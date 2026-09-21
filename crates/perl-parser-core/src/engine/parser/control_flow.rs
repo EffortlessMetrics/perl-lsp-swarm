@@ -401,17 +401,21 @@ impl<'a> Parser<'a> {
         self.expect_closing_delimiter(TokenKind::RightParen)?;
         let body = self.parse_block()?;
 
-        // Handle continue block
-        let continue_block = if self.peek_kind() == Some(TokenKind::Continue) {
-            self.advance_token()?; // consume 'continue'
-            Some(Box::new(self.parse_block()?))
-        } else {
-            None
-        };
+        // A `continue` block never attaches to C-style `for`: real Perl
+        // rejects `for (;;) { ... } continue { ... }` outright (`syntax
+        // error near "} continue"`). Fail the parse like
+        // `DoWhileTrailingBlock` rather than recovering — the orphaned
+        // `continue { ... }` would otherwise re-parse as a clean
+        // expression statement and silently accept what `perl` refuses
+        // to compile (#16296).
+        if self.peek_kind() == Some(TokenKind::Continue) {
+            let location = self.current_position();
+            return Err(ParseError::CStyleForContinueBlock { location });
+        }
 
         let end = self.previous_position();
         self.charge_node(
-            NodeKind::For { init, condition, update, body: Box::new(body), continue_block },
+            NodeKind::For { init, condition, update, body: Box::new(body), continue_block: None },
             SourceLocation { start, end },
         )
     }
@@ -882,7 +886,8 @@ impl<'a> Parser<'a> {
                         // `DoWhileTrailingBlock` joins them: the trailing block
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
-                        // compile (#15649).
+                        // compile (#15649). `CStyleForContinueBlock` joins them
+                        // for the same reason on C-style `for` (#16296).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
@@ -891,6 +896,7 @@ impl<'a> Parser<'a> {
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }
+                                | ParseError::CStyleForContinueBlock { .. }
                         ) {
                             return Err(e);
                         }
@@ -1217,6 +1223,22 @@ mod goto_form_tests {
         walk(&ast, &mut found_goto, &mut found_targetless);
         assert!(found_goto, "targeted goto must still produce a Goto node");
         assert!(!found_targetless, "targeted goto must not produce a TargetlessGoto");
+    }
+
+    #[test]
+    fn c_style_for_continue_block_is_hard_error() {
+        // Real perl rejects `for (;;) { ... } continue { ... }` outright
+        // (`syntax error near "} continue"`): `continue` blocks attach to
+        // while/until/foreach loops only. The parse must fail rather than
+        // attach the block or re-parse it as a call (#16296).
+        use crate::error::ParseError;
+        let mut parser =
+            Parser::new("for (my $i = 0; $i < 3; $i++) { print 1; } continue { print 2; }");
+        let err = parser.parse().expect_err("C-style for with continue block must fail to parse");
+        assert!(
+            matches!(err, ParseError::CStyleForContinueBlock { .. }),
+            "expected CStyleForContinueBlock, got {err:?}"
+        );
     }
 
     #[test]

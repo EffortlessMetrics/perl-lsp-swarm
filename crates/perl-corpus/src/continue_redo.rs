@@ -314,6 +314,18 @@ do {
         should_parse: false, // Redo only works in loops
     },
     ContinueRedoCase {
+        id: "continue.cstyle.for",
+        description: "Continue block after C-style for loop (invalid).",
+        tags: &["continue", "for", "c-style", "edge-case", "invalid"],
+        source: r#"for (my $i = 0; $i < 3; $i++) {
+    print "$i\n";
+} continue {
+    print "continue\n";
+}
+"#,
+        should_parse: false, // perl rejects: continue never attaches to C-style for
+    },
+    ContinueRedoCase {
         id: "continue.lexical.scope",
         description: "Continue block with lexical variable declarations.",
         tags: &["continue", "loop", "scope", "lexical"],
