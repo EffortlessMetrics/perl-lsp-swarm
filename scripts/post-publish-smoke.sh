@@ -232,13 +232,16 @@ INSTALLER_SCRIPT="$(dirname -- "${BASH_SOURCE[0]}")/install.sh"
 INSTALLER_HOST="$(uname -s 2>/dev/null || printf 'unknown')"
 case "$INSTALLER_HOST" in
     Linux|Darwin)
-        if [[ ! -f "$INSTALLER_SCRIPT" ]]; then
+        if [[ "$SKIP_INSTALL" == "1" ]]; then
+            pass "install.sh release-archive path skipped (SKIP_INSTALL=1)"
+        elif [[ ! -f "$INSTALLER_SCRIPT" ]]; then
             fail "installer script not found at $INSTALLER_SCRIPT"
         else
             INSTALLER_DIR="$(mktemp -d)"
             CLEANUP_DIRS+=("$INSTALLER_DIR")
+            INSTALLER_LOG="$(mktemp)"
             if INSTALL_DIR="$INSTALLER_DIR" VERSION="v$VERSION" \
-                bash "$INSTALLER_SCRIPT" >/dev/null 2>&1; then
+                bash "$INSTALLER_SCRIPT" >"$INSTALLER_LOG" 2>&1; then
                 INSTALLED_VERSION_OUTPUT="$("$INSTALLER_DIR/perllsp" --version 2>&1 | head -n 1)"
                 if [[ "$INSTALLED_VERSION_OUTPUT" =~ $VERSION ]]; then
                     pass "install.sh installed perllsp and --version reports $VERSION (got: $INSTALLED_VERSION_OUTPUT)"
@@ -246,8 +249,10 @@ case "$INSTALLER_HOST" in
                     fail "install.sh finished but installed perllsp --version did not report $VERSION (got: $INSTALLED_VERSION_OUTPUT)"
                 fi
             else
-                fail "install.sh failed for v$VERSION (archive download, SHA256SUMS verify, or install step)"
+                fail "install.sh failed for v$VERSION (archive download, SHA256SUMS verify, or install step); installer log:"
+                cat "$INSTALLER_LOG" >&2
             fi
+            rm -f "$INSTALLER_LOG"
         fi
         ;;
     *)

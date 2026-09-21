@@ -51,12 +51,21 @@ anything to `bash`:
 ```bash
 RELEASE_TAG=v0.17.0  # the release you want to install
 INSTALLER_REF="$(git ls-remote https://github.com/EffortlessMetrics/perl-lsp.git "refs/tags/${RELEASE_TAG}^{}" | cut -f1)"
-INSTALLER_SHA256="$(curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/install.sh" | sha256sum | cut -d' ' -f1)"
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA_TOOL="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  SHA_TOOL="shasum -a 256"
+else
+  echo "sha256sum or shasum is required to generate the installer digest" >&2
+  exit 1
+fi
+INSTALLER_SHA256="$(curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/scripts/install.sh" | $SHA_TOOL | cut -d' ' -f1)"
 printf 'ref: %s\ndigest: %s\n' "$INSTALLER_REF" "$INSTALLER_SHA256"
 ```
 
 `INSTALLER_REF` is the immutable publish commit of that tag, and `INSTALLER_SHA256` is
-the digest of `install.sh` at that commit. These generated values are convenience-level:
+the digest of `scripts/install.sh` — the canonical installer the bootstrap wrapper
+downloads and verifies — at that commit. These generated values are convenience-level:
 they pin the executed installer to one exact ref and content, but they come from the
 same host the installer is fetched from, so they are not independent review. Feed them
 to the identity-bound remote bootstrap:
