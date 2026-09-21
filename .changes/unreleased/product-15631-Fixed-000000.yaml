@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Native debugger evaluation preserves numeric-leading Perl expressions, including spaced arithmetic such as 6 * 7."
+time: 2026-09-14T00:00:00Z
+custom:
+  PR: "15631"
+  Slug: numeric-evaluate-expressions
+  Breaking: "no"

@@ -14,6 +14,7 @@ import {
   NATIVE_EXTENSION_ID,
   REVIEWED_PERL_EXTENSIONS,
   buildRedactedCoexistencePacket,
+  coexistenceConflictIdentity,
   coexistenceConflictKey,
   type CoexistenceFinding,
 } from './coexistenceRegistry';
@@ -126,8 +127,16 @@ function folderSettingSnapshot(
  * Every pass carries the full inventory so settings-derived classes combine
  * scoped settings with installed extensions; the host pass evaluates without
  * a resource scope, each folder pass its own `{ uri, languageId: 'perl' }`
- * snapshot and file evidence. Findings keep the scope they were observed in
- * and are deduplicated by exact conflict identity.
+ * snapshot and file evidence.
+ *
+ * A folder pass re-reads the same global and workspace settings as the host
+ * pass, so it re-observes host-wide conditions that are in no way specific to
+ * that root. Such a restatement is dropped: a conflict already established
+ * host-wide is reported once, at `user` scope. A folder contributes a finding
+ * only when it establishes a conflict identity the host pass did not — a real
+ * folder override, or folder-local file evidence such as `.perltidyrc`. This
+ * keeps one condition bound to one suppression identity however many roots
+ * are open, and keeps a root from restating another root's conflict (#16000).
  */
 export async function collectCoexistenceFindings(
   context: vscode.ExtensionContext,
@@ -144,7 +153,9 @@ export async function collectCoexistenceFindings(
     installedExtensions: inventory,
     ...folderSettingSnapshot({ languageId: 'perl' }),
   };
-  const findings = detectCoexistenceFindings(userScopeObservations);
+  const hostWideFindings = detectCoexistenceFindings(userScopeObservations);
+  const findings = [...hostWideFindings];
+  const hostWideIdentities = new Set(hostWideFindings.map(coexistenceConflictIdentity));
 
   const folders = vscode.workspace.workspaceFolders ?? [];
   for (const [index, folder] of folders.entries()) {
@@ -159,14 +170,17 @@ export async function collectCoexistenceFindings(
     } catch {
       perltidyrcPresent = false;
     }
+    const folderFindings = detectCoexistenceFindings({
+      selfExtensionId: selfId,
+      installedExtensions: inventory,
+      folderName: folder.name || `folder-${index + 1}`,
+      perltidyrcPresentInFolder: perltidyrcPresent,
+      ...folderSettingSnapshot({ uri: folder.uri, languageId: 'perl' }),
+    });
     findings.push(
-      ...detectCoexistenceFindings({
-        selfExtensionId: selfId,
-        installedExtensions: inventory,
-        folderName: folder.name || `folder-${index + 1}`,
-        perltidyrcPresentInFolder: perltidyrcPresent,
-        ...folderSettingSnapshot({ uri: folder.uri, languageId: 'perl' }),
-      }),
+      ...folderFindings.filter(
+        (finding) => !hostWideIdentities.has(coexistenceConflictIdentity(finding)),
+      ),
     );
   }
 

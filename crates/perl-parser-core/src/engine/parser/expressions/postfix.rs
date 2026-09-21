@@ -15,6 +15,35 @@ impl<'a> Parser<'a> {
     /// build an initial node outside the normal `parse_primary` path
     /// (e.g. typeglobs in `parse_unary`) can still participate in postfix chaining.
     ///
+    /// Do-while trailing-block brace policy (#15649).
+    ///
+    /// A `{` following a do-while condition is the trailing block that real
+    /// Perl rejects near `") {"`. The grammar boundary is the condition's own
+    /// parentheses, not the expression shape: inside the condition's `(...)`
+    /// (paren depth > 0) every postfix brace is an ordinary subscript
+    /// (`while ($h{k})`), and after the group closed no shape can subscript
+    /// (`while ($flag) {k}` and `($h{k}){k}` reject even though grouping left
+    /// a bare variable or subscript binary here). Unparenthesized conditions
+    /// keep the shape rule: bare variables and bareword call/block forms
+    /// (`while foo {k}`) and any subscript-chain result (`$h{k}{j}`,
+    /// `$a[0]{k}`, `$self->{a}{b}`) keep consuming; a brace after a completed
+    /// non-subscript shape (`while $a eq $b {`) is the trailing block, left
+    /// for `parse_statement_modifier` to reject.
+    fn do_while_keep_consuming_brace(&self, expr: &Node) -> bool {
+        let subscript_chain = matches!(
+            &expr.kind,
+            NodeKind::Binary { op, .. }
+                if matches!(op.as_str(), "{}" | "[]" | "->{}" | "->[]" | "->@[]" | "->%{}")
+        );
+        let bare_shape =
+            matches!(&expr.kind, NodeKind::Variable { .. } | NodeKind::Identifier { .. });
+        let inside_condition_group = self.in_do_while_condition
+            && self.do_while_paren_reject
+            && self.do_while_paren_depth > 0;
+        let unparenthesized_condition = self.in_do_while_condition && !self.do_while_paren_reject;
+        inside_condition_group || (unparenthesized_condition && (bare_shape || subscript_chain))
+    }
+
     /// The loop handles several postfix patterns in order of precedence:
     /// 1. Hash/array slice without arrow (`@hash{...}`, `%hash{...}`)
     /// 2. Increment/decrement operators (`++`, `--`)
@@ -22,7 +51,25 @@ impl<'a> Parser<'a> {
     /// 4. Array subscript (`[...]`)
     /// 5. Hash subscript with block handling (`{...}`)
     /// 6. Function call parentheses (`(...)`)
-    pub(crate) fn parse_postfix_chain(&mut self, mut expr: Node) -> ParseResult<Node> {
+    pub(crate) fn parse_postfix_chain(&mut self, expr: Node) -> ParseResult<Node> {
+        self.parse_postfix_chain_with(expr, false)
+    }
+
+    /// Arrow-only postfix continuation for word `not` results (#13932,
+    /// FC-WORD-NOT-POSTFIX-OVERADMIT). Perl admits `->` chains on a
+    /// parenthesized `not` result (`not($x)->foo`) but rejects direct `[]`,
+    /// `{}`, `++`, `--`, and call continuations (`not($x)[0]`, `not($x)++`
+    /// are syntax errors per perl 5.38.2 `-c`). Anything else stays
+    /// unconsumed so statement recovery reports it instead of a clean AST.
+    pub(crate) fn parse_arrow_chain(&mut self, expr: Node) -> ParseResult<Node> {
+        self.parse_postfix_chain_with(expr, true)
+    }
+
+    fn parse_postfix_chain_with(
+        &mut self,
+        mut expr: Node,
+        arrow_only: bool,
+    ) -> ParseResult<Node> {
         let mut postfix_chain_depth = 0usize;
 
         // Closure to track nesting depth and prevent stack overflow on deeply
@@ -39,6 +86,43 @@ impl<'a> Parser<'a> {
         };
 
         loop {
+            // #13932 (FC-WORD-NOT-POSTFIX-OVERADMIT): word `not` results admit
+            // only `->` continuations. Anything else is left unconsumed so
+            // statement recovery reports the residue instead of a clean AST.
+            if arrow_only && !matches!(self.peek_kind(), Some(TokenKind::Arrow)) {
+                break;
+            }
+            // #15649: leave a surviving do-while trailing `{` for
+            // `parse_statement_modifier` to reject with `DoWhileTrailingBlock`.
+            // This single gate covers every direct-`{` postfix arm below (hash
+            // slices, block-call forms, hash subscripts): after the
+            // parenthesized condition's own `)` closes, no shape subscripts.
+            if self.peek_kind() == Some(TokenKind::LeftBrace)
+                && self.in_do_while_condition
+                && !self.do_while_keep_consuming_brace(&expr)
+            {
+                break;
+            }
+            // --------------------------------------------------------------------
+            // Do-while closed-group guard — must precede every `{`-consuming
+            // arm below (slices, bareword block calls, hash subscripts), or
+            // shapes like `while (@h) { 2 }` and `while (foo) { 2 }` leak
+            // their trailing block into those arms: parenthesized conditions
+            // preserve their inner node kind, so the slice/block-call
+            // detectors see a Variable/Identifier and consume the brace.
+            // When the do-while condition's own `(...)` group is closed
+            // (reject armed, depth 0), a following `{` is the trailing block
+            // real Perl rejects near ") {" — leave it for
+            // `parse_statement_modifier` (#15649, #15719 review).
+            // --------------------------------------------------------------------
+            if self.in_do_while_condition
+                && self.do_while_paren_reject
+                && self.do_while_paren_depth == 0
+                && self.peek_kind() == Some(TokenKind::LeftBrace)
+            {
+                break;
+            }
+
             // --------------------------------------------------------------------
             // Hash/array slice without arrow: @hash{...} or %hash{...}
             //
@@ -71,12 +155,12 @@ impl<'a> Parser<'a> {
                     || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "%{}");
 
                 if is_at_slice || is_pct_slice {
-                    self.tokens.next()?; // consume {
+                    self.advance_token()?; // consume {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
                     let start = expr.location.start;
-                    let end = self.previous_position();
+                    let end = self.previous_position().max(key.location.end);
 
                     record_postfix_layer()?;
                     let kind = if is_at_slice {
@@ -84,7 +168,7 @@ impl<'a> Parser<'a> {
                     } else {
                         NodeKind::KeyValueSlice { target: Box::new(expr), keys: Box::new(key) }
                     };
-                    expr = Node::new(kind, SourceLocation { start, end });
+                    expr = self.charge_node(kind, SourceLocation { start, end })?;
                     continue;
                 }
             }
@@ -104,10 +188,10 @@ impl<'a> Parser<'a> {
                     let func_name = name.clone();
                     let arg = self.parse_unary()?;
                     let end = arg.location.end;
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::FunctionCall { name: func_name, args: vec![arg] },
                         SourceLocation { start, end },
-                    );
+                    )?;
                     continue;
                 }
             }
@@ -122,20 +206,20 @@ impl<'a> Parser<'a> {
                     let end = op_token.end();
 
                     record_postfix_layer()?;
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(expr) },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
 
                 Some(TokenKind::Arrow) => {
-                    self.tokens.next()?; // consume ->
+                    self.consume_token()?; // consume -> (advances the recovery span)
 
                     // Check for postfix dereference operators
                     match self.peek_kind() {
                         Some(TokenKind::ArraySigil) => {
                             // ->@*, ->@[...], or ->@{...}
-                            self.tokens.next()?; // consume @
+                            self.consume_token()?; // consume @
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->@*
@@ -143,46 +227,49 @@ impl<'a> Parser<'a> {
                                 record_postfix_layer()?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBracket) {
                                 // ->@[...] array slice
-                                self.tokens.next()?; // consume [
+                                self.advance_token()?; // consume [
                                 let index = self.parse_expression()?;
                                 self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = self.previous_position().max(index.location.end);
 
                                 // Represent as a special binary operation for array slice dereference
                                 record_postfix_layer()?;
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::Binary {
                                         op: "->@[]".to_string(),
                                         left: Box::new(expr),
                                         right: Box::new(index),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->@{...} postfix hash slice
-                                self.tokens.next()?; // consume {
+                                self.advance_token()?; // consume {
                                 let keys = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = self.previous_position().max(keys.location.end);
 
                                 record_postfix_layer()?;
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::HashSlice {
                                         target: Box::new(expr),
                                         keys: Box::new(keys),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
+                            } else {
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
                         }
 
                         Some(TokenKind::HashSigil) => {
                             // ->%* or ->%{...}
-                            self.tokens.next()?; // consume %
+                            self.consume_token()?; // consume %
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->%*
@@ -190,53 +277,79 @@ impl<'a> Parser<'a> {
                                 record_postfix_layer()?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->%{...} hash slice
-                                self.tokens.next()?; // consume {
+                                self.advance_token()?; // consume {
                                 let key = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = self.previous_position().max(key.location.end);
 
                                 // Represent as a special binary operation for hash slice dereference
                                 record_postfix_layer()?;
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::Binary {
                                         op: "->%{}".to_string(),
                                         left: Box::new(expr),
                                         right: Box::new(key),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
+                            } else {
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
                         }
 
                         Some(TokenKind::ScalarSigil) => {
                             // ->$*
-                            self.tokens.next()?; // consume $
+                            self.consume_token()?; // consume $
 
-                            if self.peek_kind() == Some(TokenKind::Star) {
+                            if self.peek_kind() == Some(TokenKind::LeftBrace) {
+                                // ->${ expr }: dynamic method call with a braced
+                                // method-name expression (`$obj->${method}()`),
+                                // valid Perl since 5.8. Not a truncated chain, so
+                                // do not recover. `NodeKind::MethodCall` stores the
+                                // method as text only, so building it here would
+                                // drop the parsed method expression from the tree
+                                // and hide `${ $undeclared }` from strict-vars.
+                                // Leave `{ expr }` and `(args)` to the subscript and
+                                // call layers below, which keep the expression as a
+                                // traversable child (the same shape `main` has
+                                // always produced; a first-class dynamic-method
+                                // operand is tracked separately).
+                                continue;
+                            } else if self.peek_kind() == Some(TokenKind::Star) {
                                 expr = self.consume_arrow_star_deref(expr, "->$*")?;
                                 record_postfix_layer()?;
+                            } else {
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
                         }
 
                         Some(TokenKind::SubSigil | TokenKind::BitwiseAnd) => {
                             // ->&* (code dereference)
-                            self.tokens.next()?; // consume &
+                            self.consume_token()?; // consume &
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 expr = self.consume_arrow_star_deref(expr, "->&*")?;
                                 record_postfix_layer()?;
+                            } else {
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
                         }
 
                         Some(TokenKind::Star) => {
                             // ->** (glob dereference)
-                            self.tokens.next()?; // consume first *
+                            self.consume_token()?; // consume first *
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 expr = self.consume_arrow_star_deref(expr, "->**")?;
                                 record_postfix_layer()?;
+                            } else {
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
                         }
 
@@ -250,10 +363,22 @@ impl<'a> Parser<'a> {
                                     .peek_second()
                                     .is_ok_and(|t| t.kind() == TokenKind::Star)
                             {
-                                self.tokens.next()?; // consume $#
+                                self.advance_token()?; // consume $#
                                 expr = self.consume_arrow_star_deref(expr, "->$#*")?;
                                 record_postfix_layer()?;
                                 continue;
+                            }
+
+                            if self.tokens.peek().is_ok_and(|t| t.text.as_ref() == "$#") {
+                                self.consume_token()?; // consume the incomplete `$#`
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
+                            }
+
+                            if self.tokens.peek().is_ok_and(|t| t.text.as_ref() == "$") {
+                                self.consume_token()?; // consume the incomplete `$` sigil
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
 
                             // Method call
@@ -269,10 +394,10 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::MethodCall { object: Box::new(expr), method, args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         Some(TokenKind::LeftParen) => {
@@ -285,15 +410,15 @@ impl<'a> Parser<'a> {
                             all_args.extend(args);
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: "->()".to_string(), args: all_args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         Some(TokenKind::LeftBracket) => {
                             // Arrow array dereference: $ref->[index]
-                            self.tokens.next()?; // consume [
+                            self.advance_token()?; // consume [
                             let index = self.parse_expression()?;
                             self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
@@ -301,19 +426,19 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Binary {
                                     op: "->[]".to_string(),
                                     left: Box::new(expr),
                                     right: Box::new(index),
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         Some(TokenKind::LeftBrace) => {
                             // Arrow hash dereference: $ref->{key}
-                            self.tokens.next()?; // consume {
+                            self.advance_token()?; // consume {
                             let key = self.parse_hash_subscript_key()?;
                             self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -321,14 +446,14 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
 
                             record_postfix_layer()?;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Binary {
                                     op: "->{}".to_string(),
                                     left: Box::new(expr),
                                     right: Box::new(key),
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
 
                         _ => {
@@ -339,23 +464,7 @@ impl<'a> Parser<'a> {
                             // Emit a structured recovery annotation and wrap the
                             // partially-parsed expression in an error node so that
                             // LSP features can still use the prefix (e.g. `$obj`).
-                            let start = expr.location.start;
-                            let end = self.previous_position();
-                            let pos = end;
-                            self.errors.push(ParseError::Recovered {
-                                site: RecoverySite::PostfixChain,
-                                kind: RecoveryKind::TruncatedChain,
-                                location: pos,
-                            });
-                            expr = Node::new(
-                                NodeKind::Error {
-                                    message: "Incomplete arrow expression".to_string(),
-                                    expected: vec![],
-                                    found: self.tokens.peek().ok().cloned(),
-                                    partial: Some(Box::new(expr)),
-                                },
-                                SourceLocation { start, end },
-                            );
+                            expr = self.recover_truncated_arrow(expr);
                             // Exit the postfix loop — we cannot continue chaining
                             // after a malformed arrow.
                             break;
@@ -382,10 +491,10 @@ impl<'a> Parser<'a> {
                             args.push(self.parse_ternary()?);
                         }
                         let end = args.last().map_or(expr.location.end, |a| a.location.end);
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::FunctionCall { name, args },
                             SourceLocation { start, end },
-                        );
+                        )?;
                         continue;
                     }
                     // Detect array slices: @arr[...] or @{$aref}[...]
@@ -393,7 +502,7 @@ impl<'a> Parser<'a> {
                         || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
 
                     // Array indexing - can be a single index or slice with multiple indices
-                    self.tokens.next()?; // consume [
+                    self.advance_token()?; // consume [
 
                     // Check if this might be a slice (multiple indices)
                     let mut indices = vec![self.parse_expression()?];
@@ -427,10 +536,10 @@ impl<'a> Parser<'a> {
                             })?
                             .location
                             .end;
-                        Node::new(
+                        self.charge_node(
                             NodeKind::ArrayLiteral { elements: indices },
                             SourceLocation { start, end },
-                        )
+                        )?
                     };
 
                     let start = expr.location.start;
@@ -438,22 +547,22 @@ impl<'a> Parser<'a> {
 
                     record_postfix_layer()?;
                     if is_array_slice {
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::ArraySlice {
                                 target: Box::new(expr),
                                 indices: Box::new(index),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                     } else {
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::Binary {
                                 op: "[]".to_string(),
                                 left: Box::new(expr),
                                 right: Box::new(index),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                     }
                 }
 
@@ -486,7 +595,7 @@ impl<'a> Parser<'a> {
                                     if self.peek_kind() == Some(TokenKind::FatArrow)
                                         && let Some(arg) = args.last_mut()
                                     {
-                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
                                     }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if self.is_at_statement_end() {
@@ -522,7 +631,7 @@ impl<'a> Parser<'a> {
                                     if self.peek_kind() == Some(TokenKind::FatArrow)
                                         && let Some(arg) = args.last_mut()
                                     {
-                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
                                     }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if is_bare_func {
@@ -571,7 +680,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -589,7 +698,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?; // consume comma or fat arrow
                                         if self.is_implicit_arg_terminator() {
@@ -608,16 +717,21 @@ impl<'a> Parser<'a> {
                                 .location
                                 .end;
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                             continue; // Continue the loop
                         }
                     }
 
-                    // Hash element access
-                    self.tokens.next()?; // consume {
+                    // Hash element access (do-while trailing `{` already left
+                    // by the loop-top gate above; this re-check keeps the arm
+                    // honest if it is ever reached directly).
+                    if self.in_do_while_condition && !self.do_while_keep_consuming_brace(&expr) {
+                        break;
+                    }
+                    self.advance_token()?; // consume {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -626,14 +740,14 @@ impl<'a> Parser<'a> {
 
                     // Represent as binary subscript operation
                     record_postfix_layer()?;
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: "{}".to_string(),
                             left: Box::new(expr),
                             right: Box::new(key),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
 
                 Some(TokenKind::LeftParen) if matches!(&expr.kind, NodeKind::Identifier { .. }) => {
@@ -647,10 +761,10 @@ impl<'a> Parser<'a> {
                             let start = expr.location.start;
                             let end = self.previous_position();
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::ArrayLiteral { elements: words },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if matches!(name.as_str(), "print" | "say" | "printf" | "send") {
                             // `print( $fh EXPR )` — filehandle-style inside explicit parens.
                             // parse_args() treats every argument as comma-separated, so
@@ -662,19 +776,19 @@ impl<'a> Parser<'a> {
                             let start = expr.location.start;
                             let end = self.previous_position();
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name, args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else {
                             let args = self.parse_args()?;
                             let start = expr.location.start;
                             let end = self.previous_position();
 
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name, args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
                     }
                 }
@@ -695,17 +809,17 @@ impl<'a> Parser<'a> {
 
                     record_postfix_layer()?;
                     expr = if matches!(&expr.kind, NodeKind::Undef) {
-                        Node::new(
+                        self.charge_node(
                             NodeKind::FunctionCall { name: "undef".to_string(), args },
                             SourceLocation { start, end },
-                        )
+                        )?
                     } else {
                         let mut all_args = vec![expr];
                         all_args.extend(args);
-                        Node::new(
+                        self.charge_node(
                             NodeKind::FunctionCall { name: "->()".to_string(), args: all_args },
                             SourceLocation { start, end },
-                        )
+                        )?
                     };
                 }
 
@@ -727,10 +841,10 @@ impl<'a> Parser<'a> {
                             // A qualified CORE builtin remains executable before a fat comma;
                             // do not let the generic key conversion turn it into a string.
                             let start = expr.location.start;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args: vec![] },
                                 SourceLocation { start, end: expr.location.end },
-                            );
+                            )?;
                         } else if Self::is_nullary_builtin(name) {
                             // Nullary builtins (shift, pop, caller, wantarray, etc.) can also
                             // take an explicit sigil-starting argument, e.g. `shift @arr`.
@@ -755,10 +869,10 @@ impl<'a> Parser<'a> {
                                 .last()
                                 .map(|arg: &Node| arg.location.end)
                                 .unwrap_or(expr.location.end);
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if !Self::is_builtin_function(name)
                             && !self.is_at_statement_end()
                             && self.peek_kind() != Some(TokenKind::FatArrow)
@@ -793,10 +907,10 @@ impl<'a> Parser<'a> {
 
                             let start = expr.location.start;
                             let end = args.last().map_or(expr.location.end, |arg| arg.location.end);
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if name.contains("::")
                             && !self.is_at_statement_end()
                             && self.peek_kind() != Some(TokenKind::FatArrow)
@@ -837,10 +951,10 @@ impl<'a> Parser<'a> {
                             }
                             let start = expr.location.start;
                             let end = self.previous_position();
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall { name: name.clone(), args },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if Self::is_builtin_function(name)
                             || Self::core_qualified_builtin_name(name).is_some()
                             || self.looks_like_bare_call(name)
@@ -903,10 +1017,10 @@ impl<'a> Parser<'a> {
                                 || is_str_op_terminated
                             {
                                 // Bare builtin with no arguments
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::FunctionCall { name: name.clone(), args: vec![] },
                                     expr.location,
-                                );
+                                )?;
                             } else {
                                 // Parse arguments without parentheses
                                 let mut args = Vec::new();
@@ -943,7 +1057,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1003,7 +1117,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1042,7 +1156,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1065,7 +1179,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?; // consume comma or fat arrow
                                         if self.is_at_statement_end() {
@@ -1099,7 +1213,7 @@ impl<'a> Parser<'a> {
                                             if self.peek_kind() == Some(TokenKind::FatArrow)
                                                 && let Some(arg) = args.last_mut()
                                             {
-                                                Self::auto_quote_bareword_before_fat_comma(arg);
+                                                self.auto_quote_bareword_before_fat_comma(arg)?;
                                             }
                                             self.consume_token()?;
                                         }
@@ -1124,7 +1238,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
@@ -1219,7 +1333,7 @@ impl<'a> Parser<'a> {
                                                 if self.peek_kind() == Some(TokenKind::FatArrow)
                                                     && let Some(arg) = args.last_mut()
                                                 {
-                                                    Self::auto_quote_bareword_before_fat_comma(arg);
+                                                    self.auto_quote_bareword_before_fat_comma(arg)?;
                                                 }
                                                 self.consume_token()?;
                                             }
@@ -1284,7 +1398,7 @@ impl<'a> Parser<'a> {
                                         if self.peek_kind() == Some(TokenKind::FatArrow)
                                             && let Some(arg) = args.last_mut()
                                         {
-                                            Self::auto_quote_bareword_before_fat_comma(arg);
+                                            self.auto_quote_bareword_before_fat_comma(arg)?;
                                         }
                                         self.consume_token()?;
                                         if self.is_at_statement_end() {
@@ -1312,19 +1426,19 @@ impl<'a> Parser<'a> {
                                     } else {
                                         message_args.remove(0)
                                     };
-                                    Node::new(
+                                    self.charge_node(
                                         NodeKind::IndirectCall {
                                             method: name.clone(),
                                             object: Box::new(object),
                                             args: message_args,
                                         },
                                         SourceLocation { start, end },
-                                    )
+                                    )?
                                 } else {
-                                    Node::new(
+                                    self.charge_node(
                                         NodeKind::FunctionCall { name: name.clone(), args },
                                         SourceLocation { start, end },
-                                    )
+                                    )?
                                 };
                             }
                         }
@@ -1346,13 +1460,13 @@ impl<'a> Parser<'a> {
                             let arg = self.parse_ternary()?;
                             let start = expr.location.start;
                             let end = arg.location.end;
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::FunctionCall {
                                     name: "undef".to_string(),
                                     args: vec![arg],
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
                     }
                     break;
@@ -1450,11 +1564,11 @@ impl<'a> Parser<'a> {
     /// Consume the next token as a bareword string node (for quote-op names used
     /// as hash keys, e.g. the `m` in `$h{m}` or `@h{m, s}`).
     fn consume_as_bareword_string(&mut self) -> ParseResult<Node> {
-        let token = self.tokens.next()?;
-        Ok(Node::new(
+        let token = self.advance_token()?;
+        self.charge_node(
             NodeKind::String { value: token.text.to_string(), interpolated: false },
             SourceLocation { start: token.start(), end: token.end() },
-        ))
+        )
     }
 
     /// Parse hash subscript key expression, treating lone keywords as bare
@@ -1523,7 +1637,9 @@ impl<'a> Parser<'a> {
         }
 
         let end = elements.last().map(|n| n.location.end).unwrap_or(start);
-        Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
+        Ok(Some(
+            self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })?,
+        ))
     }
 
     fn peek_is_keyword_bareword_key(&mut self, allow_terminal_control_key: bool) -> bool {
@@ -1565,11 +1681,33 @@ impl<'a> Parser<'a> {
     }
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {
-        let token = self.tokens.next()?;
-        Ok(Node::new(
+        let token = self.advance_token()?;
+        self.charge_node(
             NodeKind::Identifier { name: token.text.to_string() },
             SourceLocation { start: token.start(), end: token.end() },
-        ))
+        )
+    }
+
+    fn recover_truncated_arrow(&mut self, expr: Node) -> Node {
+        let start = expr.location.start;
+        let end = self.previous_position();
+        self.record_error(ParseError::Recovered {
+            site: RecoverySite::PostfixChain,
+            kind: RecoveryKind::TruncatedChain,
+            location: end,
+        });
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension
+        // (same exemption class as the missing-operand recovery node).
+        Node::new(
+            NodeKind::Error {
+                message: "Incomplete arrow expression".to_string(),
+                expected: vec![],
+                found: self.tokens.peek().ok().cloned(),
+                partial: Some(Box::new(expr)),
+            },
+            SourceLocation { start, end },
+        )
     }
 
     /// Attempt to parse a quote-operator name (`m`, `s`, `q`, `qq`, `qw`, `qr`,
@@ -1612,7 +1750,9 @@ impl<'a> Parser<'a> {
         }
 
         let end = elements.last().map(|n| n.location.end).unwrap_or(start);
-        Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
+        Ok(Some(
+            self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })?,
+        ))
     }
 
     /// Finish an arrow star-form postfix dereference from the consumed `*` token.
@@ -1623,9 +1763,83 @@ impl<'a> Parser<'a> {
     fn consume_arrow_star_deref(&mut self, expr: Node, op: &'static str) -> ParseResult<Node> {
         let star = self.consume_token()?;
         let start = expr.location.start;
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Unary { op: op.to_string(), operand: Box::new(expr) },
             SourceLocation { start, end: star.end() },
-        ))
+        )
+    }
+}
+
+/// Boundary discriminators for the do-while trailing-brace policy (#15649):
+/// `do_while_keep_consuming_brace` must keep consuming inside the
+/// condition's own `(...)`, keep bare/subscript shapes for unparenthesized
+/// conditions, and stop for everything else so `parse_statement_modifier`
+/// can reject the trailing block. (ripr discriminators for the
+/// `inside_condition_group || (unparenthesized_condition && (bare_shape ||
+/// subscript_chain))` seams.)
+#[cfg(test)]
+mod do_while_brace_boundary_tests {
+    use super::*;
+
+    fn variable_node() -> Node {
+        Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "h".to_string() },
+            SourceLocation { start: 0, end: 2 },
+        )
+    }
+
+    fn subscript_node() -> Node {
+        Node::new(
+            NodeKind::Binary {
+                op: "{}".to_string(),
+                left: Box::new(variable_node()),
+                right: Box::new(Node::new(
+                    NodeKind::Number { value: "0".to_string() },
+                    SourceLocation { start: 3, end: 4 },
+                )),
+            },
+            SourceLocation { start: 0, end: 5 },
+        )
+    }
+
+    fn number_node() -> Node {
+        Node::new(NodeKind::Number { value: "0".to_string() }, SourceLocation { start: 0, end: 1 })
+    }
+
+    fn condition_parser(unparenthesized: bool, depth: usize) -> Parser<'static> {
+        let mut parser = Parser::new("while 1 {}");
+        parser.in_do_while_condition = true;
+        parser.do_while_paren_reject = !unparenthesized;
+        parser.do_while_paren_depth = depth;
+        parser
+    }
+
+    #[test]
+    fn inside_condition_group_keeps_consuming() {
+        let parser = condition_parser(false, 1);
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), true);
+        assert_eq!(parser.do_while_keep_consuming_brace(&number_node()), true);
+    }
+
+    #[test]
+    fn closed_condition_group_stops_consuming() {
+        let parser = condition_parser(false, 0);
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), false);
+        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node()), false);
+    }
+
+    #[test]
+    fn unparenthesized_condition_keeps_bare_and_subscript_shapes() {
+        let parser = condition_parser(true, 0);
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), true);
+        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node()), true);
+        assert_eq!(parser.do_while_keep_consuming_brace(&number_node()), false);
+    }
+
+    #[test]
+    fn outside_do_while_condition_stops_consuming() {
+        let mut parser = Parser::new("while 1 {}");
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), false);
+        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node()), false);
     }
 }

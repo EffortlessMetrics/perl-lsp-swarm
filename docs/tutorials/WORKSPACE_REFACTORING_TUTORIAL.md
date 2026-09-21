@@ -25,7 +25,7 @@ You'll learn to:
 
 ```rust
 use perl_parser::workspace_refactor::WorkspaceRefactor;
-use perl_parser::workspace_index::WorkspaceIndex;
+use perl_workspace::workspace_index::WorkspaceIndex;
 use std::path::Path;
 
 // Create a workspace index

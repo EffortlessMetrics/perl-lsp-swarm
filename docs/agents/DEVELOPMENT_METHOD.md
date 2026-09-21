@@ -180,6 +180,17 @@ When GitHub owns the next transition, mark the frame `IN_FLIGHT`, advance anothe
 independent claim, and revisit only when its named wake event occurs. Do not poll
 unchanged state or keep an idle agent alive to symbolize the wait.
 
+A remote wait releases root attention. An exact wake event is a resumability condition,
+not a request to schedule the current engineering context to wake itself. Do not create
+a timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit
+the same remote condition. While any disjoint claim remains useful, release unnecessary
+claim-local contexts and continue that work immediately. If no remaining required claim is
+actionable because each waits on a real external blocker or accountable owner decision,
+return the goal-level external blocker with each claim's condition and wake event
+named, and let the bounded engineering session end. Scheduled monitoring is a distinct user goal;
+it must not be introduced merely to keep ordinary engineering work attached to a
+remote wait.
+
 ## Orchestration economics
 
 Delegate when expected evidence gain, root-context preservation,
@@ -339,6 +350,24 @@ publication. [File policy](../FILE_POLICY.md) and
 [non-Rust policy](../policy/NON_RUST_POLICY.md) define its current-tree evidence path.
 Temporary workflows that execute or push on a branch's behalf are not an acceptable
 repair route; the edit is made locally by the candidate writer.
+
+## Self-authored correction and disclosure
+
+When an in-scope defect is reversible and covered by the accepted claim and current
+writer envelope, correct it immediately, rerun the
+affected proof, and disclose the defect, correction, result, and remaining uncertainty.
+The fact that the agent introduced the defect does not create a new approval
+transaction. Ask for a decision only when the correction requires a non-derivable
+product or policy choice, a separately protected external action, or material scope,
+cost, privacy, security, or exposure change. Disclosure and authorization are separate
+facts.
+
+Pending candidate work remains a candidate-local wait with one exact wake event. Do not
+turn unchanged polling into progress or an umbrella blocker; advance another disjoint
+claim when its authority permits. An active writer collision and a higher-precedence
+prohibition hold only the affected claim and preserve existing ownership and result
+vocabulary. Repository guidance cannot override a higher-precedence runtime
+instruction; that provenance remains an explicit uncertainty boundary.
 
 ## Hard stops
 

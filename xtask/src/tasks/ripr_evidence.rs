@@ -5,22 +5,38 @@
 
 use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::git_context::{default_windows_drive_mount_root, git_output_with_mount_root};
+use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::fmt;
 use std::fs;
-use std::io::Read;
+use std::io::{self, BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
+use syn::spanned::Spanned;
+use syn::visit::{self, Visit};
 use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, classify_ancestry};
 
 #[cfg(test)]
 static RIPR_BIN_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Test-only override for the staged-payload cap, so a refusal test can drive
+/// the guard with a small payload instead of gigabytes. Serialized by the same
+/// exclusive lock as [`RIPR_BIN_OVERRIDE`]: every test that sets this also
+/// installs a producer double, and both are cleared by one guard.
+#[cfg(test)]
+static RIPR_MAX_RAW_CHECK_BYTES_OVERRIDE: std::sync::Mutex<Option<u64>> =
+    std::sync::Mutex::new(None);
 
 const DEFAULT_ROOT: &str = ".";
 const DEFAULT_BASE: &str = "origin/main";
@@ -33,6 +49,64 @@ const PR_DIFF_RECEIPT: &str = "target/ripr/pr/committed-diff.json";
 /// The `repo-exposure.json` summary only contains per-bucket counts, not the `findings[]`
 /// array.  Without `findings[]` it is impossible to diagnose suppression mismatches offline.
 const PR_RAW_CHECK_JSON: &str = "target/ripr/pr/raw-check.json";
+/// Filename prefix for the in-flight stdout file `run_ripr_streaming_to_file`
+/// publishes by rename. Distinctive so an abandoned one can be identified and
+/// swept without touching any other file in the staging directory.
+const RIPR_STDOUT_TEMP_PREFIX: &str = "raw-check.partial-";
+/// Same-filesystem staging directory for in-flight RIPR stdout. It is outside
+/// every uploaded evidence glob, so an interrupted run cannot publish a partial
+/// payload while still allowing the final artifact to use an atomic rename.
+const RIPR_STDOUT_STAGING_DIR: &str = "target/ripr/stdout-staging";
+/// Retained bytes of child stderr. The pipe is always drained in full — a
+/// child blocked writing to an unread pipe would never exit — but only this
+/// much is kept, so a noisy failure cannot reintroduce the unbounded buffer
+/// this change exists to remove (#12569 review).
+const MAX_RIPR_STDERR_BYTES: usize = 64 * 1024;
+/// Maximum bytes of producer stdout this transport stages on disk before it
+/// terminates the producer and refuses the run.
+///
+/// `ripr check` output is unbounded in the *repository* dimension, not only the
+/// diff: each finding embeds a repo-wide literal inventory, so the payload grows
+/// as (changed lines × repository literal density) rather than with the diff.
+/// #12569 and #12860 removed the *memory* ceiling by carrying the payload
+/// through a file instead of a String and a full DOM; nothing bounded the file.
+/// The staged payload has been measured at 10.4GB against a hosted runner with
+/// ~7GB of free disk, where the runner is killed mid-write, no classification
+/// artifact is produced, and the required gate reports no verdict at all
+/// (#12999).
+///
+/// The default sits between the two payload sizes measured on #12999: above the
+/// 4.61GB payload that completed ingestion, and below the 10.4GB payload that
+/// killed the lane. It bounds this repository's own disk use; it cannot make an
+/// oversized diff produce a verdict, and is not a capacity grant. Override with
+/// [`RIPR_MAX_RAW_CHECK_BYTES_ENV`] where a lane's disk budget genuinely differs.
+///
+/// This is a **soft** threshold while the producer runs: it is enforced by
+/// measuring the staged file, so the payload may pass it by the overshoot budget
+/// documented on [`RIPR_STDOUT_POLL_INTERVAL`] before the producer is
+/// terminated. A lane must therefore keep headroom above the ceiling, not
+/// exactly the ceiling. Publication is a hard check, measured once on the
+/// completed payload.
+const MAX_RIPR_RAW_CHECK_BYTES: u64 = 6 * 1024 * 1024 * 1024;
+/// Environment override for [`MAX_RIPR_RAW_CHECK_BYTES`], as a byte count.
+const RIPR_MAX_RAW_CHECK_BYTES_ENV: &str = "RIPR_MAX_RAW_CHECK_BYTES";
+/// Interval between staged-payload size checks while the producer runs.
+///
+/// The producer owns its stdout file descriptor (#12569), so the payload is
+/// measured through the filesystem rather than by intercepting bytes. That makes
+/// [`MAX_RIPR_RAW_CHECK_BYTES`] a **soft** threshold: the producer keeps writing
+/// during each interval, so the staged file can pass the ceiling by up to
+/// (this interval × the producer's write bandwidth) before it is terminated.
+///
+/// This is therefore the overshoot budget, and it is deliberately short. The
+/// observed producer emitted ~954MB in 26s (~37MB/s), which overshoots by well
+/// under 1MB here; a single large buffered write bursting at device bandwidth
+/// is the worst case and stays in the tens of MB. Both are immaterial against
+/// the multi-GB exhaustion this guard prevents, but neither is zero — a hard
+/// allocation ceiling would need a producer-side output limit or a bounded
+/// filesystem, and `ripr` exposes no output cap (#15017 owns that upstream ask).
+/// Raising this interval widens the overshoot budget proportionally.
+const RIPR_STDOUT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const REVIEW_COMMENTS_JSON: &str = "target/ripr/review/comments.json";
 const REVIEW_COMMENTS_MD: &str = "target/ripr/review/comments.md";
 const ANNOTATIONS_TXT: &str = "target/ripr/review/annotations.txt";
@@ -40,6 +114,9 @@ const PR_SUMMARY_MD: &str = "target/ripr/pr/summary.md";
 const IMPACTED_JSON: &str = "target/xtask/impacted-evidence/latest.json";
 const IMPACTED_MD: &str = "target/xtask/impacted-evidence/latest.md";
 const DEFAULT_RIPR_SUPPRESSIONS: &str = "policy/ripr-suppressions.toml";
+const FRESHNESS_HANDOFF_ENV: &str = "RIPR_FRESHNESS_HANDOFF";
+const FRESHNESS_TOKEN_ENV: &str = "RIPR_FRESHNESS_TOKEN";
+const FRESHNESS_MARKER: &str = "clear-succeeded";
 
 pub fn ripr_pr(
     root: &str,
@@ -127,6 +204,237 @@ pub fn ripr_pr_summary(check: bool) -> Result<()> {
     Ok(())
 }
 
+// -----------------------------------------------------------------------------
+// Suppression lifecycle audit (advisory)
+// -----------------------------------------------------------------------------
+
+/// Days before `expires` at which an entry is called out as due to lapse.
+const SUPPRESSION_EXPIRY_HORIZON_DAYS: i64 = 14;
+
+/// Report the ledger's own lifecycle dates against today, advisory only.
+///
+/// This command exists because the dates were unreadable in practice: the
+/// ledger header demands `owner`, `reason`, `created`, `review_after` and
+/// `expires` on every entry, yet nothing in the toolchain deserialized the last
+/// four, so an entry went on suppressing findings indefinitely past its own
+/// stated end date and no surface said so.
+///
+/// It deliberately does not enforce. Retiring a lapsed suppression is a
+/// judgement about whether the underlying finding is now real, which belongs to
+/// the entry's owner; failing the gate on a date would red PRs that have
+/// nothing to do with the suppression, which is the defect class this work is
+/// meant to reduce rather than add to. The command exits 0 on any readable
+/// ledger.
+pub fn ripr_suppression_audit(
+    suppressions: &Path,
+    out: &Path,
+    json_out: &Path,
+    print_summary: bool,
+) -> Result<()> {
+    let repo = repo_root()?;
+    let rules = read_ripr_suppression_rules(&repo, suppressions)?;
+    let packet = suppression_lifecycle_audit(
+        &rules.lifecycle,
+        Utc::now().date_naive(),
+        &display_path(suppressions),
+    );
+    let markdown = render_suppression_lifecycle_markdown(&packet);
+
+    write_text(&repo.join(json_out), &format_json(&packet)?)?;
+    write_text(&repo.join(out), &markdown)?;
+    if print_summary {
+        print!("{markdown}");
+    }
+    println!("Wrote {}", display_path(json_out));
+    println!("Wrote {}", display_path(out));
+    Ok(())
+}
+
+/// Classify every committed lifecycle row against one explicit date.
+///
+/// Pure in both arguments: the caller supplies `today`, so the whole judgement
+/// is reproducible from the ledger bytes plus a date, and the tests pin real
+/// calendar arithmetic rather than whatever day they happen to run on.
+fn suppression_lifecycle_audit(
+    lifecycle: &[RiprSuppressionLifecycle],
+    today: NaiveDate,
+    ledger_path: &str,
+) -> Value {
+    let mut expired = Vec::new();
+    let mut expiring_soon = Vec::new();
+    let mut review_due = Vec::new();
+    let mut unenforceable = Vec::new();
+    let mut no_expiry = Vec::new();
+    let mut current = 0usize;
+
+    for row in lifecycle {
+        // Completeness and expiry are reported independently. An entry missing
+        // only `owner` still has a readable end date, and folding it into a
+        // single "unenforceable" bucket would hide that date — the exact
+        // silence this audit exists to break.
+        if !row.missing.is_empty() || !row.malformed.is_empty() {
+            unenforceable.push(json!({
+                "id": row.id,
+                "owner": row.owner,
+                "missing": row.missing,
+                "malformed": row.malformed,
+            }));
+        }
+
+        // Read before the `expires` branch below, whose `continue` would
+        // otherwise skip it: an entry with no readable end date can still be
+        // long past its own review date, and dropping that date here is the
+        // same silence the block above refuses.
+        if let Some(review_after) = parse_ledger_date(&row.review_after)
+            && review_after <= today
+        {
+            review_due.push(json!({
+                "id": row.id,
+                "owner": row.owner,
+                "review_after": row.review_after,
+                "days_past_review": (today - review_after).num_days(),
+            }));
+        }
+
+        let Some(expires) = parse_ledger_date(&row.expires) else {
+            // No readable end date at all: a permanent exception living in a
+            // ledger whose header says every entry carries one.
+            no_expiry.push(json!({
+                "id": row.id,
+                "kind": row.kind,
+                "owner": row.owner,
+                "expires": row.expires,
+            }));
+            continue;
+        };
+
+        let days_past = (today - expires).num_days();
+        if days_past > 0 {
+            expired.push(json!({
+                "id": row.id,
+                "kind": row.kind,
+                "owner": row.owner,
+                "created": row.created,
+                "expires": row.expires,
+                "days_past_expiry": days_past,
+            }));
+        } else if -days_past <= SUPPRESSION_EXPIRY_HORIZON_DAYS {
+            expiring_soon.push(json!({
+                "id": row.id,
+                "owner": row.owner,
+                "expires": row.expires,
+                "days_until_expiry": -days_past,
+            }));
+        } else {
+            current += 1;
+        }
+    }
+
+    let oldest_overrun = expired
+        .iter()
+        .filter_map(|entry| entry.get("days_past_expiry").and_then(Value::as_i64))
+        .max()
+        .unwrap_or(0);
+
+    json!({
+        "schema_version": 1,
+        "kind": "ripr_suppression_lifecycle_audit",
+        "mode": "advisory",
+        "decision": "advisory",
+        "as_of": today.to_string(),
+        "ledger": ledger_path,
+        "total_entries": lifecycle.len(),
+        "expired_count": expired.len(),
+        "expiring_within_days": SUPPRESSION_EXPIRY_HORIZON_DAYS,
+        "expiring_soon_count": expiring_soon.len(),
+        "review_due_count": review_due.len(),
+        "unenforceable_count": unenforceable.len(),
+        "no_expiry_count": no_expiry.len(),
+        "current_count": current,
+        "oldest_overrun_days": oldest_overrun,
+        "expired": expired,
+        "expiring_soon": expiring_soon,
+        "review_due": review_due,
+        "unenforceable": unenforceable,
+        "no_expiry": no_expiry,
+        "claim_boundary": [
+            "Advisory report only; no gate verdict reads this artifact and no suppression stops applying on its expires date.",
+            "Dates are the ledger's own committed values, compared against as_of.",
+            "expired, expiring_soon, current and no_expiry partition the ledger by end date; unenforceable overlaps all of them and counts entries missing or malforming a field the ledger header demands.",
+            "review_due is reported only for entries with a readable expires date."
+        ]
+    })
+}
+
+fn render_suppression_lifecycle_markdown(packet: &Value) -> String {
+    let num = |key: &str| packet.get(key).and_then(Value::as_i64).unwrap_or(0);
+    let rows = |key: &str| packet.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+    let text = |value: &Value, key: &str| {
+        value.get(key).and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or("—").to_string()
+    };
+
+    let mut out = String::new();
+    out.push_str("### RIPR suppression lifecycle (advisory)\n\n");
+    out.push_str(&format!(
+        "`{}` — {} entries, as of {}.\n\n",
+        packet.get("ledger").and_then(Value::as_str).unwrap_or("policy/ripr-suppressions.toml"),
+        num("total_entries"),
+        packet.get("as_of").and_then(Value::as_str).unwrap_or("unknown"),
+    ));
+
+    let expired = num("expired_count");
+    if expired == 0 {
+        out.push_str("No suppression is past its own `expires` date.\n\n");
+    } else {
+        out.push_str(&format!(
+            "**{expired} suppression(s) are past their own `expires` date**, the oldest by {} days.\n\n",
+            num("oldest_overrun_days"),
+        ));
+        out.push_str("| id | owner | expires | days past |\n|---|---|---|---|\n");
+        for row in rows("expired") {
+            out.push_str(&format!(
+                "| `{}` | {} | {} | {} |\n",
+                text(&row, "id"),
+                text(&row, "owner"),
+                text(&row, "expires"),
+                row.get("days_past_expiry").and_then(Value::as_i64).unwrap_or(0),
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str(&format!(
+        "Expiring within {} days: {}. Past `review_after`: {}. Current: {}.\n\n",
+        num("expiring_within_days"),
+        num("expiring_soon_count"),
+        num("review_due_count"),
+        num("current_count"),
+    ));
+
+    let no_expiry = num("no_expiry_count");
+    if no_expiry > 0 {
+        out.push_str(&format!(
+            "**{no_expiry} suppression(s) carry no readable `expires` date at all** and are therefore permanent:\n\n",
+        ));
+        for row in rows("no_expiry") {
+            out.push_str(&format!("- `{}` (owner {})\n", text(&row, "id"), text(&row, "owner")));
+        }
+        out.push('\n');
+    }
+
+    let unenforceable = num("unenforceable_count");
+    if unenforceable > 0 {
+        out.push_str(&format!(
+            "{unenforceable} entr(y/ies) are missing or malforming a field the ledger header demands; see `lifecycle-audit.json`.\n\n",
+        ));
+    }
+
+    out.push_str(
+        "These dates are advisory. No gate reads them, and a suppression does not stop applying on its `expires` date; retiring one is the owner's call.\n",
+    );
+    out
+}
+
 pub fn ripr_annotations(comments: &str, out: &str, check: bool) -> Result<()> {
     let repo = repo_root()?;
     let comments = normalized_option(comments, REVIEW_COMMENTS_JSON);
@@ -152,7 +460,10 @@ pub fn ripr_annotations(comments: &str, out: &str, check: bool) -> Result<()> {
         } else if generated.text.is_empty() {
             println!("RIPR annotations: no comments[] guidance to emit.");
         } else {
-            print!("{}", generated.text);
+            println!(
+                "RIPR annotations generated: {} workflow command(s) written to {out}.",
+                generated.text.lines().count()
+            );
         }
         println!("Wrote {out}");
     }
@@ -323,6 +634,10 @@ fn ripr_plus_receipt_packet(
             "path_patterns": suppressions.display_patterns.clone(),
             "invalid_patterns": suppressions.invalid_patterns.clone(),
             "reasons": suppressions.suppression_reasons.clone(),
+            // Committed lifecycle rows, verbatim and clock-free. The expiry
+            // judgement lives in `cargo xtask ripr-suppression-audit`, which is
+            // advisory; nothing here changes a gate verdict.
+            "lifecycle": suppressions.lifecycle.iter().map(RiprSuppressionLifecycle::to_value).collect::<Vec<_>>(),
         },
         "decision": "advisory",
         "claim_boundary": [
@@ -626,8 +941,108 @@ struct RiprSuppression {
     paths: Vec<String>,
     #[serde(default)]
     classification: Vec<String>,
+    /// Optional exact finding/probe identities. Empty means "no identity filter"
+    /// (path + classification only). Non-empty is fail-closed: a finding without a
+    /// matching id is not suppressed, even on a matching path.
+    #[serde(default)]
+    gap_ids: Vec<String>,
     #[serde(default)]
     reason: String,
+    /// Accountable owner. Demanded by the ledger header; see [`RiprSuppressionLifecycle`]
+    /// for why it was previously discarded.
+    #[serde(default)]
+    owner: String,
+    /// Date the suppression was admitted, `YYYY-MM-DD`.
+    #[serde(default)]
+    created: String,
+    /// Date the owner undertook to revisit the suppression, `YYYY-MM-DD`.
+    #[serde(default)]
+    review_after: String,
+    /// Date the suppression was to stop applying, `YYYY-MM-DD`.
+    #[serde(default)]
+    expires: String,
+}
+
+/// One suppression's committed lifecycle row, exactly as the ledger spells it.
+///
+/// The ledger header states that every entry "requires owner, reason, created,
+/// review_after, and expires", but [`RiprSuppression`] deserialized only `id`,
+/// `kind`, `paths`, `classification`, `gap_ids` and `reason`. Serde's default
+/// behaviour is to ignore unknown keys, so the four lifecycle fields parsed
+/// cleanly and were then dropped on the floor: nothing in the toolchain ever
+/// read a `review_after` or an `expires`, and no entry has ever stopped
+/// applying on its own date.
+///
+/// These rows carry the committed dates verbatim and hold no clock reading, so
+/// they are a pure function of the ledger bytes. Every comparison against
+/// "today" happens in [`suppression_lifecycle_audit`], which writes an advisory
+/// artifact and is not an input to any gate verdict.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RiprSuppressionLifecycle {
+    id: String,
+    kind: String,
+    owner: String,
+    created: String,
+    review_after: String,
+    expires: String,
+    /// Fields the ledger header demands that this entry leaves empty.
+    missing: Vec<String>,
+    /// Date fields present but not parseable as `YYYY-MM-DD`.
+    malformed: Vec<String>,
+}
+
+impl RiprSuppressionLifecycle {
+    fn from_entry(suppression: &RiprSuppression) -> Self {
+        let mut missing = Vec::new();
+        let mut malformed = Vec::new();
+        for (field, value) in [
+            ("owner", suppression.owner.as_str()),
+            ("reason", suppression.reason.as_str()),
+            ("created", suppression.created.as_str()),
+            ("review_after", suppression.review_after.as_str()),
+            ("expires", suppression.expires.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                missing.push(field.to_string());
+            }
+        }
+        for (field, value) in [
+            ("created", suppression.created.as_str()),
+            ("review_after", suppression.review_after.as_str()),
+            ("expires", suppression.expires.as_str()),
+        ] {
+            if !value.trim().is_empty() && parse_ledger_date(value).is_none() {
+                malformed.push(field.to_string());
+            }
+        }
+        Self {
+            id: suppression.id.clone(),
+            kind: suppression.kind.clone(),
+            owner: suppression.owner.clone(),
+            created: suppression.created.clone(),
+            review_after: suppression.review_after.clone(),
+            expires: suppression.expires.clone(),
+            missing,
+            malformed,
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        json!({
+            "id": self.id,
+            "kind": self.kind,
+            "owner": self.owner,
+            "created": self.created,
+            "review_after": self.review_after,
+            "expires": self.expires,
+            "missing": self.missing,
+            "malformed": self.malformed,
+        })
+    }
+}
+
+fn parse_ledger_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok()
 }
 
 #[derive(Debug, Default)]
@@ -635,8 +1050,14 @@ struct RiprSuppressionRules {
     display_patterns: Vec<String>,
     path_patterns: Vec<Pattern>,
     classification_patterns: Vec<Vec<String>>,
+    /// Parallel to `path_patterns`. Empty inner lists mean no identity filter.
+    gap_id_sets: Vec<Vec<String>>,
     invalid_patterns: Vec<String>,
     suppression_reasons: Vec<Value>,
+    /// One row per `[[suppress]]` entry in ledger order, carrying the committed
+    /// lifecycle fields. Deliberately kept out of `suppression_reasons` so the
+    /// existing receipt shape is unchanged. Holds no clock reading.
+    lifecycle: Vec<RiprSuppressionLifecycle>,
 }
 
 fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressionRules> {
@@ -648,18 +1069,23 @@ fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressi
 
     let mut rules = RiprSuppressionRules::default();
     for suppression in policy.suppressions {
+        rules.lifecycle.push(RiprSuppressionLifecycle::from_entry(&suppression));
         let paths =
             suppression.paths.iter().map(|path| normalize_path_text(path)).collect::<Vec<_>>();
         if !suppression.id.trim().is_empty()
             || !suppression.kind.trim().is_empty()
             || !suppression.reason.trim().is_empty()
         {
-            rules.suppression_reasons.push(json!({
+            let mut reason = json!({
                 "id": suppression.id,
                 "kind": suppression.kind,
                 "reason": suppression.reason,
                 "paths": paths.clone(),
-            }));
+            });
+            if !suppression.gap_ids.is_empty() {
+                reason["gap_ids"] = json!(suppression.gap_ids);
+            }
+            rules.suppression_reasons.push(reason);
         }
         for path_pattern in paths {
             match Pattern::new(&path_pattern) {
@@ -667,6 +1093,7 @@ fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressi
                     rules.display_patterns.push(path_pattern);
                     rules.path_patterns.push(pattern);
                     rules.classification_patterns.push(suppression.classification.clone());
+                    rules.gap_id_sets.push(suppression.gap_ids.clone());
                 }
                 Err(_) => rules.invalid_patterns.push(path_pattern),
             }
@@ -683,7 +1110,10 @@ fn suppression_matches_seam(rules: &RiprSuppressionRules, seam: &Value) -> bool 
         return false;
     };
     let path = normalize_suppression_match_path(&path);
-    rules.path_patterns.iter().any(|pattern| pattern.matches(&path))
+    let seam_id = ripr_suppression_identity(seam);
+    rules.path_patterns.iter().enumerate().any(|(index, pattern)| {
+        pattern.matches(&path) && suppression_gap_ids_match(rules, index, seam_id)
+    })
 }
 
 fn current_head(repo: &Path) -> Result<String> {
@@ -723,11 +1153,33 @@ fn revision_sha(repo: &Path, revision: &str) -> Result<String> {
 /// `run_ripr_check` returns successfully and before JSON parsing or the envelope
 /// check, so syntax failures and refused envelopes both retain their current
 /// UTF-8 payload. A producer failure or non-UTF-8 stdout returns earlier.
-fn clear_stale_pr_artifacts(repo: &Path) -> Result<()> {
-    for relative in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD, PR_RAW_CHECK_JSON, PR_DIFF, PR_DIFF_RECEIPT]
-    {
+fn clear_stale_pr_artifacts_with<F>(
+    repo: &Path,
+    remove_file: F,
+    include_workflow_artifacts: bool,
+) -> Result<()>
+where
+    F: for<'a> Fn(&'a Path) -> io::Result<()> + Copy,
+{
+    let mut artifacts =
+        vec![PR_EVIDENCE_JSON, PR_EVIDENCE_MD, PR_RAW_CHECK_JSON, PR_DIFF, PR_DIFF_RECEIPT];
+    if include_workflow_artifacts {
+        artifacts.extend([
+            REVIEW_COMMENTS_JSON,
+            REVIEW_COMMENTS_MD,
+            ANNOTATIONS_TXT,
+            PR_SUMMARY_MD,
+            IMPACTED_JSON,
+            IMPACTED_MD,
+            "target/receipts/quality/ripr-plus.json",
+            "target/receipts/quality/ripr-badge-producer.json",
+            "target/receipts/quality/quality-gate-ripr.json",
+            "target/receipts/quality/quality-gate-ripr.md",
+        ]);
+    }
+    for relative in artifacts {
         let path = repo.join(relative);
-        match fs::remove_file(&path) {
+        match remove_file(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
@@ -738,11 +1190,79 @@ fn clear_stale_pr_artifacts(repo: &Path) -> Result<()> {
     Ok(())
 }
 
+fn prepare_freshness_handoff() -> Result<Option<(PathBuf, String)>> {
+    let Some(path) = env::var_os(FRESHNESS_HANDOFF_ENV) else {
+        return Ok(None);
+    };
+    let token = env::var(FRESHNESS_TOKEN_ENV)
+        .context("RIPR_FRESHNESS_TOKEN is required with RIPR_FRESHNESS_HANDOFF")?;
+    if token.trim().is_empty() {
+        bail!("RIPR_FRESHNESS_TOKEN must not be empty");
+    }
+    let path = PathBuf::from(path);
+    fs::create_dir_all(&path)
+        .with_context(|| format!("creating freshness handoff {}", path.display()))?;
+    Ok(Some((path, token)))
+}
+
+fn invalidate_and_publish_freshness_handoff<F>(
+    repo: &Path,
+    handoff: Option<(PathBuf, String)>,
+    remove_file: F,
+) -> Result<()>
+where
+    F: for<'a> Fn(&'a Path) -> io::Result<()> + Copy,
+{
+    if let Some((path, _)) = &handoff {
+        let marker = path.join(FRESHNESS_MARKER);
+        match remove_file(&marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("clearing freshness handoff {}", marker.display()));
+            }
+        }
+    }
+    clear_stale_pr_artifacts_with(repo, remove_file, handoff.is_some())?;
+    publish_freshness_handoff(handoff)
+}
+
+fn publish_freshness_handoff(handoff: Option<(PathBuf, String)>) -> Result<()> {
+    let Some((path, token)) = handoff else {
+        return Ok(());
+    };
+    write_text(&path.join(FRESHNESS_MARKER), &format!("{token}\n"))
+}
+
+fn validate_freshness_handoff(path: &Path, token: &str, repo: &Path) -> Result<()> {
+    let marker = path.join(FRESHNESS_MARKER);
+    let actual = fs::read_to_string(&marker).with_context(|| {
+        format!("freshness handoff is missing for this producer invocation: {}", marker.display())
+    })?;
+    if actual.trim_end() != token {
+        bail!("freshness handoff does not match this producer invocation under {}", repo.display());
+    }
+    Ok(())
+}
+
+fn require_freshness_handoff(repo: &Path) -> Result<()> {
+    let Some(path) = env::var_os(FRESHNESS_HANDOFF_ENV) else {
+        return Ok(());
+    };
+    let token = env::var(FRESHNESS_TOKEN_ENV)
+        .context("RIPR_FRESHNESS_TOKEN is required with RIPR_FRESHNESS_HANDOFF")?;
+    validate_freshness_handoff(&PathBuf::from(path), &token, repo)
+}
+
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // Invalidate before revision, diff, or producer work. Once clearing succeeds,
     // later failures cannot expose earlier copies to the always-run validator
-    // or artifact upload (#9113 review). Removal failures remain #15097.
-    clear_stale_pr_artifacts(repo)?;
+    // or artifact upload (#9113 review). Removal failures leave no handoff marker.
+    let freshness_handoff = prepare_freshness_handoff()?;
+    invalidate_and_publish_freshness_handoff(repo, freshness_handoff, |path| {
+        fs::remove_file(path)
+    })?;
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
     if let Some(pr_head_sha) = &options.pr_head_sha {
@@ -753,8 +1273,8 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
     let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &diff_receipt)?;
-    let check_json = run_ripr_check(repo, options)?;
-    // Write raw check output for offline diagnostics (#1346): repo-exposure.json only contains
+    // Stream raw check output straight into the artifact path without buffering it in memory
+    // (#12860). For offline diagnostics (#1346), repo-exposure.json only contains
     // per-bucket counts; the findings[] array (which carries per-finding classification and path)
     // is required to diagnose suppression mismatches.  This file is included in the
     // ripr-pr-evidence artifact upload so it is available without re-running ripr.
@@ -764,12 +1284,7 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     // payload is needed to diagnose the refusal — and the only case where nobody has seen it
     // before. Validating first would bail with the evidence directory missing the one file
     // that explains why.
-    write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
-    let check_value: Value =
-        serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
-    // Fail closed on a producer whose envelope changed shape (#9113), before any
-    // counting can turn missing fields into an all-zero "clean" verdict.
-    validate_check_envelope(&check_value)?;
+    run_ripr_check(repo, options)?;
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
     let head_extents = HeadLineExtents::from_committed_diff(repo, &diff_receipt);
     // Attribution basis for the new-gap count (#11690): findings must sit in a
@@ -783,18 +1298,28 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let attribution_scope = metadata
         .as_ref()
         .and_then(|metadata| dependency_attribution_scope(metadata, &changed_paths).ok());
-    let production_surface = metadata
-        .as_ref()
-        .and_then(|metadata| production_surface_from_metadata(repo, metadata).ok());
-    let packet = pr_evidence_packet_with_count(
+    let production_surface = metadata.as_ref().and_then(|metadata| {
+        production_surface_from_metadata(repo, metadata, &changed_paths, &head_sha).ok()
+    });
+    let attribution = attribution_scope.as_ref().and_then(AttributionScope::applied);
+    // The findings payload is unbounded (#12860: 2.1GB observed) — ingest it by
+    // streaming one finding at a time into the summary buckets instead of
+    // buffering the whole String plus a full serde_json DOM.
+    let ingestion = ripr_check_ingestion_from_file(
+        &repo.join(PR_RAW_CHECK_JSON),
+        &suppressions,
+        Some(&head_extents),
+        attribution,
+        production_surface.as_ref(),
+    )?;
+    let packet = pr_evidence_packet_from_summary(
         options,
-        &check_value,
+        &ingestion,
         &base_sha,
         &head_sha,
         &suppressions,
         PrEvidenceContext {
             changed_file_count,
-            head_extents: Some(&head_extents),
             attribution_scope: attribution_scope.as_ref(),
             production_surface: production_surface.as_ref(),
         },
@@ -809,6 +1334,7 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
 }
 
 fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
+    require_freshness_handoff(repo)?;
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
     if let Some(pr_head_sha) = &options.pr_head_sha {
@@ -841,19 +1367,972 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     Ok(())
 }
 
-fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<String> {
+/// Runs `ripr check --format json`, streaming its stdout straight into
+/// [`PR_RAW_CHECK_JSON`] without buffering the payload in memory.
+///
+/// RIPR check output is unbounded — a 2.1GB payload killed a 16GB CI runner
+/// (#12860) — so this transport never holds the whole document: the child
+/// writes to a regular temporary file in a staging directory outside the
+/// uploaded evidence globs, then atomically publishes that file by rename once
+/// the child succeeds. The staging directory remains on the same filesystem as
+/// the artifact for atomic publication (#12569).
+fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff = repo.join(PR_DIFF).display().to_string();
     let root = command_root_arg(repo, &options.root)?;
-    run_ripr(&[
-        "check".to_string(),
-        "--root".to_string(),
-        root,
-        "--diff".to_string(),
-        diff,
-        "--format".to_string(),
-        "json".to_string(),
-    ])
+    run_ripr_streaming_to_file(
+        &[
+            "check".to_string(),
+            "--root".to_string(),
+            root,
+            "--diff".to_string(),
+            diff,
+            "--format".to_string(),
+            "json".to_string(),
+        ],
+        &repo.join(PR_RAW_CHECK_JSON),
+        &repo.join(RIPR_STDOUT_STAGING_DIR),
+    )
 }
+
+/// Runs RIPR, streaming stdout into a temporary file in `staging_dir` and
+/// atomically publishing it at `out_path` after success. The staging directory
+/// is outside uploaded evidence globs but on the same filesystem, so an
+/// interrupted run cannot leave a partial payload in the artifact tree while
+/// the final publication remains an atomic rename. Stderr is captured in full
+/// (diagnostics are small); the stdout excerpt in a failure message is bounded
+/// because the payload itself is unbounded. Only one complete copy of the
+/// payload exists on disk, and any failure before the rename drops the
+/// temporary file without exposing a partial artifact at `out_path`.
+///
+/// That single copy is bounded by [`MAX_RIPR_RAW_CHECK_BYTES`]: the producer is
+/// terminated and the run refused once its staged stdout passes the cap, so an
+/// unbounded payload fails closed with an actionable error instead of filling
+/// the runner's disk and having it killed mid-write (#12999).
+fn run_ripr_streaming_to_file(args: &[String], out_path: &Path, staging_dir: &Path) -> Result<()> {
+    let binary = ripr_binary()?;
+    // Resolved before the producer is spawned: a malformed ceiling must fail
+    // immediately rather than after minutes of analysis.
+    let max_bytes = max_raw_check_bytes()?;
+    // A failed rerun must not leave an older raw artifact available to the
+    // review-comments fallback. The artifact is published only after the child
+    // succeeds and its complete stdout has been written.
+    match fs::remove_file(out_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to remove stale {}", out_path.display()));
+        }
+    }
+    let parent = match out_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    fs::create_dir_all(staging_dir)
+        .with_context(|| format!("failed to create {}", staging_dir.display()))?;
+    // `NamedTempFile` unlinks on drop, but a killed process never runs drop.
+    // This lane is killed routinely — OOM before this change, and external
+    // run cancellation after it — each time stranding a partial payload that
+    // can be gigabytes. Removing only the published artifact let those
+    // orphans accumulate on persistent self-hosted workspaces until the disk
+    // filled, which is the same failure class this change exists to prevent
+    // (#12569 review). Sweep them by prefix before writing a new one.
+    remove_orphaned_stdout_temps(staging_dir);
+    let stdout_file = tempfile::Builder::new()
+        .prefix(RIPR_STDOUT_TEMP_PREFIX)
+        .tempfile_in(staging_dir)
+        .context("failed to create RIPR stdout file")?;
+    let mut command = Command::new(&binary);
+    command
+        .args(args)
+        .stdout(Stdio::from(stdout_file.reopen().context("failed to reopen RIPR stdout file")?))
+        .stderr(Stdio::piped());
+    let (mut child, tree) = spawn_isolated_ripr_producer(command, &binary)?;
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            // `Stdio::piped()` above always yields a handle; an absent one means
+            // the child is not the process this transport configured.
+            settle_ripr_producer(&mut child, Some(&tree));
+            bail!("{binary} was spawned without the piped stderr this transport requires");
+        }
+    };
+    let cap = StagedPayloadCap { path: stdout_file.path(), max_bytes };
+    let (status, stderr_bytes) =
+        drain_stderr_and_wait(&mut child, Some(&tree), stderr, &binary, Some(&cap))?;
+    if !status.success() {
+        let mut stdout_excerpt = Vec::new();
+        if let Ok(stdout_reader) = stdout_file.reopen() {
+            let _ = stdout_reader.take(4096).read_to_end(&mut stdout_excerpt);
+        }
+        bail!(
+            "{binary} failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            status,
+            String::from_utf8_lossy(&stdout_excerpt).trim(),
+            String::from_utf8_lossy(&stderr_bytes).trim()
+        );
+    }
+    // The publication invariant, measured on the completed payload: an
+    // over-cap artifact is never published. The waiter measures before it polls
+    // `try_wait`, so a producer that passes the cap and exits in the window
+    // between those two steps is reaped by its own exit and never measured
+    // again in the loop; this is the check that holds for it.
+    cap.check(&binary)?;
+    stdout_file
+        .persist(out_path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to publish {binary} stdout to {}", out_path.display()))?;
+    Ok(())
+}
+
+/// Best-effort removal of stdout temporaries abandoned by a previous run.
+///
+/// Errors are ignored: this is disk hygiene, not a correctness gate, and a
+/// sweep failure must not block evidence generation. Removing a file a
+/// concurrent writer still holds open does not corrupt its stream — that
+/// writer keeps its descriptor and only its final `persist` fails — and this
+/// function already assumes a single writer per staging directory, since it
+/// unconditionally removes the published artifact above.
+fn remove_orphaned_stdout_temps(staging_dir: &Path) {
+    let Ok(entries) = fs::read_dir(staging_dir) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(RIPR_STDOUT_TEMP_PREFIX) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Isolation for the `ripr check` producer so a failure path can terminate every
+/// process that inherited the staged stdout file or the stderr pipe.
+///
+/// Unix uses a fresh process group set before exec. Windows assigns a job
+/// object while the child is still suspended, so a descendant spawned in
+/// `main` cannot race the assignment, then resumes via `ResumeThread`. Spawn
+/// does not use `CREATE_BREAKAWAY_FROM_JOB`: a parent already inside a job
+/// (typical on hosted runners) would then fail to spawn rather than fall
+/// back. If the job cannot be assigned, settle falls back to `taskkill /T`.
+struct RiprProducerTree {
+    #[cfg(not(unix))]
+    pid: u32,
+    #[cfg(unix)]
+    pgid: libc::pid_t,
+    #[cfg(windows)]
+    job: Option<winapi::shared::ntdef::HANDLE>,
+}
+
+impl RiprProducerTree {
+    fn prepare(command: &mut Command) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            use winapi::um::winbase::CREATE_SUSPENDED;
+            command.creation_flags(CREATE_SUSPENDED);
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = command;
+            bail!("RIPR producer process-tree isolation is unavailable on this platform");
+        }
+        #[cfg(any(unix, windows))]
+        {
+            Ok(())
+        }
+    }
+
+    fn attach(child: &Child) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            let pid = child.id();
+            let pgid = libc::pid_t::try_from(pid)
+                .map_err(|_| eyre!("producer pid {pid} does not fit in a process-group id"))?;
+            Ok(Self { pgid })
+        }
+        #[cfg(windows)]
+        {
+            Ok(Self { pid: child.id(), job: attach_windows_job(child) })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            bail!("RIPR producer process-tree isolation is unavailable on this platform");
+        }
+    }
+
+    fn terminate(&self) {
+        #[cfg(unix)]
+        {
+            // SAFETY: `pgid` is the process group created by `process_group(0)`
+            // on this child before exec. The negative id targets only that
+            // group; ESRCH is harmless if the group is already gone.
+            unsafe {
+                let _ = libc::kill(-self.pgid, libc::SIGKILL);
+            }
+        }
+        #[cfg(windows)]
+        {
+            if let Some(job) = self.job {
+                // SAFETY: `job` is a job handle we created and still own.
+                unsafe {
+                    let _ = winapi::um::jobapi2::TerminateJobObject(job, 1);
+                }
+            } else {
+                let pid = self.pid.to_string();
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid, "/T", "/F"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = self;
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for RiprProducerTree {
+    fn drop(&mut self) {
+        if let Some(job) = self.job.take() {
+            // SAFETY: we own this handle; KILL_ON_JOB_CLOSE reaps leftovers
+            // that survived a successful wait.
+            unsafe {
+                let _ = winapi::um::handleapi::CloseHandle(job);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn attach_windows_job(child: &Child) -> Option<winapi::shared::ntdef::HANDLE> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr::null_mut;
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::jobapi2::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+    };
+    use winapi::um::winnt::{
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation,
+    };
+
+    // SAFETY: a nameless job object; the handle is owned by this function until
+    // it is either returned or closed on the failure paths below.
+    let handle = unsafe { CreateJobObjectW(null_mut(), null_mut()) };
+    if handle.is_null() {
+        return None;
+    }
+    // SAFETY: `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` is a C struct we fully
+    // overwrite in `LimitFlags` before passing it to the API.
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // SAFETY: `handle` is a job we just created; `limits` is a well-typed
+    // extended-limit block of the size the API expects.
+    let configured = unsafe {
+        SetInformationJobObject(
+            handle,
+            JobObjectExtendedLimitInformation,
+            &mut limits as *mut _ as *mut _,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        // SAFETY: we still own `handle` and have not returned it.
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        return None;
+    }
+    // SAFETY: `handle` is our job; the process handle is the child's and is
+    // valid for the child's lifetime.
+    let assigned = unsafe {
+        AssignProcessToJobObject(handle, child.as_raw_handle() as winapi::shared::ntdef::HANDLE)
+    };
+    if assigned == 0 {
+        // SAFETY: we still own `handle` and have not returned it.
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        return None;
+    }
+    Some(handle)
+}
+
+/// Resume the primary thread of a process spawned with `CREATE_SUSPENDED`.
+///
+/// `std::process::Child` does not expose the thread handle, so this walks a
+/// toolhelp snapshot the same way the DAP probe does. A failed resume is an
+/// error: the child would otherwise stay suspended and the waiter would hang.
+#[cfg(windows)]
+fn resume_windows_process(child: &Child) -> io::Result<()> {
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::processthreadsapi::{OpenThread, ResumeThread};
+    use winapi::um::tlhelp32::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use winapi::um::winnt::THREAD_SUSPEND_RESUME;
+
+    // SAFETY: the snapshot is a kernel handle we close on every path below;
+    // the walked THREADENTRY32 records are populated by the snapshot APIs.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let result = (|| {
+        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut has_thread = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        while has_thread {
+            if entry.th32OwnerProcessID == child.id() {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if thread.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let previous_count = unsafe { ResumeThread(thread) };
+                let resume_error = if previous_count == u32::MAX {
+                    Some(io::Error::last_os_error())
+                } else {
+                    None
+                };
+                let close_result = unsafe { CloseHandle(thread) };
+                if let Some(error) = resume_error {
+                    return Err(error);
+                }
+                if close_result == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                return Ok(());
+            }
+            has_thread = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+        }
+        Err(io::Error::other("suspended RIPR producer has no discoverable thread"))
+    })();
+    // SAFETY: `snapshot` is the handle created above and is still owned here.
+    unsafe {
+        let _ = CloseHandle(snapshot);
+    }
+    result
+}
+
+fn spawn_isolated_ripr_producer(
+    mut command: Command,
+    binary: &str,
+) -> Result<(Child, RiprProducerTree)> {
+    RiprProducerTree::prepare(&mut command)?;
+    let mut child = command.spawn().with_context(|| format!("failed to run {binary}"))?;
+    let tree = match RiprProducerTree::attach(&child) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    #[cfg(windows)]
+    if let Err(error) = resume_windows_process(&child) {
+        settle_ripr_producer(&mut child, Some(&tree));
+        return Err(error).with_context(|| format!("failed to resume suspended {binary} producer"));
+    }
+    Ok((child, tree))
+}
+
+/// Terminates the producer process tree and reaps the direct child on a failure
+/// path, ignoring errors: the caller is already returning a failure, and an
+/// unsettled descendant that inherited stdout or stderr can keep the pipe open
+/// and keep appending to a staged file nothing will publish (#12999).
+fn settle_ripr_producer(child: &mut Child, tree: Option<&RiprProducerTree>) {
+    if let Some(tree) = tree {
+        tree.terminate();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Direct-child settle for tests that spawn without isolation.
+#[cfg(test)]
+fn settle_ripr_child(child: &mut Child) {
+    settle_ripr_producer(child, None);
+}
+
+/// The staged stdout file and the byte ceiling this run may not exceed.
+struct StagedPayloadCap<'a> {
+    path: &'a Path,
+    max_bytes: u64,
+}
+
+impl StagedPayloadCap<'_> {
+    /// Currently staged bytes, or `None` when the size cannot be read.
+    ///
+    /// An unreadable staged file must not refuse an otherwise good run, so an
+    /// absent measurement leaves the guard inactive for that poll rather than
+    /// failing closed. The file is created before the producer is spawned, so
+    /// the expected `None` window is empty; a persistent metadata failure
+    /// silently disables this guard, which is a limitation of measuring the
+    /// payload through the filesystem instead of intercepting bytes.
+    fn staged_bytes(&self) -> Option<u64> {
+        fs::metadata(self.path).ok().map(|metadata| metadata.len())
+    }
+
+    /// Fails when the staged payload has passed `max_bytes`. The caller settles
+    /// the producer; this only decides.
+    fn check(&self, binary: &str) -> Result<()> {
+        let Some(staged) = self.staged_bytes() else { return Ok(()) };
+        if staged <= self.max_bytes {
+            return Ok(());
+        }
+        bail!(
+            "{binary} staged {staged} bytes of output, over this lane's {} byte cap. \
+             The producer was terminated and no evidence artifact was published, so \
+             this run has no RIPR verdict rather than a runner killed mid-write \
+             (#12999). The diff scope is too large for the lane's disk budget: \
+             reduce it, route to a larger runner, or raise \
+             {RIPR_MAX_RAW_CHECK_BYTES_ENV} with capacity evidence.",
+            self.max_bytes,
+        )
+    }
+}
+
+/// Resolves this run's staged-payload ceiling.
+fn max_raw_check_bytes() -> Result<u64> {
+    #[cfg(test)]
+    {
+        let guard = RIPR_MAX_RAW_CHECK_BYTES_OVERRIDE
+            .lock()
+            .map_err(|_| eyre!("RIPR raw-check cap test override lock poisoned"))?;
+        if let Some(max_bytes) = *guard {
+            return Ok(max_bytes);
+        }
+    }
+
+    resolve_max_raw_check_bytes(env::var(RIPR_MAX_RAW_CHECK_BYTES_ENV))
+}
+
+/// Classifies a [`RIPR_MAX_RAW_CHECK_BYTES_ENV`] lookup into this run's ceiling.
+///
+/// Only an *absent* variable selects the default. A variable that is present but
+/// unreadable — including one holding non-UTF-8 bytes — is refused, because a
+/// lane that believes it set a ceiling and silently got the default would be
+/// killed by the failure this guard exists to convert into a clean refusal.
+fn resolve_max_raw_check_bytes(lookup: std::result::Result<String, env::VarError>) -> Result<u64> {
+    match lookup {
+        Ok(value) => parse_max_raw_check_bytes(&value),
+        Err(env::VarError::NotPresent) => Ok(MAX_RIPR_RAW_CHECK_BYTES),
+        Err(env::VarError::NotUnicode(_)) => {
+            bail!("{RIPR_MAX_RAW_CHECK_BYTES_ENV} is set to a non-UTF-8 value")
+        }
+    }
+}
+
+/// Parses a [`RIPR_MAX_RAW_CHECK_BYTES_ENV`] value.
+///
+/// An unusable ceiling is refused rather than silently replaced by the default:
+/// a lane that believes it raised the cap and did not would be killed by the
+/// very failure this guard exists to convert into a clean refusal.
+fn parse_max_raw_check_bytes(value: &str) -> Result<u64> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("{RIPR_MAX_RAW_CHECK_BYTES_ENV} is set but empty");
+    }
+    let max_bytes: u64 = value.parse().with_context(|| {
+        format!("{RIPR_MAX_RAW_CHECK_BYTES_ENV} must be a byte count, got {value:?}")
+    })?;
+    if max_bytes == 0 {
+        bail!("{RIPR_MAX_RAW_CHECK_BYTES_ENV} must be greater than zero");
+    }
+    Ok(max_bytes)
+}
+
+/// Drains the producer's stderr to EOF on a worker thread, retaining at most
+/// `MAX_RIPR_STDERR_BYTES`, while this thread waits for the producer and holds
+/// its staged payload under `cap`.
+///
+/// The drain runs on its own thread because both jobs must make progress at
+/// once: an undrained stderr pipe fills and blocks the producer forever, while
+/// a staged payload nobody measures grows until the runner dies (#12999).
+/// Stdout remains a regular file the producer writes directly (#12569) — this
+/// never returns it to a pipe — so the payload is measured through the
+/// filesystem rather than by buffering it here.
+///
+/// Every exit path settles the producer tree before the join below: a
+/// returned error must not leave a descendant writing an unbounded payload
+/// into a staged file nothing will publish, and a producer that exits on its
+/// own while a descendant retains the stderr write-end must not block the
+/// join forever. Settling an exited tree is a no-op, so one settlement after
+/// the wait covers both.
+fn drain_stderr_and_wait(
+    child: &mut Child,
+    tree: Option<&RiprProducerTree>,
+    stderr: impl Read + Send + 'static,
+    binary: &str,
+    cap: Option<&StagedPayloadCap<'_>>,
+) -> Result<(ExitStatus, Vec<u8>)> {
+    let read_failed = Arc::new(AtomicBool::new(false));
+    let drain = {
+        let read_failed = Arc::clone(&read_failed);
+        thread::spawn(move || drain_bounded_stderr(stderr, &read_failed))
+    };
+
+    let waited = wait_within_cap(child, tree, binary, cap, &read_failed);
+
+    // The direct producer has exited or been terminated and reaped. Terminate
+    // the whole tree before joining the drain: on the failure arms the wait
+    // already settled it, and on the early-parent-exit arm — the producer
+    // returned a status while a descendant still holds the stderr write-end —
+    // this is the only settlement, and without it the join below blocks on a
+    // pipe the transport no longer owns. Settling twice is harmless.
+    settle_ripr_producer(child, tree);
+
+    let stderr_bytes = match drain.join() {
+        Ok(Ok(stderr_bytes)) => stderr_bytes,
+        // A stderr read failure is the precise diagnosis for the wait abort it
+        // causes, so it is surfaced ahead of that abort. The tree is already
+        // settled above.
+        Ok(Err(error)) => {
+            return Err(error).with_context(|| format!("failed to read {binary} stderr"));
+        }
+        Err(_) => {
+            bail!("the {binary} stderr drain thread panicked");
+        }
+    };
+
+    match waited? {
+        Some(status) => Ok((status, stderr_bytes)),
+        // The drain signalled failure yet returned neither an error nor a
+        // panic. That is an internal inconsistency in this transport, not a
+        // producer fault, so it is not reported as one.
+        None => bail!(
+            "the {binary} stderr drain reported a failure without surfacing one; \
+             the producer was terminated and no evidence artifact was published"
+        ),
+    }
+}
+
+/// Releases the waiter if the drain stops for any reason other than reaching
+/// EOF, including a panic.
+///
+/// `read_failed` is the only channel by which the waiter learns the drain is no
+/// longer running. Setting it from the error arm alone would leave a panicking
+/// drain invisible: the waiter would keep polling a producer that is blocked
+/// writing into a stderr pipe nobody is reading, and neither would ever finish.
+/// Disarming on the success path keeps a normal EOF — which happens while the
+/// producer may still legitimately be working — from aborting the wait.
+struct StderrDrainSentinel<'a> {
+    read_failed: &'a AtomicBool,
+    armed: bool,
+}
+
+impl Drop for StderrDrainSentinel<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.read_failed.store(true, Ordering::Release);
+        }
+    }
+}
+
+/// Reads `stderr` to EOF, retaining at most [`MAX_RIPR_STDERR_BYTES`].
+///
+/// Everything is drained even once the retention cap is reached: truncating by
+/// stopping the read would leave the producer blocked on a full pipe, and it
+/// would never exit.
+fn drain_bounded_stderr(mut stderr: impl Read, read_failed: &AtomicBool) -> io::Result<Vec<u8>> {
+    let mut sentinel = StderrDrainSentinel { read_failed, armed: true };
+    let mut stderr_bytes = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        // The sentinel releases the waiter on this arm, and on a panic.
+        let read = stderr.read(&mut chunk)?;
+        if read == 0 {
+            sentinel.armed = false;
+            return Ok(stderr_bytes);
+        }
+        let spare = MAX_RIPR_STDERR_BYTES.saturating_sub(stderr_bytes.len());
+        if spare > 0 {
+            stderr_bytes.extend_from_slice(&chunk[..read.min(spare)]);
+        }
+    }
+}
+
+/// Waits for the producer, terminating it once its staged payload passes `cap`.
+///
+/// This is the bound that keeps the payload off the lane's disk: it stops a
+/// producer that would otherwise keep writing, including one that never exits
+/// on its own. Whether a *completed* payload may be published is decided once
+/// more at the publication site, which owns that invariant.
+///
+/// Returns `Ok(None)` when the wait was abandoned because the stderr drain
+/// failed; the caller owns that diagnosis.
+fn wait_within_cap(
+    child: &mut Child,
+    tree: Option<&RiprProducerTree>,
+    binary: &str,
+    cap: Option<&StagedPayloadCap<'_>>,
+    read_failed: &AtomicBool,
+) -> Result<Option<ExitStatus>> {
+    loop {
+        if read_failed.load(Ordering::Acquire) {
+            settle_ripr_producer(child, tree);
+            return Ok(None);
+        }
+        if let Some(cap) = cap
+            && let Err(error) = cap.check(binary)
+        {
+            settle_ripr_producer(child, tree);
+            return Err(error);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(None) => {}
+            Err(error) => {
+                settle_ripr_producer(child, tree);
+                return Err(error).with_context(|| format!("failed to wait for {binary}"));
+            }
+        }
+        thread::sleep(RIPR_STDOUT_POLL_INTERVAL);
+    }
+}
+
+/// Streamed ingestion of one `ripr check --format json` payload (#12860): the
+/// summary map plus the aggregate per-finding buckets. The findings array is
+/// never materialized — it is the unbounded surface (2.1GB observed) that killed
+/// evidence runners when the whole payload was buffered into a String and
+/// parsed into a full serde_json DOM. Each finding is deserialized into one
+/// `serde_json::Value` at a time and dropped before the next, so peak ingestion
+/// memory is bounded by the largest single finding rather than the payload.
+/// A payload whose memory is concentrated in one huge finding is not bounded by
+/// this change; the observed #12860 shape is many findings carrying unconsumed
+/// blobs, which this does bound.
+#[derive(Debug)]
+struct RiprCheckIngestion {
+    summary_counts: RiprPrSummaryCounts,
+    /// Mirrors `check_value.get("summary").and_then(Value::as_object).is_some()`:
+    /// a `summary` key that is not an object still counts as absent.
+    check_summary_present: bool,
+}
+
+/// Streams the raw payload at `raw_check_path` once, aggregating per-finding
+/// buckets through [`RiprFindingBuckets::absorb`] as each finding is parsed.
+/// Only the (small) summary object is retained.
+fn ripr_check_ingestion_from_file(
+    raw_check_path: &Path,
+    suppressions: &RiprSuppressionRules,
+    head_extents: Option<&HeadLineExtents>,
+    attribution: Option<&DependencyAttribution>,
+    production_surface: Option<&ProductionSurface>,
+) -> Result<RiprCheckIngestion> {
+    let raw_check = fs::File::open(raw_check_path)
+        .with_context(|| format!("reading {}", raw_check_path.display()))?;
+    let reader = BufReader::with_capacity(64 * 1024, raw_check);
+    let mut buckets = RiprFindingBuckets::default();
+    let payload = stream_ripr_check_payload_with_events(reader, &mut |event| match event {
+        StreamFindingsEvent::Start => buckets = RiprFindingBuckets::default(),
+        StreamFindingsEvent::Finding(finding) => {
+            buckets.absorb(finding, suppressions, head_extents, attribution, production_surface)
+        }
+    })
+    .context("ripr check output was not valid JSON")?;
+    let check_summary = payload.summary.as_ref().and_then(Value::as_object);
+    validate_check_summary_counts(check_summary)?;
+    validate_check_findings_array(payload.findings_is_array)?;
+    Ok(RiprCheckIngestion {
+        summary_counts: ripr_summary_counts_merge(
+            ripr_summary_counts_seed(check_summary),
+            buckets,
+            check_summary.is_some(),
+        ),
+        check_summary_present: check_summary.is_some(),
+    })
+}
+
+/// Events emitted while streaming a top-level `findings` value.
+enum StreamFindingsEvent<'a> {
+    Start,
+    Finding(&'a Value),
+}
+
+/// Streaming payload parser with an event for top-level duplicate-key
+/// semantics. serde_json's retained map representation is last-key-wins.
+/// Emitting `Start` before every `findings` value lets a streaming sink discard
+/// the prior value before consuming the replacement, including when the
+/// replacement is not an array.
+///
+/// The findings array is never materialized: each element becomes one
+/// `serde_json::Value` for the callback and is dropped before the next. Any
+/// other top-level shape (arrays, scalars) is still validated but carries no
+/// summary and no findings, which is what the previous DOM path saw through
+/// `Value::get`. A single huge finding can still dominate memory; this bounds
+/// the many-finding, unconsumed-blob shape observed in #12860.
+fn stream_ripr_check_payload_with_events<R, F>(
+    reader: R,
+    on_event: &mut F,
+) -> serde_json::Result<RiprCheckPayload>
+where
+    R: Read,
+    F: for<'a> FnMut(StreamFindingsEvent<'a>),
+{
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let payload = deserializer.deserialize_any(RiprCheckPayloadVisitor { on_event })?;
+    deserializer.end()?;
+    Ok(payload)
+}
+
+/// What a streaming parse of a `ripr check` payload retains.
+#[derive(Default)]
+struct RiprCheckPayload {
+    summary: Option<Value>,
+    base: Option<Value>,
+    findings_is_array: bool,
+}
+
+/// Hand-driven map visitor so `findings` elements are consumed one at a time;
+/// a typed `findings: Vec<...>` field would rebuild the unbounded array this
+/// ingestion exists to avoid.
+struct RiprCheckPayloadVisitor<'a, F> {
+    on_event: &'a mut F,
+}
+
+impl<'de, F> Visitor<'de> for RiprCheckPayloadVisitor<'_, F>
+where
+    F: for<'a> FnMut(StreamFindingsEvent<'a>),
+{
+    type Value = RiprCheckPayload;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a ripr check JSON payload")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut payload = RiprCheckPayload::default();
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "summary" => payload.summary = Some(map.next_value()?),
+                "findings" => {
+                    (self.on_event)(StreamFindingsEvent::Start);
+                    payload.findings_is_array =
+                        map.next_value_seed(StreamFindingsSeed { on_event: self.on_event })?;
+                }
+                "base" => payload.base = Some(map.next_value()?),
+                // Values the receipt never consumes are skipped in place —
+                // serde_json discards skipped tokens without buffering them.
+                _ => {
+                    map.next_value::<de::IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(payload)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while seq.next_element::<de::IgnoredAny>()?.is_some() {}
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(RiprCheckPayload::default())
+    }
+}
+
+/// [`DeserializeSeed`] streaming the elements of one `findings` value through
+/// the caller's callback. The array itself is never materialized; one
+/// `serde_json::Value` is held for each callback and dropped before the next
+/// element is deserialized. This bounds many findings with unconsumed blobs,
+/// but not a single finding whose own value is huge.
+struct StreamFindingsSeed<'a, F> {
+    on_event: &'a mut F,
+}
+
+impl<'de, F> DeserializeSeed<'de> for StreamFindingsSeed<'_, F>
+where
+    F: for<'a> FnMut(StreamFindingsEvent<'a>),
+{
+    type Value = bool;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de, F> Visitor<'de> for StreamFindingsSeed<'_, F>
+where
+    F: for<'a> FnMut(StreamFindingsEvent<'a>),
+{
+    type Value = bool;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an array of ripr findings")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(finding) = seq.next_element_seed(StreamFindingSeed)? {
+            (self.on_event)(StreamFindingsEvent::Finding(&finding));
+        }
+        Ok(true)
+    }
+
+    // A `findings` value that is not an array behaves as absent, matching the
+    // DOM path's `Value::as_array` guard.
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        while map.next_entry::<de::IgnoredAny, de::IgnoredAny>()?.is_some() {}
+        Ok(false)
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+        Ok(false)
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+        Ok(false)
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+        Ok(false)
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+        Ok(false)
+    }
+
+    fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E> {
+        Ok(false)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(false)
+    }
+}
+
+/// Deserializes one top-level finding while dropping only the large diagnostic
+/// fields that this consumer never reads. The finding itself remains bounded
+/// to one `Value`, and nested fields retain their complete values.
+struct StreamFindingSeed;
+
+impl<'de> DeserializeSeed<'de> for StreamFindingSeed {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(StreamFindingVisitor)
+    }
+}
+
+struct StreamFindingVisitor;
+
+impl<'de> Visitor<'de> for StreamFindingVisitor {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a RIPR finding")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut object = Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if LARGE_FINDING_FIELDS.contains(&key.as_str()) {
+                map.next_value::<IgnoredAny>()?;
+                continue;
+            }
+            object.insert(key, map.next_value::<Value>()?);
+        }
+        Ok(Value::Object(object))
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = seq.next_element::<Value>()? {
+            values.push(value);
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        let number = serde_json::Number::from_f64(value)
+            .ok_or_else(|| E::custom("RIPR finding contained a non-finite number"))?;
+        Ok(Value::Number(number))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(Value::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(Value::String(value))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+}
+
+const LARGE_FINDING_FIELDS: &[&str] = &["activation", "observed_values", "assertion_texts"];
 
 #[derive(Debug, Default)]
 struct RiprPrSummaryCounts {
@@ -885,6 +2364,12 @@ struct RiprPrSummaryCounts {
     /// Same, for findings whose classification was not recognized. Decrements
     /// `severe_gaps` directly, like `suppressed_unclassified`.
     non_production_unclassified: usize,
+    /// `no_static_path` findings on a line that carries a declaration and no
+    /// executable code in the head revision (#16077), per
+    /// [`declaration_seam_lines`]. Dropped from the blocking bucket and
+    /// reported for transparency; not a policy suppression. Lowest precedence,
+    /// so a finding any other filter claims reports under that filter instead.
+    declaration_seam_excluded: usize,
 }
 
 /// The `summary` counts the required `ripr+ New Gap Gate` decision is derived from.
@@ -912,8 +2397,8 @@ const REQUIRED_CHECK_SUMMARY_COUNTS: [&str; 3] =
 /// as an explicit `0` (captured in `xtask/tests/fixtures/ripr-0.10/`), so
 /// "field present and zero" and "field gone" are distinguishable, and only the
 /// former means clean.
-fn validate_check_envelope(check_value: &Value) -> Result<()> {
-    let Some(summary) = check_value.get("summary").and_then(Value::as_object) else {
+fn validate_check_summary_counts(summary: Option<&Map<String, Value>>) -> Result<()> {
+    let Some(summary) = summary else {
         bail!(
             "ripr check output did not include a `summary` object; refusing to report \
              a zero-gap result from an envelope the gate cannot measure"
@@ -932,7 +2417,11 @@ fn validate_check_envelope(check_value: &Value) -> Result<()> {
             Some(_) => {}
         }
     }
-    if !check_value.get("findings").is_some_and(Value::is_array) {
+    Ok(())
+}
+
+fn validate_check_findings_array(findings_is_array: bool) -> Result<()> {
+    if !findings_is_array {
         bail!(
             "ripr check output did not include a `findings` array; per-finding \
              classification and path are required to apply suppressions honestly"
@@ -941,6 +2430,20 @@ fn validate_check_envelope(check_value: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Validate the captured DOM envelope used by fixture tests.
+///
+/// Production validates the same contract from the streamed envelope through
+/// [`validate_check_summary_counts`] and [`validate_check_findings_array`].
+#[cfg(test)]
+fn validate_check_envelope(check_value: &Value) -> Result<()> {
+    validate_check_summary_counts(check_value.get("summary").and_then(Value::as_object))?;
+    validate_check_findings_array(check_value.get("findings").is_some_and(Value::is_array))
+}
+
+/// DOM-path aggregation, retained as the test oracle for the streaming
+/// ingestion (#12860): production ingests via [`RiprFindingBuckets`] without
+/// materializing the findings array.
+#[cfg(test)]
 fn ripr_pr_summary_counts(
     check_value: &Value,
     check_summary: Option<&Map<String, Value>>,
@@ -949,23 +2452,61 @@ fn ripr_pr_summary_counts(
     attribution: Option<&DependencyAttribution>,
     production_surface: Option<&ProductionSurface>,
 ) -> RiprPrSummaryCounts {
-    let summary_counts = RiprPrSummaryCounts {
+    let mut buckets = RiprFindingBuckets::default();
+    if let Some(findings) = check_value.get("findings").and_then(Value::as_array) {
+        for finding in findings {
+            buckets.absorb(finding, suppressions, head_extents, attribution, production_surface);
+        }
+    }
+    ripr_summary_counts_merge(
+        ripr_summary_counts_seed(check_summary),
+        buckets,
+        check_summary.is_some(),
+    )
+}
+
+/// The bucket totals seeded from the payload's own summary object, before any
+/// per-finding discounting.
+fn ripr_summary_counts_seed(check_summary: Option<&Map<String, Value>>) -> RiprPrSummaryCounts {
+    RiprPrSummaryCounts {
         weakly_exposed: count_field(check_summary, "weakly_exposed"),
         reachable_unrevealed: count_field(check_summary, "reachable_unrevealed"),
         no_static_path: count_field(check_summary, "no_static_path"),
         ..RiprPrSummaryCounts::default()
-    };
-    let Some(findings) = check_value.get("findings").and_then(Value::as_array) else {
-        return summary_counts;
-    };
+    }
+}
 
-    let mut suppressed = RiprPrSummaryCounts::default();
-    let mut outside_head = RiprPrSummaryCounts::default();
-    let mut non_production = RiprPrSummaryCounts::default();
-    let mut unsuppressed_from_findings = RiprPrSummaryCounts::default();
-    let mut out_of_graph_buckets = RiprPrSummaryCounts::default();
-    let mut out_of_graph_total = 0usize;
-    for finding in findings {
+/// Per-finding discounting buckets, accumulated one finding at a time so the
+/// findings array never has to be materialized (#12860).
+#[derive(Default)]
+struct RiprFindingBuckets {
+    suppressed: RiprPrSummaryCounts,
+    outside_head: RiprPrSummaryCounts,
+    non_production: RiprPrSummaryCounts,
+    declaration_seam: RiprPrSummaryCounts,
+    unsuppressed_from_findings: RiprPrSummaryCounts,
+    out_of_graph_buckets: RiprPrSummaryCounts,
+    out_of_graph_total: usize,
+}
+
+impl RiprFindingBuckets {
+    fn absorb(
+        &mut self,
+        finding: &Value,
+        suppressions: &RiprSuppressionRules,
+        head_extents: Option<&HeadLineExtents>,
+        attribution: Option<&DependencyAttribution>,
+        production_surface: Option<&ProductionSurface>,
+    ) {
+        let Self {
+            suppressed,
+            outside_head,
+            non_production,
+            declaration_seam,
+            unsuppressed_from_findings,
+            out_of_graph_buckets,
+            out_of_graph_total,
+        } = self;
         // ripr 0.5.x: "classification" field, values "weakly_exposed" | "reachable_unrevealed" | "no_static_path".
         // ripr 0.9.x: "grip_class" field, values "weakly_gripped" | "reachable_unrevealed" | "no_static_path".
         //   "weakly_gripped" findings are counted in summary.reachable_unrevealed in 0.9.x.
@@ -995,8 +2536,10 @@ fn ripr_pr_summary_counts(
         // No resolvable path — and no compiled-into-production view — is
         // never non-production: the structural filter, like #6260, must not
         // take a fail-open shortcut on ambiguous input.
-        let non_production_kind = ripr_finding_path(finding)
-            .and_then(|path| classify_non_production(production_surface, &path));
+        let finding_line = ripr_finding_line(finding);
+        let non_production_kind = ripr_finding_path(finding).and_then(|path| {
+            classify_non_production_at_line(production_surface, &path, finding_line)
+        });
         // Path suppression is checked BEFORE the classification guard (#1346).
         // A finding whose classification is unrecognized must still be suppressed if its
         // path matches a policy rule — skipping only path-unknown findings, not
@@ -1012,7 +2555,7 @@ fn ripr_pr_summary_counts(
                 non_production.non_production_excluded += 1;
                 non_production.non_production_unclassified += 1;
             }
-            continue;
+            return;
         };
         let policy_suppressed = suppression_matches_finding(suppressions, finding);
         if !policy_suppressed
@@ -1025,26 +2568,36 @@ fn ripr_pr_summary_counts(
             // dropped before bucket counting and reported for transparency.
             // Policy suppression, head-revision filtering, and the structural
             // non-production filter all keep precedence.
-            out_of_graph_total += 1;
+            *out_of_graph_total += 1;
             match canonical {
                 "weakly_exposed" => out_of_graph_buckets.weakly_exposed += 1,
                 "reachable_unrevealed" => out_of_graph_buckets.reachable_unrevealed += 1,
                 "no_static_path" => out_of_graph_buckets.no_static_path += 1,
                 _ => {}
             }
-            continue;
+            return;
         }
+        // #16077: lowest precedence, and only for `no_static_path`. The other
+        // two classifications assert something a declaration line can still be
+        // guilty of, so they are never filtered here.
+        let declaration_seam_excluded = canonical == "no_static_path"
+            && ripr_finding_path(finding).is_some_and(|path| {
+                is_declaration_seam_at_line(production_surface, &path, finding_line)
+            });
         let counts = if policy_suppressed {
             suppressed.suppressed_by_policy += 1;
-            &mut suppressed
+            &mut *suppressed
         } else if outside {
             outside_head.outside_head_revision += 1;
-            &mut outside_head
+            &mut *outside_head
         } else if non_production_kind.is_some() {
             non_production.non_production_excluded += 1;
-            &mut non_production
+            &mut *non_production
+        } else if declaration_seam_excluded {
+            declaration_seam.declaration_seam_excluded += 1;
+            &mut *declaration_seam
         } else {
-            &mut unsuppressed_from_findings
+            &mut *unsuppressed_from_findings
         };
         match canonical {
             "weakly_exposed" => counts.weakly_exposed += 1,
@@ -1053,7 +2606,26 @@ fn ripr_pr_summary_counts(
             _ => {}
         }
     }
-    if check_summary.is_some() {
+}
+
+/// Combines the summary seed with the per-finding buckets. When the payload
+/// carried a summary object the buckets only discount it; otherwise the
+/// recognized findings are the totals themselves.
+fn ripr_summary_counts_merge(
+    summary_counts: RiprPrSummaryCounts,
+    buckets: RiprFindingBuckets,
+    check_summary_present: bool,
+) -> RiprPrSummaryCounts {
+    let RiprFindingBuckets {
+        suppressed,
+        outside_head,
+        non_production,
+        declaration_seam,
+        unsuppressed_from_findings,
+        out_of_graph_buckets,
+        out_of_graph_total,
+    } = buckets;
+    if check_summary_present {
         // Per-bucket suppression: subtract classified suppressions from their respective buckets.
         // Unclassified suppressions (suppressed_unclassified) cannot be attributed to a bucket,
         // so they are carried through for the caller to subtract from severe_gaps directly.
@@ -1077,7 +2649,8 @@ fn ripr_pr_summary_counts(
                 .saturating_sub(suppressed.no_static_path)
                 .saturating_sub(outside_head.no_static_path)
                 .saturating_sub(out_of_graph_buckets.no_static_path)
-                .saturating_sub(non_production.no_static_path),
+                .saturating_sub(non_production.no_static_path)
+                .saturating_sub(declaration_seam.no_static_path),
             suppressed_by_policy: suppressed.suppressed_by_policy,
             suppressed_unclassified: suppressed.suppressed_unclassified,
             outside_head_revision: outside_head.outside_head_revision,
@@ -1085,6 +2658,7 @@ fn ripr_pr_summary_counts(
             out_of_dependency_graph: out_of_graph_total,
             non_production_excluded: non_production.non_production_excluded,
             non_production_unclassified: non_production.non_production_unclassified,
+            declaration_seam_excluded: declaration_seam.declaration_seam_excluded,
         };
     }
     // Path B: no summary object — bucket totals come from `unsuppressed_from_findings`, which
@@ -1101,6 +2675,7 @@ fn ripr_pr_summary_counts(
         out_of_dependency_graph: out_of_graph_total,
         non_production_excluded: non_production.non_production_excluded,
         non_production_unclassified: 0,
+        declaration_seam_excluded: declaration_seam.declaration_seam_excluded,
         ..unsuppressed_from_findings
     }
 }
@@ -1114,12 +2689,14 @@ fn suppression_matches_finding(rules: &RiprSuppressionRules, finding: &Value) ->
         .get("classification")
         .and_then(Value::as_str)
         .or_else(|| finding.get("grip_class").and_then(Value::as_str));
+    let finding_id = ripr_suppression_identity(finding);
     rules
         .path_patterns
         .iter()
         .zip(rules.display_patterns.iter())
         .zip(rules.classification_patterns.iter())
-        .any(|((pattern, pattern_text), allowed_classifications)| {
+        .enumerate()
+        .any(|(index, ((pattern, pattern_text), allowed_classifications))| {
             let path_matches = pattern.matches(&path)
                 || suppression_directory_pattern_matches(pattern_text, &path);
             path_matches
@@ -1130,7 +2707,31 @@ fn suppression_matches_finding(rules: &RiprSuppressionRules, finding: &Value) ->
                                 == canonical_suppression_classification(allowed)
                         })
                     }))
+                && suppression_gap_ids_match(rules, index, finding_id)
         })
+}
+
+/// Exact finding/probe identity used by optional `gap_ids` filters.
+///
+/// A missing identity cannot satisfy a non-empty filter (fail closed). Empty
+/// filters do not consult this value.
+fn ripr_suppression_identity(value: &Value) -> Option<&str> {
+    ["id", "gap_id"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .or_else(|| value.get("probe").and_then(|probe| probe.get("id").and_then(Value::as_str)))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
+fn suppression_gap_ids_match(
+    rules: &RiprSuppressionRules,
+    index: usize,
+    identity: Option<&str>,
+) -> bool {
+    let allowed = rules.gap_id_sets.get(index).map(Vec::as_slice).unwrap_or(&[]);
+    allowed.is_empty()
+        || identity.is_some_and(|id| allowed.iter().any(|allowed_id| allowed_id == id))
 }
 
 fn canonical_suppression_classification(classification: &str) -> &str {
@@ -1187,6 +2788,20 @@ fn ripr_finding_line(finding: &Value) -> Option<u64> {
         .filter(|line| *line > 0)
 }
 
+/// Source text a RIPR probe reports for the line it points at (`probe.expression`
+/// on 0.5.x/0.10.x, `seam.expression` on 0.9.x). A finding without one cannot be
+/// anchored to head text and is never filtered on that basis.
+fn ripr_finding_expression(finding: &Value) -> Option<String> {
+    ["probe", "seam"]
+        .into_iter()
+        .find_map(|key| finding.get(key).and_then(|node| node.get("expression")))
+        .or_else(|| finding.get("expression"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 /// Where a finding's path sits in the head revision of the change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeadPathState {
@@ -1220,18 +2835,53 @@ struct HeadLineExtents {
     present: BTreeMap<String, usize>,
     /// Repo-relative paths the change removes.
     removed: BTreeSet<String>,
+    /// Repo-relative path -> the head revision's lines, for anchoring a probe's
+    /// expression to the line it reports (#6260 residual, see
+    /// `probe_expression_is_absent_near`). Absent for a path means the anchor
+    /// check cannot run and the finding stays counted.
+    head_lines: BTreeMap<String, Vec<String>>,
+}
+
+/// How far, in lines either side of the reported line, a probe's expression may
+/// sit in the head revision and still count as anchored there. ripr reports a
+/// head-side probe on its own line; the window only absorbs off-by-a-few line
+/// attribution around multi-line statements.
+const HEAD_ANCHOR_WINDOW: usize = 3;
+
+/// Largest head-revision blob whose lines are retained for probe anchoring.
+/// `from_committed_diff` reads every changed path's head text; without a cap a
+/// large generated asset alongside real code can exhaust the hosted lane's
+/// memory and kill the required check. Blobs over the cap get no entry, so
+/// their findings resolve to `Unknown` and stay counted — fail-closed, never
+/// dropped. Override with [`MAX_HEAD_BLOB_BYTES_ENV`] where a lane's memory
+/// budget genuinely differs.
+const MAX_HEAD_BLOB_BYTES: u64 = 8 * 1024 * 1024;
+/// Environment override for [`MAX_HEAD_BLOB_BYTES`], as a byte count.
+const MAX_HEAD_BLOB_BYTES_ENV: &str = "RIPR_MAX_HEAD_BLOB_BYTES";
+
+/// A probe-expression or head line that carries no identifying text: a lone
+/// delimiter or separator run (`}`, `});`, `];`, …). Either side of the
+/// anchor comparison being such a line makes the match vacuous — any nearby
+/// unrelated block end anchors a deleted finding and keeps it counted even
+/// though none of its substantive text exists at head.
+fn is_low_information_line(text: &str) -> bool {
+    !text.is_empty()
+        && text.chars().all(|c| matches!(c, '(' | ')' | '{' | '}' | '[' | ']' | ';' | ',' | ':'))
 }
 
 impl HeadLineExtents {
     fn from_committed_diff(repo: &Path, diff: &CommittedDiffReceipt) -> Self {
         let mut present = BTreeMap::new();
         let mut removed = BTreeSet::new();
+        let mut head_lines = BTreeMap::new();
         for entry in &diff.entries {
             if let Some(new_path) = entry.new_path.as_deref() {
-                // An unreadable blob yields no entry, so its findings resolve to
-                // `Unknown` and stay counted.
-                if let Some(lines) = head_file_line_count(repo, &diff.head_sha, new_path) {
-                    present.insert(normalize_repo_relative_path(new_path), lines);
+                // An unreadable or oversized blob yields no entry, so its
+                // findings resolve to `Unknown` and stay counted.
+                if let Some(lines) = head_file_lines(repo, &diff.head_sha, new_path) {
+                    let path = normalize_repo_relative_path(new_path);
+                    present.insert(path.clone(), lines.len());
+                    head_lines.insert(path, lines);
                 }
             }
             // Removal is read from the status code, never inferred from "has an old
@@ -1248,7 +2898,7 @@ impl HeadLineExtents {
         }
         // A path some other entry adds back still exists at head and keeps its extent.
         removed.retain(|path| !present.contains_key(path));
-        Self { present, removed }
+        Self { present, removed, head_lines }
     }
 
     fn resolve(&self, raw_path: &str) -> HeadPathState {
@@ -1284,16 +2934,112 @@ impl HeadLineExtents {
             return false;
         };
         match self.resolve(&path) {
-            HeadPathState::Present(lines) => line > lines as u64,
+            HeadPathState::Present(lines) => {
+                line > lines as u64 || self.probe_expression_is_absent_near(&path, line, finding)
+            }
             HeadPathState::Removed => true,
             HeadPathState::Unknown => false,
         }
     }
+
+    /// The #6260 residual: `ripr check --diff` also emits probes for lines the
+    /// change *deletes*, anchored at the head line where the deletion happened.
+    /// When that anchor is inside the head file's extent, the line-count check
+    /// above cannot tell it from a head-side probe, and the gate counts a gap no
+    /// test can ever reach (the deleted code is gone) while the guidance pass
+    /// correctly names no seam for it.
+    ///
+    /// A head-side probe always carries the head line's own text as its
+    /// expression, so the discriminator is textual: the finding is outside the
+    /// head revision only when it carries a non-empty expression, the head
+    /// file's lines are known, and no non-empty line within
+    /// [`HEAD_ANCHOR_WINDOW`] of the reported line contains, or is contained
+    /// by, any substantive line of that expression. A lone delimiter on either
+    /// side (`}`, `});`, …) matches any nearby unrelated block end, so such
+    /// lines never anchor on their own; an expression with no substantive line
+    /// at all stays counted. Every other undecidable case (no expression, no
+    /// head text, an expression that does anchor nearby) stays counted: the
+    /// filter never takes the fail-open direction.
+    fn probe_expression_is_absent_near(&self, path: &str, line: u64, finding: &Value) -> bool {
+        let Some(expression) = ripr_finding_expression(finding) else {
+            return false;
+        };
+        let expression_lines =
+            expression.lines().map(str::trim).filter(|text| !text.is_empty()).collect::<Vec<_>>();
+        if expression_lines.is_empty() {
+            return false;
+        }
+        if !expression_lines.iter().any(|expr| !is_low_information_line(expr)) {
+            return false;
+        }
+        let Some(head_lines) = self.head_lines_for(path) else {
+            return false;
+        };
+        let Some(index) = usize::try_from(line).ok().and_then(|line| line.checked_sub(1)) else {
+            return false;
+        };
+        if index >= head_lines.len() {
+            return false;
+        }
+        let start = index.saturating_sub(HEAD_ANCHOR_WINDOW);
+        let end = index.saturating_add(HEAD_ANCHOR_WINDOW).min(head_lines.len() - 1);
+        let anchored = head_lines[start..=end]
+            .iter()
+            .map(|text| text.trim())
+            .filter(|text| !text.is_empty() && !is_low_information_line(text))
+            .any(|head| {
+                expression_lines.iter().any(|expr| {
+                    !is_low_information_line(expr) && (head.contains(expr) || expr.contains(head))
+                })
+            });
+        !anchored
+    }
+
+    /// Head-revision lines for a finding path, resolved like [`Self::resolve`]:
+    /// an exact normalized key, else a unique repo-relative suffix match.
+    fn head_lines_for(&self, raw_path: &str) -> Option<&[String]> {
+        let normalized = normalize_repo_relative_path(raw_path);
+        if let Some(lines) = self.head_lines.get(&normalized) {
+            return Some(lines.as_slice());
+        }
+        let candidates = self
+            .head_lines
+            .iter()
+            .filter(|(path, _)| path_suffix_matches(&normalized, path))
+            .map(|(_, lines)| lines.as_slice())
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [lines] => Some(lines),
+            _ => None,
+        }
+    }
 }
 
-fn head_file_line_count(repo: &Path, head_sha: &str, path: &str) -> Option<usize> {
+fn max_head_blob_bytes() -> u64 {
+    std::env::var(MAX_HEAD_BLOB_BYTES_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(MAX_HEAD_BLOB_BYTES)
+}
+
+fn head_file_lines(repo: &Path, head_sha: &str, path: &str) -> Option<Vec<String>> {
     let spec = format!("{head_sha}:{path}");
-    run_git_output(repo, &["show", spec.as_str()]).ok().map(|blob| blob.lines().count())
+    // Stat before reading: `git show` materializes the whole blob, and a
+    // multi-hundred-megabyte generated asset would otherwise sit in memory as
+    // per-line Strings until the receipt finishes streaming. Over the cap the
+    // blob gets no entry and its findings stay counted (fail-closed).
+    let size = run_git_output(repo, &["cat-file", "-s", spec.as_str()])
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    if size > max_head_blob_bytes() {
+        return None;
+    }
+    run_git_output(repo, &["show", spec.as_str()])
+        .ok()
+        .map(|blob| blob.lines().map(ToOwned::to_owned).collect())
 }
 
 fn normalize_repo_relative_path(path: &str) -> String {
@@ -1577,7 +3323,7 @@ const NON_PRODUCTION_BASIS: &str = "compiled_into_workspace_artifacts";
 
 /// Graph source recorded alongside the basis so receipts stay honest about
 /// where the compiled-into-production decision came from.
-const NON_PRODUCTION_SOURCE: &str = "cargo_metadata_target_membership";
+const NON_PRODUCTION_SOURCE: &str = "cargo_metadata_target_membership_and_immutable_head_ast_spans";
 
 /// Why a finding path is structurally non-production for the new-gap basis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1587,6 +3333,8 @@ enum NonProductionKind {
     /// A file under a Cargo integration-test directory that no production
     /// artifact compiles.
     IntegrationTest,
+    /// An item inside an inline module guarded by the exact `cfg(test)`.
+    InlineTest,
 }
 
 /// The compiled-into-production view of the workspace (#12267 review repair).
@@ -1611,10 +3359,12 @@ enum NonProductionKind {
 ///
 /// Limitations, kept honest by the receipt stamp: the closure is textual, not
 /// a cargo build graph — `include!`, macro-generated module paths, and
-/// multi-line `#[path]` attributes are not followed, and `#[cfg(test)] mod`
-/// declarations inside production files over-include their siblings (the safe
-/// direction). A `tests/`-located file compiled through an unfollowed
-/// mechanism would be misclassified as non-production.
+/// multi-line `#[path]` attributes are not followed. Inline test attribution
+/// is also conservative: only parsed exact `#[cfg(test)]` module interiors
+/// with a usable finding line are excluded; source parse/read failures and
+/// ambiguous predicates remain in the blocking basis. A `tests/`-located file
+/// compiled through an unfollowed mechanism would be misclassified as
+/// non-production.
 #[derive(Debug, Clone)]
 struct ProductionSurface {
     /// Normalized (forward-slash) absolute host path of the workspace root,
@@ -1623,6 +3373,11 @@ struct ProductionSurface {
     /// Repo-relative normalized paths of files compiled into production
     /// workspace artifacts.
     production_paths: BTreeSet<String>,
+    inline_test_ranges: BTreeMap<String, Vec<(usize, usize)>>,
+    /// Lines that resolve, in the head revision, to a syn item carrying no
+    /// executable code (#16077). Used only to drop `no_static_path` findings,
+    /// which measure call-graph reachability a declaration line cannot have.
+    declaration_seam_lines: BTreeMap<String, BTreeSet<usize>>,
 }
 
 impl ProductionSurface {
@@ -1631,6 +3386,8 @@ impl ProductionSurface {
         ProductionSurface {
             repo_root: repo_root.to_string(),
             production_paths: production_paths.iter().map(|path| path.to_string()).collect(),
+            inline_test_ranges: BTreeMap::new(),
+            declaration_seam_lines: BTreeMap::new(),
         }
     }
 }
@@ -1677,9 +3434,18 @@ fn repo_relative_surface_path(surface: &ProductionSurface, raw_path: &str) -> Op
 /// cannot be resolved against the repository root) is never non-production:
 /// the gate keeps failing closed on ambiguous input, the same convention as
 /// #6260 and the dependency-graph filter.
+#[cfg(test)]
 fn classify_non_production(
     surface: Option<&ProductionSurface>,
     raw_path: &str,
+) -> Option<NonProductionKind> {
+    classify_non_production_at_line(surface, raw_path, None)
+}
+
+fn classify_non_production_at_line(
+    surface: Option<&ProductionSurface>,
+    raw_path: &str,
+    line: Option<u64>,
 ) -> Option<NonProductionKind> {
     let surface = surface?;
     let path = repo_relative_surface_path(surface, raw_path)?;
@@ -1691,13 +3457,43 @@ fn classify_non_production(
     {
         return Some(NonProductionKind::IntegrationTest);
     }
+    if let Some(line) = line.and_then(|line| usize::try_from(line).ok())
+        && surface
+            .inline_test_ranges
+            .get(&path)
+            .is_some_and(|ranges| ranges.iter().any(|(start, end)| *start < line && line < *end))
+    {
+        return Some(NonProductionKind::InlineTest);
+    }
     None
+}
+
+/// Whether a finding's line resolves to a non-executable declaration in the
+/// head revision (#16077).
+///
+/// Fail-closed at every step: no surface, an unresolvable path, a missing line,
+/// a file the head does not carry, or a file that would not parse all return
+/// `false`, which keeps the finding in the blocking basis.
+fn is_declaration_seam_at_line(
+    surface: Option<&ProductionSurface>,
+    raw_path: &str,
+    line: Option<u64>,
+) -> bool {
+    let Some(surface) = surface else { return false };
+    let Some(path) = repo_relative_surface_path(surface, raw_path) else { return false };
+    let Some(line) = line.and_then(|line| usize::try_from(line).ok()) else { return false };
+    surface.declaration_seam_lines.get(&path).is_some_and(|lines| lines.contains(&line))
 }
 
 /// Build the production surface from cargo metadata and the repo checkout.
 /// Errors mean the surface could not be established; callers must then skip
 /// non-production classification entirely rather than guess.
-fn production_surface_from_metadata(repo: &Path, metadata: &Value) -> Result<ProductionSurface> {
+fn production_surface_from_metadata(
+    repo: &Path,
+    metadata: &Value,
+    changed_paths: &[String],
+    head_sha: &str,
+) -> Result<ProductionSurface> {
     let root = metadata
         .get("workspace_root")
         .and_then(Value::as_str)
@@ -1707,7 +3503,12 @@ fn production_surface_from_metadata(repo: &Path, metadata: &Value) -> Result<Pro
         .get("packages")
         .and_then(Value::as_array)
         .ok_or_else(|| eyre!("cargo metadata missing packages array"))?;
-    let mut surface = ProductionSurface { repo_root: root, production_paths: BTreeSet::new() };
+    let mut surface = ProductionSurface {
+        repo_root: root,
+        production_paths: BTreeSet::new(),
+        inline_test_ranges: BTreeMap::new(),
+        declaration_seam_lines: BTreeMap::new(),
+    };
     let mut scan_queue: Vec<String> = Vec::new();
     for package in packages {
         let manifest = package.get("manifest_path").and_then(Value::as_str);
@@ -1769,7 +3570,418 @@ fn production_surface_from_metadata(repo: &Path, metadata: &Value) -> Result<Pro
         bail!("cargo metadata resolved no workspace production sources");
     }
     scan_include_closure(repo, &mut surface.production_paths, scan_queue);
+    for path in changed_paths
+        .iter()
+        .map(|path| normalize_repo_relative_path(path))
+        .filter(|path| surface.production_paths.contains(path))
+    {
+        let spec = format!("{head_sha}:{path}");
+        // A file the head revision does not carry leaves both maps without an
+        // entry, which keeps its findings in the blocking basis.
+        let Ok(source) = run_git_output(repo, &["show", spec.as_str()]) else { continue };
+        let ranges = inline_cfg_test_ranges(&source);
+        if !ranges.is_empty() {
+            surface.inline_test_ranges.insert(path.clone(), ranges);
+        }
+        let seams = declaration_seam_lines(&source);
+        if !seams.is_empty() {
+            surface.declaration_seam_lines.insert(path, seams);
+        }
+    }
     Ok(surface)
+}
+
+/// Locate only inline modules whose condition is exactly `cfg(test)`. Parsing
+/// failures and predicates that may also hold in production are deliberately
+/// ignored so the caller keeps those findings in the blocking basis.
+fn inline_cfg_test_ranges(source: &str) -> Vec<(usize, usize)> {
+    let Ok(file) = syn::parse_file(source) else { return Vec::new() };
+    let mut collector = InlineCfgTestRangeCollector::default();
+    collector.visit_file(&file);
+    collector.ranges
+}
+
+/// Lines that carry a declaration and no executable code, in the head revision
+/// of one file (#16077).
+///
+/// `no_static_path` asserts that no static test path reaches the changed owner.
+/// That is a statement about the call graph, and the item kinds collected here
+/// contribute no node to it: a `use`, an `extern crate`, a bodiless `mod`, a
+/// type declaration, and a literal-initialized `const` or `static` contain no
+/// call site, so no test can produce a path to one. Reporting them as
+/// unreachable is the analyzer applying a call-graph model to a line that has
+/// no call (ripr#1429), not a coverage finding.
+///
+/// Deliberately excluded, because they can carry executable bodies:
+/// `Item::Trait` (default methods), `Item::Impl` (associated methods),
+/// `Item::Fn`, `Item::Mod` with content (its own items are visited on their
+/// own terms), and any `const`/`static` whose initializer is a call, a closure,
+/// or any other non-literal expression.
+///
+/// Like [`inline_cfg_test_ranges`], a parse failure yields nothing so the caller
+/// keeps every finding in the blocking basis.
+fn declaration_seam_lines(source: &str) -> BTreeSet<usize> {
+    let Ok(file) = syn::parse_file(source) else { return BTreeSet::new() };
+    let mut collector = DeclarationSeamCollector::default();
+    collector.visit_file(&file);
+    // A line only stays a seam when nothing executable shares it. Subtracting
+    // rather than refusing to mark keeps the two passes independent: an item is
+    // screened by its own kind, and occupancy is resolved afterwards.
+    collector.lines.difference(&collector.executable).copied().collect()
+}
+
+#[derive(Default)]
+struct DeclarationSeamCollector {
+    lines: BTreeSet<usize>,
+    /// Lines an executable construct occupies. Subtracted from `lines` at the
+    /// end, because marking is per line and a finding is matched by
+    /// `(file, line)` alone: `const OK: bool = true; fn run() { go(); }` puts a
+    /// declaration and a call on one physical line, and without this the call's
+    /// finding would be subtracted from a required gate's blocking basis
+    /// (#16077 review).
+    executable: BTreeSet<usize>,
+}
+
+impl DeclarationSeamCollector {
+    /// Mark every line the item occupies, attributes included. A doc comment or
+    /// a `#[derive]` above a declaration is no more executable than the
+    /// declaration itself, and a finding may land on either.
+    fn mark(&mut self, attrs: &[syn::Attribute], span: proc_macro2::Span) {
+        let start = attrs
+            .iter()
+            .map(Spanned::span)
+            .chain(std::iter::once(span))
+            .map(|span| span.start().line)
+            .min()
+            .unwrap_or_else(|| span.start().line);
+        for line in start..=span.end().line {
+            self.lines.insert(line);
+        }
+    }
+
+    /// Record every line an executable construct occupies, so a declaration
+    /// sharing a physical line with it cannot subtract that line.
+    fn mark_executable(&mut self, attrs: &[syn::Attribute], span: proc_macro2::Span) {
+        let start = attrs
+            .iter()
+            .map(Spanned::span)
+            .chain(std::iter::once(span))
+            .map(|span| span.start().line)
+            .min()
+            .unwrap_or_else(|| span.start().line);
+        for line in start..=span.end().line {
+            self.executable.insert(line);
+        }
+    }
+
+    /// Run [`NonLiteralExprProbe`] over one item and report whether it found
+    /// anything. The closure names which `visit_item_*` to enter, so every
+    /// declaration kind is screened by the same predicate.
+    fn carries_an_expression(visit: impl FnOnce(&mut NonLiteralExprProbe)) -> bool {
+        let mut probe = NonLiteralExprProbe::default();
+        visit(&mut probe);
+        probe.found
+    }
+
+    /// Mark an item whose only possible source of code is its own attributes.
+    ///
+    /// `use`, `extern crate` and `mod name;` hold no expression, so the other
+    /// visitors mark them without probing. That skipped the attribute probe
+    /// entirely, and `#[generate_runtime_path] use std::fmt;` is a real shape:
+    /// the macro may append functions onto that line (#16077 review). Running
+    /// the probe over the attributes alone is the whole question for these
+    /// three kinds.
+    fn mark_by_attrs(&mut self, attrs: &[syn::Attribute], span: proc_macro2::Span) {
+        let readable = !Self::carries_an_expression(|probe| {
+            for attr in attrs {
+                probe.visit_attribute(attr);
+            }
+        });
+        if readable {
+            self.mark(attrs, span);
+        } else {
+            self.mark_executable(attrs, span);
+        }
+    }
+}
+
+/// Whether an item contains any expression other than a bare literal.
+///
+/// This is the predicate that keeps the filter honest, and it is deliberately
+/// blunt. A `const fn` call is legal in an enum discriminant (`A = compute()`),
+/// in a const-generic default (`struct S<const N: usize = compute()>`), and in
+/// an array length, so "this item kind has no function body" is not the same
+/// claim as "no line of this item carries a call". Anything that is not a
+/// literal — a call, a closure, a macro, a path to another const, even `1 + 1`
+/// — leaves the whole item in the blocking basis. Const evaluation is not a
+/// reason to treat a call token as absent.
+#[derive(Default)]
+struct NonLiteralExprProbe {
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for NonLiteralExprProbe {
+    fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+        if matches!(expr, syn::Expr::Lit(_)) {
+            // A literal has no subexpression worth descending into.
+            return;
+        }
+        self.found = true;
+    }
+
+    /// A macro invocation is opaque tokens, not a `syn::Expr`, so `visit_expr`
+    /// never sees what it expands to. In type position — `struct S { field:
+    /// ty!() }` where `ty!()` expands to `[u8; compute()]` — nothing else in
+    /// this probe fires either, and the item would be screened as carrying no
+    /// call while its expansion carries one (#16077 review). Treat every macro
+    /// as an expression the probe cannot read, in every position.
+    fn visit_macro(&mut self, _: &'ast syn::Macro) {
+        self.found = true;
+    }
+
+    /// A procedural attribute macro is a `syn::Attribute`, not a `syn::Macro`,
+    /// so `visit_macro` never fires for it. `#[generate_runtime_path] struct S;`
+    /// can emit arbitrary code while the item reads as a bare declaration
+    /// (#16077 review).
+    ///
+    /// This is the one place the probe must whitelist rather than invert: every
+    /// declaration carries `///`, `#[cfg]` or `#[derive]`, so treating all
+    /// attributes as unreadable would empty the filter. Only attributes the
+    /// language itself defines, and which therefore cannot expand to code, are
+    /// accepted; anything else is an attribute macro or a derive helper whose
+    /// owner may expand to code, and the item stays in the blocking basis.
+    fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
+        if !inert_attribute(attr) {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_attribute(self, attr);
+    }
+}
+
+/// Built-in attributes that cannot expand to code.
+///
+/// `derive` is deliberately here. It does generate an `impl`, but excluding
+/// every deriving declaration would remove most of this filter's subject, and
+/// whether `ripr` attributes a derived impl's finding back to the deriving
+/// item's own line is a property of the external analyzer that this repository
+/// cannot observe. That residual is recorded on the PR rather than guessed at.
+/// Everything absent from this list — an attribute macro, a derive helper such
+/// as `#[serde(...)]`, anything a crate defines — keeps its item blocking.
+fn inert_attribute(attr: &syn::Attribute) -> bool {
+    const INERT: &[&str] = &[
+        "allow",
+        "automatically_derived",
+        "cfg",
+        "cold",
+        "deny",
+        "deprecated",
+        "derive",
+        "doc",
+        "expect",
+        "export_name",
+        "forbid",
+        "inline",
+        "link_section",
+        "must_use",
+        "no_mangle",
+        "non_exhaustive",
+        "repr",
+        "track_caller",
+        "used",
+        "warn",
+    ];
+    // `cfg_attr` is deliberately absent. Its payload is an attribute list that
+    // `syn` keeps as opaque `Meta::List` tokens, so `#[cfg_attr(all(),
+    // generate_runtime_path)]` reaches neither `visit_attribute` nor
+    // `visit_macro` and would be read as inert on the strength of the wrapper's
+    // name alone (#16077 review). Reading that payload would mean re-parsing it;
+    // refusing it costs one line in this workspace — of 387 `cfg_attr`
+    // occurrences under `crates/` and `xtask/`, exactly one sits on a screened
+    // declaration kind, because the rest decorate functions and impls that are
+    // marked executable anyway.
+    // `clippy::…` and `rustfmt::…` are tool attributes: two segments, inert by
+    // definition, and never an attribute macro.
+    let mut segments = attr.path().segments.iter();
+    let Some(first) = segments.next() else { return false };
+    let first = first.ident.to_string();
+    if matches!(first.as_str(), "clippy" | "rustfmt") {
+        return true;
+    }
+    segments.next().is_none() && INERT.contains(&first.as_str())
+}
+
+impl<'ast> Visit<'ast> for DeclarationSeamCollector {
+    /// Conservative default for item kinds this collector does not screen.
+    ///
+    /// Every kind below is classified by an explicit rule. Anything else — an
+    /// item-position macro (`global_asm!`, `include!`, a declarative macro that
+    /// expands to arbitrary code), an `extern` block, a trait alias, or a
+    /// `Verbatim` item `syn` could not resolve into a known kind — occupies its
+    /// lines instead. An unclassified kind must not silently default to
+    /// "carries no call": marking is per line and a finding is matched by
+    /// `(file, line)` alone, so `use std::arch::global_asm; global_asm!("nop");`
+    /// would otherwise let the `use` subtract the macro's finding from a
+    /// required gate's blocking basis (#16077 review).
+    ///
+    /// `Item::Mod` is excluded because its span covers its children, which are
+    /// visited on their own terms; marking it would occupy every line inside it.
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        let screened = matches!(
+            item,
+            syn::Item::Use(_)
+                | syn::Item::ExternCrate(_)
+                | syn::Item::Mod(_)
+                | syn::Item::Fn(_)
+                | syn::Item::Impl(_)
+                | syn::Item::Trait(_)
+                | syn::Item::Enum(_)
+                | syn::Item::Struct(_)
+                | syn::Item::Union(_)
+                | syn::Item::Type(_)
+                | syn::Item::Const(_)
+                | syn::Item::Static(_)
+        );
+        if !screened {
+            let attrs: &[syn::Attribute] = match item {
+                syn::Item::ForeignMod(unscreened) => &unscreened.attrs,
+                syn::Item::Macro(unscreened) => &unscreened.attrs,
+                syn::Item::TraitAlias(unscreened) => &unscreened.attrs,
+                _ => &[],
+            };
+            self.mark_executable(attrs, item.span());
+        }
+        syn::visit::visit_item(self, item);
+    }
+
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        self.mark_by_attrs(&item.attrs, item.span());
+    }
+
+    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+        self.mark_by_attrs(&item.attrs, item.span());
+    }
+
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if item.content.is_none() {
+            // `mod name;` — the declaration line only. A module with a body is
+            // not marked; its items are visited individually below.
+            self.mark_by_attrs(&item.attrs, item.span());
+            return;
+        }
+        // An inline module's own attributes were skipped: only the bodiless
+        // branch probed them, and this branch recursed straight past. A child
+        // declaration then marked the line on its own, so
+        // `#[generate_runtime_path] mod m { struct S; }` read as a seam although
+        // the macro may put code on that line (#16077 review).
+        //
+        // The span is the header, not `item.span()`: the item's span runs to the
+        // closing brace, so marking that executable would bury every seam the
+        // module legitimately contains. `mod` and its name are the last header
+        // tokens before the body, and an unreadable attribute can only reach the
+        // lines they and the attribute occupy.
+        let unreadable = Self::carries_an_expression(|probe| {
+            for attr in &item.attrs {
+                probe.visit_attribute(attr);
+            }
+        });
+        if unreadable {
+            self.mark_executable(&item.attrs, item.ident.span());
+        }
+        syn::visit::visit_item_mod(self, item);
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        self.mark_executable(&item.attrs, item.span());
+        syn::visit::visit_item_fn(self, item);
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        self.mark_executable(&item.attrs, item.span());
+        syn::visit::visit_item_impl(self, item);
+    }
+
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        self.mark_executable(&item.attrs, item.span());
+        syn::visit::visit_item_trait(self, item);
+    }
+
+    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+        if Self::carries_an_expression(|probe| probe.visit_item_enum(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        if Self::carries_an_expression(|probe| probe.visit_item_struct(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_union(&mut self, item: &'ast syn::ItemUnion) {
+        if Self::carries_an_expression(|probe| probe.visit_item_union(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        if Self::carries_an_expression(|probe| probe.visit_item_type(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        if Self::carries_an_expression(|probe| probe.visit_item_const(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if Self::carries_an_expression(|probe| probe.visit_item_static(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+}
+
+#[derive(Default)]
+struct InlineCfgTestRangeCollector {
+    ranges: Vec<(usize, usize)>,
+}
+
+impl<'ast> Visit<'ast> for InlineCfgTestRangeCollector {
+    fn visit_item_mod(&mut self, module: &'ast syn::ItemMod) {
+        let guarded = module.attrs.iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && attribute.parse_args::<syn::Path>().is_ok_and(|path| path.is_ident("test"))
+        });
+        if guarded && module.content.is_some() {
+            let start = module
+                .attrs
+                .iter()
+                .map(Spanned::span)
+                .chain(std::iter::once(module.span()))
+                .map(|span| span.start().line)
+                .min()
+                .unwrap_or(module.span().start().line);
+            let end = module.span().end().line;
+            if start < end {
+                self.ranges.push((start, end));
+            }
+        }
+        visit::visit_item_mod(self, module);
+    }
 }
 
 /// Follow `#[path = "…"]` includes and plain `mod name;` declarations from the
@@ -1917,9 +4129,9 @@ fn pr_evidence_packet(
         base_sha,
         head_sha,
         suppressions,
+        None,
         PrEvidenceContext {
             changed_file_count: changed_files.len(),
-            head_extents: None,
             attribution_scope: None,
             production_surface: None,
         },
@@ -1942,31 +4154,35 @@ fn pr_evidence_packet_on_surface(
         base_sha,
         head_sha,
         suppressions,
+        None,
         PrEvidenceContext {
             changed_file_count: changed_files.len(),
-            head_extents: None,
             attribution_scope: None,
             production_surface,
         },
     )
 }
 
-/// The measurement context for one PR evidence packet: which diff was
-/// measured, and which bases the new-gap filters were applied on.
+/// The stamped measurement context for one PR evidence packet: which diff was
+/// measured, and which bases the receipt records as applied.
 ///
-/// These four facts travel together — every caller that supplies one supplies
+/// These three facts travel together — every caller that supplies one supplies
 /// all of them — while the options, exact base/head identity, check payload,
-/// and suppression policy stay explicit arguments. Grouping them keeps
-/// [`pr_evidence_packet_with_count`] inside the configured argument budget
-/// without weakening any call site: the struct deliberately has no `Default`,
-/// so a caller that omits a field fails to compile rather than silently
-/// measuring against an empty basis (#13809).
+/// and suppression policy stay explicit arguments. Grouping them keeps both
+/// receipt builders inside the configured argument budget without weakening any
+/// call site: the struct deliberately has no `Default`, so a caller that omits
+/// a field fails to compile rather than silently measuring against an empty
+/// basis (#13809).
+///
+/// Head-revision line extents are deliberately *not* a field. #12569 moved the
+/// extent filter off the receipt builder and into ingestion, where it is
+/// applied per finding as the payload streams; by the time either builder runs,
+/// the counts are already scoped. Extents stay an explicit argument of the
+/// filtering path so this struct cannot imply a filter the builder never runs.
 #[derive(Clone, Copy)]
 struct PrEvidenceContext<'a> {
     /// Number of files in the committed diff under evaluation.
     changed_file_count: usize,
-    /// Head-revision line extents; `None` keeps every finding in scope.
-    head_extents: Option<&'a HeadLineExtents>,
     /// Dependency-attribution basis; `None` keeps every finding counted.
     attribution_scope: Option<&'a AttributionScope>,
     /// Compiled-production surface; `None` keeps every finding counted.
@@ -1995,20 +4211,20 @@ const _: fn() = || {
     let _ = <PrEvidenceContext<'static> as AmbiguousIfDefault<_>>::marker;
 };
 
+/// DOM-path receipt builder, retained as the test oracle for the streaming
+/// ingestion (#12860): receipt bytes must match
+/// [`pr_evidence_packet_from_summary`] for the same payload.
+#[cfg(test)]
 fn pr_evidence_packet_with_count(
     options: &PrEvidenceOptions,
     check_value: &Value,
     base_sha: &str,
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
+    head_extents: Option<&HeadLineExtents>,
     context: PrEvidenceContext<'_>,
 ) -> Value {
-    let PrEvidenceContext {
-        changed_file_count,
-        head_extents,
-        attribution_scope,
-        production_surface,
-    } = context;
+    let PrEvidenceContext { attribution_scope, production_surface, .. } = context;
     let check_summary = check_value.get("summary").and_then(Value::as_object);
     let summary = ripr_pr_summary_counts(
         check_value,
@@ -2018,6 +4234,36 @@ fn pr_evidence_packet_with_count(
         attribution_scope.and_then(AttributionScope::applied),
         production_surface,
     );
+    pr_evidence_packet_from_summary(
+        options,
+        &RiprCheckIngestion {
+            summary_counts: summary,
+            check_summary_present: check_summary.is_some(),
+        },
+        base_sha,
+        head_sha,
+        suppressions,
+        context,
+    )
+}
+
+/// Builds the receipt from streamed ingestion results. Receipt bytes are
+/// identical to the DOM path (`pr_evidence_packet_with_count`, retained as the
+/// test oracle) for the same payload; the #12860 compatibility tests pin this
+/// byte for byte.
+///
+/// Takes the same [`PrEvidenceContext`] as the DOM path so the stamped
+/// measurement basis has one spelling (#13809), not one per ingestion path.
+fn pr_evidence_packet_from_summary(
+    options: &PrEvidenceOptions,
+    ingestion: &RiprCheckIngestion,
+    base_sha: &str,
+    head_sha: &str,
+    suppressions: &RiprSuppressionRules,
+    context: PrEvidenceContext<'_>,
+) -> Value {
+    let PrEvidenceContext { changed_file_count, attribution_scope, production_surface } = context;
+    let summary = &ingestion.summary_counts;
     let weakly_exposed = summary.weakly_exposed;
     let reachable_unrevealed = summary.reachable_unrevealed;
     let no_static_path = summary.no_static_path;
@@ -2032,7 +4278,7 @@ fn pr_evidence_packet_with_count(
         .saturating_sub(summary.outside_head_unclassified)
         .saturating_sub(summary.non_production_unclassified);
     let ripr_severe_gap = severe_gaps > 0;
-    let warnings = if check_summary.is_some() {
+    let warnings = if ingestion.check_summary_present {
         Vec::new()
     } else {
         vec![json!({
@@ -2071,6 +4317,7 @@ fn pr_evidence_packet_with_count(
             "outside_head_revision": summary.outside_head_revision,
             "out_of_dependency_graph": summary.out_of_dependency_graph,
             "non_production_excluded": summary.non_production_excluded,
+            "declaration_seam_excluded": summary.declaration_seam_excluded,
             "suppression_patterns": suppressions.display_patterns.clone(),
         },
         "attribution": attribution_stamp(attribution_scope),
@@ -2190,6 +4437,10 @@ fn validate_pr_evidence_packet(
     if !summary.get("non_production_excluded").is_some_and(Value::is_u64) {
         violations.push("summary.non_production_excluded is missing or not an integer".to_string());
     }
+    if !summary.get("declaration_seam_excluded").is_some_and(Value::is_u64) {
+        violations
+            .push("summary.declaration_seam_excluded is missing or not an integer".to_string());
+    }
     match packet.get("attribution").and_then(Value::as_object) {
         Some(attribution) => {
             if attribution.get("basis").and_then(Value::as_str) != Some(ATTRIBUTION_BASIS) {
@@ -2274,6 +4525,10 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
     out.push_str(&format!(
         "- non_production_excluded: {}\n",
         count_field(summary, "non_production_excluded")
+    ));
+    out.push_str(&format!(
+        "- declaration_seam_excluded: {}\n",
+        count_field(summary, "declaration_seam_excluded")
     ));
     out.push_str(&format!("- severe gaps: {}\n\n", count_field(summary, "severe_gaps")));
     out.push_str("## Targeted Mutation\n\n");
@@ -2613,18 +4868,6 @@ fn fallback_guidance_comments(
     repo: &Path,
     options: &ReviewCommentsOptions,
 ) -> Result<Option<(Vec<Value>, usize)>> {
-    let Ok(text) = fs::read_to_string(repo.join(PR_RAW_CHECK_JSON)) else {
-        return Ok(None);
-    };
-    let Ok(packet) = serde_json::from_str::<Value>(&text) else {
-        return Ok(None);
-    };
-    if packet.get("base").and_then(Value::as_str) != Some(options.base.as_str()) {
-        return Ok(None);
-    }
-    let Some(findings) = packet.get("findings").and_then(Value::as_array) else {
-        return Ok(None);
-    };
     let Ok(suppressions) = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))
     else {
         return Ok(None);
@@ -2646,28 +4889,114 @@ fn fallback_guidance_comments(
             })
         })
         .unwrap_or(AttributionScope::NoChangedPackage);
-    let production_surface = metadata
-        .as_ref()
-        .and_then(|metadata| production_surface_from_metadata(repo, metadata).ok());
+    let production_surface = metadata.as_ref().and_then(|metadata| {
+        let changed_paths = diff_receipt
+            .as_ref()
+            .map(|diff| committed_diff_entry_paths(&diff.entries))
+            .unwrap_or_default();
+        let head_sha = revision_sha(repo, &options.head).ok()?;
+        production_surface_from_metadata(repo, metadata, &changed_paths, &head_sha).ok()
+    });
     let head_extents =
         diff_receipt.as_ref().map(|diff| HeadLineExtents::from_committed_diff(repo, diff));
 
-    let (mut seams, suppressed) = fallback_seam_entries(
-        findings,
-        &suppressions,
-        head_extents.as_ref(),
-        attribution.applied(),
-        production_surface.as_ref(),
+    let raw_check = fs::File::open(repo.join(PR_RAW_CHECK_JSON)).ok();
+    let Some(raw_check) = raw_check else { return Ok(None) };
+    let mut accumulator = FallbackGuidanceAccumulator::default();
+    let payload = stream_ripr_check_payload_with_events(
+        BufReader::with_capacity(64 * 1024, raw_check),
+        &mut |event| match event {
+            StreamFindingsEvent::Start => accumulator.reset(),
+            StreamFindingsEvent::Finding(finding) => accumulator.absorb(
+                finding,
+                &suppressions,
+                head_extents.as_ref(),
+                attribution.applied(),
+                production_surface.as_ref(),
+            ),
+        },
     );
-
-    seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
-    seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
-    seams.truncate(FALLBACK_GUIDANCE_LIMIT);
+    let Ok(payload) = payload else { return Ok(None) };
+    if payload.base.as_ref().and_then(Value::as_str) != Some(options.base.as_str()) {
+        return Ok(None);
+    }
+    // `finish` already returns the bounded, sorted, path/line-unique set; no
+    // further sort or dedup is needed here.
+    let (seams, suppressed) = accumulator.finish();
     let comments = seams.into_iter().map(|(_, _, _, comment)| comment).collect::<Vec<_>>();
     if comments.is_empty() {
         return Ok(None);
     }
     Ok(Some((comments, suppressed)))
+}
+
+type FallbackSeam = (String, u64, String, Value);
+
+enum FallbackSeamDecision {
+    Ignore,
+    Suppressed,
+    Emit(FallbackSeam),
+}
+
+/// Keeps fallback guidance bounded while preserving the deterministic first
+/// `FALLBACK_GUIDANCE_LIMIT` path/line entries that the old sort/dedup/truncate
+/// implementation emitted. Its entries are always sorted by `(path, line, id)`,
+/// `(path, line)` keys are unique, and the result is bounded to
+/// `FALLBACK_GUIDANCE_LIMIT`. A later duplicate path/line replaces the retained
+/// entry only when its id sorts first, matching the old dedup order.
+#[derive(Default)]
+struct FallbackGuidanceAccumulator {
+    seams: Vec<FallbackSeam>,
+    suppressed: usize,
+}
+
+impl FallbackGuidanceAccumulator {
+    fn reset(&mut self) {
+        self.seams.clear();
+        self.suppressed = 0;
+    }
+
+    fn absorb(
+        &mut self,
+        finding: &Value,
+        suppressions: &RiprSuppressionRules,
+        head_extents: Option<&HeadLineExtents>,
+        attribution: Option<&DependencyAttribution>,
+        production_surface: Option<&ProductionSurface>,
+    ) {
+        match fallback_seam_decision(
+            finding,
+            suppressions,
+            head_extents,
+            attribution,
+            production_surface,
+        ) {
+            FallbackSeamDecision::Ignore => {}
+            FallbackSeamDecision::Suppressed => self.suppressed += 1,
+            FallbackSeamDecision::Emit(entry) => {
+                let key_matches =
+                    |existing: &FallbackSeam| existing.0 == entry.0 && existing.1 == entry.1;
+                if let Some(existing) = self.seams.iter_mut().find(|existing| key_matches(existing))
+                {
+                    if entry.2 < existing.2 {
+                        *existing = entry;
+                    }
+                    return;
+                }
+                self.seams.push(entry);
+                self.seams.sort_by(|left, right| {
+                    (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2))
+                });
+                self.seams.truncate(FALLBACK_GUIDANCE_LIMIT);
+            }
+        }
+    }
+
+    /// Returns entries sorted by `(path, line, id)`, with unique `(path, line)`
+    /// keys and at most `FALLBACK_GUIDANCE_LIMIT` entries.
+    fn finish(self) -> (Vec<FallbackSeam>, usize) {
+        (self.seams, self.suppressed)
+    }
 }
 
 /// Collect the gate-actionable seams fallback guidance should name, applying
@@ -2677,6 +5006,10 @@ fn fallback_guidance_comments(
 /// seams are dropped before sorting and truncation so the
 /// [`FALLBACK_GUIDANCE_LIMIT`] slice cannot crowd out a production seam that
 /// actually keeps `new_unresolved` positive.
+/// This function is retained as the pre-streaming DOM oracle for the parity
+/// tests and has no production caller since the streaming accumulator replaced
+/// it.
+#[cfg(test)]
 fn fallback_seam_entries(
     findings: &[Value],
     suppressions: &RiprSuppressionRules,
@@ -2687,77 +5020,108 @@ fn fallback_seam_entries(
     let mut suppressed = 0usize;
     let mut seams: Vec<(String, u64, String, Value)> = Vec::new();
     for finding in findings {
-        // ripr 0.5.x: "classification"; ripr 0.9.x may emit "grip_class" with
-        // "weakly_gripped" folded into the counted reachable_unrevealed bucket
-        // (see ripr_pr_summary_counts). Accept both and name the counted class.
-        let raw_class = finding
-            .get("classification")
-            .and_then(Value::as_str)
-            .or_else(|| finding.get("grip_class").and_then(Value::as_str));
-        let canonical = match raw_class {
-            Some("weakly_gripped") => "reachable_unrevealed",
-            Some(other) => other,
-            None => continue,
-        };
-        if !gate_actionable_classification(canonical) {
-            continue;
+        match fallback_seam_decision(
+            finding,
+            suppressions,
+            head_extents,
+            attribution,
+            production_surface,
+        ) {
+            FallbackSeamDecision::Ignore => {}
+            FallbackSeamDecision::Suppressed => suppressed += 1,
+            FallbackSeamDecision::Emit(entry) => seams.push(entry),
         }
-        if suppression_matches_finding(suppressions, finding) {
-            suppressed += 1;
-            continue;
-        }
-        if head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding)) {
-            continue;
-        }
-        if ripr_finding_path(finding)
-            .is_some_and(|path| classify_non_production(production_surface, &path).is_some())
-        {
-            continue;
-        }
-        if let Some(attribution) = attribution
-            && attribution.finding_is_out_of_graph(finding)
-        {
-            continue;
-        }
-        let Some(file) = ripr_finding_path(finding) else { continue };
-        let path = normalize_suppression_match_path(&file);
-        // Without a known anchor the normalized value is still an absolute host
-        // path; never emit CI-runner paths into receipts.
-        if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
-            continue;
-        }
-        let Some(line) = ripr_finding_line(finding) else { continue };
-        let id = finding
-            .get("id")
-            .and_then(Value::as_str)
-            .or_else(|| finding.pointer("/probe/id").and_then(Value::as_str))
-            .or_else(|| finding.pointer("/seam/id").and_then(Value::as_str))
-            .unwrap_or("unknown-seam");
-        let family = finding
-            .pointer("/probe/family")
-            .and_then(Value::as_str)
-            .or_else(|| finding.pointer("/seam/family").and_then(Value::as_str))
-            .unwrap_or(canonical);
-        let expression = finding
-            .pointer("/probe/expression")
-            .and_then(Value::as_str)
-            .or_else(|| finding.pointer("/seam/expression").and_then(Value::as_str))
-            .unwrap_or("");
-        let reach_summary = finding
-            .pointer("/ripr/reach/summary")
-            .and_then(Value::as_str)
-            .unwrap_or("no static test path found");
-        let comment = json!({
-            "id": id,
-            "path": path,
-            "line": line,
-            "seam": format!("{family}: {}", first_line(expression)),
-            "reason": format!("{canonical}: {reach_summary}"),
-            "suggested_test": fallback_suggested_test(canonical),
-        });
-        seams.push((path.clone(), line, id.to_string(), comment));
     }
     (seams, suppressed)
+}
+
+fn fallback_seam_decision(
+    finding: &Value,
+    suppressions: &RiprSuppressionRules,
+    head_extents: Option<&HeadLineExtents>,
+    attribution: Option<&DependencyAttribution>,
+    production_surface: Option<&ProductionSurface>,
+) -> FallbackSeamDecision {
+    // ripr 0.5.x: "classification"; ripr 0.9.x may emit "grip_class" with
+    // "weakly_gripped" folded into the counted reachable_unrevealed bucket
+    // (see ripr_pr_summary_counts). Accept both and name the counted class.
+    let raw_class = finding
+        .get("classification")
+        .and_then(Value::as_str)
+        .or_else(|| finding.get("grip_class").and_then(Value::as_str));
+    let canonical = match raw_class {
+        Some("weakly_gripped") => "reachable_unrevealed",
+        Some(other) => other,
+        None => return FallbackSeamDecision::Ignore,
+    };
+    if !gate_actionable_classification(canonical) {
+        return FallbackSeamDecision::Ignore;
+    }
+    if suppression_matches_finding(suppressions, finding) {
+        return FallbackSeamDecision::Suppressed;
+    }
+    if head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding)) {
+        return FallbackSeamDecision::Ignore;
+    }
+    let finding_line = ripr_finding_line(finding);
+    if ripr_finding_path(finding).is_some_and(|path| {
+        classify_non_production_at_line(production_surface, &path, finding_line).is_some()
+    }) {
+        return FallbackSeamDecision::Ignore;
+    }
+    // #16077: the same predicate the blocking count applies. Without it the two
+    // surfaces disagree — a seam the gate no longer counts would still occupy
+    // one of the FALLBACK_GUIDANCE_LIMIT slots and could crowd out the
+    // executable seam that is actually keeping the gate red.
+    if canonical == "no_static_path"
+        && ripr_finding_path(finding).is_some_and(|path| {
+            is_declaration_seam_at_line(production_surface, &path, finding_line)
+        })
+    {
+        return FallbackSeamDecision::Ignore;
+    }
+    if let Some(attribution) = attribution
+        && attribution.finding_is_out_of_graph(finding)
+    {
+        return FallbackSeamDecision::Ignore;
+    }
+    let Some(file) = ripr_finding_path(finding) else { return FallbackSeamDecision::Ignore };
+    let path = normalize_suppression_match_path(&file);
+    // Without a known anchor the normalized value is still an absolute host
+    // path; never emit CI-runner paths into receipts.
+    if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
+        return FallbackSeamDecision::Ignore;
+    }
+    let Some(line) = ripr_finding_line(finding) else { return FallbackSeamDecision::Ignore };
+    let id = finding
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| finding.pointer("/probe/id").and_then(Value::as_str))
+        .or_else(|| finding.pointer("/seam/id").and_then(Value::as_str))
+        .unwrap_or("unknown-seam");
+    let family = finding
+        .pointer("/probe/family")
+        .and_then(Value::as_str)
+        .or_else(|| finding.pointer("/seam/family").and_then(Value::as_str))
+        .unwrap_or(canonical);
+    let expression = finding
+        .pointer("/probe/expression")
+        .and_then(Value::as_str)
+        .or_else(|| finding.pointer("/seam/expression").and_then(Value::as_str))
+        .unwrap_or("");
+    let reach_summary = finding
+        .pointer("/ripr/reach/summary")
+        .and_then(Value::as_str)
+        .unwrap_or("no static test path found");
+    let comment = json!({
+        "id": id,
+        "path": path,
+        "line": line,
+        "seam": format!("{family}: {}", first_line(expression)),
+        "reason": format!("{canonical}: {reach_summary}"),
+        "suggested_test": fallback_suggested_test(canonical),
+    });
+    FallbackSeamDecision::Emit((path, line, id.to_string(), comment))
 }
 
 /// Emit an `incomplete` guidance receipt that names the gate-actionable seams
@@ -3010,11 +5374,52 @@ fn render_annotations(repo: &Path, comments: &str) -> Result<AnnotationOutput> {
         .and_then(Value::as_array)
         .ok_or_else(|| eyre!("{comments} is missing comments[]"))?;
     let mut out = String::new();
+    // The degraded notice precedes the line annotations it qualifies: it says
+    // the set below is incomplete, so it must not be read after it.
+    if let Some(notice) = degraded_guidance_annotation(&packet) {
+        out.push_str(&notice);
+        out.push('\n');
+    }
     for item in comments_array {
         out.push_str(&annotation_from_comment(item)?);
         out.push('\n');
     }
     Ok(AnnotationOutput { text: out, comments_missing: false })
+}
+
+/// One run-level warning when the review-guidance producer did not complete.
+///
+/// A degraded receipt keeps its fallback seams in `summary_only[]`, which
+/// `annotation_from_comment` rejects as not annotation-safe, so `comments[]`
+/// is empty and the run would otherwise emit no annotation at all — byte-for-byte
+/// how a PR with no gaps presents. The timeout would then be discoverable only
+/// by opening the receipt or comparing step durations (#15523, #11322 item 5).
+///
+/// Returns `None` for an `advisory` (completed) receipt so a clean run stays
+/// clean, and for any unrecognized status so this never invents a signal it
+/// cannot substantiate. The text is derived only from receipt bytes, keeping
+/// `cargo xtask ripr-annotations --check` a meaningful staleness contract.
+fn degraded_guidance_annotation(packet: &Value) -> Option<String> {
+    let status = packet.get("status").and_then(Value::as_str)?;
+    if !matches!(status, "incomplete" | "error") {
+        return None;
+    }
+    let reason = packet
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|warning| warning.get("kind").and_then(Value::as_str) == Some("tool_error"))
+        .and_then(|warning| warning.get("message").and_then(Value::as_str))
+        .map(first_line)
+        .unwrap_or_else(|| "no tool_error reason was recorded".to_string());
+    Some(format!(
+        "::warning title={}::{}",
+        escape_cmd(&format!("ripr review guidance {status}")),
+        escape_cmd_data(&format!(
+            "Review guidance did not complete, so the seam set for this run is not the whole picture: {reason}"
+        ))
+    ))
 }
 
 fn annotation_from_comment(item: &Value) -> Result<String> {
@@ -3049,7 +5454,7 @@ fn annotation_from_comment(item: &Value) -> Result<String> {
         escape_cmd(&path),
         line,
         escape_cmd(&format!("ripr {severity} {kind}")),
-        escape_cmd(&message)
+        escape_cmd_data(&message)
     ))
 }
 
@@ -3627,33 +6032,69 @@ fn run_output(cmd: &str, args: &[String]) -> Result<String> {
     String::from_utf8(stdout_bytes).with_context(|| format!("{cmd} stdout was not UTF-8"))
 }
 
+/// `run_output` with a wall-clock timeout. Both child streams are regular
+/// files for the same reason as there (#12569) — and one more: this loop only
+/// polls `try_wait`, so a piped child that writes more than the pipe buffer
+/// blocks on the write and can never exit. The timeout then becomes the only
+/// way out, which is how `ripr-review-comments` lanes burned tens of minutes
+/// before an external SIGTERM on diffs whose output exceeded the buffer.
 fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Result<String> {
+    let stdout_file =
+        tempfile::NamedTempFile::new().context("failed to create command stdout file")?;
+    let stderr_file =
+        tempfile::NamedTempFile::new().context("failed to create command stderr file")?;
     let mut child = Command::new(cmd)
         .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(stdout_file.reopen().context("failed to reopen command stdout file")?))
+        .stderr(Stdio::from(stderr_file.reopen().context("failed to reopen command stderr file")?))
         .spawn()
         .with_context(|| format!("failed to run {cmd}"))?;
     let started = Instant::now();
-    loop {
-        if child.try_wait().with_context(|| format!("failed to poll {cmd}"))?.is_some() {
-            let output =
-                child.wait_with_output().with_context(|| format!("failed to collect {cmd}"))?;
-            return output_to_string(cmd, output);
+    let status = loop {
+        if let Some(status) = child.try_wait().with_context(|| format!("failed to poll {cmd}"))? {
+            break status;
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();
-            let output =
-                child.wait_with_output().with_context(|| format!("failed to collect {cmd}"))?;
+            let _ = child.wait();
             bail!(
                 "{cmd} timed out after {}s\nstdout:\n{}\nstderr:\n{}",
                 timeout.as_secs(),
-                String::from_utf8_lossy(&output.stdout).trim(),
-                String::from_utf8_lossy(&output.stderr).trim()
+                String::from_utf8_lossy(&read_output_excerpt(&stdout_file)?).trim(),
+                String::from_utf8_lossy(&read_output_excerpt(&stderr_file)?).trim()
             );
         }
         std::thread::sleep(Duration::from_millis(200));
+    };
+    let mut stdout_bytes = Vec::new();
+    stdout_file
+        .reopen()
+        .with_context(|| format!("failed to reopen {cmd} stdout file"))?
+        .read_to_end(&mut stdout_bytes)
+        .with_context(|| format!("failed to read {cmd} stdout file"))?;
+    if !status.success() {
+        bail!(
+            "{cmd} failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            status,
+            String::from_utf8_lossy(&stdout_bytes).trim(),
+            String::from_utf8_lossy(&read_output_excerpt(&stderr_file)?).trim()
+        );
     }
+    String::from_utf8(stdout_bytes).with_context(|| format!("{cmd} stdout was not UTF-8"))
+}
+
+/// Reads the first `MAX_RIPR_STDERR_BYTES` of a captured stream file for a
+/// diagnostic message. The full payload stays on disk in the tempfile; error
+/// text only needs an excerpt, and a runaway child may have written far more
+/// than a message should carry.
+fn read_output_excerpt(file: &tempfile::NamedTempFile) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.reopen()
+        .context("failed to reopen captured output file")?
+        .take(MAX_RIPR_STDERR_BYTES as u64)
+        .read_to_end(&mut bytes)
+        .context("failed to read captured output file")?;
+    Ok(bytes)
 }
 
 fn output_to_string(cmd: &str, output: std::process::Output) -> Result<String> {
@@ -3668,6 +6109,27 @@ fn output_to_string(cmd: &str, output: std::process::Output) -> Result<String> {
     String::from_utf8(output.stdout).with_context(|| format!("{cmd} stdout was not UTF-8"))
 }
 
+/// The `--root` value every `ripr` invocation receives: a **repo-relative**
+/// path spelled with `/` separators (`.` for the repository root itself).
+///
+/// The spelling is load-bearing, not cosmetic. ripr 0.10.0 loses test→seam
+/// association when the root is absolute: probes it would classify `exposed`
+/// under a relative root report `related_tests_total: 0` and collapse into the
+/// merge-blocking `no_static_path` bucket (#15487, reproduced on PR #15747 —
+/// same diff, absolute root `no_static_path: 53`, relative root
+/// `no_static_path: 0, exposed: 52, weakly_exposed: 1`; same defect measured on
+/// #14635). It also regressed against 0.9.0, which associated tests through an
+/// absolute root. The repository's captured 0.10 fixtures
+/// (`xtask/tests/fixtures/ripr-0.10/README.md`) pin the supported contract:
+/// `root` is `.` and probe paths are repository-relative. Passing the
+/// canonicalized absolute path — what this function did before #15487 — made
+/// every production invocation deviate from that contract while CI worked in a
+/// container whose repo path (`/workspace`) happened to differ from every
+/// fixture capture.
+///
+/// Validation is unchanged and stays fail-closed: the root must resolve inside
+/// the canonicalized repository, and relative parent escapes are rejected
+/// before any relative spelling is produced.
 fn command_root_arg(repo: &Path, root: &str) -> Result<String> {
     let repo = repo
         .canonicalize()
@@ -3685,7 +6147,21 @@ fn command_root_arg(repo: &Path, root: &str) -> Result<String> {
             repo.display()
         );
     }
-    Ok(canonical.display().to_string())
+    let Ok(relative) = canonical.strip_prefix(&repo) else {
+        bail!(
+            "RIPR root {} is inside repository root {} but has no relative spelling",
+            canonical.display(),
+            repo.display()
+        );
+    };
+    if relative.as_os_str().is_empty() {
+        return Ok(".".to_string());
+    }
+    Ok(relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
 }
 
 fn write_text(path: &Path, text: &str) -> Result<()> {
@@ -3838,6 +6314,17 @@ fn escape_cmd(value: &str) -> String {
         .replace(':', "%3A")
 }
 
+/// Escape the *data* half of a workflow command — the text after `::`.
+///
+/// The runner unescapes only `%25`, `%0D` and `%0A` there; `%3A` and `%2C` are
+/// unescaped for `key=value` *properties* only. Running message text through
+/// [`escape_cmd`] therefore renders literal `%3A`/`%2C` in the annotation, which
+/// defeats the point of a message a human is meant to read. Use this for message
+/// bodies and keep [`escape_cmd`] for property values such as `title=`.
+fn escape_cmd_data(value: &str) -> String {
+    value.replace('%', "%25").replace('\r', "%0D").replace('\n', "%0A")
+}
+
 fn bullet_list(values: &[String]) -> String {
     values.iter().map(|value| format!("- {value}")).collect::<Vec<_>>().join("\n")
 }
@@ -3868,6 +6355,17 @@ mod tests {
 
     fn parse_check(raw: &str) -> Result<Value> {
         serde_json::from_str(raw).context("captured ripr output must be valid JSON")
+    }
+
+    fn stream_findings(raw: &str) -> Result<(RiprCheckPayload, Vec<Value>)> {
+        let mut findings = Vec::new();
+        let payload = stream_ripr_check_payload_with_events(raw.as_bytes(), &mut |event| {
+            if let StreamFindingsEvent::Finding(finding) = event {
+                findings.push(finding.clone());
+            }
+        })
+        .context("captured ripr output must be valid JSON")?;
+        Ok((payload, findings))
     }
 
     fn counts_for(check: &Value) -> RiprPrSummaryCounts {
@@ -3905,6 +6403,154 @@ mod tests {
             (counts.no_static_path) == (0),
             "proof predicate failed: {}",
             stringify!((counts.no_static_path) == (0))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn projected_findings_preserve_consumed_fields_and_gate_counts() -> Result<()> {
+        let raw = r#"{
+          "summary": {"weakly_exposed": 1, "reachable_unrevealed": 0, "no_static_path": 0},
+          "findings": [
+            {
+              "classification": "no_static_path",
+              "classification": "weakly_exposed",
+              "probe": {"file": "crates/example/src/lib.rs", "line": 7},
+              "seam": {"file": "crates/example/src/lib.rs", "line": 7, "family": "navigation"},
+              "location": {"line": 7, "column": 3},
+              "placement": {"kind": "body", "expression": "return $value"},
+              "evidence_record": {"id": "evidence-7", "family": "coverage"},
+              "ripr": {"reach": {"summary": "No static path found"}},
+              "activation": "discard this large diagnostic field",
+              "observed_values": ["discard", "these"],
+              "assertion_texts": {"discard": true},
+              "unknown_semantic_field": {"keep": "last value", "nested": {"activation": "retain"}}
+            },
+            "scalar-finding",
+            null
+          ]
+        }"#;
+        let (payload, findings) = stream_findings(raw)?;
+        let summary = payload.summary.as_ref().and_then(Value::as_object);
+        validate_check_summary_counts(summary)?;
+        validate_check_findings_array(payload.findings_is_array)?;
+        color_eyre::eyre::ensure!(findings.len() == 3, "scalar and null findings must survive");
+        let first = findings.get(0).context("first streamed finding")?;
+        let second = findings.get(1).context("second streamed finding")?;
+        let third = findings.get(2).context("third streamed finding")?;
+        color_eyre::eyre::ensure!(second == &json!("scalar-finding"));
+        color_eyre::eyre::ensure!(third.is_null());
+        color_eyre::eyre::ensure!(first.get("activation").is_none());
+        color_eyre::eyre::ensure!(first.get("observed_values").is_none());
+        color_eyre::eyre::ensure!(first.get("assertion_texts").is_none());
+        color_eyre::eyre::ensure!(
+            first.get("classification").and_then(Value::as_str) == Some("weakly_exposed")
+        );
+        color_eyre::eyre::ensure!(
+            first.pointer("/unknown_semantic_field/keep").and_then(Value::as_str)
+                == Some("last value")
+        );
+        color_eyre::eyre::ensure!(
+            first.pointer("/unknown_semantic_field/nested/activation").and_then(Value::as_str)
+                == Some("retain")
+        );
+        let mut expected = parse_check(raw)?;
+        let expected_findings = expected
+            .get_mut("findings")
+            .and_then(Value::as_array_mut)
+            .context("unprojected findings array")?;
+        for finding in expected_findings.iter_mut() {
+            if let Some(object) = finding.as_object_mut() {
+                for field in LARGE_FINDING_FIELDS {
+                    object.remove(*field);
+                }
+            }
+        }
+        color_eyre::eyre::ensure!(
+            findings == *expected_findings,
+            "streamed findings must preserve every non-diagnostic field"
+        );
+
+        let temp = tempfile::tempdir()?;
+        let raw_path = temp.path().join("raw-check.json");
+        fs::write(&raw_path, raw)?;
+        let streamed =
+            ripr_check_ingestion_from_file(&raw_path, &no_suppressions(), None, None, None)?;
+        color_eyre::eyre::ensure!(
+            (
+                streamed.summary_counts.weakly_exposed,
+                streamed.summary_counts.reachable_unrevealed,
+                streamed.summary_counts.no_static_path
+            ) == (1, 0, 0),
+            "streamed gate counts must remain (1, 0, 0)"
+        );
+
+        let real_dom = parse_check(REAL_010_CHECK)?;
+        let real_temp = tempfile::tempdir()?;
+        let real_path = real_temp.path().join("raw-check.json");
+        fs::write(&real_path, REAL_010_CHECK)?;
+        let real_streamed =
+            ripr_check_ingestion_from_file(&real_path, &no_suppressions(), None, None, None)?;
+        let real_dom_counts = counts_for(&real_dom);
+        color_eyre::eyre::ensure!(
+            (
+                real_streamed.summary_counts.weakly_exposed,
+                real_streamed.summary_counts.reachable_unrevealed,
+                real_streamed.summary_counts.no_static_path
+            ) == (
+                real_dom_counts.weakly_exposed,
+                real_dom_counts.reachable_unrevealed,
+                real_dom_counts.no_static_path
+            ),
+            "streamed ingestion must preserve every real fixture gate count"
+        );
+        let suppression = rules_for(&["crates/example/**"])?;
+        let suppressed_streamed =
+            ripr_check_ingestion_from_file(&raw_path, &suppression, None, None, None)?;
+        color_eyre::eyre::ensure!(
+            suppressed_streamed.summary_counts.weakly_exposed
+                == counts_with(&parse_check(raw)?, &suppression).weakly_exposed,
+            "streaming must preserve suppression-derived counts"
+        );
+
+        let duplicate_keys = r#"{
+          "summary": "earlier malformed summary",
+          "summary": {"weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 0},
+          "findings": "earlier non-array findings",
+          "findings": []
+        }"#;
+        let duplicate_path = temp.path().join("duplicate.json");
+        fs::write(&duplicate_path, duplicate_keys)?;
+        let duplicate =
+            ripr_check_ingestion_from_file(&duplicate_path, &no_suppressions(), None, None, None)?;
+        color_eyre::eyre::ensure!(
+            duplicate.check_summary_present,
+            "last duplicate summary must remain the accepted summary"
+        );
+        color_eyre::eyre::ensure!(
+            (
+                duplicate.summary_counts.weakly_exposed,
+                duplicate.summary_counts.reachable_unrevealed,
+                duplicate.summary_counts.no_static_path
+            ) == (0, 0, 0),
+            "last duplicate findings value must remain the accepted empty array"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_payload_inside_projected_field_is_refused() -> Result<()> {
+        let malformed = r#"{
+          "summary": {"weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 0},
+          "findings": [{"activation": "unterminated}]
+        }"#;
+        let temp = tempfile::tempdir()?;
+        let raw_path = temp.path().join("raw-check.json");
+        fs::write(&raw_path, malformed)?;
+        color_eyre::eyre::ensure!(
+            ripr_check_ingestion_from_file(&raw_path, &no_suppressions(), None, None, None)
+                .is_err(),
+            "malformed ignored field payload must still fail JSON parsing"
         );
         Ok(())
     }
@@ -4047,6 +6693,162 @@ mod tests {
             "proof predicate failed: {}",
             stringify!((counts_for(&check).weakly_exposed) == (0))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn streamed_envelope_validation_matches_the_dom_oracle() -> Result<()> {
+        let real = parse_check(REAL_010_CHECK)?;
+        let mut cases = vec![("complete envelope", real.clone(), None)];
+        for key in REQUIRED_CHECK_SUMMARY_COUNTS {
+            let mut check = real.clone();
+            check
+                .get_mut("summary")
+                .and_then(Value::as_object_mut)
+                .context("fixture has a summary object")?
+                .remove(key);
+            cases.push((key, check, Some(key)));
+        }
+        for malformed in [json!("3"), json!(-1), json!(1.5), json!(null), json!({})] {
+            let mut check = real.clone();
+            check
+                .get_mut("summary")
+                .and_then(Value::as_object_mut)
+                .context("fixture has a summary object")?
+                .insert("weakly_exposed".to_string(), malformed);
+            cases.push(("weakly_exposed", check, Some("weakly_exposed")));
+        }
+        let mut missing_findings = real.clone();
+        missing_findings.as_object_mut().context("fixture is an object")?.remove("findings");
+        cases.push(("findings missing", missing_findings, Some("findings")));
+
+        let mut object_findings = real.clone();
+        object_findings
+            .as_object_mut()
+            .context("fixture is an object")?
+            .insert("findings".to_string(), json!({}));
+        cases.push(("findings object", object_findings, Some("findings")));
+
+        let mut empty_findings = real.clone();
+        let summary = empty_findings
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+            .context("fixture has a summary object")?;
+        for key in REQUIRED_CHECK_SUMMARY_COUNTS {
+            summary.insert(key.to_string(), json!(0));
+        }
+        empty_findings
+            .as_object_mut()
+            .context("fixture is an object")?
+            .insert("findings".to_string(), json!([]));
+        cases.push(("explicitly clean envelope", empty_findings, None));
+
+        for (label, dom, field) in cases {
+            let temp = tempfile::tempdir()?;
+            let raw_path = temp.path().join("raw-check.json");
+            fs::write(&raw_path, serde_json::to_vec(&dom)?)?;
+            let streamed =
+                ripr_check_ingestion_from_file(&raw_path, &no_suppressions(), None, None, None);
+            let dom_refusal = validate_check_envelope(&dom).err();
+            color_eyre::eyre::ensure!(
+                streamed.is_err() == dom_refusal.is_some(),
+                "{label}: streamed and DOM refusal decisions differ"
+            );
+            if let Some(field) = field {
+                let streamed_refusal =
+                    streamed.as_ref().err().map(ToString::to_string).ok_or_else(|| {
+                        eyre!("{label}: streamed ingestion unexpectedly succeeded")
+                    })?;
+                color_eyre::eyre::ensure!(
+                    streamed_refusal.contains(field),
+                    "{label}: streamed refusal must name `{field}`, got: {streamed_refusal}"
+                );
+                color_eyre::eyre::ensure!(
+                    dom_refusal.as_ref().is_some_and(|refusal| refusal.to_string().contains(field)),
+                    "{label}: DOM refusal must name `{field}`"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Both paths share `RiprFindingBuckets::absorb`, so this proves streaming
+    /// traversal/aggregation parity on real producer output rather than independent bucket-classification logic.
+    #[test]
+    fn streamed_ingestion_counts_match_the_dom_oracle_on_captured_producer_output() -> Result<()> {
+        for raw in [REAL_010_CHECK, REAL_009_CHECK] {
+            let dom = parse_check(raw)?;
+            let temp = tempfile::tempdir()?;
+            let raw_path = temp.path().join("raw-check.json");
+            fs::write(&raw_path, raw)?;
+            let streamed =
+                ripr_check_ingestion_from_file(&raw_path, &no_suppressions(), None, None, None)?;
+            let expected = ripr_pr_summary_counts(
+                &dom,
+                dom.get("summary").and_then(Value::as_object),
+                &RiprSuppressionRules::default(),
+                None,
+                None,
+                None,
+            );
+            let expected_check_summary_present =
+                dom.get("summary").and_then(Value::as_object).is_some();
+            let actual_check_summary_present = streamed.check_summary_present;
+            let actual = streamed.summary_counts;
+            for (field, actual, expected) in [
+                ("weakly_exposed", actual.weakly_exposed, expected.weakly_exposed),
+                (
+                    "reachable_unrevealed",
+                    actual.reachable_unrevealed,
+                    expected.reachable_unrevealed,
+                ),
+                ("no_static_path", actual.no_static_path, expected.no_static_path),
+                (
+                    "suppressed_by_policy",
+                    actual.suppressed_by_policy,
+                    expected.suppressed_by_policy,
+                ),
+                (
+                    "suppressed_unclassified",
+                    actual.suppressed_unclassified,
+                    expected.suppressed_unclassified,
+                ),
+                (
+                    "outside_head_revision",
+                    actual.outside_head_revision,
+                    expected.outside_head_revision,
+                ),
+                (
+                    "outside_head_unclassified",
+                    actual.outside_head_unclassified,
+                    expected.outside_head_unclassified,
+                ),
+                (
+                    "out_of_dependency_graph",
+                    actual.out_of_dependency_graph,
+                    expected.out_of_dependency_graph,
+                ),
+                (
+                    "non_production_excluded",
+                    actual.non_production_excluded,
+                    expected.non_production_excluded,
+                ),
+                (
+                    "non_production_unclassified",
+                    actual.non_production_unclassified,
+                    expected.non_production_unclassified,
+                ),
+            ] {
+                color_eyre::eyre::ensure!(
+                    actual == expected,
+                    "{field}: streamed count {actual} != DOM count {expected}"
+                );
+            }
+            color_eyre::eyre::ensure!(
+                actual_check_summary_present == expected_check_summary_present,
+                "summary presence must match between streamed and DOM paths"
+            );
+        }
         Ok(())
     }
 
@@ -4375,6 +7177,227 @@ esac
     /// so this passes only while the clear is the first thing `write_pr_evidence`
     /// does. Moving it back behind `write_pr_diff` (where it originally sat)
     /// fails here, because none of those steps ever run.
+    #[test]
+    fn failed_artifact_invalidation_preserves_old_file_for_consumer_guard() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        let old = repo.path().join(PR_EVIDENCE_JSON);
+        fs::create_dir_all(old.parent().ok_or_else(|| eyre!("evidence parent missing"))?)?;
+        fs::write(&old, "old matching packet")?;
+        let handoff = tempfile::tempdir()?;
+        let token = "test/failed-clear".to_owned();
+        fs::write(handoff.path().join(FRESHNESS_MARKER), format!("{token}\n"))?;
+
+        let refusal = invalidate_and_publish_freshness_handoff(
+            repo.path(),
+            Some((handoff.path().to_path_buf(), token.clone())),
+            |path| {
+                if path == old {
+                    Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected refusal"))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+        );
+        let _ = refusal
+            .err()
+            .ok_or_else(|| eyre!("injected invalidation refusal must remain an error"))?;
+        color_eyre::eyre::ensure!(
+            old.exists(),
+            "the deterministic refusal must leave the old readable packet for the consumer test"
+        );
+        color_eyre::eyre::ensure!(
+            validate_freshness_handoff(handoff.path(), &token, repo.path()).is_err(),
+            "a marker from before a failed clear must not authorize consumer validation"
+        );
+
+        let standalone = tempfile::tempdir()?;
+        let ancillary = standalone.path().join(REVIEW_COMMENTS_JSON);
+        fs::create_dir_all(ancillary.parent().ok_or_else(|| eyre!("review parent missing"))?)?;
+        fs::write(&ancillary, "standalone artifact")?;
+        clear_stale_pr_artifacts_with(standalone.path(), |path| fs::remove_file(path), false)?;
+        color_eyre::eyre::ensure!(
+            ancillary.exists(),
+            "standalone ripr-pr must not claim ownership of ancillary workflow artifacts"
+        );
+
+        let current = tempfile::tempdir()?;
+        let current_packet = current.path().join(PR_EVIDENCE_JSON);
+        let current_ancillary = current.path().join(REVIEW_COMMENTS_JSON);
+        fs::create_dir_all(
+            current_packet.parent().ok_or_else(|| eyre!("current parent missing"))?,
+        )?;
+        fs::create_dir_all(
+            current_ancillary.parent().ok_or_else(|| eyre!("review parent missing"))?,
+        )?;
+        fs::write(&current_packet, "old packet")?;
+        fs::write(&current_ancillary, "old review")?;
+        let current_handoff = tempfile::tempdir()?;
+        let current_token = "test/successful-clear".to_owned();
+        invalidate_and_publish_freshness_handoff(
+            current.path(),
+            Some((current_handoff.path().to_path_buf(), current_token.clone())),
+            |path| fs::remove_file(path),
+        )?;
+        validate_freshness_handoff(current_handoff.path(), &current_token, current.path())?;
+        color_eyre::eyre::ensure!(
+            validate_freshness_handoff(current_handoff.path(), "test/old-token", current.path())
+                .is_err(),
+            "a marker from an earlier producer invocation must not validate with a new token"
+        );
+        color_eyre::eyre::ensure!(!current_packet.exists() && !current_ancillary.exists());
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn check_pr_evidence_requires_a_published_freshness_handoff_when_requested() -> Result<()> {
+        if let Some(repo) = env::var_os("RIPR_FRESHNESS_TEST_REPO") {
+            let options = evidence_options();
+            let result = check_pr_evidence(Path::new(&repo), &options);
+            let expect_success = env::var_os("RIPR_FRESHNESS_TEST_EXPECT_SUCCESS").is_some();
+            if expect_success {
+                result.context("child consumer check must accept the matching marker")?;
+            } else {
+                let refusal = result
+                    .err()
+                    .ok_or_else(|| eyre!("child consumer check must reject a missing marker"))?;
+                color_eyre::eyre::ensure!(
+                    refusal.to_string().contains("freshness handoff is missing"),
+                    "child refusal must identify the missing marker: {refusal}"
+                );
+            }
+            return Ok(());
+        }
+
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+        let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+        let _ripr = override_ripr_bin(&fake)?;
+        let handoff = tempfile::tempdir()?;
+        let token = "test/check-consumer";
+
+        write_pr_evidence(repo.path(), &options)?;
+        let marker = handoff.path().join(FRESHNESS_MARKER);
+        for expect_success in [false, true] {
+            if expect_success {
+                fs::write(&marker, format!("{token}\n"))?;
+            }
+            let mut child = Command::new(env::current_exe()?);
+            child
+                .args([
+                    "--nocapture",
+                    "--exact",
+                    "tasks::ripr_evidence::tests::check_pr_evidence_requires_a_published_freshness_handoff_when_requested",
+                ])
+                .current_dir(repo.path())
+                .env("RIPR_FRESHNESS_TEST_REPO", repo.path())
+                .env("RIPR_FRESHNESS_HANDOFF", handoff.path())
+                .env("RIPR_FRESHNESS_TOKEN", token);
+            if expect_success {
+                child.env("RIPR_FRESHNESS_TEST_EXPECT_SUCCESS", "1");
+            } else {
+                child.env_remove("RIPR_FRESHNESS_TEST_EXPECT_SUCCESS");
+            }
+            let output = child.output().context("running child consumer check")?;
+            color_eyre::eyre::ensure!(
+                output.status.success(),
+                "child consumer check failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            color_eyre::eyre::ensure!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "child consumer check did not execute its test: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn marker_removal_uses_the_owned_file_removal_operation() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        let handoff = tempfile::tempdir()?;
+        let marker = handoff.path().join(FRESHNESS_MARKER);
+        let old_token = "test/old-marker";
+        let token = "test/new-marker";
+        fs::write(&marker, format!("{old_token}\n"))?;
+
+        let refusal = invalidate_and_publish_freshness_handoff(
+            repo.path(),
+            Some((handoff.path().to_path_buf(), token.to_owned())),
+            |path| {
+                if path == marker {
+                    Err(io::Error::new(io::ErrorKind::PermissionDenied, "marker refusal"))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+        )
+        .err()
+        .ok_or_else(|| eyre!("marker removal refusal must abort invalidation"))?;
+        color_eyre::eyre::ensure!(
+            format!("{refusal:#}").contains("marker refusal"),
+            "marker removal refusal must retain its cause: {refusal}"
+        );
+        color_eyre::eyre::ensure!(
+            marker.exists(),
+            "failed marker removal must preserve the marker"
+        );
+        color_eyre::eyre::ensure!(
+            fs::read_to_string(&marker)?.trim_end() == old_token,
+            "failed marker removal must preserve the old marker token"
+        );
+        color_eyre::eyre::ensure!(
+            validate_freshness_handoff(handoff.path(), token, repo.path()).is_err(),
+            "a refused marker must not authorize a different producer invocation"
+        );
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn healthy_packet_survives_refused_invalidation_but_handoff_check_rejects() -> Result<()> {
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+        let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+        let _guard = override_ripr_bin(&fake)?;
+
+        write_pr_evidence(repo.path(), &options)?;
+        check_pr_evidence(repo.path(), &options)
+            .context("healthy same-revision packet must check successfully")?;
+        let old = repo.path().join(PR_EVIDENCE_JSON);
+        color_eyre::eyre::ensure!(old.is_file(), "healthy packet must remain readable");
+
+        let handoff = tempfile::tempdir()?;
+        let token = "test/refused-after-healthy".to_owned();
+        fs::write(handoff.path().join(FRESHNESS_MARKER), format!("{token}\n"))?;
+        let refusal = invalidate_and_publish_freshness_handoff(
+            repo.path(),
+            Some((handoff.path().to_path_buf(), token.clone())),
+            |path| {
+                if path == old {
+                    Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected refusal"))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+        );
+        let _ = refusal.err().ok_or_else(|| eyre!("invalidation refusal must remain an error"))?;
+        color_eyre::eyre::ensure!(
+            old.is_file(),
+            "refused invalidation must leave old packet readable"
+        );
+        check_pr_evidence(repo.path(), &options)
+            .context("standalone check should still validate the readable old packet")?;
+        color_eyre::eyre::ensure!(
+            validate_freshness_handoff(handoff.path(), &token, repo.path()).is_err(),
+            "handoff-aware consumer admission must reject the refused invalidation"
+        );
+        Ok(())
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn an_early_failure_also_invalidates_the_previous_packet() -> Result<()> {
@@ -4585,14 +7608,605 @@ esac
     }
 
     #[test]
+    fn inline_cfg_test_ranges_exclude_only_strict_module_interior() -> Result<()> {
+        let source = r##"// #[cfg(test)]
+pub const LOOKALIKE: &str = "#[cfg(test)]";
+#[cfg(test)]
+mod tests {
+    fn helper() {}
+    const TEXT: &str = "#[cfg(test)]";
+}
+fn product_with_local_test_module() {
+    #[cfg(test)]
+    mod local_tests {
+        fn helper() {}
+    }
+    let production = 1;
+}
+#[cfg(any(test, feature = "extra"))]
+mod maybe_tests {
+    fn product_when_featured() {}
+}
+"##;
+        let ranges = inline_cfg_test_ranges(source);
+        let mut surface = ProductionSurface::from_parts("/ws", &["src/lib.rs"]);
+        surface.inline_test_ranges.insert("src/lib.rs".to_string(), ranges);
+
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(4))
+            != Some(NonProductionKind::InlineTest)
+        {
+            return Err(eyre!("inline cfg(test) helper was not excluded"));
+        }
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(5))
+            != Some(NonProductionKind::InlineTest)
+        {
+            return Err(eyre!("inline cfg(test) module interior was not excluded"));
+        }
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(11))
+            != Some(NonProductionKind::InlineTest)
+        {
+            return Err(eyre!("block-local inline cfg(test) helper was not excluded"));
+        }
+        for line in [1, 2, 7, 9, 12, 13, 16, 17, 18] {
+            if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(line)).is_some() {
+                return Err(eyre!("line {line} was incorrectly classified as test-only"));
+            }
+        }
+        if !inline_cfg_test_ranges("#[cfg(test)] mod broken {").is_empty() {
+            return Err(eyre!("malformed source was classified as test-only"));
+        }
+
+        let check = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 2, "no_static_path": 0 },
+            "findings": [
+                { "classification": "reachable_unrevealed", "seam": { "file": "src/lib.rs", "line": 2 } },
+                { "classification": "reachable_unrevealed", "seam": { "file": "src/lib.rs", "line": 4 } }
+            ]
+        });
+        let counts = ripr_pr_summary_counts(
+            &check,
+            check.get("summary").and_then(Value::as_object),
+            &no_suppressions(),
+            None,
+            None,
+            Some(&surface),
+        );
+        if counts.reachable_unrevealed != 1 || counts.non_production_excluded != 1 {
+            return Err(eyre!(
+                "inline test filtering changed product counts: reachable={}, excluded={}",
+                counts.reachable_unrevealed,
+                counts.non_production_excluded
+            ));
+        }
+        Ok(())
+    }
+
+    /// #16077: the collector marks a line only when the item occupying it
+    /// carries no executable code. The rejected kinds are the point of the
+    /// test — a filter that swallowed a function body or a computed
+    /// initializer would drop findings the gate must keep.
+    #[test]
+    fn declaration_seam_lines_keeps_lines_shared_with_executable_code() -> Result<()> {
+        // Marking is per line and findings are matched by `(file, line)` alone,
+        // so a declaration sharing a physical line with executable code would
+        // otherwise subtract that code's finding from the blocking basis of a
+        // required gate — a false clean result (#16077 review).
+        let source = r##"pub const FLAG: bool = true; pub fn run() -> bool { compute() }
+pub const ALONE: bool = false;
+const fn compute() -> bool { true }
+pub struct Pair; impl Pair { fn go(&self) -> bool { compute() } }
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Line 1 carries a literal `const` AND a function body; line 4 carries
+        // a unit struct AND an inherent method. Neither may be subtracted.
+        for line in [1, 3, 4] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries executable code and must stay in the blocking basis"
+                ));
+            }
+        }
+        // A declaration with the line to itself is still a seam, so the filter
+        // has not simply been switched off.
+        if !marked.contains(&2) {
+            return Err(eyre!("line 2 is a declaration seam and must still be marked"));
+        }
+        Ok(())
+    }
+
+    /// #16077 review: an item kind the collector does not screen must occupy
+    /// its lines. Before this, `DeclarationSeamCollector` enumerated the
+    /// executable kinds it knew about, so anything it had not enumerated —
+    /// starting with `Item::Macro` — added nothing to `executable` and let a
+    /// declaration on the same physical line subtract the unscreened item's
+    /// finding from a required gate.
+    /// #16077 review: a procedural attribute is a `syn::Attribute`, not a
+    /// `syn::Macro`, so `visit_macro` does not reach it. Only attributes the
+    /// language defines are accepted as inert; anything a crate defines may
+    /// expand to code and keeps its item blocking.
+    #[test]
+    fn declaration_seam_lines_keeps_declarations_carrying_attribute_macros() -> Result<()> {
+        let source = r##"pub const PLAIN: bool = true;
+/// Inert: a doc comment is an attribute the language defines.
+#[allow(dead_code)]
+pub const DOCUMENTED: bool = true;
+#[generate_runtime_path]
+pub struct Generated;
+#[serde(rename = "other")]
+pub struct Helper;
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Built-in attributes leave the declaration a seam, including the
+        // lines the attributes themselves occupy.
+        for line in [1, 2, 3, 4] {
+            if !marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries only built-in attributes and must stay a seam"
+                ));
+            }
+        }
+        // An attribute macro and a derive helper are both crate-defined, so
+        // neither the attribute line nor the item line may be subtracted.
+        for line in [5, 6, 7, 8] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries a crate-defined attribute and must stay in the blocking basis"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// #16077 review: a macro is opaque tokens, not a `syn::Expr`. In type,
+    /// pattern or expression position its expansion can carry a call the probe
+    /// cannot read, so a declaration containing one must not be screened as
+    /// carrying no call.
+    #[test]
+    fn declaration_seam_lines_keeps_declarations_carrying_opaque_macros() -> Result<()> {
+        let source = r##"pub struct Holder { field: ty!() }
+pub const ALONE: bool = false;
+pub const FROM_MACRO: usize = size_of_thing!();
+pub type Alias = wrapper!(u8);
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Each of these is a screened item kind whose only non-literal content
+        // is a macro. `visit_expr` alone sees nothing in the type-position and
+        // alias cases, which is the reachable half of this.
+        for line in [1, 3, 4] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries a macro the probe cannot read and must stay in the blocking basis"
+                ));
+            }
+        }
+        if !marked.contains(&2) {
+            return Err(eyre!("line 2 is a literal declaration and must still be marked"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_keeps_lines_shared_with_unscreened_items() -> Result<()> {
+        let source = r##"use std::arch::global_asm; global_asm!("nop");
+pub const ALONE: bool = false;
+extern "C" { fn imported(); } pub const WITH_EXTERN: bool = true;
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Line 1 carries a `use` AND an item-position macro; line 3 carries a
+        // literal `const` AND an `extern` block. The macro can expand to
+        // anything and the `extern` block declares a callable, so neither line
+        // may be subtracted on the strength of the declaration beside it.
+        for line in [1, 3] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} shares a line with an unscreened item and must stay in the blocking basis"
+                ));
+            }
+        }
+        // The filter is still on: a literal const alone on its line is a seam.
+        if !marked.contains(&2) {
+            return Err(eyre!("line 2 is a declaration seam and must still be marked"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_marks_only_non_executable_items() -> Result<()> {
+        let source = r##"use std::fmt::Debug;
+pub(crate) mod root_input;
+pub const SERVER_SUPPORT: bool = true;
+pub static BUILD_TAG: &str = "release";
+pub const DERIVED: bool = compute();
+pub(crate) enum InitialRootInput {
+    ExplicitWorkspaceFolders,
+    NoWorkspaceRoot,
+}
+pub(crate) use crate::protocol::capabilities::{
+    SERVER_SUPPORT,
+};
+const fn compute() -> bool {
+    true
+}
+pub trait Surface {
+    fn describe(&self) -> bool {
+        true
+    }
+}
+pub mod nested {
+    pub const INNER: u8 = 3;
+    pub fn run() -> u8 {
+        INNER
+    }
+}
+pub enum Computed {
+    First = 1,
+    Second = compute() as isize,
+}
+pub struct Plain {
+    pub items: Vec<u8>,
+}
+pub type Derived = [u8; 8];
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // `use`, bodiless `mod`, literal `const`/`static`, `enum`, multi-line
+        // `use`, and a literal `const` nested in a module with a body.
+        for line in [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 22] {
+            if !marked.contains(&line) {
+                return Err(eyre!("line {line} is a declaration seam but was not marked"));
+            }
+        }
+        // A computed const initializer, a `const fn` body, a trait default
+        // method, a module header with a body, and a function body.
+        for line in [5, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25] {
+            if marked.contains(&line) {
+                return Err(eyre!("line {line} carries executable code but was marked"));
+            }
+        }
+        // A `const fn` call is legal in an enum discriminant, so "an enum has no
+        // method bodies" does not mean "no line of this enum carries a call".
+        // The whole item stays blocking, discriminant line included.
+        for line in [27, 28, 29, 30] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} belongs to an enum with a computed discriminant but was marked"
+                ));
+            }
+        }
+        // Literal-only declarations on the same footing still mark, so the
+        // screen is not simply rejecting every type declaration.
+        for line in [31, 32, 33, 34] {
+            if !marked.contains(&line) {
+                return Err(eyre!("line {line} is a literal-only declaration but was not marked"));
+            }
+        }
+        if !declaration_seam_lines("pub const BROKEN: bool = ;").is_empty() {
+            return Err(eyre!("unparseable source produced declaration seams"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_keeps_declarations_whose_attribute_is_wrapped_in_cfg_attr()
+    -> Result<()> {
+        // `cfg_attr` keeps its payload as opaque `Meta::List` tokens, so a
+        // procedural attribute nested inside one reaches neither `visit_attribute`
+        // nor `visit_macro`. Reading the wrapper's name alone called it inert.
+        let source = concat!(
+            "pub const PLAIN: bool = true;\n",
+            "#[cfg_attr(all(), generate_runtime_path)]\n",
+            "pub struct Wrapped;\n",
+        );
+        let marked = declaration_seam_lines(source);
+        if !marked.contains(&1) {
+            bail!("line 1 carries no attribute at all and must stay marked: {marked:?}");
+        }
+        for line in [2, 3] {
+            if marked.contains(&line) {
+                bail!(
+                    "line {line} is covered by a cfg_attr payload the probe cannot read \
+                     and must stay in the blocking basis: {marked:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_probes_attributes_on_directly_marked_items() -> Result<()> {
+        // `use`, `extern crate` and `mod name;` hold no expression, so they were
+        // marked without probing — which skipped the attribute probe entirely,
+        // although an attribute macro on any of them may append functions.
+        let source = concat!(
+            "use std::fmt;\n",
+            "#[generate_runtime_path]\n",
+            "use std::io;\n",
+            "#[generate_runtime_path]\n",
+            "extern crate alloc;\n",
+            "#[generate_runtime_path]\n",
+            "mod generated;\n",
+        );
+        let marked = declaration_seam_lines(source);
+        if !marked.contains(&1) {
+            bail!("a plain `use` carries nothing and must stay marked: {marked:?}");
+        }
+        for line in [2, 3, 4, 5, 6, 7] {
+            if marked.contains(&line) {
+                bail!(
+                    "line {line} carries a crate-defined attribute on a directly marked \
+                     item and must stay in the blocking basis: {marked:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_probes_attributes_on_inline_modules() -> Result<()> {
+        // Only the bodiless branch of the module visitor probed attributes; a
+        // module with a body recursed straight past its own. A child
+        // declaration then marked the line by itself, so an attribute macro on
+        // the module cleared a line it may well put code on.
+        let source = concat!(
+            "mod plain { struct A; }\n",
+            "#[generate_runtime_path] mod wrapped { struct B; }\n",
+            "#[generate_runtime_path]\n",
+            "mod split {\n",
+            "    struct C;\n",
+            "}\n",
+        );
+        let marked = declaration_seam_lines(source);
+        if !marked.contains(&1) {
+            bail!("a plain inline module carries nothing and must stay marked: {marked:?}");
+        }
+        if marked.contains(&2) {
+            bail!(
+                "line 2 shares a line with an unreadable attribute on an inline \
+                 module and must stay in the blocking basis: {marked:?}"
+            );
+        }
+        // Lines 3 and 4 carry no assertion on purpose: nothing marks a module
+        // header either way, so a claim about them would pass whatever the
+        // visitor does. `split` earns its place on line 5 instead — it is the
+        // multi-line form, so a header span widened to the whole item would
+        // swallow the declaration inside the body and show up there.
+        if !marked.contains(&5) {
+            bail!(
+                "a declaration inside the body is out of the header's reach and \
+                 must stay marked: {marked:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// #16077: the filter removes `no_static_path` and nothing else, and only
+    /// on a declaration line. Every other combination stays in the blocking
+    /// basis, and the exclusion is reported rather than silent.
+    #[test]
+    fn declaration_seam_filter_drops_only_no_static_path_findings() -> Result<()> {
+        let source = r##"pub const SERVER_SUPPORT: bool = true;
+pub const DERIVED: bool = compute();
+const fn compute() -> bool {
+    true
+}
+"##;
+        let mut surface = ProductionSurface::from_parts("/ws", &["src/lib.rs"]);
+        surface
+            .declaration_seam_lines
+            .insert("src/lib.rs".to_string(), declaration_seam_lines(source));
+
+        let check = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 3 },
+            "findings": [
+                // Declaration line: the one finding this filter exists for.
+                { "classification": "no_static_path", "seam": { "file": "src/lib.rs", "line": 1 } },
+                // Same line, different classification — never filtered.
+                { "classification": "reachable_unrevealed", "seam": { "file": "src/lib.rs", "line": 1 } },
+                // Computed initializer: a call the graph can carry.
+                { "classification": "no_static_path", "seam": { "file": "src/lib.rs", "line": 2 } },
+                // Inside a function body.
+                { "classification": "no_static_path", "seam": { "file": "src/lib.rs", "line": 4 } }
+            ]
+        });
+        let counts = ripr_pr_summary_counts(
+            &check,
+            check.get("summary").and_then(Value::as_object),
+            &no_suppressions(),
+            None,
+            None,
+            Some(&surface),
+        );
+        if counts.no_static_path != 2 {
+            return Err(eyre!(
+                "expected 2 blocking no_static_path findings, got {}",
+                counts.no_static_path
+            ));
+        }
+        if counts.reachable_unrevealed != 1 {
+            return Err(eyre!(
+                "declaration-seam filtering changed reachable_unrevealed to {}",
+                counts.reachable_unrevealed
+            ));
+        }
+        if counts.declaration_seam_excluded != 1 {
+            return Err(eyre!(
+                "expected 1 reported declaration-seam exclusion, got {}",
+                counts.declaration_seam_excluded
+            ));
+        }
+
+        // No surface means no filtering: every finding stays blocking.
+        let unfiltered = ripr_pr_summary_counts(
+            &check,
+            check.get("summary").and_then(Value::as_object),
+            &no_suppressions(),
+            None,
+            None,
+            None,
+        );
+        if unfiltered.no_static_path != 3 || unfiltered.declaration_seam_excluded != 0 {
+            return Err(eyre!(
+                "absent production surface still filtered: no_static_path={}, excluded={}",
+                unfiltered.no_static_path,
+                unfiltered.declaration_seam_excluded
+            ));
+        }
+        Ok(())
+    }
+
+    /// #16077: the blocking count and the degraded fallback guidance must apply
+    /// the same predicate. `fallback_seam_decision` emits at most
+    /// `FALLBACK_GUIDANCE_LIMIT` entries, so a seam the count no longer blocks
+    /// on would otherwise occupy a slot and could crowd out the executable seam
+    /// that is actually keeping the gate red.
+    #[test]
+    fn fallback_guidance_shares_the_declaration_seam_filter() -> Result<()> {
+        let source = r##"pub const SERVER_SUPPORT: bool = true;
+pub const DERIVED: bool = compute();
+const fn compute() -> bool {
+    true
+}
+"##;
+        let mut surface = ProductionSurface::from_parts("/ws", &["src/lib.rs"]);
+        surface
+            .declaration_seam_lines
+            .insert("src/lib.rs".to_string(), declaration_seam_lines(source));
+
+        let filtered = json!({
+            "classification": "no_static_path",
+            "seam": { "file": "src/lib.rs", "line": 1 }
+        });
+        if !matches!(
+            fallback_seam_decision(&filtered, &no_suppressions(), None, None, Some(&surface)),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance still emitted a filtered declaration seam"));
+        }
+
+        // The executable seam the guidance exists to surface must survive.
+        let executable = json!({
+            "classification": "no_static_path",
+            "seam": { "file": "src/lib.rs", "line": 4 }
+        });
+        if matches!(
+            fallback_seam_decision(&executable, &no_suppressions(), None, None, Some(&surface)),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance dropped a seam inside a function body"));
+        }
+
+        // Same declaration line, different classification: still guidance-worthy.
+        let other_class = json!({
+            "classification": "reachable_unrevealed",
+            "seam": { "file": "src/lib.rs", "line": 1 }
+        });
+        if matches!(
+            fallback_seam_decision(&other_class, &no_suppressions(), None, None, Some(&surface)),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance dropped a non-no_static_path finding"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inline_ranges_use_head_blob_and_filter_fallback_guidance() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        init_git_repo(repo.path())?;
+        fs::create_dir(repo.path().join("src"))?;
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn product() {}\n#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n",
+        )?;
+        run_git(repo.path(), &["add", "src/lib.rs"])?;
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "source",
+            ],
+        )?;
+        let head = run_git(repo.path(), &["rev-parse", "HEAD"])?;
+        // The working tree deliberately diverges from the evaluated commit.
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn product() {}\nmod tests {\n    fn helper() {}\n}\n",
+        )?;
+        let metadata = json!({
+            "workspace_root": repo.path().display().to_string(),
+            "packages": [{
+                "manifest_path": repo.path().join("Cargo.toml").display().to_string(),
+                "targets": [{
+                    "kind": ["lib"],
+                    "src_path": repo.path().join("src/lib.rs").display().to_string()
+                }]
+            }]
+        });
+        let changed = vec!["src/lib.rs".to_string()];
+        let surface = production_surface_from_metadata(repo.path(), &metadata, &changed, &head)?;
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(4))
+            != Some(NonProductionKind::InlineTest)
+        {
+            return Err(eyre!("classifier did not use the immutable head blob"));
+        }
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(1)).is_some() {
+            return Err(eyre!("product line was classified as test-only"));
+        }
+        let finding = json!({
+            "classification": "reachable_unrevealed",
+            "seam": { "file": "src/lib.rs", "line": 4 }
+        });
+        if !matches!(
+            fallback_seam_decision(&finding, &no_suppressions(), None, None, Some(&surface),),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance did not share inline filtering"));
+        }
+        if !surface.inline_test_ranges.contains_key("src/lib.rs") {
+            return Err(eyre!("head source did not populate inline ranges"));
+        }
+        // An unavailable evaluated blob is conservative and leaves the finding counted.
+        let missing =
+            production_surface_from_metadata(repo.path(), &metadata, &changed, "missing")?;
+        if classify_non_production_at_line(Some(&missing), "src/lib.rs", Some(4)).is_some() {
+            return Err(eyre!("missing head blob produced a test-only exclusion"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn command_root_arg_allows_repo_relative_root() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let repo = temp.path();
-        fs::create_dir(repo.join("crates"))?;
+        fs::create_dir_all(repo.join("crates").join("sub"))?;
 
+        // A subdir root returns a `/`-separated repo-relative spelling — the
+        // contract ripr 0.10.0 associates tests under (#15487).
         let root = command_root_arg(repo, "crates")?;
+        assert_eq!(root, "crates");
 
-        assert_eq!(PathBuf::from(root), repo.join("crates").canonicalize()?);
+        let nested = command_root_arg(repo, "crates/sub")?;
+        assert_eq!(nested, "crates/sub");
+
+        // The repository root itself is spelled `.`, matching the captured
+        // fixture contract (`root` is `.` and probe paths are
+        // repository-relative).
+        let repo_root = command_root_arg(repo, ".")?;
+        assert_eq!(repo_root, ".");
+
+        // An absolute root inside the repository resolves to the same relative
+        // spelling instead of leaking a host path into the producer argv.
+        let absolute = command_root_arg(repo, &repo.canonicalize()?.display().to_string())?;
+        assert_eq!(absolute, ".");
         Ok(())
     }
 
@@ -4789,7 +8403,9 @@ esac
             ],
             classification_patterns: vec![Vec::new(), Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let summary = ripr_plus_seam_summary(&seams, &suppressions, 10);
@@ -4826,12 +8442,14 @@ esac
             path_patterns: Vec::new(),
             classification_patterns: Vec::new(),
             invalid_patterns: vec!["archive/[".to_string()],
+            gap_id_sets: Vec::new(),
             suppression_reasons: vec![json!({
                 "id": "ripr-suppress-archive",
                 "kind": "generated_or_non_production_surface",
                 "reason": "Archived source is not active behavior.",
                 "paths": ["archive/**"],
             })],
+            lifecycle: Vec::new(),
         };
         // Badge supplies the canonical counts; seam summary supplies the triage inventory.
         let badge = json!({
@@ -5150,6 +8768,288 @@ reason = "UX receipt tests are proof inputs."
         Ok(())
     }
 
+    fn lifecycle_row(
+        id: &str,
+        owner: &str,
+        created: &str,
+        review_after: &str,
+        expires: &str,
+    ) -> RiprSuppressionLifecycle {
+        RiprSuppressionLifecycle::from_entry(&RiprSuppression {
+            id: id.to_string(),
+            kind: "generated_or_non_production_surface".to_string(),
+            paths: vec!["archive/**".to_string()],
+            classification: Vec::new(),
+            gap_ids: Vec::new(),
+            reason: "documented exception".to_string(),
+            owner: owner.to_string(),
+            created: created.to_string(),
+            review_after: review_after.to_string(),
+            expires: expires.to_string(),
+        })
+    }
+
+    fn audit_on(rows: &[RiprSuppressionLifecycle], today: &str) -> Result<Value> {
+        let today = parse_ledger_date(today)
+            .ok_or_else(|| eyre!("test fixture date `{today}` is not `%Y-%m-%d`"))?;
+        Ok(suppression_lifecycle_audit(rows, today, "policy/ripr-suppressions.toml"))
+    }
+
+    /// The defect this work exists to fix: the four lifecycle fields the ledger
+    /// header demands parsed cleanly and were then discarded, so nothing could
+    /// ever observe an overrun.
+    #[test]
+    fn suppression_lifecycle_fields_survive_deserialization() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(
+            repo.join("policy/ripr-suppressions.toml"),
+            r#"
+schema_version = 1
+policy = "ripr-suppressions"
+
+[[suppress]]
+id = "ripr-suppress-archive"
+kind = "generated_or_non_production_surface"
+paths = ["archive/**"]
+owner = "proof-lane"
+reason = "Archived source is not active workspace behavior."
+created = "2026-05-28"
+review_after = "2026-06-28"
+expires = "2026-09-30"
+"#,
+        )?;
+
+        let rules = read_ripr_suppression_rules(repo, Path::new("policy/ripr-suppressions.toml"))?;
+
+        assert_eq!(rules.lifecycle.len(), 1);
+        let row = &rules.lifecycle[0];
+        assert_eq!(row.owner, "proof-lane");
+        assert_eq!(row.created, "2026-05-28");
+        assert_eq!(row.review_after, "2026-06-28");
+        assert_eq!(row.expires, "2026-09-30");
+        assert!(row.missing.is_empty(), "complete row reported missing {:?}", row.missing);
+        assert!(row.malformed.is_empty());
+        Ok(())
+    }
+
+    /// The receipt carries the committed dates verbatim and reads no clock, so
+    /// `ripr-plus --check` stays byte-stable across a midnight boundary.
+    #[test]
+    fn ripr_plus_lifecycle_rows_hold_no_clock_reading() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(
+            repo.join("policy/ripr-suppressions.toml"),
+            r#"
+schema_version = 1
+policy = "ripr-suppressions"
+
+[[suppress]]
+id = "ripr-suppress-archive"
+kind = "generated_or_non_production_surface"
+paths = ["archive/**"]
+owner = "proof-lane"
+reason = "Archived source is not active workspace behavior."
+created = "2026-05-28"
+review_after = "2026-06-28"
+expires = "2026-09-30"
+"#,
+        )?;
+        let rules = read_ripr_suppression_rules(repo, Path::new("policy/ripr-suppressions.toml"))?;
+        let packet = ripr_plus_receipt_packet(
+            &RiprPlusOptions {
+                root: ".".to_string(),
+                suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
+            },
+            "deadbeef",
+            &rules,
+            &json!({}),
+            ripr_plus_seam_summary(&[], &rules, 10),
+        );
+
+        assert_eq!(
+            packet["suppressions"]["lifecycle"],
+            json!([{
+                "id": "ripr-suppress-archive",
+                "kind": "generated_or_non_production_surface",
+                "owner": "proof-lane",
+                "created": "2026-05-28",
+                "review_after": "2026-06-28",
+                "expires": "2026-09-30",
+                "missing": [],
+                "malformed": [],
+            }])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_audit_reports_overrun_in_days_against_the_supplied_date() -> Result<()> {
+        let rows = vec![
+            lifecycle_row("expired-long", "repo-owner", "2026-05-07", "2026-06-07", "2026-08-07"),
+            lifecycle_row("expired-today", "proof-lane", "2026-05-07", "2026-06-07", "2026-09-19"),
+            lifecycle_row("current", "proof-lane", "2026-05-07", "2026-06-07", "2026-12-31"),
+        ];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["expired_count"], json!(2));
+        assert_eq!(audit["oldest_overrun_days"], json!(44));
+        assert_eq!(audit["current_count"], json!(1));
+        assert_eq!(audit["expired"][0]["id"], json!("expired-long"));
+        assert_eq!(audit["expired"][0]["days_past_expiry"], json!(44));
+        assert_eq!(audit["expired"][1]["days_past_expiry"], json!(1));
+        Ok(())
+    }
+
+    /// An entry expiring exactly today has not yet lapsed; one that expired
+    /// yesterday has. Pins the boundary so the report cannot drift by a day.
+    #[test]
+    fn suppression_audit_treats_the_expiry_date_itself_as_still_current() -> Result<()> {
+        let rows =
+            vec![lifecycle_row("edge", "proof-lane", "2026-01-01", "2026-06-01", "2026-09-20")];
+
+        let on_the_day = audit_on(&rows, "2026-09-20")?;
+        assert_eq!(on_the_day["expired_count"], json!(0));
+        assert_eq!(on_the_day["expiring_soon_count"], json!(1));
+        assert_eq!(on_the_day["expiring_soon"][0]["days_until_expiry"], json!(0));
+
+        let day_after = audit_on(&rows, "2026-09-21")?;
+        assert_eq!(day_after["expired_count"], json!(1));
+        assert_eq!(day_after["expired"][0]["days_past_expiry"], json!(1));
+        Ok(())
+    }
+
+    /// A missing `owner` must not swallow a readable end date. Folding
+    /// completeness and expiry into one bucket would hide exactly the overrun
+    /// this audit exists to surface.
+    #[test]
+    fn suppression_audit_reports_an_incomplete_entry_that_is_also_expired() -> Result<()> {
+        let rows = vec![lifecycle_row("no-owner", "", "2026-05-07", "2026-06-07", "2026-08-07")];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["unenforceable_count"], json!(1));
+        assert_eq!(audit["unenforceable"][0]["missing"], json!(["owner"]));
+        assert_eq!(audit["expired_count"], json!(1), "an incomplete entry still has an end date");
+        assert_eq!(audit["expired"][0]["days_past_expiry"], json!(44));
+        Ok(())
+    }
+
+    /// An entry with no `expires` at all is permanent. It is neither expired
+    /// nor current, and reporting it as current would be the ledger's original
+    /// lie restated.
+    #[test]
+    fn suppression_audit_separates_entries_with_no_expiry_from_current_ones() -> Result<()> {
+        let rows = vec![
+            lifecycle_row("permanent", "proof-lane", "", "", ""),
+            lifecycle_row("malformed", "proof-lane", "2026-05-07", "2026-06-07", "not-a-date"),
+            lifecycle_row("current", "proof-lane", "2026-05-07", "2026-06-07", "2026-12-31"),
+        ];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["no_expiry_count"], json!(2));
+        assert_eq!(audit["current_count"], json!(1));
+        assert_eq!(audit["expired_count"], json!(0));
+        assert_eq!(audit["unenforceable"][1]["malformed"], json!(["expires"]));
+        assert_eq!(
+            audit["review_due_count"],
+            json!(2),
+            "an unreadable `expires` must not also swallow the entry's review date"
+        );
+        Ok(())
+    }
+
+    /// The two dates are independent facts. An entry with no readable `expires`
+    /// can still be long past its own `review_after`, and reporting only the
+    /// missing end date would hide that — the defect a `continue` in the
+    /// expiry branch introduced once already.
+    #[test]
+    fn an_entry_with_no_expiry_still_reports_its_overdue_review_date() -> Result<()> {
+        let rows = vec![
+            lifecycle_row("no-end-date", "proof-lane", "2020-01-01", "2020-01-01", ""),
+            lifecycle_row("unparseable", "proof-lane", "2020-01-01", "2020-01-01", "someday"),
+        ];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["no_expiry_count"], json!(2));
+        assert_eq!(audit["review_due_count"], json!(2));
+        assert_eq!(audit["review_due"][0]["id"], json!("no-end-date"));
+        assert_eq!(audit["review_due"][0]["days_past_review"], json!(2454));
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_audit_reports_review_due_separately_from_expiry() -> Result<()> {
+        let rows =
+            vec![lifecycle_row("due", "proof-lane", "2026-05-07", "2026-09-13", "2026-12-31")];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["expired_count"], json!(0));
+        assert_eq!(audit["review_due_count"], json!(1));
+        assert_eq!(audit["review_due"][0]["days_past_review"], json!(7));
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_audit_markdown_names_the_expired_entry_and_its_age() -> Result<()> {
+        let rows = vec![lifecycle_row(
+            "ripr-suppress-generated-status-docs",
+            "repo-owner",
+            "2026-05-07",
+            "2026-06-07",
+            "2026-08-07",
+        )];
+
+        let markdown = render_suppression_lifecycle_markdown(&audit_on(&rows, "2026-09-20")?);
+
+        assert!(markdown.contains("1 suppression(s) are past their own `expires` date"));
+        assert!(markdown.contains("the oldest by 44 days"));
+        assert!(markdown.contains("ripr-suppress-generated-status-docs"));
+        assert!(markdown.contains("repo-owner"));
+        assert!(
+            markdown.contains("advisory"),
+            "the report must say plainly that it changes no gate verdict"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_audit_markdown_says_so_when_nothing_has_lapsed() -> Result<()> {
+        let rows =
+            vec![lifecycle_row("current", "proof-lane", "2026-05-07", "2026-12-01", "2026-12-31")];
+
+        let markdown = render_suppression_lifecycle_markdown(&audit_on(&rows, "2026-09-20")?);
+
+        assert!(markdown.contains("No suppression is past its own `expires` date."));
+        assert!(!markdown.contains("| days past |"));
+        Ok(())
+    }
+
+    /// The live ledger is the subject of the change. This pins that the real
+    /// file parses under the widened schema and that every entry now yields a
+    /// lifecycle row, without pinning today's overrun count.
+    #[test]
+    fn committed_ledger_yields_one_lifecycle_row_per_entry() -> Result<()> {
+        let repo = repo_root()?;
+        let raw = fs::read_to_string(repo.join("policy/ripr-suppressions.toml"))?;
+        let declared = raw.matches("[[suppress]]").count();
+        let rules = read_ripr_suppression_rules(&repo, Path::new("policy/ripr-suppressions.toml"))?;
+
+        assert_eq!(rules.lifecycle.len(), declared);
+        assert!(
+            rules.lifecycle.iter().any(|row| !row.expires.is_empty()),
+            "the ledger must carry at least one readable expires date"
+        );
+        Ok(())
+    }
+
     #[test]
     fn ripr_plus_suppression_rules_reject_invalid_path_globs() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -5245,6 +9145,94 @@ paths = ["archive/["]
                 "probe": {"file": "xtask/src/tasks/check_tautology/detect.rs"}
             })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn panic_debt_declaration_suppression_matches_no_static_path_only() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let paths = [
+            "xtask/src/no_panic_debt/check.rs",
+            "xtask/src/no_panic_debt/discover.rs",
+            "xtask/src/no_panic_debt/join.rs",
+            "xtask/src/no_panic_debt/model.rs",
+            "xtask/src/no_panic_debt/vocabulary.rs",
+        ];
+
+        for path in paths {
+            assert!(
+                suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "no_static_path", "probe": {"file": path}})
+                ),
+                "no_static_path on {path} must match the #13397 declaration suppression"
+            );
+            assert!(
+                !suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "reachable_unrevealed", "probe": {"file": path}})
+                ),
+                "reachable_unrevealed on {path} must remain visible"
+            );
+        }
+        assert!(!suppression_matches_finding(
+            &rules,
+            &json!({
+                "classification": "no_static_path",
+                "probe": {"file": "xtask/src/utils.rs"}
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn install_surface_route_unit_suppression_matches_no_static_path_only() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let path = "xtask/src/install_surface_route_units.rs";
+
+        assert!(
+            suppression_matches_finding(
+                &rules,
+                &json!({"classification": "no_static_path", "probe": {"file": path}})
+            ),
+            "no_static_path on {path} must match the #10831 declaration suppression"
+        );
+        assert!(
+            suppression_matches_finding(
+                &rules,
+                &json!({"grip_class": "no_static_path", "seam": {"file": path}})
+            ),
+            "ripr 0.9.x grip_class no_static_path on {path} must match"
+        );
+        // The blocking bucket this entry deliberately does not cover: a future
+        // executable seam must still stop the gate.
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({"classification": "reachable_unrevealed", "probe": {"file": path}})
+            ),
+            "reachable_unrevealed on {path} must remain visible"
+        );
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({"classification": "weakly_exposed", "probe": {"file": path}})
+            ),
+            "weakly_exposed on {path} must remain visible"
+        );
+        // The registry vocabulary's other owner is not in scope of this entry.
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({
+                    "classification": "no_static_path",
+                    "probe": {"file": "xtask/src/tasks/install_surface_inventory.rs"}
+                })
+            ),
+            "the inventory task must not inherit this file-scoped suppression"
+        );
         Ok(())
     }
 
@@ -5376,7 +9364,9 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("crates/perl-lsp-ux-tests/tests/**")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -5415,7 +9405,9 @@ paths = ["archive/["]
             ],
             classification_patterns: vec![Vec::new(), Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let finding = json!({
             "classification": "reachable_unrevealed",
@@ -5435,7 +9427,9 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("crates/perl-lsp-ux-tests/tests/**")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let finding = json!({
             "classification": "weakly_exposed",
@@ -5445,6 +9439,152 @@ paths = ["archive/["]
         });
 
         assert!(suppression_matches_finding(&rules, &finding));
+        Ok(())
+    }
+
+    #[test]
+    fn gap_ids_filter_matches_only_listed_finding_identities() -> Result<()> {
+        let listed = "probe:crates_perl-lsp-rs_src_runtime_outbound.rs:field_construction:9673d288";
+        let unlisted =
+            "probe:crates_perl-lsp-rs_src_runtime_outbound.rs:field_construction:deadbeef";
+        let rules = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-lsp-rs/src/runtime/outbound.rs".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-lsp-rs/src/runtime/outbound.rs")?],
+            classification_patterns: vec![vec!["no_static_path".to_string()]],
+            invalid_patterns: Vec::new(),
+            gap_id_sets: vec![vec![listed.to_string()]],
+            suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
+        };
+        let listed_finding = json!({
+            "id": listed,
+            "classification": "no_static_path",
+            "probe": {
+                "id": listed,
+                "file": "crates/perl-lsp-rs/src/runtime/outbound.rs",
+                "line": 143
+            }
+        });
+        let unlisted_finding = json!({
+            "id": unlisted,
+            "classification": "no_static_path",
+            "probe": {
+                "id": unlisted,
+                "file": "crates/perl-lsp-rs/src/runtime/outbound.rs",
+                "line": 200
+            }
+        });
+        let missing_id = json!({
+            "classification": "no_static_path",
+            "probe": { "file": "crates/perl-lsp-rs/src/runtime/outbound.rs", "line": 143 }
+        });
+
+        assert!(suppression_matches_finding(&rules, &listed_finding));
+        assert!(!suppression_matches_finding(&rules, &unlisted_finding));
+        assert!(!suppression_matches_finding(&rules, &missing_id));
+        Ok(())
+    }
+
+    #[test]
+    fn gap_ids_filter_on_seams_does_not_path_mask_unlisted_identities() -> Result<()> {
+        let listed =
+            "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:field_construction:6f18ede8";
+        let rules = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-lsp-rs/src/runtime/scheduler.rs".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-lsp-rs/src/runtime/scheduler.rs")?],
+            classification_patterns: vec![Vec::new()],
+            invalid_patterns: Vec::new(),
+            gap_id_sets: vec![vec![listed.to_string()]],
+            suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
+        };
+        let listed_seam = json!({
+            "id": listed,
+            "file": "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+            "kind": "no_static_path"
+        });
+        let unlisted_seam = json!({
+            "id": "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:error_path:abcd1234",
+            "file": "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+            "kind": "error_path"
+        });
+        let path_only_seam = json!({
+            "file": "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+            "kind": "no_static_path"
+        });
+
+        assert!(suppression_matches_seam(&rules, &listed_seam));
+        assert!(!suppression_matches_seam(&rules, &unlisted_seam));
+        assert!(!suppression_matches_seam(&rules, &path_only_seam));
+        Ok(())
+    }
+
+    #[test]
+    fn outbound_settlement_suppression_matches_only_listed_probe_identities() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let outbound = "crates/perl-lsp-rs/src/runtime/outbound.rs";
+        let scheduler = "crates/perl-lsp-rs/src/runtime/scheduler.rs";
+        let listed_outbound =
+            "probe:crates_perl-lsp-rs_src_runtime_outbound.rs:field_construction:9673d288";
+        let listed_scheduler =
+            "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:field_construction:6f18ede8";
+        let unlisted = "probe:crates_perl-lsp-rs_src_runtime_outbound.rs:error_path:ffffffff";
+
+        assert!(
+            suppression_matches_finding(
+                &rules,
+                &json!({
+                    "id": listed_outbound,
+                    "classification": "no_static_path",
+                    "probe": {"id": listed_outbound, "file": outbound, "line": 143}
+                })
+            ),
+            "listed WriterCompletion.failed probe must match"
+        );
+        assert!(
+            suppression_matches_finding(
+                &rules,
+                &json!({
+                    "id": listed_scheduler,
+                    "classification": "no_static_path",
+                    "probe": {"id": listed_scheduler, "file": scheduler, "line": 430}
+                })
+            ),
+            "listed AdmissionGuard.server probe must match"
+        );
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({
+                    "id": unlisted,
+                    "classification": "no_static_path",
+                    "probe": {"id": unlisted, "file": outbound, "line": 250}
+                })
+            ),
+            "unlisted no_static_path in outbound.rs must stay visible"
+        );
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({
+                    "classification": "no_static_path",
+                    "probe": {"file": outbound, "line": 143}
+                })
+            ),
+            "missing identity must not satisfy the gap_ids filter"
+        );
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({
+                    "id": listed_outbound,
+                    "classification": "reachable_unrevealed",
+                    "probe": {"id": listed_outbound, "file": outbound, "line": 143}
+                })
+            ),
+            "reachable_unrevealed in outbound.rs must stay visible"
+        );
         Ok(())
     }
 
@@ -5498,7 +9638,9 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/execution.rs")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -5563,7 +9705,9 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/execution.rs")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -5590,7 +9734,9 @@ paths = ["archive/["]
             path_patterns: Vec::new(),
             classification_patterns: Vec::new(),
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         }
     }
 
@@ -5611,13 +9757,147 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             suppressions,
+            Some(extents),
             PrEvidenceContext {
                 changed_file_count: 1,
-                head_extents: Some(extents),
                 attribution_scope: None,
                 production_surface: None,
             },
         )
+    }
+
+    /// #6260 residual, from the `raw-check.json` of run 34732444951 on #14958: ten
+    /// `no_static_path` probes carrying the text of a function the change deleted
+    /// (`if let Some(folder_uri) = folder_uri {` and friends), all anchored at
+    /// `inc_context/mod.rs:357`, a doc-comment line that exists at head. The
+    /// line-count check alone counted them; the guidance pass named no seam at
+    /// 357. Head-side probes on the same head keep their own line's text as the
+    /// expression and must stay counted, as must anything the anchor check cannot
+    /// decide.
+    #[test]
+    fn deleted_line_findings_anchored_inside_head_extents_do_not_count() -> Result<()> {
+        let path = "crates/perl-lsp-rs/src/runtime/lifecycle/inc_context/mod.rs";
+        let head = [
+            "impl LspServer {",
+            "    pub(crate) fn assemble(&self) -> Option<Context> {",
+            "        let mut folders = self.workspace_folders.lock();",
+            "        Some(Context { root, folder_uri })",
+            "    }",
+            "",
+            "    /// Read the startup roots and snapshot from the already-locked stored owner.",
+            "    /// Never reselect the owner after capturing the other context settings.",
+            "    fn system_inc_for_context(",
+            "        config: &mut WorkspaceConfig,",
+            "        access: SystemIncAccess,",
+            "    ) -> (Vec<PathBuf>, SystemIncProbeSnapshot) {",
+            "        config.peek_system_inc()",
+            "    }",
+            "}",
+        ];
+        let probe = |line: u64, expression: Option<&str>| {
+            let mut probe = json!({ "path": path, "line": line });
+            if let Some(expression) = expression {
+                probe["expression"] = json!(expression);
+            }
+            json!({ "classification": "no_static_path", "kind": "call_deletion", "probe": probe })
+        };
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 7 },
+            "findings": [
+                // Deleted code anchored on the doc comment at 7: nothing near it.
+                probe(7, Some("if let Some(folder_uri) = folder_uri {")),
+                probe(7, Some("return folder.effective_workspace_config.get_system_inc().to_vec();")),
+                // Deleted code whose text survives elsewhere in the file (line 3),
+                // but not within the anchor window of the reported line.
+                probe(7, Some("let mut folders = self.workspace_folders.lock();")),
+                // Head-side probe on its own line: counted.
+                probe(13, Some("config.peek_system_inc()")),
+                // Head-side probe attributed a couple of lines off a multi-line
+                // statement: still anchored within the window, counted.
+                probe(9, Some("access: SystemIncAccess,")),
+                // No expression: the anchor check cannot decide, counted.
+                probe(7, None),
+                // Expression text longer than the head line it wraps: counted.
+                probe(4, Some("Some(Context { root, folder_uri })\n    }")),
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(path.to_string(), head.len())]),
+            removed: BTreeSet::new(),
+            head_lines: BTreeMap::from([(
+                path.to_string(),
+                head.iter().map(|line| (*line).to_string()).collect(),
+            )]),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(4)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(4)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(3)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(0)));
+
+        // Without head text the anchor check is inert and the old behavior holds:
+        // every in-extent probe counts.
+        let blind = HeadLineExtents { head_lines: BTreeMap::new(), ..extents };
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &blind);
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(7)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// A deleted multi-line expression whose only near-head match is a lone
+    /// delimiter: the substantive line is gone from head, but an unrelated
+    /// `}` within the anchor window used to keep the finding counted,
+    /// recreating an unsatisfiable gate. Low-information lines never anchor on
+    /// their own. An expression of nothing but delimiters stays counted: with
+    /// no substantive text the check cannot decide, and the filter never takes
+    /// the fail-open direction.
+    #[test]
+    fn deleted_expression_anchored_only_by_delimiter_does_not_count() -> Result<()> {
+        let path = "src/deleted.rs";
+        let head = [
+            "fn keep() {",
+            "    let retained = 1;",
+            "}",
+            "",
+            "fn other() {",
+            "    let x = 2;",
+            "}",
+        ];
+        let probe = |line: u64, expression: Option<&str>| {
+            let mut probe = json!({ "path": path, "line": line });
+            if let Some(expression) = expression {
+                probe["expression"] = json!(expression);
+            }
+            json!({ "classification": "no_static_path", "kind": "call_deletion", "probe": probe })
+        };
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 3 },
+            "findings": [
+                // Substantive line gone; only the trailing `}` matches head
+                // line 3 or 7 within the window: absent, not counted.
+                probe(5, Some("let removed = compute();\n}")),
+                // Substantive line survives at head line 6: anchored, counted.
+                probe(5, Some("let x = 2;\n}")),
+                // Nothing but delimiters: undecidable, stays counted.
+                probe(5, Some("}\n});")),
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(path.to_string(), head.len())]),
+            removed: BTreeSet::new(),
+            head_lines: BTreeMap::from([(
+                path.to_string(),
+                head.iter().map(|line| (*line).to_string()).collect(),
+            )]),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(1)));
+        Ok(())
     }
 
     /// #6260 reproduction, from the `raw-check.json` of run 31273961774 on #6161:
@@ -5647,6 +9927,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -5684,6 +9965,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -5711,6 +9993,7 @@ paths = ["archive/["]
         let extents = HeadLineExtents {
             present: BTreeMap::new(),
             removed: BTreeSet::from(["crates/perl-lsp-rs/src/removed.rs".to_string()]),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -5744,6 +10027,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -5772,11 +10056,14 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("archive/**")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let extents = HeadLineExtents {
             present: BTreeMap::from([("archive/old.rs".to_string(), 4usize)]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &suppressions, &extents);
@@ -5932,7 +10219,9 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("archive/**")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet_on_surface(
@@ -6239,7 +10528,8 @@ paths = ["archive/["]
                 }
             ]
         });
-        let surface = production_surface_from_metadata(Path::new("/nonexistent"), &metadata)?;
+        let surface =
+            production_surface_from_metadata(Path::new("/nonexistent"), &metadata, &[], "HEAD")?;
         assert!(surface.production_paths.contains("xtask/tests/support/cli_harness.rs"));
         assert!(!surface.production_paths.contains("xtask/tests/it.rs"));
         assert_eq!(
@@ -6292,6 +10582,173 @@ paths = ["archive/["]
         Ok(())
     }
 
+    /// The pre-streaming DOM pipeline: `fallback_seam_entries` followed by the
+    /// sort/dedup/truncate `fallback_guidance_comments` applied to its result.
+    /// This is the oracle the streaming accumulator must match exactly.
+    fn dom_fallback_pipeline(
+        findings: &[Value],
+        suppressions: &RiprSuppressionRules,
+        head_extents: Option<&HeadLineExtents>,
+        attribution: Option<&DependencyAttribution>,
+        production_surface: Option<&ProductionSurface>,
+    ) -> (Vec<FallbackSeam>, usize) {
+        let (mut seams, suppressed) = fallback_seam_entries(
+            findings,
+            suppressions,
+            head_extents,
+            attribution,
+            production_surface,
+        );
+        seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
+        seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
+        seams.truncate(FALLBACK_GUIDANCE_LIMIT);
+        (seams, suppressed)
+    }
+
+    /// Falsifies a fallback accumulator that loses DOM ordering, deduplication, or the bound.
+    #[test]
+    fn fallback_streaming_matches_dom_oracle_over_a_wide_payload() -> Result<()> {
+        let mut findings = vec![
+            raw_check_finding(
+                "probe:suppressed",
+                "no_static_path",
+                "crates/suppressed/src/hidden.rs",
+                2,
+            ),
+            raw_check_finding("probe:archive", "reachable_unrevealed", "archive/old.rs", 3),
+        ];
+        for index in 0..(FALLBACK_GUIDANCE_LIMIT * 3) {
+            findings.push(raw_check_finding(
+                &format!("probe:{index:03}"),
+                if index % 2 == 0 { "no_static_path" } else { "reachable_unrevealed" },
+                &format!("crates/wide/src/file{:02}.rs", (index * 7) % 11),
+                ((index * 5) % 29 + 1) as u64,
+            ));
+        }
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/suppressed/**".to_string()],
+            path_patterns: vec![Pattern::new("crates/suppressed/**")?],
+            classification_patterns: vec![Vec::new()],
+            invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
+            suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
+        };
+        let production_surface = ProductionSurface::from_parts("/ws", &[]);
+        let payload = json!({
+            "base": "origin/main",
+            "summary": {
+                "findings": findings.len(),
+                "reachable_unrevealed": findings.len(),
+                "no_static_path": findings.len()
+            },
+            "findings": findings
+        });
+        let payload_text = serde_json::to_string(&payload)?;
+        let expected = dom_fallback_pipeline(
+            payload
+                .get("findings")
+                .and_then(Value::as_array)
+                .ok_or_else(|| eyre!("findings missing"))?,
+            &suppressions,
+            None,
+            None,
+            Some(&production_surface),
+        );
+        let mut accumulator = FallbackGuidanceAccumulator::default();
+        stream_ripr_check_payload_with_events(
+            BufReader::with_capacity(64 * 1024, std::io::Cursor::new(payload_text.as_bytes())),
+            &mut |event| match event {
+                StreamFindingsEvent::Start => accumulator.reset(),
+                StreamFindingsEvent::Finding(finding) => accumulator.absorb(
+                    finding,
+                    &suppressions,
+                    None,
+                    None,
+                    Some(&production_surface),
+                ),
+            },
+        )?;
+        assert_eq!(accumulator.finish(), expected);
+        assert_eq!(
+            expected.0.len(),
+            FALLBACK_GUIDANCE_LIMIT,
+            "the wide payload must exercise the fallback guidance truncation bound"
+        );
+        assert_eq!(expected.1, 1, "the suppressed finding must exercise the policy counter");
+        assert!(
+            expected.0.iter().all(|(path, _, _, _)| !path.starts_with("archive/")),
+            "the non-production finding must not reach fallback guidance"
+        );
+        Ok(())
+    }
+
+    /// Falsifies a duplicate-key implementation that keeps a later, larger-id seam.
+    #[test]
+    fn fallback_streaming_keeps_smallest_id_for_duplicate_path_and_line() -> Result<()> {
+        let findings = vec![
+            raw_check_finding("probe:z", "no_static_path", "crates/x/src/lib.rs", 7),
+            raw_check_finding("probe:a", "no_static_path", "crates/x/src/lib.rs", 7),
+        ];
+        let expected = dom_fallback_pipeline(&findings, &no_suppressions(), None, None, None);
+        let mut accumulator = FallbackGuidanceAccumulator::default();
+        for finding in &findings {
+            accumulator.absorb(finding, &no_suppressions(), None, None, None);
+        }
+        let actual = accumulator.finish();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.0.len(), 1);
+        assert_eq!(actual.0[0].2, "probe:a");
+        Ok(())
+    }
+
+    /// Falsifies a duplicate-findings implementation that accumulates the first array.
+    #[test]
+    fn fallback_streaming_duplicate_findings_uses_only_the_last_array() -> Result<()> {
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/suppressed/**".to_string()],
+            path_patterns: vec![Pattern::new("crates/suppressed/**")?],
+            classification_patterns: vec![Vec::new()],
+            invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
+            suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
+        };
+        let first_findings = vec![raw_check_finding(
+            "probe:first",
+            "no_static_path",
+            "crates/suppressed/src/hidden.rs",
+            2,
+        )];
+        let second_findings = vec![raw_check_finding(
+            "probe:second",
+            "reachable_unrevealed",
+            "crates/x/src/lib.rs",
+            7,
+        )];
+        let first_text = serde_json::to_string(&first_findings)?;
+        let second_text = serde_json::to_string(&second_findings)?;
+        let payload_text = format!(
+            r#"{{"base":"origin/main","summary":{{}},"findings":{first_text},"findings":{second_text}}}"#
+        );
+        let expected = dom_fallback_pipeline(&second_findings, &suppressions, None, None, None);
+        let mut accumulator = FallbackGuidanceAccumulator::default();
+        stream_ripr_check_payload_with_events(
+            BufReader::with_capacity(64 * 1024, std::io::Cursor::new(payload_text.as_bytes())),
+            &mut |event| match event {
+                StreamFindingsEvent::Start => accumulator.reset(),
+                StreamFindingsEvent::Finding(finding) => {
+                    accumulator.absorb(finding, &suppressions, None, None, None)
+                }
+            },
+        )?;
+        let actual = accumulator.finish();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.1, 0, "the first array's suppressed finding must be reset");
+        assert_eq!(actual.0[0].2, "probe:second");
+        Ok(())
+    }
+
     /// Fail closed: a finding with no resolvable path is never classified
     /// non-production, exactly like the #6260 head-range filter.
     #[test]
@@ -6336,6 +10793,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -7059,9 +11517,9 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &suppressions,
+            None,
             PrEvidenceContext {
                 changed_file_count: 5,
-                head_extents: None,
                 attribution_scope: Some(&scope),
                 production_surface: Some(&surface),
             },
@@ -7089,9 +11547,9 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &suppressions,
+            None,
             PrEvidenceContext {
                 changed_file_count: 5,
-                head_extents: None,
                 attribution_scope: None,
                 production_surface: Some(&surface),
             },
@@ -7122,9 +11580,9 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &suppressions,
+            None,
             PrEvidenceContext {
                 changed_file_count: 1,
-                head_extents: None,
                 attribution_scope: None,
                 production_surface: None,
             },
@@ -7174,11 +11632,19 @@ paths = ["archive/["]
         if let Some(parent) = raw_check.parent() {
             fs::create_dir_all(parent)?;
         }
+        let mut large_finding = raw_check_finding(
+            "probe:large",
+            "reachable_unrevealed",
+            "/abs/repo/crates/foo/src/large.rs",
+            5,
+        );
+        large_finding["irrelevant_diagnostics"] = Value::String("x".repeat(4 * 1024 * 1024));
         fs::write(
             &raw_check,
             json!({
                 "base": "HEAD",
                 "findings": [
+                    large_finding,
                     raw_check_finding("probe:b20", "reachable_unrevealed", "/abs/repo/crates/foo/src/b.rs", 20),
                     raw_check_finding("probe:a10b", "no_static_path", "/abs/repo/crates/foo/src/a.rs", 10),
                     raw_check_finding("probe:a10a", "no_static_path", "/abs/repo/crates/foo/src/a.rs", 10),
@@ -7216,7 +11682,7 @@ paths = ["archive/["]
         let packet: Value =
             serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
         assert_eq!(packet["status"], json!("incomplete"));
-        assert_eq!(packet.pointer("/summary/summary_only"), Some(&json!(3)));
+        assert_eq!(packet.pointer("/summary/summary_only"), Some(&json!(4)));
         assert_eq!(packet.pointer("/summary/suppressed"), Some(&json!(1)));
         assert_eq!(packet.pointer("/warnings/0/kind"), Some(&json!("tool_error")), "{packet}");
         assert_eq!(packet.pointer("/warnings/1/kind"), Some(&json!("guidance_fallback")));
@@ -7227,9 +11693,20 @@ paths = ["archive/["]
             .ok_or_else(|| eyre!("missing summary_only array"))?;
         assert_eq!(items[0]["path"], json!("crates/foo/src/a.rs"));
         assert_eq!(items[0]["line"], json!(10));
+        // probe:a10b arrives before probe:a10a at the same (path, line). The
+        // smaller id must win, and the pair must collapse to one entry —
+        // without this the test passes whichever duplicate the fallback kept.
+        assert_eq!(items[0]["id"], json!("probe:a10a"));
+        assert_eq!(
+            items.iter().filter(|item| item["path"] == json!("crates/foo/src/a.rs")).count(),
+            1,
+            "duplicate (path, line) seams must collapse to one entry"
+        );
         assert_eq!(items[1]["path"], json!("crates/foo/src/b.rs"));
         assert_eq!(items[2]["path"], json!("crates/foo/src/e.rs"));
         assert_eq!(items[2]["line"], json!(50));
+        assert_eq!(items[3]["path"], json!("crates/foo/src/large.rs"));
+        assert_eq!(items[3]["line"], json!(5));
         for item in items {
             for key in ["id", "path", "seam", "reason", "suggested_test"] {
                 assert!(
@@ -7244,6 +11721,217 @@ paths = ["archive/["]
         assert!(markdown.contains("- status: incomplete"), "{markdown}");
         assert!(markdown.contains("crates/foo/src/a.rs:10"), "{markdown}");
         assert!(markdown.contains("tool_error: ripr timed out after 600s"), "{markdown}");
+        Ok(())
+    }
+
+    /// Falsifies a fallback accumulator whose duplicate replacement and
+    /// truncation bound interact, through the same production entry point.
+    ///
+    /// The wide-payload test below pins the bound, the sort-order window, and
+    /// a late *smaller*-id duplicate. It cannot see the rest of the ordering
+    /// algebra, because every one of its keys is distinct and its only
+    /// duplicate happens to be the one that should win: an accumulator that
+    /// simply took the last id for a key would pass it. Retaining bounded
+    /// state makes three more cases reachable, and all three are silent
+    /// wrong-answer bugs rather than crashes:
+    ///
+    /// - a *larger* id arriving for a retained key must not displace it;
+    /// - a key already pushed past the bound must stay dropped when it
+    ///   reappears with a smaller id, because ordering between distinct keys
+    ///   never depends on the id;
+    /// - a key sorting before the whole window must still get in and evict
+    ///   the current largest.
+    ///
+    /// The DOM oracle sorts, dedups, and truncates the entire set, so it is
+    /// indifferent to arrival order. This pins the streamed receipt to it.
+    #[test]
+    fn fallback_guidance_orders_duplicates_across_the_truncation_bound() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(repo.join("policy/ripr-suppressions.toml"), "")?;
+        let raw_check = repo.join(PR_RAW_CHECK_JSON);
+        if let Some(parent) = raw_check.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let actionable = "no_static_path";
+        let mut findings = Vec::new();
+        // Saturate the bound with distinct mid-range keys and mid-range ids.
+        for index in 0..FALLBACK_GUIDANCE_LIMIT {
+            findings.push(raw_check_finding(
+                &format!("probe:m{index:03}"),
+                actionable,
+                &format!("crates/m/src/f{index:03}.rs"),
+                1,
+            ));
+        }
+        // A retained key gains a smaller id after the bound is already full.
+        findings.push(raw_check_finding("probe:a000", actionable, "crates/m/src/f005.rs", 1));
+        // A retained key is offered a larger id, which must not displace it.
+        findings.push(raw_check_finding("probe:z999", actionable, "crates/m/src/f006.rs", 1));
+        // A key sorting past the bound is dropped, then reappears with a
+        // smaller id: still out, because the id never orders distinct keys.
+        findings.push(raw_check_finding("probe:z000", actionable, "crates/z/src/late.rs", 1));
+        findings.push(raw_check_finding("probe:a001", actionable, "crates/z/src/late.rs", 1));
+        // A key sorting before every retained entry must evict the largest.
+        findings.push(raw_check_finding("probe:m999", actionable, "crates/0/src/early.rs", 1));
+
+        fs::write(&raw_check, json!({ "base": "HEAD", "findings": findings }).to_string())?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+        write_degraded_review_comments(repo, &options, ".", "ripr timed out after 600s")?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        let items = packet
+            .get("summary_only")
+            .and_then(Value::as_array)
+            .ok_or_else(|| eyre!("missing summary_only array"))?;
+
+        // The DOM oracle over the same arrival order, as the receipt renders it.
+        let expected = dom_fallback_pipeline(&findings, &no_suppressions(), None, None, None);
+        let expected_paths = expected.0.iter().map(|(path, ..)| path.clone()).collect::<Vec<_>>();
+        let actual_paths =
+            items.iter().map(|item| option_string_field(Some(item), "path")).collect::<Vec<_>>();
+        assert_eq!(actual_paths, expected_paths, "retained window must match the DOM oracle");
+
+        assert_eq!(items.len(), FALLBACK_GUIDANCE_LIMIT, "the bound must stay saturated");
+        let id_for = |path: &str| {
+            items
+                .iter()
+                .find(|item| item["path"] == json!(path))
+                .map(|item| option_string_field(Some(item), "id"))
+        };
+        assert_eq!(
+            id_for("crates/m/src/f005.rs").as_deref(),
+            Some("probe:a000"),
+            "a smaller id arriving after the bound is full must replace the retained seam"
+        );
+        assert_eq!(
+            id_for("crates/m/src/f006.rs").as_deref(),
+            Some("probe:m006"),
+            "a larger id must not displace the retained seam"
+        );
+        assert_eq!(id_for("crates/z/src/late.rs"), None, "a key past the bound stays dropped");
+        assert_eq!(
+            id_for("crates/0/src/early.rs").as_deref(),
+            Some("probe:m999"),
+            "a key sorting before the window must evict the largest retained seam"
+        );
+        assert_eq!(
+            id_for(&format!("crates/m/src/f{:03}.rs", FALLBACK_GUIDANCE_LIMIT - 1)),
+            None,
+            "the evicted seam must be the largest retained key"
+        );
+        Ok(())
+    }
+
+    /// Drives the production fallback seam (`fallback_guidance_comments` via
+    /// `write_degraded_review_comments`) with the payload shape #12860 actually
+    /// produced: many findings, each carrying an unconsumed blob the receipt
+    /// never reads.
+    ///
+    /// The existing fallback tests either reconstruct the accumulator loop by
+    /// hand — which leaves the production wiring (`BufReader` transport, the
+    /// `Start`/`Finding` event match, the base-ref guard) unproven — or use a
+    /// payload too narrow to reach `FALLBACK_GUIDANCE_LIMIT`. This closes both:
+    /// truncation and duplicate-key replacement are exercised through the same
+    /// entry point production uses, on a payload whose findings array is far
+    /// larger than anything the fallback is allowed to retain.
+    ///
+    /// Falsifies three wrong implementations: one that buffers the findings
+    /// array, one that truncates before applying a later smaller-id
+    /// replacement, and one that lets a duplicate `(path, line)` occupy two of
+    /// the bounded slots.
+    #[test]
+    fn fallback_guidance_streams_a_wide_payload_and_replaces_duplicates() -> Result<()> {
+        const SEAM_COUNT: usize = 40;
+        const BLOB_BYTES: usize = 256 * 1024;
+
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(repo.join("policy/ripr-suppressions.toml"), "")?;
+        let raw_check = repo.join(PR_RAW_CHECK_JSON);
+        if let Some(parent) = raw_check.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Distinct (path, line) seams, ordered so the retained window is the
+        // first FALLBACK_GUIDANCE_LIMIT paths by sort order, not by arrival.
+        let mut findings = Vec::with_capacity(SEAM_COUNT + 1);
+        for index in (0..SEAM_COUNT).rev() {
+            let mut finding = raw_check_finding(
+                &format!("probe:seam{index:03}z"),
+                "no_static_path",
+                &format!("crates/foo/src/seam{index:03}.rs"),
+                7,
+            );
+            finding["irrelevant_diagnostics"] = Value::String("x".repeat(BLOB_BYTES));
+            findings.push(finding);
+        }
+        // A late duplicate of a retained seam, carrying a smaller id. It must
+        // replace the retained entry rather than add a slot — and it arrives
+        // after truncation has already discarded the tail.
+        findings.push(raw_check_finding(
+            "probe:seam000a",
+            "no_static_path",
+            "crates/foo/src/seam000.rs",
+            7,
+        ));
+
+        let payload = json!({ "base": "HEAD", "findings": findings }).to_string();
+        assert!(
+            payload.len() > SEAM_COUNT * BLOB_BYTES,
+            "the payload must be far larger than the retained window"
+        );
+        fs::write(&raw_check, &payload)?;
+
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+        write_degraded_review_comments(repo, &options, ".", "ripr timed out after 600s")?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        let items = packet
+            .get("summary_only")
+            .and_then(Value::as_array)
+            .ok_or_else(|| eyre!("missing summary_only array"))?;
+
+        assert_eq!(
+            items.len(),
+            FALLBACK_GUIDANCE_LIMIT,
+            "a payload of {SEAM_COUNT} seams must truncate to the guidance bound"
+        );
+        // The retained window is the sort-order prefix, not the arrival prefix.
+        for (index, item) in items.iter().enumerate() {
+            assert_eq!(item["path"], json!(format!("crates/foo/src/seam{index:03}.rs")), "{item}");
+        }
+        // The late duplicate replaced the retained entry in place.
+        assert_eq!(items[0]["id"], json!("probe:seam000a"));
+        assert_eq!(
+            items.iter().filter(|item| item["path"] == json!("crates/foo/src/seam000.rs")).count(),
+            1,
+            "the duplicate (path, line) must not consume a second bounded slot"
+        );
+        // No blob reached the receipt: the fallback reads the seam, not the payload.
+        assert!(
+            !fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?.contains(&"x".repeat(1024)),
+            "unconsumed finding fields must not reach the receipt"
+        );
         Ok(())
     }
 
@@ -7358,6 +12046,34 @@ paths = ["archive/["]
         Ok(())
     }
 
+    /// Pin the GitHub workflow-command escape rules apart at the unit level.
+    ///
+    /// The two rules drift apart silently if `escape_cmd` is ever used on the
+    /// data half or `escape_cmd_data` on a property half: the runner unescapes
+    /// `%3A` and `%2C` in properties only, so a property half that is only
+    /// data-escaped will surface literal `:` / `,` where the operator expects
+    /// the original characters, and a data half that is property-escaped will
+    /// surface literal `%3A` / `%2C` everywhere a human is supposed to read.
+    /// See #15527.
+    #[test]
+    fn escape_rules_stay_apart_for_property_and_data_halves() {
+        // Property half: every reserved character must be encoded.
+        let property_value = "ripr strong:gap focused,test 100%";
+        let property = escape_cmd(property_value);
+        assert_eq!(property, "ripr strong%3Agap focused%2Ctest 100%25");
+        assert!(!property.contains(':'));
+        assert!(!property.contains(','));
+
+        // Data half: only `%`, CR and LF must be encoded; `:` and `,` survive.
+        let data_value = "boundary proof: below, equal, above\nSuggested test: add % branch";
+        let data = escape_cmd_data(data_value);
+        assert_eq!(data, "boundary proof: below, equal, above%0ASuggested test: add %25 branch");
+        assert!(data.contains(':'));
+        assert!(data.contains(','));
+        assert!(!data.contains("%3A"));
+        assert!(!data.contains("%2C"));
+    }
+
     #[test]
     fn render_annotations_emits_escaped_github_warning_packets() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -7387,10 +12103,273 @@ paths = ["archive/["]
         let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
 
         assert!(!rendered.comments_missing);
+        // Property halves keep the GitHub workflow-command property rule
+        // (%3A, %2C, %25, %0D, %0A are all unescaped by the runner).
         assert!(rendered.text.contains("::warning file=crates/perl-parser/src/lib.rs,line=42"));
         assert!(rendered.text.contains("title=ripr strong%3Agap focused%2Ctest"));
-        assert!(rendered.text.contains("boundary proof%3A below%2C equal%2C above"));
-        assert!(rendered.text.contains("Suggested test%3A add %25 branch table"));
+        // Data half keeps only the three escapes the runner unescapes there
+        // (%25, %0D, %0A). Colons and commas must reach the operator as `:`
+        // and `,`, not as `%3A` / `%2C`.
+        assert!(rendered.text.contains("boundary proof: below, equal, above"));
+        assert!(rendered.text.contains("Suggested test: add %25 branch table"));
+        // And the two rules stay pinned apart: the *property* halves in the
+        // same packet must still encode `:` and `,` while `%` stays escaped
+        // even in data halves.
+        assert!(!rendered.text.contains("boundary proof%3A"));
+        assert!(!rendered.text.contains("Suggested test%3A"));
+        Ok(())
+    }
+
+    /// Write a `comments.json` with the given status/warnings and no
+    /// annotation-safe `comments[]` — the exact shape a degraded guidance pass
+    /// produces, since its fallback seams live in `summary_only[]`.
+    fn write_guidance_receipt(repo: &Path, status: &str, warnings: Value) -> Result<()> {
+        fs::create_dir_all(repo.join("target/ripr/review"))?;
+        fs::write(
+            repo.join(REVIEW_COMMENTS_JSON),
+            format_json(&json!({
+                "status": status,
+                "comments": [],
+                "summary_only": [
+                    { "path": "crates/perl-parser/src/lib.rs", "line": 42, "seam": "gap" }
+                ],
+                "suppressed": [],
+                "warnings": warnings,
+            }))?,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn render_annotations_warns_when_guidance_timed_out() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([
+                { "kind": "tool_error", "message": "ripr timed out after 600s", "path": null },
+                { "kind": "guidance_fallback", "message": "seam names were synthesized", "path": null }
+            ]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        // Without this the run emits nothing at all, which is byte-for-byte how
+        // a PR with no gaps presents.
+        assert!(!rendered.text.is_empty(), "a degraded pass must not render as a clean run");
+        // The message is command *data*: the runner unescapes only %25/%0D/%0A
+        // there, so `,` and `:` must reach it literally or the operator reads
+        // "%2C"/"%3A" in the annotation.
+        assert_eq!(
+            rendered.text.trim_end(),
+            "::warning title=ripr review guidance incomplete::Review guidance did not complete, \
+             so the seam set for this run is not the whole picture: ripr timed out after 600s"
+        );
+        Ok(())
+    }
+
+    /// The message is command data, not a property. Escaping it with the
+    /// property escaper renders literal `%3A`/`%2C` to the operator, so this
+    /// pins the two escapers apart at the one seam that mixes them.
+    #[test]
+    fn render_annotations_does_not_property_escape_the_degraded_message() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "error",
+            json!([{
+                "kind": "tool_error",
+                "message": "failed to spawn ripr: No such file, giving up",
+                "path": null
+            }]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+        let (title, message) = rendered
+            .text
+            .trim_end()
+            .trim_start_matches("::warning title=")
+            .split_once("::")
+            .ok_or_else(|| eyre!("annotation did not split into title and message"))?;
+
+        assert!(message.contains("failed to spawn ripr: No such file, giving up"));
+        assert!(!message.contains("%3A"), "message must not be property-escaped: {message}");
+        assert!(!message.contains("%2C"), "message must not be property-escaped: {message}");
+        // The title is a property and stays property-escaped.
+        assert_eq!(title, "ripr review guidance error");
+        Ok(())
+    }
+
+    /// `%` still has to be escaped in the data half, or the runner eats it as
+    /// the start of an escape sequence.
+    #[test]
+    fn render_annotations_escapes_percent_in_the_degraded_message() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([{ "kind": "tool_error", "message": "budget 90% exhausted", "path": null }]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.contains("budget 90%25 exhausted"));
+        Ok(())
+    }
+
+    /// Pins selection order. With one `tool_error` per receipt today both
+    /// first-match and last-match agree, so nothing else here would catch a
+    /// change of rule.
+    #[test]
+    fn render_annotations_reports_the_first_tool_error_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([
+                { "kind": "tool_error", "message": "first recorded failure", "path": null },
+                { "kind": "tool_error", "message": "later cascading failure", "path": null }
+            ]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.contains("first recorded failure"));
+        assert!(!rendered.text.contains("later cascading failure"));
+        Ok(())
+    }
+
+    #[test]
+    fn render_annotations_warns_when_guidance_errored_without_fallback() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "error",
+            json!([{ "kind": "tool_error", "message": "ripr exited with status 2", "path": null }]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.contains("title=ripr review guidance error"));
+        assert!(rendered.text.contains("ripr exited with status 2"));
+        Ok(())
+    }
+
+    /// Negative control: the signal must discriminate. A completed pass carries
+    /// `status: "advisory"`, and adding a standing warning there would make the
+    /// annotation worthless as evidence.
+    #[test]
+    fn render_annotations_stays_silent_for_a_completed_guidance_pass() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(repo, "advisory", json!([]))?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(
+            rendered.text.is_empty(),
+            "a completed pass must emit no degradation warning, got {:?}",
+            rendered.text
+        );
+        Ok(())
+    }
+
+    /// Negative control: a receipt with no status at all is not evidence of
+    /// degradation, so it must not manufacture one.
+    #[test]
+    fn render_annotations_stays_silent_when_no_status_is_recorded() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("target/ripr/review"))?;
+        fs::write(
+            repo.join(REVIEW_COMMENTS_JSON),
+            format_json(&json!({ "comments": [], "warnings": [] }))?,
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.is_empty());
+        Ok(())
+    }
+
+    /// A degraded pass whose reason was lost still has to be visible. Falling
+    /// silent here would restore the exact defect for the one case where the
+    /// producer failed hardest.
+    #[test]
+    fn render_annotations_warns_on_degradation_even_without_a_recorded_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([{ "kind": "guidance_fallback", "message": "no tool error here", "path": null }]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.contains("title=ripr review guidance incomplete"));
+        assert!(rendered.text.contains("no tool_error reason was recorded"));
+        Ok(())
+    }
+
+    /// The notice qualifies the annotations beneath it, so it cannot trail them.
+    #[test]
+    fn render_annotations_places_the_degraded_notice_before_line_annotations() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("target/ripr/review"))?;
+        fs::write(
+            repo.join(REVIEW_COMMENTS_JSON),
+            format_json(&json!({
+                "status": "incomplete",
+                "comments": [
+                    {
+                        "placement": {
+                            "path": "crates/perl-parser/src/lib.rs",
+                            "line": 42,
+                            "mode": "exact_seam_line"
+                        },
+                        "reason": "branch lacks boundary proof"
+                    }
+                ],
+                "warnings": [
+                    { "kind": "tool_error", "message": "ripr timed out after 600s", "path": null }
+                ],
+            }))?,
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        let lines: Vec<&str> = rendered.text.lines().collect();
+        assert_eq!(lines.len(), 2, "expected notice + one line annotation, got {lines:?}");
+        assert!(lines[0].contains("title=ripr review guidance incomplete"));
+        assert!(lines[1].contains("file=crates/perl-parser/src/lib.rs,line=42"));
+        Ok(())
+    }
+
+    /// The `--check` staleness contract compares exact bytes, so the notice has
+    /// to be a pure function of the receipt.
+    #[test]
+    fn render_annotations_degraded_notice_is_deterministic() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([{ "kind": "tool_error", "message": "ripr timed out after 600s", "path": null }]),
+        )?;
+
+        let first = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+        let second = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        // Two identical empty renders would satisfy equality vacuously.
+        assert!(first.text.contains("ripr review guidance incomplete"));
+        assert_eq!(first, second);
         Ok(())
     }
 
@@ -7834,16 +12813,34 @@ paths = ["archive/["]
             if let Ok(mut guard) = RIPR_BIN_OVERRIDE.lock() {
                 *guard = None;
             }
+            if let Ok(mut guard) = RIPR_MAX_RAW_CHECK_BYTES_OVERRIDE.lock() {
+                *guard = None;
+            }
         }
     }
 
     fn override_ripr_bin(binary: &Path) -> Result<RiprBinOverrideGuard> {
+        override_ripr_bin_with_cap(binary, None)
+    }
+
+    /// As `override_ripr_bin`, and also installs `max_bytes` as this run's
+    /// staged-payload ceiling. Both overrides live under the one exclusive lock
+    /// and are cleared by the one guard, so a cap can never leak into another
+    /// test's producer double.
+    fn override_ripr_bin_with_cap(
+        binary: &Path,
+        max_bytes: Option<u64>,
+    ) -> Result<RiprBinOverrideGuard> {
         // A panicking test poisons this lock; recover rather than cascading an
         // unrelated failure into every other override test.
         let exclusive = RIPR_BIN_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut guard =
             RIPR_BIN_OVERRIDE.lock().map_err(|_| eyre!("RIPR_BIN test override lock poisoned"))?;
         *guard = Some(binary.display().to_string());
+        let mut cap = RIPR_MAX_RAW_CHECK_BYTES_OVERRIDE
+            .lock()
+            .map_err(|_| eyre!("RIPR raw-check cap test override lock poisoned"))?;
+        *cap = max_bytes;
         Ok(RiprBinOverrideGuard(exclusive))
     }
 
@@ -8005,6 +13002,108 @@ esac
             result.bytes().all(|b| b == b'x'),
             "Output must consist entirely of 'x' bytes — got unexpected content"
         );
+        Ok(())
+    }
+
+    /// Helper child that writes `byte_count` ASCII `x` bytes to stderr and then
+    /// a small `ok` payload to stdout — the shape that deadlocked the old
+    /// piped `run_output_with_timeout` transport.
+    fn write_noisy_stderr_script(dir: &Path, byte_count: usize) -> Result<PathBuf> {
+        let source = dir.join("noisy_stderr.rs");
+        fs::write(
+            &source,
+            format!(
+                "use std::io::Write;\n\
+                 fn main() {{\n\
+                     let noise = vec![b'x'; {byte_count}];\n\
+                     if let Err(error) = std::io::stderr().write_all(&noise) {{\n\
+                         eprintln!(\"{{error}}\");\n\
+                         std::process::exit(1);\n\
+                     }}\n\
+                     if let Err(error) = std::io::stdout().write_all(b\"ok\\n\") {{\n\
+                         eprintln!(\"{{error}}\");\n\
+                         std::process::exit(1);\n\
+                     }}\n\
+                 }}\n"
+            ),
+        )?;
+        #[cfg(windows)]
+        let binary = dir.join("noisy_stderr.exe");
+        #[cfg(not(windows))]
+        let binary = dir.join("noisy_stderr");
+        let output = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .context("failed to compile noisy-stderr test helper")?;
+        if !output.status.success() {
+            bail!(
+                "failed to compile noisy-stderr test helper:\n{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(binary)
+    }
+
+    #[test]
+    fn run_output_with_timeout_reads_large_stdout_from_file() -> Result<()> {
+        // The timeout variant must use the same file transport as run_output:
+        // a piped child that out-writes the pipe buffer deadlocks against a
+        // poll loop that never drains it.
+        const TARGET_BYTES: usize = 2 * 1024 * 1024;
+
+        let tmp = tempfile::tempdir()?;
+        let script = write_large_output_script(tmp.path(), TARGET_BYTES)?;
+
+        let result =
+            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_secs(120))?;
+
+        assert_eq!(
+            result.len(),
+            TARGET_BYTES,
+            "Expected exactly {TARGET_BYTES} bytes, captured {}",
+            result.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_output_with_timeout_survives_large_stderr() -> Result<()> {
+        // Regression guard for the review-comments lane hang: the child writes
+        // well past the pipe buffer on stderr while producing a small stdout
+        // result. With pipes this deadlocked until the timeout or an external
+        // SIGTERM; with file transport it returns immediately.
+        let tmp = tempfile::tempdir()?;
+        let script = write_noisy_stderr_script(tmp.path(), 4 * MAX_RIPR_STDERR_BYTES)?;
+
+        let result =
+            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_secs(120))?;
+
+        assert_eq!(result.trim(), "ok", "stdout result must be captured verbatim");
+        Ok(())
+    }
+
+    #[test]
+    fn run_output_with_timeout_reports_failure_status() -> Result<()> {
+        #[cfg(not(windows))]
+        {
+            let tmp = tempfile::tempdir()?;
+            let fail = tmp.path().join("fail.sh");
+            fs::write(&fail, "#!/bin/sh\nprintf 'detailed error' >&2\nexit 2\n")?;
+            use std::os::unix::fs::PermissionsExt;
+            {
+                let mut p = fs::metadata(&fail)?.permissions();
+                p.set_mode(0o755);
+                fs::set_permissions(&fail, p)?;
+            }
+            let err =
+                run_output_with_timeout(&fail.display().to_string(), &[], Duration::from_secs(60))
+                    .unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("detailed error"), "stderr must appear in error: {msg}");
+            assert!(msg.contains("status"), "exit status must appear in error: {msg}");
+        }
         Ok(())
     }
 
@@ -8480,7 +13579,9 @@ esac
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -8549,7 +13650,9 @@ esac
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -8624,7 +13727,9 @@ esac
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -8652,6 +13757,1262 @@ esac
             Some(&json!(true)),
             "gate must fire: 1 real gap remains even though 2 unclassified are suppressed"
         );
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------------
+    // Streaming ingestion compatibility (#12860)
+    //
+    // `ripr check --format json` output is unbounded — a 2.1GB payload killed a
+    // 16GB CI runner when write_pr_evidence buffered it into one String and then
+    // parsed a full serde_json DOM. The ingestion now streams one finding at a
+    // time into RiprFindingBuckets. These tests pin the new path to the retained
+    // DOM oracle byte for byte, on realistic and degenerate payloads alike.
+    // ---------------------------------------------------------------------------
+
+    /// #12860 compatibility falsifier: for the same raw payload bytes, the
+    /// streaming ingestion must produce receipt bytes identical to the DOM
+    /// oracle (`serde_json::from_str` + `pr_evidence_packet_with_count`).
+    fn assert_streaming_receipt_matches_dom(
+        payload: &str,
+        extents: Option<&HeadLineExtents>,
+        suppressions: &RiprSuppressionRules,
+    ) -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let dom_packet = pr_evidence_packet_with_count(
+            &options,
+            &serde_json::from_str(payload).context("parity payload must be valid JSON")?,
+            "base-sha",
+            "head-sha",
+            suppressions,
+            extents,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                attribution_scope: None,
+                production_surface: None,
+            },
+        );
+        let temp = tempfile::tempdir()?;
+        let raw_path = temp.path().join("raw-check.json");
+        fs::write(&raw_path, payload)?;
+        let ingestion =
+            ripr_check_ingestion_from_file(&raw_path, suppressions, extents, None, None)?;
+        let streamed_packet = pr_evidence_packet_from_summary(
+            &options,
+            &ingestion,
+            "base-sha",
+            "head-sha",
+            suppressions,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                attribution_scope: None,
+                production_surface: None,
+            },
+        );
+        assert_eq!(
+            format_json(&dom_packet)?,
+            format_json(&streamed_packet)?,
+            "streamed receipt bytes must match DOM receipt bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_ingestion_receipt_matches_dom_bytes() -> Result<()> {
+        let payloads = [
+            // Realistic 0.5.x shape: classification + probe paths, plus large
+            // unconsumed per-finding structures like the 2.1GB payload carried.
+            concat!(
+                r#"{"schema_version":"0.2","tool":"ripr","summary":{"changed_rust_files":2,"findings":3,"weakly_exposed":1,"reachable_unrevealed":1,"no_static_path":1},"findings":["#,
+                r#"{"id":"p1","classification":"weakly_exposed","severity":"info","confidence":1.0,"probe":{"id":"p1","family":"call_deletion","file":".\\xtask/src/a.rs","line":11,"expression":"type TestResult = anyhow::Result<()>;"},"ripr":{"reach":{"state":"yes","summary":"reaches"},"observations":[{"line":271,"value":"01","context":"assertion_argument"}]}},"#,
+                r#"{"classification":"reachable_unrevealed","seam":{"file":"crates/perl-lsp-rs/src/b.rs","line":4}},"#,
+                r#"{"classification":"no_static_path","probe":{"path":"xtask/src/c.rs","line":9},"notes":"unicode ✓ escaped \"quotes\""}]}"#
+            ),
+            // 0.9.x grip_class variant, mapped onto the canonical buckets.
+            concat!(
+                r#"{"summary":{"weakly_exposed":0,"reachable_unrevealed":2,"no_static_path":0},"findings":["#,
+                r#"{"grip_class":"weakly_gripped","seam":{"file":"crates/perl-lsp-rs/src/removed.rs","line":4}},"#,
+                r#"{"grip_class":"weakly_gripped","seam":{"file":"crates/perl-lsp-rs/src/kept.rs","line":40}}]}"#
+            ),
+            // Unrecognized classification on suppression-relevant paths (#1346).
+            concat!(
+                r#"{"summary":{"weakly_exposed":1,"reachable_unrevealed":0,"no_static_path":0},"findings":["#,
+                r#"{"classification":"exposed","probe":{"path":"archive/old.rs"}},"#,
+                r#"{"classification":"reachable_unrevealed","probe":{"path":"archive/old.rs"}}]}"#
+            ),
+            r#"{"summary":{"weakly_exposed":2,"reachable_unrevealed":0,"no_static_path":0},"findings":["a-string",42,null,true,{"classification":"weakly_exposed","probe":{"path":"mixed.rs"}}]}"#,
+            // Duplicate keys: DOM semantics keep the last occurrence.
+            r#"{"summary":{"weakly_exposed":1},"summary":{"weakly_exposed":7,"reachable_unrevealed":0,"no_static_path":0},"findings":[],"findings":[]}"#,
+            // A non-empty duplicate findings value must replace, not add to,
+            // the earlier array (serde_json DOM maps are last-key-wins).
+            concat!(
+                r#"{"summary":{"weakly_exposed":0,"reachable_unrevealed":1,"no_static_path":1},"findings":["#,
+                r#"{"classification":"no_static_path","probe":{"path":"first.rs","line":1}}],"findings":["#,
+                r#"{"classification":"reachable_unrevealed","probe":{"path":"last.rs","line":2}}]}"#
+            ),
+            // Trailing whitespace is allowed by both paths.
+            r#"{"summary":{"weakly_exposed":0,"reachable_unrevealed":0,"no_static_path":0},"findings":[]}"#,
+        ];
+        for payload in payloads {
+            assert_streaming_receipt_matches_dom(payload, None, &no_suppressions())?;
+        }
+        Ok(())
+    }
+
+    /// Shapes the pre-#9113 DOM path counted are now refused by both paths.
+    /// Retained from the DOM/stream count-parity list: after the producer-envelope
+    /// contract they are instrument failures, and the parity claim is that the
+    /// streaming path refuses exactly what the DOM oracle refuses.
+    #[test]
+    fn streaming_ingestion_refuses_the_degenerate_shapes_the_dom_oracle_refuses() -> Result<()> {
+        let payloads = [
+            r#"{"summary":{"weakly_exposed":3,"reachable_unrevealed":0,"no_static_path":0}}"#,
+            r#"{"findings":[{"classification":"no_static_path","probe":{"path":"a.rs"}},{"classification":"unknown","probe":{"path":"b.rs"}}]}"#,
+            r#"{"tool":"ripr"}"#,
+            r#"{}"#,
+            r#"{"summary":"not-an-object","findings":null}"#,
+            r#"{"summary":{"weakly_exposed":2},"findings":5}"#,
+            r#"{"summary":{"weakly_exposed":2},"findings":{"a":1}}"#,
+            r#"{"summary":{"weakly_exposed":"3","reachable_unrevealed":-2,"no_static_path":1.5},"findings":[]}"#,
+            r#"[1,2,3]"#,
+            r#""just a string""#,
+            r#"42"#,
+            r#"-7"#,
+            r#"true"#,
+            r#"null"#,
+            "{}\n  ",
+        ];
+        for payload in payloads {
+            let dom = serde_json::from_str::<Value>(payload)?;
+            let dom_refusal = validate_check_envelope(&dom)
+                .err()
+                .ok_or_else(|| eyre!("DOM oracle unexpectedly accepted {payload}"))?;
+            let temp = tempfile::tempdir()?;
+            let raw_path = temp.path().join("raw-check.json");
+            fs::write(&raw_path, payload)?;
+            let streamed_refusal =
+                ripr_check_ingestion_from_file(&raw_path, &no_suppressions(), None, None, None)
+                    .err()
+                    .ok_or_else(|| eyre!("streamed ingestion unexpectedly accepted {payload}"))?;
+            color_eyre::eyre::ensure!(
+                streamed_refusal.to_string() == dom_refusal.to_string(),
+                "refusal mismatch for {payload}: streamed `{streamed_refusal}`, DOM `{dom_refusal}`"
+            );
+        }
+        Ok(())
+    }
+
+    /// The #6260 reproduction payload: probes on a deleted line must not count
+    /// as new gaps under either ingestion path.
+    #[test]
+    fn streaming_ingestion_receipt_matches_dom_bytes_with_extents() -> Result<()> {
+        let payload = concat!(
+            r#"{"summary":{"weakly_exposed":0,"reachable_unrevealed":0,"no_static_path":2},"findings":["#,
+            r#"{"classification":"no_static_path","kind":"call_deletion","probe":{"path":"xtask/src/tasks/check_version_sync.rs","line":29}},"#,
+            r#"{"classification":"no_static_path","kind":"return_value","probe":{"path":"xtask/src/tasks/check_version_sync.rs","line":29}}]}"#
+        );
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(
+                "xtask/src/tasks/check_version_sync.rs".to_string(),
+                13usize,
+            )]),
+            removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
+        };
+        assert_streaming_receipt_matches_dom(payload, Some(&extents), &no_suppressions())
+    }
+
+    #[test]
+    fn streaming_ingestion_receipt_matches_dom_bytes_with_suppressions() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::create_dir_all(temp.path().join("policy"))?;
+        fs::write(
+            temp.path().join("policy/ripr-suppressions.toml"),
+            r#"schema_version = 1
+policy = "ripr-suppressions"
+owner = "EffortlessMetrics"
+status = "advisory"
+updated = "2026-05-28"
+
+[[suppress]]
+paths = ["archive/**"]
+"#,
+        )?;
+        let rules =
+            read_ripr_suppression_rules(temp.path(), Path::new("policy/ripr-suppressions.toml"))?;
+        let payload = concat!(
+            r#"{"summary":{"weakly_exposed":1,"reachable_unrevealed":2,"no_static_path":0},"findings":["#,
+            r#"{"classification":"weakly_exposed","probe":{"path":"archive/old.rs","line":1}},"#,
+            r#"{"classification":"reachable_unrevealed","seam":{"file":"archive/deep/nested.rs","line":2}},"#,
+            r#"{"classification":"reachable_unrevealed","seam":{"file":"crates/live/src/lib.rs","line":3}}]}"#
+        );
+        assert_streaming_receipt_matches_dom(payload, None, &rules)
+    }
+
+    /// Both paths must reject invalid payloads, and the streaming error must
+    /// carry the same ingestion context the DOM path used.
+    #[test]
+    fn streaming_ingestion_rejects_invalid_payloads_like_the_dom_path() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let suppressions = no_suppressions();
+        for (name, payload) in [
+            ("garbage", "not json at all"),
+            ("truncated", r#"{"summary":{}"#),
+            ("trailing-content", r#"{"summary":{}} trailing"#),
+            ("bad-string", r#"{"findings":[{"probe":{"path":unterminated}}]"#),
+        ] {
+            let raw_path = temp.path().join(format!("{name}.json"));
+            fs::write(&raw_path, payload)?;
+            let streamed =
+                ripr_check_ingestion_from_file(&raw_path, &suppressions, None, None, None);
+            assert!(
+                serde_json::from_str::<Value>(payload).is_err(),
+                "{name}: DOM oracle must reject this payload"
+            );
+            let err = streamed.unwrap_err();
+            let message = format!("{err:#}");
+            assert!(
+                message.contains("ripr check output was not valid JSON"),
+                "{name}: error must carry the ingestion context: {message}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The raw artifact must carry ripr's stdout byte for byte — the contract
+    /// the String-buffering path had via `write_text` (#1346) — while the
+    /// streaming transport never holds the payload in memory (#12860).
+    #[test]
+    fn run_ripr_check_streams_stdout_verbatim_into_the_raw_artifact() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let payload = concat!(
+            r#"{"summary":{"changed_rust_files":1,"findings":2,"weakly_exposed":1,"reachable_unrevealed":0,"no_static_path":1},"findings":"#,
+            r#"[{"classification":"weakly_exposed","probe":{"file":"crates/x/src/a.rs","line":3}},"#,
+            r#"{"classification":"no_static_path","probe":{"path":"xtask/src/b.rs","line":8}}]}"#
+        );
+        let binary = write_ripr_stub(&stubs, "ripr-check-ok", payload, 0)?;
+        let _override = override_ripr_bin(&binary)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+
+        run_ripr_check(&repo, &options)?;
+
+        let raw_path = repo.join("target/ripr/pr/raw-check.json");
+        let raw = fs::read(&raw_path)?;
+        assert_eq!(raw, payload.as_bytes(), "raw artifact must carry stdout verbatim");
+
+        let Some(parent) = raw_path.parent() else {
+            bail!("raw artifact path has no parent");
+        };
+        let names = fs::read_dir(parent)?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<BTreeSet<_>>>()?;
+        assert_eq!(names, BTreeSet::from(["raw-check.json".to_string()]));
+
+        let suppressions = no_suppressions();
+        let ingestion = ripr_check_ingestion_from_file(&raw_path, &suppressions, None, None, None)?;
+        assert!(ingestion.check_summary_present);
+        assert_eq!(ingestion.summary_counts.weakly_exposed, 1);
+        assert_eq!(ingestion.summary_counts.reachable_unrevealed, 0);
+        assert_eq!(ingestion.summary_counts.no_static_path, 1);
+        Ok(())
+    }
+
+    /// A stderr read failure must not leave the producer running: it would keep
+    /// writing its unbounded payload to a temporary file nothing will publish.
+    /// The injected read failure itself is not portably reproducible through
+    /// `std::process`, so this covers the settle step the failure path calls.
+    /// The producer is a compiled stub, so the test does not require a platform shell.
+    #[test]
+    fn settling_the_producer_terminates_and_reaps_it() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let binary = write_sleeping_ripr_stub(temp.path(), "ripr-sleeping")?;
+        let mut child = Command::new(&binary)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to spawn long-lived test producer")?;
+        let started = Instant::now();
+        settle_ripr_child(&mut child);
+        let status = child.try_wait()?.ok_or_else(|| eyre!("settled producer was not reaped"))?;
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(5),
+            "settling the producer waited instead of killing it"
+        );
+        color_eyre::eyre::ensure!(
+            !status.success(),
+            "a settled producer must not report success: {status}"
+        );
+        Ok(())
+    }
+
+    struct FailingStderrReader;
+
+    impl Read for FailingStderrReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "injected stderr read failure"))
+        }
+    }
+
+    struct PanickingStderrReader;
+
+    impl Read for PanickingStderrReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            panic!("injected stderr drain panic")
+        }
+    }
+
+    /// A drain that dies without returning an error must still release the
+    /// waiter. Otherwise the waiter keeps polling a producer that can block
+    /// forever writing into a stderr pipe nobody is reading, and the whole
+    /// transport hangs instead of failing closed.
+    #[test]
+    fn a_panicking_stderr_drain_still_settles_the_producer() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let binary = write_sleeping_ripr_stub(temp.path(), "ripr-panicking-stderr")?;
+        let mut child = Command::new(&binary)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to spawn long-lived test producer")?;
+        let started = Instant::now();
+
+        let error = drain_stderr_and_wait(&mut child, None, PanickingStderrReader, "ripr", None)
+            .err()
+            .ok_or_else(|| eyre!("a panicking stderr drain must return an error"))?;
+
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains("panicked"),
+            "the panic must be reported as such: {message}"
+        );
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(30),
+            "a panicking drain left the waiter polling a producer that never exits"
+        );
+        let status = child
+            .try_wait()?
+            .ok_or_else(|| eyre!("producer was not reaped after the stderr drain panicked"))?;
+        color_eyre::eyre::ensure!(
+            !status.success(),
+            "a settled producer must not report success: {status}"
+        );
+        Ok(())
+    }
+
+    struct ChunkedStderrReader {
+        remaining: usize,
+        chunk_size: usize,
+    }
+
+    impl Read for ChunkedStderrReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.remaining == 0 || buf.is_empty() {
+                return Ok(0);
+            }
+            let read = self.remaining.min(self.chunk_size).min(buf.len());
+            buf[..read].fill(b'E');
+            self.remaining -= read;
+            Ok(read)
+        }
+    }
+
+    #[test]
+    fn drain_stderr_and_wait_settles_the_producer_on_read_failure() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let binary = write_sleeping_ripr_stub(temp.path(), "ripr-failing-stderr")?;
+        let mut child = Command::new(&binary)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to spawn long-lived test producer")?;
+        let started = Instant::now();
+        let error = drain_stderr_and_wait(&mut child, None, FailingStderrReader, "ripr", None)
+            .err()
+            .ok_or_else(|| eyre!("a failing stderr reader must return an error"))?;
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains("failed to read ripr stderr"),
+            "read failure context was missing: {message}"
+        );
+        let status = child
+            .try_wait()?
+            .ok_or_else(|| eyre!("producer was not reaped after the stderr read failure"))?;
+        color_eyre::eyre::ensure!(
+            !status.success(),
+            "a settled producer must not report success: {status}"
+        );
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(5),
+            "settling the producer waited instead of killing it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn drain_stderr_and_wait_drains_and_bounds_successful_stderr() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let binary = write_ripr_stub(temp.path(), "ripr-short-lived", "", 0)?;
+        let mut child = Command::new(&binary)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to spawn short-lived test producer")?;
+        let (status, stderr_bytes) = drain_stderr_and_wait(
+            &mut child,
+            None,
+            ChunkedStderrReader { remaining: MAX_RIPR_STDERR_BYTES * 2, chunk_size: 1024 },
+            "ripr",
+            None,
+        )?;
+        color_eyre::eyre::ensure!(
+            status.success(),
+            "the short-lived producer must report success: {status}"
+        );
+        color_eyre::eyre::ensure!(
+            stderr_bytes.len() == MAX_RIPR_STDERR_BYTES,
+            "retained stderr had {} bytes, expected exactly {}",
+            stderr_bytes.len(),
+            MAX_RIPR_STDERR_BYTES
+        );
+        Ok(())
+    }
+
+    /// A killed run may leave staging residue, but the uploaded evidence tree
+    /// holds only the published artifact: stdout temporaries live in staging.
+    #[test]
+    fn run_ripr_check_stages_stdout_outside_the_uploaded_evidence_tree() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let raw_path = repo.join(PR_RAW_CHECK_JSON);
+        let artifact_dir = raw_path.parent().ok_or_else(|| eyre!("raw path has no parent"))?;
+        let staging_dir = repo.join(RIPR_STDOUT_STAGING_DIR);
+        fs::create_dir_all(artifact_dir)?;
+        fs::create_dir_all(&staging_dir)?;
+        let orphan = staging_dir.join(format!("{RIPR_STDOUT_TEMP_PREFIX}deadbeef"));
+        fs::write(&orphan, "partial payload from a killed run")?;
+
+        let payload = r#"{"summary":{"findings":0},"findings":[]}"#;
+        let binary = write_ripr_stub(&stubs, "ripr-check-staging", payload, 0)?;
+        let _override = override_ripr_bin(&binary)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+
+        run_ripr_check(&repo, &options)?;
+
+        assert_eq!(fs::read(&raw_path)?, payload.as_bytes());
+        let artifact_entries = fs::read_dir(artifact_dir)?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        assert!(
+            !artifact_entries.iter().any(|name| name.starts_with(RIPR_STDOUT_TEMP_PREFIX)),
+            "uploaded evidence tree must never contain stdout temporaries: {artifact_entries:?}"
+        );
+        assert!(!orphan.exists(), "a pre-existing staging orphan must be swept before the run");
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_stdout_staging_workflow_upload_globs_exclude_staging_dir() -> Result<()> {
+        let workflow = fs::read_to_string(repo_root()?.join(".github/workflows/ripr.yml"))?;
+        let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow)?;
+        let jobs = yaml
+            .get("jobs")
+            .and_then(serde_yaml_ng::Value::as_mapping)
+            .context("RIPR workflow has no jobs map")?;
+        let mut upload_paths = Vec::new();
+        for job in jobs.values() {
+            let Some(steps) = job.get("steps").and_then(serde_yaml_ng::Value::as_sequence) else {
+                continue;
+            };
+            for step in steps {
+                if step.get("name").and_then(serde_yaml_ng::Value::as_str)
+                    != Some("Upload ripr PR evidence")
+                {
+                    continue;
+                }
+                let path = step
+                    .get("with")
+                    .and_then(|with| with.get("path"))
+                    .and_then(serde_yaml_ng::Value::as_str)
+                    .context("RIPR evidence upload step has no path")?;
+                upload_paths.extend(path.lines().map(str::trim).filter(|path| !path.is_empty()));
+            }
+        }
+        color_eyre::eyre::ensure!(
+            !upload_paths.is_empty(),
+            "RIPR workflow has no evidence upload paths"
+        );
+        color_eyre::eyre::ensure!(
+            upload_paths.iter().any(|path| *path == "target/ripr/pr/**"),
+            "RIPR evidence uploads must retain target/ripr/pr/**: {upload_paths:?}"
+        );
+        for path in &upload_paths {
+            let root = path.strip_suffix("/**").unwrap_or(path).trim_end_matches('/');
+            let matches_staging = RIPR_STDOUT_STAGING_DIR == root
+                || RIPR_STDOUT_STAGING_DIR.starts_with(&format!("{root}/"));
+            color_eyre::eyre::ensure!(
+                !matches_staging,
+                "upload glob `{path}` would include {RIPR_STDOUT_STAGING_DIR}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Falsifies a transport that leaves a killed run's partial payload behind.
+    ///
+    /// `NamedTempFile` unlinks on drop, so nothing reclaims the in-flight
+    /// stdout file when the process dies without unwinding — the ordinary
+    /// outcome on this lane, which is killed by OOM or by external run
+    /// cancellation. Startup removed only the published artifact, so those
+    /// orphans accumulated on persistent self-hosted workspaces.
+    #[test]
+    fn run_ripr_check_sweeps_stdout_temporaries_abandoned_by_a_killed_run() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let raw_path = repo.join(PR_RAW_CHECK_JSON);
+        let artifact_dir = raw_path.parent().ok_or_else(|| eyre!("raw path has no parent"))?;
+        let staging_dir = repo.join(RIPR_STDOUT_STAGING_DIR);
+        fs::create_dir_all(artifact_dir)?;
+        fs::create_dir_all(&staging_dir)?;
+
+        // What a killed prior run leaves in staging: a prefixed temporary that
+        // drop never reclaimed, plus an unrelated neighbour that must survive.
+        let orphan = staging_dir.join(format!("{RIPR_STDOUT_TEMP_PREFIX}deadbeef"));
+        fs::write(&orphan, "partial payload from a killed run")?;
+        let bystander = staging_dir.join("committed-diff.json");
+        fs::write(&bystander, "{}")?;
+
+        let payload = r#"{"summary":{"findings":0},"findings":[]}"#;
+        let binary = write_ripr_stub(&stubs, "ripr-check-sweep", payload, 0)?;
+        let _override = override_ripr_bin(&binary)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+
+        run_ripr_check(&repo, &options)?;
+
+        assert!(!orphan.exists(), "an abandoned stdout temporary must be swept");
+        assert!(bystander.exists(), "the sweep must not touch unrelated artifact files");
+        assert_eq!(fs::read(&raw_path)?, payload.as_bytes());
+        let leftovers = fs::read_dir(&staging_dir)?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        assert!(
+            !leftovers.iter().any(|name| name.starts_with(RIPR_STDOUT_TEMP_PREFIX)),
+            "no stdout temporary may survive a successful run: {leftovers:?}"
+        );
+        Ok(())
+    }
+
+    /// Falsifies a transport that buffers child stderr without a bound.
+    ///
+    /// The stdout path streams, but stderr was read with `read_to_end`, so a
+    /// noisy failure restored exactly the unbounded buffer #12569 removes. The
+    /// stub emits far more than the cap and more than a pipe buffer holds, so a
+    /// fix that truncates by *stopping* the read instead of draining would
+    /// deadlock here rather than pass. The oracle inspects the stderr section
+    /// only because the surrounding diagnostic carries the binary path.
+    #[test]
+    fn run_ripr_check_failure_retains_bounded_stderr() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("EEEE-stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let noise = MAX_RIPR_STDERR_BYTES * 4;
+        let binary =
+            write_ripr_stub_with_stderr(&stubs, "ripr-check-noisy", "partial payload", 2, noise)?;
+        let _override = override_ripr_bin(&binary)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+
+        let err = run_ripr_check(&repo, &options).unwrap_err();
+        let message = format!("{err:#}");
+
+        assert!(message.contains("status"), "exit status must still appear: {message}");
+        let stderr = message
+            .split_once("\nstderr:\n")
+            .map(|(_, stderr)| stderr)
+            .ok_or_else(|| eyre!("failure message did not include a stderr section"))?;
+        let retained = stderr.matches('E').count();
+        color_eyre::eyre::ensure!(
+            retained == MAX_RIPR_STDERR_BYTES,
+            "retained stderr section had {retained} E bytes, expected exactly {MAX_RIPR_STDERR_BYTES}"
+        );
+        assert!(
+            message.len() < noise,
+            "the failure message must be far smaller than the emitted stderr"
+        );
+        Ok(())
+    }
+
+    /// A failing ripr run must surface its status and a bounded stdout excerpt,
+    /// and must not leave a raw artifact behind.
+    #[test]
+    fn run_ripr_check_failure_surfaces_status_without_an_artifact() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let binary = write_ripr_stub(&stubs, "ripr-check-fail", "partial payload", 2)?;
+        let _override = override_ripr_bin(&binary)?;
+        let raw_path = repo.join(PR_RAW_CHECK_JSON);
+        fs::create_dir_all(raw_path.parent().ok_or_else(|| eyre!("raw path has no parent"))?)?;
+        fs::write(&raw_path, "stale prior run")?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+
+        let err = run_ripr_check(&repo, &options).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("status"), "exit status must appear: {message}");
+        assert!(
+            message.contains("partial payload"),
+            "bounded stdout excerpt must aid diagnosis: {message}"
+        );
+        assert!(
+            !raw_path.exists(),
+            "a failed run must remove a stale artifact rather than expose it to fallback"
+        );
+        Ok(())
+    }
+
+    /// Lazily generates a large `ripr check` payload with exact summary counts
+    /// and findings buckets for the production ingestion seam. The generator
+    /// yields chunk by chunk so the fixture is never held in memory as one
+    /// buffer; this test does not measure a memory bound.
+    struct SyntheticCheckStream {
+        header: Vec<u8>,
+        header_pos: usize,
+        findings_remaining: usize,
+        pending: Vec<u8>,
+        pending_pos: usize,
+        footer_served: bool,
+        filler: String,
+    }
+
+    impl SyntheticCheckStream {
+        const FINDING_COUNT: usize = 400;
+        /// ~256KB of unconsumed filler per finding, sized like the real
+        /// payload (~1.2MB findings, most of it never read by the receipt).
+        const FILLER_BYTES: usize = 256 * 1024;
+
+        fn new() -> Self {
+            Self {
+                header: format!(
+                    r#"{{"schema_version":"0.2","tool":"ripr","summary":{{"findings":{},"weakly_exposed":{},"reachable_unrevealed":0,"no_static_path":0}},"findings":["#,
+                    Self::FINDING_COUNT,
+                    Self::FINDING_COUNT
+                )
+                .into_bytes(),
+                header_pos: 0,
+                findings_remaining: Self::FINDING_COUNT,
+                pending: Vec::new(),
+                pending_pos: 0,
+                footer_served: false,
+                filler: "x".repeat(Self::FILLER_BYTES),
+            }
+        }
+
+        fn finding_bytes(&self, index: usize) -> Vec<u8> {
+            let comma = if index == 0 { "" } else { "," };
+            format!(
+                "{comma}{{\"id\":\"probe:{index}\",\"classification\":\"weakly_exposed\",\"severity\":\"info\",\"confidence\":1.0,\"probe\":{{\"file\":\"crates/x/src/{index}.rs\",\"line\":3}},\"evidence\":\"{}\"}}",
+                self.filler
+            )
+            .into_bytes()
+        }
+    }
+
+    impl Read for SyntheticCheckStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.header_pos < self.header.len() {
+                let len = (self.header.len() - self.header_pos).min(buf.len());
+                buf[..len].copy_from_slice(&self.header[self.header_pos..][..len]);
+                self.header_pos += len;
+                return Ok(len);
+            }
+            if self.pending_pos < self.pending.len() {
+                let len = (self.pending.len() - self.pending_pos).min(buf.len());
+                buf[..len].copy_from_slice(&self.pending[self.pending_pos..][..len]);
+                self.pending_pos += len;
+                return Ok(len);
+            }
+            if self.findings_remaining > 0 {
+                let index = Self::FINDING_COUNT - self.findings_remaining;
+                self.findings_remaining -= 1;
+                self.pending = self.finding_bytes(index);
+                self.pending_pos = 0;
+                return self.read(buf);
+            }
+            if !self.footer_served {
+                self.footer_served = true;
+                self.pending = b"]}".to_vec();
+                self.pending_pos = 0;
+                return self.read(buf);
+            }
+            Ok(0)
+        }
+    }
+
+    /// Runs the large fixture once through `ripr_check_ingestion_from_file`,
+    /// proving the production seam validates it and computes exact bucket
+    /// counts without claiming a measured memory bound.
+    #[test]
+    fn streaming_ingestion_completes_on_large_payload_with_correct_buckets() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let raw_path = temp.path().join("raw-check.json");
+        let mut raw_file = fs::File::create(&raw_path)?;
+        std::io::copy(&mut SyntheticCheckStream::new(), &mut raw_file)?;
+        let ingestion =
+            ripr_check_ingestion_from_file(&raw_path, &no_suppressions(), None, None, None)?;
+        assert!(ingestion.check_summary_present);
+        assert_eq!(ingestion.summary_counts.weakly_exposed, SyntheticCheckStream::FINDING_COUNT);
+        assert_eq!(ingestion.summary_counts.reachable_unrevealed, 0);
+        assert_eq!(ingestion.summary_counts.no_static_path, 0);
+        Ok(())
+    }
+
+    /// Bounded local re-run against a retained diagnostics payload (#12860),
+    /// for the wt-12860 lane's 2.1GB artifact. Skipped by default:
+    /// `RIPR_LARGE_RAW_CHECK=<path> cargo test -p xtask -- --ignored streaming_ingestion_handles_retained_large_payload`
+    ///
+    /// The retained artifact is a truncated document (the diagnosed run was
+    /// killed while ripr was still writing), so full-document ingestion cannot
+    /// complete for it. What this probe pins instead is the absence of the
+    /// kill signature: the whole payload streams through a fixed-size reader
+    /// and the truncated document fails cleanly with the ingestion context —
+    /// no multi-gigabyte String, no DOM, no abort.
+    #[test]
+    #[ignore]
+    fn streaming_ingestion_handles_retained_large_payload_when_asked() -> Result<()> {
+        let Some(path) = env::var_os("RIPR_LARGE_RAW_CHECK") else {
+            bail!("set RIPR_LARGE_RAW_CHECK to a retained raw-check.json to run this probe");
+        };
+        let started = Instant::now();
+        match ripr_check_ingestion_from_file(Path::new(&path), &no_suppressions(), None, None, None)
+        {
+            Ok(ingestion) => println!(
+                "ingested {} in {:?}: weakly_exposed={} reachable_unrevealed={} no_static_path={}",
+                Path::new(&path).display(),
+                started.elapsed(),
+                ingestion.summary_counts.weakly_exposed,
+                ingestion.summary_counts.reachable_unrevealed,
+                ingestion.summary_counts.no_static_path,
+            ),
+            Err(err) => {
+                let message = format!("{err:#}");
+                assert!(
+                    message.contains("ripr check output was not valid JSON"),
+                    "a truncated payload must fail cleanly at parse, not by exhaustion: {message}"
+                );
+                println!(
+                    "streamed {} to a clean parse failure in {:?} (truncated diagnostics artifact): {message}",
+                    Path::new(&path).display(),
+                    started.elapsed(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Compile a stub `ripr` binary that writes `stdout_text` to stdout and
+    /// exits with `exit_code`, the way the #12569 transport helpers do.
+    fn write_ripr_stub(
+        dir: &Path,
+        name: &str,
+        stdout_text: &str,
+        exit_code: i32,
+    ) -> Result<PathBuf> {
+        write_ripr_stub_with_stderr(dir, name, stdout_text, exit_code, 0)
+    }
+
+    /// As `write_ripr_stub`, but the child also writes `stderr_bytes` bytes to
+    /// stderr, so a test can drive the bounded-retention path with more output
+    /// than the cap and more than a pipe buffer holds.
+    fn write_ripr_stub_with_stderr(
+        dir: &Path,
+        name: &str,
+        stdout_text: &str,
+        exit_code: i32,
+        stderr_bytes: usize,
+    ) -> Result<PathBuf> {
+        let main_body = format!(
+            "    use std::io::Write;\n    let payload = {stdout_text:?};\n    let _ = std::io::stdout().write_all(payload.as_bytes());\n    let noise = vec![b'E'; {stderr_bytes}];\n    let _ = std::io::stderr().write_all(&noise);\n    std::process::exit({exit_code});\n"
+        );
+        compile_test_stub(dir, name, &main_body)
+    }
+
+    /// Compiles `main_body` into a test child binary. Both the ripr stubs and
+    /// the long-lived producer stub go through this, so no test depends on a
+    /// platform shell being present.
+    fn compile_test_stub(dir: &Path, name: &str, main_body: &str) -> Result<PathBuf> {
+        let source = dir.join(format!("{name}.rs"));
+        fs::write(&source, format!("fn main() {{\n{main_body}}}\n"))?;
+        #[cfg(windows)]
+        let binary = dir.join(format!("{name}.exe"));
+        #[cfg(not(windows))]
+        let binary = dir.join(name);
+        let output = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .context("failed to compile ripr stub")?;
+        if !output.status.success() {
+            bail!(
+                "failed to compile ripr stub:\n{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(binary)
+    }
+
+    /// A producer that outlives the test unless it is killed, so the settle
+    /// path is observable instead of the child exiting by itself.
+    fn write_sleeping_ripr_stub(dir: &Path, name: &str) -> Result<PathBuf> {
+        compile_test_stub(
+            dir,
+            name,
+            "    std::thread::sleep(std::time::Duration::from_secs(60));\n",
+        )
+    }
+
+    /// A producer that stays alive while a descendant inherits stdout *and*
+    /// stderr and floods both. Killing only the direct child would leave the
+    /// descendant holding the pipe (hanging `drain.join`) and the staged file
+    /// (disk still growing after the cap fired). The parent never floods, so a
+    /// settle that does not walk the tree cannot pass the refusal test.
+    fn write_descendant_flooding_ripr_stub(
+        dir: &Path,
+        name: &str,
+        sidecar: &Path,
+    ) -> Result<PathBuf> {
+        compile_test_stub(
+            dir,
+            name,
+            &format!(
+                "    use std::io::Write;\n    \
+                 use std::process::Command;\n    \
+                 let mut args = std::env::args();\n    \
+                 let Some(exe) = args.next() else {{ return; }};\n    \
+                 let chunk = vec![b'x'; 64 * 1024];\n    \
+                 if args.next().as_deref() == Some(\"--flood\") {{\n        \
+                 let mut stdout = std::io::stdout();\n        \
+                 let mut side = std::fs::File::create({sidecar:?}).ok();\n        \
+                 loop {{\n            \
+                 if stdout.write_all(&chunk).is_err() {{\n                \
+                 return;\n            \
+                 }}\n            \
+                 let _ = stdout.flush();\n            \
+                 let _ = std::io::stderr().write_all(b\"e\");\n            \
+                 if let Some(file) = side.as_mut() {{\n                \
+                 if file.write_all(&chunk).is_err() {{\n                    \
+                 return;\n                \
+                 }}\n                \
+                 let _ = file.flush();\n            \
+                 }}\n        \
+                 }}\n    \
+                 }}\n    \
+                 let Ok(_child) = Command::new(exe).arg(\"--flood\").spawn() else {{\n        \
+                 return;\n    \
+                 }};\n    \
+                 loop {{\n        \
+                 std::thread::sleep(std::time::Duration::from_secs(60));\n    \
+                 }}\n"
+            ),
+        )
+    }
+
+    /// A producer that spawns a long-lived copy of itself holding the inherited
+    /// staged descriptors and then exits successfully with a small payload,
+    /// standing in for a producer that leaves a descendant behind on the
+    /// success path.
+    fn write_exiting_with_descendant_ripr_stub(dir: &Path, name: &str) -> Result<PathBuf> {
+        compile_test_stub(
+            dir,
+            name,
+            "    use std::io::Write;\n    \
+             use std::process::Command;\n    \
+             let mut args = std::env::args();\n    \
+             let Some(exe) = args.next() else { return; };\n    \
+             if args.next().as_deref() == Some(\"--hold\") {\n        \
+             std::thread::sleep(std::time::Duration::from_secs(60));\n        \
+             return;\n    \
+             }\n    \
+             let Ok(_child) = Command::new(exe).arg(\"--hold\").spawn() else {\n        \
+             return;\n    \
+             };\n    \
+             let payload = \"{\\\"summary\\\":{\\\"findings\\\":0},\\\"findings\\\":[]}\";\n    \
+             let _ = std::io::stdout().write_all(payload.as_bytes());\n    \
+             std::process::exit(0);\n",
+        )
+    }
+
+    /// A producer that writes stdout without ever stopping, standing in for the
+    /// unbounded payload of #12999 at a size a test can afford. It exits only if
+    /// it is killed, so a cap that never fires hangs the test rather than
+    /// passing it.
+    fn write_flooding_ripr_stub(dir: &Path, name: &str) -> Result<PathBuf> {
+        compile_test_stub(
+            dir,
+            name,
+            "    use std::io::Write;\n    \
+             let chunk = vec![b'x'; 64 * 1024];\n    \
+             let mut stdout = std::io::stdout();\n    \
+             loop {\n        \
+             if stdout.write_all(&chunk).is_err() {\n            \
+             return;\n        \
+             }\n        \
+             let _ = stdout.flush();\n    \
+             }\n",
+        )
+    }
+
+    /// A producer that writes `bytes` of stdout and exits immediately, so the
+    /// cap must hold for a payload that can pass it inside one poll interval.
+    fn write_oversized_exiting_ripr_stub(dir: &Path, name: &str, bytes: usize) -> Result<PathBuf> {
+        compile_test_stub(
+            dir,
+            name,
+            &format!(
+                "    use std::io::Write;\n    \
+                 let payload = vec![b'x'; {bytes}];\n    \
+                 let _ = std::io::stdout().write_all(&payload);\n    \
+                 std::process::exit(0);\n"
+            ),
+        )
+    }
+
+    fn pr_evidence_options() -> PrEvidenceOptions {
+        PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        }
+    }
+
+    /// #12999: an unbounded producer payload must fail closed with an
+    /// actionable refusal instead of filling the lane's disk until the runner is
+    /// killed mid-write. The producer never exits on its own, so a cap that does
+    /// not fire cannot pass this test.
+    #[test]
+    fn run_ripr_check_refuses_a_producer_that_passes_the_staged_payload_cap() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let binary = write_flooding_ripr_stub(&stubs, "ripr-flooding")?;
+        let _override = override_ripr_bin_with_cap(&binary, Some(1024 * 1024))?;
+
+        let started = Instant::now();
+        let error = run_ripr_check(&repo, &pr_evidence_options())
+            .err()
+            .ok_or_else(|| eyre!("an unbounded payload must be refused, not published"))?;
+
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains("over this lane's 1048576 byte cap"),
+            "refusal must name the cap it enforced: {message}"
+        );
+        color_eyre::eyre::ensure!(
+            message.contains(RIPR_MAX_RAW_CHECK_BYTES_ENV),
+            "refusal must name the override that raises the cap: {message}"
+        );
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "the producer was waited out instead of terminated at the cap"
+        );
+
+        // A refused run publishes nothing: the gate must see an absent verdict,
+        // never a truncated payload that would ingest as a smaller gap.
+        let raw_path = repo.join(PR_RAW_CHECK_JSON);
+        color_eyre::eyre::ensure!(
+            !raw_path.exists(),
+            "a refused run must not publish {}",
+            raw_path.display()
+        );
+        let staging = repo.join(RIPR_STDOUT_STAGING_DIR);
+        let staged: Vec<_> = fs::read_dir(&staging)?
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        color_eyre::eyre::ensure!(
+            staged.is_empty(),
+            "the staged payload must be dropped when the run is refused: {staged:?}"
+        );
+        Ok(())
+    }
+
+    /// Class-level falsifier for process-tree ownership: a descendant that
+    /// inherited both stdout and stderr must be terminated with the producer.
+    /// Killing only the direct child hangs `drain.join` on the inherited stderr
+    /// write-end and lets the staged file keep growing after the cap fired.
+    #[test]
+    fn run_ripr_check_refuses_a_descendant_that_inherits_stdout_and_stderr() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let sidecar = stubs.join("descendant-side.bin");
+        let binary = write_descendant_flooding_ripr_stub(&stubs, "ripr-descendant", &sidecar)?;
+        let _override = override_ripr_bin_with_cap(&binary, Some(1024 * 1024))?;
+        let started = Instant::now();
+
+        let error = run_ripr_check(&repo, &pr_evidence_options())
+            .err()
+            .ok_or_else(|| eyre!("a descendant flooding past the cap must be refused"))?;
+
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains("over this lane's 1048576 byte cap"),
+            "refusal must name the cap it enforced: {message}"
+        );
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "drain.join blocked on a descendant that still held stderr"
+        );
+        color_eyre::eyre::ensure!(
+            !repo.join(PR_RAW_CHECK_JSON).exists(),
+            "a refused run must not publish an artifact"
+        );
+
+        // The sidecar is not unlinked with the staged file, so its size is the
+        // oracle that the descendant actually stopped writing.
+        let first = sidecar.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        color_eyre::eyre::ensure!(
+            first > 0,
+            "the descendant must have started writing the sidecar before the cap fired"
+        );
+        thread::sleep(Duration::from_millis(300));
+        let second = sidecar.metadata().map(|metadata| metadata.len()).unwrap_or(first);
+        color_eyre::eyre::ensure!(
+            second == first,
+            "descendant kept writing after refusal: {first} then {second} bytes"
+        );
+        Ok(())
+    }
+
+    /// Early-parent-exit control for process-tree ownership: a producer that
+    /// exits successfully while a descendant still holds the inherited stderr
+    /// write-end must not block the drain's join. The flood refusal above keeps
+    /// the parent alive, so it exercises only the cap-failure settlement arm;
+    /// without the settlement before the join, this run hangs rather than
+    /// failing an assertion.
+    #[test]
+    fn run_ripr_check_settles_a_descendant_left_behind_by_a_producer_that_exits() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let payload = r#"{"summary":{"findings":0},"findings":[]}"#;
+        let binary = write_exiting_with_descendant_ripr_stub(&stubs, "ripr-exiting-descendant")?;
+        let _override = override_ripr_bin(&binary)?;
+        let started = Instant::now();
+
+        run_ripr_check(&repo, &pr_evidence_options())?;
+
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "the join hung on a descendant that outlived its producer"
+        );
+        assert_eq!(
+            fs::read(repo.join(PR_RAW_CHECK_JSON))?,
+            payload.as_bytes(),
+            "the published payload must stay verbatim once the tree is settled"
+        );
+        Ok(())
+    }
+
+    /// Negative control for the cap's timing: a producer that passes the cap and
+    /// exits on its own is never terminated by the waiter, so the refusal has to
+    /// come from the completed-payload check at the publication site. Measured:
+    /// with the waiter's in-loop check removed, this test still refuses; with
+    /// both removed, it publishes the oversized payload and fails.
+    #[test]
+    fn run_ripr_check_refuses_an_oversized_payload_from_a_producer_that_exits_at_once() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let binary = write_oversized_exiting_ripr_stub(&stubs, "ripr-oversized", 256 * 1024)?;
+        let _override = override_ripr_bin_with_cap(&binary, Some(64 * 1024))?;
+
+        let error = run_ripr_check(&repo, &pr_evidence_options())
+            .err()
+            .ok_or_else(|| eyre!("an oversized payload must be refused even if it exits first"))?;
+
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains("over this lane's 65536 byte cap"),
+            "refusal must name the cap it enforced: {message}"
+        );
+        color_eyre::eyre::ensure!(
+            !repo.join(PR_RAW_CHECK_JSON).exists(),
+            "a refused run must publish no artifact"
+        );
+        Ok(())
+    }
+
+    /// Negative control for the cap's threshold: the guard must not refuse a
+    /// payload the lane can hold. A payload exactly at the cap is accepted and
+    /// still published byte for byte, so the bound cannot regress the working
+    /// path it exists to protect.
+    #[test]
+    fn run_ripr_check_publishes_a_payload_that_exactly_fills_the_staged_payload_cap() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let payload = r#"{"summary":{"findings":0},"findings":[]}"#;
+        let binary = write_ripr_stub(&stubs, "ripr-at-cap", payload, 0)?;
+        let max_bytes = u64::try_from(payload.len())?;
+        let _override = override_ripr_bin_with_cap(&binary, Some(max_bytes))?;
+
+        run_ripr_check(&repo, &pr_evidence_options())?;
+
+        assert_eq!(
+            fs::read(repo.join(PR_RAW_CHECK_JSON))?,
+            payload.as_bytes(),
+            "a payload at the cap must still publish verbatim"
+        );
+        Ok(())
+    }
+
+    /// The default ceiling is a claim about this repository's measured payloads
+    /// (#12999), so it is pinned against them: above the 4.61GB payload that
+    /// completed ingestion, and below the 10.4GB payload that killed the lane.
+    /// Moving it outside that band is a capacity decision, not a refactor.
+    #[test]
+    fn staged_payload_cap_default_sits_between_the_payloads_measured_on_12999() {
+        const INGESTED_PAYLOAD_BYTES: u64 = 4_606_060_928;
+        const LANE_KILLING_PAYLOAD_BYTES: u64 = 10_385_110_266;
+        assert!(
+            MAX_RIPR_RAW_CHECK_BYTES > INGESTED_PAYLOAD_BYTES,
+            "the default cap must not refuse a payload measured completing ingestion"
+        );
+        assert!(
+            MAX_RIPR_RAW_CHECK_BYTES < LANE_KILLING_PAYLOAD_BYTES,
+            "the default cap must refuse the payload measured killing the lane"
+        );
+    }
+
+    /// Only an *absent* override selects the default. A present-but-unreadable
+    /// override is refused, including the non-UTF-8 case: silently substituting
+    /// the default there would run a ceiling the lane did not ask for, which is
+    /// the failure this guard exists to convert into a clean refusal.
+    #[test]
+    fn staged_payload_cap_resolution_defaults_only_when_the_override_is_absent() -> Result<()> {
+        assert_eq!(
+            resolve_max_raw_check_bytes(Err(env::VarError::NotPresent))?,
+            MAX_RIPR_RAW_CHECK_BYTES,
+            "an absent override must select the documented default"
+        );
+        assert_eq!(resolve_max_raw_check_bytes(Ok("1048576".to_string()))?, 1024 * 1024);
+
+        // Constructing a genuinely non-UTF-8 `OsString` needs platform-specific
+        // extension traits, and this transport is load-bearing on Windows
+        // (#12569). The refusal keys on the variant rather than its bytes, so
+        // the variant is what this drives.
+        let error = resolve_max_raw_check_bytes(Err(env::VarError::NotUnicode(
+            std::ffi::OsString::from("non-utf8 stand-in"),
+        )))
+        .err()
+        .ok_or_else(|| eyre!("a non-UTF-8 override must be refused, not silently defaulted"))?;
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains(RIPR_MAX_RAW_CHECK_BYTES_ENV) && message.contains("non-UTF-8"),
+            "refusal must name the variable and the reason: {message}"
+        );
+
+        let error = resolve_max_raw_check_bytes(Ok("nonsense".to_string()))
+            .err()
+            .ok_or_else(|| eyre!("an unparseable override must be refused"))?;
+        color_eyre::eyre::ensure!(
+            format!("{error:#}").contains(RIPR_MAX_RAW_CHECK_BYTES_ENV),
+            "refusal must name the variable it read"
+        );
+        Ok(())
+    }
+
+    /// The in-run ceiling is enforced by measuring the staged file, so it is a
+    /// soft threshold whose overshoot is bounded by
+    /// (poll interval × producer write bandwidth). This pins the poll interval as
+    /// a declared overshoot budget: raising it widens that window
+    /// proportionally, and a long interval would let a bursting producer pass
+    /// the ceiling by enough to exhaust the headroom the guard assumes.
+    #[test]
+    fn staged_payload_poll_interval_keeps_the_overshoot_budget_small() {
+        assert!(
+            RIPR_STDOUT_POLL_INTERVAL <= Duration::from_millis(50),
+            "a longer poll interval widens the overshoot budget the cap depends on"
+        );
+        assert!(
+            RIPR_STDOUT_POLL_INTERVAL >= Duration::from_millis(5),
+            "an interval this short spends measurable CPU on stat() for a run lasting minutes"
+        );
+    }
+
+    /// An unusable override must be refused rather than silently replaced by the
+    /// default: a lane that believes it raised the cap and did not would be
+    /// killed by the failure this guard converts into a clean refusal.
+    #[test]
+    fn staged_payload_cap_override_refuses_unusable_values() -> Result<()> {
+        assert_eq!(parse_max_raw_check_bytes("1048576")?, 1024 * 1024);
+        assert_eq!(parse_max_raw_check_bytes("  1048576  ")?, 1024 * 1024);
+        for unusable in ["", "   ", "0", "-1", "6GiB", "1.5", "1_048_576"] {
+            let error = parse_max_raw_check_bytes(unusable).err().ok_or_else(|| {
+                eyre!("{unusable:?} is not a usable byte ceiling and must be refused")
+            })?;
+            let message = format!("{error:#}");
+            color_eyre::eyre::ensure!(
+                message.contains(RIPR_MAX_RAW_CHECK_BYTES_ENV),
+                "refusal must name the variable it read: {message}"
+            );
+        }
         Ok(())
     }
 }

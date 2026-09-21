@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15121,
-  "reason": "The ordinary package command now measures the exact versioned VSIX archive and validates every payload. Fresh Windows packaging preserved the archive file set and names; package.json is 59528 bytes after binding the standalone check to the metadata-derived artifact name and exact release workflow path. This declaration records the measured candidate inventory; installed behavior remains an independent stage.",
-  "base_baseline_file_sha256": "5c73582a6a7ae22a9f648492731ef3315336bfb17553aee22bfb48c332f89411",
-  "candidate_baseline_file_sha256": "4edd01ebb5a7ca17295226af8c866a172d1d424c9aa7cd342c7dd9e15d799db8",
-  "base_inventory_sha256": "7780c5f86aebdd24b900a76bf412fcc05ad1c1acfd0b16717be6444bd884bcbb",
-  "candidate_inventory_sha256": "5f414273d8913857ebb2aef8a14fbf4c1613fb0ce71a95a94a82b846349ad4ff"
+  "owner_issue": 16063,
+  "reason": "Issue #16063 baseline repair under the #6889 transition contract: main's bundled out/extension.js grew 1697570 to 1698027 (+457) when f6a34fde7 (#14523, launch-authority startup contract) added the host workspace-authority handoff in vscode-extension/src/debugAdapter.ts (+28 lines) without refreshing this baseline; the crate inventory .ci/dap/editor-transport-inventory.v1.json was updated but the VSIX inventory was not. This is a deliberate size-only growth caused by tracked source already on main, not packaging drift and not any current candidate's change: vscode-extension/ is byte-identical between the merge base and current main. Measured transition: out/extension.js 1697570 to 1698027 (+457), total 1878815 to 1879272 (+457); total_files unchanged at 29; no file added, removed, or renamed; classification size_only; behavior_safe. The delta reproduces from tracked source: a local npm ci && npm run bundle produces out/extension.js at exactly 1698027 bytes, byte-identical to the linux-hosted measurement in the Current-source Linux smoke run that reported transition_required on unrelated PR #15442. The declared base digests equal the accepted candidate digests of the preceding transition (565b1d93.../50ddecd...), so the ratchet chain is continuous.",
+  "base_baseline_file_sha256": "565b1d93a8bd261d0a509f9f6d29d13a65f4a1cdc7e2a5bd9cda0eceb53ea8b0",
+  "candidate_baseline_file_sha256": "a2b0dd0d97448d6f20e61969e74b68a0f069f1d507963fc2a48a264ec037c731",
+  "base_inventory_sha256": "50ddecd73db59133834017ecffade73ff755eb54260693d37348c1c781835484",
+  "candidate_inventory_sha256": "f279e9d522233ecd611bc0ef827fd3e44bbabe09787399ab4c9cf9744f94d717"
 }

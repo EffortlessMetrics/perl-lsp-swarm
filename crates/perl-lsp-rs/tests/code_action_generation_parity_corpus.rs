@@ -205,7 +205,7 @@ fn pragma_duplicate_authority_is_visible_and_uncollapsed() -> TestResult {
                     .is_some_and(|text| text.contains("use strict"))
             })
         })
-        .map(|action| title(action))
+        .map(title)
         .collect::<Vec<_>>();
 
     assert!(

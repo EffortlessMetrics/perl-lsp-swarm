@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust
-//! use perl_dap_eval::{SafeEvaluator, ValidationResult};
+//! use perl_dap::eval::SafeEvaluator;
 //!
 //! let evaluator = SafeEvaluator::new();
 //!
@@ -39,8 +39,11 @@
 //! - **Mutation**: Assignment operators, ++/--, regex mutation (s///)
 
 mod patterns;
+mod trust;
 mod validator;
 
+pub(crate) use trust::retarget_side_effect_hint;
+pub use trust::{EvaluateAdmission, ReplTrustPolicy, admit};
 pub use validator::{SafeEvaluator, ValidationError, ValidationResult};
 
 // Re-export pattern constants for testing/extension

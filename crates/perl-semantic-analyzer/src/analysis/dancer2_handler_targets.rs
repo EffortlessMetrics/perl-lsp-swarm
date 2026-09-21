@@ -29,7 +29,7 @@
 //! sub's body is not indexed (statically execution-conditional context), so
 //! references to it stay boundaries.
 
-use crate::ast::{Node, NodeKind};
+use crate::ast::{Node, NodeKind, SourceLocation};
 use perl_semantic_facts::handler::{FrameworkHandler, FrameworkHandlerBoundary, SubroutineTarget};
 use perl_semantic_facts::{AnchorId, FileId, SourceAnchor};
 use std::collections::{HashMap, HashSet};
@@ -110,7 +110,7 @@ impl SubroutineTargetIndex {
             NodeKind::Package { name, block: None, .. } => {
                 *current_package = Some(name.clone());
             }
-            NodeKind::Subroutine { name, declarator, .. } => {
+            NodeKind::Subroutine { name, declarator, name_span, body, .. } => {
                 // Package-scoped declarations only: `my`/`state` subs are
                 // lexical and never resolve through `\&package::name`. A
                 // `package None` context cannot own package subs.
@@ -122,7 +122,8 @@ impl SubroutineTargetIndex {
                     };
                     if is_package_scoped {
                         let key = (package.to_string(), sub_name.clone());
-                        let candidate = target_of(node, file_id);
+                        let candidate =
+                            target_of(node, Some(sub_name), name_span.as_ref(), body, file_id);
                         // A later bodyless stub does not replace an existing
                         // concrete definition: Perl keeps the CODE slot's
                         // defined body. Anything else (a later body, or the
@@ -142,7 +143,7 @@ impl SubroutineTargetIndex {
                 // other subroutine at runtime: existence of a same-name `sub`
                 // no longer proves which target a `\&name` invokes. Record
                 // the slot and keep it unresolvable.
-                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind {
+                if let NodeKind::Typeglob { name: glob_name, .. } = &lhs.kind {
                     let (package, name) =
                         split_qualified_name(glob_name, current_package.as_deref())
                             .unwrap_or_else(|| ("main".to_string(), None));
@@ -203,13 +204,21 @@ fn non_empty(value: &str) -> Option<String> {
 }
 
 /// Build the canonical [`SubroutineTarget`] for one declaration node.
-fn target_of(node: &Node, file_id: FileId) -> SubroutineTarget {
-    let NodeKind::Subroutine { name, name_span, body, .. } = &node.kind else {
-        unreachable!("target_of is only called on Subroutine nodes");
-    };
-    let name = name.clone().unwrap_or_default();
+///
+/// Takes the declaration's parts rather than the node, so that "this is only
+/// called on a Subroutine node" is carried by the caller's own `match` arm
+/// instead of asserted at runtime. The previous shape re-matched `node.kind`
+/// and closed the impossible arm with `unreachable!`, which the production
+/// banned-construct rule forbids and which no caller could ever reach.
+fn target_of(
+    node: &Node,
+    name: Option<&String>,
+    name_span: Option<&SourceLocation>,
+    body: &Node,
+    file_id: FileId,
+) -> SubroutineTarget {
+    let name = name.cloned().unwrap_or_default();
     let name_anchor = name_span
-        .as_ref()
         .map(|span| anchor(span.start, span.end, file_id))
         .unwrap_or_else(|| anchor(node.location.start, node.location.start + name.len(), file_id));
     let declaration_anchor = anchor(node.location.start, node.location.end, file_id);
@@ -320,13 +329,12 @@ mod tests {
     }
 
     fn find_call_operand<'a>(node: &'a Node, call_name: &str, found: &mut Option<&'a Node>) {
-        if let NodeKind::FunctionCall { name, args } = &node.kind {
-            if name == call_name {
-                if let Some(last) = args.last() {
-                    *found = Some(last);
-                    return;
-                }
-            }
+        if let NodeKind::FunctionCall { name, args } = &node.kind
+            && name == call_name
+            && let Some(last) = args.last()
+        {
+            *found = Some(last);
+            return;
         }
         for child in node.children() {
             find_call_operand(child, call_name, found);

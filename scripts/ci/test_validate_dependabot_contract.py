@@ -434,14 +434,15 @@ class NegativeControlTests(unittest.TestCase):
 
     def test_echo_prefixed_run_commands_are_not_wiring(self) -> None:
         workflow = (ROOT / POLICY_WORKFLOW).read_text(encoding="utf-8")
+        # Replace every lane copy: a routed workflow legitimately repeats the
+        # contract commands once per lane, and an echo prefix must unwire all
+        # of them for the negative control to hold.
         mutated = workflow.replace(
             "          python3 scripts/ci/test_validate_dependabot_contract.py\n",
             "          echo python3 scripts/ci/test_validate_dependabot_contract.py\n",
-            1,
         ).replace(
             "          python3 scripts/ci/validate_dependabot_contract.py --repo-root .\n",
             "          echo python3 scripts/ci/validate_dependabot_contract.py --repo-root .\n",
-            1,
         )
         ids = _ids(inspect_workflow_wiring(mutated))
         self.assertIn("workflow-tests-unwired", ids)
@@ -515,6 +516,25 @@ class NegativeControlTests(unittest.TestCase):
                 lambda text: text + "\n\nTarget pull requests to `master`.\n",
             )
             self.assertIn("master-as-default-branch", _ids(_findings(tmp)))
+
+
+class CooldownTests(unittest.TestCase):
+    def test_each_ecosystem_refuses_missing_or_wrong_cooldown(self) -> None:
+        original = (ROOT / CONFIG_PATH).read_text(encoding="utf-8")
+        marker = "    cooldown:\n      default-days: 14\n"
+        pieces = original.split(marker)
+        if len(pieces) != 4:
+            raise ValueError("fixture requires exactly three updater cooldowns")
+        for row in range(3):
+            for replacement in ("", "    cooldown:\n      default-days: 13\n"):
+                with self.subTest(row=row, replacement=replacement), tempfile.TemporaryDirectory() as raw:
+                    root = Path(raw)
+                    _clone_surfaces(root)
+                    changed = pieces[0]
+                    for index, piece in enumerate(pieces[1:]):
+                        changed += (replacement if index == row else marker) + piece
+                    (root / CONFIG_PATH).write_text(changed, encoding="utf-8")
+                    self.assertIn("cooldown-drift", _ids(_findings(root)))
 
 
 if __name__ == "__main__":

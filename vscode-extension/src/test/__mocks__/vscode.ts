@@ -10,7 +10,7 @@ import { jest } from '@jest/globals';
 
 export const Uri = {
   parse: (value: string) => ({ toString: () => value, fsPath: value }),
-  file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path }),
+  file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path, scheme: 'file' }),
 };
 
 export class ThemeColor {
@@ -21,6 +21,13 @@ export class Position {
   constructor(
     public readonly line: number,
     public readonly character: number,
+  ) {}
+}
+
+export class Location {
+  constructor(
+    public readonly uri: unknown,
+    public readonly range: unknown,
   ) {}
 }
 
@@ -262,6 +269,13 @@ export const window = {
     return task(progress, token);
   }),
   activeTextEditor: undefined as { document: unknown } | undefined,
+  createWebviewPanel: jest.fn(() => ({
+    reveal: jest.fn(),
+    dispose: jest.fn(),
+    onDidDispose: jest.fn(() => ({ dispose: jest.fn() })),
+    title: '',
+    webview: { html: '' },
+  })),
   // Server-demand deferral (#8180) arms this listener so a Perl document
   // restored with the window still starts the language server.
   onDidChangeActiveTextEditor: jest.fn(() => ({ dispose: jest.fn() })),
@@ -292,6 +306,7 @@ export const workspace = {
   ),
   asRelativePath: jest.fn((uri: { fsPath: string }) => uri.fsPath),
   textDocuments: [],
+  decode: jest.fn(async (content: Uint8Array) => Buffer.from(content).toString('utf8')),
   findFiles: jest.fn(async () => []),
   openTextDocument: jest.fn(async (value: string | { fsPath: string }) => ({
     uri: typeof value === 'string' ? { fsPath: value } : value,
@@ -413,6 +428,14 @@ export enum ConfigurationTarget {
   WorkspaceFolder = 3,
 }
 
+export const ViewColumn = {
+  Active: -1,
+  Beside: -2,
+  One: 1,
+  Two: 2,
+  Three: 3,
+};
+
 export const languages = {
   onDidChangeDiagnostics: jest.fn(() => ({ dispose: jest.fn() })),
   getDiagnostics: jest.fn(() => [] as Array<[unknown, unknown[]]>),
@@ -420,4 +443,5 @@ export const languages = {
   registerFoldingRangeProvider: jest.fn(() => ({ dispose: jest.fn() })),
   registerCodeActionsProvider: jest.fn(() => ({ dispose: jest.fn() })),
   registerDefinitionProvider: jest.fn(() => ({ dispose: jest.fn() })),
+  setLanguageConfiguration: jest.fn(() => ({ dispose: jest.fn() })),
 };

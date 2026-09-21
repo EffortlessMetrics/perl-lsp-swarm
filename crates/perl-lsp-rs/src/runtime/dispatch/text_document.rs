@@ -32,6 +32,9 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Admission must precede parse-token rotation: malformed input cannot
+        // cancel the predecessor parse or replace its token.
+        self.prepare_did_change_admission(params.as_ref())?;
         let uri = params
             .as_ref()
             .and_then(|p| p.pointer("/textDocument/uri"))
@@ -229,22 +232,25 @@ impl LspServer {
     pub(super) fn handle_prepare_type_hierarchy_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_prepare_type_hierarchy(params)
+        self.handle_prepare_type_hierarchy(params, request_id)
     }
 
     pub(super) fn handle_type_hierarchy_supertypes_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_type_hierarchy_supertypes(params)
+        self.handle_type_hierarchy_supertypes(params, request_id)
     }
 
     pub(super) fn handle_type_hierarchy_subtypes_dispatch(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        self.handle_type_hierarchy_subtypes(params)
+        self.handle_type_hierarchy_subtypes(params, request_id)
     }
 
     // Diagnostics

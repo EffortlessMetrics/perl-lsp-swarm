@@ -316,7 +316,7 @@ fn payload_summary(kind: &NodeKind) -> PayloadSummary {
             }
         }
         NodeKind::Glob { pattern } => push_str(&mut parts, &mut truncated, "pattern", pattern),
-        NodeKind::Typeglob { name } => push_str(&mut parts, &mut truncated, "name", name),
+        NodeKind::Typeglob { name, .. } => push_str(&mut parts, &mut truncated, "name", name),
         NodeKind::If { keyword, .. } | NodeKind::While { keyword, .. } => {
             if let Some(keyword) = keyword {
                 push_str(&mut parts, &mut truncated, "keyword", keyword);
@@ -452,6 +452,7 @@ fn payload_summary(kind: &NodeKind) -> PayloadSummary {
         | NodeKind::OptionalParameter { .. }
         | NodeKind::SlurpyParameter { .. }
         | NodeKind::Return { .. }
+        | NodeKind::TargetlessGoto { .. }
         | NodeKind::MissingExpression
         | NodeKind::MissingStatement
         | NodeKind::MissingIdentifier

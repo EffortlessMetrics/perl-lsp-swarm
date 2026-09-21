@@ -9,12 +9,12 @@ This status tracks parser AST construct coverage for the crate-local HIR baselin
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `lowered` | 38 | Emits one or more HIR items today. |
-| `dynamic_boundary` | 3 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
+| `lowered` | 39 | Emits one or more HIR items today. |
+| `dynamic_boundary` | 5 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
 | `intentionally_skipped` | 20 | Traversal, metadata, or recovery placeholder; no standalone HIR item expected. |
-| `not_yet_modeled` | 15 | Parser AST construct exists, but HIR has no shell yet. |
+| `not_yet_modeled` | 13 | Parser AST construct exists, but HIR has no shell yet. |
 
-AST kinds tracked: `76`. HIR construct kinds tracked: `29`.
+AST kinds tracked: `77`. HIR construct kinds tracked: `29`.
 
 ## Inventory
 
@@ -55,8 +55,8 @@ AST kinds tracked: `76`. HIR construct kinds tracked: `29`.
 | `If` | `lowered` | `BranchShell` | `if`/`unless` block form lowered as a branch shell with condition anchor and arm counts. |
 | `LabeledStatement` | `intentionally_skipped` | - | Label metadata is threaded into the loop it wraps; no standalone HIR item. |
 | `While` | `lowered` | `LoopShell` | `while`/`until` lowered as a loop shell with condition and continue-block facts. |
-| `Tie` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
-| `Untie` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `Tie` | `dynamic_boundary` | `DynamicBoundary` | `tie` emits `DynamicBoundary`; the tie class expression and constructor arguments traverse. |
+| `Untie` | `dynamic_boundary` | `DynamicBoundary` | `untie` emits `DynamicBoundary`; the target place expression traverses. |
 | `For` | `lowered` | `LoopShell` | C-style `for` lowered as a loop shell with optional-condition and iterator facts. |
 | `Foreach` | `lowered` | `LoopShell` | `foreach` lowered as a loop shell with iterator-declaration and continue-block facts. |
 | `Given` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
@@ -74,6 +74,7 @@ AST kinds tracked: `76`. HIR construct kinds tracked: `29`.
 | `Return` | `lowered` | `ControlTransfer` | Lowered as a control-transfer shell recording whether a value is returned. |
 | `LoopControl` | `lowered` | `ControlTransfer` | `next`/`last`/`redo` lowered as control-transfer shells with optional label. |
 | `Goto` | `lowered` | `ControlTransfer` | Lowered as a control-transfer shell; plain label targets are preserved. |
+| `TargetlessGoto` | `lowered` | `ControlTransfer` | Honest targetless goto emits a control-transfer shell with no label and no executed child. |
 | `MethodCall` | `lowered` | `MethodCallExpr` | Lowered as method-call shell. |
 | `FunctionCall` | `lowered` | `CallExpr`, `DynamicBoundary`, `RequireDecl` | `require` calls lower as `RequireDecl`; coderef calls add a dynamic boundary. |
 | `AmperCall` | `not_yet_modeled` | - | No first-slice HIR shell yet. |

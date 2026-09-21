@@ -108,6 +108,27 @@ through `$address-review-comments`; read-only reviewers do not mutate.
    conclusion as one submitted review through `scripts/reviews/inline`. Submit as
    `COMMENT`; this repository does not submit `APPROVE`.
 
+Use `--body-file` for the fully assembled UTF-8 review (including its marker).
+Review Markdown is data: never interpolate it into `bash -c` or another shell
+command string. Keep `--body` only for simple callers with safe argument transport.
+For a clean review, write `[]` to the findings file; do not fabricate an inline
+finding. Non-empty findings still require addressable diff anchors.
+
+```bash
+bash scripts/reviews/inline --pr <pr> --repo <owner/repo> \
+  --body-file /path/to/review.md --findings /path/to/findings.json --event COMMENT
+```
+
+From native PowerShell, use WSL's direct executable route and Bash-visible paths
+(translate Windows paths separately with `wsl.exe --exec wslpath -a -u <path>`):
+
+```powershell
+wsl.exe --exec bash /mnt/h/path/to/repo/scripts/reviews/inline --pr <pr> --repo <owner/repo> --body-file /mnt/h/path/to/review.md --findings /mnt/h/path/to/findings.json --event COMMENT
+```
+
+Only file paths cross this boundary; the body never becomes shell syntax.
+The offline platform proof is `pwsh -NoProfile -File scripts/tests/test-review-inline-windows.ps1`.
+
 A `COMMENTED` review is only a GitHub fact; it does not become substantive merely
 because it exists. When the cumulative conclusion is `REVIEW_CURRENT`, generate the
 subject-bound marker from the current PR diff **before** invoking the submission

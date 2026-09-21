@@ -212,7 +212,8 @@ impl NodeKind {
             | NodeKind::StatementModifier { .. }
             | NodeKind::Return { .. }
             | NodeKind::LoopControl { .. }
-            | NodeKind::Goto { .. } => NodeKindCategory::Statement,
+            | NodeKind::Goto { .. }
+            | NodeKind::TargetlessGoto { .. } => NodeKindCategory::Statement,
 
             NodeKind::Variable { .. }
             | NodeKind::VariableWithAttributes { .. }
@@ -779,6 +780,15 @@ impl NodeKind {
                 recovery = false,
                 bp = true
             ),
+            NodeKind::TargetlessGoto { .. } => flags!(
+                exec = true,
+                scope = false,
+                decl = false,
+                refs = false,
+                children = false,
+                recovery = false,
+                bp = true
+            ),
             NodeKind::MethodCall { .. } => flags!(
                 exec = true,
                 scope = false,
@@ -1132,7 +1142,7 @@ mod tests {
             NodeKind::Undef,
             NodeKind::Readline { filehandle: None },
             NodeKind::Glob { pattern: "*.pl".to_string() },
-            NodeKind::Typeglob { name: "foo".to_string() },
+            NodeKind::Typeglob { name: "foo".to_string(), body: None },
             NodeKind::Number { value: "42".to_string() },
             NodeKind::String { value: "hello".to_string(), interpolated: false },
             NodeKind::VString { value: "v1.2.3".to_string() },
@@ -1211,11 +1221,14 @@ mod tests {
             NodeKind::Signature { parameters: vec![] },
             NodeKind::MandatoryParameter { variable: Box::new(leaf()) },
             NodeKind::OptionalParameter {
+                default_operator: "=".into(),
+                default_operator_span: Default::default(),
                 variable: Box::new(leaf()),
                 default_value: Box::new(leaf()),
             },
             NodeKind::SlurpyParameter { variable: Box::new(leaf()) },
             NodeKind::NamedParameter {
+                default_operator_span: None,
                 variable: Box::new(leaf()),
                 external_name: String::new(),
                 default_operator: None,
@@ -1232,6 +1245,7 @@ mod tests {
             NodeKind::Return { value: None },
             NodeKind::LoopControl { op: "next".to_string(), label: None },
             NodeKind::Goto { target: Box::new(leaf()), form: GotoTargetForm::Label },
+            NodeKind::TargetlessGoto {},
             NodeKind::MethodCall {
                 object: Box::new(leaf()),
                 method: "foo".to_string(),
@@ -1691,7 +1705,7 @@ mod tests {
             n(NodeKind::Undef),
             n(NodeKind::Readline { filehandle: Some("STDIN".to_string()) }),
             n(NodeKind::Glob { pattern: "*.pl".to_string() }),
-            n(NodeKind::Typeglob { name: "foo".to_string() }),
+            n(NodeKind::Typeglob { name: "foo".to_string(), body: None }),
             n(NodeKind::Number { value: "42".to_string() }),
             n(NodeKind::String { value: "hello".to_string(), interpolated: false }),
             n(NodeKind::VString { value: "v1.2.3".to_string() }),
@@ -1777,11 +1791,14 @@ mod tests {
             n(NodeKind::Signature { parameters: vec![leaf()] }),
             n(NodeKind::MandatoryParameter { variable: Box::new(leaf()) }),
             n(NodeKind::OptionalParameter {
+                default_operator: "=".into(),
+                default_operator_span: Default::default(),
                 variable: Box::new(leaf()),
                 default_value: Box::new(leaf()),
             }),
             n(NodeKind::SlurpyParameter { variable: Box::new(leaf()) }),
             n(NodeKind::NamedParameter {
+                default_operator_span: None,
                 variable: Box::new(leaf()),
                 external_name: String::new(),
                 default_operator: None,
@@ -1801,6 +1818,7 @@ mod tests {
             n(NodeKind::Return { value: Some(Box::new(leaf())) }),
             n(NodeKind::LoopControl { op: "next".to_string(), label: None }),
             n(NodeKind::Goto { target: Box::new(leaf()), form: GotoTargetForm::Label }),
+            n(NodeKind::TargetlessGoto {}),
             n(NodeKind::MethodCall {
                 object: Box::new(leaf()),
                 method: "foo".to_string(),

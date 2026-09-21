@@ -5,15 +5,17 @@
 
 mod common;
 
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::transport::framing::frame;
+use perl_tdd_support::must_with;
 use serde_json::{Value, json};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -28,7 +30,7 @@ fn smoke_timeout() -> Duration {
 }
 
 fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
@@ -112,6 +114,7 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
 
     let timeout = smoke_timeout();
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -162,24 +165,55 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
     server_handle
         .join()
         .map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))?
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
+        .map_err(std::io::Error::other)?;
     Ok(())
 }
 
 #[test]
-fn dap_attach_e2e_tcp_loopback_stop_on_entry_and_server_stopped() -> TestResult {
+fn dap_attach_e2e_tcp_loopback_peer_pause_is_forwarded() -> TestResult {
+    tcp_loopback_peer_event("pause")
+}
+
+#[test]
+fn dap_attach_e2e_tcp_loopback_peer_entry_is_forwarded() -> TestResult {
+    tcp_loopback_peer_event("entry")
+}
+
+fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
+    listener.set_nonblocking(true)?;
+    let (release_tx, release_rx) = sync_channel(1);
 
     let server_handle = thread::spawn(move || -> Result<(), Box<dyn Error + Send + Sync>> {
-        let (mut socket, _) = listener.accept()?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let (mut socket, _) = loop {
+            match listener.accept() {
+                Ok(connection) => break connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "fake TCP debugger server accept timed out",
+                        )));
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(Box::new(error)),
+            }
+        };
+        socket.set_nonblocking(false)?;
+        socket.set_read_timeout(Some(Duration::from_secs(15)))?;
+        socket.set_write_timeout(Some(Duration::from_secs(15)))?;
+
+        release_rx.recv_timeout(Duration::from_secs(15))?;
 
         let stopped_event = json!({
             "type": "event",
             "seq": 1,
             "event": "stopped",
             "body": {
-                "reason": "pause",
+                "reason": peer_reason,
                 "threadId": 19,
                 "allThreadsStopped": true
             }
@@ -203,13 +237,14 @@ fn dap_attach_e2e_tcp_loopback_stop_on_entry_and_server_stopped() -> TestResult 
 
     let timeout = smoke_timeout();
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
     response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
     let _initialized = wait_for_event(&rx, "initialized", timeout)?;
 
-    response_success(
+    let attach = response_success(
         adapter.handle_request(
             2,
             "attach",
@@ -217,30 +252,195 @@ fn dap_attach_e2e_tcp_loopback_stop_on_entry_and_server_stopped() -> TestResult 
                 "host": "127.0.0.1",
                 "port": port,
                 "timeout": 2000,
-                "stopOnEntry": true
+                "stopOnEntry": false
             })),
         ),
         "attach",
-    )?;
+    );
+    if let Err(error) = attach {
+        let _ = release_tx.send(());
+        server_handle
+            .join()
+            .map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))?
+            .map_err(std::io::Error::other)?;
+        return Err(error.into());
+    }
 
-    let first_stopped = wait_for_event(&rx, "stopped", timeout)?;
-    let first_body = event_body(&first_stopped).ok_or("first stopped event missing body")?;
-    assert_eq!(first_body.get("reason").and_then(Value::as_str), Some("entry"));
-    assert_eq!(first_body.get("threadId").and_then(Value::as_i64), Some(1));
+    let mut failure = None;
+    loop {
+        match rx.try_recv() {
+            Err(TryRecvError::Empty) => break,
+            Ok((DapMessage::Event { ref event, .. }, _)) if event == "stopped" => {
+                failure = Some("attach emitted a stop before the peer did".into());
+                break;
+            }
+            Ok(_) => {}
+            Err(TryRecvError::Disconnected) => {
+                failure = Some("event channel disconnected before peer stop".into());
+                break;
+            }
+        }
+    }
 
-    let second_stopped = wait_for_event(&rx, "stopped", timeout)?;
-    let second_body = event_body(&second_stopped).ok_or("second stopped event missing body")?;
-    assert_eq!(second_body.get("reason").and_then(Value::as_str), Some("pause"));
-    // #8294/#14787: the peer thread id (19) is normalised to the synthetic 1.
-    assert_eq!(second_body.get("threadId").and_then(Value::as_i64), Some(1));
+    let _ = release_tx.send(());
+    if failure.is_none() {
+        let deadline = Instant::now() + timeout;
+        let mut peer_stop_seen = false;
+        while !peer_stop_seen && failure.is_none() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                failure = Some("timed out waiting for peer stop".into());
+                break;
+            }
+            match rx.recv_timeout(remaining) {
+                Ok(message) => match message {
+                    (DapMessage::Event { ref event, .. }, _) if event == "stopped" => {
+                        peer_stop_seen = true;
+                        match event_body(&message.0) {
+                            Some(stopped_body) => {
+                                if stopped_body.get("reason").and_then(Value::as_str)
+                                    != Some(peer_reason)
+                                {
+                                    failure = Some(format!(
+                                        "peer stop reason was not {peer_reason}: {stopped_body:?}"
+                                    ));
+                                } else if stopped_body.get("threadId").and_then(Value::as_i64)
+                                    != Some(1)
+                                {
+                                    failure = Some(format!(
+                                        "peer thread id was not normalized: {stopped_body:?}"
+                                    ));
+                                }
+                            }
+                            None => failure = Some("stopped event missing body".into()),
+                        }
+                    }
+                    (DapMessage::Event { ref event, .. }, _) if event == "terminated" => {
+                        failure = Some("terminated arrived before peer stopped event".into());
+                    }
+                    _ => {}
+                },
+                Err(error) => {
+                    failure = Some(format!("event stream failed before peer stop: {error}"));
+                    break;
+                }
+            }
+        }
+    }
 
-    response_success(adapter.handle_request(3, "disconnect", Some(json!({}))), "disconnect")?;
-    let _terminated = wait_for_event(&rx, "terminated", timeout)?;
+    let disconnect =
+        response_success(adapter.handle_request(3, "disconnect", Some(json!({}))), "disconnect");
+    if failure.is_none() {
+        if let Err(error) = disconnect {
+            failure = Some(error);
+        } else {
+            let deadline = Instant::now() + timeout;
+            let mut terminated_seen = false;
+            while !terminated_seen && failure.is_none() {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    failure = Some("timed out waiting for terminated".into());
+                    break;
+                }
+                match rx.recv_timeout(remaining) {
+                    Ok(message) => match message {
+                        (DapMessage::Event { ref event, .. }, _) if event == "stopped" => {
+                            failure =
+                                Some(format!("stopped event arrived after peer stop: {message:?}"));
+                        }
+                        (DapMessage::Event { ref event, .. }, _) if event == "terminated" => {
+                            terminated_seen = true;
+                        }
+                        _ => {}
+                    },
+                    Err(error) => {
+                        failure = Some(format!("event stream failed before terminated: {error}"));
+                    }
+                }
+            }
+        }
+    }
 
-    server_handle
+    let server_result = server_handle
         .join()
-        .map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))?
-        .map_err(|err| std::io::Error::other(err.to_string()))?;
+        .map_err(|_| std::io::Error::other("fake TCP debugger server panicked"))
+        .and_then(|result| result.map_err(std::io::Error::other));
+    if let Some(error) = failure {
+        return Err(error.into());
+    }
+    server_result?;
+    Ok(())
+}
+
+#[test]
+fn dap_attach_e2e_tcp_stop_on_entry_is_rejected_before_connect() -> TestResult {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    listener.set_nonblocking(true)?;
+
+    let mut adapter = DebugAdapter::new();
+    let (tx, rx) = sync_channel(64);
+    adapter.set_event_sender(tx);
+    response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
+    let _initialized = wait_for_event(&rx, "initialized", smoke_timeout())?;
+
+    let attach_response = adapter.handle_request(
+        2,
+        "attach",
+        Some(json!({
+            "host": "127.0.0.1",
+            "port": port,
+            "timeout": 2000,
+            "stopOnEntry": true
+        })),
+    );
+
+    // The refusal must happen before TCP connect. If the old implementation
+    // accepted the request, close that connection before returning the failure
+    // so the intentional pre-fix red remains bounded and cleanup-safe.
+    let connected = match listener.accept() {
+        Ok((socket, _)) => {
+            drop(socket);
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
+        Err(error) => {
+            let _ = adapter.handle_request(3, "disconnect", Some(json!({})));
+            return Err(error.into());
+        }
+    };
+    if connected {
+        let _ = adapter.handle_request(3, "disconnect", Some(json!({})));
+    }
+
+    let message = response_failure_message(attach_response, "attach")?;
+    if !message.contains("stopOnEntry") || !message.contains("TCP") {
+        return Err(format!(
+            "TCP stopOnEntry refusal must explain the unsupported adapter-controlled pause: {message}"
+        )
+        .into());
+    }
+    if connected {
+        return Err("TCP refusal must occur before opening the peer socket".into());
+    }
+
+    while let Ok(message) = rx.try_recv() {
+        if let (DapMessage::Event { event, .. }, _) = message {
+            return Err(
+                format!("refused attach must not publish postinitialize event `{event}`").into()
+            );
+        }
+    }
+
+    let threads_body = response_success(adapter.handle_request(4, "threads", None), "threads")?
+        .ok_or("threads response missing body")?;
+    let threads = threads_body
+        .get("threads")
+        .and_then(Value::as_array)
+        .ok_or("threads response missing thread list")?;
+    if !threads.is_empty() {
+        return Err("refused attach must leave no active session".into());
+    }
     Ok(())
 }
 
@@ -251,6 +451,7 @@ fn dap_attach_e2e_tcp_attach_timeout_returns_actionable_message() -> TestResult 
     drop(listener);
 
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
 
     let message = response_failure_message(
@@ -298,6 +499,7 @@ fn dap_attach_validation_errors_reach_the_request_response() -> TestResult {
 
     for (arguments, expected_guidance) in cases {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
         let message = response_failure_message(
             adapter.handle_request(2, "attach", Some(arguments)),
@@ -310,4 +512,26 @@ fn dap_attach_validation_errors_reach_the_request_response() -> TestResult {
     }
 
     Ok(())
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = must_with(
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test: unbounded session",
+            )),
+        }),
+        "test authority resolution",
+    );
+    adapter.set_launch_authority(authority);
 }

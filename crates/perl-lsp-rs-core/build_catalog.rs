@@ -4,7 +4,6 @@
 // reference `perl_lsp_rs_core::feature_catalog` at build time.
 
 use std::collections::BTreeSet;
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -89,60 +88,6 @@ impl Catalog {
         ids
     }
 
-    /// Trackable feature count for BDD/compliance grids.
-    /// Excludes entries explicitly marked `counts_in_coverage = false`.
-    pub fn trackable_feature_count_for_grid(&self) -> usize {
-        self.feature
-            .iter()
-            .filter(|feature| feature.maturity != Maturity::Planned && feature.counts_in_coverage)
-            .count()
-    }
-
-    /// Advertised trackable count for BDD/compliance grids.
-    /// Excludes entries explicitly marked `counts_in_coverage = false`.
-    pub fn advertised_trackable_count_for_grid(&self) -> usize {
-        self.feature
-            .iter()
-            .filter(|feature| {
-                feature.advertised
-                    && feature.maturity.may_advertise()
-                    && feature.counts_in_coverage
-            })
-            .count()
-    }
-
-    /// Compatibility-only alias for the grid-oriented trackable count.
-    /// This is not a compliance, status, or reporting authority.
-    #[deprecated(note = "compatibility-only; use trackable_feature_count_for_grid")]
-    pub fn trackable_feature_count(&self) -> usize {
-        self.feature
-            .iter()
-            .filter(|feature| feature.maturity != Maturity::Planned)
-            .count()
-    }
-
-    /// Compatibility-only alias for the grid-oriented advertised count.
-    /// This is not a compliance, status, or reporting authority.
-    #[deprecated(note = "compatibility-only; use advertised_trackable_count_for_grid")]
-    pub fn advertised_trackable_count(&self) -> usize {
-        self.feature
-            .iter()
-            .filter(|feature| feature.advertised && feature.maturity.may_advertise())
-            .count()
-    }
-
-    /// Compatibility-only alias for the grid-oriented percentage.
-    /// This is not a compliance, status, or reporting authority.
-    #[deprecated(note = "compatibility-only; use compliance_percent_for_grid")]
-    pub fn compliance_percent(&self) -> f32 {
-        let trackable = self.trackable_feature_count_for_grid();
-        if trackable == 0 {
-            return 0.0;
-        }
-        let advertised = self.advertised_trackable_count_for_grid();
-        (advertised as f64 / trackable as f64 * 100.0).round() as f32
-    }
-
     pub fn validate(&self) -> Result<(), String> {
         let mut seen = BTreeSet::new();
         let mut issues = Vec::new();
@@ -189,13 +134,6 @@ pub enum CatalogSourceKind {
     Vendored,
 }
 
-pub fn resolve_catalog_source(manifest_dir: &Path) -> Result<CatalogSource, String> {
-    resolve_catalog_source_with_override(
-        manifest_dir,
-        env::var_os("FEATURES_TOML_OVERRIDE").map(PathBuf::from),
-    )
-}
-
 pub fn resolve_catalog_source_with_override(
     manifest_dir: &Path,
     override_path: Option<PathBuf>,
@@ -240,10 +178,8 @@ mod tests {
 
     #[test]
     fn missing_explicit_override_does_not_fall_back_to_workspace_catalog() {
-        let root = std::env::temp_dir().join(format!(
-            "perl-lsp-build-catalog-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("perl-lsp-build-catalog-{}", std::process::id()));
         must_with(fs::create_dir_all(&root), "create test catalog directory");
         let workspace_catalog = root.join("features.toml");
         let missing_override = root.join("missing-features.toml");
@@ -252,31 +188,25 @@ mod tests {
             "write fallback workspace catalog",
         );
 
-        let result = resolve_catalog_source_with_override(
-            &root,
-            Some(PathBuf::from(&missing_override)),
-        );
+        let result =
+            resolve_catalog_source_with_override(&root, Some(PathBuf::from(&missing_override)));
 
         assert!(result.is_err(), "missing explicit override must be terminal");
-        assert!(must_err_with(result, "missing explicit override must be terminal")
-            .contains("FEATURES_TOML_OVERRIDE path does not exist"));
+        assert!(
+            must_err_with(result, "missing explicit override must be terminal")
+                .contains("FEATURES_TOML_OVERRIDE path does not exist")
+        );
         must_with(fs::remove_dir_all(root), "remove test catalog directory");
     }
 }
 
 pub fn read_catalog(path: &Path) -> Result<Catalog, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("failed to read features catalog: {e}"))?;
-    let catalog: Catalog = toml::from_str(&content)
-        .map_err(|e| format!("failed to parse features catalog: {e}"))?;
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("failed to read features catalog: {e}"))?;
+    let catalog: Catalog =
+        toml::from_str(&content).map_err(|e| format!("failed to parse features catalog: {e}"))?;
     catalog.validate()?;
     Ok(catalog)
-}
-
-pub fn load_catalog_for_build(manifest_dir: &Path) -> Result<(Catalog, CatalogSource), String> {
-    let source = resolve_catalog_source(manifest_dir)?;
-    let catalog = read_catalog(&source.path)?;
-    Ok((catalog, source))
 }
 
 pub fn generate_lsp_catalog_module_at(
@@ -339,7 +269,11 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
         code.push_str(&format!("    {:?},\n", id));
     }
     code.push_str("];\n\n");
-    code.push_str("pub fn advertised_features() -> &'static [&'static str] { ADVERTISED_LSP_FEATURES }\n\n");
-    code.push_str("pub fn has_feature(id: &str) -> bool { ADVERTISED_LSP_FEATURES.contains(&id) }\n");
+    code.push_str(
+        "pub fn advertised_features() -> &'static [&'static str] { ADVERTISED_LSP_FEATURES }\n\n",
+    );
+    code.push_str(
+        "pub fn has_feature(id: &str) -> bool { ADVERTISED_LSP_FEATURES.contains(&id) }\n",
+    );
     code
 }

@@ -62,6 +62,7 @@
     "onLanguage:gherkin",
     "onWalkthrough:perl-lsp.gettingStarted",
     "onDebugResolve:perl",
+    "onDebugResolve:perl5",
     "onDebugInitialConfigurations"
   ],
   "contributes": {
@@ -151,6 +152,15 @@
         }
       },
       {
+        "language": "perl5",
+        "scopeName": "source.perl",
+        "path": "./syntaxes/perl.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.c.perl": "c",
+          "meta.embedded.block.perl.perl": "perl"
+        }
+      },
+      {
         "language": "gherkin",
         "scopeName": "source.gherkin",
         "path": "./syntaxes/gherkin.tmLanguage.json"
@@ -159,6 +169,9 @@
     "breakpoints": [
       {
         "language": "perl"
+      },
+      {
+        "language": "perl5"
       }
     ],
     "debuggers": [
@@ -281,10 +294,6 @@
           },
           "attach": {
             "properties": {
-              "processId": {
-                "type": "number",
-                "description": "Attach to an existing Perl process by PID"
-              },
               "host": {
                 "type": "string",
                 "description": "Host for TCP attach mode",
@@ -1087,27 +1096,27 @@
         },
         {
           "command": "perl-lsp.runTests",
-          "when": "editorLangId == perl && resourceExtname =~ /\\.(t|pl)$/"
+          "when": "(editorLangId == perl || editorLangId == perl5) && resourceExtname =~ /\\.(t|pl)$/"
         },
         {
           "command": "perl-lsp.runPerlCritic",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.setPerlCriticSeverity",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.checkSyntax",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.runCurrentTest",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.runTestAtCursor",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.runAllTests",
@@ -1115,11 +1124,11 @@
         },
         {
           "command": "perl-lsp.formatDocument",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.showIncPaths",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.openModule",
@@ -1127,19 +1136,19 @@
         },
         {
           "command": "perl-lsp.showParserAst",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.extractVariable",
-          "when": "editorLangId == perl && editorHasSelection"
+          "when": "(editorLangId == perl || editorLangId == perl5) && editorHasSelection"
         },
         {
           "command": "perl-lsp.extractMethod",
-          "when": "editorLangId == perl && editorHasSelection"
+          "when": "(editorLangId == perl || editorLangId == perl5) && editorHasSelection"
         },
         {
           "command": "perl-lsp.showRefactoringOptions",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.createDebugConfig",
@@ -1153,19 +1162,19 @@
         },
         {
           "command": "perl-lsp.explainProviderDecision",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.previewSafeDelete",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.previewPackageRename",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.copyProviderDecisionReceipt",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.showWorkspaceTrustReport",
@@ -1177,58 +1186,58 @@
         },
         {
           "command": "perl-lsp.explainMissingModuleLookup",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.explainDiagnostic",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.reportIssue"
         },
         {
           "command": "perl-lsp.previewPod",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         }
       ],
       "editor/title": [
         {
           "command": "perl-lsp.runTests",
-          "when": "editorLangId == perl && resourceExtname =~ /\\.(t|pl)$/",
+          "when": "(editorLangId == perl || editorLangId == perl5) && resourceExtname =~ /\\.(t|pl)$/",
           "group": "navigation"
         },
         {
           "command": "perl-lsp.runPerlCritic",
-          "when": "editorLangId == perl",
+          "when": "editorLangId == perl || editorLangId == perl5",
           "group": "navigation"
         },
         {
           "command": "perl-lsp.previewPod",
-          "when": "editorLangId == perl",
+          "when": "editorLangId == perl || editorLangId == perl5",
           "group": "navigation"
         }
       ],
       "editor/context": [
         {
           "command": "perl-lsp.runTests",
-          "when": "editorLangId == perl",
+          "when": "editorLangId == perl || editorLangId == perl5",
           "group": "navigation"
         },
         {
           "command": "perl-lsp.runTestAtCursor",
-          "when": "editorLangId == perl",
+          "when": "editorLangId == perl || editorLangId == perl5",
           "group": "navigation"
         },
         {
           "command": "perl-lsp.runPerlCritic",
-          "when": "editorLangId == perl",
+          "when": "editorLangId == perl || editorLangId == perl5",
           "group": "navigation"
         }
       ],
       "problem/context": [
         {
           "command": "perl-lsp.explainDiagnostic",
-          "when": "resourceLangId == perl",
+          "when": "resourceLangId == perl || resourceLangId == perl5",
           "group": "navigation"
         }
       ]
@@ -1237,37 +1246,41 @@
       {
         "command": "perl-lsp.runTests",
         "key": "shift+alt+t",
-        "when": "editorTextFocus && editorLangId == perl"
+        "when": "editorTextFocus && (editorLangId == perl || editorLangId == perl5)"
       },
       {
         "command": "perl-lsp.runTestAtCursor",
         "key": "ctrl+alt+shift+t",
-        "when": "editorTextFocus && editorLangId == perl"
+        "when": "editorTextFocus && (editorLangId == perl || editorLangId == perl5)"
       },
       {
         "command": "perl-lsp.restart",
         "key": "shift+alt+r",
-        "when": "editorTextFocus && editorLangId == perl"
+        "when": "editorTextFocus && (editorLangId == perl || editorLangId == perl5)"
       },
       {
         "command": "editor.action.formatDocument",
         "key": "shift+alt+f",
-        "when": "editorHasDocumentFormattingProvider && editorTextFocus && !editorReadonly && editorLangId == perl"
+        "when": "editorHasDocumentFormattingProvider && editorTextFocus && !editorReadonly && (editorLangId == perl || editorLangId == perl5)"
       },
       {
         "command": "perl-lsp.extractVariable",
         "key": "shift+alt+v",
-        "when": "editorTextFocus && editorHasSelection && editorLangId == perl"
+        "when": "editorTextFocus && editorHasSelection && (editorLangId == perl || editorLangId == perl5)"
       },
       {
         "command": "perl-lsp.extractMethod",
         "key": "shift+alt+m",
-        "when": "editorTextFocus && editorHasSelection && editorLangId == perl"
+        "when": "editorTextFocus && editorHasSelection && (editorLangId == perl || editorLangId == perl5)"
       }
     ],
     "snippets": [
       {
         "language": "perl",
+        "path": "./snippets/perl.json"
+      },
+      {
+        "language": "perl5",
         "path": "./snippets/perl.json"
       },
       {
@@ -1397,6 +1410,7 @@
     "compile:test": "npm run clean:test && node scripts/governed-tsc.js -p ./tsconfig.test.json",
     "watch:bundle": "npm run clean:out && rolldown -c rolldown.config.mjs --watch",
     "watch:types": "node scripts/governed-tsc.js -watch --noEmit -p ./tsconfig.json",
+    "dev": "node scripts/dev-supervisor.js",
     "lint": "npm run lint:canary && node scripts/check-oxlint-warning-budget.js",
     "lint:ratchet": "node scripts/check-oxlint-warning-budget.js",
     "lint:canary": "node scripts/lint-canary.js",
@@ -1406,7 +1420,7 @@
     "test:ci": "npm run compile:test && npm run test:receipt-summary && node scripts/run-jest.js --ci --coverage --verbose",
     "test:grammar": "vscode-tmgrammar-snap --config package.json \"test/grammar/fixtures/*.pl\"",
     "test:grammar:update": "vscode-tmgrammar-snap --config package.json -u \"test/grammar/fixtures/*.pl\"",
-    "test:receipt-summary": "node --test scripts/summarize-vscode-receipts.test.js && node --test scripts/sample-local-vsix-smoke.test.js && node --test scripts/run-local-vsix-smoke.test.js && node --test scripts/check-vsix-inventory.test.js && node --test scripts/package-command.test.js && node --test scripts/check-publisher-tools.test.js && node --test scripts/vscode-toolchain-workflows.test.js && node --test scripts/check-source-map.test.js && node --test scripts/check-typescript-authority.test.js && node --test scripts/governed-tsc.test.js && node --test scripts/checked-command-contract.test.js && node --test scripts/reporter.test.js",
+    "test:receipt-summary": "node --test --test-concurrency=1 scripts/summarize-vscode-receipts.test.js scripts/sample-local-vsix-smoke.test.js scripts/run-local-vsix-smoke.test.js scripts/check-vsix-inventory.test.js scripts/package-command.test.js scripts/check-vsix-prebuilt-payload.test.js scripts/check-publisher-tools.test.js scripts/vscode-toolchain-workflows.test.js scripts/check-source-map.test.js scripts/check-typescript-authority.test.js scripts/governed-tsc.test.js scripts/checked-command-contract.test.js scripts/reporter.test.js scripts/build-script.test.js scripts/dev-supervisor.test.js scripts/dev-launch-contract.test.js scripts/js-yaml-security.test.js",
     "check:package-inventory": "node scripts/check-vsix-inventory.js",
     "check:source-map": "node scripts/check-source-map.js",
     "summarize:vscode": "node scripts/summarize-vscode-receipts.js",
@@ -1424,9 +1438,9 @@
     "check:openvsx": "npm exec --offline --no -- ovsx --version"
   },
   "dependencies": {
-    "adm-zip": "^0.6.0",
     "tar": "^7.5.22",
-    "vscode-languageclient": "^10.1.1"
+    "vscode-languageclient": "^10.1.1",
+    "yauzl": "^3.4.0"
   },
   "overrides": {
     "@babel/core": "7.29.6",
@@ -1440,23 +1454,24 @@
     "markdown-it": "14.2.0",
     "picomatch@2": "2.3.2",
     "picomatch@4": "4.0.4",
-    "qs": "6.15.2",
+    "qs": "6.16.0",
     "serialize-javascript": "7.0.5",
     "tmp": "0.2.7",
     "undici": "7.29.0",
     "uuid": "11.1.1"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.8",
     "@types/jest": "^30.0.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.x",
     "@types/tar": "^7.0.87",
+    "@types/yauzl": "^3.4.0",
     "@types/vscode": "~1.125.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
     "ajv": "^8.20.0",
     "jest": "^30.5.1",
+    "jszip": "^3.10.1",
     "mocha": "^12.0.0",
     "ovsx": "1.1.1",
     "oxfmt": "0.66.0",

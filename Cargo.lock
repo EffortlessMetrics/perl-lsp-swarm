@@ -307,9 +307,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chacha20"
-version = "0.10.0"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures",
@@ -1717,6 +1717,7 @@ name = "perl-core-harness-types"
 version = "0.17.0"
 dependencies = [
  "clap",
+ "jsonschema",
  "serde",
  "serde_json",
 ]
@@ -1829,11 +1830,13 @@ dependencies = [
  "perl-ast-v2",
  "perl-parser-core",
  "perl-position-tracking",
+ "perl-source-identity",
  "perl-tdd-support",
  "perl-token",
  "phf",
  "proptest",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
  "unicode-ident",
@@ -1886,6 +1889,7 @@ dependencies = [
  "perl-pod",
  "perl-position-tracking",
  "perl-ripr-facts",
+ "perl-semantic-analyzer",
  "perl-semantic-facts",
  "perl-source-identity",
  "perl-subprocess-runtime",
@@ -1933,6 +1937,7 @@ dependencies = [
  "perl-parser-core",
  "perl-position-tracking",
  "perl-pragma",
+ "perl-regex",
  "perl-semantic-analyzer",
  "perl-semantic-facts",
  "perl-source-identity",
@@ -1978,13 +1983,24 @@ name = "perl-module"
 version = "0.17.0"
 dependencies = [
  "perl-parser-core",
+ "perl-semantic-facts",
  "perl-tdd-support",
  "perl-workspace",
  "proptest",
  "regex",
+ "serde",
+ "serde_json",
  "tempfile",
  "unicode-ident",
  "url",
+]
+
+[[package]]
+name = "perl-operation-trace"
+version = "0.17.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2016,6 +2032,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "static_assertions",
  "tempfile",
  "thiserror",
  "tracing",
@@ -2072,7 +2089,6 @@ dependencies = [
 name = "perl-parser-pest"
 version = "0.17.0"
 dependencies = [
- "perl-tdd-support",
  "pest",
  "pest_derive",
  "regex",
@@ -2113,6 +2129,7 @@ version = "0.17.0"
 dependencies = [
  "criterion",
  "perl-ast",
+ "perl-parser-core",
  "proptest",
 ]
 
@@ -2122,6 +2139,8 @@ version = "0.17.0"
 dependencies = [
  "perl-test-must",
  "proptest",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -2307,6 +2326,7 @@ dependencies = [
  "perl-pod",
  "perl-pragma",
  "perl-symbol",
+ "perl-test-must",
  "serde",
  "serde_json",
 ]
@@ -2319,6 +2339,7 @@ dependencies = [
  "perl-lsp-rs",
  "serde_json",
  "tempfile",
+ "url",
 ]
 
 [[package]]
@@ -2853,9 +2874,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
@@ -2877,9 +2898,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -4212,6 +4233,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "serial_test",
  "sha1",
  "sha2",
  "similar 3.2.0",
