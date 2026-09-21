@@ -374,7 +374,6 @@ For per-developer or editor-specific settings, configure via your editor's LSP m
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 50000,
       "referencesCap": 1000
     }
   }
@@ -496,7 +495,6 @@ Reduce indexed files and result caps in your settings:
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 5000,
       "workspaceSymbolCap": 100
     }
   }

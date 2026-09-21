@@ -259,13 +259,7 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
             "codeLensCap": 111,
             "diagnosticsPerFileCap": 33,
             "inlayHintsCap": 44,
-            "astCacheMaxEntries": 55,
-            "astCacheTtlSecs": 66,
-            "symbolCacheMaxEntries": 77,
-            "maxIndexedFiles": 888,
-            "maxTotalSymbols": 9999,
             "maxFileSizeBytes": 123456,
-            "workspaceScanDeadlineMs": 4200,
             "referenceSearchDeadlineMs": 1300,
             "memoryWarningThresholdBytes": 1000,
             "memoryCriticalThresholdBytes": 2000,
@@ -368,13 +362,7 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     assert_eq!(limits.code_lens_cap, 111);
     assert_eq!(limits.diagnostics_per_file_cap, 33);
     assert_eq!(limits.inlay_hints_cap, 44);
-    assert_eq!(limits.ast_cache_max_entries, 55);
-    assert_eq!(limits.ast_cache_ttl_secs, 66);
-    assert_eq!(limits.symbol_cache_max_entries, 77);
-    assert_eq!(limits.max_indexed_files, 888);
-    assert_eq!(limits.max_total_symbols, 9999);
     assert_eq!(limits.max_file_size_bytes, 123456);
-    assert_eq!(limits.workspace_scan_deadline, Duration::from_millis(4200));
     assert_eq!(limits.reference_search_deadline, Duration::from_millis(1300));
     assert_eq!(limits.memory_budget.warning_threshold_bytes, 1000);
     assert_eq!(limits.memory_budget.critical_threshold_bytes, 2000);
