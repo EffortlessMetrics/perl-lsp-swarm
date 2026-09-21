@@ -321,7 +321,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
       - name: Cache cargo dependencies
@@ -374,7 +374,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
       # #2908: this lane builds only the ci-scope-selected crate subset
@@ -459,7 +459,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           bash scripts/tools/aqua-doctor.sh
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
@@ -600,7 +600,7 @@ jobs:
 
       - name: Install Rust
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -682,7 +682,7 @@ jobs:
 
       - name: Install Rust
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: stable
 
@@ -814,7 +814,7 @@ jobs:
           git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
@@ -1158,7 +1158,7 @@ jobs:
           git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
@@ -1700,7 +1700,7 @@ jobs:
           printf 'Testing exact candidate %s\n' "$TESTED_SHA"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -1934,7 +1934,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -2197,7 +2197,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
 
@@ -2307,7 +2307,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned formatter toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
           components: rustfmt
