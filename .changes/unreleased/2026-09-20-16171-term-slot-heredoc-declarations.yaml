@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "The local-subroutine prepass now recognizes definite term-slot heredocs after `return` and after fat commas, including under statement modifiers, so heredoc body prose stays out of known-sub discovery and later slash disambiguation."
+time: 2026-09-20T00:00:00Z
+custom:
+  PR: "16171"
+  Slug: term-slot-heredoc-declarations
+  Breaking: "no"

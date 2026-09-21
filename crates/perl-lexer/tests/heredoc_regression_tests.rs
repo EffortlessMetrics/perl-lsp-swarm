@@ -1,4 +1,4 @@
-use perl_lexer::{PerlLexer, TokenType};
+use perl_lexer::{LocalSymbolTable, PerlLexer, TokenType};
 
 #[test]
 fn lexer_terminates_on_backtick_heredoc_with_cr() {
@@ -95,6 +95,32 @@ fn lexer_rejects_unterminated_backtick_heredoc_label() {
     let has_heredoc = tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart));
     assert!(!has_heredoc, "unterminated backtick label should not become heredoc");
     assert!(tokens.iter().any(|t| matches!(t.token_type, TokenType::EOF)));
+}
+
+#[test]
+fn lexer_term_slot_heredoc_bodies_stay_out_of_the_public_slash_path() {
+    // `return <<END` is a definite heredoc (local Perl oracle), so the body
+    // prose must not become a known sub and must not take the known-sub regex
+    // path, while the declaration after the terminator keeps it.
+    let source = "sub f { return <<END unless $cond; }\nsub fake { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(!table.is_known_sub("fake"), "body prose leaked: {source:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+    let with_slash = format!("{source}fake /x/;\n");
+    let mut lx = PerlLexer::new(&with_slash);
+    let mut saw_division = false;
+    let mut took_regex_path = false;
+    while let Some(token) = lx.next_token() {
+        match token.token_type {
+            TokenType::Division => saw_division = true,
+            TokenType::RegexMatch => took_regex_path = true,
+            TokenType::EOF => break,
+            _ => {}
+        }
+    }
+    assert!(!took_regex_path, "body prose took the known-sub regex path");
+    assert!(saw_division, "fake /x/ did not lex as division");
 }
 
 #[test]

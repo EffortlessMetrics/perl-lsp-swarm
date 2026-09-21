@@ -776,15 +776,27 @@ fn heredoc_allowed_before(
         return true;
     }
 
-    if prefix
-        .chars()
-        .next_back()
-        .is_some_and(|ch| matches!(ch, '=' | '(' | '[' | '{' | ',' | ';' | ':' | '?'))
+    // Term position: with no left operand, `<<MARKER` is a heredoc, never a
+    // left shift. The fat comma (`key => <<END`) belongs beside the
+    // single-character introducers because its last character is the `>` of
+    // the operator, not a term.
+    if prefix.ends_with("=>")
+        || prefix
+            .chars()
+            .next_back()
+            .is_some_and(|ch| matches!(ch, '=' | '(' | '[' | '{' | ',' | ';' | ':' | '?'))
     {
         return true;
     }
 
-    previous_word_before(line, offset).is_some_and(|word| is_callable_word(word, known_subs, hints))
+    // `return` introduces a term slot without being callable, so
+    // `return <<END;` is a definite heredoc even when nothing callable
+    // precedes the opener. The oracle keeps this reading under a statement
+    // modifier too (`return <<END unless $cond;`). This adds no name
+    // authority: a word still has to be callable by the known-sub rule, and
+    // unknown bareword callables stay unresolved under #14927.
+    previous_word_before(line, offset)
+        .is_some_and(|word| word == "return" || is_callable_word(word, known_subs, hints))
 }
 
 /// Recognize the immediate scalar-filehandle `print $handle LIST` term slot.
@@ -1026,6 +1038,26 @@ mod tests {
         assert!(table.is_known_sub("real"));
         assert!(!table.is_known_sub("first_fake"));
         assert!(!table.is_known_sub("second_fake"));
+    }
+
+    #[test]
+    fn term_slot_heredocs_under_conditional_modifiers_keep_declarations() {
+        // Measured with the local Perl oracle (runtime plus `-MO=Deparse`):
+        // `return <<END` and `key => <<END` keep the heredoc reading under an
+        // `unless` statement modifier, exactly like the initializer forms. The
+        // conditional modifier does not invalidate the statement's declaration
+        // and the body is string content: its prose must not become a known
+        // sub, while declarations after the terminator survive unconditionally.
+        for statement in [
+            "my $x = <<END unless $cond;",
+            "sub f { return <<END; }",
+            "sub f { return <<END unless $cond; }",
+            "my %h = (key => <<END);",
+            "my %h = (key => <<END) unless $cond;",
+        ] {
+            let source = format!("{statement}\nsub fake {{ }}\nEND\nsub real {{ }}\n");
+            assert_membership_and_slash(&source, &["real"], &["fake"]);
+        }
     }
 
     #[test]
