@@ -5,8 +5,8 @@
 //! Given/When/Then language and avoids duplicated harness boilerplate.
 
 use anyhow::{Result, anyhow};
-use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 use perl_lsp_ux_tests::binary_available;
+use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 use serde_json::Value;
 use std::time::Duration;
 

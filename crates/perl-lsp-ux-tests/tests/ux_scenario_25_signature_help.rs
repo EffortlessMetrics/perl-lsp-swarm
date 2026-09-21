@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 use perl_lsp_ux_tests::binary_available;
+use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 use serde_json::{Value, json};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
