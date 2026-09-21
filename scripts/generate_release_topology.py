@@ -22,9 +22,11 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
+    from .release_vsix_mapping import mapped_vsix_identity, mapping_from_topology
     from .release_topology_json import load_topology_json
     from .release_subject_projection import topology_subject_projection
 else:
+    from release_vsix_mapping import mapped_vsix_identity, mapping_from_topology
     from release_topology_json import load_topology_json
     from release_subject_projection import topology_subject_projection
 
@@ -85,8 +87,8 @@ def publish_dependency_graph(
 def topology_schema_version(value: Any) -> int:
     # JSON Schema accepts integral numbers such as 1.0. Preserve that v1
     # behavior, while refusing Python's bool/int equality and unknown versions.
-    if type(value) not in (int, float) or value not in (1, 2, 3):
-        raise TopologyError("release topology schema must be 1, 2 or 3")
+    if type(value) not in (int, float) or value not in (1, 2, 3, 4):
+        raise TopologyError("release topology schema must be 1, 2, 3 or 4")
     return int(value)
 
 
@@ -111,11 +113,12 @@ def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
         ) from error
     try:
         schema_path = (root or SCHEMA_PATH.parents[1]) / relative
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema_bytes = schema_path.read_bytes()
+        schema = json.loads(schema_bytes.decode("utf-8"))
         validator_type = jsonschema.validators.validator_for(schema)
         validator_type.check_schema(schema)
         validator = validator_type(schema)
-    except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError, jsonschema.SchemaError) as error:
         raise TopologyError(f"release topology schema is invalid: {error}") from error
     errors = sorted(
         validator.iter_errors(manifest),
@@ -134,9 +137,7 @@ def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
             if isinstance(sources, dict)
             else {}
         )
-        if not isinstance(source, dict) or source.get("sha256") != sha256(
-            root / relative
-        ):
+        if not isinstance(source, dict) or source.get("path") != relative or source.get("sha256") != hashlib.sha256(schema_bytes).hexdigest():
             raise TopologyError("schema source hash is stale")
 
 
@@ -675,8 +676,10 @@ def source_paths(
         schema_relative_path(schema_version) if path == SCHEMA_RELATIVE_PATH else path
         for path in SOURCE_PATHS
     ]
-    if schema_version == 3:
+    if schema_version in (3, 4):
         paths.extend(["scripts/release_subject_projection.py", "scripts/release_terminal_manifest.py"])
+    if schema_version == 4:
+        paths.append("scripts/release_vsix_mapping.py")
     manifests = workspace_manifests
     if manifests is None:
         manifests = []
@@ -764,7 +767,7 @@ def ensure_committed_topology_inputs(root: Path, paths: list[str]) -> None:
 
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
-        value = load_topology_json(path.read_text(encoding="utf-8"), supported_versions=(1, 2, 3))
+        value = load_topology_json(path.read_text(encoding="utf-8"), supported_versions=(1, 2, 3, 4))
     except (OSError, ValueError) as error:
         raise TopologyError(f"cannot read frozen topology {path}: {error}") from error
     if not isinstance(value, dict):
@@ -789,7 +792,7 @@ def load_frozen_authority(
             "frozen topology digest differs from --frozen-topology-sha256"
         )
     try:
-        value = load_topology_json(raw, supported_versions=(1, 2, 3))
+        value = load_topology_json(raw, supported_versions=(1, 2, 3, 4))
     except ValueError as error:
         raise TopologyError(f"cannot parse frozen topology {path}: {error}") from error
     if not isinstance(value, dict):
@@ -930,6 +933,30 @@ def validate_source_transition(
     prepared_sources = prepared.get("sources")
     if not isinstance(frozen_sources, dict) or not isinstance(prepared_sources, dict):
         raise TopologyError("frozen/prepared source inventories must be objects")
+    mapped_transition = frozen.get("schema") == 3 and prepared.get("schema") == 4
+    if mapped_transition:
+        # Both contracts must have landed before the product freeze. Switching
+        # the inventory's selected schema is metadata, changing its bytes is not.
+        for version in (3, 4):
+            relative = schema_relative_path(version)
+            ensure_committed_topology_inputs(frozen_root, [relative])
+            ensure_committed_topology_inputs(prepared_root, [relative])
+            if (frozen_root / relative).read_bytes() != (prepared_root / relative).read_bytes():
+                raise TopologyError("mapped preparation changed a topology schema")
+        for inventory, root, version in ((frozen_sources, frozen_root, 3), (prepared_sources, prepared_root, 4)):
+            relative = schema_relative_path(version)
+            if inventory.get(relative) != {"path": relative, "sha256": sha256(root / relative)}:
+                raise TopologyError("mapped transition has stale selected schema identity")
+        helper = "scripts/release_vsix_mapping.py"
+        for root in (frozen_root, prepared_root):
+            ensure_committed_topology_inputs(root, [helper])
+        if (frozen_root / helper).read_bytes() != (prepared_root / helper).read_bytes():
+            raise TopologyError("mapped preparation changed the mapping helper")
+        if prepared_sources.get(helper) != {"path": helper, "sha256": sha256(prepared_root / helper)}:
+            raise TopologyError("mapped transition has stale mapping helper identity")
+        prepared_sources = {key: value for key, value in prepared_sources.items() if key != helper}
+        frozen_sources = {key: value for key, value in frozen_sources.items() if key != schema_relative_path(3)}
+        prepared_sources = {key: value for key, value in prepared_sources.items() if key != schema_relative_path(4)}
     if set(frozen_sources) != set(prepared_sources):
         raise TopologyError("prepared topology changes the source path set")
     if git_head(frozen_root) != frozen.get("frozen_product_sha"):
@@ -997,7 +1024,7 @@ def validate_source_transition(
         ) != normalized_source_value(
             prepared_root,
             relative,
-            prepared_release,
+            prepared["vsix"]["version"] if mapped_transition and relative == "vscode-extension/package.json" else prepared_release,
             published_names,
             published_paths,
             set(frozen_inherited),
@@ -1020,24 +1047,41 @@ def validate_prepared_projection(
         raise TopologyError("frozen topology authority bytes do not match supplied baseline")
     schema_validate(frozen, frozen_root)
     schema_validate(prepared, prepared_root)
-    if topology_schema_version(frozen.get("schema")) != topology_schema_version(
-        prepared.get("schema")
-    ):
+    frozen_version = topology_schema_version(frozen.get("schema"))
+    prepared_version = topology_schema_version(prepared.get("schema"))
+    mapped_transition = frozen_version == 3 and prepared_version == 4
+    if prepared_version == 4 and not mapped_transition:
+        raise TopologyError("mapped preparation requires an explicit frozen v3 topology")
+    if frozen_version != prepared_version and not mapped_transition:
         raise TopologyError("frozen/prepared topology schema versions must match")
     if frozen.get("prepared_swarm_sha") is not None:
         raise TopologyError("frozen topology must not already bind prepared_swarm_sha")
     if frozen.get("frozen_product_sha") != prepared.get("frozen_product_sha"):
         raise TopologyError("prepared topology does not retain frozen_product_sha")
-    validate_source_transition(frozen, prepared, frozen_root, prepared_root)
     frozen_subjects = deepcopy(frozen)
     prepared_subjects = deepcopy(prepared)
     frozen_subjects.pop("sources", None)
     prepared_subjects.pop("sources", None)
+    if mapped_transition:
+        package = json.loads((prepared_root / "vscode-extension/package.json").read_text(encoding="utf-8"))
+        try:
+            expected = mapped_vsix_identity(mapping_from_topology(prepared), package, prepared["release"], prepared["prepared_swarm_sha"])
+        except ValueError as error:
+            raise TopologyError(str(error)) from error
+        if any(prepared["vsix"].get(key) != value for key, value in expected.items()):
+            raise TopologyError("prepared mapped identity differs from accepted package")
+        # The mapping is admitted above, not discarded as arbitrary metadata.
+        # All inherited membership, target, channel and claim fields survive the
+        # comparison, including native member lists and subject projection.
+        prepared_subjects["schema"] = 3
+        for key in ("candidate_id", "publisher", "name", "pre_release"):
+            prepared_subjects["vsix"].pop(key)
     if immutable_projection(frozen_subjects) != immutable_projection(prepared_subjects):
         raise TopologyError(
             "prepared topology changes an immutable frozen product subject "
             f"(frozen digest {frozen_digest})"
         )
+    validate_source_transition(frozen, prepared, frozen_root, prepared_root)
 
 
 # Characters whose preceding token leaves the parser in a position where the
@@ -1383,6 +1427,7 @@ def build_manifest(
     frozen_root: Path | None = None,
     *,
     schema_version: int = SCHEMA,
+    vsix_mapping: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     schema_version = topology_schema_version(schema_version)
     if frozen_topology is not None:
@@ -1457,7 +1502,14 @@ def build_manifest(
     package = json.loads(
         (root / "vscode-extension/package.json").read_text(encoding="utf-8")
     )
-    if package.get("version") != release:
+    if schema_version == 4:
+        try:
+            mapped = mapped_vsix_identity(vsix_mapping, package, release, prepared_swarm_sha)
+        except ValueError as error:
+            raise TopologyError(str(error)) from error
+    elif vsix_mapping is not None:
+        raise TopologyError("VSIX mapping requires opt-in topology v4")
+    elif package.get("version") != release:
         raise TopologyError(
             f"VSIX version {package.get('version')} does not match {release}"
         )
@@ -1497,9 +1549,11 @@ def build_manifest(
             ).items()
         },
     }
-    if schema_version in (2, 3):
+    if schema_version == 4:
+        manifest["vsix"].update(mapped)
+    if schema_version in (2, 3, 4):
         manifest["checksum_assets"] = derive_checksum_assets(workflow, targets)
-    if schema_version == 3:
+    if schema_version in (3, 4):
         manifest["subject_projection"] = derive_subject_projection(workflow, root)
     if frozen_topology is not None:
         if frozen_topology_digest is None:
@@ -1524,6 +1578,8 @@ def validate_manifest(
     frozen_topology_digest: str | None = None,
     frozen_topology_path: Path | None = None,
     frozen_root: Path | None = None,
+    *,
+    vsix_mapping: dict[str, Any] | None = None,
 ) -> None:
     schema_validate(manifest, root)
     if frozen_topology is not None:
@@ -1533,6 +1589,11 @@ def validate_manifest(
             "frozen topology authority is only valid for prepared validation"
         )
     schema_version = topology_schema_version(manifest.get("schema"))
+    if schema_version == 4:
+        if vsix_mapping is None or mapping_from_topology(manifest) != vsix_mapping:
+            raise TopologyError("mapped validation requires the exact explicit VSIX mapping")
+    elif vsix_mapping is not None:
+        raise TopologyError("VSIX mapping requires opt-in topology v4")
     if expected_sha is not None and manifest.get("frozen_product_sha") != expected_sha:
         raise TopologyError(
             "manifest frozen_product_sha differs from the reviewed candidate SHA"
@@ -1640,11 +1701,11 @@ def validate_manifest(
     expected_targets = derive_targets(workflow, release)
     if targets != expected_targets:
         raise TopologyError("binary_targets does not match the release workflow")
-    if schema_version in (2, 3) and manifest.get("checksum_assets") != derive_checksum_assets(
+    if schema_version in (2, 3, 4) and manifest.get("checksum_assets") != derive_checksum_assets(
         workflow, expected_targets
     ):
         raise TopologyError("checksum_assets does not match the public archive checksum inventory")
-    if schema_version == 3 and manifest.get("subject_projection") != derive_subject_projection(workflow, root):
+    if schema_version in (3, 4) and manifest.get("subject_projection") != derive_subject_projection(workflow, root):
         raise TopologyError("subject_projection does not match the terminal producer")
     downstream = json.loads(
         (root / "docs/reference/downstream-dap-integrations.json").read_text()
@@ -1666,13 +1727,20 @@ def validate_manifest(
     package = json.loads(
         (root / "vscode-extension/package.json").read_text(encoding="utf-8")
     )
-    if package.get("version") != release or manifest.get("vsix", {}).get(
+    if schema_version == 4:
+        try:
+            expected = mapped_vsix_identity(mapping_from_topology(manifest), package, release, prepared_swarm_sha)
+        except ValueError as error:
+            raise TopologyError(str(error)) from error
+        if any(manifest["vsix"].get(key) != value for key, value in expected.items()):
+            raise TopologyError("VSIX mapping or asset differs from prepared manifest")
+    elif package.get("version") != release or manifest.get("vsix", {}).get(
         "version"
     ) != package.get("version"):
         raise TopologyError(
             "VSIX version does not match the release or current extension manifest"
         )
-    expected_vsix_asset = f"{package.get('name')}-{package.get('version')}.vsix"
+    expected_vsix_asset = (expected["asset_name"] if schema_version == 4 else f"{package.get('name')}-{package.get('version')}.vsix")
     if manifest.get("vsix", {}).get("asset_name") != expected_vsix_asset:
         raise TopologyError("VSIX asset name does not match the extension manifest")
     if sorted(manifest.get("vsix", {}).get("managed_targets", [])) != sorted(
@@ -1683,7 +1751,7 @@ def validate_manifest(
         )
     if manifest.get("primary_channels") != PRIMARY_CHANNELS:
         raise TopologyError("primary channel set is not the accepted v0.18 set")
-    if manifest.get("vsix", {}).get("version") != manifest.get("release"):
+    if schema_version != 4 and manifest.get("vsix", {}).get("version") != manifest.get("release"):
         raise TopologyError("VSIX version must equal release version")
     sources = manifest.get("sources")
     if not isinstance(sources, dict):
@@ -1713,7 +1781,7 @@ def validate_manifest(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--schema-version", type=int, choices=(1, 2, 3), default=SCHEMA,
+        "--schema-version", type=int, choices=(1, 2, 3, 4), default=SCHEMA,
         help="topology contract to generate or check (default: 1; checksums require 2)",
     )
     parser.add_argument(
@@ -1721,6 +1789,7 @@ def main() -> int:
     )
     parser.add_argument("--frozen-product-sha", required=True)
     parser.add_argument("--prepared-swarm-sha")
+    parser.add_argument("--vsix-mapping", type=Path, help="explicit prepared RC mapping; topology v4 only")
     parser.add_argument(
         "--frozen-topology",
         type=Path,
@@ -1747,6 +1816,18 @@ def main() -> int:
     args = parser.parse_args()
     root = (args.root or Path(__file__).resolve().parents[1]).resolve()
     try:
+        vsix_mapping = None
+        if args.vsix_mapping:
+            try:
+                if __package__:
+                    from .release_topology_json import load_unique_json
+                else:
+                    from release_topology_json import load_unique_json
+                vsix_mapping = load_unique_json(args.vsix_mapping.read_bytes().decode("utf-8"))
+            except (UnicodeError, ValueError) as error:
+                raise TopologyError(f"invalid VSIX mapping: {error}") from error
+        if (args.schema_version == 4) != (vsix_mapping is not None):
+            raise TopologyError("topology v4 requires --vsix-mapping; legacy schemas forbid it")
         if args.frozen_topology is None and (
             args.frozen_topology_sha256 is not None or args.frozen_root is not None
         ):
@@ -1765,6 +1846,8 @@ def main() -> int:
                     args.frozen_topology, args.frozen_topology_sha256
                 )
                 schema_validate(frozen_topology, args.frozen_root or root)
+            if args.schema_version == 4 and mapping_from_topology(manifest) != vsix_mapping:
+                raise TopologyError("manifest differs from supplied VSIX mapping")
             if manifest.get("release") != args.release:
                 raise TopologyError("manifest release differs from --release")
             validate_manifest(
@@ -1776,6 +1859,7 @@ def main() -> int:
                 frozen_digest,
                 args.frozen_topology,
                 args.frozen_root,
+                vsix_mapping=vsix_mapping,
             )
         else:
             frozen_topology = None
@@ -1795,6 +1879,7 @@ def main() -> int:
                 args.frozen_topology,
                 args.frozen_root,
                 schema_version=args.schema_version,
+                vsix_mapping=vsix_mapping,
             )
             validate_manifest(
                 manifest,
@@ -1805,6 +1890,7 @@ def main() -> int:
                 frozen_digest,
                 args.frozen_topology,
                 args.frozen_root,
+                vsix_mapping=vsix_mapping,
             )
             args.output.write_text(
                 json.dumps(manifest, indent=2) + "\n", encoding="utf-8"

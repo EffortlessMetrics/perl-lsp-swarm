@@ -1,3 +1,14 @@
+/// Why the contextual repetition production consumes or leaves its next token.
+/// This is local grammar knowledge, not a general expression-start predicate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RepetitionRhsDisposition {
+    SupportedOperand,
+    AssignmentContinuation,
+    MissingOperand,
+    UnsupportedOperand,
+    InvalidOperand,
+}
+
 impl<'a> Parser<'a> {
     /// Parse comma operator (lowest precedence except for word operators)
     fn parse_comma(&mut self) -> ParseResult<Node> {
@@ -72,7 +83,7 @@ impl<'a> Parser<'a> {
             let mut right = if self.goto_starts_control_flow() {
                 self.parse_goto()?
             } else {
-                self.parse_word_not_expr()?
+                self.parse_assignment()?
             };
             right = self.collect_comma_fat_arrow_continuation(right)?;
 
@@ -114,23 +125,70 @@ impl<'a> Parser<'a> {
                 .unwrap_or(true)
     }
 
-    /// Parse word not expression - handles 'not' operator
+    /// Parse word `not` through its canonical operand boundary (#13932).
+    /// Bare operands include assignment/comma but stop before and/or/xor;
+    /// explicit parentheses close the operand before following infix operators.
     fn parse_word_not_expr(&mut self) -> ParseResult<Node> {
         self.with_recursion_guard(|s| {
-            if s.peek_kind() == Some(TokenKind::WordNot) {
+            if s.peek_kind() == Some(TokenKind::WordNot) && !s.is_keyword_before_fat_arrow() {
                 let op_token = s.advance_token()?;
                 let start = op_token.start();
-                let operand = if s.goto_starts_control_flow() {
-                    s.parse_goto()?
+                // Simple-group `)` end when the operand took the parenthesized
+                // path below; the group returns the inner location.
+                let mut closer_end = None;
+                let operand = if let Some(missing) = s.recover_missing_infix_rhs(start) {
+                    missing
+                } else if s.peek_kind() == Some(TokenKind::LeftParen) {
+                    let inner = s.parse_primary()?;
+                    // FC-WORD-NOT-SPAN-CLOSER: the group consumes `)` through
+                    // the tracked closer path, so the previous position is the
+                    // closing delimiter end the inner location omits. On the
+                    // inserted-closer recovery path nothing was consumed and
+                    // the max below keeps the inner end.
+                    closer_end = Some(s.previous_position());
+                    inner
                 } else {
-                    s.parse_word_not_expr()?
+                    // A parenthesized inner operand must ride the full
+                    // descent: after it returns, the climb back through the
+                    // additive levels still runs inside this operand
+                    // (`not not ($n) + 1` keeps `+ 1` inside the outer `not`,
+                    // while `not ($n) + 1` does not). A bare inner operand
+                    // already ran every level, so the climb is a no-op.
+                    let inner_is_bare = !matches!(
+                        s.tokens.peek_second().ok().map(|token| token.kind()),
+                        Some(TokenKind::LeftParen)
+                    );
+                    let first = if s.peek_kind() == Some(TokenKind::WordNot)
+                        && !s.is_keyword_before_fat_arrow()
+                        && inner_is_bare
+                    {
+                        // FC-WORD-NOT-NEST-DEPTH: nested bare `not` recurses
+                        // directly — one production-depth frame per operator,
+                        // as before — instead of riding parse_assignment back
+                        // down through the power/unary guards (~3 frames per
+                        // `not`, which tripped the 128-frame budget at ~50
+                        // prefixes that Perl accepts).
+                        s.parse_word_not_expr()?
+                    } else if s.goto_starts_control_flow() {
+                        s.parse_goto()?
+                    } else {
+                        s.parse_assignment()?
+                    };
+                    s.collect_comma_fat_arrow_continuation(first)?
                 };
-                let end = operand.location.end;
+                let end = match closer_end {
+                    Some(closer) => operand.location.end.max(closer),
+                    None => operand.location.end,
+                };
 
-                return s.charge_node(
+                let expr = s.charge_node(
                     NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                     SourceLocation { start, end },
-                );
+                )?;
+                // FC-WORD-NOT-POSTFIX-OVERADMIT: only `->` chains may continue
+                // a `not` result (`not($x)->foo`); direct `[]`/`{}`/`++`/`--`
+                // are Perl syntax errors and stay for statement recovery.
+                return s.parse_arrow_chain(expr);
             }
 
             // The right side of a word operator should be a full expression
@@ -172,23 +230,33 @@ impl<'a> Parser<'a> {
 
     /// Parse assignment expression
     fn parse_assignment(&mut self) -> ParseResult<Node> {
-        if let Some(kind) = self.peek_kind() {
-            if matches!(
+        self.parse_assignment_with_ternary_tail(true)
+    }
+
+    /// Parse an operand whose caller owns following comma/fat-arrow separators.
+    /// Only the unparenthesized ternary else tail inherits this boundary; the
+    /// colon-delimited then branch and nested groups establish their own context.
+    fn parse_assignment_before_separator(&mut self) -> ParseResult<Node> {
+        self.parse_assignment_with_ternary_tail(false)
+    }
+
+    fn parse_assignment_with_ternary_tail(&mut self, collect_else_list: bool) -> ParseResult<Node> {
+        // NOTE (#13932 reconstruction): no early `not` dispatch here.
+        // Word `not` enters through parse_unary so the levels above
+        // still run after `parse_word_not_expr` returns. The
+        // `parse_unary` WordNot arm remains the single entry point.
+        if let Some(kind) = self.peek_kind()
+            && matches!(
                 kind,
                 TokenKind::WordNot | TokenKind::WordAnd | TokenKind::WordOr | TokenKind::WordXor
-            ) && self.is_keyword_before_fat_arrow()
-            {
-                let token = self.advance_token()?;
-                return self.charge_node(
-                    NodeKind::Identifier { name: token.text.to_string() },
-                    SourceLocation { start: token.start(), end: token.end() },
-                );
-            }
-
-            // Check if we have a 'not' operator first
-            if kind == TokenKind::WordNot {
-                return self.parse_word_not_expr();
-            }
+            )
+            && self.is_keyword_before_fat_arrow()
+        {
+            let token = self.advance_token()?;
+            return self.charge_node(
+                NodeKind::Identifier { name: token.text.to_string() },
+                SourceLocation { start: token.start(), end: token.end() },
+            );
         }
 
         // Handle 'return' as an expression in expression context
@@ -198,16 +266,14 @@ impl<'a> Parser<'a> {
             return self.parse_return_expr();
         }
 
-        let mut expr = self.parse_ternary()?;
+        let mut expr = self.parse_ternary_with_tail(collect_else_list)?;
 
         if let Some((op, op_start)) = self.consume_assignment_operator()? {
             // The RHS can be a 'not' expression, or missing (recovery)
             let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
                 missing
-            } else if self.peek_kind() == Some(TokenKind::WordNot) {
-                self.parse_word_not_expr()?
             } else {
-                self.parse_assignment()?
+                self.parse_assignment_with_ternary_tail(collect_else_list)?
             };
             let start = expr.location.start;
             let end = rhs.location.end;
@@ -236,6 +302,10 @@ impl<'a> Parser<'a> {
     /// chained ternaries (`$a ? $b : $c ? $d : $e`) are right-associative
     /// without accidentally capturing a surrounding assignment.
     fn parse_ternary(&mut self) -> ParseResult<Node> {
+        self.parse_ternary_with_tail(true)
+    }
+
+    fn parse_ternary_with_tail(&mut self, collect_else_list: bool) -> ParseResult<Node> {
         let mut expr = self.parse_range()?;
 
         if self.peek_kind() == Some(TokenKind::Question) {
@@ -249,9 +319,13 @@ impl<'a> Parser<'a> {
             // trailing fat-arrow / comma continuation stopping before `:`.
             let then_expr = self.collect_fat_arrow_ternary_branch(then_expr)?;
             self.expect(TokenKind::Colon)?;
-            let else_expr = self.parse_ternary()?;
+            let else_expr = self.parse_ternary_with_tail(collect_else_list)?;
             // Likewise for the else-branch.
-            let else_expr = self.collect_fat_arrow_ternary_branch(else_expr)?;
+            let else_expr = if collect_else_list {
+                self.collect_fat_arrow_ternary_branch(else_expr)?
+            } else {
+                else_expr
+            };
 
             let start = expr.location.start;
             let end = else_expr.location.end;
@@ -327,8 +401,10 @@ impl<'a> Parser<'a> {
             // Auto-quote a bare identifier before =>
             if let NodeKind::Identifier { ref name } = elements[0].kind {
                 let loc = elements[0].location;
-                elements[0] =
-                    self.charge_node(NodeKind::String { value: name.clone(), interpolated: false }, loc)?;
+                elements[0] = self.charge_node(
+                    NodeKind::String { value: name.clone(), interpolated: false },
+                    loc,
+                )?;
             }
             self.advance_token()?; // consume =>
             if !matches!(
@@ -919,7 +995,10 @@ impl<'a> Parser<'a> {
         }
 
         let end = operands.last().map_or(start, |n| n.location.end);
-        self.charge_node(NodeKind::ChainedComparison { operands, ops }, SourceLocation { start, end })
+        self.charge_node(
+            NodeKind::ChainedComparison { operands, ops },
+            SourceLocation { start, end },
+        )
     }
 
     /// Parse shift expression
@@ -1008,14 +1087,14 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    /// Whether `kind`/`text` may start the RHS of ordinary binary string repetition.
+    /// Classify the RHS term of ordinary binary string repetition.
     ///
     /// Kept local to this seam: filehandle, block, list, and recovery contexts have
     /// different legal starts. Do not reuse this as a global expression-starter
-    /// predicate. Angle-bracket terms, word `not`, magic constants, and yada-yada
-    /// `...` are intentionally omitted.
-    fn ordinary_binary_repetition_rhs_starts(kind: TokenKind, text: &str) -> bool {
-        match kind {
+    /// predicate. Angle-bracket terms and yada-yada `...` remain
+    /// outside this supported operand set. Magic constants use Identifier.
+    fn ordinary_binary_repetition_rhs(kind: TokenKind, text: &str) -> RepetitionRhsDisposition {
+        let supported = match kind {
             TokenKind::Number
             | TokenKind::ScalarSigil
             | TokenKind::ArraySigil
@@ -1029,7 +1108,10 @@ impl<'a> Parser<'a> {
             | TokenKind::Undef
             | TokenKind::Do
             | TokenKind::Sub
+            // `when` is a bareword/call while this operand is still expected.
+            | TokenKind::When
             | TokenKind::Not
+            | TokenKind::WordNot
             | TokenKind::Minus
             | TokenKind::Plus
             | TokenKind::Increment
@@ -1074,7 +1156,45 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => false,
+        };
+        if supported {
+            RepetitionRhsDisposition::SupportedOperand
+        } else {
+            // A missing implementation is not evidence of invalid Perl.
+            RepetitionRhsDisposition::UnsupportedOperand
         }
+    }
+
+    /// Classify the still-unconsumed contextual `x` and its RHS together.
+    /// Both multiplicative parsing and final statement recovery consult this
+    /// owner while the same token/lookahead is current; no nested parse can
+    /// overwrite a saved cause. Adjacency belongs to assignment recognition.
+    fn repetition_rhs_disposition(&mut self) -> ParseResult<RepetitionRhsDisposition> {
+        let operator_end = self.tokens.peek()?.end();
+        let next = self.tokens.peek_second()?;
+        let kind = next.kind();
+        let adjacent = next.start() == operator_end;
+        let ordinary = Self::ordinary_binary_repetition_rhs(kind, next.text.as_ref());
+        let word_follower = (Self::is_stmt_modifier_kind(kind) && kind != TokenKind::When)
+            || matches!(kind, TokenKind::WordAnd | TokenKind::WordOr | TokenKind::WordXor);
+        // Keywords before => are autoquoted terms, not outer continuations.
+        if word_follower && self.tokens.peek_third()?.kind() == TokenKind::FatArrow {
+            return Ok(RepetitionRhsDisposition::UnsupportedOperand);
+        }
+        Ok(match kind {
+            TokenKind::Assign if adjacent => RepetitionRhsDisposition::AssignmentContinuation,
+            TokenKind::Assign => RepetitionRhsDisposition::InvalidOperand,
+            kind if kind.is_recovery_boundary()
+                || word_follower
+                || matches!(
+                    kind,
+                    TokenKind::Comma | TokenKind::FatArrow | TokenKind::And | TokenKind::Or
+                ) =>
+            {
+                RepetitionRhsDisposition::MissingOperand
+            }
+            _ => ordinary,
+        })
     }
 
     fn parse_multiplicative_with(&mut self, mut expr: Node) -> ParseResult<Node> {
@@ -1136,16 +1256,24 @@ impl<'a> Parser<'a> {
                     if peeked_text != "x" {
                         break;
                     }
-                    let is_operand_start = self.tokens.peek_second().ok().is_some_and(|next| {
-                        Self::ordinary_binary_repetition_rhs_starts(next.kind(), next.text.as_ref())
-                    });
-                    if !is_operand_start {
+                    let disposition = self.repetition_rhs_disposition()?;
+                    if !matches!(
+                        disposition,
+                        RepetitionRhsDisposition::SupportedOperand
+                            | RepetitionRhsDisposition::MissingOperand
+                    ) {
                         break;
                     }
                     let op_token = self.advance_token()?;
                     // Use parse_power() so that `a x b**c` parses as `a x (b**c)`.
                     // Exponentiation binds more tightly than repetition in Perl.
-                    let right = self.parse_power()?;
+                    let right = if disposition == RepetitionRhsDisposition::MissingOperand {
+                        self.record_missing_infix_rhs(op_token.start())
+                    } else if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+                        missing
+                    } else {
+                        self.parse_power()?
+                    };
                     let start = expr.location.start;
                     let end = right.location.end;
 
