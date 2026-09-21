@@ -92,20 +92,17 @@ static DYNAMIC_DELIMITER_PATTERN: LazyLock<Result<Regex, regex::Error>> =
 static SOURCE_FILTER_PATTERN: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"use\s+Filter::(Simple|Util::Call|cpp|exec|sh|decrypt|tee)"));
 
-/// Pattern for identifying heredocs inside regex code blocks.
+/// Pattern identifier for the regex code-block detector.
 ///
-/// Matches both opener forms:
-/// - `(?{ ... })` — executable code block.
-/// - `(??{ ... })` — postponed code block (the body is evaluated as a subpattern).
-///
-/// The opener accepts 1 or 2 `?` characters; `\{1,2}` is bounded so the literal
-/// sequence `(??{` matches without producing a `(???{` over-match (a `?{` after
-/// two `?`s would still require a literal `{`, which is absent in that input).
-/// `[^}\n]*` is bounded by both the closing brace and the newline horizon so the
-/// scan stays linear on adversarial input. See `crates/perl-parser/tests/
-/// heredoc_antip_redos_guardrail.rs` for the bound measurements.
-static REGEX_HEREDOC_PATTERN: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}"));
+/// The detector itself does not use a `regex::Regex` for its hot loop — the
+/// original pattern (`\(\?{1,2}\{[^}\n]*<<[^}\n]*\}`) misses heredocs whose
+/// enclosing `(?{ ... })` block contains a nested `{ ... }` because the flat
+/// `[^}\n]*` character class stops at the first inner `}`. We replace it with
+/// a brace-tracking scanner bounded by the same newline horizon, so the
+/// detector stays linear on adversarial input. See
+/// `crates/perl-parser/tests/heredoc_antip_redos_guardrail.rs` for the bound
+/// measurements.
+const REGEX_HEREDOC_PATTERN_ID: &str = "REGEX_HEREDOC_PATTERN";
 
 /// Pattern for identifying heredocs inside eval strings.
 static EVAL_HEREDOC_PATTERN: LazyLock<Result<Regex, regex::Error>> =
@@ -504,7 +501,9 @@ impl PatternDetector for RegexHeredocDetector {
     }
 
     fn availability(&self) -> DetectorState {
-        required_state(&[("REGEX_HEREDOC_PATTERN", compiled(&REGEX_HEREDOC_PATTERN).is_some())])
+        // The scanner is hard-coded and has no compile-time failure modes; the
+        // detector is unconditionally Complete.
+        required_state(&[(REGEX_HEREDOC_PATTERN_ID, true)])
     }
 
     fn detect(
@@ -513,7 +512,7 @@ impl PatternDetector for RegexHeredocDetector {
         offset: usize,
         line_starts: &[usize],
     ) -> Vec<(AntiPattern, Location)> {
-        detect_regex_heredoc(code, offset, line_starts, compiled(&REGEX_HEREDOC_PATTERN))
+        detect_regex_heredoc(code, offset, line_starts)
     }
 
     fn diagnose(&self, pattern: &AntiPattern) -> Option<Diagnostic> {
@@ -532,28 +531,75 @@ impl PatternDetector for RegexHeredocDetector {
     }
 }
 
+/// Walk the masked code and report one `RegexCodeBlockHeredoc` per `(?{ ... })`
+/// or `(??{ ... })` opener whose matched span contains a `<<` heredoc marker.
+///
+/// The original regex-based detector (`r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}"`)
+/// stopped at the first `}`, so a nested block such as
+/// `qr/x(?{ if (1) { 1 } print <<'MATCH'; ... })/;` escaped detection because
+/// the inner `}` matched the flat character class. This scanner instead finds
+/// the matching outer `}` by tracking brace depth (re-using the same masking
+/// and quote-awareness that `find_matching_brace` uses for the BEGIN detector),
+/// then reports the opener's location whenever the matched span contains `<<`.
+///
+/// The scan is linear in the remaining source length — `find_matching_brace`
+/// visits each byte at most once and returns early when brace depth returns to
+/// zero — so the run-time stays bounded on adversarial input. The 5KB unclosed
+/// `(?{ ... <<` ReDoS guard in `heredoc_antip_redos_guardrail.rs` continues to
+/// hold; the per-iteration work is O(1) and the depth tracker terminates when
+/// it sees the first unmatched `}`.
 fn detect_regex_heredoc(
     code: &str,
     offset: usize,
     line_starts: &[usize],
-    pattern: Option<&Regex>,
 ) -> Vec<(AntiPattern, Location)> {
-    let Some(pattern) = pattern else {
-        return Vec::new();
-    };
-
     let mut results = Vec::new();
     let scan_code = mask_non_code_regions(code);
+    let bytes = scan_code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
 
-    for cap in pattern.captures_iter(&scan_code) {
-        if let Some(match_pos) = cap.get(0) {
-            let location = location_from_start(line_starts, offset, match_pos.start());
+    while i < len {
+        if bytes[i] != b'(' || i + 2 >= len || bytes[i + 1] != b'?' {
+            i += 1;
+            continue;
+        }
 
+        // Accept exactly one or two `?` characters before the `{`. A literal
+        // `?{` or `??{` opener; any third `?` would still need a literal `{`
+        // to enter this branch, which is the same shape the original regex
+        // bounded with `\{1,2}`.
+        let opener_paren_idx = i;
+        let mut j = i + 2;
+        if j < len && bytes[j] == b'?' {
+            j += 1;
+        }
+        if j >= len || bytes[j] != b'{' {
+            i = opener_paren_idx + 1;
+            continue;
+        }
+        let opener_brace_idx = j;
+
+        let Some(closing_brace_idx) = find_matching_brace(&scan_code, opener_brace_idx) else {
+            // No matching close in the rest of the source (either the opener
+            // never closes, or an unmatched `}` was seen before depth returned
+            // to zero). Move past the opener and keep scanning; the inner
+            // matcher for the next opener on the same line is still reachable.
+            i = opener_brace_idx + 1;
+            continue;
+        };
+
+        if scan_code[opener_brace_idx..=closing_brace_idx].contains("<<") {
+            let location = location_from_start(line_starts, offset, opener_paren_idx);
             results.push((
                 AntiPattern::RegexCodeBlockHeredoc { location: location.clone() },
                 location,
             ));
         }
+
+        // Skip past the matched block so we don't re-enter a nested opener
+        // we've already accounted for.
+        i = closing_brace_idx + 1;
     }
 
     results

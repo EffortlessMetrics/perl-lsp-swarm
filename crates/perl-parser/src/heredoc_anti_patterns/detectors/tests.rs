@@ -164,15 +164,27 @@ fn test_regex_heredoc_does_not_overmatch_triple_question() {
 
 #[test]
 fn test_regex_heredoc_pattern_static_matches_both_openers() {
-    // #14390: observe the production REGEX_HEREDOC_PATTERN static directly. The
-    // detector-level tests above reach it only transitively through trait-object
-    // dispatch, which static analysis cannot follow; this direct observation pins
-    // the changed `?{1,2}` opener to its falsifying inputs.
-    let pattern =
-        super::compiled(&super::REGEX_HEREDOC_PATTERN).expect("production regex compiles");
-    assert!(pattern.is_match("m/a(?{b<<'X'})c/"));
-    assert!(pattern.is_match("m/a(??{b<<'X'})c/"));
-    assert!(!pattern.is_match("m/a(???{b<<'X'})c/"));
+    // #14390: pin the changed `?{1,2}` opener to its falsifying inputs. The
+    // production code no longer carries a `LazyLock<Regex>` static for the
+    // regex-heredoc detector (#14191 replaced the regex with a brace-tracking
+    // scanner), so observe the detector end-to-end instead of the pattern
+    // directly: a one-question opener and a two-question opener both report,
+    // a three-question opener does not.
+    use crate::heredoc_anti_patterns::{AntiPattern, AntiPatternDetector};
+    let detector = AntiPatternDetector::new();
+
+    let count = |input: &str| -> usize {
+        detector
+            .detect_all_report(input)
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.pattern, AntiPattern::RegexCodeBlockHeredoc { .. }))
+            .count()
+    };
+
+    assert!(count("m/a(?{b<<'X'})c/") >= 1, "single-? opener must report");
+    assert!(count("m/a(??{b<<'X'})c/") >= 1, "double-? opener must report");
+    assert_eq!(count("m/a(???{b<<'X'})c/"), 0, "triple-? is not a Perl opener");
 }
 
 #[test]
