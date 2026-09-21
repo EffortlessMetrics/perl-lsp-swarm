@@ -1,0 +1,4465 @@
+{
+  "schema_version": "high_risk_configuration_bindings.v1",
+  "witnesses": {
+    "ai.admit": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "AiCompletionConfig::admit_trusted_user_operator_activation",
+      "expression": "self.activation_authority = AiActivationAuthority::TrustedUserOperator"
+    },
+    "ai.derive": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "recompute_ai_completion_effective",
+      "expression": "ai.enabled = ai.user_enabled && !ai.project_opt_out"
+    },
+    "ai.streaming.derive": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "recompute_ai_completion_effective",
+      "expression": "ai.streaming.enabled = ai.streaming.user_enabled"
+    },
+    "ai.client": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "ServerConfig::update_from_value",
+      "expression": "if let Some(ai) = settings.get(\"aiCompletion\") {\n            // Security (#4997): activation and selection authority cannot be\n            // written from any LSP client payload. The same parser serves\n            // initialization options, didChangeConfiguration, and unscoped or\n            // folder-scoped workspace/configuration results, so no arrival\n            // here can prove user/machine provenance. Rejections preserve any\n            // previously accepted trusted state instead of clearing it.\n            if let Some(_enabled) = ai.get(\"enabled\") {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.enabled from a generic LSP settings channel \\\n                     (security: #4997): this channel cannot prove user/machine provenance, \\\n                     so it can neither arm nor disable remote AI egress\"\n                );\n            }\n            if let Some(provider) = ai.get(\"provider\") {\n                let _ = provider;\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.provider from a generic LSP settings channel \\\n                     (security: #4997): backend/egress identity selection requires \\\n                     trusted user/operator authority\"\n                );\n            }\n            // Security (#5684): do NOT honour LSP-channel endpoint, apiKeyEnv,\n            // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect\n            // AI completion requests to an attacker-controlled endpoint and\n            // exfiltrate source code, or change the env var name to read an\n            // arbitrary secret. No configuration path currently sets them:\n            // `.perl-lsp.toml` does not carry these fields at all (#4955),\n            // no client channel may supply them (#5684), and the primary VS\n            // Code extension exposes no endpoint/credential surface (known\n            // gap documented in docs/reference/AI_COMPLETION.md and #4997).\n            if let Some(_endpoint) = ai.get(\"endpoint\").and_then(|v| v.as_str()) {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.endpoint from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(model) = ai.get(\"model\") {\n                let _ = model;\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.model from a generic LSP settings channel \\\n                     (security: #4997): request identity selection requires \\\n                     trusted user/operator authority\"\n                );\n            }\n            if let Some(_key_env) = ai.get(\"apiKeyEnv\").and_then(|v| v.as_str()) {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.apiKeyEnv from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(_key_header) = ai.get(\"apiKeyHeader\").and_then(|v| v.as_str()) {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.apiKeyHeader from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(_key_prefix) = ai.get(\"apiKeyPrefix\") {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.apiKeyPrefix from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(timeout) = ai.get(\"timeoutMs\").and_then(|v| v.as_u64()) {\n                self.ai_completion.timeout_ms = timeout;\n            }\n            if let Some(tokens) = ai.get(\"maxOutputTokens\").and_then(|v| v.as_u64()) {\n                self.ai_completion.max_output_tokens = tokens as u32;\n            }\n            if let Some(rps) = ai.get(\"rateLimitRps\").and_then(|v| v.as_f64()) {\n                self.ai_completion.rate_limit_rps = rps;\n            }\n            if let Some(inflight) = ai.get(\"maxInflight\").and_then(|v| v.as_u64()) {\n                // The configuration authority catalog declares `ai.max_inflight`\n                // as `UnsignedRange { minimum: 1, maximum: 64 }` with\n                // `KeepLastValid`. This channel bypassed both: `as u32` wraps,\n                // so 4294967296 became 0 \u00e2\u20ac\u201d and then a gate capacity of 1, i.e.\n                // *tighter* than the user asked for \u00e2\u20ac\u201d while 65..=u32::MAX\n                // sailed past the declared maximum.\n                //\n                // Pre-existing, but `max_inflight` is now a live-concurrency\n                // ceiling rather than only the token bucket's burst (`#8300`),\n                // so an out-of-range value changes how many requests may be\n                // simultaneously active. Honour the declared contract here.\n                match u32::try_from(inflight) {\n                    Ok(value) if AI_MAX_INFLIGHT_RANGE.contains(&value) => {\n                        self.ai_completion.max_inflight = value;\n                    }\n                    _ => {\n                        tracing::warn!(\n                            requested = inflight,\n                            minimum = *AI_MAX_INFLIGHT_RANGE.start(),\n                            maximum = *AI_MAX_INFLIGHT_RANGE.end(),\n                            retained = self.ai_completion.max_inflight,\n                            \"aiCompletion.maxInflight is out of range; keeping the previous value\"\n                        );\n                    }\n                }\n            }\n            if let Some(fallback) = ai.get(\"fallback\").and_then(|v| v.as_bool()) {\n                self.ai_completion.fallback = fallback;\n            }\n            if let Some(local_model_mode) = ai.get(\"localModelMode\").and_then(|v| v.as_bool()) {\n                self.ai_completion.local_model_mode = local_model_mode;\n            }\n            if let Some(streaming) = ai.get(\"streaming\") {\n                // Security (#4997): streaming activation follows the same\n                // authority law as backend arming; a generic payload may not\n                // imply authorization either way.\n                if let Some(_enabled) = streaming.get(\"enabled\") {\n                    tracing::warn!(\n                        target: \"perl_lsp::config\",\n                        \"ignoring aiCompletion.streaming.enabled from a generic LSP \\\n                         settings channel (security: #4997): streaming preferences \\\n                         never imply or revoke remote egress authorization\"\n                    );\n                }\n                if let Some(debounce) = streaming.get(\"updateDebounceMs\").and_then(|v| v.as_u64()) {\n                    self.ai_completion.streaming.update_debounce_ms = debounce;\n                }\n            }\n            recompute_ai_completion_effective(&mut self.ai_completion);\n        }"
+    },
+    "format.client": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "ServerConfig::update_from_value",
+      "expression": "if let Some(formatting) = settings.get(\"formatting\") {\n            if let Some(enabled) = formatting.get(\"enabled\").and_then(|v| v.as_bool()) {\n                self.perltidy_enabled = enabled;\n            }\n            if let Some(format_on_save) = formatting.get(\"formatOnSave\").and_then(|v| v.as_bool()) {\n                self.format_on_save = format_on_save;\n            }\n            if let Some(engine) = formatting.get(\"engine\").and_then(|v| v.as_str()) {\n                match parse_client_formatter_mode(engine) {\n                    Some(mode) => self.formatting_engine = mode,\n                    None => tracing::warn!(\n                        target: \"perl_lsp::config\",\n                        setting = \"formatting.engine\",\n                        value = %engine,\n                        valid = CLIENT_FORMATTER_MODE_VALID_OPTIONS,\n                        \"unrecognized formatting.engine value; keeping current setting\",\n                    ),\n                }\n            }\n            // Security: do NOT honour LSP-channel formatting.profile / extraArgs (issue #5001).\n            if let Some(len) = formatting.get(\"maximumLineLength\").and_then(as_config_u64) {\n                self.perltidy_maximum_line_length = Some(len as u32);\n            }\n            if let Some(indent) = formatting.get(\"indentColumns\").and_then(as_config_u64) {\n                self.perltidy_indent_columns = Some(indent as u32);\n            }\n            if let Some(tabs) = formatting.get(\"tabs\").and_then(|v| v.as_bool()) {\n                self.perltidy_tabs = Some(tabs);\n            }\n            if let Some(brace) = formatting.get(\"openingBraceOnNewLine\").and_then(|v| v.as_bool()) {\n                self.perltidy_opening_brace_on_new_line = Some(brace);\n            }\n            if let Some(cuddle) = formatting.get(\"cuddledElse\").and_then(|v| v.as_bool()) {\n                self.perltidy_cuddled_else = Some(cuddle);\n            }\n            if let Some(space) = formatting.get(\"spaceAfterKeyword\").and_then(|v| v.as_bool()) {\n                self.perltidy_space_after_keyword = Some(space);\n            }\n            if let Some(comma) = formatting.get(\"addTrailingCommas\").and_then(|v| v.as_bool()) {\n                self.perltidy_add_trailing_commas = Some(comma);\n            }\n            if let Some(align) = formatting.get(\"verticalAlignment\").and_then(|v| v.as_bool()) {\n                self.perltidy_vertical_alignment = Some(align);\n            }\n            if let Some(block) = formatting.get(\"blockCommentIndentation\").and_then(as_config_u64) {\n                self.perltidy_block_comment_indentation = Some(block as u32);\n            }\n            if let Some(timeout) = formatting.get(\"timeoutSecs\").and_then(as_config_u64) {\n                self.perltidy_timeout_secs = timeout;\n            }\n        }"
+    },
+    "ai.defaults": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "AiCompletionConfig::Default::default",
+      "expression": "Self {\n            activation_authority: AiActivationAuthority::Unavailable,\n            user_enabled: false,\n            project_opt_out: false,\n            enabled: false,\n            provider: \"openai_compat\".to_string(),\n            endpoint: String::new(),\n            model: \"gpt-4o-mini\".to_string(),\n            api_key_env: \"OPENAI_API_KEY\".to_string(),\n            api_key_header: DEFAULT_AI_API_KEY_HEADER.to_string(),\n            api_key_prefix: Some(DEFAULT_AI_API_KEY_PREFIX.to_string()),\n            timeout_ms: 1800,\n            max_output_tokens: 64,\n            rate_limit_rps: 1.0,\n            max_inflight: 1,\n            fallback: true,\n            local_model_mode: false,\n            streaming: AiStreamingConfig::default(),\n        }"
+    },
+    "stream.defaults": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "AiStreamingConfig::Default::default",
+      "expression": "Self { user_enabled: true, enabled: true, update_debounce_ms: 60 }"
+    },
+    "server.defaults": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "ServerConfig::Default::default",
+      "expression": "Self {\n            inlay_hints_enabled: true,\n            inlay_hints_parameter_hints: true,\n            inlay_hints_type_hints: true,\n            inlay_hints_chained_hints: false,\n            inlay_hints_max_length: 30,\n            telemetry_enabled: false,\n            perlcritic_enabled: true,\n            perlcritic_severity: 3,\n            perlcritic_profile: None,\n            perlcritic_theme: None,\n            critic_engine: CriticEngine::Native,\n            native_critic_profile: \"recommended\".to_string(),\n            native_critic_include: Vec::new(),\n            native_critic_exclude: Vec::new(),\n            perltidy_enabled: true,\n            formatting_engine: FormatterMode::Native,\n            format_on_save: true,\n            perltidy_profile: None,\n            perltidy_maximum_line_length: Some(80),\n            // Unset by default: unconfigured workspaces defer to the editor's\n            // `tabSize` / `insertSpaces`.\n            perltidy_indent_columns: None,\n            perltidy_tabs: None,\n            perltidy_opening_brace_on_new_line: Some(false),\n            perltidy_cuddled_else: Some(true),\n            perltidy_space_after_keyword: Some(true),\n            perltidy_add_trailing_commas: Some(false),\n            perltidy_vertical_alignment: Some(true),\n            perltidy_block_comment_indentation: Some(0),\n            perltidy_extra_args: Vec::new(),\n            perltidy_timeout_secs: 10,\n            ai_completion: AiCompletionConfig::default(),\n        }"
+    },
+    "workspace.defaults": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "WorkspaceConfig::Default::default",
+      "expression": "Self {\n            include_paths: vec![\"lib\".to_string(), \".\".to_string(), \"local/lib/perl5\".to_string()],\n            external_include_paths: Vec::new(),\n            discovery_extra_extensions: Vec::new(),\n            discovery_extra_skipped_dirs: Vec::new(),\n            use_system_inc: false,\n            system_inc_epoch: Arc::new(Mutex::new(SystemIncProbeEpoch::default())),\n            system_inc_resolved: Vec::new(),\n            perl_path: None,\n            perl_args: Vec::new(),\n            native_build_hints: NativeBuildHints::default(),\n            declared_dependencies: Vec::new(),\n            detected_dependency_include_paths: Vec::new(),\n            resolution_timeout_ms: 50,\n            use_perl5lib: true,\n            perl5lib_precedence: Perl5LibPrecedence::Prepend,\n        }"
+    },
+    "workspace.client": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "WorkspaceConfig::update_from_value_with_context",
+      "expression": "if let Some(workspace) = settings.get(\"workspace\") {\n            if let Some(paths) = workspace.get(\"includePaths\").and_then(|v| v.as_array()) {\n                let mut valid = Vec::with_capacity(paths.len());\n                for value in paths {\n                    let Some(entry) = value.as_str() else {\n                        continue;\n                    };\n                    match validate_resource_include_path_entry(entry, context.workspace_root) {\n                        Ok(()) => valid.push(entry.to_string()),\n                        Err(reason) => rejected\n                            .push(RejectedClientIncludePath { entry: entry.to_string(), reason }),\n                    }\n                }\n                // An explicit configuration channel replaces the whole list,\n                // so detector ownership no longer describes any entry here\n                // (#13640). Clearing it keeps a user-supplied path that\n                // happens to equal a detected root from being retired later\n                // when its marker disappears; the next refresh re-observes it\n                // as already-present and leaves it unowned.\n                self.detected_dependency_include_paths.clear();\n                self.include_paths = valid;\n            }\n            if let Some(paths) = workspace.get(\"externalIncludePaths\").and_then(|v| v.as_array()) {\n                match context.external_include_paths {\n                    ExternalIncludePathAuthority::TrustedUserOperator => {\n                        let (accepted, external_rejected) = parse_external_include_paths(paths);\n                        if external_rejected.is_empty() {\n                            self.external_include_paths = accepted;\n                        } else {\n                            // Atomic admission (catalog fallback `RejectSource`):\n                            // a candidate with any invalid entry is rejected as\n                            // a whole, so a malformed or partially valid\n                            // payload never clears or partially replaces the\n                            // previously accepted complete set (INC-AUTH-007).\n                            rejected.extend(external_rejected);\n                        }\n                    }\n                    ExternalIncludePathAuthority::Untrusted(source) => {\n                        // Fail closed (#4998): reject non-empty unauthorized\n                        // arrivals without clearing previously accepted values.\n                        let entries: Vec<&str> = paths\n                            .iter()\n                            .filter_map(|value| value.as_str())\n                            .map(str::trim)\n                            .filter(|entry| !entry.is_empty())\n                            .collect();\n                        if !entries.is_empty() {\n                            tracing::warn!(\n                                target: \"perl_lsp::config\",\n                                source = source.label(),\n                                count = entries.len(),\n                                \"ignored unauthorized externalIncludePaths entries\"\n                            );\n                            rejected.extend(entries.into_iter().map(|entry| {\n                                RejectedClientIncludePath {\n                                    entry: entry.to_string(),\n                                    reason: RejectedClientIncludePathReason::ExternalUnauthorized(\n                                        source,\n                                    ),\n                                }\n                            }));\n                        }\n                    }\n                }\n            }\n            if let Some(extensions) = string_array(workspace.get(\"discoveryExtensions\")) {\n                self.discovery_extra_extensions = extensions;\n            }\n            if let Some(skipped_dirs) = string_array(workspace.get(\"discoverySkippedDirs\")) {\n                self.discovery_extra_skipped_dirs = skipped_dirs;\n            }\n            if let Some(use_inc) = workspace.get(\"useSystemInc\").and_then(|v| v.as_bool()) {\n                if use_inc != self.use_system_inc {\n                    // Settings changed: reset the SHARED epoch so every clone\n                    // re-probes, and clear this instance's materialized copy.\n                    *self.lock_system_inc_epoch() = SystemIncProbeEpoch::default();\n                    self.system_inc_resolved.clear();\n                }\n                self.use_system_inc = use_inc;\n            }\n            // Security: do NOT honour workspace-supplied perlPath / perlArgs.\n            // Allowing arbitrary Perl interpreter / argv from workspace settings\n            // would let a hostile project execute arbitrary code via the @INC\n            // probe (issue #3729). The interpreter / args remain whatever the\n            // user (not the workspace) configured globally.\n            if let Some(timeout) = workspace.get(\"resolutionTimeout\").and_then(as_config_u64) {\n                self.resolution_timeout_ms = timeout;\n            }\n            if let Some(use_p5l) = workspace.get(\"usePerl5lib\").and_then(|v| v.as_bool()) {\n                // Invalidate the lazy startup-@INC cache when usePerl5lib toggles, because\n                // `fetch_perl_inc` strips PERL5LIB from the probe environment when\n                // usePerl5lib is false (and inherits it when true). A cache built under\n                // the old setting may include or exclude PERL5LIB paths incorrectly.\n                if use_p5l != self.use_perl5lib {\n                    // Same shared-epoch reset as the useSystemInc boundary:\n                    // every clone of this config must observe the change.\n                    *self.lock_system_inc_epoch() = SystemIncProbeEpoch::default();\n                    self.system_inc_resolved.clear();\n                }\n                self.use_perl5lib = use_p5l;\n            }\n            if let Some(prec) = workspace.get(\"perl5libPrecedence\").and_then(|v| v.as_str()) {\n                // Only update on recognised values; leave the current setting unchanged for\n                // unknown strings so a typo does not silently reset an explicitly-set Append.\n                match prec {\n                    \"append\" => self.perl5lib_precedence = Perl5LibPrecedence::Append,\n                    \"prepend\" => self.perl5lib_precedence = Perl5LibPrecedence::Prepend,\n                    other => tracing::warn!(\n                        target: \"perl_lsp::config\",\n                        setting = \"workspace.perl5libPrecedence\",\n                        value = %other,\n                        valid = \"prepend, append\",\n                        \"unrecognized perl5libPrecedence value; keeping current setting\",\n                    ),\n                }\n            }\n        }"
+    },
+    "format.consumer": {
+      "path": "crates/perl-lsp-rs/src/runtime/language/formatting.rs",
+      "function": "LspServer::formatter_mode",
+      "expression": "self.config.lock().formatting_engine"
+    },
+    "ai.project.reducer": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "ProjectConfig::apply_to_server_config",
+      "expression": "config.ai_completion.project_opt_out = self.ai_completion.enabled == Some(false)"
+    },
+    "ai.activation.consumer": {
+      "path": "crates/perl-lsp-rs/src/runtime/mod.rs",
+      "function": "LspServer::refresh_ai_backend",
+      "expression": "matches!(ai_config.activation_authority, perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator)"
+    },
+    "ai.enabled.consumer": {
+      "path": "crates/perl-lsp-rs/src/runtime/mod.rs",
+      "function": "LspServer::refresh_ai_backend",
+      "expression": "if !ai_config.enabled || !trusted_activation {\n            *self.ai_inline_backend.lock() = None;\n            return;\n        }"
+    },
+    "ai.provider.inputs": {
+      "path": "crates/perl-lsp-rs/src/runtime/mod.rs",
+      "function": "LspServer::ai_provider_config",
+      "expression": "perl_lsp_rs_core::providers::ai::OpenAiConfig::new(ai_config.endpoint.clone(), ai_config.model.clone(), api_key, ai_config.timeout_ms,)"
+    },
+    "ai.provider.api_key_header": {
+      "path": "crates/perl-lsp-rs/src/runtime/mod.rs",
+      "function": "LspServer::ai_provider_config",
+      "expression": "provider_config.api_key_header = ai_config.api_key_header.clone()"
+    },
+    "ai.provider.api_key_prefix": {
+      "path": "crates/perl-lsp-rs/src/runtime/mod.rs",
+      "function": "LspServer::ai_provider_config",
+      "expression": "provider_config.api_key_prefix = ai_config.api_key_prefix.clone()"
+    },
+    "ai.provider.max_inflight": {
+      "path": "crates/perl-lsp-rs/src/runtime/mod.rs",
+      "function": "LspServer::ai_provider_config",
+      "expression": "provider_config.max_inflight = ai_config.max_inflight"
+    },
+    "ai.provider.local_model_mode": {
+      "path": "crates/perl-lsp-rs/src/runtime/mod.rs",
+      "function": "LspServer::ai_provider_config",
+      "expression": "provider_config.local_model_mode = ai_config.local_model_mode"
+    },
+    "limit.write.workspace_symbol_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"workspaceSymbolCap\").and_then(|v| v.as_u64()) {\n                self.workspace_symbol_cap = v as usize;\n            }"
+    },
+    "limit.read.workspace_symbol_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "workspace_symbol_cap",
+      "expression": "LSP_LIMITS.read().map(|l| l.workspace_symbol_cap).unwrap_or(200)"
+    },
+    "limit.write.references_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"referencesCap\").and_then(|v| v.as_u64()) {\n                self.references_cap = v as usize;\n            }"
+    },
+    "limit.read.references_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "references_cap",
+      "expression": "LSP_LIMITS.read().map(|l| l.references_cap).unwrap_or(500)"
+    },
+    "limit.write.completion_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"completionCap\").and_then(|v| v.as_u64()) {\n                self.completion_cap = v as usize;\n            }"
+    },
+    "limit.read.completion_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "completion_cap",
+      "expression": "LSP_LIMITS.read().map(|l| l.completion_cap).unwrap_or(100)"
+    },
+    "limit.write.document_symbol_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"documentSymbolCap\").and_then(|v| v.as_u64()) {\n                self.document_symbol_cap = v as usize;\n            }"
+    },
+    "limit.read.document_symbol_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "document_symbol_cap",
+      "expression": "LSP_LIMITS.read().map(|l| l.document_symbol_cap).unwrap_or(500)"
+    },
+    "limit.write.code_lens_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"codeLensCap\").and_then(|v| v.as_u64()) {\n                self.code_lens_cap = v as usize;\n            }"
+    },
+    "limit.read.code_lens_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "code_lens_cap",
+      "expression": "LSP_LIMITS.read().map(|l| l.code_lens_cap).unwrap_or(100)"
+    },
+    "limit.write.diagnostics_per_file_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"diagnosticsPerFileCap\").and_then(|v| v.as_u64()) {\n                self.diagnostics_per_file_cap = v as usize;\n            }"
+    },
+    "limit.read.diagnostics_per_file_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "diagnostics_per_file_cap",
+      "expression": "LSP_LIMITS.read().map(|l| l.diagnostics_per_file_cap).unwrap_or(200)"
+    },
+    "limit.write.inlay_hints_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"inlayHintsCap\").and_then(|v| v.as_u64()) {\n                self.inlay_hints_cap = v as usize;\n            }"
+    },
+    "limit.read.inlay_hints_cap": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "inlay_hints_cap",
+      "expression": "LSP_LIMITS.read().map(|l| l.inlay_hints_cap).unwrap_or(500)"
+    },
+    "limit.write.ast_cache_max_entries": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"astCacheMaxEntries\").and_then(|v| v.as_u64()) {\n                self.ast_cache_max_entries = v as usize;\n            }"
+    },
+    "limit.write.ast_cache_ttl_secs": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"astCacheTtlSecs\").and_then(|v| v.as_u64()) {\n                self.ast_cache_ttl_secs = v;\n            }"
+    },
+    "limit.write.symbol_cache_max_entries": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"symbolCacheMaxEntries\").and_then(|v| v.as_u64()) {\n                self.symbol_cache_max_entries = v as usize;\n            }"
+    },
+    "limit.write.max_indexed_files": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"maxIndexedFiles\").and_then(|v| v.as_u64()) {\n                self.max_indexed_files = v as usize;\n            }"
+    },
+    "limit.write.max_total_symbols": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"maxTotalSymbols\").and_then(|v| v.as_u64()) {\n                self.max_total_symbols = v as usize;\n            }"
+    },
+    "limit.write.max_file_size_bytes": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"maxFileSizeBytes\").and_then(|v| v.as_u64()) {\n                self.max_file_size_bytes = v as usize;\n            }"
+    },
+    "limit.read.max_file_size_bytes": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "max_file_size_bytes",
+      "expression": "LSP_LIMITS.read().map(|l| l.max_file_size_bytes).unwrap_or(1_024 * 1_024)"
+    },
+    "limit.write.workspace_scan_deadline": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"workspaceScanDeadlineMs\").and_then(|v| v.as_u64()) {\n                self.workspace_scan_deadline = Duration::from_millis(v);\n            }"
+    },
+    "limit.write.reference_search_deadline": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"referenceSearchDeadlineMs\").and_then(|v| v.as_u64()) {\n                self.reference_search_deadline = Duration::from_millis(v);\n            }"
+    },
+    "limit.read.reference_search_deadline": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "reference_search_deadline",
+      "expression": "LSP_LIMITS.read().map(|l| l.reference_search_deadline).unwrap_or(Duration::from_secs(2))"
+    },
+    "limit.write.warning_threshold_bytes": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"memoryWarningThresholdBytes\").and_then(|v| v.as_u64()) {\n                self.memory_budget.warning_threshold_bytes = v as usize;\n            }"
+    },
+    "limit.read.warning_threshold_bytes": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "memory_warning_threshold_bytes",
+      "expression": "LSP_LIMITS.read().map(|l| l.memory_budget.warning_threshold_bytes).unwrap_or(512 * 1024 * 1024)"
+    },
+    "limit.write.critical_threshold_bytes": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"memoryCriticalThresholdBytes\").and_then(|v| v.as_u64()) {\n                self.memory_budget.critical_threshold_bytes = v as usize;\n            }"
+    },
+    "limit.read.critical_threshold_bytes": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "memory_critical_threshold_bytes",
+      "expression": "LSP_LIMITS\n        .read()\n        .map(|l| l.memory_budget.critical_threshold_bytes)\n        .unwrap_or(1024 * 1024 * 1024)"
+    },
+    "limit.write.ast_cache_max_bytes": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "LspLimits::update_from_value",
+      "expression": "if let Some(v) = limits.get(\"astCacheMaxMemoryBytes\").and_then(|v| v.as_u64()) {\n                self.memory_budget.ast_cache_max_bytes = v as usize;\n            }"
+    },
+    "ai.credential.read": {
+      "path": "crates/perl-lsp-rs/src/runtime/mod.rs",
+      "function": "LspServer::resolve_ai_api_key_with",
+      "expression": "read_env(&ai_config.api_key_env)"
+    },
+    "ai.rate.read": {
+      "path": "crates/perl-lsp-rs/src/runtime/mod.rs",
+      "function": "LspServer::refresh_ai_backend",
+      "expression": "Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(ai_config.rate_limit_rps, rate_limit_burst,))"
+    },
+    "ai.streaming.read": {
+      "path": "crates/perl-lsp-rs/src/runtime/language/streaming.rs",
+      "function": "LspServer::handle_streaming_inline_completion",
+      "expression": "{\n            let cfg = self.config.lock();\n            let a = &cfg.ai_completion;\n            (\n                a.enabled,\n                a.streaming.enabled,\n                a.fallback,\n                a.max_output_tokens,\n                a.timeout_ms,\n                a.streaming.update_debounce_ms,\n            )\n        }"
+    },
+    "limit.read.ast_cache_max_bytes": {
+      "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
+      "function": "ast_cache_max_memory_bytes",
+      "expression": "LSP_LIMITS.read().map(|l| l.memory_budget.ast_cache_max_bytes).unwrap_or(128 * 1024 * 1024)"
+    },
+    "critic.client": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "CriticSettingsCandidate::parse_lsp_update",
+      "expression": "if let Some(native) = settings.get(\"critic\") {\n            parse_enabled(native, \"critic.enabled\", &mut candidate, &mut rejected);\n            parse_severity(native, \"critic.severity\", &mut candidate, &mut rejected);\n            match native.get(\"engine\") {\n                None => {}\n                Some(value) => match value.as_str() {\n                    Some(\"native\") => candidate.engine_raw = Some(CriticEngine::Native),\n                    Some(alias)\n                        if matches!(\n                            alias.trim().to_ascii_lowercase().as_str(),\n                            \"legacy\" | \"external\" | \"perlcritic\"\n                        ) =>\n                    {\n                        tracing::warn!(\n                            target: \"perl_lsp::config\",\n                            setting = \"critic.engine\",\n                            value = %alias,\n                            \"ignoring deprecated critic.engine from LSP settings channel; \\\n                             external Perl::Critic is not a runtime engine (#8253), \\\n                             migration owned by #9072\",\n                        );\n                    }\n                    Some(other) => rejected.push(RejectedSibling::new(\"critic.engine\", other)),\n                    None => rejected.push(RejectedSibling::new(\"critic.engine\", value.to_string())),\n                },\n            }\n            parse_profile(native, \"critic.profile\", &mut candidate, &mut rejected);\n            parse_rule_list(native, \"critic.include\", &mut candidate, &mut rejected);\n            parse_rule_list(native, \"critic.exclude\", &mut candidate, &mut rejected);\n        }"
+    },
+    "critic.commit.enabled": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "CriticSettingsCandidate::apply_to",
+      "expression": "if let Some(enabled) = self.enabled {\n            config.perlcritic_enabled = enabled;\n        }"
+    },
+    "critic.parse.enabled": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "parse_enabled",
+      "expression": "match block.get(\"enabled\") {\n        None => {}\n        Some(value) => match value.as_bool() {\n            Some(enabled) => candidate.enabled = Some(enabled),\n            None => rejected.push(RejectedSibling::new(setting, value.to_string())),\n        },\n    }"
+    },
+    "critic.commit.severity": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "CriticSettingsCandidate::apply_to",
+      "expression": "if let Some(severity) = self.severity {\n            config.perlcritic_severity = severity;\n        }"
+    },
+    "critic.parse.severity": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "parse_severity",
+      "expression": "match block.get(\"severity\") {\n        None => {}\n        Some(value) => match as_config_u64(value) {\n            Some(raw) => {\n                let clamped = raw.clamp(1, 5) as u8;\n                if u64::from(clamped) != raw {\n                    tracing::warn!(\n                        target: \"perl_lsp::config\",\n                        setting = setting,\n                        value = raw,\n                        valid_range = \"1-5\",\n                        \"critic severity out of range; clamped to {}\",\n                        clamped,\n                    );\n                }\n                candidate.severity = Some(clamped);\n            }\n            None => rejected.push(RejectedSibling::new(setting, value.to_string())),\n        },\n    }"
+    },
+    "critic.commit.profile": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "CriticSettingsCandidate::apply_to",
+      "expression": "if let Some(profile) = self.profile {\n            config.native_critic_profile = profile.as_str().to_string();\n        }"
+    },
+    "critic.parse.profile": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "parse_profile",
+      "expression": "match block.get(\"profile\") {\n        None => {}\n        Some(value) => match value.as_str().and_then(NativeCriticProfile::parse) {\n            Some(profile) => candidate.profile = Some(profile),\n            None => rejected.push(RejectedSibling::new(setting, value.to_string())),\n        },\n    }"
+    },
+    "critic.commit.include": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "CriticSettingsCandidate::apply_to",
+      "expression": "if let Some(include) = self.include {\n            config.native_critic_include = include;\n        }"
+    },
+    "critic.parse.rules": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "parse_rule_list",
+      "expression": "match block.get(key) {\n        None => {}\n        Some(value) => match value.as_array() {\n            Some(entries) => {\n                let mut ids = Vec::with_capacity(entries.len());\n                let mut malformed: Option<String> = None;\n                for entry in entries {\n                    match entry.as_str() {\n                        Some(id) => ids.push(id.to_string()),\n                        None => {\n                            malformed = Some(entry.to_string());\n                            break;\n                        }\n                    }\n                }\n                if let Some(entry) = malformed {\n                    rejected.push(RejectedSibling::new(setting, entry));\n                    return;\n                }\n                let normalized = normalize_string_list(&ids);\n                warn_unknown_rule_ids(CriticRuleIdSource::ClientSettings, setting, &normalized);\n                if key == \"include\" {\n                    candidate.include = Some(normalized);\n                } else {\n                    candidate.exclude = Some(normalized);\n                }\n            }\n            None => rejected.push(RejectedSibling::new(setting, value.to_string())),\n        },\n    }"
+    },
+    "critic.commit.exclude": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "CriticSettingsCandidate::apply_to",
+      "expression": "if let Some(exclude) = self.exclude {\n            config.native_critic_exclude = exclude;\n        }"
+    },
+    "critic.commit.engine": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "CriticSettingsCandidate::apply_to",
+      "expression": "if let Some(engine) = self.engine_raw {\n            config.critic_engine = engine;\n        }"
+    },
+    "critic.enabled.read": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "ServerConfig::effective_critic_state",
+      "expression": "if !self.perlcritic_enabled {\n            return EffectiveCriticState::Disabled;\n        }"
+    },
+    "critic.native.read": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "ServerConfig::effective_critic_state",
+      "expression": "EffectiveCriticState::Native(EffectiveNativeCriticConfig {\n            profile: NativeCriticProfile::parse(&self.native_critic_profile).unwrap_or_default(),\n            severity_threshold: self.perlcritic_severity.clamp(1, 5),\n            include: canonical_rule_ids(&self.native_critic_include),\n            exclude: canonical_rule_ids(&self.native_critic_exclude),\n            owning_root: owning_root.map(ToOwned::to_owned),\n        })"
+    },
+    "format.project.engine": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "ProjectConfig::apply_to_server_config",
+      "expression": "if let Some(ref engine) = self.formatting.engine {\n            match parse_formatter_mode(engine) {\n                Some(mode) => config.formatting_engine = mode,\n                None => tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    setting = \"formatting.engine\",\n                    value = %engine,\n                    valid = FORMATTER_MODE_VALID_OPTIONS,\n                    \"unrecognized formatting.engine value in .perl-lsp.toml; \\\n                     keeping current setting\",\n                ),\n            }\n        }"
+    },
+    "format.project.enabled": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "ProjectConfig::apply_to_server_config",
+      "expression": "if let Some(enabled) = self.formatting.enabled {\n            config.perltidy_enabled = enabled;\n        }"
+    },
+    "format.project.format_on_save": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "ProjectConfig::apply_to_server_config",
+      "expression": "if let Some(format_on_save) = self.formatting.format_on_save {\n            config.format_on_save = format_on_save;\n        }"
+    },
+    "format.project.perltidy_profile": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "ProjectConfig::apply_to_server_config",
+      "expression": "if let Some(ref profile) = self.formatting.perltidy_profile {\n            config.perltidy_profile = Some(profile.clone());\n        }"
+    },
+    "format.project.perltidy_timeout_secs": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "ProjectConfig::apply_to_server_config",
+      "expression": "if let Some(timeout) = self.formatting.perltidy_timeout_secs {\n            config.perltidy_timeout_secs = timeout;\n        }"
+    },
+    "format.options.read": {
+      "path": "crates/perl-lsp-rs/src/runtime/language/formatting.rs",
+      "function": "LspServer::build_perltidy_config",
+      "expression": "{\n        let config = self.config.lock();\n        let profile = config\n            .perltidy_profile\n            .clone()\n            .or_else(|| self.discovered_perltidy_profile.lock().clone());\n        PerlTidyConfig {\n            maximum_line_length: config.perltidy_maximum_line_length,\n            indent_columns: config.perltidy_indent_columns,\n            tabs: config.perltidy_tabs,\n            opening_brace_on_new_line: config.perltidy_opening_brace_on_new_line,\n            cuddled_else: config.perltidy_cuddled_else,\n            space_after_keyword: config.perltidy_space_after_keyword,\n            add_trailing_commas: config.perltidy_add_trailing_commas,\n            vertical_alignment: config.perltidy_vertical_alignment,\n            block_comment_indentation: config.perltidy_block_comment_indentation,\n            profile,\n            extra_args: config.perltidy_extra_args.clone(),\n            timeout_secs: config.perltidy_timeout_secs,\n        }\n    }"
+    },
+    "format.profile.read": {
+      "path": "crates/perl-lsp-rs/src/runtime/language/formatting.rs",
+      "function": "LspServer::build_perltidy_config",
+      "expression": "config.perltidy_profile.clone().or_else(|| self.discovered_perltidy_profile.lock().clone())"
+    },
+    "format.enabled.read": {
+      "path": "crates/perl-lsp-rs/src/runtime/language/formatting.rs",
+      "function": "LspServer::is_formatting_enabled",
+      "expression": "config.perltidy_enabled && config.formatting_engine != FormatterMode::Off"
+    },
+    "workspace.roots.read": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "WorkspaceConfig::effective_include_paths",
+      "expression": "dedupe_preserve_order(self.include_paths.iter().map(String::as_str).chain(self.external_include_paths.iter().map(String::as_str)),)"
+    },
+    "workspace.perl5lib.read": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "WorkspaceConfig::effective_include_paths",
+      "expression": "if !self.use_perl5lib || perl5lib_paths.is_empty() {\n            return configured;\n        }"
+    },
+    "workspace.precedence.read": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "WorkspaceConfig::effective_include_paths",
+      "expression": "match self.perl5lib_precedence {\n            Perl5LibPrecedence::Prepend => dedupe_preserve_order(\n                perl5lib_paths\n                    .iter()\n                    .map(String::as_str)\n                    .chain(configured.iter().map(String::as_str)),\n            ),\n            Perl5LibPrecedence::Append => dedupe_preserve_order(\n                configured\n                    .iter()\n                    .map(String::as_str)\n                    .chain(perl5lib_paths.iter().map(String::as_str)),\n            ),\n        }"
+    },
+    "workspace.system.read": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "WorkspaceConfig::get_system_inc_probe_outcome",
+      "expression": "if !self.use_system_inc { return SystemIncProbeOutcome::Disabled; }"
+    },
+    "workspace.argv.read": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "WorkspaceConfig::ensure_system_inc_probe",
+      "expression": "self.perl_args.clone()"
+    },
+    "workspace.perl.read": {
+      "path": "crates/perl-lsp-rs-core/src/config/toolchain_profile.rs",
+      "function": "PerlToolchainProfile::resolve",
+      "expression": "match config.perl_path.as_deref().filter(|p| !p.is_empty()) {\n            Some(path) => PathBuf::from(path),\n            None => resolve_perl_path_with_toolchain().ok()?,\n        }"
+    },
+    "project.perl.version.read": {
+      "path": "crates/perl-lsp-rs/src/runtime/diagnostics.rs",
+      "function": "project_version_for_doc",
+      "expression": "server.project_config_for_uri(uri)?.perl.version"
+    },
+    "client.readExternalIncludePaths": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "readExternalIncludePaths",
+      "expression": "{\n  const inspected = config.inspect?.('externalIncludePaths') as\n    | {\n        globalValue?: unknown;\n      }\n    | undefined;\n\n  if (!inspected || inspected.globalValue === undefined) {\n    return undefined;\n  }\n\n  if (!Array.isArray(inspected.globalValue)) {\n    return undefined;\n  }\n\n  return inspected.globalValue.filter((value): value is string => typeof value === 'string');\n}"
+    },
+    "client.machineScopedExternalIncludePaths": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "machineScopedExternalIncludePaths",
+      "expression": "{\n  return readExternalIncludePaths(config) ?? [];\n}"
+    },
+    "client.buildWorkspaceConfigurationPayload": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "buildWorkspaceConfigurationPayload",
+      "expression": "{\n  const includePathsExplicit = hasExplicitOverride(config, 'includePaths');\n  const externalIncludePaths = readExternalIncludePaths(config);\n\n  if (!includePathsExplicit && externalIncludePaths === undefined) {\n    return undefined;\n  }\n\n  const workspace: Record<string, unknown> = {};\n  if (includePathsExplicit) {\n    workspace.includePaths = readIncludePaths(config);\n  }\n  if (externalIncludePaths !== undefined) {\n    workspace.externalIncludePaths = externalIncludePaths;\n  }\n\n  return { workspace };\n}"
+    },
+    "client.buildUserAiCompletionConfigurationPayload": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "buildUserAiCompletionConfigurationPayload",
+      "expression": "{\n  const enabled = readMachineScopedBoolean(config, 'aiCompletion.enabled', false);\n  const streamingEnabled = readMachineScopedBoolean(config, 'aiCompletion.streaming.enabled', true);\n\n  return {\n    settings: {\n      perl: {\n        aiCompletion: {\n          enabled,\n          streaming: { enabled: streamingEnabled },\n        },\n      },\n    },\n  };\n}"
+    },
+    "client.buildLanguageClientConfigurationPayload": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "buildLanguageClientConfigurationPayload",
+      "expression": "{\n  const config = vscode.workspace.getConfiguration('perl-lsp', documentUri);\n  const perl: Record<string, unknown> = {};\n  const workspace = buildWorkspaceConfigurationPayload(config);\n  if (workspace) {\n    Object.assign(perl, workspace);\n  }\n  const critic = buildCriticSettings(documentUri);\n  if (critic) {\n    Object.assign(perl, critic);\n  }\n\n  return { settings: { perl } };\n}"
+    },
+    "client.buildCriticSettings": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "buildCriticSettings",
+      "expression": "{\n  const config = getPerlCriticConfiguration(documentUri);\n  const critic = getNativeCriticSyncSettings(config, severityOverride);\n  const perlcritic = getLegacyPerlCriticSyncSettings(config);\n  const perl: Record<string, unknown> = {};\n\n  if (Object.keys(critic).length > 0) {\n    perl.critic = critic;\n  }\n  if (Object.keys(perlcritic).length > 0) {\n    perl.perlcritic = perlcritic;\n  }\n\n  return Object.keys(perl).length > 0 ? perl : undefined;\n}"
+    },
+    "runner.removed.parser": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "@no-key:ServerConfig::update_from_value",
+      "expression": "testRunner"
+    },
+    "project.version.serde": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "@serde-field:ProjectPerlConfig.version",
+      "expression": "Option<String>"
+    },
+    "project.perl.serde": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "@serde-field:ProjectConfig.perl",
+      "expression": "ProjectPerlConfig"
+    },
+    "critic.context.read": {
+      "path": "crates/perl-lsp-rs/src/runtime/diagnostics.rs",
+      "function": "PullDiagnosticsOrchestrator::build_context",
+      "expression": "{\n            let cfg = server.config.lock();\n            (\n                cfg.perlcritic_enabled,\n                cfg.perlcritic_severity,\n                cfg.perlcritic_profile.clone(),\n                cfg.critic_engine,\n                cfg.native_critic_profile.clone(),\n                cfg.native_critic_include.clone(),\n                cfg.native_critic_exclude.clone(),\n                AcceptedCriticSnapshot::capture(&cfg, root_key.as_deref()),\n            )\n        }"
+    },
+    "critic.snapshot.read": {
+      "path": "crates/perl-lsp-rs/src/runtime/workspace.rs",
+      "function": "critic_config_snapshot",
+      "expression": "(\n        config.perlcritic_enabled,\n        config.perlcritic_severity,\n        config.perlcritic_profile.clone(),\n        config.perlcritic_theme.clone(),\n        config.native_critic_profile.clone(),\n        config.native_critic_include.clone(),\n        config.native_critic_exclude.clone(),\n    )"
+    },
+    "workspace.timeout.capture": {
+      "path": "crates/perl-lsp-rs/src/runtime/lifecycle/inc_context/mod.rs",
+      "function": "LspServer::effective_inc_context_for_doc_with",
+      "expression": "Some(EffectiveIncContext {\n            root,\n            folder_uri,\n            doc_uri: doc_uri.map(ToOwned::to_owned),\n            effective_roots,\n            use_system_inc: config.use_system_inc,\n            use_perl5lib: config.use_perl5lib,\n            resolution_timeout_ms: config.resolution_timeout_ms,\n            system_inc_state,\n        })"
+    },
+    "workspace.timeout.consume": {
+      "path": "crates/perl-lsp-rs/src/runtime/language/missing_module_lookup.rs",
+      "function": "LspServer::explain_missing_module_lookup",
+      "expression": "Duration::from_millis(context.resolution_timeout_ms)"
+    },
+    "workspace.project": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "ProjectConfig::apply_to_workspace_config",
+      "expression": "{\n        let mut rejected = Vec::new();\n        let mut skip_include_paths = false;\n        if !self.perl.include_paths.is_empty() {\n            // Fail closed: if the workspace root itself cannot be canonicalized\n            // there is nothing to validate containment against, so no entry can\n            // be trusted. Detected once here rather than inferred per-entry, so\n            // the reported reason names the actual cause instead of blaming\n            // each path for \"escaping\" a root that could not be read.\n            if let Err(err) = std::fs::canonicalize(workspace_root) {\n                // The failure belongs to the workspace root, not to any single\n                // entry, so record it once instead of repeating an identical\n                // warning per configured path.\n                rejected.push(RejectedIncludePath {\n                    entry: workspace_root.display().to_string(),\n                    reason: RejectedIncludePathReason::WorkspaceRootUnavailable(err.to_string()),\n                });\n                // Fail closed for include roots: entries are dropped, not merely\n                // reported, since leaving a previously-set list in place would\n                // let an unvalidated path stay live.\n                //\n                // Scoped deliberately: this is a path-validation failure, not a\n                // failure of the whole project config, so discovery extensions,\n                // skip lists and the perl5lib settings below still apply.\n                config.include_paths.clear();\n                skip_include_paths = true;\n            }\n            let mut valid = Vec::with_capacity(self.perl.include_paths.len());\n            for entry in self.perl.include_paths.iter().filter(|_| !skip_include_paths) {\n                let candidate = Path::new(entry);\n                if candidate.is_absolute() {\n                    rejected.push(RejectedIncludePath {\n                        entry: entry.clone(),\n                        reason: RejectedIncludePathReason::Absolute,\n                    });\n                    continue;\n                }\n                if let Err(err) = validate_workspace_path(candidate, workspace_root) {\n                    rejected.push(RejectedIncludePath {\n                        entry: entry.clone(),\n                        reason: RejectedIncludePathReason::from_path_error(&err),\n                    });\n                    continue;\n                }\n                valid.push(entry.clone());\n            }\n            if !skip_include_paths {\n                // Project-file configuration replaces the list; drop detector\n                // ownership for the same reason as the client-settings channel\n                // (#13640).\n                config.detected_dependency_include_paths.clear();\n                config.include_paths = valid;\n            }\n        }\n        if !self.perl.discovery_extensions.is_empty() {\n            config.discovery_extra_extensions =\n                normalize_string_list(&self.perl.discovery_extensions);\n        }\n        if !self.perl.discovery_skipped_dirs.is_empty() {\n            config.discovery_extra_skipped_dirs =\n                normalize_string_list(&self.perl.discovery_skipped_dirs);\n        }\n        if let Some(use_p5l) = self.perl.use_perl5lib {\n            config.use_perl5lib = use_p5l;\n        }\n        if let Some(ref prec) = self.perl.perl5lib_precedence {\n            config.perl5lib_precedence = prec.clone();\n        }\n        rejected\n    }"
+    },
+    "critic.project": {
+      "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
+      "function": "CriticSettingsCandidate::parse_project_config",
+      "expression": "{\n        let mut candidate = Self {\n            enabled: diagnostics.perlcritic,\n            severity: diagnostics.perlcritic_severity.map(|severity| {\n                let clamped = severity.clamp(1, 5);\n                if clamped != severity {\n                    tracing::warn!(\n                        target: \"perl_lsp::config\",\n                        setting = \"diagnostics.perlcritic_severity\",\n                        value = severity,\n                        valid_range = \"1-5\",\n                        \"perlcritic_severity out of range; clamped to {}\",\n                        clamped,\n                    );\n                }\n                clamped\n            }),\n            ..Self::default()\n        };\n        let mut rejected: Vec<RejectedSibling> = Vec::new();\n\n        if let Some(engine) = &critic.engine {\n            match crate::config::parse_critic_engine(engine) {\n                Some(parsed) => {\n                    if parsed == CriticEngine::Legacy {\n                        tracing::warn!(\n                            target: \"perl_lsp::config\",\n                            setting = \"critic.engine\",\n                            value = %engine,\n                            \"deprecated critic.engine in .perl-lsp.toml selects the \\\n                             external compatibility path only; it cannot construct a \\\n                             product runtime engine state (#8253), migration owned by #9072\",\n                        );\n                    }\n                    candidate.engine_raw = Some(parsed);\n                }\n                None => rejected.push(RejectedSibling::new(\"critic.engine\", engine)),\n            }\n        }\n        if let Some(profile) = &critic.profile {\n            match NativeCriticProfile::parse(profile) {\n                Some(parsed) => candidate.profile = Some(parsed),\n                None => rejected.push(RejectedSibling::new(\"critic.profile\", profile)),\n            }\n        }\n        candidate.include = critic.include.as_ref().map(|ids| {\n            let normalized = normalize_string_list(ids);\n            warn_unknown_rule_ids(CriticRuleIdSource::ProjectFile, \"critic.include\", &normalized);\n            normalized\n        });\n        candidate.exclude = critic.exclude.as_ref().map(|ids| {\n            let normalized = normalize_string_list(ids);\n            warn_unknown_rule_ids(CriticRuleIdSource::ProjectFile, \"critic.exclude\", &normalized);\n            normalized\n        });\n\n        finish_candidate(candidate, rejected)\n    }"
+    },
+    "format.client.mode": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "parse_client_formatter_mode",
+      "expression": "{\n    match normalize_formatter_mode_value(value).as_str() {\n        \"native\" => Some(FormatterMode::Native),\n        \"off\" | \"disabled\" | \"none\" => Some(FormatterMode::Off),\n        _ => None,\n    }\n}"
+    },
+    "format.project.mode": {
+      "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
+      "function": "parse_formatter_mode",
+      "expression": "{\n    match normalize_formatter_mode_value(value).as_str() {\n        \"native\" => Some(FormatterMode::Native),\n        \"external-legacy\" | \"external-perltidy\" | \"perltidy\" => Some(FormatterMode::ExternalLegacy),\n        \"off\" | \"disabled\" | \"none\" => Some(FormatterMode::Off),\n        _ => None,\n    }\n}"
+    },
+    "client.hasExplicitOverride": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "hasExplicitOverride",
+      "expression": "{\n  const value = config.inspect?.(key) as\n    | {\n        globalValue?: unknown;\n        workspaceValue?: unknown;\n        workspaceFolderValue?: unknown;\n        globalLanguageValue?: unknown;\n        workspaceLanguageValue?: unknown;\n        workspaceFolderLanguageValue?: unknown;\n      }\n    | undefined;\n\n  return Boolean(\n    value &&\n    (value.globalValue !== undefined ||\n      value.workspaceValue !== undefined ||\n      value.workspaceFolderValue !== undefined ||\n      value.globalLanguageValue !== undefined ||\n      value.workspaceLanguageValue !== undefined ||\n      value.workspaceFolderLanguageValue !== undefined),\n  );\n}"
+    },
+    "client.getPerlCriticConfiguration": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "getPerlCriticConfiguration",
+      "expression": "{\n  const scope: { uri?: vscode.Uri; languageId: string } = documentUri\n    ? { uri: documentUri, languageId: 'perl' }\n    : { languageId: 'perl' };\n  return vscode.workspace.getConfiguration('perl-lsp', scope);\n}"
+    },
+    "client.pickExplicit": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "pickExplicit",
+      "expression": "{\n  const settings: Partial<T> = {};\n\n  for (const spec of specs) {\n    if (hasExplicitOverride(config, spec.key)) {\n      settings[spec.property] = config.get(spec.key, spec.defaultValue) as T[typeof spec.property];\n    }\n  }\n\n  return settings;\n}"
+    },
+    "client.getNativeCriticSyncSettings": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "getNativeCriticSyncSettings",
+      "expression": "{\n  const settings = pickExplicit(config, NATIVE_CRITIC_SPECS);\n\n  if (severityOverride !== undefined) {\n    settings.severity = severityOverride;\n  }\n\n  return settings;\n}"
+    },
+    "client.getLegacyPerlCriticSyncSettings": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "getLegacyPerlCriticSyncSettings",
+      "expression": "{\n  return pickExplicit(config, LEGACY_CRITIC_SPECS);\n}"
+    },
+    "client.readIncludePaths": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "readIncludePaths",
+      "expression": "{\n  const configured = config.get<unknown>('includePaths', [...DEFAULT_INCLUDE_PATHS]);\n  if (!Array.isArray(configured)) {\n    return [...DEFAULT_INCLUDE_PATHS];\n  }\n\n  return configured.filter((value): value is string => typeof value === 'string');\n}"
+    },
+    "client.readMachineScopedBoolean": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "readMachineScopedBoolean",
+      "expression": "{\n  return config.get<boolean>(key, defaultValue);\n}"
+    },
+    "client.NATIVE_CRITIC_SPECS": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "@table:NATIVE_CRITIC_SPECS",
+      "expression": "[\n  { key: 'critic.enabled', property: 'enabled', defaultValue: true },\n  { key: 'critic.engine', property: 'engine', defaultValue: 'native' },\n  { key: 'critic.profile', property: 'profile', defaultValue: 'recommended' },\n  { key: 'critic.severity', property: 'severity', defaultValue: 3 },\n  { key: 'critic.include', property: 'include', defaultValue: [] },\n  { key: 'critic.exclude', property: 'exclude', defaultValue: [] },\n]"
+    },
+    "client.LEGACY_CRITIC_SPECS": {
+      "path": "vscode-extension/src/languageClientConfiguration.ts",
+      "function": "@table:LEGACY_CRITIC_SPECS",
+      "expression": "[\n  { key: 'perlcritic.enabled', property: 'enabled', defaultValue: false },\n  { key: 'perlcritic.severity', property: 'severity', defaultValue: 3 },\n  { key: 'perlcritic.profile', property: 'profile', defaultValue: '' },\n  { key: 'perlcritic.theme', property: 'theme', defaultValue: '' },\n]"
+    }
+  },
+  "rows": [
+    {
+      "id": "ai.activation_authority",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.activation_authority",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "ai.admit",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.activation.consumer"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.activation_authority",
+        "roles": [
+          "arm"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.api_key_env",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.api_key_env",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.credential.read"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.api_key_env",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "credential_use"
+        ],
+        "composition": [
+          {
+            "kind": "requires_authority_from",
+            "field": "ai.activation_authority"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.api_key_header",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.api_key_header",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.provider.api_key_header"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.api_key_header",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "credential_use"
+        ],
+        "composition": [
+          {
+            "kind": "requires_authority_from",
+            "field": "ai.activation_authority"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.api_key_prefix",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.api_key_prefix",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.provider.api_key_prefix"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.api_key_prefix",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "credential_use"
+        ],
+        "composition": [
+          {
+            "kind": "requires_authority_from",
+            "field": "ai.activation_authority"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.effective_enabled",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.enabled",
+      "sources": [
+        "CompiledDefault",
+        "ProjectFile",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "ai.derive",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.enabled.consumer"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/enabled",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.effective_enabled",
+        "roles": [
+          "arm"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [
+          {
+            "kind": "composes_with",
+            "field": "ai.user_enabled"
+          },
+          {
+            "kind": "composes_with",
+            "field": "ai.project_opt_out"
+          },
+          {
+            "kind": "requires_authority_from",
+            "field": "ai.activation_authority"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4997",
+          "negative_control_id": "pending:#4997:ai.effective_enabled"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.endpoint",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.endpoint",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.provider.inputs"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.endpoint",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [
+          {
+            "kind": "requires_authority_from",
+            "field": "ai.activation_authority"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.fallback",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.fallback",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.streaming.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/fallback",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.fallback",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4997",
+          "negative_control_id": "pending:#4997:ai.fallback"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.local_model_mode",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.local_model_mode",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.provider.local_model_mode"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/localModelMode",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.local_model_mode",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4997",
+          "negative_control_id": "pending:#4997:ai.local_model_mode"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.max_inflight",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.max_inflight",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiScheduler"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.provider.max_inflight"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/maxInflight",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.max_inflight",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4997",
+          "negative_control_id": "pending:#4997:ai.max_inflight"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.max_output_tokens",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.max_output_tokens",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.streaming.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/maxOutputTokens",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.max_output_tokens",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4997",
+          "negative_control_id": "pending:#4997:ai.max_output_tokens"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.model",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.model",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.provider.inputs"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/model",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.model",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [
+          {
+            "kind": "requires_authority_from",
+            "field": "ai.activation_authority"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.project_opt_out",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.project_opt_out",
+      "sources": [
+        "CompiledDefault",
+        "ProjectFile"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "ai.project.reducer",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.derive"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.project_opt_out",
+        "roles": [
+          "reduce"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [
+          {
+            "kind": "may_only_reduce"
+          },
+          {
+            "kind": "composes_with",
+            "field": "ai.user_enabled"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4997",
+          "negative_control_id": "pending:#4997:ai.project_opt_out"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.provider",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.provider",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/provider",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.provider",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [
+          {
+            "kind": "requires_authority_from",
+            "field": "ai.activation_authority"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.rate_limit_rps",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.rate_limit_rps",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiScheduler"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.rate.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/rateLimitRps",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.rate_limit_rps",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4997",
+          "negative_control_id": "pending:#4997:ai.rate_limit_rps"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.streaming.effective_enabled",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "AiStreaming.enabled",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "stream.defaults",
+        "ai.client",
+        "ai.streaming.derive",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.streaming.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/streaming/properties/enabled",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.streaming.effective_enabled",
+        "roles": [
+          "arm"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [
+          {
+            "kind": "composes_with",
+            "field": "ai.streaming.user_enabled"
+          },
+          {
+            "kind": "requires_authority_from",
+            "field": "ai.activation_authority"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.streaming.update_debounce_ms",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#10817",
+      "rust_field": "AiStreaming.update_debounce_ms",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiScheduler"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "stream.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.streaming.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/streaming/properties/updateDebounceMs",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.streaming.update_debounce_ms",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4997",
+          "negative_control_id": "pending:#4997:ai.streaming.update_debounce_ms"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.streaming.user_enabled",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "AiStreaming.user_enabled",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "stream.defaults",
+        "ai.client",
+        "client.buildUserAiCompletionConfigurationPayload",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.streaming.derive"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/streaming/properties/enabled",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/2/properties/perl-lsp.aiCompletion.streaming.enabled",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.streaming.user_enabled",
+        "roles": [
+          "arm"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [
+          {
+            "kind": "requires_authority_from",
+            "field": "ai.activation_authority"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.timeout_ms",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.timeout_ms",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiScheduler"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.provider.inputs"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/timeoutMs",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.timeout_ms",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4997",
+          "negative_control_id": "pending:#4997:ai.timeout_ms"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "ai.user_enabled",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "AiCompletion.user_enabled",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "InlineCompletion",
+        "AiTransport"
+      ],
+      "invalidation": "InlineCompletion",
+      "writers": [
+        "ai.defaults",
+        "ai.client",
+        "client.buildUserAiCompletionConfigurationPayload",
+        "client.readMachineScopedBoolean"
+      ],
+      "consumers": [
+        "ai.derive"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/aiCompletion/properties/enabled",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/2/properties/perl-lsp.aiCompletion.enabled",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4997",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "ai.user_enabled",
+        "roles": [
+          "arm"
+        ],
+        "effects": [
+          "network"
+        ],
+        "composition": [
+          {
+            "kind": "requires_authority_from",
+            "field": "ai.activation_authority"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "critic.effective_enabled",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#8253",
+      "rust_field": "Server.perlcritic_enabled",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "NativeCritic",
+        "LegacyCritic",
+        "DiagnosticCache"
+      ],
+      "invalidation": "Diagnostics",
+      "writers": [
+        "server.defaults",
+        "critic.client",
+        "critic.commit.enabled",
+        "critic.parse.enabled",
+        "client.buildCriticSettings",
+        "client.buildLanguageClientConfigurationPayload",
+        "critic.project",
+        "client.hasExplicitOverride",
+        "client.getPerlCriticConfiguration",
+        "client.pickExplicit",
+        "client.getNativeCriticSyncSettings",
+        "client.getLegacyPerlCriticSyncSettings",
+        "client.NATIVE_CRITIC_SPECS",
+        "client.LEGACY_CRITIC_SPECS"
+      ],
+      "consumers": [
+        "critic.enabled.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/critic/properties/enabled",
+          "present": true
+        },
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/perlcritic/properties/enabled",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.critic.enabled",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#9072",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "critic.effective_enabled",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#9072",
+          "reason": "Native accepted policy; canonical legacy consumer migration is still separately owned."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "critic.engine",
+      "kind": "active",
+      "disposition": "bounded_compatibility_with_exit",
+      "owner": "#9072",
+      "rust_field": "Server.critic_engine",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "NativeCritic",
+        "LegacyCritic",
+        "DiagnosticCache"
+      ],
+      "invalidation": "Diagnostics",
+      "writers": [
+        "server.defaults",
+        "critic.client",
+        "critic.commit.engine",
+        "client.buildCriticSettings",
+        "client.buildLanguageClientConfigurationPayload",
+        "critic.project",
+        "client.hasExplicitOverride",
+        "client.getPerlCriticConfiguration",
+        "client.pickExplicit",
+        "client.getNativeCriticSyncSettings",
+        "client.getLegacyPerlCriticSyncSettings",
+        "client.NATIVE_CRITIC_SPECS",
+        "client.LEGACY_CRITIC_SPECS"
+      ],
+      "consumers": [
+        "critic.context.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/critic/properties/engine",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.critic.engine",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#9072",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "critic.engine",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#9072",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "critic.exclude",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#8253",
+      "rust_field": "Server.native_critic_exclude",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "NativeCritic",
+        "DiagnosticCache"
+      ],
+      "invalidation": "Diagnostics",
+      "writers": [
+        "server.defaults",
+        "critic.client",
+        "critic.commit.exclude",
+        "critic.parse.rules",
+        "client.buildCriticSettings",
+        "client.buildLanguageClientConfigurationPayload",
+        "critic.project",
+        "client.hasExplicitOverride",
+        "client.getPerlCriticConfiguration",
+        "client.pickExplicit",
+        "client.getNativeCriticSyncSettings",
+        "client.getLegacyPerlCriticSyncSettings",
+        "client.NATIVE_CRITIC_SPECS",
+        "client.LEGACY_CRITIC_SPECS"
+      ],
+      "consumers": [
+        "critic.native.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/critic/properties/exclude",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.critic.exclude",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": null,
+      "capability": {
+        "field_id": "critic.exclude",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "none"
+        ],
+        "composition": [],
+        "proof": null,
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "critic.include",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#8253",
+      "rust_field": "Server.native_critic_include",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "NativeCritic",
+        "DiagnosticCache"
+      ],
+      "invalidation": "Diagnostics",
+      "writers": [
+        "server.defaults",
+        "critic.client",
+        "critic.commit.include",
+        "critic.parse.rules",
+        "client.buildCriticSettings",
+        "client.buildLanguageClientConfigurationPayload",
+        "critic.project",
+        "client.hasExplicitOverride",
+        "client.getPerlCriticConfiguration",
+        "client.pickExplicit",
+        "client.getNativeCriticSyncSettings",
+        "client.getLegacyPerlCriticSyncSettings",
+        "client.NATIVE_CRITIC_SPECS",
+        "client.LEGACY_CRITIC_SPECS"
+      ],
+      "consumers": [
+        "critic.native.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/critic/properties/include",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.critic.include",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": null,
+      "capability": {
+        "field_id": "critic.include",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "none"
+        ],
+        "composition": [],
+        "proof": null,
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "critic.legacy_profile",
+      "kind": "active",
+      "disposition": "bounded_compatibility_with_exit",
+      "owner": "#9072",
+      "rust_field": "Server.perlcritic_profile",
+      "sources": [
+        "CompiledDefault",
+        "ProjectFile"
+      ],
+      "canonical_consumers": [
+        "NativeCritic",
+        "LegacyCritic",
+        "DiagnosticCache"
+      ],
+      "invalidation": "Diagnostics",
+      "writers": [
+        "server.defaults",
+        "client.hasExplicitOverride",
+        "client.getPerlCriticConfiguration",
+        "client.pickExplicit",
+        "client.getNativeCriticSyncSettings",
+        "client.getLegacyPerlCriticSyncSettings",
+        "client.NATIVE_CRITIC_SPECS",
+        "client.LEGACY_CRITIC_SPECS"
+      ],
+      "consumers": [
+        "critic.context.read"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#9072",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "critic.legacy_profile",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#9072",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "critic.legacy_theme",
+      "kind": "active",
+      "disposition": "bounded_compatibility_with_exit",
+      "owner": "#9072",
+      "rust_field": "Server.perlcritic_theme",
+      "sources": [
+        "CompiledDefault",
+        "ProjectFile"
+      ],
+      "canonical_consumers": [
+        "NativeCritic",
+        "LegacyCritic",
+        "DiagnosticCache"
+      ],
+      "invalidation": "Diagnostics",
+      "writers": [
+        "server.defaults",
+        "client.hasExplicitOverride",
+        "client.getPerlCriticConfiguration",
+        "client.pickExplicit",
+        "client.getNativeCriticSyncSettings",
+        "client.getLegacyPerlCriticSyncSettings",
+        "client.NATIVE_CRITIC_SPECS",
+        "client.LEGACY_CRITIC_SPECS"
+      ],
+      "consumers": [
+        "critic.snapshot.read"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#9072",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "critic.legacy_theme",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#9072",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "critic.profile",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#8253",
+      "rust_field": "Server.native_critic_profile",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "NativeCritic",
+        "DiagnosticCache"
+      ],
+      "invalidation": "Diagnostics",
+      "writers": [
+        "server.defaults",
+        "critic.client",
+        "critic.commit.profile",
+        "critic.parse.profile",
+        "client.buildCriticSettings",
+        "client.buildLanguageClientConfigurationPayload",
+        "critic.project",
+        "client.hasExplicitOverride",
+        "client.getPerlCriticConfiguration",
+        "client.pickExplicit",
+        "client.getNativeCriticSyncSettings",
+        "client.getLegacyPerlCriticSyncSettings",
+        "client.NATIVE_CRITIC_SPECS",
+        "client.LEGACY_CRITIC_SPECS"
+      ],
+      "consumers": [
+        "critic.native.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/critic/properties/profile",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.critic.profile",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": null,
+      "capability": {
+        "field_id": "critic.profile",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "none"
+        ],
+        "composition": [],
+        "proof": null,
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "critic.severity",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#8253",
+      "rust_field": "Server.perlcritic_severity",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "NativeCritic",
+        "LegacyCritic",
+        "DiagnosticCache"
+      ],
+      "invalidation": "Diagnostics",
+      "writers": [
+        "server.defaults",
+        "critic.client",
+        "critic.commit.severity",
+        "critic.parse.severity",
+        "client.buildCriticSettings",
+        "client.buildLanguageClientConfigurationPayload",
+        "critic.project",
+        "client.hasExplicitOverride",
+        "client.getPerlCriticConfiguration",
+        "client.pickExplicit",
+        "client.getNativeCriticSyncSettings",
+        "client.getLegacyPerlCriticSyncSettings",
+        "client.NATIVE_CRITIC_SPECS",
+        "client.LEGACY_CRITIC_SPECS"
+      ],
+      "consumers": [
+        "critic.native.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/critic/properties/severity",
+          "present": true
+        },
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/perlcritic/properties/severity",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.critic.severity",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#9072",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "critic.severity",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#9072",
+          "reason": "Native accepted policy; canonical legacy consumer migration is still separately owned."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "formatting.enabled",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#5001",
+      "rust_field": "Server.perltidy_enabled",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "NativeFormatter",
+        "ExternalFormatter"
+      ],
+      "invalidation": "Formatting",
+      "writers": [
+        "server.defaults",
+        "format.client",
+        "format.project.enabled"
+      ],
+      "consumers": [
+        "format.enabled.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/formatting/properties/enabled",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#5001",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "formatting.enabled",
+        "roles": [
+          "arm"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [
+          {
+            "kind": "composes_with",
+            "field": "formatting.engine"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#5001",
+          "negative_control_id": "pending:#5001:formatting.enabled"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "formatting.engine",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#5001",
+      "rust_field": "Server.formatting_engine",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "NativeFormatter",
+        "ExternalFormatter"
+      ],
+      "invalidation": "Formatting",
+      "writers": [
+        "server.defaults",
+        "format.client",
+        "format.project.engine",
+        "format.client.mode",
+        "format.project.mode"
+      ],
+      "consumers": [
+        "format.consumer"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/formatting/properties/engine",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#5001",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "formatting.engine",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [
+          {
+            "kind": "composes_with",
+            "field": "formatting.enabled"
+          },
+          {
+            "kind": "composes_with",
+            "field": "formatting.format_on_save"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#5001",
+          "negative_control_id": "pending:#5001:formatting.engine"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "formatting.extra_args",
+      "kind": "active",
+      "disposition": "unsupported_rejected",
+      "owner": "#5001",
+      "rust_field": "Server.perltidy_extra_args",
+      "sources": [
+        "CompiledDefault",
+        "ProjectFile"
+      ],
+      "canonical_consumers": [
+        "NativeFormatter",
+        "ExternalFormatter"
+      ],
+      "invalidation": "Formatting",
+      "writers": [
+        "server.defaults",
+        "format.client"
+      ],
+      "consumers": [
+        "format.options.read"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#5001",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "formatting.extra_args",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#5001",
+          "reason": "Default/internal storage remains; admitted public adapter is absent or explicitly rejected."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "formatting.format_on_save",
+      "kind": "active",
+      "disposition": "parsed_pending_with_owner",
+      "owner": "#8092",
+      "rust_field": "Server.format_on_save",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "NativeFormatter",
+        "ExternalFormatter",
+        "SaveFormatting"
+      ],
+      "invalidation": "Formatting",
+      "writers": [
+        "server.defaults",
+        "format.client",
+        "format.project.format_on_save"
+      ],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/formatting/properties/formatOnSave",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.formatOnSave",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#11955",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "formatting.format_on_save",
+        "roles": [
+          "trigger"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [
+          {
+            "kind": "automatic_lifecycle_trigger"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#8092",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "formatting.profile",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#5001",
+      "rust_field": "Server.perltidy_profile",
+      "sources": [
+        "CompiledDefault",
+        "ProjectFile"
+      ],
+      "canonical_consumers": [
+        "NativeFormatter",
+        "ExternalFormatter"
+      ],
+      "invalidation": "Formatting",
+      "writers": [
+        "server.defaults",
+        "format.client",
+        "format.project.perltidy_profile"
+      ],
+      "consumers": [
+        "format.profile.read"
+      ],
+      "projections": [
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.perltidyConfig",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#5001",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "formatting.profile",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#5001",
+          "negative_control_id": "pending:#5001:formatting.profile"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "formatting.timeout_secs",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#5001",
+      "rust_field": "Server.perltidy_timeout_secs",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings"
+      ],
+      "canonical_consumers": [
+        "NativeFormatter",
+        "ExternalFormatter"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "server.defaults",
+        "format.client",
+        "format.project.perltidy_timeout_secs"
+      ],
+      "consumers": [
+        "format.options.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/formatting/properties/timeoutSecs",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#5001",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "formatting.timeout_secs",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "process"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#5001",
+          "negative_control_id": "pending:#5001:formatting.timeout_secs"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.ast_cache_max_entries",
+      "kind": "active",
+      "disposition": "parsed_pending_with_owner",
+      "owner": "#16176",
+      "rust_field": "Limits.ast_cache_max_entries",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.ast_cache_max_entries"
+      ],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/astCacheMaxEntries",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.ast_cache_max_entries",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#16176",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.ast_cache_memory_bytes",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.ast_cache_max_bytes",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.ast_cache_max_bytes"
+      ],
+      "consumers": [
+        "limit.read.ast_cache_max_bytes"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/astCacheMaxMemoryBytes",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.ast_cache_memory_bytes",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.ast_cache_memory_bytes"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.ast_cache_ttl_secs",
+      "kind": "active",
+      "disposition": "parsed_pending_with_owner",
+      "owner": "#16176",
+      "rust_field": "Limits.ast_cache_ttl_secs",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.ast_cache_ttl_secs"
+      ],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/astCacheTtlSecs",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.ast_cache_ttl_secs",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#16176",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.code_lens_cap",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.code_lens_cap",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ResultCaps"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.code_lens_cap"
+      ],
+      "consumers": [
+        "limit.read.code_lens_cap"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/codeLensCap",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.code_lens_cap",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.code_lens_cap"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.completion_cap",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.completion_cap",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ResultCaps"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.completion_cap"
+      ],
+      "consumers": [
+        "limit.read.completion_cap"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/completionCap",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.completion_cap",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.completion_cap"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.critical_memory_threshold_bytes",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.critical_threshold_bytes",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.critical_threshold_bytes"
+      ],
+      "consumers": [
+        "limit.read.critical_threshold_bytes"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/memoryCriticalThresholdBytes",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.critical_memory_threshold_bytes",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.critical_memory_threshold_bytes"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.diagnostics_per_file_cap",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.diagnostics_per_file_cap",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ResultCaps"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.diagnostics_per_file_cap"
+      ],
+      "consumers": [
+        "limit.read.diagnostics_per_file_cap"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/diagnosticsPerFileCap",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.diagnostics_per_file_cap",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.diagnostics_per_file_cap"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.document_symbol_cap",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.document_symbol_cap",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ResultCaps"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.document_symbol_cap"
+      ],
+      "consumers": [
+        "limit.read.document_symbol_cap"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/documentSymbolCap",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.document_symbol_cap",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.document_symbol_cap"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.file_size_bytes",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.max_file_size_bytes",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.max_file_size_bytes"
+      ],
+      "consumers": [
+        "limit.read.max_file_size_bytes"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/maxFileSizeBytes",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.file_size_bytes",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.file_size_bytes"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.indexed_files",
+      "kind": "active",
+      "disposition": "parsed_pending_with_owner",
+      "owner": "#16176",
+      "rust_field": "Limits.max_indexed_files",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.max_indexed_files"
+      ],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/maxIndexedFiles",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.indexed_files",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#16176",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.inlay_hints_cap",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.inlay_hints_cap",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ResultCaps"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.inlay_hints_cap"
+      ],
+      "consumers": [
+        "limit.read.inlay_hints_cap"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/inlayHintsCap",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.inlay_hints_cap",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.inlay_hints_cap"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.reference_search_deadline_ms",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.reference_search_deadline",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.reference_search_deadline"
+      ],
+      "consumers": [
+        "limit.read.reference_search_deadline"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/referenceSearchDeadlineMs",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.reference_search_deadline_ms",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.reference_search_deadline_ms"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.references_cap",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.references_cap",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ResultCaps"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.references_cap"
+      ],
+      "consumers": [
+        "limit.read.references_cap"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/referencesCap",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.references_cap",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.references_cap"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.symbol_cache_max_entries",
+      "kind": "active",
+      "disposition": "parsed_pending_with_owner",
+      "owner": "#16176",
+      "rust_field": "Limits.symbol_cache_max_entries",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.symbol_cache_max_entries"
+      ],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/symbolCacheMaxEntries",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.symbol_cache_max_entries",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#16176",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.total_symbols",
+      "kind": "active",
+      "disposition": "parsed_pending_with_owner",
+      "owner": "#16176",
+      "rust_field": "Limits.max_total_symbols",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.max_total_symbols"
+      ],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/maxTotalSymbols",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.total_symbols",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#16176",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.warning_memory_threshold_bytes",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.warning_threshold_bytes",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.warning_threshold_bytes"
+      ],
+      "consumers": [
+        "limit.read.warning_threshold_bytes"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/memoryWarningThresholdBytes",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.warning_memory_threshold_bytes",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.warning_memory_threshold_bytes"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.workspace_scan_deadline_ms",
+      "kind": "active",
+      "disposition": "parsed_pending_with_owner",
+      "owner": "#16176",
+      "rust_field": "Limits.workspace_scan_deadline",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "BoundedExecution"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.workspace_scan_deadline"
+      ],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/workspaceScanDeadlineMs",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.workspace_scan_deadline_ms",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#16176",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "limits.workspace_symbol_cap",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7479",
+      "rust_field": "Limits.workspace_symbol_cap",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ResultCaps"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "limit.write.workspace_symbol_cap"
+      ],
+      "consumers": [
+        "limit.read.workspace_symbol_cap"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/limits/properties/workspaceSymbolCap",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#7479",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "limits.workspace_symbol_cap",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#7479"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#7479",
+          "negative_control_id": "pending:#7479:limits.workspace_symbol_cap"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "project.perl.version",
+      "kind": "derived",
+      "disposition": "behavior_backed",
+      "owner": "#10132",
+      "rust_field": "ProjectPerlConfig.version",
+      "sources": [
+        "ProjectFile"
+      ],
+      "canonical_consumers": [],
+      "invalidation": "Diagnostics",
+      "writers": [
+        "project.version.serde",
+        "project.perl.serde"
+      ],
+      "consumers": [
+        "project.perl.version.read"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#10132",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": null,
+      "capability": null
+    },
+    {
+      "id": "testRunner.args",
+      "kind": "removed",
+      "disposition": "remove_false_contract",
+      "owner": "#10136",
+      "rust_field": "",
+      "sources": [],
+      "canonical_consumers": [],
+      "invalidation": "None",
+      "writers": [],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/testRunner",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/0/properties/perl-lsp.testRunner.args",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.testRunner.args",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/2/properties/perl-lsp.testRunner.args",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/3/properties/perl-lsp.testRunner.args",
+          "present": false
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#10136",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": null,
+      "capability": null
+    },
+    {
+      "id": "testRunner.command",
+      "kind": "removed",
+      "disposition": "remove_false_contract",
+      "owner": "#10136",
+      "rust_field": "",
+      "sources": [],
+      "canonical_consumers": [],
+      "invalidation": "None",
+      "writers": [],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/testRunner",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/0/properties/perl-lsp.testRunner.command",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.testRunner.command",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/2/properties/perl-lsp.testRunner.command",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/3/properties/perl-lsp.testRunner.command",
+          "present": false
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#10136",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": null,
+      "capability": null
+    },
+    {
+      "id": "testRunner.enabled",
+      "kind": "removed",
+      "disposition": "remove_false_contract",
+      "owner": "#10136",
+      "rust_field": "",
+      "sources": [],
+      "canonical_consumers": [],
+      "invalidation": "None",
+      "writers": [],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/testRunner",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/0/properties/perl-lsp.testRunner.enabled",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.testRunner.enabled",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/2/properties/perl-lsp.testRunner.enabled",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/3/properties/perl-lsp.testRunner.enabled",
+          "present": false
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#10136",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": null,
+      "capability": null
+    },
+    {
+      "id": "testRunner.timeout",
+      "kind": "removed",
+      "disposition": "remove_false_contract",
+      "owner": "#10136",
+      "rust_field": "",
+      "sources": [],
+      "canonical_consumers": [],
+      "invalidation": "None",
+      "writers": [],
+      "consumers": [],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/testRunner",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/0/properties/perl-lsp.testRunner.timeout",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/1/properties/perl-lsp.testRunner.timeout",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/2/properties/perl-lsp.testRunner.timeout",
+          "present": false
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/3/properties/perl-lsp.testRunner.timeout",
+          "present": false
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#10136",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": null,
+      "capability": null
+    },
+    {
+      "id": "workspace.external_include_paths",
+      "kind": "active",
+      "disposition": "trusted_only_adapter",
+      "owner": "#10817",
+      "rust_field": "Workspace.external_include_paths",
+      "sources": [
+        "CompiledDefault",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "ModuleResolver",
+        "WorkspaceIndex",
+        "DependencyGraph"
+      ],
+      "invalidation": "ModuleResolution",
+      "writers": [
+        "workspace.defaults",
+        "workspace.client",
+        "client.readExternalIncludePaths",
+        "client.buildWorkspaceConfigurationPayload",
+        "client.buildLanguageClientConfigurationPayload"
+      ],
+      "consumers": [
+        "workspace.roots.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/workspace/properties/externalIncludePaths",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/0/properties/perl-lsp.externalIncludePaths",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4998",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "workspace.external_include_paths",
+        "roles": [
+          "widen"
+        ],
+        "effects": [
+          "external_filesystem_read"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10817",
+          "reason": "Default/internal storage remains; admitted public adapter is absent or explicitly rejected."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "workspace.include_paths",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#4998",
+      "rust_field": "Workspace.include_paths",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ModuleResolver",
+        "WorkspaceIndex",
+        "DependencyGraph"
+      ],
+      "invalidation": "ModuleResolution",
+      "writers": [
+        "workspace.defaults",
+        "workspace.client",
+        "client.readExternalIncludePaths",
+        "client.buildWorkspaceConfigurationPayload",
+        "client.buildLanguageClientConfigurationPayload",
+        "workspace.project",
+        "client.readIncludePaths"
+      ],
+      "consumers": [
+        "workspace.roots.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/workspace/properties/includePaths",
+          "present": true
+        },
+        {
+          "path": "vscode-extension/package.json",
+          "pointer": "/contributes/configuration/0/properties/perl-lsp.includePaths",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4998",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "workspace.include_paths",
+        "roles": [
+          "widen"
+        ],
+        "effects": [
+          "external_filesystem_read"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4998",
+          "negative_control_id": "pending:#4998:workspace.include_paths"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "workspace.perl5lib_precedence",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#4998",
+      "rust_field": "Workspace.perl5lib_precedence",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ModuleResolver",
+        "WorkspaceIndex",
+        "DependencyGraph"
+      ],
+      "invalidation": "ModuleResolution",
+      "writers": [
+        "workspace.defaults",
+        "workspace.client",
+        "workspace.project"
+      ],
+      "consumers": [
+        "workspace.precedence.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/workspace/properties/perl5libPrecedence",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4998",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "workspace.perl5lib_precedence",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "external_filesystem_read"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4998",
+          "negative_control_id": "pending:#4998:workspace.perl5lib_precedence"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "workspace.perl_args",
+      "kind": "active",
+      "disposition": "unsupported_rejected",
+      "owner": "#10134",
+      "rust_field": "Workspace.perl_args",
+      "sources": [
+        "CompiledDefault",
+        "ProjectFile",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "PerlToolchain",
+        "ModuleResolver"
+      ],
+      "invalidation": "ModuleResolution",
+      "writers": [
+        "workspace.defaults",
+        "workspace.client"
+      ],
+      "consumers": [
+        "workspace.argv.read"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4998",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "workspace.perl_args",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "external_filesystem_read"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10134",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "workspace.perl_path",
+      "kind": "active",
+      "disposition": "unsupported_rejected",
+      "owner": "#10134",
+      "rust_field": "Workspace.perl_path",
+      "sources": [
+        "CompiledDefault",
+        "ProjectFile",
+        "TrustedUserSettings"
+      ],
+      "canonical_consumers": [
+        "PerlToolchain",
+        "ModuleResolver"
+      ],
+      "invalidation": "ModuleResolution",
+      "writers": [
+        "workspace.defaults",
+        "workspace.client"
+      ],
+      "consumers": [
+        "workspace.perl.read"
+      ],
+      "projections": [],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4998",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "workspace.perl_path",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "external_filesystem_read"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "unsupported",
+          "owner": "#10134",
+          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "workspace.resolution_timeout_ms",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#7054",
+      "rust_field": "Workspace.resolution_timeout_ms",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ModuleResolver"
+      ],
+      "invalidation": "RuntimeScheduling",
+      "writers": [
+        "workspace.defaults",
+        "workspace.client"
+      ],
+      "consumers": [
+        "workspace.timeout.capture",
+        "workspace.timeout.consume"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/workspace/properties/resolutionTimeout",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#16182",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "workspace.resolution_timeout_ms",
+        "roles": [
+          "select"
+        ],
+        "effects": [
+          "resource_budget"
+        ],
+        "composition": [
+          {
+            "kind": "hard_product_envelope",
+            "owner": "#16182"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#16182",
+          "negative_control_id": "pending:#16182:workspace.resolution_timeout_ms"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "workspace.use_perl5lib",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#4998",
+      "rust_field": "Workspace.use_perl5lib",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "ModuleResolver",
+        "WorkspaceIndex",
+        "DependencyGraph"
+      ],
+      "invalidation": "ModuleResolution",
+      "writers": [
+        "workspace.defaults",
+        "workspace.client",
+        "workspace.project"
+      ],
+      "consumers": [
+        "workspace.perl5lib.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/workspace/properties/usePerl5lib",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4998",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "workspace.use_perl5lib",
+        "roles": [
+          "arm"
+        ],
+        "effects": [
+          "external_filesystem_read"
+        ],
+        "composition": [
+          {
+            "kind": "composes_with",
+            "field": "workspace.perl5lib_precedence"
+          }
+        ],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4998",
+          "negative_control_id": "pending:#4998:workspace.use_perl5lib"
+        },
+        "reduction_exception": null
+      }
+    },
+    {
+      "id": "workspace.use_system_inc",
+      "kind": "active",
+      "disposition": "behavior_backed",
+      "owner": "#4998",
+      "rust_field": "Workspace.use_system_inc",
+      "sources": [
+        "CompiledDefault",
+        "InitializationOptions",
+        "ProjectFile",
+        "GlobalClientSettings",
+        "WorkspaceConfiguration"
+      ],
+      "canonical_consumers": [
+        "PerlToolchain",
+        "ModuleResolver"
+      ],
+      "invalidation": "ModuleResolution",
+      "writers": [
+        "workspace.defaults",
+        "workspace.client"
+      ],
+      "consumers": [
+        "workspace.system.read"
+      ],
+      "projections": [
+        {
+          "path": "schemas/perllsp-settings.schema.json",
+          "pointer": "/properties/perl/properties/workspace/properties/useSystemInc",
+          "present": true
+        }
+      ],
+      "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
+      "currentness": {
+        "owner": "#7943",
+        "status": "unresolved",
+        "witness": null
+      },
+      "first_effect": {
+        "owner": "#4998",
+        "status": "unresolved",
+        "witness": null
+      },
+      "capability": {
+        "field_id": "workspace.use_system_inc",
+        "roles": [
+          "arm"
+        ],
+        "effects": [
+          "process",
+          "external_filesystem_read"
+        ],
+        "composition": [],
+        "proof": {
+          "kind": "first_effect",
+          "owner": "#4998",
+          "negative_control_id": "pending:#4998:workspace.use_system_inc"
+        },
+        "reduction_exception": null
+      }
+    }
+  ],
+  "remaining_low_risk": [
+    "formatting.add_trailing_commas",
+    "formatting.block_comment_indentation",
+    "formatting.cuddled_else",
+    "formatting.indent_columns",
+    "formatting.maximum_line_length",
+    "formatting.opening_brace_on_new_line",
+    "formatting.space_after_keyword",
+    "formatting.tabs",
+    "formatting.vertical_alignment",
+    "inlay.chained_hints",
+    "inlay.enabled",
+    "inlay.max_length",
+    "inlay.parameter_hints",
+    "inlay.type_hints",
+    "telemetry.enabled",
+    "workspace.declared_dependencies",
+    "workspace.discovery_extra_extensions",
+    "workspace.discovery_extra_skipped_dirs",
+    "workspace.native_build_hints"
+  ]
+}
