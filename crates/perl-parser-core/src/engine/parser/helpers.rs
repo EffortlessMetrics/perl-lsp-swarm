@@ -1033,6 +1033,11 @@ impl<'a> Parser<'a> {
         if !self.is_infix_rhs_absent() {
             return None;
         }
+        Some(self.record_missing_infix_rhs(op_pos))
+    }
+
+    /// Record an absent operand after its grammar owner has identified the boundary.
+    fn record_missing_infix_rhs(&mut self, op_pos: usize) -> Node {
         self.record_error(ParseError::Recovered {
             site: RecoverySite::InfixRhs,
             kind: RecoveryKind::MissingOperand,
@@ -1041,7 +1046,7 @@ impl<'a> Parser<'a> {
         let pos = op_pos;
         // #8786: not charged. Synthetic recovery node — recovery-node
         // accounting is #7074's dimension, not an admitted core dimension.
-        Some(Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos }))
+        Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos })
     }
 
     /// Expect a closing delimiter, recovering gracefully if missing.
@@ -1374,9 +1379,10 @@ impl<'a> Parser<'a> {
     }
 
     /// We are conservative: the identifier must be lowercase (uppercase bare
-    /// identifiers are more likely to be constants or package names) and
-    /// must NOT be a string comparison operator (`eq`, `ne`, `lt`, `gt`, etc.)
-    /// or a keyword token.
+    /// identifiers are more likely to be constants or package names — an
+    /// uppercase name is admitted only before a plain literal, where the call
+    /// reading is the sole valid Perl parse, #16373) and must NOT be a string
+    /// comparison operator (`eq`, `ne`, `lt`, `gt`, etc.) or a keyword token.
     fn looks_like_bare_call(&mut self, name: &str) -> bool {
         if self.peek_kind().is_some_and(|kind| {
             matches!(kind, TokenKind::My | TokenKind::Our | TokenKind::Local | TokenKind::State)
@@ -1388,8 +1394,29 @@ impl<'a> Parser<'a> {
 
         // Only lowercase identifiers can be bare function calls.
         // Uppercase identifiers like `FIRST_FD` are constants.
-        if name.is_empty() || !name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') {
+        if name.is_empty() {
             return false;
+        }
+        if !name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') {
+            // An uppercase bareword followed by a plain literal has exactly one
+            // valid Perl reading: a declared sub call. ``T `a``` (perl
+            // t/base/lex.t:225) cannot be two adjacent terms, so refusing the
+            // call route left the literal as `UnexpectedSameLineResidue`
+            // (#16373). Widen only for argument starts that admit no other
+            // parse; every other following token keeps the conservative
+            // constant/package-name reading.
+            if !self.peek_kind().is_some_and(|kind| {
+                matches!(
+                    kind,
+                    TokenKind::String
+                        | TokenKind::QuoteSingle
+                        | TokenKind::QuoteDouble
+                        | TokenKind::QuoteCommand
+                        | TokenKind::Number
+                )
+            }) {
+                return false;
+            }
         }
 
         // Exclude string comparison operators and infix keyword operators that are
@@ -1439,10 +1466,18 @@ impl<'a> Parser<'a> {
             // multiplication.
             TokenKind::Star if has_typeglob_first_arg => true,
 
-            // `func "string"` or `func 'string'` — bare function call with a string literal arg.
+            // `func "string"`, `func 'string'`, `func q()`, `func qq()`,
+            // or `func `command`` — bare function call with a string-literal
+            // argument. Backtick bodies lex as `QuoteCommand`, `q()` as
+            // `QuoteSingle` and `qq()` as `QuoteDouble`, so they must be
+            // admitted here too or the quote form loses its argument
+            // uptake (#16373, #16377 review).
             // Handles: `croak "error message"`, `_estr "fmt"`, `die "msg"`, etc.
             // Imported functions that behave like builtins often take string args without parens.
-            TokenKind::String => true,
+            TokenKind::String
+            | TokenKind::QuoteSingle
+            | TokenKind::QuoteDouble
+            | TokenKind::QuoteCommand => true,
 
             // `func 0` — Perl list-operator style calls may take literal numeric args.
             TokenKind::Number => true,

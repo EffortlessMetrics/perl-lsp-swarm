@@ -105,11 +105,25 @@ fn e2e_config(timeout: Duration) -> ScenarioConfig {
     }
 }
 
+/// Budget for one e2e scenario and for individual request roundtrips.
+///
+/// These receipts assert arrival, not speed (see the module header): the
+/// claim is "we drove the e2e config and the answer arrived," so the bound
+/// exists only to fail fast on a wedged binary. A tight budget turns the
+/// verdict into a function of the runner: #16278 measured the two UX
+/// workflows disagreeing on 11 of 30 identical heads because a loaded CI
+/// moment pushed healthy roundtrips past fixed 8s/5s budgets (one observed
+/// expiry: 7999ms with the stream still live). 60s keeps the wedge
+/// detector while leaving runner-speed noise outside the claim; the happy
+/// path still completes in well under a second.
 fn timeout() -> Duration {
-    // 8s gives CI runners ample headroom while still failing fast on a
-    // wedged binary. Local dev typically completes each scenario in <500ms.
-    Duration::from_secs(8)
+    Duration::from_secs(60)
 }
+
+/// Budget for "wait until the observation arrives" helpers. Same contract
+/// as [`timeout`]: arrival is the assertion; the bound only detects a
+/// wedged binary.
+const ARRIVAL_BUDGET: Duration = Duration::from_secs(30);
 
 fn symbol_tree_contains_name(symbols: &[Value], expected_name: &str) -> bool {
     let mut pending: Vec<&Value> = symbols.iter().collect();
@@ -205,7 +219,7 @@ fn ux_latency_edit_publishes_parse_error_diagnostic() -> Result<()> {
     harness.open_file("broken.pl", PARSE_ERROR_SOURCE)?;
 
     // Under syntax-only + zero debounce, a parse error must arrive promptly.
-    let diags = harness.wait_for_diagnostics("broken.pl", Duration::from_secs(5));
+    let diags = harness.wait_for_diagnostics("broken.pl", ARRIVAL_BUDGET);
     assert!(
         !diags.is_empty(),
         "syntax-only e2e mode must surface parse errors; got empty diagnostics list"
@@ -236,12 +250,12 @@ fn ux_latency_edit_clears_diagnostics_when_parse_recovers() -> Result<()> {
     let harness = UxHarness::new(e2e_config(timeout()))?;
     harness.open_file("recovers.pl", PARSE_ERROR_SOURCE)?;
 
-    let bad = harness.wait_for_diagnostics("recovers.pl", Duration::from_secs(5));
+    let bad = harness.wait_for_diagnostics("recovers.pl", ARRIVAL_BUDGET);
     assert!(!bad.is_empty(), "broken parse must report at least one diagnostic; got {bad:?}");
 
     // Apply the fix and expect the latest publish for this URI to be empty.
     harness.change_file_full("recovers.pl", CLEAN_SOURCE)?;
-    let cleared = harness.wait_for_no_diagnostics("recovers.pl", Duration::from_secs(5));
+    let cleared = harness.wait_for_no_diagnostics("recovers.pl", ARRIVAL_BUDGET);
     assert!(
         cleared,
         "syntax-only mode must publish an empty diagnostic list after the parse recovers"
@@ -296,7 +310,7 @@ fn ux_latency_inline_completion_dynamic_path_returns_deterministic_items() -> Re
 
     let harness = UxHarness::new(e2e_config(timeout()))?;
     let inline_registered =
-        wait_for_registration(&harness, "textDocument/inlineCompletion", Duration::from_secs(2));
+        wait_for_registration(&harness, "textDocument/inlineCompletion", ARRIVAL_BUDGET);
     assert!(
         inline_registered,
         "lean LSP4IJ-shaped client must receive dynamic inline-completion registration"
@@ -348,7 +362,7 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
 
     let symbols = harness.wait_for_workspace_symbols(
         "alpha",
-        Duration::from_secs(5),
+        ARRIVAL_BUDGET,
         Duration::from_millis(50),
         |items| {
             items.iter().any(|symbol| symbol.get("name").and_then(Value::as_str) == Some("alpha"))
@@ -394,7 +408,7 @@ fn ux_latency_code_action_returns_without_error_for_parse_diagnostic() -> Result
 
     let harness = UxHarness::new(e2e_config(timeout()))?;
     harness.open_file("action.pl", PARSE_ERROR_SOURCE)?;
-    let diagnostics = harness.wait_for_diagnostics("action.pl", Duration::from_secs(5));
+    let diagnostics = harness.wait_for_diagnostics("action.pl", ARRIVAL_BUDGET);
     assert!(
         !diagnostics.is_empty(),
         "code action e2e receipt needs a real diagnostic to act on; got {diagnostics:?}"
