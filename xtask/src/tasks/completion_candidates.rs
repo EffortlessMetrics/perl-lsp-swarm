@@ -508,9 +508,12 @@ impl RankDisposition {
 /// `#10230` is what blocks `Complete` while any reached row is
 /// `legacy_unreported`; that block lives downstream, not here.
 ///
-/// This decision is pinned by `deliberately_accepts_every_completeness_variant`
-/// so a later reader does not mistake the absence for an oversight.
+/// This decision is pinned by `deliberately_accepts_every_completeness_variant`.
+/// The test derives its inventory from the enum itself, so adding a variant
+/// automatically adds it to the acceptance walk instead of relying on a second
+/// hand-maintained list.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
 pub enum CompletenessDisposition {
     /// Reports an exact complete result, empty included.
@@ -3511,23 +3514,15 @@ mod tests {
 
     /// `CompletenessDisposition` deliberately has no `Forbidden*` variant and no
     /// `forbidden()` gate in `validate_dispositions` (see the enum's doc comment
-    /// and `#16085`). Every variant here is a legitimate producer state,
+    /// and `#16085`). Every declared variant is a legitimate producer state,
     /// including `LegacyUnreported`, which is the documented default for every
-    /// unmigrated row. This test walks every variant on a passing row and
-    /// asserts the validator accepts it, so a future change cannot silently
-    /// introduce or remove a check without this test telling on it.
+    /// unmigrated row. `EnumIter` makes the walk derive from the enum itself, so
+    /// adding a variant automatically extends this acceptance control.
     #[test]
-    fn deliberately_accepts_every_completeness_variant() {
-        use CompletenessDisposition as CD;
-        let variants = [
-            CD::CompleteOrEmpty,
-            CD::QualifiedPartial,
-            CD::NotReady,
-            CD::CancelledOrDeadline,
-            CD::DynamicOrUnsupported,
-            CD::LegacyUnreported,
-        ];
-        for variant in variants {
+    fn deliberately_accepts_every_completeness_variant() -> Result<()> {
+        use strum::IntoEnumIterator;
+
+        for variant in CompletenessDisposition::iter() {
             let (mut ledger, discovered) = fixture();
             let row = row_mut(&mut ledger, |row| {
                 // Reach a row the validator exercises end-to-end. The router and
@@ -3536,14 +3531,15 @@ mod tests {
                 !matches!(row.candidate_class, CandidateClass::Router | CandidateClass::Finalizer)
             });
             row.source_completeness = variant;
-            if let Err(error) = validate(&ledger, &discovered) {
-                panic!(
+            validate(&ledger, &discovered).with_context(|| {
+                format!(
                     "validator refused `CompletenessDisposition::{}` even though #16085 records \
-                     the absence of a forbidden() gate as a deliberate decision: {error:?}",
+                     the absence of a forbidden() gate as a deliberate decision",
                     variant.as_str()
-                );
-            }
+                )
+            })?;
         }
+        Ok(())
     }
 
     /// A workspace or method candidate has a real entity behind it, so calling
