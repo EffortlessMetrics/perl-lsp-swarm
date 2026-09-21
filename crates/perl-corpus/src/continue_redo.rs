@@ -326,6 +326,26 @@ do {
         should_parse: false, // perl rejects: continue never attaches to C-style for
     },
     ContinueRedoCase {
+        id: "continue.empty.parens",
+        description: "Empty-parenthesized continue invocation (valid).",
+        tags: &["continue", "edge-case"],
+        source: r#"while (1) {
+    continue();
+}
+"#,
+        should_parse: true, // `continue()` is one loop-control node in real Perl
+    },
+    ContinueRedoCase {
+        id: "continue.expression.position",
+        description: "Continue as a short-circuit operand (valid).",
+        tags: &["continue", "edge-case"],
+        source: r#"while (1) {
+    $ready and continue;
+}
+"#,
+        should_parse: true, // real Perl permits continue in expression position
+    },
+    ContinueRedoCase {
         id: "continue.lexical.scope",
         description: "Continue block with lexical variable declarations.",
         tags: &["continue", "loop", "scope", "lexical"],
