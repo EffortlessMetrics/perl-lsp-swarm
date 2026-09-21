@@ -52,7 +52,7 @@ tree-sitter-perl-rs = { workspace = true }
 regex.workspace = true
 serde_yaml_ng = "0.10.0"
 toml = "1.1.2"
-bindgen = "0.72.1"
+bindgen = "0.73.1"
 notify = "8.2.0"
 flate2 = "1.1.5"
 tar = "0.4.46"
