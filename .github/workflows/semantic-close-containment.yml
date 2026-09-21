@@ -160,8 +160,9 @@ jobs:
           # #16214: the contract that a validator which cannot do its job exits
           # differently from one that reached a verdict is only worth anything
           # if it holds for the real binary. No fixture reaches exit 3 or 4 --
-          # all 26 land on 0 or 2 -- so this is the only place the instrument
-          # failure path is exercised end to end.
+          # every one lands on 0 or 2, which the replay above re-measures on
+          # each run -- so this is the only place the instrument failure path
+          # is exercised end to end.
           rc=0
           env -u GITHUB_EVENT_PATH "$bin" >/dev/null 2>"${RUNNER_TEMP:-/tmp}/scc-selftest-stderr.txt" || rc=$?
           if [ "${rc}" -ne 4 ]; then
