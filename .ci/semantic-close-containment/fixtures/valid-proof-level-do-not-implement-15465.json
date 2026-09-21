@@ -1,0 +1,36 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-21",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15465",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13367"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves CP00-PROOF-LEVEL-CONTRADICTION does not arm when the issue excludes a proof level with 'do not implement' phrasing, even when the verb is not enumerated in PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS. The clause-scoped structural-negation detector catches 'not' before the verb 'implement' the same way it does for 'not change' / 'not require' (#15463, #10831). See #15465 for the verb-vocabulary gap and #13367 for the original failing PR review."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990021,
+    "title": "fix(quickorm): fail closed on repeated imports in the table-column candidate (#9001650)",
+    "body": "## Claim Boundary\n\nInstalled evidence is explicitly out of scope.\n\nCloses #9001650."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001650,
+      "title": "fix(quickorm): fail closed on repeated imports in the table-column candidate",
+      "body": "## Objective\n\nContain current-main candidate authority until #13238 lands.\n\nDo not implement the full installed-name model here.\n\n## Required change\n\n- replace the implicit latest-import-wins assumption with an explicit bounded candidate state;\n- detect repeated `use`/`no DBIx::QuickORM` activity per package and fail closed."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001650,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}
