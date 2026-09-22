@@ -183,7 +183,6 @@ fn classify_with_exit_status(
     let workflow = first_failing_test.as_ref().and_then(|name| workflow_from_test_name(name));
 
     let failing_tests = discriminate_failing_tests(raw);
-    let failure_class = run_failure_class(&failing_tests, raw);
 
     let canonical_repro = first_failing_test.as_ref().map(|name| {
         format!("cargo test -p perl-lsp-ux-tests {name} -- --test-threads=1 --nocapture")
@@ -195,7 +194,6 @@ fn classify_with_exit_status(
         format!("just ux-tests {short}")
     });
 
-    let route = route_for_failure_class(failure_class);
     let has_failed_test = first_failing_test.is_some()
         || lines.iter().any(|line| line.contains("test result: FAILED"));
     let has_passing_summary = lines.iter().any(|line| line.contains("test result: ok"));
@@ -204,6 +202,22 @@ fn classify_with_exit_status(
         if command_succeeded && has_passing_summary && !has_failed_test { "pass" } else { "fail" }
             .to_string();
     let blocking = result != "pass";
+
+    // A passing run asserts no failure, so its receipt must not classify one.
+    // `run_failure_class` falls through to the whole-log word scan when no test
+    // failed, and a green log mentions "baseline" on every run (`Compiling
+    // perl-lsp-ux-baselines` is enough), which claimed `BaselineDrift` and
+    // routed a passing run to `update_baseline` — advice to move a baseline on
+    // a run that failed nothing (#16287). `Unknown`/`Triage` is the honest
+    // neutral: it says nothing rather than something wrong, keeps both field
+    // types, and nothing routes on the class on a pass because `merge_action`
+    // is already `merge_allowed`.
+    let failure_class = if result == "pass" {
+        UxFailureClass::Unknown
+    } else {
+        run_failure_class(&failing_tests, raw)
+    };
+    let route = route_for_failure_class(failure_class);
     let merge_action = if !blocking {
         "merge_allowed"
     } else {
@@ -1470,6 +1484,26 @@ test result: FAILED. 0 passed; 1 failed; timed out after 60s";
         let receipt = classify(log, None);
         assert_eq!(receipt.result, "pass");
         assert!(receipt.failing_tests.is_empty(), "a passing run discriminates nothing");
+    }
+
+    #[test]
+    fn a_passing_run_publishes_no_failure_classification() {
+        // `Compiling perl-lsp-ux-baselines` appears in every green log. Before
+        // #16287 the whole-log class scan read it, so a passing receipt claimed
+        // `baseline_drift` with route `baseline_update` — a green run advising
+        // the one remedy the repository forbids without a failure.
+        let log = "   Compiling perl-lsp-ux-baselines v0.1.0\n\
+                   running 3 tests\n\
+                   test ux_scenario_01_startup::start ... ok\n\
+                   test result: ok. 3 passed; 0 failed";
+        let receipt = classify(log, None);
+        assert_eq!(receipt.result, "pass");
+        assert_eq!(
+            receipt.failure_class,
+            UxFailureClass::Unknown,
+            "a passing run asserts no failure; the neutral class says nothing"
+        );
+        assert_eq!(receipt.route, UxRoute::Triage);
     }
 
     #[test]

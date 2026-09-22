@@ -1862,9 +1862,12 @@ jobs:
           if receipt_path.exists():
               data = json.loads(receipt_path.read_text(encoding="utf-8"))
               lines.append(f"- Result: `{data.get('result', 'unknown')}`")
-              if data.get("failure_class"):
+              # A passing run publishes only the neutral `unknown`/`triage`
+              # class and route (#16287); omitting them keeps the green summary
+              # from advertising a failure remedy.
+              if data.get("result") != "pass" and data.get("failure_class"):
                   lines.append(f"- Failure class: `{data.get('failure_class')}`")
-              if data.get("route"):
+              if data.get("result") != "pass" and data.get("route"):
                   lines.append(f"- Route: `{data.get('route')}`")
               if data.get("merge_action"):
                   lines.append(f"- Merge action: `{data.get('merge_action')}`")
@@ -2037,6 +2040,15 @@ jobs:
       # to the four contracts above on the same required merge surface.
       - name: Gate-policy budget witness contract (required merge surface)
         run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
+
+      # #13295: standalone semantic conformance corpus — oracle, mutation bank,
+      # and CLI command wiring. These tests span corpus authoring rules,
+      # derivation determinism, and all 15 behavioral mutations; they are the
+      # primary negative-control surface for the standalone install semantics
+      # (#10243/#11550) and must run on the required merge surface so a broken
+      # corpus vector or a regressed oracle cannot land undetected.
+      - name: Standalone semantic conformance corpus contract (required merge surface)
+        run: cargo test -p xtask --test standalone_vectors_cli --locked -- --nocapture
 
       # #7611: keep the JSON-RPC dependency-boundary probe on a required
       # merge surface so a restored Perl taxonomy dependency cannot merge
