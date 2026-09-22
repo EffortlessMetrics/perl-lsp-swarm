@@ -801,6 +801,36 @@ pub fn prod() -> bool { true }
     Ok(())
 }
 
+/// FC-PAREN-MACRO-OPEN-NO-SCOPE-SEMI: a gated parenthesized macro body
+/// (`cases!( … )`) scopes on parens, so a `;` body line must not end the item.
+#[test]
+fn paren_macro_body_is_excluded() -> TestResult {
+    let repo = TempRepo::new("paren-macro")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+#[cfg(test)]
+cases!(
+    some_setup;
+    let re = regex::Regex::new(r"x").unwrap();
+);
+pub fn prod() -> bool { true }
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "Regex::new inside a #[cfg(test)] cases!( … ) body must be excluded\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
 /// T8: a `test_cases![ … ]` macro body is item scope via brackets.
 #[test]
 fn bracket_macro_body_is_excluded() -> TestResult {

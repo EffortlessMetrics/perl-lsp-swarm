@@ -43,9 +43,11 @@
 //!   `open_no_scope`.
 //! * item depth counts `{`/`}` and `[`/`]` only — parens never open or close an
 //!   item scope, so multi-line signatures and `where` clauses cannot end it, and
-//!   `test_cases![ … ]` macro bodies are covered. (The shared `delim_delta` keeps
-//!   its paren counting for `LazyStaticScope`, whose lazy-init closers end with
-//!   `});`.)
+//!   `test_cases![ … ]` macro bodies are covered. The one exception is a gated
+//!   item that STARTS with a macro invocation (`cases!(`/): its scope counts
+//!   parens too, until it ends; every other item keeps the paren-ignoring
+//!   delta. (The shared `delim_delta` keeps its paren counting for
+//!   `LazyStaticScope`, whose lazy-init closers end with `});`.)
 //! * `plain #[cfg(test)]` and `#[cfg(all(test, …))]` gate identically: every
 //!   `cfg(all(test, …))` item is absent from production builds (the predicate
 //!   requires `test = true`), so the whole item is skipped to its end, while
@@ -76,6 +78,46 @@ fn item_delim_delta(code: &str) -> i32 {
         }
     }
     delta
+}
+
+/// Paren-inclusive item delta for macro-invocation items (`cases!( … )`):
+/// braces, brackets, AND parens. Used only while `macro_parens` is set, so
+/// function signatures keep the paren-ignoring behavior above.
+fn macro_item_delim_delta(code: &str) -> i32 {
+    let mut delta = 0;
+    for ch in code.chars() {
+        match ch {
+            '{' | '[' | '(' => delta += 1,
+            '}' | ']' | ')' => delta -= 1,
+            _ => {}
+        }
+    }
+    delta
+}
+
+/// Whether the attribute-stripped item start opens a macro invocation:
+/// an identifier, `!`, optional whitespace, then `(`. A start line that merely
+/// ends in `!` without `(` stays on the waiting path (rustfmt keeps the
+/// delimiter on the opener line).
+fn is_macro_invocation(item: &str) -> bool {
+    let bytes = item.trim_start().as_bytes();
+    let mut i = 0;
+    if i < bytes.len() && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+        i += 1;
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+    } else {
+        return false;
+    }
+    if bytes.get(i) != Some(&b'!') {
+        return false;
+    }
+    i += 1;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    bytes.get(i) == Some(&b'(')
 }
 
 /// Whether a `trim_start`ed attribute is a test gate: `#[cfg(test)]`, or
@@ -137,6 +179,10 @@ pub(super) struct InlineTestScope {
     /// The item started but no `{`/`[` stands open yet (bare signature, `where`
     /// clause, attribute fragment, brace on a later line).
     open_no_scope: bool,
+    /// The active item is a macro invocation (`cases!( … )`): depth counts
+    /// parens as well as braces/brackets. Set at item start, cleared at item
+    /// end; always false while waiting.
+    macro_parens: bool,
 }
 
 impl InlineTestScope {
@@ -158,11 +204,18 @@ impl InlineTestScope {
     /// Advance the tracker past the given (sanitized) line.
     pub(super) fn observe_line(&mut self, code: &str) {
         if self.active {
-            // `;` is ignored while active: only the item delta moves depth.
-            self.depth += item_delim_delta(code);
+            // `;` is ignored while active: only the item delta moves depth —
+            // paren-inclusive for macro-invocation items, brace/bracket-only
+            // otherwise.
+            self.depth += if self.macro_parens {
+                macro_item_delim_delta(code)
+            } else {
+                item_delim_delta(code)
+            };
             if self.depth <= 0 {
                 self.active = false;
                 self.depth = 0;
+                self.macro_parens = false;
             }
             return;
         }
@@ -181,26 +234,33 @@ impl InlineTestScope {
             return;
         }
         // First real code line for the gated item (same-line remainder after a
-        // gate, or a waiting line): resolve the item span.
-        let delta = item_delim_delta(code);
+        // gate, or a waiting line): resolve the item span. A macro-invocation
+        // opener (`cases!(`) scopes on parens too, so its delta is inclusive;
+        // every other item keeps the paren-ignoring delta.
+        let macro_item = is_macro_invocation(rest);
+        let delta = if macro_item { macro_item_delim_delta(code) } else { item_delim_delta(code) };
         let has_brace = code.contains('{') || code.contains('}');
         let has_semi = code.contains(';');
         if delta > 0 {
             self.active = true;
             self.depth = delta;
+            self.macro_parens = macro_item;
             self.gate_pending = false;
             self.open_no_scope = false;
         } else if delta == 0 && has_semi {
             // Braceless item (`use a::b;`, `struct X;`): complete on this line.
+            self.macro_parens = false;
             self.gate_pending = false;
             self.open_no_scope = false;
         } else if has_brace && delta <= 0 {
             // Balanced inline item (`fn f() {}`, `mod m {}`): complete.
+            self.macro_parens = false;
             self.gate_pending = false;
             self.open_no_scope = false;
         } else {
             // Bare signature, `mod` name, `where` clause, or attribute fragment:
             // the item started but no scope stands open yet — keep waiting.
+            self.macro_parens = false;
             self.gate_pending = false;
             self.open_no_scope = true;
         }
@@ -572,6 +632,34 @@ mod tests {
             "pub fn prod() {}",
         ]);
         assert_eq!(verdicts, [true, true, true, false]);
+    }
+
+    #[test]
+    fn paren_macro_body_with_semi_stays_test_only() {
+        // FC-PAREN-MACRO-OPEN-NO-SCOPE-SEMI: a gated `cases!(` item scopes on
+        // parens, so the depth-0 `;` body line must not complete it.
+        let verdicts = scan_sanitized(&[
+            "#[cfg(test)]",
+            "cases!(",
+            "    some_setup;",
+            "    let x = 1;",
+            ");",
+            "pub fn prod() {}",
+        ]);
+        assert_eq!(verdicts, [true, true, true, true, true, false]);
+
+        // Same-line gate form works too: the attribute is paren-balanced, so
+        // the opener's `(` still drives the delta.
+        let verdicts =
+            scan_sanitized(&["#[cfg(test)] cases!(", "    some_setup;", ");", "pub fn prod() {}"]);
+        assert_eq!(verdicts, [true, true, true, false]);
+
+        // A bang without `(` is not a macro invocation: existing waiting path.
+        assert!(!is_macro_invocation("my_macro!"));
+        assert!(is_macro_invocation("cases!("));
+        assert!(is_macro_invocation("cases! ("));
+        assert!(!is_macro_invocation("fn helper() {"));
+        assert!(!is_macro_invocation("foo(bar);"));
     }
 
     #[test]
