@@ -44,9 +44,9 @@ The extension downloads the matching server binary for your platform.
 
 Prefer a [release archive](https://github.com/EffortlessMetrics/perl-lsp/releases) until
 release closeout publishes the reviewed SHA-256 digest of `scripts/install.sh`. From a
-clone, run `bash install.sh --help`. In the meantime, generate the bootstrap values from
-the release tag you want to install, and check the digest they print before piping
-anything to `bash`:
+clone, run `bash install.sh --help`. Otherwise, decide whether to use the
+identity-bound root `install.sh` wrapper or verify `scripts/install.sh` manually;
+both routes start from the same `INSTALLER_REF` and `INSTALLER_SHA256` values:
 
 ```bash
 RELEASE_TAG=v0.17.0  # the release you want to install
@@ -64,24 +64,51 @@ printf 'ref: %s\ndigest: %s\n' "$INSTALLER_REF" "$INSTALLER_SHA256"
 ```
 
 `INSTALLER_REF` is the immutable publish commit of that tag, and `INSTALLER_SHA256` is
-the digest of `scripts/install.sh` — the canonical installer the bootstrap wrapper
-downloads and verifies — at that commit. These generated values are convenience-level:
+the digest of `scripts/install.sh` at that commit. Both values are convenience-level:
 they pin the executed installer to one exact ref and content, but they come from the
-same host the installer is fetched from, so they are not independent review. Feed them
-to the identity-bound remote bootstrap:
+same host the installer is fetched from, so they are not independent review.
 
-```bash
-curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
-  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
-    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
-```
+**The wrapper's identity-bound check only holds when the wrapper at `$INSTALLER_REF`
+performs the digest verification.** Current `main` does
+([`install.sh:84-126`](../../install.sh)); the `v0.17.0` wrapper does not — at
+v0.17.0 it fetches floating `master` and ignores both env vars. Pick the route
+that matches the wrapper at the chosen ref:
 
-This is the project's own installer ([`scripts/install.sh`](../../scripts/install.sh)).
-It downloads the matching GitHub release archive, verifies it against the
-release `SHA256SUMS` when that file is available, and installs `perllsp` and
-`perl-dap`. GitHub Releases remains the authority for what was actually
-published; the script is a convenience over that same archive, not a separate
-channel.
+1. **Use the root wrapper (when its verification is hardened).** Feed both env vars:
+
+   ```bash
+   curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+     | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+       PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
+   ```
+
+   The wrapper at the chosen ref must read `PERL_LSP_INSTALLER_REF` /
+   `PERL_LSP_INSTALLER_SHA256` and refuse to exec on any mismatch; verify by
+   reading the wrapper's source before relying on this.
+
+2. **Verify `scripts/install.sh` directly (works for any release, including v0.17.0).**
+   The wrapper is not involved — the digest is checked locally before exec, so a
+   non-hardening wrapper cannot reach the installer:
+
+   ```bash
+   TMP="$(mktemp)"
+   trap 'rm -f "$TMP"' EXIT
+   curl --proto '=https' --silent --show-error --output "$TMP" \
+     "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/scripts/install.sh"
+   ACTUAL_SHA="$($SHA_TOOL "$TMP" | cut -d' ' -f1)"
+   if [ "$ACTUAL_SHA" != "$INSTALLER_SHA256" ]; then
+     echo "scripts/install.sh digest mismatch: expected $INSTALLER_SHA256, got $ACTUAL_SHA" >&2
+     exit 1
+   fi
+   bash "$TMP"
+   ```
+
+The canonical installer at
+[`scripts/install.sh`](../../scripts/install.sh) downloads the matching GitHub
+release archive, verifies it against the release `SHA256SUMS` when that file is
+available, and installs `perllsp` and `perl-dap`. GitHub Releases remains the
+authority for what was actually published; the script is a convenience over that
+same archive, not a separate channel.
 
 ### Option 3: Windows
 
