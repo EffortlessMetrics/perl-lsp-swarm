@@ -310,16 +310,38 @@ jobs:
                   except (OSError, ValueError):
                       receipt = None
                   if isinstance(receipt, dict):
+                      # A passing run asserts no failure, so its receipt's class
+                      # and route are only the neutral `unknown`/`triage`
+                      # (#16287). Omitting both lines keeps a green summary from
+                      # advertising a failure remedy.
+                      show_failure_fields = receipt.get("result") != "pass"
                       lines += [
                           "",
                           "### Structured evidence",
                           "",
-                          f"- Failure class: `{receipt.get('failure_class') or 'n/a'}`",
+                      ]
+                      if show_failure_fields:
+                          lines.append(
+                              f"- Failure class: `{receipt.get('failure_class') or 'n/a'}`"
+                          )
+                      lines += [
                           f"- First failing test: `{receipt.get('first_failing_test') or 'n/a'}`",
                           f"- Panic location: `{receipt.get('panic_location') or 'n/a'}`",
                           f"- Repro: `{receipt.get('canonical_repro') or receipt.get('friendly_repro') or 'just ux-tests'}`",
-                          f"- Route: `{receipt.get('route') or 'triage'}`",
                       ]
+                      if show_failure_fields:
+                          lines.append(f"- Route: `{receipt.get('route') or 'triage'}`")
+                      # `failure_class` is read from the whole log; the per-test
+                      # discrimination that separates a spent budget from a
+                      # rejected observation travels in `human_summary` (#16103).
+                      # This surface printed the class alone, so a failure here
+                      # showed the guess without the reading beside it, while the
+                      # same receipt read correctly in ci.yml. Two printers of one
+                      # field is exactly how that divergence happens, which is why
+                      # `both_ux_summaries_print_the_receipts_human_summary` now
+                      # pins both.
+                      if receipt.get("human_summary"):
+                          lines.append(f"- Summary: {receipt.get('human_summary')}")
 
           rendered = "\n".join(lines) + "\n"
           summary.write_text(rendered, encoding="utf-8")

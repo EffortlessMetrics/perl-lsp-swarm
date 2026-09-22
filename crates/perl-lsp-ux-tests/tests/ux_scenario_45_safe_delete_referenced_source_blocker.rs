@@ -5,6 +5,9 @@
 //! referenced. The expected product behavior is no edit, a blocker reason, and
 //! a copyable provider explanation.
 
+// UX receipt tests intentionally write structured receipts to stderr for --nocapture logs.
+#![allow(clippy::print_stderr)]
+
 use anyhow::{Context, Result, anyhow};
 use perl_lsp_ux_tests::{
     ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available, missing_binary_skip,

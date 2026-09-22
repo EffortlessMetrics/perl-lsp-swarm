@@ -3966,6 +3966,38 @@ review_after = "2026-10-13"
 expires = "2026-12-31"
 removal_criteria = "Remove when #13238 lands the exact installed-name state that replaces this containment, or when the candidate gains its first production consumer (then re-scope the suppression to that consumer's seams and require activation evidence through it), or when ripr#1429 resolves activation tracing for modules with no production entry point. Narrow immediately if any seam unrelated to the containment predicates lands in this file."
 
+# -----------------------------------------------------------------------------
+# PR #13300 (#13295) introduces the standalone install semantic conformance
+# corpus harness — xtask/src/tasks/standalone_vectors/{mod,oracle,schema,
+# mutations}.rs plus the fixture corpus. ripr 0.10.0 reports 214 no_static_path
+# probes on the PR diff, every one in mod.rs: field_construction probes on the
+# corpus-path consts (CORPUS_DIR, GOLDEN_DIR, LIVE_REPO_SLUG) and on the CLI
+# dispatch plumbing of a module whose own doc comment declares it proof-only by
+# construction (an import/subprocess boundary control pins that it never
+# references production crates). The module's executable proof is the
+# required-merge-surface integration suite cargo test -p xtask --test
+# standalone_vectors_cli (whole-corpus check, idempotent second generation, the
+# 15-mutation bank all-caught, explain, import boundary), plus 19 inline oracle
+# unit tests in oracle.rs — which carries its own static test paths and
+# produces zero probes. ripr cannot statically connect the CLI-binary
+# integration test or const data to mod.rs's declarations: the same
+# ripr#1428/#1429 class as ripr-suppress-module-train-live-readonly-const,
+# ripr-suppress-git-ancestry-inline-test-plumbing, and the quality_baseline
+# entries.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-standalone-vectors-harness-entry"
+kind = "test_receipt_surface"
+paths = ["xtask/src/tasks/standalone_vectors/mod.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#13295"
+reason = "PR #13300 (#13295): the standalone install semantic conformance corpus harness lands its oracle, mutation bank, and CLI wiring in xtask/src/tasks/standalone_vectors/. ripr 0.10.0 reports 214 no_static_path probes, all in mod.rs — field_construction on corpus-path consts (CORPUS_DIR, GOLDEN_DIR, LIVE_REPO_SLUG) and on CLI dispatch plumbing. The module is proof-only by construction: the oracle_subtree_has_no_production_imports_or_subprocesses control forbids production-crate references and subprocess spawning, and the behavior is proven by the required-merge-surface suite cargo test -p xtask --test standalone_vectors_cli (check over all 22 vectors, idempotent regeneration, mutation-check catching all 15 registered mutations across 22 applications, explain, import boundary) plus 19 inline oracle unit tests in oracle.rs. The const-data and integration-harness shapes have no static test path ripr can trace (ripr#1428/#1429 class, same as ripr-suppress-module-train-live-readonly-const and ripr-suppress-git-ancestry-inline-test-plumbing). HONEST SCOPE NOTE: the matcher is path-scoped, so a future no_static_path seam in mod.rs is masked for this window; the executable seams of the harness stay gated by the required CLI suite, and oracle.rs/schema.rs/mutations.rs remain unsuppressed so their seams stay visible. Suppression is narrow (single harness file, one PR). Remove when ripr#1429 traces const-data references or ripr#1428 distinguishes integration-harness plumbing, or when targeted mutation is scheduled per #1289."
+created = "2026-09-17"
+review_after = "2026-10-17"
+expires = "2026-12-31"
+removal_criteria = "Remove when ripr#1429 traces const-data references or ripr#1428 stops flagging integration-harness plumbing as production seams, or narrow immediately if a future receipt reports an executable (non-declaration) no_static_path seam in mod.rs outside the CLI dispatch plumbing, or if any probe appears in oracle.rs, schema.rs, or mutations.rs."
+
 # Activation inventory generator (#9204, PR #14633): hosted RIPR on head
 # 09cb09d623 (merge tree d5827469, run 35005794864) reported 188 new
 # actionable gaps — 106 no_static_path + 82 reachable_unrevealed — in the
