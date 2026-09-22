@@ -61,6 +61,14 @@ just pr-fast
 The repository pins Rust channel `1.95.0` in `rust-toolchain.toml` and currently
 requires MSRV 1.95.
 
+### Windows shell for `just` recipes
+
+The `just` recipes are bash scripts. Run them from Git Bash (or another bash
+with `cygpath` on `PATH`); from PowerShell or `cmd.exe` they fail with
+``Could not find `cygpath` ``. Git for Windows installs both tools, but only
+`C:\Program Files\Git\cmd` is on `PATH` by default — also add
+`C:\Program Files\Git\bin` and `C:\Program Files\Git\usr\bin`.
+
 ### Windows symlink-privilege skips (#12567)
 
 Creating file symlinks on Windows requires `SeCreateSymbolicLinkPrivilege`,
