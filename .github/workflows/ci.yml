@@ -2110,6 +2110,29 @@ jobs:
       - name: Changelog fragment gate contract (required merge surface)
         run: cargo test -p xtask --bin xtask --locked -- --nocapture changelog changie
 
+      # #15040: same defect shape as #13484 directly above. PR #14513 added 12
+      # `ci_subject_materializer::tests` and 3 `file_policy::tests::preapproved`
+      # unit tests, but no workflow invoked them — `xtask` is a bin target so
+      # `cargo test --workspace --lib` does not build them, the only
+      # `--bin xtask` invocations are in `emacs-train-context-contract.yml`
+      # for unrelated modules, and `ci-gate-self-tests.yml` is path-gated to
+      # other paths. Without these steps a future revert of the
+      # `-c core.autocrlf=false -c merge.renormalize=false` git wrapper flags,
+      # a bump of `PREAPPROVED_SUBJECT_CONTRACT_VERSION` without retargeting
+      # the live workflow contract-version, or a relaxation of
+      # `validate_preapproved_subject_workflow` could land without the merge
+      # surface ever failing — the very failure mode #13484 added to keep
+      # `tasks::changelog::tests` honest. Scoped to the exact module paths
+      # rather than substring filters on purpose: only those modules carry
+      # the structural-validator regressions this claim covers, and broader
+      # filters would re-introduce the inventory-ratchet red that #13484
+      # was specifically avoiding.
+      - name: PR-subject materializer unit tests (required merge surface)
+        run: cargo test -p xtask --bin xtask --locked ci_subject_materializer::tests -- --nocapture
+
+      - name: File-policy preapproval unit tests (required merge surface)
+        run: cargo test -p xtask --bin xtask --locked file_policy::tests::preapproved -- --nocapture
+
       - name: Workflow policy CLI wiring (required merge surface)
         run: cargo test -p xtask --bin xtask --locked -- workflow_policy_lint
 
