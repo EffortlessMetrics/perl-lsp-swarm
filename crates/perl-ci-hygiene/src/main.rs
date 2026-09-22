@@ -193,48 +193,55 @@ fn is_excluded_test_path(path: &Path) -> bool {
 
 pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
     let contents = read_lines(path)?;
-    // Plain #[cfg(test)] is an unconditional test-scope boundary: any item guarded
-    // this way is test-only regardless of what follows, so treat the first occurrence
-    // as the boundary immediately (matches the original heuristic).
+    // The heuristic is "where does this file's inline `mod tests { … }` block
+    // begin?" — the line where production scope ends. Both plain
+    // `#[cfg(test)]` and `#[cfg(all(test, …))]` are matched, and *both* require
+    // a lookahead: the next non-blank, non-attribute line must be a `mod`
+    // declaration.
     //
-    // #[cfg(all(test, ...))] requires a lookahead: it must be followed (possibly after
-    // blank lines or other attributes) by a `mod` declaration to count as a boundary.
-    // This prevents a lone `#[cfg(all(test, not(target_arch = "wasm32")))] use …` near
-    // the top of a file (e.g. config/mod.rs:9) from falsely excluding the rest of the
-    // file from production CI checks.
+    // The lookahead prevents a `#[cfg(test)]` on a non-mod item (a single-line
+    // `use` import, a `type`, a `const`, a `thread_local!`, etc.) from falsely
+    // truncating the production scan. `crates/perl-lsp-rs/src/runtime/language/
+    // symbols.rs:12` is the live instance — a `#[cfg(test)] use` near the top
+    // of the file was hiding every production `Regex::new(...)` the ratchet
+    // was supposed to gate (#16389). The same rule was already in place for
+    // `#[cfg(all(test, …))]` to stop a `cfg(all(test, not(target_arch =
+    // "wasm32")))` `use` near `config/mod.rs:9` from doing the same thing; this
+    // change unifies the two paths.
     //
-    // #[cfg(any(test, feature = "…"))] is intentionally NOT matched because such items
-    // are compiled into production builds when the feature is active.
+    // `#[cfg(any(test, feature = "…"))]` is intentionally NOT matched because
+    // such items are compiled into production builds when the feature is active.
     let cfg_test_plain_re = Regex::new(r"^\s*#\[cfg\(test\)\]")?;
     let cfg_all_test_re = Regex::new(r"^\s*#\[cfg\(all\(test[,\)]")?;
     let attr_re = Regex::new(r"^\s*#\[")?;
     let mod_re = Regex::new(r"^\s*(?:pub\s+)?mod\s+")?;
     for (idx, line) in contents.iter().enumerate() {
-        if cfg_test_plain_re.is_match(line) {
-            return Ok(idx + 1);
+        if !cfg_test_plain_re.is_match(line) && !cfg_all_test_re.is_match(line) {
+            continue;
         }
-        if cfg_all_test_re.is_match(line) {
-            // Only treat #[cfg(all(test, ...))] as a boundary when the next
-            // non-blank, non-attribute line is a `mod` declaration.
-            let mut j = idx + 1;
-            loop {
-                if j >= contents.len() {
-                    break;
-                }
-                let next = &contents[j];
-                if next.trim().is_empty() {
-                    j += 1;
-                    continue;
-                }
-                if attr_re.is_match(next) {
-                    j += 1;
-                    continue;
-                }
-                if mod_re.is_match(next) {
-                    return Ok(idx + 1);
-                }
+        // The attribute counts as a boundary only when the next non-blank,
+        // non-attribute line opens a `mod` block. Intermediate attributes
+        // (`#[allow(…)]`, `#[cfg(…)]`, etc.) are skipped so `#[cfg(test)]
+        // #[allow(clippy::too_many_lines)] mod tests { … }` is still a
+        // boundary at the `#[cfg(test)]` line.
+        let mut j = idx + 1;
+        loop {
+            if j >= contents.len() {
                 break;
             }
+            let next = &contents[j];
+            if next.trim().is_empty() {
+                j += 1;
+                continue;
+            }
+            if attr_re.is_match(next) {
+                j += 1;
+                continue;
+            }
+            if mod_re.is_match(next) {
+                return Ok(idx + 1);
+            }
+            break;
         }
     }
     Ok(usize::MAX)
@@ -4143,11 +4150,12 @@ mod tests {
     }
 
     #[test]
-    fn cfg_test_line_number_plain_cfg_test_is_immediate_boundary() -> Result<()> {
-        // Plain #[cfg(test)] is an unconditional boundary: the lookahead-for-mod
-        // check applies only to #[cfg(all(test, ...))].  Verify that intermediate
-        // attributes between the cfg line and the `mod` block do not change the
-        // reported boundary line.
+    fn cfg_test_line_number_plain_cfg_test_with_attrs_then_mmod_is_boundary() -> Result<()> {
+        // The plain `#[cfg(test)]` boundary now goes through the same
+        // mod-lookahead as `#[cfg(all(test, …))]`. Intermediate attributes
+        // (`#[allow(…)]`, etc.) between the cfg line and the `mod` block are
+        // skipped, so the boundary is still the `#[cfg(test)]` line — not the
+        // `mod` line. Regression guard for the unified lookahead (#16389).
         let tmp = std::env::temp_dir().join("pch_test_attrs_between.rs");
         std::fs::write(
             &tmp,
@@ -4158,6 +4166,69 @@ mod tests {
         )?;
         // #[cfg(test)] is at line 3; that is the boundary, not the `mod` line.
         assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_on_use_is_not_boundary() -> Result<()> {
+        // A `#[cfg(test)]` on a non-mod item must NOT trigger the boundary
+        // heuristic — the next non-blank line is `use`, not `mod`. Without
+        // this guard the production scan would be truncated at the early
+        // test-only import and miss any later per-call `Regex::new(...)` the
+        // ratchet is supposed to gate (#16389).
+        let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test_use.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\nuse std::cell::Cell;\n\npub fn prod() {}\n")?;
+        // No `mod` follows the cfg attr → no boundary → usize::MAX.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_with_blank_lines_then_mmod_is_boundary() -> Result<()> {
+        // Blank lines between the `#[cfg(test)]` and the `mod` declaration
+        // must not break the lookahead (#16389 follow-up).
+        let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test_blanks.rs");
+        std::fs::write(&tmp, "fn prod() {}\n\n#[cfg(test)]\n\n\nmod tests { \n}\n")?;
+        // #[cfg(test)] is at line 3; the `mod` on line 6 confirms it.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_use_then_outer_cfg_test_mmod_is_boundary_at_the_mmod()
+    -> Result<()> {
+        // The first `#[cfg(test)] use …;` is not a boundary; the second
+        // `#[cfg(test)] mod tests { … }` *is*. The boundary is the line of
+        // the opening cfg attribute (#16389 follow-up: the unified lookahead
+        // must not skip a real test-module opener behind a non-mod
+        // predecessor).
+        let tmp = std::env::temp_dir().join("pch_test_use_then_mod.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(test)]\n\
+             use std::cell::Cell;\n\n\
+             #[cfg(test)]\n\
+             mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
+        // Second `#[cfg(test)]` is at line 6; the `mod` opener is at line 7.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 6);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_on_const_is_not_boundary() -> Result<()> {
+        // The non-mod item need not be a `use`; a `const`, `static`,
+        // `thread_local!`, etc. must not trigger truncation either
+        // (#16389 generalisation).
+        let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test_const.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\nconst SEED: u32 = 42;\n\npub fn prod() {}\n")?;
+        // No `mod` follows the cfg attr → no boundary → usize::MAX.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
         let _ = std::fs::remove_file(&tmp);
         Ok(())
     }

@@ -476,3 +476,128 @@ pub fn later_bad(pattern: &str) -> Regex {
     );
     Ok(())
 }
+
+/// A `#[cfg(test)]` on an item that does NOT open a test module (a `use`, a
+/// `type`, an inline function import) must not stop the production scan. Issue
+/// #16389: `first_cfg_test_line_number` returns the first `#[cfg(test)]` line
+/// regardless of what follows, so production code after a `#[cfg(test)] use …;`
+/// (e.g. `crates/perl-lsp-rs/src/runtime/language/symbols.rs:12`) is never
+/// scanned, and any per-call `Regex::new(...)` it carries escapes detection.
+///
+/// The negative shape is the one the issue calls out: an early test-only `use`
+/// followed by production symbol handlers, with a per-call `Regex::new(...)`
+/// inside one of those handlers. The ratchet must still see the production
+/// call. The scan keeps walking until it finds a `#[cfg(test)]` that opens a
+/// `mod tests { … }` block; only then does it stop.
+#[test]
+fn cfg_test_on_use_does_not_truncate_production_scan() -> TestResult {
+    let repo = TempRepo::new("cfg-test-use")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+
+// A `#[cfg(test)]` on a single-line `use` is NOT a test-module opener: the
+// production scan must continue past it.
+#[cfg(test)]
+use std::cell::Cell;
+
+pub fn safe() {}
+
+pub fn later_bad(pattern: &str) -> Regex {
+    Regex::new(pattern).unwrap()
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "a per-call Regex::new after a #[cfg(test)] use must still be counted\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("FAIL"), "output should mention FAIL\nstdout: {stdout}");
+    Ok(())
+}
+
+/// Same shape as `cfg_test_on_use_does_not_truncate_production_scan`, but the
+/// production call lives inside a `#[cfg(test)]` `mod tests { … }` block. The
+/// test module is a real test-only scope: the regex inside it must NOT be
+/// counted, and the gate must pass.
+#[test]
+fn cfg_test_use_then_test_mod_still_excludes_only_the_mod() -> TestResult {
+    let repo = TempRepo::new("cfg-test-use-then-mod")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+
+#[cfg(test)]
+use std::cell::Cell;
+
+pub fn safe() {}
+
+#[cfg(test)]
+mod tests {
+    use regex::Regex;
+    #[test]
+    fn t() {
+        let _ = Regex::new(r"x").unwrap();
+    }
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "Regex::new inside the #[cfg(test)] mod must be excluded, and the early #[cfg(test)] use must not mask production\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// The same first-attribute shape, but with whitespace between the attribute and
+/// the next item. `first_cfg_test_line_number` must skip blanks/attributes and
+/// still recognise that the `#[cfg(test)]` did not open a `mod` block, so it
+/// keeps walking.
+#[test]
+fn cfg_test_use_with_blank_lines_then_production_is_scanned() -> TestResult {
+    let repo = TempRepo::new("cfg-test-use-blanks")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+
+#[cfg(test)]
+use std::cell::Cell;
+
+
+
+pub fn later_bad(pattern: &str) -> Regex {
+    Regex::new(pattern).unwrap()
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "blank lines between #[cfg(test)] use and production code must not hide the production regex\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
