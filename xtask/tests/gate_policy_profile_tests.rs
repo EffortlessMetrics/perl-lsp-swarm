@@ -211,10 +211,7 @@ fn routed_integration_dap_test_helpers_gate_binds_all_helper_targets_in_pr_fast(
         gate.tier, "pr_fast",
         "unit_routed_full_dap_test_helpers must stay in pr_fast (#14458 sibling of unit_routed_full)"
     );
-    assert!(
-        gate.required,
-        "unit_routed_full_dap_test_helpers must stay PR-blocking once added"
-    );
+    assert!(gate.required, "unit_routed_full_dap_test_helpers must stay PR-blocking once added");
     let planning = gate
         .planning
         .as_ref()
