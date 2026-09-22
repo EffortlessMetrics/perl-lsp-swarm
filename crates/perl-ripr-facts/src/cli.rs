@@ -332,12 +332,10 @@ const MAX_TEMP_SIBLING_ATTEMPTS: usize = 16;
 /// itself is never touched, and a pre-existing scratch file that this
 /// invocation did not create is never removed.
 fn stage_temp_sibling(dest: &std::path::Path, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
-    use std::io::Write as _;
-
     let mut last_collision: Option<std::io::Error> = None;
     for _ in 0..MAX_TEMP_SIBLING_ATTEMPTS {
         let temp = temp_sibling_path(dest);
-        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
+        let file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 // The computed path already names a real file. This is the
@@ -351,9 +349,7 @@ fn stage_temp_sibling(dest: &std::path::Path, bytes: &[u8]) -> std::io::Result<s
             }
             Err(error) => return Err(error),
         };
-        file.write_all(bytes)?;
-        file.flush()?;
-        file.sync_all()?;
+        finish_staged_file(file, &temp, bytes)?;
         return Ok(temp);
     }
     Err(last_collision.unwrap_or_else(|| {
@@ -366,6 +362,36 @@ fn stage_temp_sibling(dest: &std::path::Path, bytes: &[u8]) -> std::io::Result<s
             ),
         )
     }))
+}
+
+/// Finish the staged write for a sibling this invocation exclusively created.
+///
+/// On any write, flush, or sync failure the owned scratch is best-effort
+/// removed before the original error is returned, so repeated staging
+/// failures do not accumulate partial scratch files that a later run must
+/// treat as strangers. Only call with a path this invocation created: a
+/// pre-existing file passed here is removed on failure.
+fn finish_staged_file(
+    file: std::fs::File,
+    temp: &std::path::Path,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let mut file = file;
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()
+    })();
+    if let Err(error) = result {
+        // Close before removing: deleting an open handle fails on Windows,
+        // which would leave the partial scratch behind on that platform.
+        drop(file);
+        let _ = std::fs::remove_file(temp);
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1256,6 +1282,36 @@ mod tests {
             err.kind(),
             std::io::ErrorKind::AlreadyExists,
             "a non-collision error must not be misclassified as `AlreadyExists`",
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finish_staged_file_removes_owned_scratch_on_write_failure() {
+        // A staging write that fails after exclusive creation must not leave
+        // a partial sibling behind: every failed attempt would otherwise burn
+        // a sequence slot and accumulate scratch that a later run must treat
+        // as a stranger. A read-only handle fails the write deterministically
+        // on every platform without fault injection.
+        let dir = "target/ripr-failed-stage-cleanup";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let owned_string = format!("{dir}/owned.tmp");
+        let owned = std::path::Path::new(&owned_string);
+        std::fs::write(owned, b"stale").unwrap();
+
+        let read_only = std::fs::File::open(owned).unwrap();
+        let err = finish_staged_file(read_only, owned, b"new bytes")
+            .expect_err("writing through a read-only handle must fail");
+        assert_ne!(
+            err.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "a failed staged write is not a collision to be retried",
+        );
+        assert!(
+            !owned.exists(),
+            "failed staging must remove the owned scratch instead of leaving a partial file",
         );
 
         let _ = std::fs::remove_dir_all(dir);
