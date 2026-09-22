@@ -509,6 +509,159 @@ class PredecessorTests(unittest.TestCase):
         self.assertEqual(report["findings"][0]["classification"], liveness.INFRA_NO_PROOF)
 
 
+class AwaitingApprovalTests(unittest.TestCase):
+    """The fork-PR approval hold.
+
+    ``waiting`` is the status GitHub gives a workflow run held for maintainer
+    approval on a fork pull request. Reporting it as ``infra-no-proof``
+    attributes a maintainer decision to the scheduler and degrades the signal
+    this reporter exists to provide (#16151). These tests pin the new
+    ``awaiting_approval`` classification against the cases that used to be
+    misclassified.
+    """
+
+    def test_a_waiting_run_past_the_floor_is_awaiting_approval_not_failure(self) -> None:
+        """The defect: this used to classify as ``infra-no-proof``/``failure``."""
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(
+                    200,
+                    status="waiting",
+                    created_at="2026-09-20T04:00:00Z",
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                    base_refs=["main"],
+                )
+            )
+        )
+        self.assertEqual(len(report["findings"]), 1)
+        finding = report["findings"][0]
+        self.assertEqual(finding["classification"], liveness.AWAITING_APPROVAL)
+        self.assertEqual(finding["conclusion"], "neutral")
+        self.assertIsNone(finding["predecessor_run_id"])
+        self.assertIn("fork-PR approval", finding["check_title"])
+
+    def test_a_waiting_run_inside_the_floor_is_silent(self) -> None:
+        """The floor still gates the advisory report, regardless of cause."""
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(
+                    200,
+                    status="waiting",
+                    created_at="2026-09-22T04:55:00Z",
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                    base_refs=["main"],
+                ),
+                as_of="2026-09-22T05:00:00Z",
+            )
+        )
+        self.assertEqual(report["findings"], [])
+
+    def test_a_waiting_run_does_not_consult_predecessors(self) -> None:
+        """The approval hold is a human gate, not concurrency contention.
+
+        A ``waiting`` run cannot be holding a slot for any other run, and no
+        run on the same pull request can be holding a slot for it. Looking up
+        a predecessor for it would only churn through ``same_concurrency_group``
+        on a classification that cannot use the answer, so the new branch
+        short-circuits before ``predecessor_for`` (#16151).
+        """
+        # Even when a same-PR sibling has jobs, the waiting run is reported as
+        # awaiting approval, not as serialised behind that sibling.
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(
+                    200,
+                    status="waiting",
+                    created_at="2026-09-20T04:00:00Z",
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                    base_refs=["main"],
+                ),
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                    base_refs=["main"],
+                ),
+            )
+        )
+        findings = {f["run_id"]: f for f in report["findings"]}
+        self.assertEqual(findings[200]["classification"], liveness.AWAITING_APPROVAL)
+        self.assertIsNone(findings[200]["predecessor_run_id"])
+
+    def test_pending_and_queued_are_unaffected_by_the_approval_branch(self) -> None:
+        """The new branch is keyed on status, not on UNSTARTED_STATUSES membership.
+
+        A ``pending`` run past the floor still classifies as ``infra-no-proof``
+        (the measured case on PR #16083); a ``queued`` run past the floor
+        still falls through to predecessor lookup.
+        """
+        pending = liveness.classify_snapshot(
+            snapshot(run(200, status="pending", created_at="2026-09-20T04:00:00Z", pulls=[42]))
+        )
+        self.assertEqual(pending["findings"][0]["classification"], liveness.INFRA_NO_PROOF)
+        self.assertEqual(pending["findings"][0]["conclusion"], "failure")
+
+        queued_with_predecessor = liveness.classify_snapshot(
+            snapshot(
+                run(200, status="queued", created_at="2026-09-20T04:00:00Z", pulls=[42]),
+                run(
+                    100,
+                    status="in_progress",
+                    created_at="2026-09-20T03:30:00Z",
+                    job_count=4,
+                    pulls=[42],
+                ),
+            )
+        )
+        self.assertEqual(
+            queued_with_predecessor["findings"][0]["classification"],
+            liveness.SERIALISED,
+        )
+
+    def test_the_awaiting_approval_summary_names_the_human_remedy(self) -> None:
+        """The summary must name the remedy so the reader knows it's actionable."""
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(
+                    200,
+                    status="waiting",
+                    created_at="2026-09-20T04:00:00Z",
+                    head_branch="patch-1",
+                    head_repository="alice/perl-lsp-swarm",
+                    pulls=[],
+                    base_refs=["main"],
+                )
+            )
+        )
+        finding = report["findings"][0]
+        summary = finding["check_summary"]
+        # The summary names the human remedy and tells the reader it is not
+        # an infrastructure problem, instead of pinning the misclassification
+        # we are replacing.
+        self.assertIn("fork", summary.lower())
+        self.assertIn("maintainer", summary.lower())
+        self.assertNotEqual(finding["classification"], liveness.INFRA_NO_PROOF)
+        self.assertEqual(finding["conclusion"], "neutral")
+
+    def test_awaiting_approval_is_in_the_reportable_set_with_neutral_conclusion(self) -> None:
+        """Sanity-check the constant surface, matching the SafetyTests contract."""
+        self.assertIn(liveness.AWAITING_APPROVAL, liveness.REPORTABLE)
+        self.assertEqual(liveness.CONCLUSIONS[liveness.AWAITING_APPROVAL], "neutral")
+        # `waiting` must remain in UNSTARTED_STATUSES so the snapshot step
+        # still reads job counts for approval-held runs.
+        self.assertIn("waiting", liveness.UNSTARTED_STATUSES)
+
+
 class ResolvedPullsTests(unittest.TestCase):
     def test_a_failed_read_is_unreadable_not_empty(self) -> None:
         self.assertIsNone(liveness.resolved_pulls_from_api(1, "[]"))
