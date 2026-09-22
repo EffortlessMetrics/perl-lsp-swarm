@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 use crate::{display_path, production_source_files_for_ci_checks, read_lines, read_usize_file};
 
 use self::inline_test_scope::InlineTestScope;
-use self::lazy_scope::{LazyStaticScope, code_only};
+use self::lazy_scope::{LazyStaticScope, LineSanitizer};
 
 mod inline_test_scope;
 mod lazy_scope;
@@ -55,14 +55,17 @@ pub(crate) fn check_regex_static(repo_root: &Path) -> Result<i32> {
 
         let mut lazy_scope = LazyStaticScope::default();
         let mut inline_tests = InlineTestScope::default();
+        let mut sanitizer = LineSanitizer::default();
 
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
 
-            // Match, count, and track scope over code-only text — string literals,
-            // char literals, and trailing comments are stripped so their content
-            // can neither trip a false match nor corrupt delimiter tracking.
-            let code = code_only(line);
+            // Match, count, and track scope over sanitized text — string
+            // literals, char literals, raw strings, block comments, and trailing
+            // comments are stripped so their content can neither trip a false
+            // match nor corrupt delimiter tracking. The SAME sanitized text feeds
+            // both scope trackers so multi-line lexical state stays consistent.
+            let code = sanitizer.sanitize(line);
 
             if inline_tests.is_test_line(&code) {
                 inline_tests.observe_line(&code);
