@@ -448,6 +448,416 @@ pub fn bad(pattern: &str) -> Regex {
     Ok(())
 }
 
+/// A per-call regex AFTER an early test-only item must be counted: the old
+/// whole-file truncation at the first `#[cfg(test)]` hid it, while per-item
+/// classification scans production code below the test-only item again.
+#[test]
+fn detects_per_call_regex_after_early_test_only_item() -> TestResult {
+    let repo = TempRepo::new("early-test-item")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+#[cfg(test)] use std::cell::Cell;
+pub fn matches(pat: &str, hay: &str) -> bool {
+    let re = Regex::new(pat).unwrap();
+    re.is_match(hay)
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "per-call Regex::new below an early test-only item should fail\nstdout: {}",
+        stdout_of(&out)
+    );
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("FAIL"), "output should mention FAIL\nstdout: {stdout}");
+    assert!(
+        stdout.contains("lib.rs:5"),
+        "output should point at the offending line\nstdout: {stdout}"
+    );
+    Ok(())
+}
+
+/// Production regexes BELOW a complete `#[cfg(test)] mod tests { … }` block are
+/// still counted: only the module body is excluded, not the rest of the file.
+#[test]
+fn detects_production_regex_below_test_module() -> TestResult {
+    let repo = TempRepo::new("below-test-module")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+pub fn safe() {}
+
+#[cfg(test)]
+mod tests {
+    use regex::Regex;
+    #[test]
+    fn t() {
+        let _ = Regex::new(r"x").unwrap();
+    }
+}
+
+use regex::Regex;
+pub fn bad(pat: &str, hay: &str) -> bool {
+    Regex::new(pat).unwrap().is_match(hay)
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "per-call Regex::new below a closed test module should fail\nstdout: {}",
+        stdout_of(&out)
+    );
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("FAIL"), "output should mention FAIL\nstdout: {stdout}");
+    assert!(
+        stdout.contains("count (1)"),
+        "exactly the one production violation should be counted\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("lib.rs:15"),
+        "output should point at the offending line\nstdout: {stdout}"
+    );
+    Ok(())
+}
+
+/// Multiple interleaved test-only items (the symbols.rs shape: test-only `use`,
+/// enum, `thread_local!`, guard struct plus `impl Drop`) must not hide the
+/// production regexes between them.
+#[test]
+fn detects_production_regexes_between_interleaved_test_items() -> TestResult {
+    let repo = TempRepo::new("interleaved-test-items")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+
+#[cfg(test)]
+use std::cell::Cell;
+
+pub fn first(pat: &str, hay: &str) -> bool {
+    Regex::new(pat).unwrap().is_match(hay)
+}
+
+#[cfg(test)]
+enum TestOnly { A }
+
+pub fn second(pat: &str, hay: &str) -> bool {
+    Regex::new(pat).unwrap().is_match(hay)
+}
+
+#[cfg(test)]
+thread_local! {
+    static SEEN: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn third(pat: &str, hay: &str) -> bool {
+    Regex::new(pat).unwrap().is_match(hay)
+}
+
+#[cfg(test)]
+struct Guard;
+
+#[cfg(test)]
+impl Drop for Guard {
+    fn drop(&mut self) {}
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "production regexes between test-only items should fail\nstdout: {}",
+        stdout_of(&out)
+    );
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("FAIL"), "output should mention FAIL\nstdout: {stdout}");
+    assert!(
+        stdout.contains("count (3)"),
+        "all three production violations should be counted\nstdout: {stdout}"
+    );
+    Ok(())
+}
+
+/// T0: a `#[cfg(all(test, …))]` fn item spans to its end — the body is absent
+/// from production builds, so its regex must not count.
+#[test]
+fn cfg_all_test_fn_body_is_excluded() -> TestResult {
+    let repo = TempRepo::new("cfg-all-fn")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+pub fn prod() -> bool { true }
+#[cfg(all(test, unix))] fn helper() {
+    let _ = regex::Regex::new(r"x").unwrap();
+}
+pub fn clean() -> bool { true }
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "Regex::new inside #[cfg(all(test, unix))] fn must be excluded\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// T1: a `mod tests` whose opening brace sits on the next line still gates the
+/// whole module body.
+#[test]
+fn cfg_test_mod_brace_on_next_line_is_excluded() -> TestResult {
+    let repo = TempRepo::new("brace-next-line")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+#[cfg(test)]
+mod tests
+{
+    use regex::Regex;
+    fn t() { let _ = Regex::new(r"x").unwrap(); }
+}
+pub fn prod() -> bool { true }
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "Regex::new inside next-brace #[cfg(test)] mod must be excluded\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// T2: a block comment between the gate and the item is trivia, not the item.
+#[test]
+fn block_comment_between_gate_and_item_is_excluded() -> TestResult {
+    let repo = TempRepo::new("block-comment-gate")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+#[cfg(test)]
+/* test helper */
+fn helper() { let _ = regex::Regex::new(r"x").unwrap(); }
+pub fn prod() -> bool { true }
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "Regex::new below a block comment under #[cfg(test)] must be excluded\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// T3/T5: `#[cfg(all(testing))]` is NOT a test gate — the module is reachable
+/// (e.g. `--cfg testing`) so its regex must still count.
+#[test]
+fn cfg_all_testing_mod_is_still_counted() -> TestResult {
+    let repo = TempRepo::new("cfg-all-testing")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+#[cfg(all(testing))] mod optional {
+    pub fn helper(pat: &str) -> Regex {
+        Regex::new(pat).unwrap()
+    }
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "Regex::new under #[cfg(all(testing))] must count (not a test gate)\nstdout: {}",
+        stdout_of(&out)
+    );
+    Ok(())
+}
+
+/// T6: a multi-line attribute (`#[derive(` … `)]`) after the gate keeps the gate
+/// open until the real item arrives.
+#[test]
+fn multiline_attribute_after_gate_is_excluded() -> TestResult {
+    let repo = TempRepo::new("multiline-attr")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+#[cfg(test)]
+#[derive(
+    Debug,
+)]
+fn helper() { let _ = regex::Regex::new(r"x").unwrap(); }
+pub fn prod() -> bool { true }
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "Regex::new below a multi-line attribute under #[cfg(test)] must be excluded\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// T7: a `}` inside a multi-line raw string must not close the test module early.
+#[test]
+fn brace_in_multiline_raw_string_does_not_close_test_mod() -> TestResult {
+    let repo = TempRepo::new("raw-string-brace")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r##"
+#[cfg(test)] mod tests {
+    let s = r#"
+}
+"#;
+    fn t() { let _ = regex::Regex::new(r"x").unwrap(); }
+}
+pub fn prod() -> bool { true }
+"##,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a raw-string brace must not end the test module early\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// T7 twin: a `}` inside a multi-line block comment must not close the test
+/// module early either.
+#[test]
+fn brace_in_multiline_block_comment_does_not_close_test_mod() -> TestResult {
+    let repo = TempRepo::new("block-comment-brace")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+#[cfg(test)] mod tests {
+    /*
+    }
+    */
+    fn t() { let _ = regex::Regex::new(r"x").unwrap(); }
+}
+pub fn prod() -> bool { true }
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a block-comment brace must not end the test module early\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// FC-PAREN-MACRO-OPEN-NO-SCOPE-SEMI: a gated parenthesized macro body
+/// (`cases!( … )`) scopes on parens, so a `;` body line must not end the item.
+#[test]
+fn paren_macro_body_is_excluded() -> TestResult {
+    let repo = TempRepo::new("paren-macro")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+#[cfg(test)]
+cases!(
+    some_setup;
+    let re = regex::Regex::new(r"x").unwrap();
+);
+pub fn prod() -> bool { true }
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "Regex::new inside a #[cfg(test)] cases!( … ) body must be excluded\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// T8: a `test_cases![ … ]` macro body is item scope via brackets.
+#[test]
+fn bracket_macro_body_is_excluded() -> TestResult {
+    let repo = TempRepo::new("bracket-macro")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+#[cfg(test)] test_cases![
+    regex::Regex::new(r"x")
+];
+pub fn prod() -> bool { true }
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "Regex::new inside a #[cfg(test)] test_cases![ … ] body must be excluded\nstdout: {}\nstderr: {}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
 /// A doc comment that merely mentions the lazy-init opener must not activate the
 /// scope and thereby mask a later per-call regex.
 #[test]
