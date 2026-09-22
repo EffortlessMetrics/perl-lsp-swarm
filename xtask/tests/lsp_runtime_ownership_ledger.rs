@@ -343,6 +343,13 @@ const MODULES: &[ModuleRow] = &[
         "#7386"
     ),
     module_row!(
+        "v0_18_text_sync_envelope",
+        PerlApplication,
+        "perl-lsp-rs DocumentStore + adapter",
+        "retain the selected v0.18 full-document UTF-16 envelope above runtime until the atomic-incremental cutover",
+        "#8129"
+    ),
+    module_row!(
         "window",
         ApplicationPolicy,
         "PerlLspAdapter over generic client",
@@ -369,13 +376,6 @@ const MODULES: &[ModuleRow] = &[
         "perl-lsp-rs WorkspaceServices",
         "retain workspace progress semantics above runtime",
         "#8385"
-    ),
-    module_row!(
-        "v0_18_text_sync_envelope",
-        PerlApplication,
-        "perl-lsp-rs DocumentStore + adapter",
-        "retain the selected v0.18 full-document UTF-16 envelope above runtime until the atomic-incremental cutover",
-        "#8129"
     ),
 ];
 
