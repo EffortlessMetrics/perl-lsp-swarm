@@ -496,10 +496,10 @@ fn scenario_from_test_name(test: &str) -> Option<String> {
 /// paragraph above denies, and would take `update_baseline` away from a real
 /// baseline failure that happened to run beside a slow probe.
 ///
-/// The ambiguous cases therefore keep whatever the whole-log scan already gave
-/// them. That scan is unreliable, which is the defect behind #16205, but this
-/// claim is only that proven budget evidence should beat it. Widening the claim
-/// to cases the evidence cannot settle would be guessing with more steps.
+/// The ambiguous cases therefore keep a substring scan, but the scan's input
+/// shrinks to the failing tests' own evidence (#16205). Proven budget evidence
+/// beats it one level up, and `Unknown` or an unresolved co-failure still defers
+/// to it rather than guessing with more steps.
 fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureClass {
     let every_failure_is_an_expired_budget = !failing_tests.is_empty()
         && failing_tests.iter().all(|test| test.mode == UxFailureMode::BudgetExceeded);
@@ -507,8 +507,35 @@ fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureCla
     if every_failure_is_an_expired_budget {
         UxFailureClass::Timeout
     } else {
-        infer_failure_class(&classification_input(raw))
+        infer_failure_class(&fallback_classification_input(failing_tests, raw))
     }
+}
+
+/// The text the whole-run fallback scan is allowed to read (#16205).
+///
+/// The receipt's `failure_class` is one flat field, so when no failing test carried
+/// evidence strong enough to decide it, something must. The scan stays, but prose
+/// the gate printed *around* the failure — a cache step, a restored-snapshot note,
+/// a baseline path in a startup line — is not the failing test's evidence. On job
+/// 106081131409 one such incidental `baseline` classified a run whose only failure
+/// was completion starvation as `BaselineDrift` and routed it to `update_baseline`,
+/// the remedy the repository forbids for a candidate that returned nothing.
+/// Scoping the scan to the failing blocks keeps each test's wording as the only
+/// vocabulary that can decide the run. When cargo printed no stdout blocks there
+/// is nothing to scope to, so the filtered whole log remains all the evidence
+/// there is.
+fn fallback_classification_input(failing_tests: &[UxFailingTest], raw: &str) -> String {
+    let names: Vec<&str> = failing_tests.iter().map(|test| test.name.as_str()).collect();
+    let bodies: Vec<&str> = failure_block_spans(raw)
+        .iter()
+        .filter(|(name, _, _)| names.contains(&name.as_str()))
+        .filter_map(|(_, body_start, body_end)| raw.get(*body_start..*body_end))
+        .map(block_body)
+        .collect();
+    if bodies.is_empty() {
+        return classification_input(raw);
+    }
+    classification_input(&bodies.join("\n"))
 }
 
 fn infer_failure_class(raw: &str) -> UxFailureClass {
@@ -1223,6 +1250,37 @@ test result: FAILED. 0 passed; 2 failed";
         ensure!(
             receipt.merge_action != "triage_timeout",
             "and must not take update_baseline away from a real baseline failure"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_starvation_failure_is_not_routed_to_update_the_baseline() -> Result<()> {
+        // #16205 rows two and three, measured on the 2026-09-20 UX runs: a
+        // completion-quality failure whose block says the receiver returned no
+        // candidates, beside gate prose that mentions a baseline. #16244 taught the
+        // run class to trust a proven expired budget; the fallback for every other
+        // shape still scanned the whole log, so the same stray token routed this
+        // shape to `update_baseline` — the one remedy the repository forbids for a
+        // candidate that returned nothing.
+        let log = "Restored baseline snapshot cache in 0.4s\n\
+failures:\n\n\
+---- ux_scenario_52_test_inline_completion_quality_receipt::scenario_52_test_inline_completion_quality_receipt stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_scenario_52_test_inline_completion_quality_receipt.rs:97:5:\n\
+assertion failed: $self receiver inline completion returned candidates; got []\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+
+        let receipt = classify(log, None);
+        ensure!(
+            !matches!(receipt.failure_class, UxFailureClass::BaselineDrift),
+            "a token from outside the failing block must not classify it as BaselineDrift, got {:?}",
+            receipt.failure_class
+        );
+        ensure!(
+            receipt.merge_action != "update_baseline",
+            "a starvation failure must not be told to widen a baseline it does not have, got {}",
+            receipt.merge_action
         );
         Ok(())
     }
