@@ -142,8 +142,9 @@ fn skip_char_literal(chars: &[char], quote: usize) -> Option<usize> {
 }
 
 /// Net `()`/`{}` delimiter delta for a (already [`code_only`]-sanitized) line
-/// (opens minus closes).
-fn delim_delta(code: &str) -> i32 {
+/// (opens minus closes). Shared with `inline_test_scope`, which tracks test-item
+/// spans with the same depth accounting.
+pub(super) fn delim_delta(code: &str) -> i32 {
     let mut delta = 0;
     for ch in code.chars() {
         match ch {

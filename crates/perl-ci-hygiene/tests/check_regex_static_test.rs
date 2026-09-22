@@ -448,6 +448,152 @@ pub fn bad(pattern: &str) -> Regex {
     Ok(())
 }
 
+/// A per-call regex AFTER an early test-only item must be counted: the old
+/// whole-file truncation at the first `#[cfg(test)]` hid it, while per-item
+/// classification scans production code below the test-only item again.
+#[test]
+fn detects_per_call_regex_after_early_test_only_item() -> TestResult {
+    let repo = TempRepo::new("early-test-item")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+#[cfg(test)] use std::cell::Cell;
+pub fn matches(pat: &str, hay: &str) -> bool {
+    let re = Regex::new(pat).unwrap();
+    re.is_match(hay)
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "per-call Regex::new below an early test-only item should fail\nstdout: {}",
+        stdout_of(&out)
+    );
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("FAIL"), "output should mention FAIL\nstdout: {stdout}");
+    assert!(
+        stdout.contains("lib.rs:5"),
+        "output should point at the offending line\nstdout: {stdout}"
+    );
+    Ok(())
+}
+
+/// Production regexes BELOW a complete `#[cfg(test)] mod tests { … }` block are
+/// still counted: only the module body is excluded, not the rest of the file.
+#[test]
+fn detects_production_regex_below_test_module() -> TestResult {
+    let repo = TempRepo::new("below-test-module")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+pub fn safe() {}
+
+#[cfg(test)]
+mod tests {
+    use regex::Regex;
+    #[test]
+    fn t() {
+        let _ = Regex::new(r"x").unwrap();
+    }
+}
+
+use regex::Regex;
+pub fn bad(pat: &str, hay: &str) -> bool {
+    Regex::new(pat).unwrap().is_match(hay)
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "per-call Regex::new below a closed test module should fail\nstdout: {}",
+        stdout_of(&out)
+    );
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("FAIL"), "output should mention FAIL\nstdout: {stdout}");
+    assert!(
+        stdout.contains("count (1)"),
+        "exactly the one production violation should be counted\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("lib.rs:15"),
+        "output should point at the offending line\nstdout: {stdout}"
+    );
+    Ok(())
+}
+
+/// Multiple interleaved test-only items (the symbols.rs shape: test-only `use`,
+/// enum, `thread_local!`, guard struct plus `impl Drop`) must not hide the
+/// production regexes between them.
+#[test]
+fn detects_production_regexes_between_interleaved_test_items() -> TestResult {
+    let repo = TempRepo::new("interleaved-test-items")?;
+    repo.write_baseline(0)?;
+    repo.write_crate_src(
+        "my-crate",
+        "lib.rs",
+        r#"
+use regex::Regex;
+
+#[cfg(test)]
+use std::cell::Cell;
+
+pub fn first(pat: &str, hay: &str) -> bool {
+    Regex::new(pat).unwrap().is_match(hay)
+}
+
+#[cfg(test)]
+enum TestOnly { A }
+
+pub fn second(pat: &str, hay: &str) -> bool {
+    Regex::new(pat).unwrap().is_match(hay)
+}
+
+#[cfg(test)]
+thread_local! {
+    static SEEN: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn third(pat: &str, hay: &str) -> bool {
+    Regex::new(pat).unwrap().is_match(hay)
+}
+
+#[cfg(test)]
+struct Guard;
+
+#[cfg(test)]
+impl Drop for Guard {
+    fn drop(&mut self) {}
+}
+"#,
+    )?;
+
+    let out = run_check_regex_static(repo.path())?;
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "production regexes between test-only items should fail\nstdout: {}",
+        stdout_of(&out)
+    );
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("FAIL"), "output should mention FAIL\nstdout: {stdout}");
+    assert!(
+        stdout.contains("count (3)"),
+        "all three production violations should be counted\nstdout: {stdout}"
+    );
+    Ok(())
+}
+
 /// A doc comment that merely mentions the lazy-init opener must not activate the
 /// scope and thereby mask a later per-call regex.
 #[test]
