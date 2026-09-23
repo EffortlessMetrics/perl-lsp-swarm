@@ -184,8 +184,8 @@ class Domain6FragmentTest(unittest.TestCase):
         validator = Draft202012Validator(schema)
         errors = list(validator.iter_errors(self.doc))
         self.assertEqual(errors, [])
-        # Rejecting fixtures: reviewed row without its required fields,
-        # and a row carrying an unknown property.
+        # Rejecting fixtures: a reviewed row stripped of EACH required
+        # reviewed-only field, and a row carrying an unknown property.
         import copy
 
         reviewed = next(
@@ -193,19 +193,102 @@ class Domain6FragmentTest(unittest.TestCase):
             for u in self.doc["work_units"]
             if u["disposition_state"] == "reviewed"
         )
-        missing = copy.deepcopy(self.doc)
-        bad_unit = next(
-            u
-            for u in missing["work_units"]
-            if u["work_unit_id"] == reviewed["work_unit_id"]
-        )
-        del bad_unit["release_domains"]
-        self.assertTrue(list(validator.iter_errors(missing)))
+        reviewed_only = [
+            "release_domains",
+            "primary_disposition",
+            "reachable_installed_effect",
+            "public_claim_refs",
+            "release_note_disposition",
+            "migration_or_upgrade_refs",
+            "api_schema_package_effects",
+            "proof_owner_refs",
+            "known_limitations",
+            "open_pr_relationships",
+            "controlling_issues",
+            "invalidators",
+            "platforms_and_targets",
+            "artifact_or_route_effects",
+            "editor_manifest_or_protocol_effects",
+            "installed_evidence_stage",
+        ]
+        for key in reviewed_only:
+            self.assertIn(
+                key, reviewed, f"reviewed fixture lacks {key} to strip"
+            )
+            missing = copy.deepcopy(self.doc)
+            bad_unit = next(
+                u
+                for u in missing["work_units"]
+                if u["work_unit_id"] == reviewed["work_unit_id"]
+            )
+            del bad_unit[key]
+            self.assertTrue(
+                list(validator.iter_errors(missing)),
+                f"schema accepts reviewed row without {key}",
+            )
         unknown = copy.deepcopy(self.doc)
         unknown["work_units"][0] = dict(
             unknown["work_units"][0], bogus_field_xyz=1
         )
         self.assertTrue(list(validator.iter_errors(unknown)))
+
+    def test_grouping_identity_rules(self) -> None:
+        from scripts.generate_domain6_fragment import (
+            BODY_REF,
+            group_unit_id,
+            split_unit_id,
+        )
+
+        # Trailing pair keys the PR; lone refs key the issue; bare
+        # subjects are NOREF.
+        self.assertEqual(
+            group_unit_id("fix(release): smoke (#16368) (#16371)"),
+            "PR#16371",
+        )
+        self.assertEqual(
+            group_unit_id("feat(vscode): retain candidates (#10083)"),
+            "ISS#10083",
+        )
+        self.assertEqual(
+            group_unit_id("perf(vscode): source census from ownership"),
+            "NOREF",
+        )
+        # (#0000) is a placeholder, never an identity: the sentinel
+        # splits per commit.
+        record = {
+            "sha": "e7c992321fdcd39af50b8d6b764366fa58cbc2cf",
+            "subject": "release: prepare v0.15.1 hardening (#0000)",
+            "body": "",
+        }
+        provisional = group_unit_id(record["subject"])
+        self.assertEqual(provisional, "ISS#0000")
+        self.assertEqual(
+            split_unit_id(record, provisional), "COMMIT#e7c99232"
+        )
+        other = dict(
+            record,
+            sha="fecc9de71eebb87b6a34de12261e6378ab4bb530",
+        )
+        self.assertEqual(split_unit_id(other, provisional), "COMMIT#fecc9de7")
+        self.assertNotEqual(
+            split_unit_id(record, provisional),
+            split_unit_id(other, provisional),
+        )
+        # Placeholder trailing a real pair does not steal identity.
+        self.assertEqual(
+            group_unit_id("sync: cut bdfde90d7 (#1234) (#0000)"), "ISS#1234"
+        )
+        # Non-placeholder identities pass through untouched.
+        self.assertEqual(split_unit_id(record, "PR#16371"), "PR#16371")
+        self.assertEqual(split_unit_id(record, "NOREF"), "NOREF")
+        # Body mentions are candidates for notes, never regroups.
+        self.assertEqual(
+            sorted(set(BODY_REF.findall("Merge the bounded #4346 fix"))),
+            ["4346"],
+        )
+        self.assertFalse(
+            BODY_REF.search("no references here"),
+        )
 
     def test_merge_terminal_arithmetic(self) -> None:
         enum = self.doc["merge_enumeration"]

@@ -586,15 +586,27 @@ def resolution_files(sha: str, first_parent: str) -> list[str]:
 
 
 def tree_blob(commit: str, path: str) -> str | None:
+    # Absence is proven by ls-tree (empty output), never by a failed
+    # rev-parse: any git error below raises instead of masquerading as a
+    # deletion. Error direction stays fail-closed toward unit creation.
+    listing = git("ls-tree", commit, "--", path)
+    if not [line for line in listing.splitlines() if line.strip()]:
+        return None
     proc = subprocess.run(
         ["git", "rev-parse", f"{commit}:{path}"],
         cwd=REPO_ROOT,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         check=False,
     )
     if proc.returncode != 0:
-        return None
+        try:
+            err = proc.stderr.decode("utf-8", errors="strict").strip()
+        except UnicodeDecodeError as exc:
+            raise FragmentError(
+                f"git rev-parse produced undecodable stderr: {exc}"
+            ) from exc
+        raise FragmentError(f"git rev-parse {commit}:{path} failed: {err}")
     try:
         return proc.stdout.decode("utf-8", errors="strict").strip()
     except UnicodeDecodeError as exc:
