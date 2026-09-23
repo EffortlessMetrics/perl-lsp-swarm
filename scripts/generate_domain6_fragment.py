@@ -16,7 +16,6 @@ import json
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +33,9 @@ OBSERVED_HEAD = "102974155487bc955e01d5d5222053c4c449136c"
 GROUPING_METHOD_VERSION = (
     "subject-trailing-pair.v1 "
     "+ transplant-PR-key correction "
-    "+ merge_commit_sha verification for reviewed rows"
+    "+ merge_commit_sha verification for reviewed rows "
+    "+ placeholder-0000 per-commit split "
+    "+ NOREF body-mention evidence"
 )
 
 PREFILTER = [
@@ -52,11 +53,22 @@ PREFILTER = [
 ]
 
 EXPECTED_NON_MERGE = 682
-EXPECTED_UNITS = 671
+EXPECTED_UNITS = 672
 EXPECTED_SEEDS = 5
+# Unsimplified range merge population (START_SHA..OBSERVED_HEAD,
+# --full-history): 2 kept + 1 related-record + 62 content-free +
+# 11 blob-covered + 18 created = 94. Pinned: the range is fixed, the
+# traversal is unsimplified, so drift fails closed.
+EXPECTED_MERGES = 94
+EXPECTED_CONTENT_FREE = 62
+EXPECTED_BLOB_COVERED = 11
+EXPECTED_MERGE_CREATED = 18
 
 PAREN_REF = re.compile(r"\(#(\d+)\)")
 BODY_REF = re.compile(r"#(\d+)")
+# Placeholder issue numbers carry no work-unit identity. (#0000) in a
+# subject never groups: each such commit becomes its own per-commit unit.
+PLACEHOLDER_ISSUE_NUMBERS = {"0000"}
 QUEUE_PREFIX = "queue: merge #"
 SYNC_SUBJECT = re.compile(r"^(sync:|release: history-preserving|chore\(sync\))")
 
@@ -94,10 +106,11 @@ KEEP_MERGES = {
     },
 }
 
-# First-parent-visible re-merge of the fb68dd94 lineage. Proven (in #16418)
-# to contribute zero uncovered prefilter content: it differs from fb68dd94
-# in exactly one prefilter file whose content comes from in-range non-merge
-# commit 96b2ad3ca0ff2008c781ebeb7f4bb90061f66fa8. Recorded as a related
+# First-parent-visible re-merge of the fb68dd94 lineage. Mechanically verified
+# (verify_related_remerge) to contribute zero uncovered prefilter content:
+# it differs from fb68dd94 in exactly one prefilter file
+# (scripts/ci/validate_gate_lane_mapping.py) whose blob sits in the mapped
+# range records 3dc8ade1 (#4976) and b86ba02a (#5426). Recorded as a related
 # merge on MERGE#fb68dd94, never as a separate unit.
 RELATED_MERGE_984 = "984ff2c897c930e9cbeea331b65487730bda96bd"
 
@@ -412,12 +425,22 @@ def git(*args: str) -> str:
         cwd=REPO_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         check=False,
     )
     if proc.returncode != 0:
-        raise FragmentError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
-    return proc.stdout
+        try:
+            err = proc.stderr.decode("utf-8", errors="strict").strip()
+        except UnicodeDecodeError as exc:
+            raise FragmentError(
+                f"git {' '.join(args)} failed with undecodable stderr: {exc}"
+            ) from exc
+        raise FragmentError(f"git {' '.join(args)} failed: {err}")
+    try:
+        return proc.stdout.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise FragmentError(
+            f"git {' '.join(args)} produced undecodable output: {exc}"
+        ) from exc
 
 
 def resolve_range() -> None:
@@ -454,9 +477,18 @@ def list_non_merges() -> list[dict]:
 
 
 def list_merges() -> list[dict]:
+    # Complete range enumeration: every merge in START_SHA..OBSERVED_HEAD
+    # touching the prefilter, WITHOUT history simplification. A simplified
+    # `git log -- paths` hides 72 in-range merges (proven: simplified yields
+    # 22, unsimplified yields 94), several carrying merge-unique prefilter
+    # content. `--full-history` disables simplification; the range bounds
+    # keep the pre-range history (262-94=168 older merges) out of scope by
+    # the denominator's own definition. Deterministic: no traversal order
+    # leaks into the artifact (rows sort by sha; only counts are stored).
     raw = git(
         "log",
         "--merges",
+        "--full-history",
         "--format=%H%x1f%s%x1e",
         f"{START_SHA}..{OBSERVED_HEAD}",
         "--",
@@ -484,10 +516,29 @@ def commit_files(sha: str, *, merge: bool = False) -> list[str]:
 def group_unit_id(subject: str) -> str:
     refs = PAREN_REF.findall(subject)
     if len(refs) >= 2:
+        if refs[-1] in PLACEHOLDER_ISSUE_NUMBERS:
+            refs = [r for r in refs if r not in PLACEHOLDER_ISSUE_NUMBERS]
+            if not refs:
+                return "ISS#0000"
+            if len(refs) >= 2:
+                return f"PR#{refs[-1]}"
+            return f"ISS#{refs[0]}"
         return f"PR#{refs[-1]}"
     if len(refs) == 1:
         return f"ISS#{refs[0]}"
     return "NOREF"
+
+
+def split_unit_id(record: dict, provisional: str) -> str:
+    """Replace the placeholder sentinel with a per-commit identity.
+
+    (#0000) carries no issue identity, so two commits sharing that marker
+    must never become one unit from title text. Each becomes its own
+    COMMIT#<short-sha> unit.
+    """
+    if provisional == "ISS#0000":
+        return f"COMMIT#{record['sha'][:8]}"
+    return provisional
 
 
 def file_family(path: str) -> str | None:
@@ -516,68 +567,218 @@ def route_fragment(files: list[str]) -> tuple[str, str]:
     return "cross_domain_unassigned", "mixed_or_mechanics_paths"
 
 
-def second_parent_predates_start(sha: str) -> bool:
+def merge_parents(sha: str) -> tuple[str, str]:
     parents = git("rev-parse", f"{sha}^1", f"{sha}^2").split()
     if len(parents) != 2:
         raise FragmentError(f"merge {sha} does not have two parents")
+    return parents[0], parents[1]
+
+
+def resolution_files(sha: str, first_parent: str) -> list[str]:
+    """Prefilter paths where the merge tree differs from its first parent.
+
+    Empty means the merge contributes zero prefilter content beyond its
+    first-parent line (TREESAME): whatever that line carries is either
+    mapped (in-range records) or out of scope (pre-range), never new.
+    """
+    raw = git("diff", "--name-only", first_parent, sha, "--", *PREFILTER)
+    return sorted({line for line in raw.splitlines() if line.strip()})
+
+
+def tree_blob(commit: str, path: str) -> str | None:
     proc = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", parents[1], START_SHA],
+        ["git", "rev-parse", f"{commit}:{path}"],
         cwd=REPO_ROOT,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    return proc.returncode == 0
+    if proc.returncode != 0:
+        return None
+    try:
+        return proc.stdout.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise FragmentError(
+            f"undecodable blob id for {commit}:{path}: {exc}"
+        ) from exc
+
+
+def range_holders(blob_id: str, path: str) -> list[str]:
+    """In-range non-merge commits whose tree holds this exact blob at path."""
+    raw = git(
+        "log", "--format=%H", f"--find-object={blob_id}",
+        f"{START_SHA}..{OBSERVED_HEAD}", "--", path,
+    )
+    return sorted({line for line in raw.splitlines() if line.strip()})
+
+
+def subject_shape(subject: str) -> str:
+    if subject.startswith(QUEUE_PREFIX):
+        return "queue-shaped"
+    if SYNC_SUBJECT.match(subject):
+        return "sync-shaped"
+    return "other-shaped"
+
+
+def verify_related_remerge(non_merge_shas: set[str]) -> dict:
+    """Mechanically prove RELATED_MERGE_984 carries no uncovered content.
+
+    Proven facts (not prose): against fb68dd94 it differs in exactly one
+    prefilter file, scripts/ci/validate_gate_lane_mapping.py, whose blob
+    sits in the mapped range records 3dc8ade1 (#4976) and b86ba02a
+    (#5426) — the re-merge pulls the #4976 line content, which the range
+    already maps. All other differences are outside the prefilter and out
+    of Domain-6 scope.
+    """
+    base = "fb68dd94a33424bf5007e686306b07c6bb2096e6"
+    target = "scripts/ci/validate_gate_lane_mapping.py"
+    holders = {
+        "3dc8ade1c8bd1bda6bec61331ccfd5c82cacc66e",
+        "b86ba02a1840199d17d621ab36049ba8294e3a69",
+    }
+    raw = git("diff", "--name-only", base, RELATED_MERGE_984, "--", *PREFILTER)
+    files = sorted({line for line in raw.splitlines() if line.strip()})
+    if files != [target]:
+        raise FragmentError(
+            f"related re-merge delta drifted, expected [{target}]: {files}"
+        )
+    if not holders <= non_merge_shas:
+        raise FragmentError(
+            "related re-merge holders are not all mapped range records"
+        )
+    blob_id = tree_blob(RELATED_MERGE_984, target)
+    actual = {
+        h
+        for h in range_holders(blob_id, target)
+        if h in non_merge_shas
+    }
+    if actual != holders:
+        raise FragmentError(
+            f"related re-merge blob holders drifted: {sorted(actual)}"
+        )
+    return {
+        "sha": RELATED_MERGE_984,
+        "subject": "merge: reconcile release lineage into swarm main (#4976)",
+        "reason": "related-record",
+        "detail": (
+            "first-parent-visible re-merge of fb68dd94; prefilter delta "
+            "against fb68dd94 is exactly "
+            "scripts/ci/validate_gate_lane_mapping.py whose blob sits in "
+            "mapped range records 3dc8ade1 (#4976) and b86ba02a (#5426); "
+            "recorded as related, never as a separate unit"
+        ),
+    }
 
 
 def classify_merges(
     merges: list[dict], non_merge_shas: set[str]
-) -> tuple[list[dict], dict]:
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """Sort every enumerated merge into kept / related / excluded / created.
+
+    - kept: explicit KEEP_MERGES units (file-verified later).
+    - related: RELATED_MERGE_984 (mechanically verified, recorded only).
+    - excluded content-free: merge tree equals first parent on prefilter
+      paths (zero new content by construction).
+    - excluded blob-covered: every resolution path's merge blob already
+      sits in a mapped range record's tree (covering commits named).
+    - created: resolution carries blobs no range record holds (pre-range
+      versions or merge deletions) -> new merge units, never silent.
+    Anything else fails closed.
+    """
     kept = []
-    stats = {"queue_excluded": 0, "lineage_excluded": 0}
+    related_rows: list[dict] = []
+    excluded: list[dict] = []
+    created: list[dict] = []
+    stats = {"content_free": 0, "blob_covered": 0}
+    seen = set()
     for merge in merges:
         sha, subject = merge["sha"], merge["subject"]
+        if sha in seen:
+            raise FragmentError(f"merge {sha} enumerated twice")
+        seen.add(sha)
         if sha in KEEP_MERGES:
             kept.append(merge)
             continue
-        if subject.startswith(QUEUE_PREFIX):
-            only = git("log", "--format=%H", f"{sha}^2", "--not", f"{sha}^1")
-            only_shas = [line for line in only.splitlines() if line.strip()]
-            if len(only_shas) != 1 or only_shas[0] not in non_merge_shas:
-                raise FragmentError(
-                    f"queue merge {sha} content is not a single covered "
-                    f"non-merge record: {only_shas}"
-                )
-            stats["queue_excluded"] += 1
+        if sha == RELATED_MERGE_984:
+            related_rows.append(verify_related_remerge(non_merge_shas))
             continue
-        if SYNC_SUBJECT.match(subject):
-            if not second_parent_predates_start(sha):
-                raise FragmentError(
-                    f"sync-lineage merge {sha} has in-range second-parent "
-                    "content and needs a unit"
-                )
-            stats["lineage_excluded"] += 1
+        first_parent, _second_parent = merge_parents(sha)
+        files = resolution_files(sha, first_parent)
+        shape = subject_shape(subject)
+        if not files:
+            excluded.append(
+                {
+                    "sha": sha,
+                    "subject": subject,
+                    "reason": "content-free",
+                    "detail": (
+                        f"{shape}; merge tree equals first parent on all "
+                        "prefilter paths, zero new content"
+                    ),
+                }
+            )
+            stats["content_free"] += 1
             continue
-        raise FragmentError(
-            f"merge {sha} ({subject}) is neither kept, queue-covered, "
-            "nor pre-range lineage"
+        uncovered: list[str] = []
+        covered_notes: list[str] = []
+        for path in files:
+            blob_id = tree_blob(sha, path)
+            if blob_id is None:
+                uncovered.append(f"{path} (deleted-in-merge)")
+                continue
+            holders = [
+                h for h in range_holders(blob_id, path)
+                if h in non_merge_shas
+            ]
+            if holders:
+                covered_notes.append(f"{path}->{sorted(holders)[0][:8]}")
+            else:
+                uncovered.append(f"{path} (blob-predates-range)")
+        if not uncovered:
+            excluded.append(
+                {
+                    "sha": sha,
+                    "subject": subject,
+                    "reason": "blob-covered",
+                    "detail": (
+                        f"{shape}; every resolution blob sits in a mapped "
+                        "range record: " + "; ".join(covered_notes)
+                    ),
+                }
+            )
+            stats["blob_covered"] += 1
+            continue
+        created.append(
+            {
+                "sha": sha,
+                "subject": subject,
+                "files": files,
+                "uncovered": uncovered,
+                "shape": shape,
+            }
         )
     if {m["sha"] for m in kept} != set(KEEP_MERGES):
         raise FragmentError("kept merge set drifted from KEEP_MERGES")
-    return kept, stats
+    if len(related_rows) != 1:
+        raise FragmentError("related re-merge record missing")
+    return kept, related_rows, excluded, created
 
 
 def build_work_units(records: list[dict]) -> tuple[list[dict], list[dict]]:
     by_unit: dict[str, list[dict]] = {}
     for record in records:
-        unit_id = group_unit_id(record["subject"])
+        unit_id = split_unit_id(record, group_unit_id(record["subject"]))
         by_unit.setdefault(unit_id, []).append(record)
     if len(by_unit) != EXPECTED_UNITS:
         raise FragmentError(
             f"work-unit identity count {len(by_unit)} != {EXPECTED_UNITS}"
         )
-    if set(by_unit) != set(group_unit_id(r["subject"]) for r in records):
+    if set(by_unit) != {
+        split_unit_id(r, group_unit_id(r["subject"])) for r in records
+    }:
         raise FragmentError("unit identity mismatch")
+    if any(u == "ISS#0000" or u == "PR#0000" for u in by_unit):
+        raise FragmentError("placeholder number acts as work-unit identity")
     # Draft labeled transplant landings ISS#N; merge_commit_sha equality
     # proves PR-keying. The grouping rule already yields PR#N; record why.
     for sha, correct in TRANSPLANT_CORRECTIONS.items():
@@ -637,7 +838,13 @@ def build_work_units(records: list[dict]) -> tuple[list[dict], list[dict]]:
             continue
         fragment, basis = route_fragment(files)
         subjects = sorted({r["subject"] for r in members})
-        if len(subjects) == 1:
+        if unit_id.startswith("COMMIT#"):
+            evidence = (
+                "subject carries placeholder (#0000) with no issue identity; "
+                "per-commit unit split from the former ISS#0000 group, "
+                "disposition owns verification"
+            )
+        elif len(subjects) == 1:
             refs = PAREN_REF.findall(subjects[0])
             if len(refs) >= 2:
                 evidence = (
@@ -671,6 +878,24 @@ def build_work_units(records: list[dict]) -> tuple[list[dict], list[dict]]:
                 "per-commit subjects retained below; title similarity "
                 "alone never groups, disposition verifies each member"
             )
+            if unit_id == "NOREF":
+                body_notes = []
+                for r in members:
+                    refs_in_body = sorted(
+                        set(BODY_REF.findall(r["body"]))
+                    )
+                    if refs_in_body:
+                        body_notes.append(
+                            f"{r['sha'][:8]}->"
+                            + ",".join(f"#{n}" for n in refs_in_body)
+                        )
+                if body_notes:
+                    evidence += (
+                        "; body mentions candidate "
+                        + "; ".join(body_notes)
+                        + " (unverified relationship, not a regroup; "
+                        "commits stay NOREF)"
+                    )
         row = {
             "work_unit_id": unit_id,
             "commits": commits,
@@ -700,7 +925,9 @@ def build_work_units(records: list[dict]) -> tuple[list[dict], list[dict]]:
     return units, noref_watchlist
 
 
-def build_merge_units(kept: list[dict]) -> list[dict]:
+def build_merge_units(
+    kept: list[dict], created: list[dict], unit_ids: set[str]
+) -> list[dict]:
     rows = []
     for merge in sorted(kept, key=lambda m: m["sha"]):
         spec = KEEP_MERGES[merge["sha"]]
@@ -710,15 +937,18 @@ def build_merge_units(kept: list[dict]) -> list[dict]:
                 f"merge {merge['sha']} effective prefilter file list drifted"
             )
         evidence = (
-            f"in-range merge kept from full-history enumeration; {merge['subject']}"
+            "merge kept from unsimplified range enumeration; "
+            f"{merge['subject']}"
         )
         if merge["sha"] == "fb68dd94a33424bf5007e686306b07c6bb2096e6":
             evidence += (
                 "; first-parent-visible re-merge "
                 f"{RELATED_MERGE_984} contributes zero uncovered prefilter "
-                "content (single-file delta resolves to in-range non-merge "
-                "96b2ad3ca0ff2008c781ebeb7f4bb90061f66fa8) and is recorded "
-                "as related, never as a separate unit"
+                "content (single-file delta "
+                "scripts/ci/validate_gate_lane_mapping.py resolves to "
+                "mapped range records 3dc8ade1 (#4976) and b86ba02a "
+                "(#5426), mechanically verified) and is recorded as "
+                "related, never as a separate unit"
             )
         rows.append(
             {
@@ -730,6 +960,36 @@ def build_merge_units(kept: list[dict]) -> list[dict]:
                 "disposition_state": "not_proven",
                 "paths_or_components": files,
             }
+        )
+    for item in sorted(created, key=lambda m: m["sha"]):
+        unit_id = f"MERGE#{item['sha'][:8]}"
+        if unit_id in unit_ids:
+            raise FragmentError(f"created merge unit id collides: {unit_id}")
+        unit_ids.add(unit_id)
+        fragment, basis = route_fragment(item["files"])
+        evidence = (
+            f"unsimplified-range merge ({item['shape']}) whose resolution "
+            f"carries prefilter state no range record holds: "
+            + "; ".join(item["uncovered"])
+            + "; subject: "
+            + item["subject"]
+            + "; disposition owns verification"
+        )
+        rows.append(
+            {
+                "work_unit_id": unit_id,
+                "commits": [item["sha"]],
+                "grouping_evidence": evidence,
+                "primary_fragment": fragment,
+                "primary_fragment_basis": basis,
+                "disposition_state": "not_proven",
+                "paths_or_components": item["files"],
+            }
+        )
+    if len(created) != EXPECTED_MERGE_CREATED:
+        raise FragmentError(
+            f"created merge unit count {len(created)} != "
+            f"{EXPECTED_MERGE_CREATED}"
         )
     return rows
 
@@ -746,9 +1006,35 @@ def build_document() -> dict:
     records = list_non_merges()
     non_merge_shas = {r["sha"] for r in records}
     merges = list_merges()
-    kept, merge_stats = classify_merges(merges, non_merge_shas)
+    if len(merges) != EXPECTED_MERGES:
+        raise FragmentError(
+            f"enumerated merge count {len(merges)} != {EXPECTED_MERGES}"
+        )
+    kept, related_rows, excluded, created = classify_merges(
+        merges, non_merge_shas
+    )
+    if len(excluded) != EXPECTED_CONTENT_FREE + EXPECTED_BLOB_COVERED:
+        raise FragmentError(
+            f"excluded merge count {len(excluded)} != "
+            f"{EXPECTED_CONTENT_FREE + EXPECTED_BLOB_COVERED}"
+        )
+    if (
+        len(kept)
+        + len(related_rows)
+        + len(excluded)
+        + len(created)
+        != len(merges)
+    ):
+        raise FragmentError(
+            "merge terminal arithmetic broken: "
+            f"{len(kept)} kept + {len(related_rows)} related + "
+            f"{len(excluded)} excluded + {len(created)} created != "
+            f"{len(merges)} enumerated"
+        )
     units, noref_watchlist = build_work_units(records)
-    merge_units = build_merge_units(kept)
+    merge_units = build_merge_units(
+        kept, created, {u["work_unit_id"] for u in units}
+    )
     reviewed = [u for u in units if u["disposition_state"] == "reviewed"]
     if len(reviewed) != EXPECTED_SEEDS:
         raise FragmentError(f"reviewed seed count {len(reviewed)} != 5")
@@ -762,6 +1048,28 @@ def build_document() -> dict:
         raise FragmentError("a non-merge commit is covered twice")
     if set(covered) != non_merge_shas:
         raise FragmentError("non-merge coverage is not exactly-once")
+    merge_commits = sorted(m["commits"][0] for m in merge_units)
+    if len(merge_commits) != len(set(merge_commits)):
+        raise FragmentError("a merge commit is covered twice")
+    if set(merge_commits) & non_merge_shas:
+        raise FragmentError("a merge commit collides with a range record")
+    if set(merge_commits) != {m["sha"] for m in kept} | {
+        c["sha"] for c in created
+    }:
+        raise FragmentError("merge unit commit set drifted")
+    excluded_rows = sorted(
+        related_rows + excluded, key=lambda r: r["sha"]
+    )
+    if {r["sha"] for r in excluded_rows} & (
+        set(merge_commits) | non_merge_shas
+    ):
+        raise FragmentError("an excluded merge collides with mapped commits")
+    if (
+        len(merge_commits)
+        + len(excluded_rows)
+        != len(merges)
+    ):
+        raise FragmentError("merge identity coverage is not exactly-once")
     total_rows = len(records) + len(merge_units) + len(noref_watchlist)
     payload = {
         "schema": SCHEMA,
@@ -784,28 +1092,50 @@ def build_document() -> dict:
         "not_proven_unit_count": len(not_proven),
         "work_units": units,
         "merge_units": merge_units,
+        "excluded_merges": excluded_rows,
         "noref_watchlist": noref_watchlist,
         "corrections": [
             "transplant landings 681af39d/f4e8a961/decd96de are PR-keyed "
             "(PR#15577/PR#15582/PR#15586): each commit equals the PR "
             "merge_commit_sha, so the draft ISS#N labels were corrected",
             f"first-parent-visible re-merge {RELATED_MERGE_984} is "
-            "related to MERGE#fb68dd94, not a separate unit (zero "
-            "uncovered prefilter content proven in #16418)",
+            "related to MERGE#fb68dd94, not a separate unit (prefilter "
+            "delta against fb68dd94 is exactly "
+            "scripts/ci/validate_gate_lane_mapping.py resolving to mapped "
+            "range records 3dc8ade1 (#4976) and b86ba02a (#5426), "
+            "mechanically verified)",
             "subject-NOREF commits are 5; body-aware true-NOREF rows are "
-            "3 (6a4e0ea6 mentions #14678, ca11589a mentions #4346; both "
-            "kept NOREF with candidate notes, never silently regrouped)",
-            "total_rows 687 = 682 unit-mapping rows + 2 merge rows + 3 "
+            "3; the NOREF unit grouping_evidence names the complete "
+            "per-commit body mentions "
+            "(6a4e0ea6->#14501,#14549,#14581,#14678,#14680,#14686,#7866; "
+            "ca11589a->#4346) as unverified candidates, and both commits "
+            "stay NOREF, never regrouped",
+            "former ISS#0000 group split: (#0000) carries no identity, so "
+            "e7c99232 becomes COMMIT#e7c99232 and fecc9de7 becomes "
+            "COMMIT#fecc9de7, each with per-commit placeholder evidence",
+            "merge enumeration corrected from the simplified 22 (13 "
+            "queue + 7 lineage + 2 kept): default history simplification "
+            "hides 72 in-range merges, so the field is renamed to "
+            "range_merges_touching_prefilter and the unsimplified range "
+            "population is 94 = 2 kept + 1 related-record + 62 "
+            "content-free + 11 blob-covered + 18 created merge units; "
+            "the 18 created units carry sync-cut resolutions whose blobs "
+            "predate the range or whose deletions exist in no record",
+            "total_rows 705 = 682 unit-mapping rows + 20 merge rows + 3 "
             "true-NOREF watchlist rows; the 3 watchlist rows intentionally "
-            "duplicate commits already mapped once (unique commits 684)",
+            "duplicate commits already mapped once (unique commits 702)",
         ],
         "merge_enumeration": {
-            "full_history_merges_touching_prefilter": len(merges),
-            "queue_merges_excluded_covered": merge_stats["queue_excluded"],
-            "sync_lineage_merges_excluded_pre_range": merge_stats[
-                "lineage_excluded"
-            ],
-            "merge_units_kept": len(merge_units),
+            "range_merges_touching_prefilter": len(merges),
+            "merge_units_kept": len(kept),
+            "related_remerges_recorded": len(related_rows),
+            "content_free_merges_excluded": sum(
+                1 for r in excluded_rows if r["reason"] == "content-free"
+            ),
+            "blob_covered_merges_excluded": sum(
+                1 for r in excluded_rows if r["reason"] == "blob-covered"
+            ),
+            "merge_units_created": len(created),
         },
         "consumers": {
             "parent_ledger": "#16399",
@@ -825,11 +1155,14 @@ def build_document() -> dict:
     return payload
 
 
-def render(payload: dict) -> str:
+def render_bytes(payload: dict) -> bytes:
+    # One canonical byte sequence: LF newlines, UTF-8, trailing newline.
+    # Callers must compare and write these exact bytes; decoded text
+    # equality is not byte identity on Windows (CRLF translation).
     return (
         json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False)
         + "\n"
-    )
+    ).encode("utf-8")
 
 
 def main(argv: list[str]) -> int:
@@ -840,8 +1173,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="regenerate to a temp file and fail when the checked-in "
-        "artifact differs (deterministic-render proof)",
+        help="regenerate and fail when the checked-in artifact bytes "
+        "differ (deterministic-render proof)",
     )
     args = parser.parse_args(argv)
     try:
@@ -849,19 +1182,24 @@ def main(argv: list[str]) -> int:
     except FragmentError as exc:
         print(f"domain6 fragment failed: {exc}", file=sys.stderr)
         return 1
-    text = render(payload)
+    data = render_bytes(payload)
+    if b"\r" in data:
+        print("domain6 fragment failed: rendered bytes contain CR", file=sys.stderr)
+        return 1
     if args.check:
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".json", delete=False, encoding="utf-8"
-        ) as handle:
-            handle.write(text)
-            tmp = handle.name
         try:
-            expected = args.out.read_text(encoding="utf-8")
+            expected = args.out.read_bytes()
         except OSError as exc:
             print(f"domain6 fragment --check failed: {exc}", file=sys.stderr)
             return 1
-        if text != expected:
+        if b"\r\n" in expected:
+            print(
+                "domain6 fragment --check failed: checked-in artifact "
+                "contains CRLF; canonical bytes are LF-only",
+                file=sys.stderr,
+            )
+            return 2
+        if data != expected:
             print(
                 "domain6 fragment drifted: regeneration is not "
                 "byte-identical to the checked-in artifact",
@@ -869,9 +1207,12 @@ def main(argv: list[str]) -> int:
             )
             return 2
         print(f"domain6 fragment deterministic render matches {args.out}")
-        Path(tmp).unlink()
         return 0
-    args.out.write_text(text, encoding="utf-8")
+    try:
+        args.out.write_bytes(data)
+    except OSError as exc:
+        print(f"domain6 fragment write failed: {exc}", file=sys.stderr)
+        return 1
     print(f"domain6 fragment wrote {args.out}")
     print(f"digest: {payload['coverage']['digest']}")
     return 0
