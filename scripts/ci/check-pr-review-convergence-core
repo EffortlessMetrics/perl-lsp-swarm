@@ -164,12 +164,19 @@
 #
 # stdout: a short human-readable summary line + a machine-readable JSON
 # object on the final line (for callers that want structured output):
-#   {"pr":N,"headRefOid":"...","converged":true|false,
+#   {"schema_version":"convergence_core.v1",
+#    "pr":N,"headRefOid":"...","converged":true|false,
 #    "pending_reviewers":[...],"independent_review_pending":true|false,
 #    "current_change_requests":[...],"stale_reviews":[...],"stale_bot_reviews":[...],
 #    "unresolved_active":N,"unresolved_outdated":N,"unresolved_total":N,
 #    "resolved_threads":N,"resolved_without_disposition":N,
 #    ...}
+#
+# `schema_version` is the FIRST field so consumers can short-circuit on it
+# before reading the rest of the object. A bump from "convergence_core.v1" to
+# a higher version (or any change to the field set) is a breaking change and
+# must be flagged loudly in scripts/reviews/state and every other consumer.
+# See issue #15278.
 # ("stale_reviews" is human reviewers only — BLOCKING. "stale_bot_reviews" is
 # auto-review-app reviewers whose latest review predates HEAD — ADVISORY,
 # never blocking; see the bot-exclusion note above. "unresolved_active" and
@@ -825,7 +832,14 @@ else
     echo "FAIL PR #$PR: review convergence NOT achieved at $HEAD_REF_OID — see BLOCK lines above"
 fi
 
+# Schema-versioned output envelope. Consumers (notably scripts/reviews/state
+# and downstream campaign tools) read this field first so a future shape bump
+# is observable at the consumer side instead of failing silently on an
+# unexpected record key. See issue #15278.
+: "${CONVERGENCE_CORE_SCHEMA_VERSION:=convergence_core.v1}"
+
 jq -n \
+    --arg schemaVersion "$CONVERGENCE_CORE_SCHEMA_VERSION" \
     --argjson pr "$PR" \
     --arg head "$HEAD_REF_OID" \
     --argjson converged "$CONVERGED" \
@@ -854,7 +868,7 @@ jq -n \
     --argjson dispositionsMissingMarker "$DISPOSITIONS_MISSING_MARKER_COUNT" \
     --argjson followupsWithoutIssue "$FOLLOWUPS_WITHOUT_ISSUE_COUNT" \
     --argjson unreachableFixCommits "$UNREACHABLE_FIX_COMMITS_COUNT" \
-    '{pr: $pr, headRefOid: $head, converged: $converged, pending_reviewers: $pending, independent_review_pending: $independentReviewPending, current_change_requests: $currentChangeRequests, stale_reviews: $stale, stale_bot_reviews: $staleBot, current_human_reviews: $currentHumanReviews, dismissed_human_reviews: $dismissedHumanReviews, human_review_count: $humanReviewCount, current_human_review_count: $currentHumanReviewCount, dismissed_human_review_count: $dismissedHumanReviewCount, review_decision: $reviewDecision, is_draft: $isDraft, unresolved_active: $unresolvedActive, unresolved_outdated: $unresolvedOutdated, unresolved_total: $unresolvedTotal, resolved_threads: $resolved, resolved_without_disposition: $resolvedWithoutDisposition, review_protocol_enforce: $enforce, review_runs_in_flight: $reviewRunsInFlight, verification_runs_in_flight: $verificationRunsInFlight, deep_review_receipt_head_match: $deepReviewReceiptHeadMatch, verification_receipt_head_match: $verificationReceiptHeadMatch, dispositions_missing_marker: $dispositionsMissingMarker, followups_without_issue: $followupsWithoutIssue, unreachable_fix_commits: $unreachableFixCommits}'
+    '{schema_version: $schemaVersion, pr: $pr, headRefOid: $head, converged: $converged, pending_reviewers: $pending, independent_review_pending: $independentReviewPending, current_change_requests: $currentChangeRequests, stale_reviews: $stale, stale_bot_reviews: $staleBot, current_human_reviews: $currentHumanReviews, dismissed_human_reviews: $dismissedHumanReviews, human_review_count: $humanReviewCount, current_human_review_count: $currentHumanReviewCount, dismissed_human_review_count: $dismissedHumanReviewCount, review_decision: $reviewDecision, is_draft: $isDraft, unresolved_active: $unresolvedActive, unresolved_outdated: $unresolvedOutdated, unresolved_total: $unresolvedTotal, resolved_threads: $resolved, resolved_without_disposition: $resolvedWithoutDisposition, review_protocol_enforce: $enforce, review_runs_in_flight: $reviewRunsInFlight, verification_runs_in_flight: $verificationRunsInFlight, deep_review_receipt_head_match: $deepReviewReceiptHeadMatch, verification_receipt_head_match: $verificationReceiptHeadMatch, dispositions_missing_marker: $dispositionsMissingMarker, followups_without_issue: $followupsWithoutIssue, unreachable_fix_commits: $unreachableFixCommits}'
 
 if [[ "$CONVERGED" == "true" ]]; then
     exit 0
