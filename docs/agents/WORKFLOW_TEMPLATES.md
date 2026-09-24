@@ -33,9 +33,12 @@ verify-reachability or verify-duplicate prompt. If the second pass disagrees,
 escalate to sonnet reviewer — do not resolve the disagreement at haiku tier.
 
 **Output:** `target/reconciliation/wave-N-classifications.json` — one ledger row per PR.
-Schema: `pr-triage.v1` — the row type `cargo xtask pr-ledger generate` emits, machine-checked
-by `cargo xtask agent ledgers validate` (contract: `xtask/src/tasks/agent_ledgers.rs`).
-The competing `docs/agents/pr-ledger.schema.json` was retired (#15557); its structured
+Schema: `pr-triage.v1` — the row type `cargo xtask pr-ledger generate` emits. Boundary: the
+wave worklist lives under `target/` and is never committed, so the batch validator
+`cargo xtask agent ledgers validate` (contract: `xtask/src/tasks/agent_ledgers.rs`) only
+globs the committed `docs/agents/ledgers/*.jsonl`; each generated row is machine-checked
+at the `pr-ledger generate` row-emission seam instead. The competing
+`docs/agents/pr-ledger.schema.json` was retired (#15557); its structured
 `close_proof` contract now lives in that validator and CLOSE_PROOF_POLICY.md.
 
 ---
