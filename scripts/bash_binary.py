@@ -22,8 +22,11 @@ importable from ``scripts/`` and ``scripts/ci/`` and ``scripts/tests/``)::
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
+
+_WIN_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:[\\/]")
 
 __all__ = ["bash_binary", "bash_path"]
 
@@ -59,16 +62,24 @@ def bash_binary() -> str:
 
 
 def bash_path(path: Path) -> str:
-    """Render *path* so bash resolves it on every host.
+    r"""Render *path* so bash resolves it on every host.
 
     Backslashes inside a bash argument are escape characters, so a native
-    Windows path such as ``F:\\code\\x.sh`` reaches bash as
-    ``F:codeRust2x.sh`` (exit 127). ``Path.as_posix()`` is the portable
-    form; POSIX hosts treat it unchanged.
+    Windows path such as ``F:\code\x.sh`` must reach bash with forward
+    separators. ``Path.as_posix()`` handles the host-native form on both
+    platforms; the drive-prefix discrimination below additionally repairs
+    Windows-persisted strings seen from POSIX hosts — without touching
+    POSIX paths whose components legitimately contain backslashes
+    (#15435).
     """
-    # ``Path.as_posix()`` only converts the separator native to the running
-    # host.  The callers can receive a Windows path while running under a
-    # POSIX test harness (or when a path was persisted by a Windows host), so
-    # normalize the string representation as well.
-    return str(path).replace("\\", "/")
-
+    posix = path.as_posix()
+    # A drive-prefixed path ("F:" followed by a separator) persisted by a
+    # Windows host can reach this helper through a POSIX harness whose
+    # Path keeps the backslashes literal; bash cannot consume that form,
+    # so it is rewritten in full. Everything else — including a POSIX
+    # path whose components contain backslashes — is returned exactly as
+    # as_posix() rendered it, so normalization never corrupts the running
+    # host's own paths.
+    if _WIN_DRIVE_PREFIX.match(posix):
+        return posix.replace("\\", "/")
+    return posix
