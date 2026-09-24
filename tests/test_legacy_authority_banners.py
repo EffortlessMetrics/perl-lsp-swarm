@@ -199,9 +199,12 @@ def current_main_trusted_history_state(
     - ``"present"``: the commit is an ancestor of ``origin/main``;
     - ``"absent"``: the full-history graph genuinely excludes the commit — a
       real finding;
-    - ``"instrument-failure"``: this clone cannot answer (shallow/grafted
-      history, or the object is not present locally), which proves nothing
-      about ``main`` and must not be reported as a finding.
+    - ``"shallow"``: this clone is shallow/grafted, the one named condition
+      under which the check cannot run and a skip is legitimate;
+    - ``"error"``: the ancestry command itself failed unexpectedly. This
+      proves nothing about ``main`` — and it is not the named shallow
+      condition, so it must fail the suite rather than read as a skip
+      (#15480).
     """
     shallow = subprocess.run(
         ["git", "rev-parse", "--is-shallow-repository"],
@@ -212,7 +215,7 @@ def current_main_trusted_history_state(
     )
     if shallow.stdout.strip() == "true":
         return (
-            "instrument-failure",
+            "shallow",
             "clone is shallow, so its grafted history cannot speak for main",
         )
     result = subprocess.run(
@@ -226,7 +229,7 @@ def current_main_trusted_history_state(
     if result.returncode == 1:
         return "absent", ""
     return (
-        "instrument-failure",
+        "error",
         "git merge-base --is-ancestor exited "
         f"{result.returncode}: {result.stderr.strip()}",
     )
@@ -489,10 +492,16 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
         rows = registry_rows()
         trusted_commit = trusted_historical_commit()
         state, detail = current_main_trusted_history_state(trusted_commit)
-        if state == "instrument-failure":
+        if state == "shallow":
             self.skipTest(
                 "cannot evaluate the pinned historical authority commit from "
                 f"this clone (truncated instrument): {detail}"
+            )
+        if state == "error":
+            self.fail(
+                "the ancestry instrument failed unexpectedly, so the pinned "
+                f"historical authority commit cannot be evaluated; this is "
+                f"NOT_PROVEN, not a skip: {detail}"
             )
         self.assertEqual(
             state,
@@ -675,7 +684,7 @@ class CurrentMainTrustedHistoryStateTests(unittest.TestCase):
 
         state, detail = current_main_trusted_history_state(stranded_commit, self.remote)
 
-        self.assertEqual(state, "instrument-failure")
+        self.assertEqual(state, "error")
         self.assertIn("exited 128", detail)
 
     def test_shallow_clone_without_the_object_is_an_instrument_failure(self) -> None:
@@ -685,7 +694,7 @@ class CurrentMainTrustedHistoryStateTests(unittest.TestCase):
             self.root_commit, shallow
         )
 
-        self.assertEqual(state, "instrument-failure")
+        self.assertEqual(state, "shallow")
         self.assertIn("shallow", detail)
 
     def test_shallow_clone_with_the_object_fetched_still_cannot_answer(self) -> None:
@@ -698,7 +707,7 @@ class CurrentMainTrustedHistoryStateTests(unittest.TestCase):
             self.root_commit, shallow
         )
 
-        self.assertEqual(state, "instrument-failure")
+        self.assertEqual(state, "shallow")
         self.assertIn("shallow", detail)
 
 
