@@ -1946,9 +1946,12 @@ impl FileSemanticSnapshotV1 {
     ///
     /// Every shape rule the absent family carries is fixed here by
     /// construction; the three input-binding rules are certified by
-    /// [`BoundSnapshotInputs`]; the receipt identity holds because
-    /// [`SemanticWorkReceipt::new`] derives its id. The wire path keeps
-    /// entering through [`Self::from_parts`], which keeps every check.
+    /// [`BoundSnapshotInputs`]. The receipt id is re-derived here through the
+    /// same instrument+sequence derivation [`Self::validate_shape`] checks,
+    /// so a caller-supplied receipt with a spliced `receipt_id` cannot
+    /// assemble a snapshot that its own checked deserialization would refuse.
+    /// The wire path keeps entering through [`Self::from_parts`], which keeps
+    /// every check.
     #[must_use]
     pub(crate) fn from_absent_family(
         bound: BoundSnapshotInputs,
@@ -1956,6 +1959,14 @@ impl FileSemanticSnapshotV1 {
         state: AbsentTerminalState,
     ) -> Self {
         let (profile, subject, parse_snapshot) = bound.into_parts();
+        // `receipt_id` is a derived field, never an assertion of the caller:
+        // re-derive it from the receipt's own instrument + sequence, the one
+        // derivation `validate_shape` accepts.
+        let work_receipt = SemanticWorkReceipt::new(
+            work_receipt.work_kind,
+            work_receipt.instrument,
+            work_receipt.work_sequence,
+        );
         Self::assemble(
             profile,
             subject,
@@ -3997,6 +4008,63 @@ mod tests {
             assert_eq!(total, checked, "field-for-field agreement for absent state {state}");
             assert_eq!(total.terminal_state(), state);
         }
+    }
+
+    #[test]
+    fn absent_family_constructor_refuses_a_spliced_receipt_id() {
+        // A caller can build a `SemanticWorkReceipt` literal whose public
+        // `receipt_id` field does not match its instrument + sequence. The
+        // total constructor is infallible, so the refusal is the splice
+        // itself: the id is re-derived through the same instrument+sequence
+        // derivation `validate_shape` checks, and the assembled snapshot
+        // survives its own checked deserialization — the round trip a spliced
+        // id used to fail (review finding on #16258,
+        // FC-ABSENT-RECEIPT-UNCHECKED).
+        let base = complete_fresh_full_parts();
+        let bound = BoundSnapshotInputs::new(
+            base.profile.clone(),
+            base.subject.clone(),
+            base.parse_snapshot.clone(),
+        )
+        .unwrap();
+        let ticket = AcceptedParserTicketId::from_bound_parts(
+            &base.subject.document_instance,
+            base.parse_snapshot.accepted_generation,
+            &base.parse_snapshot.source_digest,
+        );
+        let instrument =
+            InstrumentIdentity::new(SemanticInstrumentKind::ConstructionCell, ticket.as_wire());
+        let work_sequence = base.parse_snapshot.accepted_generation;
+        let spliced = SemanticWorkReceipt {
+            receipt_id: SemanticWorkReceiptId::from_instrument_and_sequence(
+                &InstrumentIdentity::new(SemanticInstrumentKind::ConstructionCell, "cell-1"),
+                999,
+            ),
+            work_kind: SemanticWorkKind::FreshFull,
+            instrument: instrument.clone(),
+            work_sequence,
+        };
+        assert_ne!(
+            spliced.receipt_id,
+            SemanticWorkReceiptId::from_instrument_and_sequence(&instrument, work_sequence),
+            "the fixture must actually splice a foreign receipt id"
+        );
+        let total = FileSemanticSnapshotV1::from_absent_family(
+            bound,
+            spliced,
+            AbsentTerminalState::NOT_PROVEN,
+        );
+        assert_eq!(
+            total.work_receipt().receipt_id,
+            SemanticWorkReceiptId::from_instrument_and_sequence(&instrument, work_sequence),
+            "the spliced id must not survive the total constructor"
+        );
+        let wire = serde_json::to_value(&total).unwrap();
+        let round_tripped = serde_json::from_value::<FileSemanticSnapshotV1>(wire).unwrap();
+        assert_eq!(
+            round_tripped, total,
+            "the assembled snapshot must pass its own checked deserialization"
+        );
     }
 
     #[test]
