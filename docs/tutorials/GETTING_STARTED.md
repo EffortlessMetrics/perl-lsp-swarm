@@ -66,7 +66,10 @@ printf 'ref: %s\ndigest: %s\n' "$INSTALLER_REF" "$INSTALLER_SHA256"
 `INSTALLER_REF` is the immutable publish commit of that tag, and `INSTALLER_SHA256` is
 the digest of `scripts/install.sh` at that commit. Both values are convenience-level:
 they pin the executed installer to one exact ref and content, but they come from the
-same host the installer is fetched from, so they are not independent review.
+same host the installer is fetched from, so they are not independent review. They bind
+the installer code only, so both execution routes below also pass `VERSION="$RELEASE_TAG"`
+and the pinned release installs its own binaries; with no `RELEASE_TAG` set, the
+installer keeps its floating `latest` default.
 
 **The wrapper's identity-bound check only holds when the wrapper at `$INSTALLER_REF`
 performs the digest verification.** Current `main` does
@@ -74,12 +77,14 @@ performs the digest verification.** Current `main` does
 v0.17.0 it fetches floating `master` and ignores both env vars. Pick the route
 that matches the wrapper at the chosen ref:
 
-1. **Use the root wrapper (when its verification is hardened).** Feed both env vars:
+1. **Use the root wrapper (when its verification is hardened).** Feed both identity
+   env vars plus the pinned release:
 
    ```bash
    curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
      | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
-       PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
+       PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" \
+       VERSION="${RELEASE_TAG:-latest}" bash
    ```
 
    The wrapper at the chosen ref must read `PERL_LSP_INSTALLER_REF` /
@@ -100,8 +105,12 @@ that matches the wrapper at the chosen ref:
      echo "scripts/install.sh digest mismatch: expected $INSTALLER_SHA256, got $ACTUAL_SHA" >&2
      exit 1
    fi
-   bash "$TMP"
+   VERSION="${RELEASE_TAG:-latest}" bash "$TMP"
    ```
+
+   The pinned-ref path runs the verified installer with `VERSION` bound to
+   `RELEASE_TAG`, so the archive comes from that exact release; without it the
+   installer would resolve `latest` while the installer code stayed pinned.
 
 The canonical installer at
 [`scripts/install.sh`](../../scripts/install.sh) downloads the matching GitHub
