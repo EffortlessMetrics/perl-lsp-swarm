@@ -1,7 +1,7 @@
 # `perllsp` nvim-lspconfig submission packet
 
-External target: `neovim/nvim-lspconfig`  
-Upstream path: `lsp/perllsp.lua`  
+External target: `neovim/nvim-lspconfig`
+Upstream path: `lsp/perllsp.lua`
 Local behavior authority: `scripts/ux/neovim/perllsp.lua`
 
 The staged file in this directory is preparation evidence only. Do **not** represent it as upstream availability until the external PR is merged and a consumable upstream ref/release contains it.
