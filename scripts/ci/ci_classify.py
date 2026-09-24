@@ -422,7 +422,10 @@ def run(args: argparse.Namespace) -> int:
     # Determine check-run source.
     if args.pr is not None:
         check_runs = fetch_check_runs_via_gh(args.pr)
-        if not check_runs:
+        # An empty fetch still honors the versioned ``--json`` contract: fall
+        # through to the shared serializer so stdout parses as the envelope.
+        # The prose summary is prose-mode only.
+        if not check_runs and not args.json:
             print("No check-runs retrieved for PR; nothing to classify.")
             return 0
     elif args.input:

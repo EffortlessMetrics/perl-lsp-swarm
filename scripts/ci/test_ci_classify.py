@@ -659,5 +659,50 @@ class TestJsonEnvelope(unittest.TestCase):
         self.assertNotIsInstance(envelope, list)
 
 
+class TestPrEmptyFetchJsonEnvelope(unittest.TestCase):
+    """``--pr N --json`` with an empty fetch must still emit the envelope.
+
+    An empty ``gh pr checks`` result (no check-runs, gh unavailable, or a
+    fresh PR) used to short-circuit with a prose line before any JSON, so a
+    consumer piping ``--json`` output into ``json.load`` crashed on a
+    versioned-contract violation. The prose summary is prose-mode only.
+    """
+
+    def _captured(self, *, json_mode: bool) -> tuple[int, str]:
+        """Run ``run()`` against a stubbed empty ``--pr`` fetch."""
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+
+        import ci_classify
+        from ci_classify import run
+
+        args = argparse.Namespace(input=None, pr=42, json=json_mode)
+        buf = io.StringIO()
+        with mock.patch.object(
+            ci_classify, "fetch_check_runs_via_gh", return_value=[]
+        ):
+            with contextlib.redirect_stdout(buf):
+                rc = run(args)
+        return rc, buf.getvalue()
+
+    def test_empty_pr_fetch_json_still_emits_envelope(self) -> None:
+        rc, stdout = self._captured(json_mode=True)
+        self.assertEqual(rc, 0)
+        envelope = json.loads(stdout)
+        self.assertIsInstance(envelope, dict)
+        self.assertEqual(envelope.get("schema_version"), SCHEMA_VERSION)
+        self.assertEqual(envelope.get("classifications"), [])
+
+    def test_empty_pr_fetch_prose_mode_keeps_summary(self) -> None:
+        rc, stdout = self._captured(json_mode=False)
+        self.assertEqual(rc, 0)
+        self.assertIn(
+            "No check-runs retrieved for PR; nothing to classify.",
+            stdout,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
