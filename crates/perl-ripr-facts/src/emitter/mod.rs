@@ -38,4 +38,5 @@ pub(crate) use boundaries::emit_boundaries_and_commands;
 pub(crate) use changes::emit_changes_from_diff;
 pub(crate) use owners::emit_files_and_owners;
 pub(crate) use relations::emit_relations_and_discriminators;
+#[allow(unused_imports)]
 pub(crate) use test_facts::emit_tests_and_oracles;
