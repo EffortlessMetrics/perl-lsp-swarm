@@ -1992,7 +1992,16 @@ function createLanguageClientLifecycle(
       }
       await finalizeStartedLanguageClient(context, startedClient, generation);
     },
+    onServerPathOverrideConsumed: () => {
+      // A queued reinstall path bypasses resolveServerPath (and its
+      // beginBinaryResolution clearing), so drop the previous generation's
+      // failure here or a healthy replacement reports a stale error (#15592).
+      languageClientStartupMetrics.recordStartupError(null);
+    },
     onFailed: (snapshot) => {
+      // Carry the settling error on the metrics surface so a terminal failed
+      // state is diagnosable from the snapshot alone (#15592).
+      languageClientStartupMetrics.recordStartupError(snapshot.error);
       languageClientStartupMetrics.finishServerStart('error');
       languageClientStartupMetrics.finishInitialize('error');
       const message =
@@ -2292,6 +2301,8 @@ export function createLanguageClient(serverPath: string): LanguageClient {
   const clientOptions: LanguageClientOptions = {
     connectionOptions: LANGUAGE_CLIENT_CONNECTION_OPTIONS,
     errorHandler: LANGUAGE_CLIENT_ERROR_HANDLER,
+    // v0.18 (#8129): do not override document sync. vscode-languageclient uses
+    // the server's advertised TextDocumentSyncKind::Full and UTF-16 encoding.
     documentSelector: perlDocumentSelector(),
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/.perltidyrc'),

@@ -17,6 +17,16 @@ my $other = $val
 sub broken {
 "#;
 
+/// The startup trace is "an e2e wiring receipt, not a hard latency budget"
+/// (module header): the assertion is that the lean dials fire and answers
+/// arrive, not that they arrive quickly. These bounds exist only to fail
+/// fast on a wedged binary. Tight budgets made the verdict a function of
+/// the runner — #16278 measured the two UX workflows disagreeing on 11 of
+/// 30 identical heads. The happy path still completes in well under a
+/// second.
+const SCENARIO_TIMEOUT: Duration = Duration::from_secs(60);
+const ARRIVAL_BUDGET: Duration = Duration::from_secs(30);
+
 fn trace_config(timeout: Duration) -> ScenarioConfig {
     ScenarioConfig {
         timeout,
@@ -116,7 +126,7 @@ fn ux_neovim_lean_startup_trace_receipt() -> Result<()> {
     let mut events = Vec::new();
     record_event(&mut events, "process_start_observed", start);
 
-    let harness = UxHarness::new(trace_config(Duration::from_secs(8)))?;
+    let harness = UxHarness::new(trace_config(SCENARIO_TIMEOUT))?;
     record_event(&mut events, "initialize_response_received", start);
     record_event(&mut events, "initialized_notification_sent", start);
 
@@ -136,7 +146,7 @@ fn ux_neovim_lean_startup_trace_receipt() -> Result<()> {
     record_event(&mut events, "text_document_content_capability_checked", start);
 
     let inline_registered =
-        wait_for_registration(&harness, "textDocument/inlineCompletion", Duration::from_secs(2));
+        wait_for_registration(&harness, "textDocument/inlineCompletion", ARRIVAL_BUDGET);
     assert!(
         inline_registered,
         "lean startup trace must dynamically register inline completion for LSP4IJ-shaped clients"
@@ -146,7 +156,7 @@ fn ux_neovim_lean_startup_trace_receipt() -> Result<()> {
     let indexing_skip_observed = wait_for_stderr_line(
         &harness,
         "Skipping eager workspace indexing on `initialized`",
-        Duration::from_secs(2),
+        ARRIVAL_BUDGET,
     );
     assert!(
         indexing_skip_observed,
@@ -162,7 +172,7 @@ fn ux_neovim_lean_startup_trace_receipt() -> Result<()> {
     harness.open_file("project/trace.pl", TRACE_SOURCE)?;
     record_event(&mut events, "did_open_sent", start);
 
-    let diags = harness.wait_for_diagnostics("project/trace.pl", Duration::from_secs(5));
+    let diags = harness.wait_for_diagnostics("project/trace.pl", ARRIVAL_BUDGET);
     assert!(!diags.is_empty(), "syntax-only lean trace must publish parser diagnostics");
     record_event(&mut events, "first_did_open_processed", start);
     record_event(&mut events, "first_diagnostic_published", start);

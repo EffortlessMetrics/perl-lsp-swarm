@@ -43,5 +43,8 @@ jobs:
         with:
           install-dependencies: 'false'
 
+      - name: Install pinned release schema dependencies
+        run: python3 -m pip install -r scripts/requirements-release.txt
+
       - name: Run release evidence to VSIX adapter tests
         run: python3 -m unittest scripts.test_prepare_vsix_prebuilt_payload -v

@@ -22,9 +22,11 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
+    from .release_vsix_mapping import mapped_vsix_identity, mapping_from_topology
     from .release_topology_json import load_topology_json
     from .release_subject_projection import topology_subject_projection
 else:
+    from release_vsix_mapping import mapped_vsix_identity, mapping_from_topology
     from release_topology_json import load_topology_json
     from release_subject_projection import topology_subject_projection
 
@@ -85,8 +87,8 @@ def publish_dependency_graph(
 def topology_schema_version(value: Any) -> int:
     # JSON Schema accepts integral numbers such as 1.0. Preserve that v1
     # behavior, while refusing Python's bool/int equality and unknown versions.
-    if type(value) not in (int, float) or value not in (1, 2, 3):
-        raise TopologyError("release topology schema must be 1, 2 or 3")
+    if type(value) not in (int, float) or value not in (1, 2, 3, 4):
+        raise TopologyError("release topology schema must be 1, 2, 3 or 4")
     return int(value)
 
 
@@ -111,11 +113,12 @@ def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
         ) from error
     try:
         schema_path = (root or SCHEMA_PATH.parents[1]) / relative
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema_bytes = schema_path.read_bytes()
+        schema = json.loads(schema_bytes.decode("utf-8"))
         validator_type = jsonschema.validators.validator_for(schema)
         validator_type.check_schema(schema)
         validator = validator_type(schema)
-    except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError, jsonschema.SchemaError) as error:
         raise TopologyError(f"release topology schema is invalid: {error}") from error
     errors = sorted(
         validator.iter_errors(manifest),
@@ -134,9 +137,7 @@ def schema_validate(manifest: dict[str, Any], root: Path | None = None) -> None:
             if isinstance(sources, dict)
             else {}
         )
-        if not isinstance(source, dict) or source.get("sha256") != sha256(
-            root / relative
-        ):
+        if not isinstance(source, dict) or source.get("path") != relative or source.get("sha256") != hashlib.sha256(schema_bytes).hexdigest():
             raise TopologyError("schema source hash is stale")
 
 
@@ -675,8 +676,10 @@ def source_paths(
         schema_relative_path(schema_version) if path == SCHEMA_RELATIVE_PATH else path
         for path in SOURCE_PATHS
     ]
-    if schema_version == 3:
+    if schema_version in (3, 4):
         paths.extend(["scripts/release_subject_projection.py", "scripts/release_terminal_manifest.py"])
+    if schema_version == 4:
+        paths.append("scripts/release_vsix_mapping.py")
     manifests = workspace_manifests
     if manifests is None:
         manifests = []
@@ -764,7 +767,7 @@ def ensure_committed_topology_inputs(root: Path, paths: list[str]) -> None:
 
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
-        value = load_topology_json(path.read_text(encoding="utf-8"), supported_versions=(1, 2, 3))
+        value = load_topology_json(path.read_text(encoding="utf-8"), supported_versions=(1, 2, 3, 4))
     except (OSError, ValueError) as error:
         raise TopologyError(f"cannot read frozen topology {path}: {error}") from error
     if not isinstance(value, dict):
@@ -789,7 +792,7 @@ def load_frozen_authority(
             "frozen topology digest differs from --frozen-topology-sha256"
         )
     try:
-        value = load_topology_json(raw, supported_versions=(1, 2, 3))
+        value = load_topology_json(raw, supported_versions=(1, 2, 3, 4))
     except ValueError as error:
         raise TopologyError(f"cannot parse frozen topology {path}: {error}") from error
     if not isinstance(value, dict):
@@ -930,6 +933,30 @@ def validate_source_transition(
     prepared_sources = prepared.get("sources")
     if not isinstance(frozen_sources, dict) or not isinstance(prepared_sources, dict):
         raise TopologyError("frozen/prepared source inventories must be objects")
+    mapped_transition = frozen.get("schema") == 3 and prepared.get("schema") == 4
+    if mapped_transition:
+        # Both contracts must have landed before the product freeze. Switching
+        # the inventory's selected schema is metadata, changing its bytes is not.
+        for version in (3, 4):
+            relative = schema_relative_path(version)
+            ensure_committed_topology_inputs(frozen_root, [relative])
+            ensure_committed_topology_inputs(prepared_root, [relative])
+            if (frozen_root / relative).read_bytes() != (prepared_root / relative).read_bytes():
+                raise TopologyError("mapped preparation changed a topology schema")
+        for inventory, root, version in ((frozen_sources, frozen_root, 3), (prepared_sources, prepared_root, 4)):
+            relative = schema_relative_path(version)
+            if inventory.get(relative) != {"path": relative, "sha256": sha256(root / relative)}:
+                raise TopologyError("mapped transition has stale selected schema identity")
+        helper = "scripts/release_vsix_mapping.py"
+        for root in (frozen_root, prepared_root):
+            ensure_committed_topology_inputs(root, [helper])
+        if (frozen_root / helper).read_bytes() != (prepared_root / helper).read_bytes():
+            raise TopologyError("mapped preparation changed the mapping helper")
+        if prepared_sources.get(helper) != {"path": helper, "sha256": sha256(prepared_root / helper)}:
+            raise TopologyError("mapped transition has stale mapping helper identity")
+        prepared_sources = {key: value for key, value in prepared_sources.items() if key != helper}
+        frozen_sources = {key: value for key, value in frozen_sources.items() if key != schema_relative_path(3)}
+        prepared_sources = {key: value for key, value in prepared_sources.items() if key != schema_relative_path(4)}
     if set(frozen_sources) != set(prepared_sources):
         raise TopologyError("prepared topology changes the source path set")
     if git_head(frozen_root) != frozen.get("frozen_product_sha"):
@@ -997,7 +1024,7 @@ def validate_source_transition(
         ) != normalized_source_value(
             prepared_root,
             relative,
-            prepared_release,
+            prepared["vsix"]["version"] if mapped_transition and relative == "vscode-extension/package.json" else prepared_release,
             published_names,
             published_paths,
             set(frozen_inherited),
@@ -1020,38 +1047,296 @@ def validate_prepared_projection(
         raise TopologyError("frozen topology authority bytes do not match supplied baseline")
     schema_validate(frozen, frozen_root)
     schema_validate(prepared, prepared_root)
-    if topology_schema_version(frozen.get("schema")) != topology_schema_version(
-        prepared.get("schema")
-    ):
+    frozen_version = topology_schema_version(frozen.get("schema"))
+    prepared_version = topology_schema_version(prepared.get("schema"))
+    mapped_transition = frozen_version == 3 and prepared_version == 4
+    if prepared_version == 4 and not mapped_transition:
+        raise TopologyError("mapped preparation requires an explicit frozen v3 topology")
+    if frozen_version != prepared_version and not mapped_transition:
         raise TopologyError("frozen/prepared topology schema versions must match")
     if frozen.get("prepared_swarm_sha") is not None:
         raise TopologyError("frozen topology must not already bind prepared_swarm_sha")
     if frozen.get("frozen_product_sha") != prepared.get("frozen_product_sha"):
         raise TopologyError("prepared topology does not retain frozen_product_sha")
-    validate_source_transition(frozen, prepared, frozen_root, prepared_root)
     frozen_subjects = deepcopy(frozen)
     prepared_subjects = deepcopy(prepared)
     frozen_subjects.pop("sources", None)
     prepared_subjects.pop("sources", None)
+    if mapped_transition:
+        package = json.loads((prepared_root / "vscode-extension/package.json").read_text(encoding="utf-8"))
+        try:
+            expected = mapped_vsix_identity(mapping_from_topology(prepared), package, prepared["release"], prepared["prepared_swarm_sha"])
+        except ValueError as error:
+            raise TopologyError(str(error)) from error
+        if any(prepared["vsix"].get(key) != value for key, value in expected.items()):
+            raise TopologyError("prepared mapped identity differs from accepted package")
+        # The mapping is admitted above, not discarded as arbitrary metadata.
+        # All inherited membership, target, channel and claim fields survive the
+        # comparison, including native member lists and subject projection.
+        prepared_subjects["schema"] = 3
+        for key in ("candidate_id", "publisher", "name", "pre_release"):
+            prepared_subjects["vsix"].pop(key)
     if immutable_projection(frozen_subjects) != immutable_projection(prepared_subjects):
         raise TopologyError(
             "prepared topology changes an immutable frozen product subject "
             f"(frozen digest {frozen_digest})"
         )
+    validate_source_transition(frozen, prepared, frozen_root, prepared_root)
 
 
-_TYPESCRIPT_NON_CODE = re.compile(
-    r"//[^\r\n]*|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
-    re.DOTALL,
-)
+# Characters whose preceding token leaves the parser in a position where the
+# next `/` must be a regex literal rather than division: assignment,
+# open/close delimiters, statement separators, type annotations, the `=>`
+# arrow, the unary/binary operators that do not permit division, and the
+# power/bitwise operators.  The closing delimiters `)]}` ALSO permit a regex
+# (the postfix-`/` shorthand is not used by the managed downloader, but we
+# keep the conservative rule for symmetry with TypeScript's own lexer).
+_REGEX_STARTER_CHARS = frozenset("=([,;{}?:!&|~+-*/%<>^")
 
 
-def _mask_typescript_non_code(source: str) -> str:
-    """Blank TypeScript comments and literals while preserving line positions."""
-    return _TYPESCRIPT_NON_CODE.sub(
-        lambda match: "".join("\n" if char == "\n" else " " for char in match.group()),
-        source,
-    )
+def _first_identifier(needle: str) -> str | None:
+    """Return the first TypeScript identifier in ``needle``, or ``None``.
+
+    Used by ``_has_executable_substring`` to anchor the position check at a
+    chunk of the needle that is not part of a string literal.  String
+    literals are masked by ``_mask_typescript_non_code`` (positions of the
+    quote characters and the literal body are blanked to spaces), so a
+    full-string equality check would reject matches whose string literal
+    appears in real code.  Verifying that the leading identifier sits in
+    executable source is enough to confirm the rest of the needle lives in
+    code.
+    """
+    i = 0
+    while i < len(needle):
+        ch = needle[i]
+        if ch.isalpha() or ch == "_" or ch == "$":
+            j = i
+            while j < len(needle) and (needle[j].isalnum() or needle[j] in "_$"):
+                j += 1
+            return needle[i:j]
+        i += 1
+    return None
+
+
+def _has_executable_substring(source: str, executable_source: str, needle: str) -> bool:
+    """True when ``needle`` appears in ``source`` AND the leading identifier
+    of the match sits in executable code (a comment or regex literal does
+    not count).
+
+    Position-aware counterpart to ``needle in source``.  The raw source is
+    searched for ``needle``; for each match the leading identifier's
+    position in the masked source is verified.  String literals are masked
+    by ``_mask_typescript_non_code`` so the substring may not be
+    byte-identical at that position; checking the leading identifier is
+    sufficient because identifiers cannot appear inside comments, regex
+    literals, or string literals.
+    """
+    if not needle:
+        return False
+    anchor = _first_identifier(needle)
+    if not anchor:
+        # Fall back to a literal check if the needle has no identifier.
+        for match in re.finditer(re.escape(needle), source):
+            if (
+                executable_source[match.start() : match.start() + len(needle)]
+                == needle
+            ):
+                return True
+        return False
+    for match in re.finditer(re.escape(needle), source):
+        anchor_pos = match.start() + needle.index(anchor)
+        if executable_source[anchor_pos : anchor_pos + len(anchor)] == anchor:
+            return True
+    return False
+
+
+def _mask_typescript_non_code(
+    source: str, mask_template_literal_bodies: bool = False
+) -> str:
+    """Blank TypeScript non-code positions while preserving line numbers.
+
+    TypeScript has four non-code lexical forms that, if left intact, would
+    let a comment or non-code string satisfy a target-derivation scan:
+
+      1. line comments    ``// ...``
+      2. block comments   ``/* ... */``
+      3. string literals  ``'...'`` and ``"..."``
+      4. regex literals   ``/.../[flags]``
+
+    Template literals (``\\`...\\```) are masked only when
+    ``mask_template_literal_bodies`` is True.  The default pass keeps the
+    template literal body verbatim because the Linux check uses the
+    production substring ``${archPrefix}-unknown-linux-${libc}`` inside the
+    template literal as its authority.  When the identifier-side check
+    needs to be strict (e.g. ``return WINDOWS_X64_TARGET`` must not be
+    satisfied by ``\\`return WINDOWS_X64_TARGET\\```) the caller asks for a
+    second pass that blanks template literal bodies too.
+
+    Regex literals are lexically ambiguous with division (``/``), so they
+    need a small character-based lexer.  ``/`` opens a regex literal only
+    when the lexer is in a term position: start of input, after an operator
+    or punctuation that disallows division, or after a newline.  After an
+    identifier, number, string, template, or closing bracket the ``/`` is
+    division and is left intact.  Unterminated literals fail closed by
+    treating the rest of the line as code rather than silently admitting a
+    partial match.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(source)
+    # True at start-of-input and after newline/operator/punctuation that
+    # cannot terminate a value-producing expression.  An identifier, number,
+    # closing bracket, string, or template resets it to False.
+    expect_term = True
+
+    while i < n:
+        c = source[i]
+        # Whitespace: pass through, newline resets expect_term so the next
+        # token starts an expression position.
+        if c.isspace():
+            if c == "\n":
+                expect_term = True
+            out.append(c)
+            i += 1
+            continue
+        # Line comment: // ... \n
+        if c == "/" and i + 1 < n and source[i + 1] == "/":
+            j = i
+            while j < n and source[j] != "\n":
+                j += 1
+            out.append(" " * (j - i))
+            i = j
+            continue
+        # Block comment: /* ... */  (preserve newlines so line numbers match)
+        if c == "/" and i + 1 < n and source[i + 1] == "*":
+            end = source.find("*/", i + 2)
+            j = n if end == -1 else end + 2
+            chunk = source[i:j]
+            out.append("".join("\n" if ch == "\n" else " " for ch in chunk))
+            i = j
+            continue
+        # String literal: '...' or "..."  MASKED so that pseudo-returns of the
+        # form ``'return WINDOWS_X64_TARGET'`` or ``"return 'x86_64-pc-
+        # windows-msvc'"`` cannot satisfy the Windows check below.  Windows
+        # does its own ``re.finditer`` over the raw source and then re-checks
+        # each match against this masked source to confirm it lives in
+        # executable code; a string-literal pseudo-return is masked, so the
+        # position check fails and the target is not admitted.
+        if c in ("'", '"'):
+            quote = c
+            j = i + 1
+            while j < n:
+                if source[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if source[j] == quote:
+                    j += 1
+                    break
+                if source[j] == "\n":
+                    # Unterminated string: stop at the newline (fail closed).
+                    break
+                j += 1
+            chunk = source[i:j]
+            out.append("".join("\n" if ch == "\n" else " " for ch in chunk))
+            expect_term = False  # a string is a complete expression term
+            i = j
+            continue
+        # Template literal: `...`  Two masks exist:
+        #
+        # * The Linux-construction substring (``${archPrefix}-unknown-linux-
+        #   ${libc}``) is the production authority, so the template literal
+        #   body MUST be visible in the mask returned to
+        #   ``derive_downloader_targets``.  ``_has_executable_substring`` is
+        #   called with this mask to confirm the template literal sits in
+        #   executable code.
+        # * The Windows-construction identifier check (``return
+        #   WINDOWS_X64_TARGET``) must not admit a template-literal pseudo-
+        #   return like `` `return WINDOWS_X64_TARGET` ``.  The mask used by
+        #   that check (built by ``_mask_typescript_identifier_unsafe``)
+        #   blanks template literal bodies as well.
+        #
+        # The default branch here is the "linux-visible" pass: append the
+        # template literal verbatim.  ``_mask_typescript_identifier_unsafe``
+        # replaces this branch with a blanked-body pass for callers that
+        # need to verify identifiers.
+        if c == "`":
+            j = i + 1
+            while j < n:
+                if source[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if source[j] == "`":
+                    j += 1
+                    break
+                j += 1
+            chunk = source[i:j]
+            if mask_template_literal_bodies:
+                out.append(
+                    "".join("\n" if ch == "\n" else " " for ch in chunk)
+                )
+            else:
+                out.append(chunk)
+            expect_term = False
+            i = j
+            continue
+        # Regex literal: /.../[flags]  (only in term position)
+        if c == "/" and expect_term:
+            j = i + 1
+            in_class = False
+            consumed_any = False
+            while j < n:
+                ch = source[j]
+                if ch == "\\" and j + 1 < n:
+                    j += 2
+                    consumed_any = True
+                    continue
+                if ch == "[":
+                    in_class = True
+                elif ch == "]" and in_class:
+                    in_class = False
+                elif ch == "/" and not in_class:
+                    j += 1
+                    break
+                if ch == "\n":
+                    # Unterminated regex on this line; treat as a stray
+                    # division operator and stop consuming.
+                    j = i + 1
+                    break
+                consumed_any = True
+                j += 1
+            # Consume valid regex flags: g, i, m, s, u, y, d.
+            while j < n and source[j] in "gimsuy":
+                j += 1
+            if consumed_any and j > i + 1:
+                chunk = source[i:j]
+                out.append("".join("\n" if ch == "\n" else " " for ch in chunk))
+                expect_term = False
+                i = j
+                continue
+            # Otherwise fall through: this was a stray `/` (division or junk)
+        # Identifier or keyword: pass through, then no term expected next.
+        if c.isalpha() or c == "_" or c == "$":
+            j = i
+            while j < n and (source[j].isalnum() or source[j] in "_$"):
+                j += 1
+            out.append(source[i:j])
+            expect_term = False
+            i = j
+            continue
+        # Number: pass through
+        if c.isdigit():
+            j = i
+            while j < n and (source[j].isalnum() or source[j] in "._"):
+                j += 1
+            out.append(source[i:j])
+            expect_term = False
+            i = j
+            continue
+        # Operators / punctuation
+        out.append(c)
+        expect_term = c in _REGEX_STARTER_CHARS
+        i += 1
+    return "".join(out)
 
 
 def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[str]:
@@ -1065,10 +1350,29 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
     """
     managed: set[str] = set()
     executable_source = _mask_typescript_non_code(source)
+    # ``identifier_unsafe_source`` blanks template literal bodies in
+    # addition to comments / string literals / regex literals.  The Windows
+    # ``constant_return`` check matches ``return WINDOWS_X64_TARGET``; a
+    # template literal like `` `return WINDOWS_X64_TARGET` `` must not
+    # satisfy that check, so the search runs against the stricter mask.
+    identifier_unsafe_source = _mask_typescript_non_code(
+        source, mask_template_literal_bodies=True
+    )
 
-    if "aarch64-apple-darwin" in source:
+    # Darwin targets must be admitted from a position-aware check that anchors on
+    # a token outside the string literal.  The downloader constructs both
+    # darwin targets in a single ternary, ``return arch === 'arm64' ?
+    # 'aarch64-apple-darwin' : 'x86_64-apple-darwin';``.  The first identifier
+    # in that needle is ``arch`` — an unquoted identifier — so the
+    # position-of-identifier check passes when the ternary is in real code
+    # and fails when the ternary is in a comment or regex literal.  Commented
+    # macOS target branches are therefore rejected while real darwin code is
+    # accepted.
+    darwin_ternary = (
+        "return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'"
+    )
+    if _has_executable_substring(source, executable_source, darwin_ternary):
         managed.add("aarch64-apple-darwin")
-    if "x86_64-apple-darwin" in source:
         managed.add("x86_64-apple-darwin")
     for constant, target in (
         ("WINDOWS_X64_TARGET", "x86_64-pc-windows-msvc"),
@@ -1079,7 +1383,9 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
             if executable_source[match.start() : match.start() + len("return")] == "return":
                 literal_return = True
                 break
-        constant_return = re.search(rf"return\s+{constant}\b", executable_source) is not None
+        constant_return = (
+            re.search(rf"return\s+{constant}\b", identifier_unsafe_source) is not None
+        )
         declared_target = False
         for match in re.finditer(
             rf"\b{constant}\s*=\s*(['\"]){re.escape(target)}\1", source
@@ -1090,11 +1396,14 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
         if literal_return or (declared_target and constant_return):
             managed.add(target)
 
-    constructs_linux_targets = (
-        "return `${archPrefix}-unknown-linux-${libc}`" in source
-        and "archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64'" in source
-        and "value === 'gnu'" in source
-        and "value === 'musl'" in source
+    constructs_linux_targets = all(
+        _has_executable_substring(source, executable_source, needle)
+        for needle in (
+            "return `${archPrefix}-unknown-linux-${libc}`",
+            "archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64'",
+            "value === 'gnu'",
+            "value === 'musl'",
+        )
     )
     if constructs_linux_targets:
         managed.update(
@@ -1118,6 +1427,7 @@ def build_manifest(
     frozen_root: Path | None = None,
     *,
     schema_version: int = SCHEMA,
+    vsix_mapping: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     schema_version = topology_schema_version(schema_version)
     if frozen_topology is not None:
@@ -1192,7 +1502,14 @@ def build_manifest(
     package = json.loads(
         (root / "vscode-extension/package.json").read_text(encoding="utf-8")
     )
-    if package.get("version") != release:
+    if schema_version == 4:
+        try:
+            mapped = mapped_vsix_identity(vsix_mapping, package, release, prepared_swarm_sha)
+        except ValueError as error:
+            raise TopologyError(str(error)) from error
+    elif vsix_mapping is not None:
+        raise TopologyError("VSIX mapping requires opt-in topology v4")
+    elif package.get("version") != release:
         raise TopologyError(
             f"VSIX version {package.get('version')} does not match {release}"
         )
@@ -1232,9 +1549,11 @@ def build_manifest(
             ).items()
         },
     }
-    if schema_version in (2, 3):
+    if schema_version == 4:
+        manifest["vsix"].update(mapped)
+    if schema_version in (2, 3, 4):
         manifest["checksum_assets"] = derive_checksum_assets(workflow, targets)
-    if schema_version == 3:
+    if schema_version in (3, 4):
         manifest["subject_projection"] = derive_subject_projection(workflow, root)
     if frozen_topology is not None:
         if frozen_topology_digest is None:
@@ -1259,6 +1578,8 @@ def validate_manifest(
     frozen_topology_digest: str | None = None,
     frozen_topology_path: Path | None = None,
     frozen_root: Path | None = None,
+    *,
+    vsix_mapping: dict[str, Any] | None = None,
 ) -> None:
     schema_validate(manifest, root)
     if frozen_topology is not None:
@@ -1268,6 +1589,11 @@ def validate_manifest(
             "frozen topology authority is only valid for prepared validation"
         )
     schema_version = topology_schema_version(manifest.get("schema"))
+    if schema_version == 4:
+        if vsix_mapping is None or mapping_from_topology(manifest) != vsix_mapping:
+            raise TopologyError("mapped validation requires the exact explicit VSIX mapping")
+    elif vsix_mapping is not None:
+        raise TopologyError("VSIX mapping requires opt-in topology v4")
     if expected_sha is not None and manifest.get("frozen_product_sha") != expected_sha:
         raise TopologyError(
             "manifest frozen_product_sha differs from the reviewed candidate SHA"
@@ -1375,11 +1701,11 @@ def validate_manifest(
     expected_targets = derive_targets(workflow, release)
     if targets != expected_targets:
         raise TopologyError("binary_targets does not match the release workflow")
-    if schema_version in (2, 3) and manifest.get("checksum_assets") != derive_checksum_assets(
+    if schema_version in (2, 3, 4) and manifest.get("checksum_assets") != derive_checksum_assets(
         workflow, expected_targets
     ):
         raise TopologyError("checksum_assets does not match the public archive checksum inventory")
-    if schema_version == 3 and manifest.get("subject_projection") != derive_subject_projection(workflow, root):
+    if schema_version in (3, 4) and manifest.get("subject_projection") != derive_subject_projection(workflow, root):
         raise TopologyError("subject_projection does not match the terminal producer")
     downstream = json.loads(
         (root / "docs/reference/downstream-dap-integrations.json").read_text()
@@ -1401,13 +1727,20 @@ def validate_manifest(
     package = json.loads(
         (root / "vscode-extension/package.json").read_text(encoding="utf-8")
     )
-    if package.get("version") != release or manifest.get("vsix", {}).get(
+    if schema_version == 4:
+        try:
+            expected = mapped_vsix_identity(mapping_from_topology(manifest), package, release, prepared_swarm_sha)
+        except ValueError as error:
+            raise TopologyError(str(error)) from error
+        if any(manifest["vsix"].get(key) != value for key, value in expected.items()):
+            raise TopologyError("VSIX mapping or asset differs from prepared manifest")
+    elif package.get("version") != release or manifest.get("vsix", {}).get(
         "version"
     ) != package.get("version"):
         raise TopologyError(
             "VSIX version does not match the release or current extension manifest"
         )
-    expected_vsix_asset = f"{package.get('name')}-{package.get('version')}.vsix"
+    expected_vsix_asset = (expected["asset_name"] if schema_version == 4 else f"{package.get('name')}-{package.get('version')}.vsix")
     if manifest.get("vsix", {}).get("asset_name") != expected_vsix_asset:
         raise TopologyError("VSIX asset name does not match the extension manifest")
     if sorted(manifest.get("vsix", {}).get("managed_targets", [])) != sorted(
@@ -1418,7 +1751,7 @@ def validate_manifest(
         )
     if manifest.get("primary_channels") != PRIMARY_CHANNELS:
         raise TopologyError("primary channel set is not the accepted v0.18 set")
-    if manifest.get("vsix", {}).get("version") != manifest.get("release"):
+    if schema_version != 4 and manifest.get("vsix", {}).get("version") != manifest.get("release"):
         raise TopologyError("VSIX version must equal release version")
     sources = manifest.get("sources")
     if not isinstance(sources, dict):
@@ -1448,7 +1781,7 @@ def validate_manifest(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--schema-version", type=int, choices=(1, 2, 3), default=SCHEMA,
+        "--schema-version", type=int, choices=(1, 2, 3, 4), default=SCHEMA,
         help="topology contract to generate or check (default: 1; checksums require 2)",
     )
     parser.add_argument(
@@ -1456,6 +1789,7 @@ def main() -> int:
     )
     parser.add_argument("--frozen-product-sha", required=True)
     parser.add_argument("--prepared-swarm-sha")
+    parser.add_argument("--vsix-mapping", type=Path, help="explicit prepared RC mapping; topology v4 only")
     parser.add_argument(
         "--frozen-topology",
         type=Path,
@@ -1482,6 +1816,18 @@ def main() -> int:
     args = parser.parse_args()
     root = (args.root or Path(__file__).resolve().parents[1]).resolve()
     try:
+        vsix_mapping = None
+        if args.vsix_mapping:
+            try:
+                if __package__:
+                    from .release_topology_json import load_unique_json
+                else:
+                    from release_topology_json import load_unique_json
+                vsix_mapping = load_unique_json(args.vsix_mapping.read_bytes().decode("utf-8"))
+            except (UnicodeError, ValueError) as error:
+                raise TopologyError(f"invalid VSIX mapping: {error}") from error
+        if (args.schema_version == 4) != (vsix_mapping is not None):
+            raise TopologyError("topology v4 requires --vsix-mapping; legacy schemas forbid it")
         if args.frozen_topology is None and (
             args.frozen_topology_sha256 is not None or args.frozen_root is not None
         ):
@@ -1500,6 +1846,8 @@ def main() -> int:
                     args.frozen_topology, args.frozen_topology_sha256
                 )
                 schema_validate(frozen_topology, args.frozen_root or root)
+            if args.schema_version == 4 and mapping_from_topology(manifest) != vsix_mapping:
+                raise TopologyError("manifest differs from supplied VSIX mapping")
             if manifest.get("release") != args.release:
                 raise TopologyError("manifest release differs from --release")
             validate_manifest(
@@ -1511,6 +1859,7 @@ def main() -> int:
                 frozen_digest,
                 args.frozen_topology,
                 args.frozen_root,
+                vsix_mapping=vsix_mapping,
             )
         else:
             frozen_topology = None
@@ -1530,6 +1879,7 @@ def main() -> int:
                 args.frozen_topology,
                 args.frozen_root,
                 schema_version=args.schema_version,
+                vsix_mapping=vsix_mapping,
             )
             validate_manifest(
                 manifest,
@@ -1540,6 +1890,7 @@ def main() -> int:
                 frozen_digest,
                 args.frozen_topology,
                 args.frozen_root,
+                vsix_mapping=vsix_mapping,
             )
             args.output.write_text(
                 json.dumps(manifest, indent=2) + "\n", encoding="utf-8"

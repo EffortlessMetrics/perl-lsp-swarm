@@ -3,9 +3,20 @@
 //! Handles client capability parsing and server capabilities construction.
 
 use super::super::{JsonRpcError, LspServer, Ordering};
+use super::root_input::{InitialRootInput, classify_initial_root_input};
 use crate::protocol::command::code_action_documentation_entries;
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
+
+/// Workspace-folder implementation truth for this build (#8161).
+///
+/// Both constants are declared once in `perl-lsp-rs-core::protocol::capabilities`
+/// and re-exported here so the runtime builder and the pure `EffectiveLspSurface`
+/// model cannot disagree. See the core declarations for the policy: neither is
+/// ever derived from the client's advertised bit or the active folder count.
+pub(crate) use perl_lsp_rs_core::protocol::capabilities::{
+    SERVER_WORKSPACE_FOLDER_SUPPORT, WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE,
+};
 
 /// Typed TextDocumentSyncOptions for ServerCapabilities construction (#4995).
 ///
@@ -94,8 +105,12 @@ impl FileOperationSupport {
 
 /// Build workspace capabilities, intersecting file operations with the exact
 /// operations the client declared during initialize.
+///
+/// `server_workspace_folder_support` is the server's implementation truth
+/// (`SERVER_WORKSPACE_FOLDER_SUPPORT`, #8161) — never the client's bit and
+/// never a function of the active folder count.
 fn workspace_capabilities(
-    workspace_folders_support: bool,
+    server_workspace_folder_support: bool,
     file_operations: FileOperationSupport,
 ) -> Value {
     // Advertised file-operation filters share the watcher pattern authority
@@ -113,8 +128,12 @@ fn workspace_capabilities(
 
     let mut workspace = json!({
         "workspaceFolders": {
-            "supported": workspace_folders_support,
-            "changeNotifications": true
+            "supported": server_workspace_folder_support,
+            // Advertised only because WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE
+            // holds in this exact build: the dispatch route is compiled in
+            // unconditionally (#8161). Keep the advertisement and the route
+            // in agreement.
+            "changeNotifications": WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE
         },
         "textDocumentContent": {
             "schemes": ["perldoc"]
@@ -172,7 +191,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Atomically check and set initialize_requested
+        // The first initialize request atomically owns the connection's
+        // one-shot attempt authority before any parameter classification.
+        // Accepted and rejected first attempts both consume this guard; every
+        // later initialize is InvalidRequest before its parameters can affect
+        // the terminal error class (#14301).
         if self
             .initialize_requested
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -184,6 +207,16 @@ impl LspServer {
                 data: None,
             });
         }
+
+        // Classification may still reject malformed first parameters with
+        // -32602. That state remains attempted-but-unaccepted and therefore
+        // cannot serve, complete initialization, or start lifecycle work:
+        // `initialization_accepted()` is the sole serving authority.
+        let session_contract = super::session_contract::TextSyncSessionContract::accept(
+            params.as_ref(),
+            super::session_contract::next_session_id(),
+        )
+        .map_err(|rejection| rejection.to_jsonrpc_error())?;
 
         // Parse client capabilities
         if let Some(params) = &params {
@@ -502,34 +535,14 @@ impl LspServer {
                         caps.inlay_hint_resolve_support = Some(props);
                     }
                 }
-
-                // Negotiate position encoding per LSP 3.17 spec
-                // Client's `general.positionEncodings` is a list of encodings it supports
-                // Server picks the first one from the list that it also supports
-                // Default to UTF-16 if the list is empty or missing
-                let negotiated_encoding = if let Some(encodings) = params
-                    .pointer("/capabilities/general/positionEncodings")
-                    .and_then(Value::as_array)
-                {
-                    // Pick the first encoding from client list that server supports
-                    let supported = ["utf-8", "utf-16"]; // Server supports UTF-8 and UTF-16
-                    encodings
-                        .iter()
-                        .find_map(|enc| {
-                            enc.as_str()
-                                .and_then(|s| if supported.contains(&s) { Some(s) } else { None })
-                        })
-                        .and_then(|enc_str| match enc_str {
-                            "utf-8" => Some(crate::textdoc::PosEnc::Utf8),
-                            "utf-16" => Some(crate::textdoc::PosEnc::Utf16),
-                            _ => None,
-                        })
-                        .unwrap_or(crate::textdoc::PosEnc::Utf16)
-                } else {
-                    // No encoding preference list provided, default to UTF-16
-                    crate::textdoc::PosEnc::Utf16
-                };
-                caps.position_encoding = negotiated_encoding;
+                // Position encoding is NOT stored on `client_capabilities`:
+                // the accepted text-sync session contract constructed at the
+                // top of this handler is the single authority for the wire
+                // encoding and sync kind, and its bounded `client_offer`
+                // receipt already records what the client preferred (#9378).
+                // Keeping a separately negotiated value here would let later
+                // code infer one encoding while the response advertises
+                // another.
             } // caps lock released here
 
             // Check if client supports pull diagnostics.
@@ -556,113 +569,87 @@ impl LspServer {
                 );
             }
 
-            // Initialize workspace folders
-            if let Some(workspace_folders) =
-                params.get("workspaceFolders").and_then(|f| f.as_array())
-            {
-                let uris = extract_workspace_folder_uris(workspace_folders);
-                if let Some(first_uri) = uris.first() {
-                    self.set_root_uri(first_uri);
-                }
+            // Initialize workspace roots from one typed root-input
+            // classification (#8161). A present non-empty `workspaceFolders`
+            // array is authoritative. A present empty/null (or malformed)
+            // field is explicit no-active-folder input and never falls
+            // through to legacy root authority or the process CWD. #8945 owns
+            // what a rootless session does after initialization; #8995 owns
+            // later folder-change transactions.
+            let root_input = classify_initial_root_input(params);
+            tracing::debug!(disposition = root_input.as_str(), "Classified initialize root input");
+            *self.initial_root_input.lock() = Some(root_input.clone());
+            match root_input {
+                InitialRootInput::ExplicitWorkspaceFolders => {
+                    if let Some(workspace_folders) =
+                        params.get("workspaceFolders").and_then(|f| f.as_array())
+                    {
+                        let uris = extract_workspace_folder_uris(workspace_folders);
+                        if let Some(first_uri) = uris.first() {
+                            self.set_root_uri(first_uri);
+                        }
 
-                let mut folders = self.workspace_folders.lock();
-                for uri in uris {
-                    tracing::debug!(uri, "Initialized with workspace folder");
-                    let mut folder =
-                        super::super::workspace_folder::WorkspaceFolderState::new(uri.clone());
-                    if let Some(path) = super::super::source_path_from_uri(&uri) {
-                        folder = folder.with_path(path);
+                        let mut folders = self.workspace_folders.lock();
+                        for uri in uris {
+                            tracing::debug!(uri, "Initialized with workspace folder");
+                            let mut folder =
+                                super::super::workspace_folder::WorkspaceFolderState::new(
+                                    uri.clone(),
+                                );
+                            if let Some(path) = super::super::source_path_from_uri(&uri) {
+                                folder = folder.with_path(path);
+                            }
+                            folders.push(folder);
+                        }
                     }
-                    folders.push(folder);
                 }
-            } else if let Some(root_uri) = params.get("rootUri").and_then(|u| u.as_str()) {
-                // Fallback to rootUri if workspaceFolders is not provided
-                let mut folders = self.workspace_folders.lock();
-                tracing::debug!(root_uri, "Initialized with root URI");
-                let mut folder =
-                    super::super::workspace_folder::WorkspaceFolderState::new(root_uri.to_string());
-                if let Some(path) = super::super::source_path_from_uri(root_uri) {
-                    folder = folder.with_path(path);
+                rootless @ (InitialRootInput::ExplicitEmptyWorkspaceFolders
+                | InitialRootInput::ExplicitNullWorkspaceFolders
+                | InitialRootInput::MalformedWorkspaceFoldersShape) => {
+                    // Explicit no-active-folder input (#8161): stay rootless
+                    // here. #8945 owns rootless-session behavior; do not mine
+                    // a legacy root or process CWD behind the client's back.
+                    tracing::debug!(
+                        disposition = rootless.as_str(),
+                        explicit_rootless = rootless.is_explicit_rootless(),
+                        "Initialized without workspace roots"
+                    );
                 }
-                folders.push(folder);
-                // Also set the root path for module resolution
-                self.set_root_uri(root_uri);
-            } else if let Some(root_path) = params.get("rootPath").and_then(|p| p.as_str()) {
-                // Legacy fallback: rootPath is deprecated since LSP 3.0 but still sent by some clients
-                // (including older JetBrains LSP clients).
-                tracing::debug!(root_path, "Initialized with legacy rootPath");
-                let root_uri = root_path_to_file_uri(root_path);
-                let mut folder =
-                    super::super::workspace_folder::WorkspaceFolderState::new(root_uri.clone());
-                // Preserve filesystem path metadata so project-config loading and other
-                // path-based workflows behave the same as rootUri/workspaceFolders initialization.
-                folder = folder.with_path(std::path::PathBuf::from(root_path));
-                let mut folders = self.workspace_folders.lock();
-                folders.push(folder);
-                self.set_root_uri(&root_uri);
-            } else if let Some(init_options) = params.get("initializationOptions") {
-                // Compatibility fallback for clients that place workspace roots in
-                // initializationOptions instead of top-level initialize params.
-                if let Some(workspace_folders) =
-                    init_options.get("workspaceFolders").and_then(|f| f.as_array())
-                {
-                    let uris = extract_workspace_folder_uris(workspace_folders);
-                    // Mirror top-level workspaceFolders: set root URI from first folder.
-                    if let Some(first_uri) = uris.first() {
-                        self.set_root_uri(first_uri);
-                    }
-                    let mut folders = self.workspace_folders.lock();
-                    for uri in uris {
-                        tracing::debug!(
-                            uri,
-                            "Initialized with workspace folder from initializationOptions"
+                InitialRootInput::LegacyRootUri => {
+                    if let Some(root_uri) = params.get("rootUri").and_then(|u| u.as_str()) {
+                        let mut folders = self.workspace_folders.lock();
+                        tracing::debug!(root_uri, "Initialized with root URI");
+                        let mut folder = super::super::workspace_folder::WorkspaceFolderState::new(
+                            root_uri.to_string(),
                         );
-                        let mut folder =
-                            super::super::workspace_folder::WorkspaceFolderState::new(uri.clone());
-                        if let Some(path) = super::super::source_path_from_uri(&uri) {
+                        if let Some(path) = super::super::source_path_from_uri(root_uri) {
                             folder = folder.with_path(path);
                         }
                         folders.push(folder);
+                        // Also set the root path for module resolution
+                        self.set_root_uri(root_uri);
                     }
-                } else if let Some(root_uri) = init_options.get("rootUri").and_then(|u| u.as_str())
-                {
-                    let mut folders = self.workspace_folders.lock();
-                    tracing::debug!(
-                        root_uri,
-                        "Initialized with root URI from initializationOptions"
-                    );
-                    let mut folder = super::super::workspace_folder::WorkspaceFolderState::new(
-                        root_uri.to_string(),
-                    );
-                    if let Some(path) = super::super::source_path_from_uri(root_uri) {
-                        folder = folder.with_path(path);
-                    }
-                    folders.push(folder);
-                    self.set_root_uri(root_uri);
-                } else if let Some(root_path) =
-                    init_options.get("rootPath").and_then(|p| p.as_str())
-                {
-                    tracing::debug!(
-                        root_path,
-                        "Initialized with legacy rootPath from initializationOptions"
-                    );
-                    let root_uri = root_path_to_file_uri(root_path);
-                    let mut folders = self.workspace_folders.lock();
-                    folders.push(super::super::workspace_folder::WorkspaceFolderState::new(
-                        root_uri.clone(),
-                    ));
-                    self.set_root_uri(&root_uri);
                 }
-            } else if let Ok(cwd) = std::env::current_dir() {
-                // Compatibility fallback for lightweight clients (for example Aider)
-                // that initialize without workspaceFolders/rootUri/rootPath.
-                let cwd_uri = root_path_to_file_uri(&cwd.to_string_lossy());
-                let mut folders = self.workspace_folders.lock();
-                folders.push(super::super::workspace_folder::WorkspaceFolderState::new(
-                    cwd_uri.clone(),
-                ));
-                self.set_root_uri(&cwd_uri);
-                tracing::debug!(cwd_uri, "Initialized with process current directory fallback");
+                InitialRootInput::LegacyRootPath => {
+                    if let Some(root_path) = params.get("rootPath").and_then(|p| p.as_str()) {
+                        // Legacy fallback: rootPath is deprecated since LSP 3.0 but still sent by some clients
+                        // (including older JetBrains LSP clients).
+                        tracing::debug!(root_path, "Initialized with legacy rootPath");
+                        let root_uri = root_path_to_file_uri(root_path);
+                        let mut folder = super::super::workspace_folder::WorkspaceFolderState::new(
+                            root_uri.clone(),
+                        );
+                        // Preserve filesystem path metadata so project-config loading and other
+                        // path-based workflows behave the same as rootUri/workspaceFolders initialization.
+                        folder = folder.with_path(std::path::PathBuf::from(root_path));
+                        let mut folders = self.workspace_folders.lock();
+                        folders.push(folder);
+                        self.set_root_uri(&root_uri);
+                    }
+                }
+                InitialRootInput::NoWorkspaceRoot => {
+                    self.initialize_rootless_compat_fallback(params);
+                }
             }
         }
 
@@ -726,9 +713,12 @@ impl LspServer {
 
         // TextDocumentSyncKind::Full (1): the server always reparses the full
         // document on every didChange notification.  Advertising Incremental (2)
-        // would be inaccurate â€” we do not maintain incremental AST state between
-        // edits; we rebuild the entire AST from the complete document text each time.
-        let sync_kind = 1;
+        // would be inaccurate — we do not maintain incremental AST state between
+        // edits; we rebuild the entire AST from the complete document text each
+        // time. The wire values below come from the accepted session contract
+        // constructed at the top of this handler (#9378); they are never
+        // authored independently here.
+        let sync_kind = session_contract.sync_kind().wire_value();
 
         // Build capabilities using catalog-driven approach
         let profile = self.feature_profile();
@@ -797,20 +787,24 @@ impl LspServer {
             }
         }
 
-        // Add fields not yet in lsp-types 0.97
+        // Advertised wire position encoding and sync kind: derived from the
+        // accepted text-sync session contract (#9378), never authored here.
         //
-        // Phase 1 (this PR) only negotiates and stores the client's preferred
-        // position encoding on `ClientCapabilities.position_encoding` for
-        // future use. `text_sync` and every feature provider (hover,
-        // definition, diagnostics, ...) still compute positions in UTF-16
-        // code units. Per the LSP 3.17 spec, client and server MUST agree on
-        // one encoding or offsets are misinterpreted, so the *advertised*
-        // `positionEncoding` MUST stay pinned to "utf-16" — the mandatory
-        // default — until phase 2 threads the negotiated encoding through the
-        // providers. Advertising anything else here would silently corrupt
-        // document sync and every position-bearing response for non-ASCII
-        // content on a client that prefers a different encoding.
-        capabilities["positionEncoding"] = Value::String("utf-16".to_string());
+        // Release envelope (#8129 branch `full_document_utf16`): the contract
+        // always holds FULL + UTF-16. A valid client offer that omits UTF-16
+        // is retained as a mandatory-fallback reason; it does not create a
+        // second wire-encoding state. Position-bearing providers still compute
+        // UTF-16 code units, and the active coordinate authority published at
+        // acceptance is the compatibility-pinned UTF-16 session context, so
+        // response, stored session state, and provider behavior all share one
+        // encoding. Per the LSP 3.17 spec, client and server MUST agree on one
+        // encoding or offsets are misinterpreted: advertising anything else
+        // would silently corrupt document sync and every position-bearing
+        // response for non-ASCII content on a client that prefers a different
+        // encoding. A later encoding cutover is #1690 and is not part of this
+        // envelope.
+        capabilities["positionEncoding"] =
+            Value::String(session_contract.position_encoding().wire_name().to_string());
         if features.declaration {
             capabilities["declarationProvider"] = Value::Bool(true);
         }
@@ -828,17 +822,24 @@ impl LspServer {
                 );
             }
         }
-        // Override text document sync with typed struct (#4995)
+        // Override text document sync with typed struct (#4995); the change
+        // kind comes from the accepted session contract (#9378).
         capabilities["textDocumentSync"] =
             serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
                 .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
 
         // Workspace capabilities: intersect client-dependent file-operation
         // participation with the exact initialize declaration (#7682).
-        let workspace_folders_support = self.client_capabilities.lock().workspace_folders_support;
+        //
+        // #8161: `workspaceFolders.supported` describes whether THIS server
+        // implements workspace-folder semantics. It must never be derived
+        // from the client's advertised `workspace.workspaceFolders` bit or
+        // from the active folder count — a rootless or client-limited session
+        // does not un-implement the server. The client's bit stays a separate
+        // normalized observation on `ClientCapabilities`.
         let file_operations = FileOperationSupport::from_initialize_params(params.as_ref());
         capabilities["workspace"] =
-            workspace_capabilities(workspace_folders_support, file_operations);
+            workspace_capabilities(SERVER_WORKSPACE_FOLDER_SUPPORT, file_operations);
 
         // Advertise experimental custom requests only to clients that declared
         // the corresponding standard inline-completion capability.
@@ -850,17 +851,150 @@ impl LspServer {
             );
         }
 
-        Ok(Some(json!({
+        let result = json!({
             "capabilities": capabilities,
             "serverInfo": {
                 "name": "perl-lsp",
                 "version": env!("CARGO_PKG_VERSION")
             }
-        })))
+        });
         // Note: the initialize result wrapper is kept as json!() because it
         // is the final envelope wrapping the dynamically-built capabilities
         // object — a typed InitializeResult struct would need to own the
         // capabilities Value, adding indirection without type safety benefit.
+
+        // Response/contract divergence is a typed internal failure, never a
+        // silent drift (#9378): the published InitializeResult must be the
+        // one derived from the accepted session value.
+        super::session_contract::verify_response_matches_contract(&session_contract, &result)?;
+
+        // Atomically accept the initialized session: contract + response
+        // digest are stored together, exactly once, after verification.
+        // Acceptance also publishes the active position-encoding context, so
+        // the serving gate and the coordinate authority open in one step.
+        let response_digest = digest_result(&result);
+        self.accept_text_sync_session(session_contract, response_digest)?;
+
+        // Bounded initialize evidence (offer, selection, sync kind, encoding,
+        // and both digests) becomes observable at acceptance — the doctor/
+        // receipt projection derives from the same stored session.
+        if let Some(session) = self.accepted_text_sync_session() {
+            tracing::info!(
+                evidence = serde_json::to_string(&session.evidence())
+                    .unwrap_or_else(|_| "serialization-unavailable".to_string()),
+                "text-sync session contract accepted (#9378)"
+            );
+        }
+
+        Ok(Some(result))
+    }
+
+    /// Compatibility fallbacks for sessions whose initialize request carried
+    /// no client-declared root input (`NoWorkspaceRoot`, #8161).
+    ///
+    /// These runtime conveniences never change the recorded disposition: the
+    /// receipt stays `no_workspace_root` because the client declared nothing.
+    /// Rootless-session policy (including whether these fallbacks should keep
+    /// existing at all) is #8945's decision.
+    fn initialize_rootless_compat_fallback(&self, params: &Value) {
+        if let Some(init_options) = params.get("initializationOptions") {
+            // Compatibility fallback for clients that place workspace roots in
+            // initializationOptions instead of top-level initialize params.
+            if let Some(workspace_folders) =
+                init_options.get("workspaceFolders").and_then(|f| f.as_array())
+            {
+                let uris = extract_workspace_folder_uris(workspace_folders);
+                // Mirror top-level workspaceFolders: set root URI from first folder.
+                if let Some(first_uri) = uris.first() {
+                    self.set_root_uri(first_uri);
+                }
+                let mut folders = self.workspace_folders.lock();
+                for uri in uris {
+                    tracing::debug!(
+                        uri,
+                        "Initialized with workspace folder from initializationOptions"
+                    );
+                    let mut folder =
+                        super::super::workspace_folder::WorkspaceFolderState::new(uri.clone());
+                    if let Some(path) = super::super::source_path_from_uri(&uri) {
+                        folder = folder.with_path(path);
+                    }
+                    folders.push(folder);
+                }
+                return;
+            }
+            if let Some(root_uri) = init_options.get("rootUri").and_then(|u| u.as_str()) {
+                let mut folders = self.workspace_folders.lock();
+                tracing::debug!(root_uri, "Initialized with root URI from initializationOptions");
+                let mut folder =
+                    super::super::workspace_folder::WorkspaceFolderState::new(root_uri.to_string());
+                if let Some(path) = super::super::source_path_from_uri(root_uri) {
+                    folder = folder.with_path(path);
+                }
+                folders.push(folder);
+                self.set_root_uri(root_uri);
+                return;
+            }
+            if let Some(root_path) = init_options.get("rootPath").and_then(|p| p.as_str()) {
+                tracing::debug!(
+                    root_path,
+                    "Initialized with legacy rootPath from initializationOptions"
+                );
+                let root_uri = root_path_to_file_uri(root_path);
+                let mut folders = self.workspace_folders.lock();
+                folders.push(super::super::workspace_folder::WorkspaceFolderState::new(
+                    root_uri.clone(),
+                ));
+                self.set_root_uri(&root_uri);
+                return;
+            }
+            // `initializationOptions` was present but carried no recognized
+            // compatibility root. Stop here: the CWD fallback below is for
+            // clients that declared nothing at all. A client that sent
+            // options (`{}`, `null`, or config-only `{ "perl": ... }`) has
+            // spoken, and manufacturing a root from the launcher's working
+            // directory would silently index an unrelated tree. This mirrors
+            // the pre-#8161 chain, where the `initializationOptions` arm
+            // consumed the branch and the CWD arm was unreachable once the
+            // field was present.
+            return;
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            // Compatibility fallback for lightweight clients (for example Aider)
+            // that initialize without workspaceFolders/rootUri/rootPath.
+            let cwd_uri = root_path_to_file_uri(&cwd.to_string_lossy());
+            let mut folders = self.workspace_folders.lock();
+            folders
+                .push(super::super::workspace_folder::WorkspaceFolderState::new(cwd_uri.clone()));
+            self.set_root_uri(&cwd_uri);
+            tracing::debug!(cwd_uri, "Initialized with process current directory fallback");
+        }
+    }
+
+    /// Recorded root-input classification of the most recent initialize
+    /// request (#8161). `None` before the first initialize. This receipt is
+    /// the test-visible provenance surface: it distinguishes what the client
+    /// declared from any compat fallback the runtime applied afterwards.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) fn initial_root_input(&self) -> Option<InitialRootInput> {
+        self.initial_root_input.lock().clone()
+    }
+
+    /// How many workspace folders are currently registered (#8161 receipt).
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) fn active_workspace_folder_count(&self) -> usize {
+        self.workspace_folders.lock().len()
+    }
+}
+
+/// Bounded digest over the exact initialize result payload, recorded with the
+/// accepted session so evidence can prove response/state agreement.
+fn digest_result(result: &Value) -> String {
+    match serde_json::to_string(result) {
+        Ok(serialized) => super::session_contract::digest_bytes(serialized.as_bytes()),
+        // serde_json serialization of a JSON Value cannot fail; the fallback
+        // keeps the digest total without inventing a fake payload digest.
+        Err(_) => "unavailable".to_string(),
     }
 }
 
@@ -954,12 +1088,17 @@ mod tests {
         clippy::unwrap_used,
         reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
     )]
-    use super::{apply_disabled_feature_id, is_jetbrains_client, is_opencode_client};
+    use super::{
+        WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE, apply_disabled_feature_id, is_jetbrains_client,
+        is_opencode_client,
+    };
     use crate::LspServer;
+    use crate::protocol::JsonRpcError;
     use crate::protocol::capabilities::BuildFlags;
     use perl_workspace::folder::root_path_to_file_uri;
     use serde_json::{Value, json};
     use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Barrier};
 
     #[test]
     fn apply_disabled_feature_id_zeros_correct_field() {
@@ -1096,7 +1235,7 @@ mod tests {
             assert!(
                 !still_all,
                 "feature ID '{id}' emitted by to_feature_ids() has no match arm in \
-                 apply_disabled_feature_id â€” add one to keep the two in sync"
+                 apply_disabled_feature_id — add one to keep the two in sync"
             );
         }
     }
@@ -1226,8 +1365,12 @@ mod tests {
     }
 
     #[test]
-    fn initialize_disables_workspace_folder_server_capability_when_client_lacks_support()
+    fn initialize_keeps_server_workspace_folder_support_when_client_lacks_support()
     -> Result<(), Box<dyn std::error::Error>> {
+        // #8161 negative control: the server's `supported` describes the
+        // server's implementation, not the client's advertised bit. A client
+        // that cannot send folder changes is a client limitation; it does not
+        // un-implement the server.
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1243,17 +1386,54 @@ mod tests {
         let workspace_folders = response
             .pointer("/capabilities/workspace/workspaceFolders/supported")
             .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+            .unwrap_or(false);
         let change_notifications = response
             .pointer("/capabilities/workspace/workspaceFolders/changeNotifications")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        assert!(!workspace_folders, "server must not advertise unsupported workspace folders");
+        assert!(
+            workspace_folders,
+            "server implements workspace-folder semantics regardless of the client bit"
+        );
+        assert!(
+            !server.client_capabilities.lock().workspace_folders_support,
+            "the client's own bit stays a separate normalized observation"
+        );
         assert!(
             change_notifications,
             "server must always advertise workspace folder change notifications (per LSP spec)"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_server_workspace_folder_support_is_independent_of_active_folder_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #8161 negative control: zero active folders (explicit rootless
+        // input) must not flip the server support bit off.
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": { "workspace": { "workspaceFolders": true } },
+            "workspaceFolders": []
+        });
+
+        let response =
+            server.handle_initialize(Some(params))?.ok_or("initialize should return payload")?;
+
+        let workspace_folders = response
+            .pointer("/capabilities/workspace/workspaceFolders/supported")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(
+            workspace_folders,
+            "rootless initialization does not imply server workspace-folder support is absent"
+        );
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("explicit_empty_workspace_folders".to_string()),
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
         Ok(())
     }
 
@@ -1280,6 +1460,195 @@ mod tests {
         assert!(
             change_notifications,
             "server must always advertise workspace folder change notifications (per LSP spec)"
+        );
+        assert_eq!(
+            change_notifications, WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE,
+            "the advertisement must agree with the compiled-in dispatch route (#8161)"
+        );
+        Ok(())
+    }
+
+    // --- #8161 exact-process root-input matrix ---
+
+    #[test]
+    fn initialize_records_explicit_workspace_folders_disposition_with_separate_receipts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": { "workspace": { "workspaceFolders": true } },
+            "workspaceFolders": [
+                { "uri": "file:///workspace-a", "name": "a" },
+                { "uri": "file:///workspace-b", "name": "b" }
+            ]
+        });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("explicit_workspace_folders".to_string()),
+        );
+        assert_eq!(server.active_workspace_folder_count(), 2);
+        let caps = server.client_capabilities.lock();
+        assert!(caps.workspace_folders_support, "client bit stays independently observable");
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_client_lacking_support_keeps_client_bit_separate_from_server_capability()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [{ "uri": "file:///workspace-a", "name": "a" }]
+        });
+
+        let response = server.handle_initialize(Some(params))?.ok_or("initialize payload")?;
+
+        let workspace_folders = response
+            .pointer("/capabilities/workspace/workspaceFolders/supported")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(workspace_folders, "folders supplied anyway do not rewrite server truth");
+        assert!(!server.client_capabilities.lock().workspace_folders_support);
+        assert_eq!(server.active_workspace_folder_count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_explicit_empty_workspace_folders_never_adopts_root_uri()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "workspaceFolders": [],
+            "rootUri": "file:///legacy"
+        });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("explicit_empty_workspace_folders".to_string()),
+            "an explicit empty folder list must not be reclassified as LegacyRootUri"
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
+        assert!(server.root_path.lock().is_none(), "no legacy root may be adopted");
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_explicit_null_workspace_folders_never_adopts_root_uri()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "workspaceFolders": null,
+            "rootUri": "file:///legacy"
+        });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("explicit_null_workspace_folders".to_string()),
+            "an explicit null folder field must not fall through to rootUri"
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
+        assert!(server.root_path.lock().is_none(), "no legacy root may be manufactured");
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_malformed_workspace_folders_shape_is_rootless_not_legacy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "workspaceFolders": "file:///not-an-array",
+            "rootUri": "file:///legacy"
+        });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("malformed_workspace_folders_shape".to_string()),
+            "a declared-but-malformed field must not convert into a legacy fallback"
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
+        assert!(server.root_path.lock().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_rejects_malformed_folder_entries_without_falling_through()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "workspaceFolders": [{ "name": "no-uri-here" }, 42],
+            "rootUri": "file:///legacy"
+        });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("explicit_workspace_folders".to_string()),
+            "entry rejection stays inside the canonical folder disposition"
+        );
+        assert_eq!(
+            server.active_workspace_folder_count(),
+            0,
+            "malformed entries are rejected by the URI policy, not skipped into another mode"
+        );
+        assert!(server.root_path.lock().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_omitted_workspace_folders_uses_reviewed_root_uri_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({ "rootUri": "file:///legacy" });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("legacy_root_uri".to_string()),
+        );
+        assert_eq!(server.active_workspace_folder_count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_omitted_workspace_folders_uses_reviewed_root_path_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({ "rootUri": null, "rootPath": "/legacy/path" });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("legacy_root_path".to_string()),
+            "a null rootUri before rootPath preserves the reviewed fallback order"
+        );
+        assert_eq!(server.active_workspace_folder_count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_without_any_root_input_records_no_workspace_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({ "capabilities": {} });
+
+        let _ = server.handle_initialize(Some(params))?;
+
+        assert_eq!(
+            server.initial_root_input().map(|input| input.as_str().to_string()),
+            Some("no_workspace_root".to_string()),
+            "the receipt must record that the client declared no root, whatever runtime \
+             compatibility fallbacks (#8945's domain) apply afterwards"
         );
         Ok(())
     }
@@ -1612,30 +1981,297 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn initialize_prefers_first_supported_position_encoding() {
+    // -----------------------------------------------------------------------
+    // Text-sync session contract (#9378, LSP-FS16-001..010)
+    // -----------------------------------------------------------------------
+
+    use crate::runtime::lifecycle::session_contract::{
+        AcceptedPositionEncoding, AcceptedSyncKind, Utf16SelectionReason,
+    };
+    /// Accept initialize with `positionEncodings` and return (response,
+    /// error-code-on-failure). Exactly one side is populated.
+    fn initialize_with_offer(offer: Value) -> (Option<Value>, Option<JsonRpcError>, LspServer) {
         let server = LspServer::new();
-        let params = json!({
-            "capabilities": {
-                "general": {
-                    "positionEncodings": ["utf-32", "utf-8", "utf-16"]
-                }
-            }
-        });
+        let params = json!({ "capabilities": { "general": { "positionEncodings": offer } } });
+        match server.handle_initialize(Some(params)) {
+            Ok(response) => (response, None, server),
+            Err(error) => (None, Some(error), server),
+        }
+    }
 
-        let _ = server.handle_initialize(Some(params));
+    #[test]
+    fn initialize_offer_containing_utf16_accepts_and_stores_contract() {
+        for offer in [
+            json!(["utf-16"]),
+            json!(["utf-8", "utf-16"]),
+            json!(["utf-32", "utf-16"]),
+            json!(["utf-16", "utf-16"]),
+            json!(["utf-7", "utf-16"]),
+            json!(["utf-32", "utf-8", "utf-16"]),
+        ] {
+            let (response, error, server) = initialize_with_offer(offer.clone());
+            assert!(error.is_none(), "offer {offer} must be accepted: {error:?}");
+            let response = response.unwrap();
 
-        assert!(
-            matches!(
-                server.client_capabilities.lock().position_encoding,
-                crate::textdoc::PosEnc::Utf8
-            ),
-            "position encoding negotiation should skip unsupported entries and pick the first supported encoding"
+            let session = server.accepted_text_sync_session().unwrap();
+            let contract = session.contract();
+            assert_eq!(contract.sync_kind(), AcceptedSyncKind::Full);
+            assert_eq!(contract.position_encoding(), AcceptedPositionEncoding::Utf16);
+            assert_eq!(
+                contract.selection_reason(),
+                Utf16SelectionReason::ClientOfferedUtf16,
+                "offer {offer} must record the client selection reason"
+            );
+
+            // Response, stored state, and evidence agree (LSP-FS16-006/010).
+            assert_eq!(
+                response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+                Some(contract.position_encoding().wire_name())
+            );
+            assert_eq!(
+                response.pointer("/capabilities/textDocumentSync/change").and_then(Value::as_i64),
+                Some(i64::from(contract.sync_kind().wire_value()))
+            );
+            let evidence = session.evidence();
+            assert_eq!(evidence.contract_digest, contract.digest());
+            let expected_response_digest = evidence.response_digest.clone();
+            assert!(!expected_response_digest.is_empty(), "response digest must be recorded");
+        }
+    }
+
+    #[test]
+    fn initialize_absent_null_and_empty_offers_default_to_utf16_with_distinct_reasons() {
+        // Absent (LSP-FS16-002).
+        let server = LspServer::new();
+        let response =
+            server.handle_initialize(Some(json!({ "capabilities": {} }))).unwrap().unwrap();
+        let session = server.accepted_text_sync_session().unwrap();
+        assert_eq!(session.contract().selection_reason(), Utf16SelectionReason::OfferAbsent);
+        assert_eq!(
+            response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16")
+        );
+
+        // JSON null is the absent spelling for an optional array.
+        let (response, error, server) = initialize_with_offer(Value::Null);
+        assert!(error.is_none(), "null offer must be accepted: {error:?}");
+        let session = server.accepted_text_sync_session().unwrap();
+        assert_eq!(session.contract().selection_reason(), Utf16SelectionReason::OfferAbsent);
+        assert_eq!(
+            response.unwrap().pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16")
+        );
+
+        // Present but empty — reviewed disposition: no constraint expressed.
+        let (response, error, server) = initialize_with_offer(json!([]));
+        assert!(error.is_none(), "empty offer must be accepted: {error:?}");
+        let session = server.accepted_text_sync_session().unwrap();
+        assert_eq!(session.contract().selection_reason(), Utf16SelectionReason::OfferEmpty);
+        assert_eq!(
+            response.unwrap().pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16")
         );
     }
 
     #[test]
-    fn initialize_accepts_utf16_when_it_is_first_supported_position_encoding() {
+    fn initialize_valid_offer_omitting_utf16_uses_mandatory_fallback() {
+        for offer in [json!(["utf-32", "utf-7"]), json!(["utf-8"]), json!(["utf-32"])] {
+            let (response, error, server) = initialize_with_offer(offer.clone());
+            assert!(error.is_none(), "valid offer {offer} must be accepted: {error:?}");
+            let response = response.unwrap();
+            let session = server.accepted_text_sync_session().unwrap();
+            assert_eq!(
+                session.contract().selection_reason(),
+                Utf16SelectionReason::MandatoryUtf16Fallback,
+                "offer {offer} must retain the mandatory fallback reason"
+            );
+            assert_eq!(
+                response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+                Some("utf-16")
+            );
+            assert_eq!(
+                response.pointer("/capabilities/textDocumentSync/change").and_then(Value::as_i64),
+                Some(1)
+            );
+        }
+    }
+
+    #[test]
+    fn initialize_malformed_offers_fail_typed() {
+        for offer in [json!("utf-16"), json!(42), json!({}), json!(["utf-16", 42])] {
+            let (response, error, server) = initialize_with_offer(offer.clone());
+            assert!(response.is_none(), "malformed offer {offer} must fail");
+            let error = error.unwrap();
+            assert_eq!(error.code, -32602);
+            assert_eq!(
+                error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.pointer("/rejection/reason"))
+                    .and_then(Value::as_str),
+                Some("malformed-offer"),
+                "malformed input must never collapse into absence: {offer}"
+            );
+            assert!(server.accepted_text_sync_session().is_none());
+            assert!(!server.initialization_accepted());
+            assert!(!server.is_initialized());
+        }
+    }
+
+    #[test]
+    fn malformed_first_initialize_consumes_one_shot_authority() {
+        let server = LspServer::new();
+        let first = server.handle_initialize(Some(json!({
+            "capabilities": { "general": { "positionEncodings": ["utf-16", 42] } }
+        })));
+        assert_eq!(first.unwrap_err().code, -32602);
+        assert!(server.accepted_text_sync_session().is_none());
+        assert!(!server.initialization_accepted());
+
+        let second = server.handle_initialize(Some(json!({
+            "capabilities": { "general": { "positionEncodings": ["utf-16"] } }
+        })));
+        assert_eq!(second.unwrap_err().code, -32600);
+        assert!(server.accepted_text_sync_session().is_none());
+        assert!(!server.initialization_accepted());
+    }
+
+    #[test]
+    fn second_initialize_cannot_replace_accepted_contract() {
+        // LSP-FS16-008: repeated initialize cannot replace or partially alter
+        // the accepted contract, and duplicate error classification happens
+        // before the second request's parameter classification.
+        let (response, error, server) = initialize_with_offer(json!(["utf-16"]));
+        assert!(error.is_none(), "first initialize must succeed: {error:?}");
+        assert!(response.is_some());
+        let accepted = server.accepted_text_sync_session().unwrap();
+        let original_digest = accepted.contract().digest();
+
+        for second_params in [
+            json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-8", "utf-16"] } }
+            }),
+            json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-16", 42] } }
+            }),
+        ] {
+            let second = server.handle_initialize(Some(second_params));
+            assert!(second.is_err(), "second initialize must fail");
+            assert_eq!(second.unwrap_err().code, -32600);
+
+            let after = server.accepted_text_sync_session().unwrap();
+            assert_eq!(after.contract().digest(), original_digest);
+            assert_eq!(
+                after.contract().selection_reason(),
+                Utf16SelectionReason::ClientOfferedUtf16
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_initialize_attempts_have_exactly_one_owner() {
+        let server = Arc::new(LspServer::new());
+        let barrier = Arc::new(Barrier::new(3));
+
+        let valid_server = Arc::clone(&server);
+        let valid_barrier = Arc::clone(&barrier);
+        let valid = std::thread::spawn(move || {
+            valid_barrier.wait();
+            valid_server.handle_initialize(Some(json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-8"] } }
+            })))
+        });
+
+        let malformed_server = Arc::clone(&server);
+        let malformed_barrier = Arc::clone(&barrier);
+        let malformed = std::thread::spawn(move || {
+            malformed_barrier.wait();
+            malformed_server.handle_initialize(Some(json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-16", 42] } }
+            })))
+        });
+
+        barrier.wait();
+        let valid = valid.join().unwrap();
+        let malformed = malformed.join().unwrap();
+
+        let invalid_request_count = [&valid, &malformed]
+            .into_iter()
+            .filter(|result| result.as_ref().err().is_some_and(|error| error.code == -32600))
+            .count();
+        assert_eq!(invalid_request_count, 1, "exactly one concurrent attempt must lose ownership");
+
+        match (valid, malformed) {
+            (Ok(_), Err(error)) => {
+                assert_eq!(error.code, -32600);
+                assert!(server.accepted_text_sync_session().is_some());
+            }
+            (Err(error), Err(malformed_error)) => {
+                assert_eq!(error.code, -32600);
+                assert_eq!(malformed_error.code, -32602);
+                assert!(server.accepted_text_sync_session().is_none());
+                assert!(!server.initialization_accepted());
+            }
+            other => panic!("unexpected concurrent initialize outcomes: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn client_name_cannot_change_selection() {
+        let (_, _, plain) = initialize_with_offer(json!(["utf-32", "utf-16"]));
+        let server_named = LspServer::new();
+        let response = server_named
+            .handle_initialize(Some(json!({
+                "clientInfo": { "name": "fancy-editor" },
+                "capabilities": { "general": { "positionEncodings": ["utf-32", "utf-16"] } }
+            })))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16")
+        );
+        assert_eq!(
+            server_named.accepted_text_sync_session().unwrap().contract().selection_reason(),
+            plain.accepted_text_sync_session().unwrap().contract().selection_reason()
+        );
+    }
+
+    #[test]
+    fn initialize_selects_utf16_wire_and_records_client_preference()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": ["utf-8", "utf-16"]
+                }
+            }
+        });
+
+        let result = server.handle_initialize(Some(params))?;
+        let caps = result.as_ref().and_then(|v| v.get("capabilities")).ok_or("capabilities")?;
+        assert_eq!(caps.get("positionEncoding"), Some(&json!("utf-16")));
+        assert_eq!(caps.pointer("/textDocumentSync/change"), Some(&json!(1)));
+        // The client's preference is recorded in the accepted contract's
+        // bounded offer receipt — not in a mutable client-capabilities slot.
+        let session = server
+            .accepted_text_sync_session()
+            .ok_or("accepted session must exist after initialize")?;
+        assert_eq!(session.contract().selection_reason(), Utf16SelectionReason::ClientOfferedUtf16);
+        let offer = serde_json::to_value(session.contract().client_offer())?;
+        assert_eq!(offer.get("offer_class"), Some(&json!("present")));
+        assert_eq!(
+            offer.pointer("/entries/0/entry"),
+            Some(&json!("utf-8")),
+            "the receipt must record the client's first listed preference"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_accepts_utf16_when_it_is_first_supported_position_encoding()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1645,19 +2281,23 @@ mod tests {
             }
         });
 
-        let _ = server.handle_initialize(Some(params));
+        let _ = server.handle_initialize(Some(params))?;
 
-        assert!(
-            matches!(
-                server.client_capabilities.lock().position_encoding,
-                crate::textdoc::PosEnc::Utf16
-            ),
-            "position encoding negotiation should preserve utf-16 when it is the first supported client preference"
+        let session = server
+            .accepted_text_sync_session()
+            .ok_or("accepted session must exist after initialize")?;
+        let offer = serde_json::to_value(session.contract().client_offer())?;
+        assert_eq!(
+            offer.pointer("/entries/0/entry"),
+            Some(&json!("utf-16")),
+            "the receipt must record utf-16 as the client's first listed entry"
         );
+        Ok(())
     }
 
     #[test]
-    fn initialize_falls_back_to_utf16_when_position_encodings_have_no_supported_values() {
+    fn initialize_accepts_position_encodings_that_omit_utf16()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1667,15 +2307,150 @@ mod tests {
             }
         });
 
-        let _ = server.handle_initialize(Some(params));
+        let result = server
+            .handle_initialize(Some(params))?
+            .ok_or("lists without utf-16 must accept via mandatory UTF-16 fallback")?;
+        assert_eq!(
+            result.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16"),
+            "mandatory fallback must still advertise utf-16: {result}"
+        );
+        assert!(
+            server.initialization_accepted(),
+            "accepted omit-utf16 initialize must open the session"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_position_encodings_consume_initialize_and_do_not_open_serving()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let err = match server.handle_initialize(Some(json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": [1]
+                }
+            }
+        }))) {
+            Err(err) => err,
+            Ok(_) => return Err("malformed encodings must fail initialize".into()),
+        };
+        assert_eq!(err.code, -32602);
+        assert!(
+            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            "first attempt must consume the one-shot even when classification fails"
+        );
+        assert!(
+            !server.initialization_accepted(),
+            "rejected first attempt must not open an accepted session"
+        );
+
+        let duplicate = match server.handle_initialize(Some(json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": ["utf-16"]
+                }
+            }
+        }))) {
+            Err(err) => err,
+            Ok(_) => {
+                return Err("retry after rejected first initialize must be InvalidRequest".into());
+            }
+        };
+        assert_eq!(duplicate.code, -32600);
+        assert_eq!(duplicate.message, "initialize may only be sent once");
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_first_initialize_attempts_have_exactly_one_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let valid = json!({
+            "capabilities": {
+                "general": { "positionEncodings": ["utf-16"] }
+            }
+        });
+        let malformed = json!({
+            "capabilities": {
+                "general": { "positionEncodings": [1] }
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| server.handle_initialize(Some(valid.clone())));
+            let second = scope.spawn(|| server.handle_initialize(Some(malformed.clone())));
+            let first = first.join().expect("first initialize thread");
+            let second = second.join().expect("second initialize thread");
+
+            let outcomes = [first, second];
+            let owners = outcomes
+                .iter()
+                .filter(|outcome| {
+                    outcome.is_ok() || outcome.as_ref().err().is_some_and(|err| err.code == -32602)
+                })
+                .count();
+            let losers = outcomes
+                .iter()
+                .filter(|outcome| outcome.as_ref().err().is_some_and(|err| err.code == -32600))
+                .count();
+            assert_eq!(owners, 1, "exactly one first attempt owns the one-shot: {outcomes:?}");
+            assert_eq!(losers, 1, "the other attempt must be InvalidRequest: {outcomes:?}");
+        });
 
         assert!(
-            matches!(
-                server.client_capabilities.lock().position_encoding,
-                crate::textdoc::PosEnc::Utf16
-            ),
-            "unsupported position encoding lists must fall back to utf-16"
+            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            "exactly one owner must consume the one-shot"
         );
+        let accepted = server.initialization_accepted();
+        if accepted {
+            assert!(
+                server
+                    .handle_initialize(Some(json!({ "capabilities": {} })))
+                    .err()
+                    .is_some_and(|err| err.code == -32600),
+                "accepted session still rejects later initialize"
+            );
+        } else {
+            let unknown = server.handle_request(crate::protocol::JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(crate::protocol::JsonRpcId::Integer(99)),
+                method: "custom/unknown".to_string(),
+                params: None,
+            });
+            // If the concurrent owner was malformed, serving must stay closed.
+            let code = unknown.and_then(|response| response.error).map(|err| err.code);
+            assert_eq!(
+                code,
+                Some(-32002),
+                "attempted-but-unaccepted initialize must not open serving: {code:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_initialize_after_success_stays_invalid_request_even_with_bad_encodings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.handle_initialize(Some(json!({ "capabilities": {} })))?;
+        let err = match server.handle_initialize(Some(json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": ["utf-8"]
+                }
+            }
+        }))) {
+            Err(err) => err,
+            Ok(_) => return Err("duplicate initialize must fail".into()),
+        };
+        assert_eq!(
+            err.code, -32600,
+            "already-consumed initialize must stay InvalidRequest, not encoding InvalidParams"
+        );
+        assert_eq!(err.message, "initialize may only be sent once");
+        Ok(())
     }
 
     #[test]
@@ -1778,6 +2553,57 @@ mod tests {
             folders[0].uri, "file:///explicit-workspace",
             "cwd fallback must not override an explicitly provided rootUri"
         );
+    }
+
+    /// Negative control (#8161): a client that sent `initializationOptions`
+    /// carrying no recognized compatibility root must stay rootless. The CWD
+    /// convenience exists for clients that declared nothing at all; letting it
+    /// fire here would silently index the launcher's working directory for
+    /// config-only and single-file sessions. Pre-#8161 the
+    /// `initializationOptions` arm consumed the fallback chain, and that
+    /// boundary is preserved.
+    #[test]
+    fn initialize_config_only_initialization_options_do_not_manufacture_a_cwd_root() {
+        for options in [json!({}), json!(null), json!({ "perl": { "perlPath": "/usr/bin/perl" } })]
+        {
+            let server = LspServer::new();
+            let params = json!({
+                "capabilities": {},
+                "initializationOptions": options.clone(),
+            });
+
+            let _ = server.handle_initialize(Some(params));
+
+            let folders = server.workspace_folders.lock();
+            assert!(
+                folders.is_empty(),
+                "initializationOptions {options} carry no root, so the session must stay \
+                 rootless rather than adopting the process working directory"
+            );
+            drop(folders);
+            assert_eq!(
+                server.initial_root_input().map(|input| input.as_str().to_string()),
+                Some("no_workspace_root".to_string()),
+                "the receipt still records that the client declared no root"
+            );
+        }
+    }
+
+    /// The recognized-root arms of the same compatibility branch keep working;
+    /// the negative control above must not be satisfied by disabling them.
+    #[test]
+    fn initialize_initialization_options_root_uri_still_resolves() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {},
+            "initializationOptions": { "rootUri": "file:///from-options" },
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        let folders = server.workspace_folders.lock();
+        assert_eq!(folders.len(), 1, "a recognized options root must still register");
+        assert_eq!(folders[0].uri, "file:///from-options");
     }
 
     #[test]

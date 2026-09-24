@@ -1,0 +1,9 @@
+project: product
+component: Installation
+kind: Fixed
+body: "Run the cargo toolchain guard before any network work in the `BUILD_FROM_SOURCE=1` path of `scripts/install.sh`. A user with a stale cargo and no internet now sees the typed `cargo-toolchain-guard: REFUSED` banner instead of the misleading `Check your internet connection` message."
+time: 2026-09-20T00:00:00Z
+custom:
+  PR: "15030"
+  Slug: install-toolchain-guard-order
+  Breaking: "no"

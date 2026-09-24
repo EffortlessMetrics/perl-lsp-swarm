@@ -7483,7 +7483,7 @@ error: aborting due to previous error
             &["inline_completion_registration", "inline_completion_core"];
         // These numbers are the policy floor/ceiling: `retry_count: 1` still
         // bounds the total wall time to 2x per gate, and the outer PR-smoke
-        // watchdog (2700s = 45m) has to absorb every pr-fast gate combined.
+        // watchdog (3600s = 60m, #15915) has to absorb every pr-fast gate combined.
         // This invariant constrains configuration; it does not establish a
         // cold-cache performance result.
         const MIN_TIMEOUT_SECONDS: u64 = 240;
@@ -7503,7 +7503,7 @@ error: aborting due to previous error
             assert!(
                 (MIN_TIMEOUT_SECONDS..=MAX_TIMEOUT_SECONDS).contains(&gate.timeout_seconds),
                 "Gate '{gate_name}' timeout_seconds={} must sit in [{MIN_TIMEOUT_SECONDS}, {MAX_TIMEOUT_SECONDS}] \
-                 to keep the configured PR Smoke policy within its outer 45m watchdog (#11797)",
+                 to keep the configured PR Smoke policy within its outer 60m watchdog (#11797, #15915)",
                 gate.timeout_seconds,
             );
             let budget = gate.budgets.as_ref().ok_or_else(|| {
@@ -7730,7 +7730,10 @@ error: aborting due to previous error
         let cohort_gate = &policy.gates[cohort];
         assert_eq!(
             cohort_gate.command,
-            "cargo build -p perllsp --locked && cargo test --locked --tests {package_args}"
+            // #16194: the test step exports the binary the build step just
+            // produced; the env-wrapped shape keeps is_cargo_test_command
+            // recognition and the ubuntu gate shell intact.
+            "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test --locked --tests {package_args}"
         );
         assert_eq!(cohort_gate.timeout_seconds, 1500);
         assert_eq!(cohort_gate.retry_count, 1);

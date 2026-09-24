@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: Add clean-parse summary and packaged injection-query helpers to tree-sitter-perl-c; retain the highlights snapshot as a documented drift-check source until the grammar and query snapshots are refreshed together.
+time: 2026-09-08T00:00:00Z
+custom:
+  PR: "12789"
+  Slug: tree-sitter-perl-c-summary
+  Breaking: "no"

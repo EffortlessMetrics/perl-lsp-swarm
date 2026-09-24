@@ -27,6 +27,7 @@ mod cli;
 mod commands;
 mod git_hooks;
 mod process;
+mod test_scope;
 
 use crate::cli::{Cli, CliCommand};
 use crate::commands::panic_test::{check_panic_test, check_panic_test_with_registry};
@@ -145,6 +146,7 @@ fn run() -> Result<i32> {
                 check_serial_test(&repo_root)?
             }
         }
+        CliCommand::CheckDoctestEnforcement => commands::doctest_enforcement::check(&repo_root)?,
         CliCommand::CheckPrintInLib => check_print_in_lib(&repo_root)?,
         CliCommand::CheckRegexStatic => check_regex_static(&repo_root)?,
         CliCommand::QuickCheck => cmd_quick_check(&repo_root)?,
@@ -189,53 +191,16 @@ fn is_excluded_test_path(path: &Path) -> bool {
     false
 }
 
+/// The 1-based line where the file's test scope begins, or [`usize::MAX`].
+///
+/// Delegates to [`test_scope::first_cfg_test_boundary`], the within-file half
+/// of the one attribute reader for production scope. The two-regex reader this
+/// used to be needed `test` on the same physical line as `#[cfg(all(`, so a
+/// gate spelled across several lines — the live shape in
+/// `crates/perl-corpus/src/loading/` — read as no boundary at all (#16281).
 pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
     let contents = read_lines(path)?;
-    // Plain #[cfg(test)] is an unconditional test-scope boundary: any item guarded
-    // this way is test-only regardless of what follows, so treat the first occurrence
-    // as the boundary immediately (matches the original heuristic).
-    //
-    // #[cfg(all(test, ...))] requires a lookahead: it must be followed (possibly after
-    // blank lines or other attributes) by a `mod` declaration to count as a boundary.
-    // This prevents a lone `#[cfg(all(test, not(target_arch = "wasm32")))] use …` near
-    // the top of a file (e.g. config/mod.rs:9) from falsely excluding the rest of the
-    // file from production CI checks.
-    //
-    // #[cfg(any(test, feature = "…"))] is intentionally NOT matched because such items
-    // are compiled into production builds when the feature is active.
-    let cfg_test_plain_re = Regex::new(r"^\s*#\[cfg\(test\)\]")?;
-    let cfg_all_test_re = Regex::new(r"^\s*#\[cfg\(all\(test[,\)]")?;
-    let attr_re = Regex::new(r"^\s*#\[")?;
-    let mod_re = Regex::new(r"^\s*(?:pub\s+)?mod\s+")?;
-    for (idx, line) in contents.iter().enumerate() {
-        if cfg_test_plain_re.is_match(line) {
-            return Ok(idx + 1);
-        }
-        if cfg_all_test_re.is_match(line) {
-            // Only treat #[cfg(all(test, ...))] as a boundary when the next
-            // non-blank, non-attribute line is a `mod` declaration.
-            let mut j = idx + 1;
-            loop {
-                if j >= contents.len() {
-                    break;
-                }
-                let next = &contents[j];
-                if next.trim().is_empty() {
-                    j += 1;
-                    continue;
-                }
-                if attr_re.is_match(next) {
-                    j += 1;
-                    continue;
-                }
-                if mod_re.is_match(next) {
-                    return Ok(idx + 1);
-                }
-                break;
-            }
-        }
-    }
-    Ok(usize::MAX)
+    Ok(test_scope::first_cfg_test_boundary(&contents))
 }
 
 /// Return true when a `// SAFETY:` comment directly documents `lines[unsafe_idx]`.
@@ -1319,10 +1284,15 @@ fn cmd_simple_lsp_test(repo_root: &Path) -> Result<i32> {
     }
     #[cfg(not(windows))]
     {
+        // Content-Length must equal the frame body exactly; the previous 205
+        // over-declared the 180-byte body, so the reader waited on bytes that
+        // never arrived. `workspaceFolders` is omitted rather than null so the
+        // declared `rootUri` is actually adopted (#8161: a present null is an
+        // explicit no-active-folder declaration).
         let shell_script = r#"cat <<'EOF' | cargo run -p perl-parser --bin perl-lsp 2>&1 | head -20
-Content-Length: 205
+Content-Length: 156
 
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":123,"rootUri":"file:///tmp","capabilities":{},"initializationOptions":{},"trace":"off","workspaceFolders":null}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":123,"rootUri":"file:///tmp","capabilities":{},"initializationOptions":{},"trace":"off"}}
 EOF
 "#;
         let output = command_with_output(repo_root, "sh", &["-c", shell_script], &[])?;
@@ -1507,7 +1477,11 @@ fn cmd_quick_receipts(repo_root: &Path) -> Result<i32> {
         "total_all_tests": 0,
         "pass_rate_active": 0.0,
         "pass_rate_total": 0.0,
-        "note": "Run generate-receipts.sh for actual test metrics"
+        // #15350: zeroes from a no-test quick run are explicitly not_run_by_mode,
+        // never a measured zero. Bundle publishers refuse this status, so a
+        // fresh timestamp cannot pass synthetic state off as current evidence.
+        "status": "not_run_by_mode",
+        "note": "Synthetic quick receipt: tests not run. Use the canonical typed producer `cargo xtask receipts` for subject-bound test metrics."
     });
     fs::write(artifacts_dir.join("test-summary.json"), serde_json::to_string(&test_summary)?)
         .with_context(|| "writing test-summary.json")?;
@@ -2413,10 +2387,12 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
     let mut all_matches: Vec<String> = Vec::new();
     let mut bare_unsafe: Vec<String> = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
-        let rel = display_path(repo_root, &path);
-        let lines = read_lines(&path)?;
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+    let sources = production_source_files_for_ci_checks(repo_root)?;
+
+    for path in sources.iter() {
+        let rel = display_path(repo_root, path);
+        let lines = read_lines(path)?;
+        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
         for (idx, line) in lines.iter().enumerate() {
             let line_no = idx + 1;
             if line_no >= test_start {
@@ -2568,17 +2544,109 @@ pub(crate) fn walk_rust_source_files_for_ci_checks(repo_root: &Path) -> Result<V
     Ok(files)
 }
 
-fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
+/// Every walked file the compiler builds outside a test profile.
+///
+/// A file whose `#[cfg(test)]` sits on the parent's `mod` declaration carries no
+/// such line itself, so a per-file scan reads every line of it as production.
+/// That is where the 14 phantom `expect` sites in `final_surface_census.rs` came
+/// from, and what kept #13838 open for three weeks over a module that has never
+/// been in a non-test build.
+///
+/// Every production check goes through here, so this is the only place that
+/// answer is computed. Two of them used to compute it inline and two did not
+/// compute it at all; one seam means a new check inherits the right scope
+/// instead of choosing it.
+///
+/// The exclusion belongs here and not inside
+/// [`walk_rust_source_files_for_ci_checks`], although folding it in would be
+/// shorter. `test_only_source_files` decides a contested file by letting any
+/// production declaration reaching it win the tie, and a file dropped from the
+/// walk never reaches that rule — the walk feeds
+/// [`test_scope::test_only_source_files`] itself, so pre-filtering there would
+/// hand it a population it had already judged.
+pub(crate) fn production_source_files_for_ci_checks(repo_root: &Path) -> Result<Vec<PathBuf>> {
+    let walked = walk_rust_source_files_for_ci_checks(repo_root)?;
+    let test_only = crate::test_scope::test_only_source_files(&walked)?;
+    Ok(walked.into_iter().filter(|path| !test_only.contains(path)).collect())
+}
+
+pub(crate) fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
+    let report = scan_prod_unwraps_and_panics(repo_root)?;
+    report.print_and_exit()
+}
+
+/// The two production-line checks share a single walk so neither scanner
+/// reads ahead of the other. Splitting them apart used to mean an early
+/// return on the first failure hid the second; keeping them in one struct
+/// forces the printing layer to see both lists before deciding an exit
+/// code. #16253.
+pub(crate) struct ProdUnwrapsAndPanicsReport {
+    pub unwrap_offenders: Vec<String>,
+    pub panic_offenders: Vec<String>,
+    pub unwrap_baseline: usize,
+    pub panic_baseline: usize,
+}
+
+impl ProdUnwrapsAndPanicsReport {
+    fn print_and_exit(&self) -> Result<i32> {
+        let mut failed = false;
+        println!(
+            "unwrap/expect: {} (baseline: {})",
+            self.unwrap_offenders.len(),
+            self.unwrap_baseline
+        );
+        if self.unwrap_offenders.len() > self.unwrap_baseline {
+            failed = true;
+            println!(
+                "FAIL: unwrap/expect count ({}) exceeds baseline ({})",
+                self.unwrap_offenders.len(),
+                self.unwrap_baseline
+            );
+            println!();
+            println!("Offenders:");
+            for line in self.unwrap_offenders.iter().take(10) {
+                println!("{line}");
+            }
+        }
+
+        println!(
+            "panic-family macros: {} (baseline: {})",
+            self.panic_offenders.len(),
+            self.panic_baseline
+        );
+        if self.panic_offenders.len() > self.panic_baseline {
+            failed = true;
+            println!(
+                "FAIL: panic-family count ({}) exceeds baseline ({})",
+                self.panic_offenders.len(),
+                self.panic_baseline
+            );
+            println!();
+            println!("Offenders:");
+            for line in self.panic_offenders.iter().take(10) {
+                println!("{line}");
+            }
+            println!(
+                "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count."
+            );
+        }
+        Ok(if failed { 1 } else { 0 })
+    }
+}
+
+pub(crate) fn scan_prod_unwraps_and_panics(repo_root: &Path) -> Result<ProdUnwrapsAndPanicsReport> {
     let unwrap_re = Regex::new(r"\.unwrap\(|\.expect\(")?;
     let panic_re = Regex::new(r"(panic!\(|todo!\(|unimplemented!\(|unreachable!\()")?;
     let comment_re = Regex::new(r"^\s*//")?;
     let mut unwrap_offenders = Vec::new();
     let mut panic_offenders = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
-        let rel = display_path(repo_root, &path);
-        let lines = read_lines(&path)?;
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+    let sources = production_source_files_for_ci_checks(repo_root)?;
+
+    for path in sources.iter() {
+        let rel = display_path(repo_root, path);
+        let lines = read_lines(path)?;
+        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
             if line_no >= test_start {
@@ -2603,39 +2671,12 @@ fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
 
     let unwrap_baseline = read_usize_file(&repo_root.join("ci/unwrap_prod_baseline.txt"), 0)?;
     let panic_baseline = read_usize_file(&repo_root.join("ci/panic_prod_baseline.txt"), 0)?;
-    println!("unwrap/expect: {} (baseline: {})", unwrap_offenders.len(), unwrap_baseline);
-    if unwrap_offenders.len() > unwrap_baseline {
-        println!(
-            "FAIL: unwrap/expect count ({}) exceeds baseline ({})",
-            unwrap_offenders.len(),
-            unwrap_baseline
-        );
-        println!();
-        println!("Offenders:");
-        for line in unwrap_offenders.iter().take(10) {
-            println!("{line}");
-        }
-        return Ok(1);
-    }
-
-    println!("panic-family macros: {} (baseline: {})", panic_offenders.len(), panic_baseline);
-    if panic_offenders.len() > panic_baseline {
-        println!(
-            "FAIL: panic-family count ({}) exceeds baseline ({})",
-            panic_offenders.len(),
-            panic_baseline
-        );
-        println!();
-        println!("Offenders:");
-        for line in panic_offenders.iter().take(10) {
-            println!("{line}");
-        }
-        println!(
-            "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count."
-        );
-        return Ok(1);
-    }
-    Ok(0)
+    Ok(ProdUnwrapsAndPanicsReport {
+        unwrap_offenders,
+        panic_offenders,
+        unwrap_baseline,
+        panic_baseline,
+    })
 }
 
 fn is_allowlisted_prod_panic_hit(_rel_path: &str, line: &str) -> bool {
@@ -3073,6 +3114,7 @@ fn collect_ignored_matches(crates_root: &Path, repo_root: &Path) -> Result<Vec<I
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
 
     #[test]
     fn cargo_wrapper_keeps_cargo_args_before_test_harness_separator() {
@@ -3979,6 +4021,136 @@ mod tests {
         );
     }
 
+    // ── the production seam, after #16251's resolver was removed (#13838) ──────
+
+    /// Builds a throwaway tree and returns its root. Named per test so parallel
+    /// runs cannot collide, and removed first so a previous run's leftovers
+    /// cannot decide the result.
+    ///
+    /// These two are #16251's walk-level controls, kept and repointed. They
+    /// asserted on `walk_rust_source_files_for_ci_checks` while that walk did
+    /// its own filtering; the filtering now lives in `test_scope`, so they
+    /// assert on the pair the scanners actually consume. The property under
+    /// test is unchanged.
+    fn cfg_test_fixture(name: &str) -> Result<PathBuf> {
+        let root = std::env::temp_dir().join(format!("pch_production_seam_{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    /// The files the scanners treat as production: walked, then minus the
+    /// set `test_scope` resolves as test-only.
+    #[test]
+    fn the_production_seam_skips_a_nested_guarded_module() -> Result<()> {
+        let root = cfg_test_fixture("walk_nested")?;
+        let src = root.join("crates").join("demo").join("src");
+        let inventory = src.join("inventory");
+        std::fs::create_dir_all(&inventory)?;
+        std::fs::write(src.join("lib.rs"), "#[cfg(test)]\nmod inventory;\nmod real;\n")?;
+        std::fs::write(src.join("inventory.rs"), "mod rows;\n")?;
+        std::fs::write(inventory.join("rows.rs"), "fn f() {}\n")?;
+        std::fs::write(src.join("real.rs"), "fn f() {}\n")?;
+
+        let production = production_source_files_for_ci_checks(&root)?;
+        ensure!(
+            !production.iter().any(|path| path.ends_with("rows.rs")),
+            "a nested test-only module must not be scanned as production; got {production:?}"
+        );
+        ensure!(
+            production.iter().any(|path| path.ends_with("real.rs")),
+            "its unguarded sibling must still be scanned; got {production:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn the_production_seam_skips_a_parent_guarded_module() -> Result<()> {
+        let root = cfg_test_fixture("walk_parent")?;
+        let src = root.join("crates").join("demo").join("src");
+        std::fs::create_dir_all(&src)?;
+        std::fs::write(src.join("lib.rs"), "#[cfg(test)]\nmod census;\nmod real;\n")?;
+        std::fs::write(src.join("census.rs"), "fn f() { let _ = x.expect(\"boom\"); }\n")?;
+        std::fs::write(src.join("real.rs"), "fn f() {}\n")?;
+
+        let production = production_source_files_for_ci_checks(&root)?;
+        ensure!(
+            !production.iter().any(|path| path.ends_with("census.rs")),
+            "a module the parent guards must not be scanned as production; got {production:?}"
+        );
+        ensure!(
+            production.iter().any(|path| path.ends_with("real.rs")),
+            "its unguarded sibling must still be scanned; got {production:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    // ── cmd_check_unwraps_prod tests (#16253) ─────────────────────────────────
+    //
+    // The two scanners (unwrap/expect and panic-family) used to early-return on
+    // the first failure so the second count was hidden. A regression that
+    // lands both kinds simultaneously must surface both — a single `Ok(1)` is
+    // indistinguishable from "only unwrap failed" once the second count is
+    // never printed.
+
+    /// Build a fixture with one crate whose production code carries both an
+    /// unwrap and a panic-family macro, with both baselines set to zero so
+    /// both checks fail. The function must report both failures (exit 1, both
+    /// FAIL lines printed) rather than hiding the second behind an early
+    /// return on the first.
+    fn unwraps_prod_dual_failure_fixture(name: &str) -> Result<PathBuf> {
+        let root = std::env::temp_dir().join(format!("pch_unwraps_prod_{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let crate_root = root.join("crates/demo");
+        std::fs::create_dir_all(crate_root.join("src"))?;
+        std::fs::create_dir_all(root.join("ci"))?;
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/demo\"]\n")?;
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )?;
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn unwrap_call() { let _ = \"x\".parse::<i32>().unwrap(); }\n\
+             pub fn panic_call() { unreachable!(\"dual\"); }\n",
+        )?;
+        std::fs::write(root.join("ci/unwrap_prod_baseline.txt"), "0\n")?;
+        std::fs::write(root.join("ci/panic_prod_baseline.txt"), "0\n")?;
+        Ok(root)
+    }
+
+    #[test]
+    fn check_unwraps_prod_reports_both_failures_when_both_exceed_baseline() -> Result<()> {
+        // Regression for the early-return defect called out in #16253: when
+        // both unwrap and panic-family counts exceed their baselines, the
+        // scanner must populate both lists before the printing layer decides
+        // the exit code, so a regression that re-introduces an early return
+        // visibly empties one of the two lists.
+        let root = unwraps_prod_dual_failure_fixture("both_fail")?;
+        let report = scan_prod_unwraps_and_panics(&root)?;
+        assert_eq!(
+            report.unwrap_offenders.len(),
+            1,
+            "expected exactly one unwrap offender; got {:?}",
+            report.unwrap_offenders
+        );
+        assert_eq!(
+            report.panic_offenders.len(),
+            1,
+            "expected exactly one panic-family offender; got {:?}",
+            report.panic_offenders
+        );
+        let exit = report.print_and_exit()?;
+        assert_eq!(exit, 1, "expected exit 1 when both checks fail");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
     // ── first_cfg_test_line_number tests (#2894) ───────────────────────────────
 
     #[test]
@@ -4051,6 +4223,25 @@ mod tests {
              mod tests {\n}\n",
         )?;
         // #[cfg(test)] is at line 3; that is the boundary, not the `mod` line.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_multiline_all_test_is_boundary() -> Result<()> {
+        // #16281: the two-regex reader this function used to wrap needed
+        // `test` on the `#[cfg(all(` line, so a gate spelled across several
+        // physical lines — the live shape at
+        // crates/perl-corpus/src/loading/sectioned_identity.rs:65 — returned
+        // usize::MAX and read the guarded test module as production.
+        let tmp = std::env::temp_dir().join("pch_test_multiline_all_test.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(all(\n    test,\n    not(target_arch = \"wasm32\"),\n))]\n\
+             mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
         assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
         let _ = std::fs::remove_file(&tmp);
         Ok(())

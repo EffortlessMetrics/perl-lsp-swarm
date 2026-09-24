@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -12,6 +12,21 @@ use crate::utils::project_root;
 const COST_PER_MINUTE: f64 = 0.008;
 const MONTHLY_BUDGET_TARGET: f64 = 60.0;
 const ANNUAL_BUDGET_TARGET: f64 = 720.0;
+
+/// CLI `--api-version` pin shared by the cost-monitor and ci-baseline
+/// producers (#15371). Only `v1` is supported; anything else fails loudly
+/// so a future versioned producer cannot be silently misread by this
+/// consumer.
+pub const SUPPORTED_API_VERSION: &str = "v1";
+
+fn ensure_supported_api_version(api_version: &str) -> Result<()> {
+    if api_version != SUPPORTED_API_VERSION {
+        bail!(
+            "unsupported --api-version `{api_version}`: this producer pins `{SUPPORTED_API_VERSION}`"
+        );
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 struct RepoInfo {
@@ -149,7 +164,8 @@ struct BaselineRun {
     head_sha: Option<String>,
 }
 
-pub fn run_cost_monitor(days: u64, json_output: bool) -> Result<()> {
+pub fn run_cost_monitor(days: u64, json_output: bool, api_version: &str) -> Result<()> {
+    ensure_supported_api_version(api_version)?;
     let root = project_root()?;
     if days == 0 {
         bail!("--days must be greater than zero");
@@ -434,7 +450,14 @@ pub fn run_cost_monitor(days: u64, json_output: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: PathBuf) -> Result<()> {
+pub fn run_ci_baseline(
+    branch: String,
+    days: u64,
+    limit: usize,
+    output_dir: PathBuf,
+    api_version: &str,
+) -> Result<()> {
+    ensure_supported_api_version(api_version)?;
     let root = project_root()?;
     if days == 0 {
         bail!("--days must be greater than zero");
@@ -478,7 +501,19 @@ pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: Path
             // invocation that silently returns zero rows cannot leave a
             // stale baseline behind without explanation.
             if branch_exists(&root, &branch)? {
+                // Legitimate no-data: the branch exists but has no runs in
+                // the window. A previous successful run may have left
+                // `ci_baseline.{json,md}` behind; retaining them would let a
+                // stale baseline look current to file consumers
+                // (release-health degrades an absent file to null, so
+                // removal is the honest signal). The branch-missing arm
+                // below stays untouched: it bails, and a failed invocation
+                // must not delete evidence.
+                let removed = clear_stale_baseline_outputs(&root, &output_dir)?;
                 println!("No workflow runs found in requested period");
+                for path in &removed {
+                    println!("Removed stale baseline output: {}", path.display());
+                }
             } else {
                 bail!(
                     "branch '{branch}' was not found in this repository; \
@@ -530,6 +565,27 @@ pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: Path
     println!("======================================");
 
     Ok(())
+}
+
+/// Remove stale `ci_baseline.{json,md}` outputs after a successful no-data
+/// invocation, returning what was removed.
+///
+/// A no-data run writes nothing; without this, a previous successful run's
+/// files would remain on disk and file consumers would present them as the
+/// current baseline (#15377). Only the two exact baseline filenames are ever
+/// removed, and only when they are plain files: anything else in the output
+/// directory (including an absent directory itself) is left alone.
+fn clear_stale_baseline_outputs(root: &Path, output_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut removed = Vec::new();
+    for file in ["ci_baseline.json", "ci_baseline.md"] {
+        let path = root.join(output_dir).join(file);
+        if path.is_file() {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove stale {}", path.display()))?;
+            removed.push(path);
+        }
+    }
+    Ok(removed)
 }
 
 fn build_baseline_report(
@@ -632,7 +688,17 @@ fn build_baseline_report(
         return None;
     }
 
-    let unique_failure_counts = compute_unique_failures(&baseline_runs);
+    // Unique-catch credit requires the complete sibling set for each head
+    // SHA (#15377): on a truncated fetch a workflow can look like the only
+    // failing lane only because its siblings were never fetched ("missing
+    // sibling creates false unique catch"). A partial sample therefore
+    // emits no unique-catch credit at all; the existing complete-sample
+    // test below pins that the credit survives when the window is covered.
+    let unique_failure_counts = if sample_completeness == SampleCompleteness::Complete {
+        compute_unique_failures(&baseline_runs)
+    } else {
+        BTreeMap::new()
+    };
 
     let mut workflow_reports = BTreeMap::new();
     for (key, counters) in workflow_counters {
@@ -988,6 +1054,7 @@ mod tests {
     use super::*;
     use color_eyre::eyre::eyre;
     use serde_json::json;
+    use tempfile::TempDir;
 
     #[test]
     fn read_timestamp_uses_fallback_keys() -> Result<()> {
@@ -1002,6 +1069,16 @@ mod tests {
             timestamp,
             DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn api_version_pin_rejects_unknown_versions() -> Result<()> {
+        ensure_supported_api_version("v1")?;
+        let error =
+            ensure_supported_api_version("v2").err().ok_or_else(|| eyre!("v2 must fail loudly"))?;
+        ensure!(error.to_string().contains("unsupported --api-version `v2`"), "got error: {error}");
+        ensure!(error.to_string().contains("`v1`"), "got error: {error}");
         Ok(())
     }
 
@@ -1243,6 +1320,95 @@ mod tests {
             build_baseline_report("main", 1, generated_at, cutoff, 200, &truncated_window_runs())
                 .ok_or_else(|| eyre!("expected baseline report"))?;
         assert_eq!(report.sample_completeness, SampleCompleteness::Complete);
+
+        Ok(())
+    }
+
+    /// A successful no-data run must not leave an older baseline looking
+    /// current (#15377): both baseline outputs are removed when present, an
+    /// unrelated file in the same directory survives, and the removed paths
+    /// are reported back.
+    #[test]
+    fn clear_stale_baseline_outputs_removes_only_baseline_files() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let out = tmp.path().join("target").join("metrics");
+        fs::create_dir_all(&out)?;
+        fs::write(out.join("ci_baseline.json"), r#"{"stale": true}"#)?;
+        fs::write(out.join("ci_baseline.md"), "# stale")?;
+        fs::write(out.join("other-artifact.json"), "{}")?;
+
+        let removed = clear_stale_baseline_outputs(tmp.path(), Path::new("target/metrics"))?;
+        assert_eq!(removed.len(), 2);
+        assert!(!out.join("ci_baseline.json").exists());
+        assert!(!out.join("ci_baseline.md").exists());
+        assert!(
+            out.join("other-artifact.json").exists(),
+            "unrelated files in the output directory must survive"
+        );
+
+        Ok(())
+    }
+
+    /// Clearing a directory that holds no baseline files (or no directory
+    /// at all, e.g. a fresh clone) is a no-op success, not an error.
+    #[test]
+    fn clear_stale_baseline_outputs_tolerates_absence() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let removed = clear_stale_baseline_outputs(tmp.path(), Path::new("target/metrics"))?;
+        assert!(removed.is_empty());
+
+        let out = tmp.path().join("target").join("metrics");
+        fs::create_dir_all(&out)?;
+        fs::write(out.join("other-artifact.json"), "{}")?;
+        let removed = clear_stale_baseline_outputs(tmp.path(), Path::new("target/metrics"))?;
+        assert!(removed.is_empty());
+
+        Ok(())
+    }
+
+    /// Cost-per-unique-catch is emitted only when both numerator and
+    /// denominator are complete (#15377): on a truncated fetch the sibling
+    /// set per head SHA is incomplete, so a workflow that looks like the
+    /// only failing lane may simply have lost its siblings to the cap.
+    /// The same shape under a covering limit keeps its credit
+    /// (`baseline_report_tracks_unique_catches_per_sha`).
+    #[test]
+    fn partial_sample_suppresses_unique_catch_credit() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")?.with_timezone(&Utc);
+        // Same failure shape as the complete-sample unique-catch test, but
+        // fetched at the cap with the window reaching further back.
+        let runs = vec![
+            json!({
+                "workflowName": "CI",
+                "conclusion": "failure",
+                "createdAt": "2026-03-25T11:00:00Z",
+                "headSha": "sha-a",
+                "startedAt": "2026-03-25T11:00:00Z",
+                "updatedAt": "2026-03-25T11:01:00Z"
+            }),
+            json!({
+                "workflowName": "Lint",
+                "conclusion": "success",
+                "createdAt": "2026-03-25T11:00:00Z",
+                "headSha": "sha-a",
+                "startedAt": "2026-03-25T11:00:00Z",
+                "updatedAt": "2026-03-25T11:01:00Z"
+            }),
+        ];
+
+        let report = build_baseline_report("main", 1, generated_at, cutoff, 2, &runs)
+            .ok_or_else(|| eyre!("expected baseline report"))?;
+        assert_eq!(report.sample_completeness, SampleCompleteness::PartialSample);
+        let ci = report.workflows.get("CI").ok_or_else(|| eyre!("expected CI workflow"))?;
+        assert_eq!(
+            ci.unique_failures, 0,
+            "a lone failure on a truncated fetch must not earn unique-catch credit"
+        );
+        assert_eq!(ci.signal_per_dollar, 0.0);
+        assert_eq!(report.summary.total_unique_failures, 0);
+        assert_eq!(report.summary.overall_signal_per_dollar, 0.0);
 
         Ok(())
     }

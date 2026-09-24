@@ -3,13 +3,12 @@ use regex::Regex;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use crate::{
-    display_path, first_cfg_test_line_number, read_lines, read_usize_file,
-    walk_rust_source_files_for_ci_checks,
-};
+use crate::{display_path, production_source_files_for_ci_checks, read_lines, read_usize_file};
 
-use self::lazy_scope::{LazyStaticScope, code_only};
+use self::inline_test_scope::InlineTestScope;
+use self::lazy_scope::{LazyStaticScope, LineSanitizer};
 
+mod inline_test_scope;
 mod lazy_scope;
 
 /// Matches the three regex-compilation constructors called out by issue #2897:
@@ -38,9 +37,10 @@ fn regex_from_static(
 ///
 /// Detection is line-based, mirroring the sibling ratchets (`check_print_in_lib`,
 /// `cmd_check_unsafe_prod`). Test code is excluded two ways: whole `tests/` files
-/// via [`walk_rust_source_files_for_ci_checks`], and inline `#[cfg(test)]` modules
-/// via [`first_cfg_test_line_number`]. Calls inside a lazy-static initializer are
-/// recognized by [`LazyStaticScope`].
+/// via [`production_source_files_for_ci_checks`], and inline test-only items and
+/// modules via per-item/per-module [`InlineTestScope`] classification (an early
+/// test-only `use` therefore hides nothing below it). Calls inside a
+/// lazy-static initializer are recognized by [`LazyStaticScope`].
 ///
 /// The baseline is stored in `ci/regex_static_baseline.txt`; the check fails if the
 /// current count exceeds it, and prints a NOTE when the count drops below (ratchet
@@ -49,23 +49,28 @@ pub(crate) fn check_regex_static(repo_root: &Path) -> Result<i32> {
     let ctor_re = regex_from_static(&REGEX_CTOR_RE, "regex constructor")?;
     let mut offenders = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
+    for path in production_source_files_for_ci_checks(repo_root)? {
         let rel = display_path(repo_root, &path);
         let lines = read_lines(&path)?;
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
 
         let mut lazy_scope = LazyStaticScope::default();
+        let mut inline_tests = InlineTestScope::default();
+        let mut sanitizer = LineSanitizer::default();
 
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
-            if line_no >= test_start {
-                break;
-            }
 
-            // Match, count, and track scope over code-only text — string literals,
-            // char literals, and trailing comments are stripped so their content
-            // can neither trip a false match nor corrupt delimiter tracking.
-            let code = code_only(line);
+            // Match, count, and track scope over sanitized text — string
+            // literals, char literals, raw strings, block comments, and trailing
+            // comments are stripped so their content can neither trip a false
+            // match nor corrupt delimiter tracking. The SAME sanitized text feeds
+            // both scope trackers so multi-line lexical state stays consistent.
+            let code = sanitizer.sanitize(line);
+
+            if inline_tests.is_test_line(&code) {
+                inline_tests.observe_line(&code);
+                continue;
+            }
 
             if !lazy_scope.allows_current_line(&code) {
                 // Count every constructor on the line, not just the first, so two
@@ -76,6 +81,7 @@ pub(crate) fn check_regex_static(repo_root: &Path) -> Result<i32> {
             }
 
             lazy_scope.observe_line(&code);
+            inline_tests.observe_line(&code);
         }
     }
 

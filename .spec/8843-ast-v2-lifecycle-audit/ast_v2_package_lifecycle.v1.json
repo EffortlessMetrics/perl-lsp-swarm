@@ -898,7 +898,10 @@
     {
       "reexport_id": "rx:perl-ast-v2",
       "path": "perl_ast::v2",
-      "site": "crates/perl-ast/src/lib.rs:110",
+      "site": "crates/perl-ast/src/lib.rs",
+      "anchor": [
+        "pub use perl_ast_v2 as v2;"
+      ],
       "exposes": "whole package",
       "consumer_id": "c:ast-reexport",
       "compatibility_obligation": "The canonical documented compatibility path. Absorption must keep this path working unchanged; it is the path the replacement column of every public-item row names."
@@ -906,7 +909,10 @@
     {
       "reexport_id": "rx:parser-core-engine",
       "path": "perl_parser_core::engine::ast_v2",
-      "site": "crates/perl-parser-core/src/engine/mod.rs:8",
+      "site": "crates/perl-parser-core/src/engine/mod.rs",
+      "anchor": [
+        "pub use perl_ast_v2 as ast_v2;"
+      ],
       "exposes": "whole package",
       "consumer_id": "c:parser-core-engine-reexport",
       "compatibility_obligation": "Public path of a separately published crate; removal is a breaking change to perl-parser-core, not to perl-ast-v2."
@@ -914,7 +920,10 @@
     {
       "reexport_id": "rx:parser-core-root",
       "path": "perl_parser_core::ast_v2",
-      "site": "crates/perl-parser-core/src/lib.rs:101",
+      "site": "crates/perl-parser-core/src/lib.rs",
+      "anchor": [
+        "pub use engine::ast_v2;"
+      ],
       "exposes": "whole package",
       "consumer_id": "c:parser-core-root-reexport",
       "compatibility_obligation": "Root-level alias of the engine path; independently removable and independently breaking."
@@ -922,7 +931,10 @@
     {
       "reexport_id": "rx:parser-core-types",
       "path": "perl_parser_core::{DiagnosticId, MissingKind}",
-      "site": "crates/perl-parser-core/src/lib.rs:97",
+      "site": "crates/perl-parser-core/src/lib.rs",
+      "anchor": [
+        "pub use ast_v2::{DiagnosticId, MissingKind};"
+      ],
       "exposes": "DiagnosticId, MissingKind",
       "consumer_id": "c:parser-core-root-reexport",
       "compatibility_obligation": "Two v2 types are public API of perl-parser-core under unqualified names. A consumer using perl_parser_core::MissingKind has no textual dependency on perl-ast-v2 at all, so a token scan of external code would not find it."
@@ -930,7 +942,10 @@
     {
       "reexport_id": "rx:parser",
       "path": "perl_parser::ast_v2",
-      "site": "crates/perl-parser/src/lib.rs:122",
+      "site": "crates/perl-parser/src/lib.rs",
+      "anchor": [
+        "pub use engine::ast_v2;"
+      ],
       "exposes": "whole package",
       "consumer_id": "c:parser-reexport",
       "compatibility_obligation": "Third crate outward; breaking removal belongs to perl-parser."
@@ -938,7 +953,10 @@
     {
       "reexport_id": "rx:parser-compat",
       "path": "perl_parser::compat::ast_v2",
-      "site": "crates/perl-parser/src/compat.rs:18",
+      "site": "crates/perl-parser/src/compat.rs",
+      "anchor": [
+        "pub use crate::engine::ast_v2;"
+      ],
       "exposes": "whole package",
       "consumer_id": "c:parser-compat-reexport",
       "compatibility_obligation": "Fourth public path, on the explicitly compatibility-oriented module."
@@ -1287,49 +1305,71 @@
     {
       "surface_id": "ps:workspace-member",
       "surface": "workspace_member",
-      "site": "Cargo.toml:5",
+      "site": "Cargo.toml",
+      "anchor": [
+        "\"crates/perl-ast-v2\","
+      ],
       "current_status": "member of the root workspace",
       "owner": "#7398 per policy/repository-topology.toml"
     },
     {
       "surface_id": "ps:workspace-dependency",
       "surface": "workspace_dependency",
-      "site": "Cargo.toml:241",
+      "site": "Cargo.toml",
+      "anchor": [
+        "perl-ast-v2 = { path = \"crates/perl-ast-v2\", version = \"0.17.0\" }"
+      ],
       "current_status": "path + version 0.17.0, so workspace consumers resolve the local path while the published version stays declared",
       "owner": "#7398"
     },
     {
       "surface_id": "ps:publish-allowlist",
       "surface": "publish_allowlist",
-      "site": "Cargo.toml:134",
+      "site": "Cargo.toml",
+      "anchor": [
+        "\"perl-ast-v2\","
+      ],
       "current_status": "Tier 1b publish-allowlisted crate",
       "owner": "release tooling"
     },
     {
       "surface_id": "ps:topology",
       "surface": "repository_topology",
-      "site": "policy/repository-topology.toml:227",
+      "site": "policy/repository-topology.toml",
+      "anchor": [
+        "name = \"perl-ast-v2\""
+      ],
       "current_status": "placement=accepted, publish_disposition=published, current_integration_mode=workspace_path, future_owner=perl-parser",
       "owner": "#7398"
     },
     {
       "surface_id": "ps:risk-pack",
       "surface": "policy_baseline",
-      "site": "policy/ci-risk-packs.toml:31",
+      "site": "policy/ci-risk-packs.toml",
+      "anchor": [
+        "\"crates/perl-ast-v2/**\","
+      ],
       "current_status": "crate glob is a member of a CI risk pack",
       "owner": "CI policy"
     },
     {
       "surface_id": "ps:panic-baseline",
       "surface": "policy_baseline",
-      "site": "policy/allow.toml:1642",
+      "site": "policy/allow.toml",
+      "anchor": [
+        "id = \"allow-b0214\"",
+        "glob = \"crates/perl-ast-v2/src/**/*.rs\""
+      ],
       "current_status": "per-crate panic-macro baseline floor over crates/perl-ast-v2/src/**/*.rs",
       "owner": "repository panic policy"
     },
     {
       "surface_id": "ps:docs-metadata",
       "surface": "docs_metadata",
-      "site": "crates/perl-ast-v2/Cargo.toml:12",
+      "site": "crates/perl-ast-v2/Cargo.toml",
+      "anchor": [
+        "documentation = \"https://docs.rs/perl-ast-v2\""
+      ],
       "current_status": "documentation = https://docs.rs/perl-ast-v2 with docsrs rustdoc args",
       "owner": "package manifest"
     }

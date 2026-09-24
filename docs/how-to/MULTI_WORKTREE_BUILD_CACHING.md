@@ -39,6 +39,19 @@ The `agent-*` recipes (`just agent-check`, `just agent-test`,
 `just agent-clippy`, `just agent-pr-fast`) route through the same wrapper and
 are equally safe for multi-worktree use.
 
+Scope note: the tier lanes (`just merge-gate`, `just ci-gate`, `just nightly`)
+and their leaves (`check-all-targets`, `clippy-full`, `test-full`, …) invoke
+plain `cargo`, so in a secondary worktree they rebuild into that worktree's
+own `target/` with no flock or disk gate. Treat them as single-worktree
+lanes; keep multi-worktree build work on `just cached`, `just build`,
+`just test`, `just check`, `just fix`, and
+`agent-check`/`agent-test`/`agent-clippy`/`agent-nextest`, which all reach
+the wrapper with a heavy first word and take its lock. `just pr-fast` and
+`just agent-pr-fast` instead invoke `cargo-safe xtask gates …`: `xtask`
+takes the wrapper's unlocked branch, so they share the target dir and
+sccache but not the build flock — do not run them concurrently against
+one `DEVPLANE`.
+
 What `cargo-safe` does (see `scripts/cargo-safe`, 74 lines, worth reading):
 
 - redirects `CARGO_TARGET_DIR`, `CARGO_HOME`, `CARGO_BUILD_BUILD_DIR`, and
@@ -80,7 +93,14 @@ every linked worktree resolves the same path (deriving it from the worktree's
 own toplevel basename would recreate the per-slot split):
 
 ```bash
-main_root="$(dirname "$(git rev-parse --git-common-dir)")"
+# --git-common-dir is absolute from a worktree but relative (".git") from the
+# main checkout, so dirname alone splits the devplane ("."/basename mismatch).
+# Branch exactly like the justfile lane does:
+common_dir="$(git rev-parse --git-common-dir)"
+case "$common_dir" in
+  /*|[A-Za-z]:*) main_root="$(dirname "$common_dir")" ;;
+  *) main_root="$(git rev-parse --show-toplevel)" ;;
+esac
 export DEVPLANE="${XDG_CACHE_HOME:-$HOME/.cache}/devplane/$(basename "$main_root")"
 export CARGO_TARGET_DIR="$DEVPLANE/target"
 export CARGO_HOME="$DEVPLANE/cargo-home"
@@ -88,7 +108,7 @@ export CARGO_INCREMENTAL=0
 # with sccache installed:
 export RUSTC_WRAPPER=sccache
 export SCCACHE_DIR="$DEVPLANE/sccache"
-export SCCACHE_BASEDIRS="$(dirname "$(git rev-parse --show-toplevel)")"
+export SCCACHE_BASEDIRS="$(dirname "$main_root")"
 ```
 
 Warning: with the variables exported directly, **you lose the flock** (see

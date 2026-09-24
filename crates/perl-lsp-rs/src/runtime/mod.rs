@@ -56,6 +56,7 @@ mod text_sync;
 /// `PERL_LSP_TIMING` phase-1 instrumentation sink (opt-in span timings).
 pub(crate) mod timing;
 mod types;
+pub(crate) mod v0_18_text_sync_envelope;
 mod window;
 mod workspace;
 mod workspace_folder;
@@ -187,6 +188,9 @@ pub struct LspServer {
     initialize_requested: AtomicBool,
     /// Whether the server is initialized
     initialized: AtomicBool,
+    /// Server-owned coordinate authority, published only after initialize succeeds.
+    pub(crate) position_encoding_session_context:
+        Mutex<Option<lifecycle::position_encoding::PositionEncodingSessionContext>>,
     /// Whether shutdown was received (for LSP-compliant exit handling)
     shutdown_received: AtomicBool,
     /// Pending `window/logMessage` text to emit once the client has sent the
@@ -215,6 +219,12 @@ pub struct LspServer {
     outbound_writer_handle: Option<std::thread::JoinHandle<outbound::WriterTerminalOutcome>>,
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
+    /// Root-input classification recorded by the most recent `initialize`
+    /// request (#8161). `None` before the first initialize. Kept as a separate
+    /// receipt from `client_capabilities.workspace_folders_support` so the
+    /// client's advertised bit and the declared root input never merge into
+    /// one derived boolean.
+    initial_root_input: Mutex<Option<lifecycle::root_input::InitialRootInput>>,
     /// Cancelled request IDs
     cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Request IDs that are queued or executing in the async scheduler.
@@ -289,6 +299,12 @@ pub struct LspServer {
     advertised_features: Mutex<crate::protocol::capabilities::AdvertisedFeatures>,
     /// Canonical feature IDs emitted by the most recent initialize response.
     advertised_feature_ids: Mutex<Vec<&'static str>>,
+    /// Accepted text-sync session contract plus the digest of the exact
+    /// `InitializeResult` built from it (#9378). `None` until initialize is
+    /// accepted; set exactly once, and never replaced or partially altered.
+    /// The immutable contract is the single authority for the wire sync kind
+    /// and position encoding — no other field may carry a competing value.
+    text_sync_session: Mutex<Option<lifecycle::session_contract::AcceptedTextSyncSession>>,
     /// Client supports pull diagnostics
     client_supports_pull_diags: Arc<AtomicBool>,
     /// Workspace configuration for module resolution
