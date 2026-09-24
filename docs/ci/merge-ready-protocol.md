@@ -77,7 +77,10 @@ the classifier cannot be altered by the candidate):
   pass;
 - the probe degrades to a non-blocking warning when its own inputs are
   unreliable: incomplete or failed API evidence, an unreadable canonical
-  `ci.yml` on `main`, or `main` moving between the before/after SHA reads.
+  `ci.yml` on `main`, or `main` moving between the before/after SHA reads —
+  a degradation `evaluate()` gates on `main`-side evidence only; candidate-side
+  probe failures are recorded as warnings, and candidate hard failures
+  (including candidate evidence that stays missing) still fail closed.
 
 A candidate whose `ci.yml` differs from canonical `main`'s is treated as
 having no comparable shard evidence: it is warned, then fail-closed after the
