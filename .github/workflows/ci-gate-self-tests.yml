@@ -48,6 +48,13 @@ on:
       - 'scripts/ci/check-pr-review-convergence'
       - 'scripts/ci/fixtures/convergence/**'
       - 'scripts/tests/test-check-pr-review-convergence.sh'
+      # Paginator accumulator stdin portability regression (#15034): the test
+      # pins the jq stdin form inside check-pr-review-convergence-core, and
+      # the core is the implementation it gates, so both halves re-run this
+      # self-test gate; without the trigger, a silent revert to
+      # jq -n --argjson would pass all gated checks.
+      - 'scripts/ci/check-pr-review-convergence-core'
+      - 'scripts/tests/test-paginate-accumulator-argjson-portability.sh'
       - 'scripts/reviews/**'
       # Subject-bound semantic review currentness. The policy-surface suite
       # asserts against the skill trees, the shared contract, and pre-merge, so
@@ -357,6 +364,11 @@ jobs:
 
       - name: Run review-convergence gate self-test
         run: bash scripts/tests/test-check-pr-review-convergence.sh
+
+      # (#15034) The paginator accumulator must stay on the jq stdin form; a
+      # silent revert to jq -n --argjson passes every other gated check.
+      - name: Run paginator accumulator argjson portability regression test
+        run: bash scripts/tests/test-paginate-accumulator-argjson-portability.sh
 
       # The convergence wrapper reports native GitHub facts and deliberately
       # refuses to classify them as substantive review. That split is only
