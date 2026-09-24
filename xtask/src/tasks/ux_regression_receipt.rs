@@ -19,11 +19,12 @@ static FAILED_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
 // paths), or `/` (absolute paths) so panics whose frame is outside the
 // workspace root — a dependency's own `unwrap`, a `registry/src/...` frame, or
 // any build whose `CARGO_MANIFEST_DIR` is not a prefix of the compiled file —
-// are still captured. The `[^:\s]` and `[^:]*` segments already forbid
-// whitespace and inner `:`, which keeps the leading class narrow.
+// are still captured. The `[^:\s]` segments forbid whitespace and inner `:`
+// across the whole path, so a token like `./ something:100:200` — whitespace
+// inside the "path" — cannot be captured as a location.
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static PANIC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z./][^:\s][^:]*:\d+:\d+)")
+    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z./][^:\s][^:\s]*:\d+:\d+)")
         .expect("panic regex must compile")
 });
 
@@ -889,6 +890,29 @@ test result: FAILED. 0 passed; 1 failed";
         ] {
             assert!(PANIC_RE.captures(line).is_none(), "leading {line:?} must not match, but did");
         }
+    }
+
+    #[test]
+    fn panic_re_whitespace_inside_path_is_not_captured() {
+        // The path segments are whitespace-free by grammar: a real panic
+        // location is one token, so `./` followed by a space is prose, not a
+        // path. The `[^:]*` tail used to admit that whitespace and captured
+        // `./ something:100:200` as a bogus `panic_location` (review finding
+        // on #16189, FC-WHITESPACE-PATH-GRAMMAR); `[^:\s]*` refuses it.
+        for line in [
+            "thread 'x' panicked at ./ something:100:200",
+            "thread 'x' panicked at ./a b.rs:100:200",
+        ] {
+            assert!(
+                PANIC_RE.captures(line).is_none(),
+                "whitespace inside {line:?} must not be captured as a path, but was"
+            );
+        }
+        // A genuine `./`-relative location with no inner whitespace still
+        // matches, proving the negative control is not over-narrow.
+        let line = "thread 'x' panicked at ./xtask/src/a.rs:100:200:";
+        let cap = PANIC_RE.captures(line).expect("dot-relative path panic must still match");
+        assert_eq!(&cap[1], "./xtask/src/a.rs:100:200");
     }
 
     // =========================================================================
