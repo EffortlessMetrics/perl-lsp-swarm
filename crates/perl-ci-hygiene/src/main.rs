@@ -214,7 +214,9 @@ pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
     let cfg_test_plain_re = Regex::new(r"^\s*#\[cfg\(test\)\]")?;
     let cfg_all_test_re = Regex::new(r"^\s*#\[cfg\(all\(test[,\)]")?;
     let attr_re = Regex::new(r"^\s*#\[")?;
-    let mod_re = Regex::new(r"^\s*(?:pub\s+)?mod\s+")?;
+    // Visibility-qualified module declarations count too: `pub(crate) mod`,
+    // `pub(super) mod`, and `pub(in path) mod` all open test-only scopes.
+    let mod_re = Regex::new(r"^\s*(?:pub(?:\((?:crate|super|in\s*[a-z_:]+)\))?\s+)?mod\s+")?;
     for (idx, line) in contents.iter().enumerate() {
         if !cfg_test_plain_re.is_match(line) && !cfg_all_test_re.is_match(line) {
             continue;
@@ -223,7 +225,10 @@ pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
         // non-attribute line opens a `mod` block. Intermediate attributes
         // (`#[allow(…)]`, `#[cfg(…)]`, etc.) are skipped so `#[cfg(test)]
         // #[allow(clippy::too_many_lines)] mod tests { … }` is still a
-        // boundary at the `#[cfg(test)]` line.
+        // boundary at the `#[cfg(test)]` line. `//`-comment lines are skipped
+        // for the same reason: a note between the attribute and the `mod`
+        // must not break the lookahead, and a commented-out `mod` line must
+        // not satisfy it.
         let mut j = idx + 1;
         loop {
             if j >= contents.len() {
@@ -235,6 +240,10 @@ pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
                 continue;
             }
             if attr_re.is_match(next) {
+                j += 1;
+                continue;
+            }
+            if next.trim_start().starts_with("//") {
                 j += 1;
                 continue;
             }
@@ -4228,6 +4237,70 @@ mod tests {
         let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test_const.rs");
         std::fs::write(&tmp, "#[cfg(test)]\nconst SEED: u32 = 42;\n\npub fn prod() {}\n")?;
         // No `mod` follows the cfg attr → no boundary → usize::MAX.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_pub_crate_mod_is_boundary() -> Result<()> {
+        // A visibility-qualified test module is still a test module: the
+        // lookahead must recognise `pub(crate) mod` (and `pub(super)` /
+        // `pub(in …)`) as the opener, not only a bare `mod`.
+        let tmp = std::env::temp_dir().join("pch_test_pub_crate_mod.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(test)]\n\
+             pub(crate) mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
+        // #[cfg(test)] is at line 3; the `pub(crate) mod` on line 4 confirms it.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_pub_super_and_pub_in_mod_are_boundaries() -> Result<()> {
+        let tmp = std::env::temp_dir().join("pch_test_pub_super_mod.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\npub(super) mod tests {\n}\n")?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 1);
+        let _ = std::fs::remove_file(&tmp);
+
+        let tmp = std::env::temp_dir().join("pch_test_pub_in_mod.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\npub(in crate::sniff) mod tests {\n}\n")?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 1);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_comment_between_cfg_test_and_mod_is_skipped() -> Result<()> {
+        // A `//` comment between the attribute and the `mod` must not break
+        // the lookahead.
+        let tmp = std::env::temp_dir().join("pch_test_comment_then_mod.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(test)]\n\
+             // Unit tests for the scanner live here.\n\
+             mod tests {\n}\n",
+        )?;
+        // #[cfg(test)] is at line 3; the comment does not hide the `mod`.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_commented_out_mod_is_not_boundary() -> Result<()> {
+        // A commented-out `mod` line must not satisfy the lookahead: the next
+        // real code item decides, and a `use` is not a boundary.
+        let tmp = std::env::temp_dir().join("pch_test_commented_mod_not_boundary.rs");
+        std::fs::write(
+            &tmp,
+            "#[cfg(test)]\n// mod tests {}\nuse std::cell::Cell;\n\npub fn prod() {}\n",
+        )?;
         assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
         let _ = std::fs::remove_file(&tmp);
         Ok(())
