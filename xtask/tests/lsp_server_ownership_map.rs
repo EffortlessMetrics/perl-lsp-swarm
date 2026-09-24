@@ -175,6 +175,18 @@ const OWNERSHIP: &[OwnershipRow] = &[
         false,
         "#8386"
     ),
+    // #8161: initialize root-input provenance receipt, written once per
+    // initialize request; kept as a separate receipt from the client's
+    // advertised workspace-folder capability bit.
+    row!(
+        "initial_root_input",
+        ClientSession,
+        "Mutex<Option<InitialRootInput>>",
+        "connection replacement",
+        "initialize root-input provenance receipt (#8161)",
+        false,
+        "#8161"
+    ),
     row!(
         "cancelled",
         ClientSession,
