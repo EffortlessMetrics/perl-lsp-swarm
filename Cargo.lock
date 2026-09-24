@@ -4237,6 +4237,7 @@ dependencies = [
  "sha1",
  "sha2",
  "similar 3.2.0",
+ "strum",
  "syn 3.0.4",
  "tar",
  "tempfile",
