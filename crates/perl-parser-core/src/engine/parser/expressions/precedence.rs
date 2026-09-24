@@ -1023,7 +1023,7 @@ impl<'a> Parser<'a> {
     ///
     /// Kept local to this seam: filehandle, block, list, and recovery contexts have
     /// different legal starts. Do not reuse this as a global expression-starter
-    /// predicate. Angle-bracket terms, word `not`, and yada-yada `...` remain
+    /// predicate. Word `not` and yada-yada `...` remain
     /// outside this supported operand set. Magic constants use Identifier.
     fn ordinary_binary_repetition_rhs(kind: TokenKind, text: &str) -> RepetitionRhsDisposition {
         let supported = match kind {
@@ -1057,6 +1057,9 @@ impl<'a> Parser<'a> {
             | TokenKind::Transliteration
             | TokenKind::Eval
             | TokenKind::HeredocStart
+            // Only while x expects its RHS: the primary angle scanner owns
+            // closure, recovery, and work limits. LeftShift stays excluded.
+            | TokenKind::Less
             // `/` after binary `x` is a term, not division. Unary reclassifies it
             // to `Regex` so `"x" x /3/` reaches `parse_primary`.
             | TokenKind::Slash => true,

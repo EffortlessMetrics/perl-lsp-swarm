@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Ordinary string repetition now retains diamond, readline and glob right operands with exact source ranges, bounded malformed recovery and unchanged comparison and shift precedence.
+time: 2026-09-20T17:11:46Z
+custom:
+  PR: 16257
+  Slug: repetition-angle-right-operands
+  Breaking: "no"
