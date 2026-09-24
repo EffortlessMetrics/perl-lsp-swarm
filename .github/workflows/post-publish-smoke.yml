@@ -139,9 +139,13 @@ jobs:
               ARTIFACT_COUNT="$(printf '%s' "$ARTIFACTS" | python3 -c '
           import json, sys
           try:
-              print(json.load(sys.stdin).get("total_count", 0))
+              data = json.load(sys.stdin)
           except Exception:
               raise SystemExit("artifact metadata is not readable JSON")
+          count = data.get("total_count")
+          if isinstance(count, bool) or not isinstance(count, int):
+              raise SystemExit("artifact metadata has no integer total_count; cannot distinguish an absent artifact from a broken metadata service")
+          print(count)
           ')" || {
                 printf '::error::The artifact metadata response for upstream run %s is not readable, so an absent %s receipt cannot be distinguished from a failed download; failing closed. (#15481)\n' "$WORKFLOW_RUN_ID" "$RECEIPT_ARTIFACT"
                 echo "should_run=false" >> "$GITHUB_OUTPUT"
