@@ -825,6 +825,12 @@ enum Commands {
         /// Head revision used for diff-scoped RIPR receipt commands.
         #[arg(long, default_value = "HEAD")]
         ripr_head: String,
+        /// Commit the repo-wide RIPR+ total-debt receipt may be bound to
+        /// instead of the head, for `--mode enforce-new-ripr` only. Normally
+        /// the merge base the pull request is measured against. Must name the
+        /// commit exactly; omitting it keeps the receipt head-bound.
+        #[arg(long)]
+        ripr_baseline_commit: Option<String>,
         /// Quality-gate JSON receipt path.
         #[arg(long, default_value = "target/receipts/quality/quality-gate.json")]
         receipt: PathBuf,
@@ -6134,6 +6140,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_baseline_commit,
             receipt,
             summary,
             check,
@@ -6148,6 +6155,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_baseline_commit,
             receipt,
             summary,
             check,
