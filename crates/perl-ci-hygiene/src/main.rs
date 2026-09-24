@@ -191,53 +191,16 @@ fn is_excluded_test_path(path: &Path) -> bool {
     false
 }
 
+/// The 1-based line where the file's test scope begins, or [`usize::MAX`].
+///
+/// Delegates to [`test_scope::first_cfg_test_boundary`], the within-file half
+/// of the one attribute reader for production scope. The two-regex reader this
+/// used to be needed `test` on the same physical line as `#[cfg(all(`, so a
+/// gate spelled across several lines — the live shape in
+/// `crates/perl-corpus/src/loading/` — read as no boundary at all (#16281).
 pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
     let contents = read_lines(path)?;
-    // Plain #[cfg(test)] is an unconditional test-scope boundary: any item guarded
-    // this way is test-only regardless of what follows, so treat the first occurrence
-    // as the boundary immediately (matches the original heuristic).
-    //
-    // #[cfg(all(test, ...))] requires a lookahead: it must be followed (possibly after
-    // blank lines or other attributes) by a `mod` declaration to count as a boundary.
-    // This prevents a lone `#[cfg(all(test, not(target_arch = "wasm32")))] use …` near
-    // the top of a file (e.g. config/mod.rs:9) from falsely excluding the rest of the
-    // file from production CI checks.
-    //
-    // #[cfg(any(test, feature = "…"))] is intentionally NOT matched because such items
-    // are compiled into production builds when the feature is active.
-    let cfg_test_plain_re = Regex::new(r"^\s*#\[cfg\(test\)\]")?;
-    let cfg_all_test_re = Regex::new(r"^\s*#\[cfg\(all\(test[,\)]")?;
-    let attr_re = Regex::new(r"^\s*#\[")?;
-    let mod_re = Regex::new(r"^\s*(?:pub\s+)?mod\s+")?;
-    for (idx, line) in contents.iter().enumerate() {
-        if cfg_test_plain_re.is_match(line) {
-            return Ok(idx + 1);
-        }
-        if cfg_all_test_re.is_match(line) {
-            // Only treat #[cfg(all(test, ...))] as a boundary when the next
-            // non-blank, non-attribute line is a `mod` declaration.
-            let mut j = idx + 1;
-            loop {
-                if j >= contents.len() {
-                    break;
-                }
-                let next = &contents[j];
-                if next.trim().is_empty() {
-                    j += 1;
-                    continue;
-                }
-                if attr_re.is_match(next) {
-                    j += 1;
-                    continue;
-                }
-                if mod_re.is_match(next) {
-                    return Ok(idx + 1);
-                }
-                break;
-            }
-        }
-    }
-    Ok(usize::MAX)
+    Ok(test_scope::first_cfg_test_boundary(&contents))
 }
 
 /// Return true when a `// SAFETY:` comment directly documents `lines[unsafe_idx]`.
@@ -4260,6 +4223,25 @@ mod tests {
              mod tests {\n}\n",
         )?;
         // #[cfg(test)] is at line 3; that is the boundary, not the `mod` line.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_multiline_all_test_is_boundary() -> Result<()> {
+        // #16281: the two-regex reader this function used to wrap needed
+        // `test` on the `#[cfg(all(` line, so a gate spelled across several
+        // physical lines — the live shape at
+        // crates/perl-corpus/src/loading/sectioned_identity.rs:65 — returned
+        // usize::MAX and read the guarded test module as production.
+        let tmp = std::env::temp_dir().join("pch_test_multiline_all_test.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(all(\n    test,\n    not(target_arch = \"wasm32\"),\n))]\n\
+             mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
         assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
         let _ = std::fs::remove_file(&tmp);
         Ok(())
