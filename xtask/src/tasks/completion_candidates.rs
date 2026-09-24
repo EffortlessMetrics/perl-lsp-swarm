@@ -494,7 +494,26 @@ impl RankDisposition {
 /// #10230 may not report `Complete` while any reached row is
 /// `legacy_unreported`, which is precisely why the state is named rather than
 /// folded into `complete_or_empty`.
+///
+/// # Why there is no `Forbidden*` variant
+///
+/// Unlike the sibling enums (`IdentityDisposition`, `InsertionDisposition`,
+/// `EvidenceDisposition`, `RankDisposition`, `FinalizerRoute`) each of which
+/// carries a `Forbidden*` variant that `validate_dispositions` refuses, every
+/// variant here is a legitimate producer state — including `legacy_unreported`,
+/// which is the documented default for unmigrated rows. Inventing a `Forbidden*`
+/// variant to mirror the sibling shape would either forbid a state the ledger
+/// currently uses as its honest default or rename a real disposition, neither
+/// of which is the change `#16085` asked for. The consumer-side gate owned by
+/// `#10230` is what blocks `Complete` while any reached row is
+/// `legacy_unreported`; that block lives downstream, not here.
+///
+/// This decision is pinned by `deliberately_accepts_every_completeness_variant`.
+/// The test derives its inventory from the enum itself, so adding a variant
+/// automatically adds it to the acceptance walk instead of relying on a second
+/// hand-maintained list.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
 pub enum CompletenessDisposition {
     /// Reports an exact complete result, empty included.
@@ -3491,6 +3510,36 @@ mod tests {
         let (mut ledger, discovered) = fixture();
         ledger.producers[0].rank = RankDisposition::UnclassifiedForbidden;
         refuses(&ledger, &discovered, "rank behavior must be classified");
+    }
+
+    /// `CompletenessDisposition` deliberately has no `Forbidden*` variant and no
+    /// `forbidden()` gate in `validate_dispositions` (see the enum's doc comment
+    /// and `#16085`). Every declared variant is a legitimate producer state,
+    /// including `LegacyUnreported`, which is the documented default for every
+    /// unmigrated row. `EnumIter` makes the walk derive from the enum itself, so
+    /// adding a variant automatically extends this acceptance control.
+    #[test]
+    fn deliberately_accepts_every_completeness_variant() -> Result<()> {
+        use strum::IntoEnumIterator;
+
+        for variant in CompletenessDisposition::iter() {
+            let (mut ledger, discovered) = fixture();
+            let row = row_mut(&mut ledger, |row| {
+                // Reach a row the validator exercises end-to-end. The router and
+                // finalizer rows are accepted by every other axis; any producer
+                // row whose other dispositions are valid will do.
+                !matches!(row.candidate_class, CandidateClass::Router | CandidateClass::Finalizer)
+            });
+            row.source_completeness = variant;
+            validate(&ledger, &discovered).with_context(|| {
+                format!(
+                    "validator refused `CompletenessDisposition::{}` even though #16085 records \
+                     the absence of a forbidden() gate as a deliberate decision",
+                    variant.as_str()
+                )
+            })?;
+        }
+        Ok(())
     }
 
     /// A workspace or method candidate has a real entity behind it, so calling
