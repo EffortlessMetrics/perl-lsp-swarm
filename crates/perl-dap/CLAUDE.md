@@ -116,7 +116,9 @@ pass their own advertised value, so promoting the native gate does not silently
 open an external-peer path that has no pure inspection of its own.
 
 If you are about to change one of these back to a catalog flag: don't. Land the
-named issue's re-enable gate first, then flip the one constant.
+re-enable gate recorded at
+`crates/perl-dap/tests/dap_hover_capability_fail_closed_9573.rs` first, then
+flip the one constant.
 
 ## Important Runtime Rules
 
