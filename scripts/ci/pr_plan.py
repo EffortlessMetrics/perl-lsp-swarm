@@ -824,6 +824,9 @@ def main() -> int:
             summary_path.parent.mkdir(parents=True, exist_ok=True)
             with summary_path.open("a", encoding="utf-8") as f:
                 f.write(render_not_proven_summary(plan))
+        # The annotation must reach the workflow log, not only the receipt:
+        # GitHub renders `::error::` lines from the process output.
+        print(plan["warnings"][0], file=sys.stderr)
         print(
             json.dumps(
                 {

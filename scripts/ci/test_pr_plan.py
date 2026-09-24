@@ -9,7 +9,7 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 
@@ -425,7 +425,8 @@ required_checks = ["docs"]
                     str(summary),
                 ]
                 stdout = io.StringIO()
-                with redirect_stdout(stdout):
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
                     status = pr_plan.main()
             finally:
                 sys.argv = old_argv
@@ -452,6 +453,9 @@ required_checks = ["docs"]
         self.assertEqual([], plan["selection"]["skipped_lanes"])
         self.assertTrue(plan["guard"]["failed"])
         self.assertIn("NOT_PROVEN", stdout.getvalue())
+        # The ::error:: annotation is printed to the workflow log, not only
+        # stored in the receipt (#15347).
+        self.assertIn("::error::Changed-file discovery failed", stderr.getvalue())
         self.assertIn("git-diff-exit-128", summary_text)
         self.assertIn("NOT_PROVEN", summary_text)
 
