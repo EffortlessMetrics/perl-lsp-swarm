@@ -653,7 +653,9 @@ class CurrentMainTrustedHistoryStateTests(unittest.TestCase):
         return result.stdout.strip()
 
     def _commit(self, repo: Path, message: str) -> str:
-        self._git(repo, "commit", "--allow-empty", "-m", message)
+        # Command-local override: a host with inherited commit.gpgsign=true
+        # and no usable signing agent would fail fixture commits in setUp.
+        self._git(repo, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", message)
         return self._git(repo, "rev-parse", "HEAD")
 
     def _shallow_clone(self) -> Path:
