@@ -64,11 +64,12 @@ requires MSRV 1.95.
 ### Windows shell for `just` recipes
 
 The `just` recipes are bash scripts. Run them from Git Bash (or another bash
-with `cygpath` on `PATH`); from PowerShell or `cmd.exe` they fail with
-``Could not find `cygpath` ``. Git Bash already puts `cygpath` and the other
-tools these recipes need on its own session `PATH`, so running them from Git
-Bash needs no extra `PATH` entries — avoid adding `Git\usr\bin` to the global
-Windows `PATH`, where its GNU utilities would shadow native `find` and `sort`.
+with `cygpath` on `PATH`). From PowerShell or `cmd.exe`, `just` fails with
+``Could not find `cygpath` `` when `cygpath` is not on `PATH`. Git Bash
+already puts `cygpath` and the other tools these recipes need on its own
+session `PATH`, so running them from Git Bash needs no extra `PATH` entries —
+avoid adding `Git\usr\bin` to the global Windows `PATH`, where its GNU
+utilities would shadow native `find` and `sort`.
 
 ### Windows symlink-privilege skips (#12567)
 
