@@ -2603,7 +2603,71 @@ pub(crate) fn production_source_files_for_ci_checks(repo_root: &Path) -> Result<
     Ok(walked.into_iter().filter(|path| !test_only.contains(path)).collect())
 }
 
-fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
+pub(crate) fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
+    let report = scan_prod_unwraps_and_panics(repo_root)?;
+    report.print_and_exit()
+}
+
+/// The two production-line checks share a single walk so neither scanner
+/// reads ahead of the other. Splitting them apart used to mean an early
+/// return on the first failure hid the second; keeping them in one struct
+/// forces the printing layer to see both lists before deciding an exit
+/// code. #16253.
+pub(crate) struct ProdUnwrapsAndPanicsReport {
+    pub unwrap_offenders: Vec<String>,
+    pub panic_offenders: Vec<String>,
+    pub unwrap_baseline: usize,
+    pub panic_baseline: usize,
+}
+
+impl ProdUnwrapsAndPanicsReport {
+    fn print_and_exit(&self) -> Result<i32> {
+        let mut failed = false;
+        println!(
+            "unwrap/expect: {} (baseline: {})",
+            self.unwrap_offenders.len(),
+            self.unwrap_baseline
+        );
+        if self.unwrap_offenders.len() > self.unwrap_baseline {
+            failed = true;
+            println!(
+                "FAIL: unwrap/expect count ({}) exceeds baseline ({})",
+                self.unwrap_offenders.len(),
+                self.unwrap_baseline
+            );
+            println!();
+            println!("Offenders:");
+            for line in self.unwrap_offenders.iter().take(10) {
+                println!("{line}");
+            }
+        }
+
+        println!(
+            "panic-family macros: {} (baseline: {})",
+            self.panic_offenders.len(),
+            self.panic_baseline
+        );
+        if self.panic_offenders.len() > self.panic_baseline {
+            failed = true;
+            println!(
+                "FAIL: panic-family count ({}) exceeds baseline ({})",
+                self.panic_offenders.len(),
+                self.panic_baseline
+            );
+            println!();
+            println!("Offenders:");
+            for line in self.panic_offenders.iter().take(10) {
+                println!("{line}");
+            }
+            println!(
+                "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count."
+            );
+        }
+        Ok(if failed { 1 } else { 0 })
+    }
+}
+
+pub(crate) fn scan_prod_unwraps_and_panics(repo_root: &Path) -> Result<ProdUnwrapsAndPanicsReport> {
     let unwrap_re = Regex::new(r"\.unwrap\(|\.expect\(")?;
     let panic_re = Regex::new(r"(panic!\(|todo!\(|unimplemented!\(|unreachable!\()")?;
     let comment_re = Regex::new(r"^\s*//")?;
@@ -2640,39 +2704,12 @@ fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
 
     let unwrap_baseline = read_usize_file(&repo_root.join("ci/unwrap_prod_baseline.txt"), 0)?;
     let panic_baseline = read_usize_file(&repo_root.join("ci/panic_prod_baseline.txt"), 0)?;
-    println!("unwrap/expect: {} (baseline: {})", unwrap_offenders.len(), unwrap_baseline);
-    if unwrap_offenders.len() > unwrap_baseline {
-        println!(
-            "FAIL: unwrap/expect count ({}) exceeds baseline ({})",
-            unwrap_offenders.len(),
-            unwrap_baseline
-        );
-        println!();
-        println!("Offenders:");
-        for line in unwrap_offenders.iter().take(10) {
-            println!("{line}");
-        }
-        return Ok(1);
-    }
-
-    println!("panic-family macros: {} (baseline: {})", panic_offenders.len(), panic_baseline);
-    if panic_offenders.len() > panic_baseline {
-        println!(
-            "FAIL: panic-family count ({}) exceeds baseline ({})",
-            panic_offenders.len(),
-            panic_baseline
-        );
-        println!();
-        println!("Offenders:");
-        for line in panic_offenders.iter().take(10) {
-            println!("{line}");
-        }
-        println!(
-            "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count."
-        );
-        return Ok(1);
-    }
-    Ok(0)
+    Ok(ProdUnwrapsAndPanicsReport {
+        unwrap_offenders,
+        panic_offenders,
+        unwrap_baseline,
+        panic_baseline,
+    })
 }
 
 fn is_allowlisted_prod_panic_hit(_rel_path: &str, line: &str) -> bool {
@@ -4080,6 +4117,68 @@ mod tests {
             production.iter().any(|path| path.ends_with("real.rs")),
             "its unguarded sibling must still be scanned; got {production:?}"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    // ── cmd_check_unwraps_prod tests (#16253) ─────────────────────────────────
+    //
+    // The two scanners (unwrap/expect and panic-family) used to early-return on
+    // the first failure so the second count was hidden. A regression that
+    // lands both kinds simultaneously must surface both — a single `Ok(1)` is
+    // indistinguishable from "only unwrap failed" once the second count is
+    // never printed.
+
+    /// Build a fixture with one crate whose production code carries both an
+    /// unwrap and a panic-family macro, with both baselines set to zero so
+    /// both checks fail. The function must report both failures (exit 1, both
+    /// FAIL lines printed) rather than hiding the second behind an early
+    /// return on the first.
+    fn unwraps_prod_dual_failure_fixture(name: &str) -> Result<PathBuf> {
+        let root = std::env::temp_dir().join(format!("pch_unwraps_prod_{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let crate_root = root.join("crates/demo");
+        std::fs::create_dir_all(crate_root.join("src"))?;
+        std::fs::create_dir_all(root.join("ci"))?;
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/demo\"]\n")?;
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )?;
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn unwrap_call() { let _ = \"x\".parse::<i32>().unwrap(); }\n\
+             pub fn panic_call() { unreachable!(\"dual\"); }\n",
+        )?;
+        std::fs::write(root.join("ci/unwrap_prod_baseline.txt"), "0\n")?;
+        std::fs::write(root.join("ci/panic_prod_baseline.txt"), "0\n")?;
+        Ok(root)
+    }
+
+    #[test]
+    fn check_unwraps_prod_reports_both_failures_when_both_exceed_baseline() -> Result<()> {
+        // Regression for the early-return defect called out in #16253: when
+        // both unwrap and panic-family counts exceed their baselines, the
+        // scanner must populate both lists before the printing layer decides
+        // the exit code, so a regression that re-introduces an early return
+        // visibly empties one of the two lists.
+        let root = unwraps_prod_dual_failure_fixture("both_fail")?;
+        let report = scan_prod_unwraps_and_panics(&root)?;
+        assert_eq!(
+            report.unwrap_offenders.len(),
+            1,
+            "expected exactly one unwrap offender; got {:?}",
+            report.unwrap_offenders
+        );
+        assert_eq!(
+            report.panic_offenders.len(),
+            1,
+            "expected exactly one panic-family offender; got {:?}",
+            report.panic_offenders
+        );
+        let exit = report.print_and_exit()?;
+        assert_eq!(exit, 1, "expected exit 1 when both checks fail");
 
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
