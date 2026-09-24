@@ -41,12 +41,12 @@ Many gates roll up under a single lane (e.g. all `pr_fast` gates contribute to t
 number of gates (e.g. `lsp_tier_a`) span two lanes.
 
 Current state — regenerate with `python3 scripts/ci/validate_gate_lane_mapping.py --strict`,
-which is the authority for these counts. Last refreshed 2026-09-20 (addition of
-`completion_candidate_ledger` and `code_action_generation_ledger` to the `merge_gate` tier):
+which is the authority for these counts. Last refreshed 2026-09-23 (addition of
+`unsafe_prod_check` to the `merge_gate` tier; #16215):
 
-- 94 gates in `.ci/gate-policy.yaml`
+- 95 gates in `.ci/gate-policy.yaml`
 - 25 lanes in `policy/ci-lanes.toml`
-- 94 / 94 gates have at least one lane mapping
+- 95 / 95 gates have at least one lane mapping
 - 0 gates point at a non-existent lane
 
 ---
