@@ -2544,7 +2544,7 @@ review_after = "2026-09-18"
 
 [[allow]]
 id = "non-rust-current-upstream-subject-manifest"
-path = "crates/perl-parser-comparison/upstream/ts-parser-perl-1.2.1.toml"
+path = "crates/perl-parser-comparison/upstream/ts-parser-perl-2.0.0.toml"
 kind = "config"
 language = "toml"
 surface = "source"

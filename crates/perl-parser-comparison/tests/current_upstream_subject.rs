@@ -27,20 +27,20 @@ fn exact_subject_manifest_is_one_complete_authority() {
     assert_eq!(subject.schema_version(), "parser-comparison-subject.v1");
     assert_eq!(subject.subject_role(), "current_upstream_tree_sitter");
     assert_eq!(subject.package_name(), "ts-parser-perl");
-    assert_eq!(subject.package_version(), "1.2.1");
-    assert_eq!(subject.package_requirement(), "=1.2.1");
+    assert_eq!(subject.package_version(), "2.0.0");
+    assert_eq!(subject.package_requirement(), "=2.0.0");
     assert_eq!(
         subject.package_checksum(),
-        "d125f7bfdd1fd82a7e87d2e85793f486ad1b5f465144e9e22132dbe5bd80e694"
+        "db3cd8574afc19af4d3db44fe0cf94a5e8fc3f4056c0326baf5ba01a29666129"
     );
-    assert_eq!(subject.upstream_tag(), "v1.2.1");
-    assert_eq!(subject.upstream_commit(), "c3e17b31179bf8f658c9f37c7a3ea6a202212d5a");
-    assert_eq!(subject.tree_sitter_runtime_version(), "0.26.12");
-    assert_eq!(subject.tree_sitter_language_version(), "0.1.7");
-    assert_eq!(subject.upstream_rust_version(), "1.77");
+    assert_eq!(subject.upstream_tag(), "v2.0.0");
+    assert_eq!(subject.upstream_commit(), "50904961d6a87c5191e611276aa2ecb9d66ca4ff");
+    assert_eq!(subject.tree_sitter_runtime_version(), "0.26.13");
+    assert_eq!(subject.tree_sitter_language_version(), "0.1.8");
+    assert_eq!(subject.upstream_rust_version(), "1.90");
     assert_eq!(
         subject.semantic_digest(),
-        "sha256:750bf42fd1190088c649e5c0ab50995b8895a8002ac15d6bbe560721a97134b2"
+        "sha256:5a2130961782eb11e91aae5ef611a7df736632b9ba82a7c6bbb040b9a64fc995"
     );
     assert_eq!(
         subject.semantic_identity(),
@@ -71,12 +71,12 @@ fn semantic_digest_is_derived_from_canonical_semantic_json() {
 
 #[test]
 fn floating_or_compatible_requirements_are_rejected() {
-    assert!(validate_exact_package_requirement("=1.2.1").is_ok());
+    assert!(validate_exact_package_requirement("=2.0.0").is_ok());
 
-    for requirement in ["1.2.1", "^1.2.1", "~1.2.1", ">=1.2.1", "*"] {
+    for requirement in ["2.0.0", "^2.0.0", "~2.0.0", ">=2.0.0", "*"] {
         let error = validate_exact_package_requirement(requirement)
             .expect_err("non-exact requirement must fail");
-        assert_eq!(error.expected(), "=1.2.1");
+        assert_eq!(error.expected(), "=2.0.0");
         assert_eq!(error.actual(), requirement);
     }
 }
@@ -179,7 +179,7 @@ fn manifest_and_lock_bind_the_exact_crates_io_subject() -> Result<(), Box<dyn Er
         "ts-parser-perl = {{ version = \"{}\", optional = true }}",
         CURRENT_UPSTREAM_SUBJECT.package_requirement()
     )));
-    assert!(!manifest.contains("ts-parser-perl = \"1.2.1\""));
+    assert!(!manifest.contains("ts-parser-perl = \"2.0.0\""));
 
     let lock = fs::read_to_string(workspace_root().join("Cargo.lock"))?;
 
