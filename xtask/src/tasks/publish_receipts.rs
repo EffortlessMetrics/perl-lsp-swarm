@@ -35,7 +35,8 @@ const RECEIPT_FILES: [&str; 5] =
     ["test-output.txt", "test-summary.json", "rustdoc.log", "doc-summary.json", "state.json"];
 
 /// Members whose bytes are digest-bound to `state.json` (#15350).
-const DIGEST_BOUND_FILES: [&str; 2] = ["test-output.txt", "rustdoc.log"];
+const DIGEST_BOUND_FILES: [&str; 4] =
+    ["test-output.txt", "rustdoc.log", "test-summary.json", "doc-summary.json"];
 
 pub fn run(date: Option<String>) -> Result<()> {
     let date = date.unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
@@ -177,6 +178,10 @@ struct StateView {
     subject: Option<SubjectView>,
     tests: DomainView,
     docs: DomainView,
+    #[serde(default)]
+    test_summary_digest: Option<String>,
+    #[serde(default)]
+    doc_summary_digest: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,6 +280,8 @@ pub(crate) fn validate_receipt_bundle(
         let recorded = match file {
             "test-output.txt" => state.tests.raw_output_digest.as_deref(),
             "rustdoc.log" => state.docs.raw_output_digest.as_deref(),
+            "test-summary.json" => state.test_summary_digest.as_deref(),
+            "doc-summary.json" => state.doc_summary_digest.as_deref(),
             _ => None,
         };
         let Some(recorded) = recorded.filter(|value| value.len() == 64) else {
@@ -393,10 +400,14 @@ mod tests {
     const OTHER_HEAD: &str = "2222222222222222222222222222222222222222";
     const TEST_OUTPUT: &str = "test result: ok. 7 passed; 0 failed; 0 ignored\n";
     const RUSTDOC_LOG: &str = "warning: missing documentation for x\n";
+    const TEST_SUMMARY_JSON: &str = r#"{"passed": 7, "status": "complete_pass"}"#;
+    const DOC_SUMMARY_JSON: &str = r#"{"missing_docs": 1, "status": "complete_pass"}"#;
 
     fn typed_state_json(head: &str, tests_status: &str, docs_status: &str) -> String {
         let test_digest = digest_hex(TEST_OUTPUT.as_bytes());
         let doc_digest = digest_hex(RUSTDOC_LOG.as_bytes());
+        let test_summary_digest = digest_hex(TEST_SUMMARY_JSON.as_bytes());
+        let doc_summary_digest = digest_hex(DOC_SUMMARY_JSON.as_bytes());
         format!(
             r#"{{
   "version": "0.18.0",
@@ -404,6 +415,8 @@ mod tests {
   "subject": {{"head": "{head}", "dirty": false}},
   "tests": {{"passed": 7, "status": "{tests_status}", "raw_output_digest": "{test_digest}"}},
   "docs": {{"missing_docs": 1, "status": "{docs_status}", "raw_output_digest": "{doc_digest}"}},
+  "test_summary_digest": "{test_summary_digest}",
+  "doc_summary_digest": "{doc_summary_digest}",
   "generated_at": "2026-09-18T00:00:00Z"
 }}"#
         )
@@ -416,6 +429,8 @@ mod tests {
         }
         files.insert("test-output.txt", TEST_OUTPUT.as_bytes().to_vec());
         files.insert("rustdoc.log", RUSTDOC_LOG.as_bytes().to_vec());
+        files.insert("test-summary.json", TEST_SUMMARY_JSON.as_bytes().to_vec());
+        files.insert("doc-summary.json", DOC_SUMMARY_JSON.as_bytes().to_vec());
         files
     }
 

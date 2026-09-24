@@ -176,6 +176,11 @@ struct ConsolidatedState {
     subject: SubjectIdentity,
     tests: TestSummary,
     docs: DocSummary,
+    /// Digest of the exact test-summary.json bytes of this run; the summary
+    /// file cannot carry its own digest, so state.json binds it (#15350).
+    test_summary_digest: String,
+    /// Digest of the exact doc-summary.json bytes of this run (#15350).
+    doc_summary_digest: String,
     generated_at: String,
 }
 
@@ -230,8 +235,15 @@ fn current_subject(root: &Path) -> Result<SubjectIdentity> {
         .unchecked()
         .run()
         .context("Failed to execute git status --porcelain")?;
-    let dirty = status_out.status.success()
-        && !String::from_utf8_lossy(&status_out.stdout).trim().is_empty();
+    if !status_out.status.success() {
+        color_eyre::eyre::bail!(
+            "git status --porcelain failed (exit {:?}: {}); repository cleanliness is \
+             unknown, so the run subject cannot be established (#15350)",
+            status_out.status.code(),
+            String::from_utf8_lossy(&status_out.stderr).trim()
+        );
+    }
+    let dirty = !String::from_utf8_lossy(&status_out.stdout).trim().is_empty();
 
     Ok(SubjectIdentity { head, dirty })
 }
@@ -283,12 +295,16 @@ fn producer_instrument_failed(producer: &ProducerReceipt, output: &str) -> bool 
     if producer.result_lines == 0 {
         return true;
     }
-    const INSTRUMENT_MARKERS: [&str; 5] = [
+    const INSTRUMENT_MARKERS: [&str; 6] = [
         "could not compile",
         "error[",
         "linking with",
         "build failed",
         "error: process terminated",
+        // A test binary that aborts or segfaults makes cargo exit nonzero with
+        // this line even when earlier targets already emitted result lines;
+        // those counts are partial, never documentation truth (#15350).
+        "process didn't exit successfully",
     ];
     INSTRUMENT_MARKERS.iter().any(|marker| output.contains(marker))
 }
@@ -321,31 +337,32 @@ pub fn run(config: ReceiptsConfig) -> Result<()> {
         if subject.dirty { "yes" } else { "no" }
     );
 
-    let test_summary = if !config.docs_only {
+    let (test_summary, test_summary_digest) = if !config.docs_only {
         println!("=== Generating Test Receipts ===");
-        let summary = generate_test_receipts(&artifacts_dir, config.test_threads)?;
+        let (summary, summary_digest) =
+            generate_test_receipts(&artifacts_dir, config.test_threads)?;
         println!(
             "Test summary: {} passed, {} failed, {} ignored (status: {:?})",
             summary.passed, summary.failed, summary.ignored, summary.status
         );
-        summary
+        (summary, summary_digest)
     } else {
         println!("=== Test Receipts Not Run (mode: --docs-only) ===");
-        TestSummary::not_run_by_mode()
+        (TestSummary::not_run_by_mode(), "not-run".to_string())
     };
 
-    let doc_summary = if !config.tests_only {
+    let (doc_summary, doc_summary_digest) = if !config.tests_only {
         println!();
         println!("=== Generating Doc Receipts ===");
-        let summary = generate_doc_receipts(&artifacts_dir)?;
+        let (summary, summary_digest) = generate_doc_receipts(&artifacts_dir)?;
         println!(
             "Doc summary: {} missing docs (status: {:?})",
             summary.missing_docs, summary.status
         );
-        summary
+        (summary, summary_digest)
     } else {
         println!("=== Doc Receipts Not Run (mode: --tests-only) ===");
-        DocSummary::not_run_by_mode()
+        (DocSummary::not_run_by_mode(), "not-run".to_string())
     };
 
     if !config.tests_only && !config.docs_only {
@@ -362,7 +379,14 @@ pub fn run(config: ReceiptsConfig) -> Result<()> {
 
     println!();
     println!("=== Generating Consolidated State ===");
-    let state = generate_consolidated_state(run_id, subject, test_summary, doc_summary)?;
+    let state = generate_consolidated_state(
+        run_id,
+        subject,
+        test_summary,
+        doc_summary,
+        test_summary_digest,
+        doc_summary_digest,
+    )?;
     let state_path = artifacts_dir.join("state.json");
     let state_json =
         serde_json::to_string_pretty(&state).context("Failed to serialize consolidated state")?;
@@ -411,7 +435,10 @@ fn run_test_producer(
 /// Every declared producer's exit status is checked (#15350): a compile
 /// failure, killed process, or zero-result invocation marks the domain
 /// `instrument_failed` instead of yielding a complete-looking aggregate.
-fn generate_test_receipts(artifacts_dir: &Path, test_threads: u32) -> Result<TestSummary> {
+fn generate_test_receipts(
+    artifacts_dir: &Path,
+    test_threads: u32,
+) -> Result<(TestSummary, String)> {
     let start = Instant::now();
     let test_output_path = artifacts_dir.join("test-output.txt");
     let test_summary_path = artifacts_dir.join("test-summary.json");
@@ -537,7 +564,10 @@ fn generate_test_receipts(artifacts_dir: &Path, test_threads: u32) -> Result<Tes
     })?;
     println!("Test summary saved to {}", test_summary_path.display());
 
-    Ok(typed)
+    // The summary file's digest is recorded in state.json (outside the file
+    // itself) so publish cannot copy a stale or replaced summary (#15350).
+    let summary_digest = digest_hex(summary_json.as_bytes());
+    Ok((typed, summary_digest))
 }
 
 /// Parse cargo test output to extract aggregate test counts
@@ -621,7 +651,7 @@ fn extract_count_before(line: &str, keyword: &str) -> Option<u64> {
 ///
 /// A rustdoc failure is recorded as `instrument_failed` (#15350): zero
 /// missing-doc warnings from a failed build is instrument failure, not zero debt.
-fn generate_doc_receipts(artifacts_dir: &Path) -> Result<DocSummary> {
+fn generate_doc_receipts(artifacts_dir: &Path) -> Result<(DocSummary, String)> {
     let rustdoc_log_path = artifacts_dir.join("rustdoc.log");
     let doc_summary_path = artifacts_dir.join("doc-summary.json");
 
@@ -664,7 +694,8 @@ fn generate_doc_receipts(artifacts_dir: &Path) -> Result<DocSummary> {
     })?;
     println!("Doc summary saved to {}", doc_summary_path.display());
 
-    Ok(summary)
+    let summary_digest = digest_hex(summary_json.as_bytes());
+    Ok((summary, summary_digest))
 }
 
 // =============================================================================
@@ -677,11 +708,22 @@ fn generate_consolidated_state(
     subject: SubjectIdentity,
     tests: TestSummary,
     docs: DocSummary,
+    test_summary_digest: String,
+    doc_summary_digest: String,
 ) -> Result<ConsolidatedState> {
     let version = extract_version()?;
     let generated_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-    Ok(ConsolidatedState { version, run_id, subject, tests, docs, generated_at })
+    Ok(ConsolidatedState {
+        version,
+        run_id,
+        subject,
+        tests,
+        docs,
+        test_summary_digest,
+        doc_summary_digest,
+        generated_at,
+    })
 }
 
 /// Extract perl-parser version from cargo metadata
@@ -894,6 +936,18 @@ error: test failed, to rerun pass `-p perl-parser`";
         let producers = vec![producer("workspace", Some(101), 1)];
         let outputs = vec![output];
         assert_eq!(test_domain_status(&producers, &outputs, 1), DomainStatus::CompleteWithFailures);
+    }
+
+    #[test]
+    fn crashed_binary_after_results_is_instrument_failed() {
+        // A later binary aborting/segfaulting makes cargo exit nonzero with
+        // its abort line; earlier targets' result lines are then partial
+        // counts and must never aggregate to a complete domain (#15350).
+        let output = "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+error: process didn't exit successfully: `probe` (signal: 11, SIGSEGV)";
+        let producers = vec![producer("workspace", Some(101), 1)];
+        let outputs = vec![output];
+        assert_eq!(test_domain_status(&producers, &outputs, 1), DomainStatus::InstrumentFailed);
     }
 
     #[test]
