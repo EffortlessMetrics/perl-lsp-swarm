@@ -259,8 +259,8 @@ fn probe_pending_request_cancellation(
 /// probed id is a protocol defect that must fail the probe, not a race the next
 /// probe may absorb — only a completed result or no same-id answer may retry.
 #[test]
-fn test_probe_classification_fails_wrong_error_and_retries_only_results(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_probe_classification_fails_wrong_error_and_retries_only_results()
+-> Result<(), Box<dyn std::error::Error>> {
     let cancelled = json!({
         "jsonrpc": "2.0", "id": 7,
         "error": { "code": -32800, "message": "Request cancelled" }
