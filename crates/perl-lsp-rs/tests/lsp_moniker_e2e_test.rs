@@ -159,6 +159,42 @@ fn moniker_multiline_export_lists_classify_only_listed_symbols_as_exports() -> T
         !moniker_kinds(&private_monikers).contains(&"export"),
         "unlisted symbol must not be classified as export: {private_monikers:?}"
     );
+
+    Ok(())
+}
+
+#[test]
+fn moniker_unclosed_multiline_list_declines_instead_of_sweeping_later_code() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+
+    // Mid-edit state: the multiline qw( list has no closing delimiter. The
+    // fallback must decline classification for this list instead of letting
+    // the capture run across newlines and swallow later declarations.
+    let uri = "file:///moniker_unclosed_exports.pm";
+    harness.open(
+        uri,
+        "package Foo::Bar;
+         use Exporter 'import';
+         our @EXPORT_OK = qw(
+             qw_export
+         sub accidental { return 1 }
+         1;
+",
+    )?;
+
+    let accidental = request_monikers(&mut harness, &uri, 4, 6)?;
+    assert!(
+        !moniker_kinds(&accidental).contains(&"export"),
+        "a declaration after an unclosed qw( must not be exported by the fallback: {accidental:?}"
+    );
+
+    let qw_export = request_monikers(&mut harness, &uri, 3, 6)?;
+    assert!(
+        !moniker_kinds(&qw_export).contains(&"export"),
+        "an uncloseable list must be declined outright, not partially classified: {qw_export:?}"
+    );
+
     Ok(())
 }
 

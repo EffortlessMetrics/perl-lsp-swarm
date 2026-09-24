@@ -275,7 +275,32 @@ impl LspServer {
         static EXPORT_ARRAY_RE: OnceLock<Option<regex::Regex>> = OnceLock::new();
 
         let export_re = EXPORT_QW_RE.get_or_init(|| {
-            regex::Regex::new(r"@EXPORT(?:_OK)?\s*=\s*qw[(\[{/<|!]([^\)\]}/|!>]+)[)\]}/|!>]").ok()
+            // Pair each supported qw delimiter explicitly: with a blanket
+            // negated class, a list whose closing delimiter is absent
+            // (mid-edit) captures across newlines until any supported close
+            // and falsely exports later declarations (#13833).
+            const PAIRS: [(&str, &str); 7] = [
+                ("(", ")"),
+                ("[", "]"),
+                ("{", "}"),
+                ("/", "/"),
+                ("<", ">"),
+                ("|", "|"),
+                ("!", "!"),
+            ];
+            let pattern = PAIRS
+                .iter()
+                .map(|(open, close)| {
+                    format!(
+                        r"@EXPORT(?:_OK)?\s*=\s*qw{}([^{}]*){}",
+                        regex::escape(open),
+                        regex::escape(close),
+                        regex::escape(close)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("|");
+            regex::Regex::new(&pattern).ok()
         });
 
         if let Some(re) = export_re {
