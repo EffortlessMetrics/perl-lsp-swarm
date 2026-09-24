@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: "Classify fork pull-request runs held for maintainer approval (`status: waiting`) as a separate `awaiting_approval` advisory with a `neutral` conclusion instead of `infra-no-proof`/`failure`. The reporter now names the human remedy rather than attributing a maintainer decision to the scheduler."
+time: 2026-09-22T00:00:00Z
+custom:
+  PR: "16151"
+  Slug: ripr-fork-approval-classification
+  Breaking: "no"
