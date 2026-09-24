@@ -29,6 +29,47 @@ SCHEMA_PATH = (
 )
 GENERATOR = REPO_ROOT / "scripts" / "generate_domain6_fragment.py"
 
+# Canonical 16-field authority for disposition-state exclusivity: every
+# field a reviewed row must carry and a not_proven row must not.
+REVIEWED_ONLY_FIELDS = [
+    "release_domains",
+    "primary_disposition",
+    "reachable_installed_effect",
+    "public_claim_refs",
+    "release_note_disposition",
+    "migration_or_upgrade_refs",
+    "api_schema_package_effects",
+    "proof_owner_refs",
+    "known_limitations",
+    "open_pr_relationships",
+    "controlling_issues",
+    "invalidators",
+    "platforms_and_targets",
+    "artifact_or_route_effects",
+    "editor_manifest_or_protocol_effects",
+    "installed_evidence_stage",
+]
+
+# Valid representative value per reviewed-only field for injection probes.
+REVIEWED_FIELD_VALUES = {
+    "release_domains": ["distribution"],
+    "primary_disposition": "packaging_install_or_editor",
+    "reachable_installed_effect": "bounded",
+    "public_claim_refs": ["claim"],
+    "release_note_disposition": "required",
+    "migration_or_upgrade_refs": ["mig"],
+    "api_schema_package_effects": ["eff"],
+    "proof_owner_refs": ["#16408"],
+    "known_limitations": ["lim"],
+    "open_pr_relationships": ["#16419"],
+    "controlling_issues": ["#16421"],
+    "invalidators": ["inv"],
+    "platforms_and_targets": ["windows-x64"],
+    "artifact_or_route_effects": ["art"],
+    "editor_manifest_or_protocol_effects": ["man"],
+    "installed_evidence_stage": "candidate",
+}
+
 START_SHA = "f6b7b2c6626fbefbf01c9c9934cac5789186f8b2"
 OBSERVED_HEAD = "102974155487bc955e01d5d5222053c4c449136c"
 
@@ -193,27 +234,17 @@ class Domain6FragmentTest(unittest.TestCase):
             for u in self.doc["work_units"]
             if u["disposition_state"] == "reviewed"
         )
-        reviewed_only = [
-            "release_domains",
-            "primary_disposition",
-            "reachable_installed_effect",
-            "public_claim_refs",
-            "release_note_disposition",
-            "migration_or_upgrade_refs",
-            "api_schema_package_effects",
-            "proof_owner_refs",
-            "known_limitations",
-            "open_pr_relationships",
-            "controlling_issues",
-            "invalidators",
-            "platforms_and_targets",
-            "artifact_or_route_effects",
-            "editor_manifest_or_protocol_effects",
-            "installed_evidence_stage",
-        ]
-        for key in reviewed_only:
+        not_proven = next(
+            u
+            for u in self.doc["work_units"]
+            if u["disposition_state"] == "not_proven"
+        )
+        for key in REVIEWED_ONLY_FIELDS:
             self.assertIn(
                 key, reviewed, f"reviewed fixture lacks {key} to strip"
+            )
+            self.assertNotIn(
+                key, not_proven, f"checked artifact already leaks {key}"
             )
             missing = copy.deepcopy(self.doc)
             bad_unit = next(
@@ -225,6 +256,17 @@ class Domain6FragmentTest(unittest.TestCase):
             self.assertTrue(
                 list(validator.iter_errors(missing)),
                 f"schema accepts reviewed row without {key}",
+            )
+            injected = copy.deepcopy(self.doc)
+            target = next(
+                u
+                for u in injected["work_units"]
+                if u["work_unit_id"] == not_proven["work_unit_id"]
+            )
+            target[key] = REVIEWED_FIELD_VALUES[key]
+            self.assertTrue(
+                list(validator.iter_errors(injected)),
+                f"schema accepts not_proven row carrying {key}",
             )
         unknown = copy.deepcopy(self.doc)
         unknown["work_units"][0] = dict(
@@ -379,7 +421,14 @@ class Domain6FragmentTest(unittest.TestCase):
             )
         finally:
             Path(tmp).unlink()
-        self.assertNotEqual(proc.returncode, 0)
+        # Exact code 2 plus the canonical-byte diagnostic pins the CRLF
+        # branch: setup failures, missing history, and FragmentError paths
+        # all exit 1, and plain drift carries a different message.
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn(
+            "contains CRLF; canonical bytes are LF-only",
+            proc.stderr.decode("utf-8", errors="strict"),
+        )
 
     def test_deterministic_rerender_byte_identical(self) -> None:
         for sha in (START_SHA, OBSERVED_HEAD):
