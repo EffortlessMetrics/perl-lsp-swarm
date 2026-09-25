@@ -165,6 +165,7 @@ merge-gate: _check-tools-basic pr-fast
     just _timed "security-audit" "just security-audit" && \
     just _timed "ci-policy" "just ci-policy" && \
     just _timed "ci-agent-ledgers-validate" "just ci-agent-ledgers-validate" && \
+    just _timed "ci-unsafe-prod" "just ci-unsafe-prod" && \
     just _timed "ci-v2-bundle-sync" "just ci-v2-bundle-sync" && \
     just _timed "ci-v2-parity" "just ci-v2-parity" && \
     just _timed "ci-lsp-def" "just ci-lsp-def" && \
@@ -1078,7 +1079,19 @@ ci-agent-ledgers-validate:
     cargo xtask agent ledgers validate --format json
     @echo "✅ Agent ledger contracts valid"
 
-# Clippy lint (catches common issues, allow missing_docs during systematic resolution)
+
+# Production-unsafe SAFETY ratchet (#16215) — runs `check-unsafe-prod`, which
+# fails when any production unsafe block lacks a preceding `// SAFETY:`
+# comment or the ci/unsafe_prod_baseline.txt count is exceeded. The checker
+# existed and was unit-tested, but nothing in CI invoked it, so drift was
+# silently absorbed; this recipe plus the merge-gate `_timed` call close that
+# gap, mirroring `ci-agent-ledgers-validate`.
+ci-unsafe-prod:
+    @echo "Checking production unsafe blocks carry SAFETY reasoning..."
+    bash ci/check_unsafe_prod.sh
+    @echo "Production unsafe SAFETY reasoning present"
+
+
 ci-clippy:
     @echo "🔍 Running clippy (all targets)..."
     cargo clippy --workspace --all-targets -- -D warnings -A missing_docs

@@ -1917,6 +1917,31 @@ gates:
       - doctest
       - ratchet
 
+  # The production-unsafe ratchet is fail-closed: `check-unsafe-prod` counts
+  # `unsafe` syntax outside tests and fails when any production unsafe block
+  # lacks a preceding `// SAFETY:` comment stating the call's actual
+  # obligations, or when the count in ci/unsafe_prod_baseline.txt is exceeded
+  # (lowered only by evidence, never raised to obtain green). Only humans ran
+  # this checker until this gate existed (#16215), so drift like missing
+  # safety reasoning was silently absorbed. Runs in the `policy` shard via the
+  # committed wrapper, which resolves the pinned toolchain before invoking the
+  # perl-ci-hygiene CLI.
+  - name: unsafe_prod_check
+    tier: merge_gate
+    description: "Fail when a production unsafe block lacks // SAFETY: reasoning or the unsafe-prod baseline rises"
+    required: true
+    command: bash ci/check_unsafe_prod.sh
+    # Matches the sibling `cargo xtask ...` gates in this shard: the cost is
+    # the cargo invocation, not the scan itself.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - safety
+
   - name: lint_policy
     tier: merge_gate
     description: "Validate the workspace Clippy lint policy against its catalog and ledgers"
@@ -2734,6 +2759,8 @@ workflow_integration:
         - doctest_enforcement
         - published_crate_count_pr_fast
         - agent_ledgers_validate
+
+        - unsafe_prod_check
         - code_action_generation_ledger
       # `compile_all_targets` is not listed here since #15638: the meta shard
       # no longer executes it (the required `Compile All Targets (bit-rot

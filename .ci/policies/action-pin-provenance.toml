@@ -442,6 +442,16 @@ sha = '5bf6ce016fd2e72eefc647cbca1e4213f65955b8'
 kind = 'release_tag'
 value = 'v2.87.5'
 
+# Verified against upstream on 2026-09-24:
+#   git ls-remote --tags https://github.com/taiki-e/install-action v2.87.8
+#   d438492cf8a250514fa2d34b30bc3c0dc37c65ff  refs/tags/v2.87.8
+# (lightweight tag; the tagged commit's message is "Release 2.87.8", 2026-09-07)
+[[pin]]
+action = 'taiki-e/install-action'
+sha = 'd438492cf8a250514fa2d34b30bc3c0dc37c65ff'
+kind = 'release_tag'
+value = 'v2.87.8'
+
 # Verified against upstream on 2026-08-29:
 # github/codeql-action v4.37.8 -> db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
 [[pin]]
