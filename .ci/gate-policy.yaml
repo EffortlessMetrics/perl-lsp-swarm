@@ -363,10 +363,26 @@ gates:
     description: "Validate release-history surfaces"
     required: true
     command: just ci-release-history
-    timeout_seconds: 120
+    # 480s/420000ms: #16419 appended scripts.tests.test_domain6_fragment to the
+    # `ci-release-history` recipe; its final two tests each shell out to
+    # `generate_domain6_fragment.py --check`, which re-renders the pinned
+    # f6b7b2c..10297415 range via `git log --full-history` — candidate-
+    # independent git grind that scales with history, not with the change
+    # under review. Pre-#16419 receipts ran the whole gate in 2.5s (run
+    # 36172362426 job 108194853240); after that merge every required meta
+    # shard kills the gate at the old 120s watchdog with the first traversal
+    # complete and the second in flight (first main-red run 36174358018 job
+    # 108207415263 at 120116ms; PR-family run 36186745952 job 108242179458 at
+    # 120084ms). A local Windows traversal measured 213s, bounding
+    # slow-runner checkout variance. The suite content is clean — the
+    # byte-identical re-render passes — so the envelope was the binding
+    # constraint. Sibling release_history_check (script only) still passes in
+    # ~1.4s and keeps its own bound. max_duration_ms is a declarative soft
+    # budget, not the enforced watchdog.
+    timeout_seconds: 480
     retry_count: 0
     budgets:
-      max_duration_ms: 90000
+      max_duration_ms: 420000
     quarantine: false
     tags:
       - release
