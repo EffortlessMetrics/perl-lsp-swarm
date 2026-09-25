@@ -7730,7 +7730,10 @@ error: aborting due to previous error
         let cohort_gate = &policy.gates[cohort];
         assert_eq!(
             cohort_gate.command,
-            "cargo build -p perllsp --locked && cargo test --locked --tests {package_args}"
+            // #16194: the test step exports the binary the build step just
+            // produced; the env-wrapped shape keeps is_cargo_test_command
+            // recognition and the ubuntu gate shell intact.
+            "cargo build -p perllsp --locked && env PERL_LSP_BIN=\"$PWD/target/debug/perllsp\" cargo test --locked --tests {package_args}"
         );
         assert_eq!(cohort_gate.timeout_seconds, 1500);
         assert_eq!(cohort_gate.retry_count, 1);

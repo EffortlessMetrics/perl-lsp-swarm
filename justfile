@@ -419,7 +419,8 @@ quick-ref:
     @echo "  One-off lint check            just check                       ~30 sec"
     @echo "  Reformat all code             cargo xtask fmt                  ~20 sec"
     @echo "  Run tests only                cargo test --workspace --lib     ~1 min"
-    @echo "  Nightly / mutation / fuzz     just ci-full                     ~15-30 min"
+    @echo "  Nightly / mutation / fuzz     just nightly                     ~15-30 min"
+    @echo "  Mutation / fuzz subsets       just mutation-subset / just fuzz-bounded"
     @echo ""
     @echo "  TIP: install the pre-push hook so pr-fast runs automatically:"
     @echo "       bash scripts/install-githooks.sh"
@@ -1481,6 +1482,7 @@ ci-policy:
     @python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
     @python3 scripts/ci/test_validate_cargo_feature_roles.py
     @python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
+    @python3 scripts/ci/test_public_api_filter.py
     @cargo xtask check-from-raw
     @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
@@ -2387,6 +2389,17 @@ _api-ratchet-crates:
 # `pub ` items plus items fronted by any run of bracketed attributes.
 # Non-item lines stay out.
 #
+# The final awk stage (scripts/ci/public_api_filter.awk, covered by
+# scripts/ci/test_public_api_filter.py) resolves method-signature `Self`
+# to the owning type path (`pub fn krate::Type::clone(&self) -> Self`
+# folds to `... -> krate::Type`). Nightly rustdoc-JSON started rendering
+# `Self` this way in September 2026 (1.100.0-nightly 2026-09-20; August
+# renderings spell the full path), which reddened every API-scope PR with
+# thousands of phantom lines (#16324, sequel to the io-path drift in
+# #16007). The owner path derives from the line itself, so a real rename
+# still diffs; a `Self`-looking substring inside a longer identifier (e.g.
+# `Selfish`) keeps its spelling via the boundary check.
+#
 # Usage: just _public-api-filter <raw-file> <filtered-file>
 [private]
 _public-api-filter raw out:
@@ -2408,6 +2421,7 @@ _public-api-filter raw out:
         | sed -E \
             -e 's#(^|[ <([&,=?])core::io::(write::|error::)?#\1std::io::#g' \
             -e 's#(^|[ <([&,=?])alloc::io::(buf_read::|read::)?#\1std::io::#g' \
+        | awk -f scripts/ci/public_api_filter.awk \
         > "{{out}}" || true
 
 # Check public API surface of the ratcheted crates against committed baselines

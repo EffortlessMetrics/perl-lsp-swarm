@@ -241,6 +241,101 @@ fn pr_smoke_publishes_failing_gate_names_through_the_reporter() -> Result<()> {
     Ok(())
 }
 
+/// #16214: the validator reports a same-repository HTTP 404 as an absent
+/// issue — a verdict about the pull request — and every other 404 as an
+/// instrument failure, because GitHub answers 404 rather than 403 for a
+/// resource the caller may not be allowed to see. That narrowing is only
+/// sound while this job can actually read the subject repository's issues.
+/// Drop `issues: read` and the same-repo branch starts reporting "the issue
+/// is not there" when the truth is "this token was not allowed to look",
+/// which is the exact defect the split removes. Parsed rather than grepped,
+/// so a permission moved to another job does not satisfy it.
+#[test]
+fn semantic_close_containment_keeps_the_issue_read_its_404_rule_depends_on() -> Result<()> {
+    let root = repo_root_checked()?;
+    let workflow: Value = serde_yaml_ng::from_str(&fs::read_to_string(
+        root.join(".github/workflows/semantic-close-containment.yml"),
+    )?)?;
+
+    let job = workflow.get("jobs").and_then(|jobs| jobs.get("containment")).ok_or_else(|| {
+        anyhow!(
+            "semantic-close-containment.yml no longer declares a `containment` job; the \
+                 404-absence rule's permission control cannot locate what it guards"
+        )
+    })?;
+
+    let issues = job
+        .get("permissions")
+        .and_then(|permissions| permissions.get("issues"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "the `containment` job declares no `issues:` permission; \
+                 `classify_gh_failure` treats a same-repository 404 as an absent issue, which \
+                 is only true while this job can read that repository's issues"
+            )
+        })?;
+    ensure!(
+        issues == "read" || issues == "write",
+        "the `containment` job grants `issues: {issues}`; the same-repository 404-is-absence \
+         rule in `classify_gh_failure` needs read access, or a 404 stops meaning absence"
+    );
+    Ok(())
+}
+
+/// #16214: the exit codes the validator can return, and the workflow's own
+/// header documenting them, drifted apart — the header still said `3 =
+/// NOT_PROVEN/instrument failure` after the two were split. That drift is
+/// silent for anyone reading the YAML as authority, and it re-teaches exactly
+/// the conflation the split removed. Bind the two.
+#[test]
+fn semantic_close_containment_header_documents_every_exit_the_binary_can_return() -> Result<()> {
+    let root = repo_root_checked()?;
+    let binary = fs::read_to_string(root.join("xtask/src/bin/semantic-close-containment.rs"))?;
+    let workflow =
+        fs::read_to_string(root.join(".github/workflows/semantic-close-containment.yml"))?;
+
+    let header_end = workflow.find("\nname:").ok_or_else(|| {
+        anyhow!("semantic-close-containment.yml has no `name:` key, so it has no header to check")
+    })?;
+    let header = workflow.get(..header_end).ok_or_else(|| {
+        anyhow!(
+            "the semantic-close-containment.yml header offset {header_end} is not a char boundary"
+        )
+    })?;
+
+    // Every documented exit constant, read off the binary rather than listed
+    // here, so adding a fifth code fails this test instead of passing it.
+    let mut codes = vec![0];
+    for line in binary.lines() {
+        let Some(rest) = line.strip_prefix("const EXIT_") else { continue };
+        let Some((_, value)) = rest.split_once(": i32 = ") else { continue };
+        let value = value.trim_end_matches(';').trim();
+        codes.push(value.parse::<i32>().map_err(|error| {
+            anyhow!("semantic-close-containment.rs declares a non-numeric exit constant {value:?}: {error}")
+        })?);
+    }
+    ensure!(
+        codes.len() >= 4,
+        "expected the binary to declare at least three EXIT_ constants beside 0, found {codes:?}; \
+         the header contract test is not reading the constants it thinks it is"
+    );
+
+    for code in &codes {
+        ensure!(
+            header.contains(&format!("{code} = ")),
+            "the semantic-close-containment.yml header does not document exit {code}, which the \
+             validator can return; a reader outside the web UI sees only the number"
+        );
+    }
+    ensure!(
+        !header.contains("NOT_PROVEN/instrument failure"),
+        "the semantic-close-containment.yml header still documents NOT_PROVEN and instrument \
+         failure as one exit code; #16214 split them"
+    );
+    Ok(())
+}
+
 #[test]
 fn ripr_workflow_blocks_new_gaps_and_requires_receipts() {
     let root = repo_root();
