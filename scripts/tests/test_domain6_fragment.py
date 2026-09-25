@@ -275,11 +275,22 @@ class Domain6FragmentTest(unittest.TestCase):
         self.assertTrue(list(validator.iter_errors(unknown)))
 
     def test_grouping_identity_rules(self) -> None:
-        from scripts.generate_domain6_fragment import (
-            BODY_REF,
-            group_unit_id,
-            split_unit_id,
+        # Load by file path: direct execution (python
+        # scripts/tests/test_domain6_fragment.py) puts scripts/tests first
+        # on sys.path, so a scripts.* import only resolves when the
+        # repository root is the entry point (python -m unittest ...).
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "domain6_generator", GENERATOR
         )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+        BODY_REF = generator.BODY_REF
+        group_unit_id = generator.group_unit_id
+        split_unit_id = generator.split_unit_id
 
         # Trailing pair keys the PR; lone refs key the issue; bare
         # subjects are NOREF.
@@ -404,6 +415,20 @@ class Domain6FragmentTest(unittest.TestCase):
 
     def test_check_rejects_crlf_mutation(self) -> None:
         import tempfile
+
+        # --check builds the document before it inspects the output file:
+        # without the pinned range, resolve_range() exits 1 before the
+        # CRLF branch, so skip cleanly instead of proving nothing.
+        for sha in (START_SHA, OBSERVED_HEAD):
+            probe = subprocess.run(
+                ["git", "cat-file", "-t", sha],
+                cwd=REPO_ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if probe.returncode != 0:
+                self.skipTest(f"pinned history range unavailable ({sha})")
 
         raw = ARTIFACT.read_bytes()
         with tempfile.NamedTemporaryFile(
