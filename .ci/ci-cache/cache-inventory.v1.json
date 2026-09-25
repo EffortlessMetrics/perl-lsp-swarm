@@ -1824,6 +1824,82 @@
       "notes": null
     },
     {
+      "id": "ripr/ripr-fallback/2",
+      "workflow": "ripr.yml",
+      "job": "ripr-fallback",
+      "step_name": "Restore memoized ripr-plus receipt",
+      "action": "actions/cache/restore",
+      "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "capability": "restore_only",
+      "trigger_event_set": [
+        "merge_group",
+        "pull_request",
+        "push",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "reachable",
+      "executed_subject": "candidate",
+      "job_condition": "always() && needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'selfhosted' && needs.ripr-selfhosted.result == 'failure' && needs.ripr-selfhosted.outputs.preflight_ok == 'false'",
+      "step_condition": null,
+      "save_condition": null,
+      "save_authority_source": "absent",
+      "payload_class": "compiler_object",
+      "cached_paths": [
+        "target/receipts/quality/ripr-plus.json"
+      ],
+      "key_dimensions": {
+        "key": "ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-${{ github.sha }}-${{ hashFiles('policy/ripr-suppressions.toml') }}",
+        "shared_key": null,
+        "restore_keys": [
+          "ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-"
+        ]
+      },
+      "key_authority": "mixed",
+      "cached_byte_provenance": "not_proven",
+      "artifact_provenance": null,
+      "writer_disposition": "restore_only",
+      "repair_owner": null,
+      "notes": null
+    },
+    {
+      "id": "ripr/ripr-fallback/3",
+      "workflow": "ripr.yml",
+      "job": "ripr-fallback",
+      "step_name": "Save memoized ripr-plus receipt",
+      "action": "actions/cache/save",
+      "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "capability": "save_only",
+      "trigger_event_set": [
+        "merge_group",
+        "pull_request",
+        "push",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "reachable",
+      "executed_subject": "candidate",
+      "job_condition": "always() && needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'selfhosted' && needs.ripr-selfhosted.result == 'failure' && needs.ripr-selfhosted.outputs.preflight_ok == 'false'",
+      "step_condition": "success() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''",
+      "save_condition": "success() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''",
+      "save_authority_source": "content_success_only",
+      "payload_class": "compiler_object",
+      "cached_paths": [
+        "target/receipts/quality/ripr-plus.json"
+      ],
+      "key_dimensions": {
+        "key": "ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-${{ github.sha }}-${{ hashFiles('policy/ripr-suppressions.toml') }}",
+        "shared_key": null,
+        "restore_keys": null
+      },
+      "key_authority": "mixed",
+      "cached_byte_provenance": "candidate_tree",
+      "artifact_provenance": null,
+      "writer_disposition": "candidate_writer_violation",
+      "repair_owner": "needs-follow-up-issue",
+      "notes": "no save guard on a candidate-reachable writer; recorded honestly, not repaired here (#9177)"
+    },
+    {
       "id": "ripr/ripr-github/0",
       "workflow": "ripr.yml",
       "job": "ripr-github",
@@ -1896,6 +1972,82 @@
       "writer_disposition": "restore_only",
       "repair_owner": null,
       "notes": null
+    },
+    {
+      "id": "ripr/ripr-github/2",
+      "workflow": "ripr.yml",
+      "job": "ripr-github",
+      "step_name": "Restore memoized ripr-plus receipt",
+      "action": "actions/cache/restore",
+      "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "capability": "restore_only",
+      "trigger_event_set": [
+        "merge_group",
+        "pull_request",
+        "push",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "reachable",
+      "executed_subject": "candidate",
+      "job_condition": "needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'github' && needs.route-ripr.outputs.fallback_allowed == 'true'",
+      "step_condition": null,
+      "save_condition": null,
+      "save_authority_source": "absent",
+      "payload_class": "compiler_object",
+      "cached_paths": [
+        "target/receipts/quality/ripr-plus.json"
+      ],
+      "key_dimensions": {
+        "key": "ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-${{ github.sha }}-${{ hashFiles('policy/ripr-suppressions.toml') }}",
+        "shared_key": null,
+        "restore_keys": [
+          "ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-"
+        ]
+      },
+      "key_authority": "mixed",
+      "cached_byte_provenance": "not_proven",
+      "artifact_provenance": null,
+      "writer_disposition": "restore_only",
+      "repair_owner": null,
+      "notes": null
+    },
+    {
+      "id": "ripr/ripr-github/3",
+      "workflow": "ripr.yml",
+      "job": "ripr-github",
+      "step_name": "Save memoized ripr-plus receipt",
+      "action": "actions/cache/save",
+      "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "capability": "save_only",
+      "trigger_event_set": [
+        "merge_group",
+        "pull_request",
+        "push",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "reachable",
+      "executed_subject": "candidate",
+      "job_condition": "needs.route-ripr.result == 'success' && needs.route-ripr.outputs.target == 'github' && needs.route-ripr.outputs.fallback_allowed == 'true'",
+      "step_condition": "success() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''",
+      "save_condition": "success() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''",
+      "save_authority_source": "content_success_only",
+      "payload_class": "compiler_object",
+      "cached_paths": [
+        "target/receipts/quality/ripr-plus.json"
+      ],
+      "key_dimensions": {
+        "key": "ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-${{ github.sha }}-${{ hashFiles('policy/ripr-suppressions.toml') }}",
+        "shared_key": null,
+        "restore_keys": null
+      },
+      "key_authority": "mixed",
+      "cached_byte_provenance": "candidate_tree",
+      "artifact_provenance": null,
+      "writer_disposition": "candidate_writer_violation",
+      "repair_owner": "needs-follow-up-issue",
+      "notes": "no save guard on a candidate-reachable writer; recorded honestly, not repaired here (#9177)"
     },
     {
       "id": "ripr/seed-cache/0",
