@@ -926,8 +926,15 @@ Point->new(
     assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
 }
 
+/// A lone `-` that starts an operand must not be rewritten into an arrow
+/// prefix, while a `-` after a real (balanced-paren) receiver must keep
+/// routing to method completion.
+///
+/// Controlling issue: #15466.
 #[test]
-fn test_object_pad_constructor_param_completion_ignores_lone_minus() {
+fn test_dash_trigger_ignores_lone_minus_but_keeps_call_chain_receiver() {
+    // `Point->new(-` — the minus opens an operand, not an arrow, so the dash
+    // trigger must answer with no completions at all.
     let code = r#"
 use Object::Pad;
 
@@ -945,8 +952,48 @@ Point->new(-
     let completions = provider.get_completions(code, code.len());
 
     assert!(
-        !completions.iter().any(|item| item.label == "x"),
-        "a lone minus inside constructor arguments must not expose constructor keys; got: {:?}",
+        completions.is_empty(),
+        "a lone minus inside constructor arguments must not be rewritten as an arrow; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+
+    // `$factory->build()-` — the `-` follows a balanced-paren call receiver,
+    // so it is the first char of `->` and methods must still be offered. The
+    // receiver gate must not drop `)` left neighbors.
+    let code = r#"
+package MyService;
+sub process { }
+sub validate { }
+package MyFactory;
+sub build { }
+my $factory = MyFactory->create;
+$factory->build()-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.iter().any(|item| item.label == "process"),
+        "a dash after a balanced-paren call receiver must still offer method completions; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+
+    // `1 -` — binary subtraction with no receiver: no method completions.
+    let code = "1 -";
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.is_empty(),
+        "a subtraction minus must not offer method completions; got: {:?}",
         completions.iter().map(|item| &item.label).collect::<Vec<_>>()
     );
 }
