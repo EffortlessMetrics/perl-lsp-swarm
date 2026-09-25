@@ -142,6 +142,17 @@ impl LocalSymbolTable {
     pub(crate) fn identity_names(&self) -> std::collections::BTreeSet<Box<str>> {
         self.known_subs.iter().cloned().collect()
     }
+
+    /// Ordered set of nullary-prototype declarations, used alongside
+    /// [`Self::identity_names`] as checkpoint policy identity until #8812.
+    ///
+    /// Nullary membership changes whether a later `<<` after the bare name is
+    /// a left shift or a heredoc opener (#16165), so two tables declaring the
+    /// same callables with different prototypes must not share one policy
+    /// identity.
+    pub(crate) fn identity_nullary_names(&self) -> std::collections::BTreeSet<Box<str>> {
+        self.nullary_subs.iter().cloned().collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -860,14 +871,24 @@ fn print_scalar_filehandle_heredoc_start(line: &str, start: usize) -> Option<usi
 /// Return `true` when a `sub` declaration carries an empty prototype at `end`.
 ///
 /// `sub foo ()` records `foo` as nullary (#16165): every bare call completes a
-/// term, so a following `<<MARKER` is a left shift, not a heredoc. The peek is
-/// single-line and skips only horizontal whitespace; a prototype continued on
-/// the next line keeps the name plain callable status.
+/// term, so a following `<<MARKER` is a left shift, not a heredoc. Perl ignores
+/// horizontal whitespace between prototype characters, so `sub foo ( )` and
+/// `sub foo (\t)` are the same empty prototype (local Perl 5.42.2 oracle:
+/// `foo(1)` is rejected with "Too many arguments" and `foo <<'END'` shifts),
+/// and they record as nullary too. Whitespace around the parens and inside
+/// them is the only slack: any prototype token — `($ )`, `( @ )` — keeps the
+/// name plain callable. The peek is single-line and skips only horizontal
+/// whitespace; a prototype continued on the next line keeps the name plain
+/// callable status.
 fn has_nullary_prototype(line: &str, end: usize) -> bool {
     let Some(rest) = line.get(end..) else {
         return false;
     };
-    rest.trim_start_matches([' ', '\t']).starts_with("()")
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let Some(after_open) = rest.strip_prefix('(') else {
+        return false;
+    };
+    after_open.trim_start_matches([' ', '\t']).starts_with(')')
 }
 
 fn parse_heredoc_opener(line: &str, start: usize) -> Option<(PendingHeredoc, usize)> {

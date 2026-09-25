@@ -209,3 +209,67 @@ fn nullary_builtin_time_shifts_instead_of_consuming_heredoc() {
         "nullary builtin must not consume <<'END' as a heredoc: {source:?}"
     );
 }
+
+#[test]
+fn spaced_nullary_prototype_completes_term_so_marker_is_left_shift() {
+    // Local Perl oracle (#16165, perl 5.42.2): whitespace inside a prototype
+    // is ignored, so `sub foo (  ) { 4 }` is still a zero-argument declaration
+    // (`prototype \&foo` keeps the literal spaces, but `foo(1)` is rejected
+    // with "Too many arguments" and `foo <<'END'` shifts). The spaces-only
+    // parens must therefore record as nullary, not plain callable.
+    let source = "sub foo (  ) { 4 }\nprint foo <<'END';\nsub phantom { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("foo"), "declaration lost: {source:?}");
+    assert!(table.is_nullary_sub("foo"), "spaced empty prototype not captured: {source:?}");
+    assert!(table.is_known_sub("phantom"), "body scanned as heredoc: {source:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+    let config = LexerConfig { symbol_table: Some(table), ..Default::default() };
+    let tokens = PerlLexer::with_config(source, config).collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "spaced nullary call must not consume <<'END' as a heredoc: {source:?}"
+    );
+}
+
+#[test]
+fn single_space_and_tab_nullary_prototypes_still_complete_term() {
+    // Local Perl oracle (#16165, perl 5.42.2): both `( )` and a tab inside the
+    // parens leave `foo <<'END'` a left shift, same mechanism as `(  )`.
+    for prototype in ["( )", "(\t)"] {
+        let source = format!(
+            "sub foo {prototype} {{ 4 }}\nprint foo <<'END';\nsub phantom {{ }}\nEND\nsub real {{ }}\n"
+        );
+        let table = LocalSymbolTable::scan_subs(&source);
+        assert!(table.is_nullary_sub("foo"), "prototype {prototype:?} not captured: {source:?}");
+        assert!(table.is_known_sub("phantom"), "body scanned as heredoc: {source:?}");
+        assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+        let config = LexerConfig { symbol_table: Some(table), ..Default::default() };
+        let tokens = PerlLexer::with_config(&source, config).collect_tokens();
+        assert!(
+            !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+            "prototype {prototype:?} must not consume <<'END' as a heredoc: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn whitespace_prototype_with_parameter_keeps_heredoc_reading_negative_control() {
+    // Mandatory negative control (local Perl oracle): `( $ )` declares one
+    // scalar parameter, so `print foo <<'END'` IS a heredoc — perl consumes
+    // the body as the argument. Inner whitespace must not blur a non-empty
+    // prototype into the nullary class.
+    let source = "sub foo ( $ ) { 4 }\nprint foo <<'END';\nsub phantom { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("foo") && !table.is_nullary_sub("foo"));
+    assert!(!table.is_known_sub("phantom"), "body not consumed: {source:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+    let config = LexerConfig { symbol_table: Some(table), ..Default::default() };
+    let tokens = PerlLexer::with_config(source, config).collect_tokens();
+    assert!(
+        tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "one-parameter prototype must keep the callable-heredoc reading: {source:?}"
+    );
+}
