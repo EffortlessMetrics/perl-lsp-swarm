@@ -363,10 +363,14 @@ gates:
     description: "Validate release-history surfaces"
     required: true
     command: just ci-release-history
-    timeout_seconds: 120
+    # Sized for gh-hosted runners after the hetzner em-ci retirement (#16444):
+    # the gate was killed at 120113ms (exit 124) mid-suite on a warm 4-core
+    # ubuntu-24.04 runner, twice in a row. 300s/240s keeps headroom over the
+    # observed floor while staying far inside the shard 1800s watchdog.
+    timeout_seconds: 300
     retry_count: 0
     budgets:
-      max_duration_ms: 90000
+      max_duration_ms: 240000
     quarantine: false
     tags:
       - release
