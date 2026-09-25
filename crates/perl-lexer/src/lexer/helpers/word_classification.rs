@@ -35,5 +35,5 @@ const NULLARY_BUILTINS: &[&str] = &["time"];
 
 #[inline]
 pub(crate) fn is_nullary_builtin(word: &str) -> bool {
-    NULLARY_BUILTINS.binary_search(&word).is_ok()
+    NULLARY_BUILTINS.contains(&word)
 }
