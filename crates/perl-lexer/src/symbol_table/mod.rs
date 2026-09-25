@@ -792,11 +792,17 @@ fn heredoc_allowed_before(
     // `return` introduces a term slot without being callable, so
     // `return <<END;` is a definite heredoc even when nothing callable
     // precedes the opener. The oracle keeps this reading under a statement
-    // modifier too (`return <<END unless $cond;`). This adds no name
-    // authority: a word still has to be callable by the known-sub rule, and
-    // unknown bareword callables stay unresolved under #14927.
-    previous_word_before(line, offset)
-        .is_some_and(|word| word == "return" || is_callable_word(word, known_subs, hints))
+    // modifier too (`return <<END unless $cond;`). The word is the keyword
+    // only when no dereference arrow precedes it: `$object->return` is a
+    // method invocation whose arrow supplies the left operand, so its `<<`
+    // may be a left shift and the following lines stay live. This adds no
+    // name authority: a word still has to be callable by the known-sub rule,
+    // and unknown bareword callables stay unresolved under #14927.
+    previous_word_before(line, offset).is_some_and(|word| {
+        let is_return_keyword =
+            word == "return" && !prefix[..prefix.len() - word.len()].ends_with("->");
+        is_return_keyword || is_callable_word(word, known_subs, hints)
+    })
 }
 
 /// Recognize the immediate scalar-filehandle `print $handle LIST` term slot.
@@ -1058,6 +1064,27 @@ mod tests {
             let source = format!("{statement}\nsub fake {{ }}\nEND\nsub real {{ }}\n");
             assert_membership_and_slash(&source, &["real"], &["fake"]);
         }
+    }
+
+    #[test]
+    fn dereferenced_return_method_is_not_the_keyword() {
+        // Measured with the local Perl oracle (runtime plus `-MO=Deparse`):
+        // `$object->return << END` is a method invocation whose arrow supplies
+        // the left operand, so the `<<` is a left shift and a bare `END` line
+        // is not a terminator. The lines after the shift stay live code: the
+        // method name must not be classified as the `return` keyword.
+        assert_membership_and_slash(
+            "my $x = $object->return <<END;\nsub fake { }\nEND\nsub real { }\n",
+            &["fake", "real"],
+            &[],
+        );
+        // Keyword control: plain `return <<END` keeps its definite heredoc
+        // reading, so the body prose stays out of the scan.
+        assert_membership_and_slash(
+            "sub f { return <<END; }\nsub fake { }\nEND\nsub real { }\n",
+            &["real"],
+            &["fake"],
+        );
     }
 
     #[test]

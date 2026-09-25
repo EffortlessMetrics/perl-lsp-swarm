@@ -124,6 +124,31 @@ fn lexer_term_slot_heredoc_bodies_stay_out_of_the_public_slash_path() {
 }
 
 #[test]
+fn lexer_dereferenced_return_method_keeps_shift_lines_live() {
+    // `$object->return <<END` is a method invocation, not the `return`
+    // keyword (local Perl oracle): the arrow supplies the left operand, so
+    // the `<<` is a left shift and the lines after it stay live code, with
+    // the declaration between the shift and the bare `END` line keeping the
+    // known-sub regex path.
+    let source = "my $x = $object->return <<END;\nsub fake { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("fake"), "shift operand swallowed live code: {source:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+    let with_slash = format!("{source}fake /x/;\n");
+    let mut lx = PerlLexer::new(&with_slash);
+    let mut took_regex_path = false;
+    while let Some(token) = lx.next_token() {
+        match token.token_type {
+            TokenType::RegexMatch => took_regex_path = true,
+            TokenType::EOF => break,
+            _ => {}
+        }
+    }
+    assert!(took_regex_path, "fake /x/ lost the known-sub regex path");
+}
+
+#[test]
 fn lexer_handles_data_markers_with_cr_line_endings() {
     let input = "my $x = 1;\r__DATA__\rline one\rline two\r";
     let mut lx = PerlLexer::new(input);
