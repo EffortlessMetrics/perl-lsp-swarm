@@ -160,7 +160,10 @@ END
 sub real { }
 ";
     let table = LocalSymbolTable::scan_subs(source);
-    assert!(table.is_known_sub("fake"), "spaced-form shift operand swallowed live code: {source:?}");
+    assert!(
+        table.is_known_sub("fake"),
+        "spaced-form shift operand swallowed live code: {source:?}"
+    );
     assert!(table.is_known_sub("real"), "spaced-form suffix declaration lost: {source:?}");
 }
 
