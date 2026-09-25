@@ -1103,7 +1103,14 @@ gates:
     # CARGO_BIN_EXE -> target/debug/perllsp -> PATH -> cargo-run fallback;
     # without a prebuilt binary the fallback compile exceeds the test's own
     # initialize timeout and reds the gate nondeterministically (#9464).
-    command: cargo build -p perllsp --locked && cargo test --locked --tests {package_args}
+    #
+    # The test step exports PERL_LSP_BIN to the binary this gate just built:
+    # suites in the routed cohort may hard-require the variable
+    # (ux_process_lifecycle_e2e::stdio_navigation_matches_exact_request_and_current_edit
+    # does), and without the export such a suite can never pass under this
+    # gate even though the matching binary is already on disk (#16194). The
+    # env-wrapped shape keeps is_cargo_test_command recognition intact.
+    command: cargo build -p perllsp --locked && env PERL_LSP_BIN="$PWD/target/debug/perllsp" cargo test --locked --tests {package_args}
     # PR #1585 produced timeout-only receipts at 600s and 900s for the
     # perl-lsp-rs/perl-lsp-rs-core/xtask route. Keep the required --tests proof
     # bounded while matching the PR Smoke watchdog for the heavier routed path.

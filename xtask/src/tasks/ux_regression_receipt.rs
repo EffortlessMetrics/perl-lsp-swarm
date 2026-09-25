@@ -14,10 +14,17 @@ static FAILED_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 // Matches both pre-1.73 format ("panicked at 'msg', path:row:col") and
 // post-1.73 format ("panicked at path:row:col:") where the location appears
-// directly after "panicked at " without a quoted message.
+// directly after "panicked at " without a quoted message. The first character
+// class accepts a letter (relative paths like `crates/...`), `.` (`./`-relative
+// paths), or `/` (absolute paths) so panics whose frame is outside the
+// workspace root — a dependency's own `unwrap`, a `registry/src/...` frame, or
+// any build whose `CARGO_MANIFEST_DIR` is not a prefix of the compiled file —
+// are still captured. The `[^:\s]` segments forbid whitespace and inner `:`
+// across the whole path, so a token like `./ something:100:200` — whitespace
+// inside the "path" — cannot be captured as a location.
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static PANIC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z][^:\s][^:]*:\d+:\d+)")
+    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z./][^:\s][^:\s]*:\d+:\d+)")
         .expect("panic regex must compile")
 });
 
@@ -240,7 +247,14 @@ fn classify_with_exit_status(
     } else {
         let test = first_failing_test.as_deref().unwrap_or("unknown_test");
         let repro = canonical_repro.as_deref().unwrap_or("see ux-regression.log");
-        format!("UX regression failed in {test}; classified as {failure_class:?}; repro: {repro}")
+        let discrimination = first_failing_test
+            .as_deref()
+            .and_then(|name| failing_tests.iter().find(|failing| failing.name == name))
+            .map(describe_discrimination)
+            .unwrap_or_default();
+        format!(
+            "UX regression failed in {test}; classified as {failure_class:?}{discrimination}; repro: {repro}"
+        )
     };
 
     UxRegressionReceipt {
@@ -338,12 +352,15 @@ fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
         });
     }
 
-    if !discriminated.is_empty() {
-        return discriminated;
-    }
-
-    // Cargo reported failures but printed no stdout block for them. Name the tests
+    // Cargo reported these failures but printed no stdout block for them. Name them
     // and admit the mode is unknown rather than borrowing the whole-log class.
+    //
+    // This runs even when other failures did produce blocks. A blockless failure the
+    // array silently dropped was invisible to every consumer: to `first_failing_test`'s
+    // own lookup, which then printed no per-test clause at all instead of saying
+    // `not discriminated`, and to `no_failing_test_compared_anything`, which would
+    // have read a run as crash-only while an unexplained failure sat beside the
+    // crash. Raised in review as `#discussion_r4058216209`.
     for line in raw.lines() {
         let Some(capture) = FAILED_TEST_RE.captures(line) else {
             continue;
@@ -363,6 +380,40 @@ fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
         });
     }
     discriminated
+}
+
+/// Say, in the one sentence a reader actually sees, what the first failing test's
+/// own block proved.
+///
+/// `failure_class` is read from the whole log, so it answers a question nobody asked:
+/// #16103 records a run where an unrelated one-file diff was published as
+/// `provider_regression` / `fix_provider`, and a later one where the same shape came
+/// back as `timeout` — the arm taken depends on which words happen to appear
+/// elsewhere in the log. `failing_tests` already carries the per-block reading that
+/// can tell a spent budget from a rejected observation, and it reaches the receipt
+/// file only. The check surface prints `human_summary`, so the discrimination has to
+/// travel in there to be read at all.
+///
+/// An undiscriminated mode is reported as such rather than dropped. "This log did not
+/// say" is the honest answer, and it is the one that tells a triager to open the log
+/// instead of trusting the class beside it.
+fn describe_discrimination(failing: &UxFailingTest) -> String {
+    let mode = match failing.mode {
+        UxFailureMode::BudgetExceeded => {
+            "a bounded wait expired, so nothing about the change was decided"
+        }
+        UxFailureMode::AssertionFailed => "an assertion rejected an observed value",
+        UxFailureMode::AssertionOnAbsentObservation => {
+            "an assertion failed on an absent observation, which a regression and a spent budget both produce"
+        }
+        UxFailureMode::Panic => "the test panicked without an assertion",
+        UxFailureMode::Unknown => "its block carried no evidence this classifier reads",
+    };
+    match (failing.discriminated, failing.evidence.as_deref()) {
+        (true, Some(evidence)) => format!("; per-test evidence: {mode} ({})", evidence.trim()),
+        (true, None) => format!("; per-test evidence: {mode}"),
+        (false, _) => format!("; per-test evidence: not discriminated — {mode}"),
+    }
 }
 
 /// Trim cargo's run-level trailer off the end of a block so the last failing test
@@ -496,6 +547,18 @@ fn scenario_from_test_name(test: &str) -> Option<String> {
 /// paragraph above denies, and would take `update_baseline` away from a real
 /// baseline failure that happened to run beside a slow probe.
 ///
+/// One ambiguous case is not left alone, because its remedy is actively unsafe.
+/// `BaselineDrift` routes to `update_baseline`, which tells a reader to accept the
+/// observed value as the new expectation. A test that panicked produced no observed
+/// value, so there is nothing to accept, and following that instruction would widen
+/// a budget or rewrite a snapshot on the strength of a crash. When every failing
+/// test is a proven crash (`no_failing_test_compared_anything`), the baseline
+/// verdict is therefore withdrawn in favour of `Unknown`, which routes to
+/// `Triage`. That is deliberately not a claim about what did go wrong — naming the
+/// right class for a panic is the open taxonomy question in #16103 — only that this
+/// run cannot be answered with a baseline. `blocking` does not read the class, so
+/// the gate still fails the run either way.
+///
 /// The ambiguous cases therefore keep whatever the whole-log scan already gave
 /// them. That scan is unreliable, which is the defect behind #16205, but this
 /// claim is only that proven budget evidence should beat it. Widening the claim
@@ -505,10 +568,42 @@ fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureCla
         && failing_tests.iter().all(|test| test.mode == UxFailureMode::BudgetExceeded);
 
     if every_failure_is_an_expired_budget {
-        UxFailureClass::Timeout
-    } else {
-        infer_failure_class(&classification_input(raw))
+        return UxFailureClass::Timeout;
     }
+
+    let scanned = infer_failure_class(&classification_input(raw));
+
+    if scanned == UxFailureClass::BaselineDrift && no_failing_test_compared_anything(failing_tests)
+    {
+        return UxFailureClass::Unknown;
+    }
+
+    scanned
+}
+
+/// True when every failing test is a proven crash.
+///
+/// A baseline or snapshot failure is an assertion: two values were produced and one
+/// was rejected. `classify_failure_mode` records an assertion in a block as
+/// `AssertionFailed` or `AssertionOnAbsentObservation`, and reaches `Panic` only
+/// after reading the whole block and finding no assertion line at all. So a run
+/// whose every failing test is `Panic` contains no comparison, and the word that
+/// produced `BaselineDrift` came from somewhere in the log that did not fail.
+///
+/// Every other mode leaves the class alone, and `Unknown` is the one worth naming.
+/// It does not mean "no comparison" — it means `classify_failure_mode` recognised
+/// no marker, which is also what a failure with no stdout block at all produces. An
+/// unrecognised baseline mismatch is exactly that shape, so reading `Unknown` as
+/// corroboration would take `update_baseline` away from a real baseline failure on
+/// the strength of having learned nothing about it. Review raised that
+/// (`#discussion_r4058216213`) against a first version that admitted `Unknown`
+/// alongside `Panic`; requiring affirmative evidence from every failing test is the
+/// same precedence `run_failure_class` already applies to budgets one level up.
+/// `AssertionFailed` beside a panic may well be the baseline comparison the class
+/// names, and `BudgetExceeded` returns at the deadline marker without reading
+/// further, so such a block is not known to be free of an assertion either.
+fn no_failing_test_compared_anything(failing_tests: &[UxFailingTest]) -> bool {
+    !failing_tests.is_empty() && failing_tests.iter().all(|test| test.mode == UxFailureMode::Panic)
 }
 
 fn infer_failure_class(raw: &str) -> UxFailureClass {
@@ -899,6 +994,99 @@ test result: FAILED. 0 passed; 1 failed";
         assert_eq!(&cap[1], "crates/perl-lsp-rs/src/lib.rs:42:8");
     }
 
+    #[test]
+    fn panic_re_matches_absolute_path_panic() {
+        // Absolute Unix-style paths are what rustc prints when the panicking
+        // frame is not under the workspace root (a dependency's own `unwrap`, a
+        // `registry/src/...` frame, or any build whose `CARGO_MANIFEST_DIR` is
+        // not a prefix of the compiled file). The first-character class used to
+        // be `[a-zA-Z]`, so these lines never matched and `panic_location` was
+        // silently absent — exactly the missing-evidence bug #16147 names.
+        let line = "thread 'x' panicked at /home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1:";
+        let cap = PANIC_RE.captures(line).expect("absolute path panic must match");
+        assert_eq!(&cap[1], "/home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1");
+    }
+
+    #[test]
+    fn panic_re_matches_dot_relative_path_panic() {
+        // `./`-relative paths appear from some toolchain and vendoring
+        // configurations. Like the absolute case above, the old regex refused
+        // to match because `.` is not a letter.
+        let line = "thread 'x' panicked at ./xtask/src/a.rs:7:1:";
+        let cap = PANIC_RE.captures(line).expect("dot-relative path panic must match");
+        assert_eq!(&cap[1], "./xtask/src/a.rs:7:1");
+    }
+
+    #[test]
+    fn panic_re_matches_cargo_registry_panic() {
+        // The case the digest fails hardest on is a panic inside a
+        // dependency, which is exactly where the reader has the least context
+        // to diagnose from the test name alone. The registry path lives under
+        // an absolute prefix (`/root/.cargo/...`) so the old `[a-zA-Z]` anchor
+        // rejected it on the leading `/`.
+        let line = "thread 'x' panicked at /root/.cargo/registry/src/index/foo-1.0/src/lib.rs:3:4:";
+        let cap = PANIC_RE.captures(line).expect("cargo registry path panic must match");
+        assert_eq!(&cap[1], "/root/.cargo/registry/src/index/foo-1.0/src/lib.rs:3:4");
+    }
+
+    #[test]
+    fn panic_re_classify_extracts_panic_location_from_absolute_path() {
+        // End-to-end: a whole log carrying a panic in a dependency frame must
+        // surface the absolute path through `panic_location` on the receipt.
+        // This is the discriminating proof #16147 requires at the call-site
+        // boundary, not just at the regex level.
+        let log = "running 1 test\n\
+test ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix ... FAILED\n\
+thread 'x' panicked at /home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1:\n\
+boom\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("abs-sha".to_string()));
+        assert_eq!(
+            receipt.panic_location.as_deref(),
+            Some("/home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1"),
+            "panic_location must surface the absolute path through classify()"
+        );
+    }
+
+    #[test]
+    fn panic_re_first_character_anchor_still_excludes_arbitrary_text() {
+        // The first-character class `[a-zA-Z./]` keeps the old anchor's
+        // narrowness: a leading space, a leading digit, or a leading `-` still
+        // cannot start a captured location. This protects against the failure
+        // mode the issue warns about — letting the regex swallow any prose
+        // after `panicked at`. Whitespace, digits, and `-` all stay excluded.
+        for line in [
+            "thread 'x' panicked at  something happened: 100:200",
+            "thread 'x' panicked at 9lives/src/lib.rs:42:8:",
+            "thread 'x' panicked at -/weird/path.rs:42:8:",
+        ] {
+            assert!(PANIC_RE.captures(line).is_none(), "leading {line:?} must not match, but did");
+        }
+    }
+
+    #[test]
+    fn panic_re_whitespace_inside_path_is_not_captured() {
+        // The path segments are whitespace-free by grammar: a real panic
+        // location is one token, so `./` followed by a space is prose, not a
+        // path. The `[^:]*` tail used to admit that whitespace and captured
+        // `./ something:100:200` as a bogus `panic_location` (review finding
+        // on #16189, FC-WHITESPACE-PATH-GRAMMAR); `[^:\s]*` refuses it.
+        for line in [
+            "thread 'x' panicked at ./ something:100:200",
+            "thread 'x' panicked at ./a b.rs:100:200",
+        ] {
+            assert!(
+                PANIC_RE.captures(line).is_none(),
+                "whitespace inside {line:?} must not be captured as a path, but was"
+            );
+        }
+        // A genuine `./`-relative location with no inner whitespace still
+        // matches, proving the negative control is not over-narrow.
+        let line = "thread 'x' panicked at ./xtask/src/a.rs:100:200:";
+        let cap = PANIC_RE.captures(line).expect("dot-relative path panic must still match");
+        assert_eq!(&cap[1], "./xtask/src/a.rs:100:200");
+    }
+
     // =========================================================================
     // Scenario 14 / 19 classifier fixture tests (Task 0.4)
     // =========================================================================
@@ -1130,6 +1318,66 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored";
             UxFailureMode::BudgetExceeded,
             "per-test discrimination must survive the whole-run class"
         );
+    }
+
+    #[test]
+    fn the_human_summary_carries_the_first_failing_tests_own_evidence() {
+        // #16103: `failure_class` is read from the whole log, and here it reads the
+        // scenario-14 provider vocabulary and calls the run a provider regression —
+        // while the test that actually failed first ran out of budget. The check
+        // surface prints `human_summary` and nothing else, so unless the per-test
+        // reading travels in there, the only sentence a triager sees is the wrong one.
+        let receipt = classify(TWO_FAILURES_LOG, Some("sha".to_string()));
+        assert!(
+            receipt.human_summary.contains("classified as ProviderRegression"),
+            "the whole-run class stays, so existing readers see what they saw: {}",
+            receipt.human_summary
+        );
+        assert!(
+            receipt.human_summary.contains("a bounded wait expired"),
+            "the first failing test's own mode must reach the printed sentence: {}",
+            receipt.human_summary
+        );
+        assert!(
+            receipt.human_summary.contains("deadline expired after 5000ms"),
+            "and the line it was read from, so the receipt shows its work: {}",
+            receipt.human_summary
+        );
+    }
+
+    #[test]
+    fn an_undiscriminated_failure_says_so_rather_than_borrowing_a_class() {
+        // The counterpart control. A block with nothing this classifier reads must
+        // not silently inherit the whole-run class's confidence: "not discriminated"
+        // is what sends a triager to the log instead of to the wrong file.
+        let log = "running 1 test\n\
+test ux_scenario_61_package_boundary_receiver_inline_completion_quality::scenario_61_receipt ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_scenario_61_package_boundary_receiver_inline_completion_quality::scenario_61_receipt stdout ----\n\
+Error: the run ended without a verdict\n\
+\n\
+failures:\n\
+    ux_scenario_61_package_boundary_receiver_inline_completion_quality::scenario_61_receipt\n\
+\n\
+test result: FAILED. 0 passed; 1 failed; 0 ignored";
+        let receipt = classify(log, None);
+        assert!(!receipt.failing_tests[0].discriminated, "the block carries no marker");
+        assert!(
+            receipt.human_summary.contains("not discriminated"),
+            "an unread block must be reported as unread: {}",
+            receipt.human_summary
+        );
+    }
+
+    #[test]
+    fn a_passing_run_keeps_its_summary_unchanged() {
+        // The addition is for failures only; a green run's sentence is a contract
+        // other readers already parse.
+        let receipt =
+            classify("running 1 test\ntest ok_test ... ok\ntest result: ok. 1 passed", None);
+        assert_eq!(receipt.human_summary, "UX regression passed; merge_allowed.");
     }
 
     #[test]
@@ -1378,6 +1626,203 @@ test result: FAILED. 0 passed; 1 failed; timed out after 60s";
             receipt.schema_version, 2,
             "consumers pinned to version 1 keep every field they already read"
         );
+    }
+
+    // ── #16103: a crash is never answered with a baseline remedy ───────────
+    //
+    // `update_baseline` tells a reader to accept the observed value as the new
+    // expectation. A panicking test produced no observed value. These pin the
+    // guard and, just as importantly, its limit.
+
+    /// One failing test, which panicked with no assertion anywhere in its block,
+    /// while the word that drives `BaselineDrift` sits in a cargo status line that
+    /// has nothing to do with the failure. This is the shape the gate published on
+    /// job 106147516331.
+    const PANIC_WITH_INCIDENTAL_BASELINE_LOG: &str = "   Compiling perl-lsp-ux-baselines v0.1.0\n\
+running 1 test\n\
+test ux_latency_document_symbols_returns_real_process_shape ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_latency_document_symbols_returns_real_process_shape stdout ----\n\
+thread 'ux_latency_document_symbols_returns_real_process_shape' (6514) panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:331:5:\n\
+called `Option::unwrap()` on a `None` value\n\
+\n\
+failures:\n\
+    ux_latency_document_symbols_returns_real_process_shape\n\
+\n\
+test result: FAILED. 0 passed; 1 failed; 0 ignored";
+
+    #[test]
+    fn a_crash_is_never_answered_with_a_baseline_remedy() {
+        let receipt = classify(PANIC_WITH_INCIDENTAL_BASELINE_LOG, None);
+
+        assert_eq!(
+            receipt.failing_tests.len(),
+            1,
+            "the fixture has exactly one failing test, and it panicked"
+        );
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::Panic);
+
+        assert_ne!(
+            receipt.merge_action, "update_baseline",
+            "there is no observed value to accept as a new baseline: the test crashed"
+        );
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::Unknown),
+            "the baseline verdict is withdrawn, not replaced with another guess"
+        );
+        assert_eq!(receipt.route, UxRoute::Triage, "a crash with no comparison goes to a human");
+        assert_eq!(receipt.merge_action, "triage");
+        assert!(receipt.blocking, "withdrawing the class must not soften the gate");
+        assert!(
+            receipt.human_summary.contains("panicked"),
+            "the reader still gets the evidence that decided it: {}",
+            receipt.human_summary
+        );
+    }
+
+    /// The same incidental word, but now one failing test really did compare two
+    /// values. That assertion may be the baseline comparison the class names, so
+    /// the class must survive.
+    const BASELINE_ASSERTION_BESIDE_A_PANIC_LOG: &str = "   Compiling perl-lsp-ux-baselines v0.1.0\n\
+running 2 tests\n\
+test ux_latency_raw_rpc::ux_latency_hover_within_baseline ... FAILED\n\
+test ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_latency_raw_rpc::ux_latency_hover_within_baseline stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:212:5:\n\
+assertion `left <= right` failed: hover exceeded its recorded baseline\n\
+  left: 910\n\
+ right: 400\n\
+\n\
+---- ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:331:5:\n\
+called `Option::unwrap()` on a `None` value\n\
+\n\
+test result: FAILED. 0 passed; 2 failed; 0 ignored";
+
+    #[test]
+    fn a_real_baseline_assertion_beside_a_crash_keeps_its_remedy() {
+        let receipt = classify(BASELINE_ASSERTION_BESIDE_A_PANIC_LOG, None);
+
+        assert_eq!(receipt.failing_tests[0].mode, UxFailureMode::AssertionFailed);
+        assert_eq!(receipt.failing_tests[1].mode, UxFailureMode::Panic);
+
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::BaselineDrift),
+            "a block that compared two real values is exactly what the class is for"
+        );
+        assert_eq!(
+            receipt.merge_action, "update_baseline",
+            "the guard withdraws an unsupported verdict; it must not withdraw a supported one"
+        );
+    }
+
+    /// Two failing tests where the FIRST printed no stdout block at all and the
+    /// second did. Cargo does this whenever a failure produces no captured output.
+    const BLOCKLESS_FIRST_FAILURE_LOG: &str = "running 2 tests\n\
+test ux_scenario_01_startup::start ... FAILED\n\
+test ux_latency_raw_rpc::ux_latency_hover_is_prompt ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_latency_raw_rpc::ux_latency_hover_is_prompt stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:212:5:\n\
+hover wait ended: deadline expired after 5000ms with the stream still live\n\
+\n\
+failures:\n\
+    ux_scenario_01_startup::start\n\
+    ux_latency_raw_rpc::ux_latency_hover_is_prompt\n\
+\n\
+test result: FAILED. 0 passed; 2 failed; 0 ignored";
+
+    #[test]
+    fn a_blockless_failure_survives_beside_one_that_printed_a_block() {
+        let receipt = classify(BLOCKLESS_FIRST_FAILURE_LOG, None);
+
+        assert_eq!(
+            receipt.failing_tests.len(),
+            2,
+            "a failure cargo printed no block for is still a failure: {:?}",
+            receipt.failing_tests.iter().map(|test| &test.name).collect::<Vec<_>>()
+        );
+
+        let blockless =
+            receipt.failing_tests.iter().find(|test| test.name == "ux_scenario_01_startup::start");
+        assert_eq!(
+            blockless.map(|test| test.mode),
+            Some(UxFailureMode::Unknown),
+            "the blockless failure must be recorded, and as unexplained"
+        );
+        assert_eq!(
+            blockless.map(|test| test.discriminated),
+            Some(false),
+            "no block is no evidence"
+        );
+
+        let with_block = receipt
+            .failing_tests
+            .iter()
+            .find(|test| test.name == "ux_latency_raw_rpc::ux_latency_hover_is_prompt");
+        assert_eq!(
+            with_block.map(|test| test.mode),
+            Some(UxFailureMode::BudgetExceeded),
+            "the block-backed failure keeps its own reading"
+        );
+        assert_eq!(
+            with_block.map(|test| test.evidence.is_some()),
+            Some(true),
+            "its deadline line is still its evidence"
+        );
+
+        assert!(
+            receipt.human_summary.contains("not discriminated"),
+            "the first failing test is the blockless one, so the sentence must say so: {}",
+            receipt.human_summary
+        );
+    }
+
+    /// The same incidental `baseline` as the crash fixture, but the co-failure is a
+    /// plausible baseline comparison that printed no block — so nothing is known
+    /// about it.
+    const UNKNOWN_BESIDE_A_CRASH_LOG: &str = "   Compiling perl-lsp-ux-baselines v0.1.0\n\
+running 2 tests\n\
+test ux_scenario_07_baseline_probe::compares ... FAILED\n\
+test ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape stdout ----\n\
+thread 'main' panicked at crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs:331:5:\n\
+called `Option::unwrap()` on a `None` value\n\
+\n\
+failures:\n\
+    ux_scenario_07_baseline_probe::compares\n\
+    ux_latency_raw_rpc::ux_latency_document_symbols_returns_real_process_shape\n\
+\n\
+test result: FAILED. 0 passed; 2 failed; 0 ignored";
+
+    #[test]
+    fn an_unexplained_co_failure_keeps_the_baseline_remedy() {
+        // `Unknown` means no marker was recognised, not that no comparison
+        // happened — an unrecognised baseline mismatch has exactly this shape.
+        // Letting it corroborate the crash would take `update_baseline` away from a
+        // real baseline failure on the strength of having learned nothing.
+        let receipt = classify(UNKNOWN_BESIDE_A_CRASH_LOG, None);
+
+        assert_eq!(receipt.failing_tests.len(), 2);
+        assert!(
+            receipt.failing_tests.iter().any(|test| test.mode == UxFailureMode::Unknown),
+            "the blockless failure must reach the guard as unexplained"
+        );
+        assert!(
+            matches!(receipt.failure_class, UxFailureClass::BaselineDrift),
+            "the guard needs affirmative crash evidence from every failing test"
+        );
+        assert_eq!(receipt.merge_action, "update_baseline");
     }
 
     #[test]

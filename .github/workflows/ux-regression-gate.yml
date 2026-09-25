@@ -75,7 +75,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: just
 
@@ -331,6 +331,17 @@ jobs:
                       ]
                       if show_failure_fields:
                           lines.append(f"- Route: `{receipt.get('route') or 'triage'}`")
+                      # `failure_class` is read from the whole log; the per-test
+                      # discrimination that separates a spent budget from a
+                      # rejected observation travels in `human_summary` (#16103).
+                      # This surface printed the class alone, so a failure here
+                      # showed the guess without the reading beside it, while the
+                      # same receipt read correctly in ci.yml. Two printers of one
+                      # field is exactly how that divergence happens, which is why
+                      # `both_ux_summaries_print_the_receipts_human_summary` now
+                      # pins both.
+                      if receipt.get("human_summary"):
+                          lines.append(f"- Summary: {receipt.get('human_summary')}")
 
           rendered = "\n".join(lines) + "\n"
           summary.write_text(rendered, encoding="utf-8")
