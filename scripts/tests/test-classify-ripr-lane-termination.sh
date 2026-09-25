@@ -51,6 +51,18 @@ classify_field() {
   bash "$CLASSIFIER" "$1" | sed -n "s/^$2=//p" | head -1
 }
 
+classify_api_field() {
+  # $1=annotations.json $2=steps.json $3=gap-receipt file ("" for none)
+  # $4=output field -> value
+  local out
+  if [[ -n "$3" ]]; then
+    out=$(bash "$CLASSIFIER" --api-evidence "$1" "$2" --gap-receipt "$3")
+  else
+    out=$(bash "$CLASSIFIER" --api-evidence "$1" "$2")
+  fi
+  printf '%s\n' "$out" | sed -n "s/^$4=//p" | head -1
+}
+
 WORK="$(mktemp -d)"
 
 # --- Fixtures -----------------------------------------------------------------
@@ -189,6 +201,189 @@ cat >"${TIMEOUT_KILL}" <<'EOF'
 EOF
 expect_eq "PIN: wall-clock timeout without receipt reruns once then lands on the loud bound" \
   "infra-no-proof" "$(classify_field "${TIMEOUT_KILL}" classification)"
+
+# --- API-evidence mode (#16431) ------------------------------------------------
+#
+# The second classifier mode classifies from the lane job's check-run
+# annotations and its steps state when the bounded log fetch fails or comes
+# back without any teardown marker. The fixtures below are verbatim API
+# shapes measured on the evicted runs named in #16431 (35444262230,
+# 35501271465, 35507463908). The boundary is unchanged: only positive
+# runner-teardown evidence arms infra-no-proof, a genuine gap receipt always
+# outranks it, and unreadable/absent evidence fails closed.
+
+if ! command -v jq >/dev/null 2>&1; then
+  fail "api-evidence fixtures require the jq executable (classifier fails closed without it)"
+  printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
+
+# Fixture: verbatim annotation of an exit-143 eviction (run 35507463908). All
+# of that job's steps had concluded; the annotation is the only teardown
+# evidence the API kept.
+ANN_143="${WORK}/ann-exit143.json"
+cat >"${ANN_143}" <<'EOF'
+[
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/f5781cc4423bac7759311827d9174f6f297ca100/.github",
+    "start_line": 1,
+    "start_column": null,
+    "end_line": 1,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "Process completed with exit code 143.",
+    "raw_details": ""
+  }
+]
+EOF
+
+# Fixture: verbatim annotation of a lost-communication eviction (runs
+# 35444262230 / 35501271465). That eviction class ends mid-cargo with zero
+# in-log teardown markers, so only this API-side evidence can see it.
+ANN_LOST="${WORK}/ann-lost-comm.json"
+cat >"${ANN_LOST}" <<'EOF'
+[
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/f5781cc4423bac7759311827d9174f6f297ca100/.github",
+    "start_line": 1,
+    "start_column": null,
+    "end_line": 1,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "The hosted runner lost communication with the server. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.",
+    "raw_details": ""
+  }
+]
+EOF
+
+ANN_EMPTY="${WORK}/ann-empty.json"
+printf '[]' >"${ANN_EMPTY}"
+
+# Fixture: a truncated annotation read (invalid JSON). Analogous to log
+# mode's partial_read: unreadable evidence cannot prove absence of a genuine
+# receipt, so it must never arm the infra path.
+ANN_TRUNCATED="${WORK}/ann-truncated.json"
+printf '[{"path":".github","annotation_level":"failure","message":"Process completed w' >"${ANN_TRUNCATED}"
+
+# Fixture: steps state of the lost-communication eviction (run 35444262230):
+# the lane failed while the step it was running never concluded.
+STEPS_STUCK="${WORK}/steps-stuck.json"
+cat >"${STEPS_STUCK}" <<'EOF'
+{
+  "conclusion": "failure",
+  "steps": [
+    {"name": "Set up job", "status": "completed", "conclusion": "success"},
+    {"name": "Checkout", "status": "completed", "conclusion": "success"},
+    {"name": "Generate PR evidence", "status": "completed", "conclusion": "success"},
+    {"name": "Generate review guidance", "status": "in_progress", "conclusion": null},
+    {"name": "Generate impacted evidence", "status": "pending", "conclusion": null},
+    {"name": "Enforce new RIPR gap quality gate", "status": "pending", "conclusion": null},
+    {"name": "Complete job", "status": "pending", "conclusion": null}
+  ]
+}
+EOF
+
+# Fixture: steps state of the exit-143 eviction (run 35507463908): every
+# step, including the failing one, had concluded before the job failed.
+STEPS_CONCLUDED="${WORK}/steps-concluded.json"
+cat >"${STEPS_CONCLUDED}" <<'EOF'
+{
+  "conclusion": "failure",
+  "steps": [
+    {"name": "Set up job", "status": "completed", "conclusion": "success"},
+    {"name": "Generate review guidance", "status": "completed", "conclusion": "failure"},
+    {"name": "Generate impacted evidence", "status": "skipped", "conclusion": "skipped"},
+    {"name": "Enforce new RIPR gap quality gate", "status": "skipped", "conclusion": "skipped"},
+    {"name": "Complete job", "status": "completed", "conclusion": "success"}
+  ]
+}
+EOF
+
+# Fixture: a cancelled job with an unconcluded step. The steps-state rule is
+# bounded to conclusion == failure, exactly as designed (#16431).
+STEPS_CANCELLED="${WORK}/steps-cancelled.json"
+cat >"${STEPS_CANCELLED}" <<'EOF'
+{
+  "conclusion": "cancelled",
+  "steps": [
+    {"name": "Generate review guidance", "status": "in_progress", "conclusion": null}
+  ]
+}
+EOF
+
+# Fixture: the lane job missing from the jobs listing (the API answers null
+# for an unmatched first() projection).
+STEPS_MISSING="${WORK}/steps-missing.json"
+printf 'null' >"${STEPS_MISSING}"
+
+# Fixture: a retrieved lane log holding the terminal receipt.
+RECEIPT_LOG="${WORK}/receipt.log"
+cat >"${RECEIPT_LOG}" <<'EOF'
+2026-08-25T04:39:50Z quality gate failed; see receipt target/receipts/quality/quality-gate-ripr.json
+EOF
+
+# Fixture: a retrieved lane log with build progress but no markers and no
+# receipt (the silence shape that hands classification to API evidence).
+SILENT_LOG="${WORK}/silent.log"
+cat >"${SILENT_LOG}" <<'EOF'
+2026-08-26T00:10:01Z info: analyzing 1480 changed files
+2026-08-26T00:12:30Z info: exposure pass 3/5
+EOF
+
+expect_eq "API DISCRIMINATOR core: exit-143 annotation classifies infra-no-proof" \
+  "infra-no-proof" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" classification)"
+
+expect_eq "API: lost-communication annotation classifies infra-no-proof" \
+  "infra-no-proof" "$(classify_api_field "${ANN_LOST}" "${STEPS_CONCLUDED}" "" classification)"
+
+expect_eq "API: steps stuck in_progress with no receipt arms without annotations" \
+  "infra-no-proof" "$(classify_api_field "${ANN_EMPTY}" "${STEPS_STUCK}" "" classification)"
+
+expect_eq "API: stuck-steps counter pins the evidence kind" \
+  "1" "$(classify_api_field "${ANN_EMPTY}" "${STEPS_STUCK}" "" stuck_in_progress_steps)"
+
+expect_eq "API: lost-communication counter pins the evidence kind" \
+  "1" "$(classify_api_field "${ANN_LOST}" "${STEPS_STUCK}" "" lost_communication_matches)"
+
+expect_eq "API PIN: no markers and all steps concluded stays ripr-failure" \
+  "ripr-failure" "$(classify_api_field "${ANN_EMPTY}" "${STEPS_CONCLUDED}" "" classification)"
+
+expect_eq "API PIN: cancelled job with an unconcluded step stays ripr-failure" \
+  "ripr-failure" "$(classify_api_field "${ANN_EMPTY}" "${STEPS_CANCELLED}" "" classification)"
+
+expect_eq "API PIN: lane job missing from the listing fails closed" \
+  "ripr-failure" "$(classify_api_field "${ANN_EMPTY}" "${STEPS_MISSING}" "" classification)"
+
+expect_eq "API PIN: missing job reports steps as unreadable" \
+  "false" "$(classify_api_field "${ANN_EMPTY}" "${STEPS_MISSING}" "" steps_read)"
+
+expect_eq "API PIN: truncated annotation read fails closed" \
+  "ripr-failure" "$(classify_api_field "${ANN_TRUNCATED}" "${STEPS_CONCLUDED}" "" classification)"
+
+expect_eq "API PIN: truncated annotation read reports unreadable evidence" \
+  "false" "$(classify_api_field "${ANN_TRUNCATED}" "${STEPS_CONCLUDED}" "" annotations_read)"
+
+expect_eq "API DISCRIMINATOR: a retrieved genuine receipt outranks teardown annotations" \
+  "ripr-failure" "$(classify_api_field "${ANN_143}" "${STEPS_STUCK}" "${RECEIPT_LOG}" classification)"
+
+expect_eq "API: receipt counter carries into api-evidence mode" \
+  "1" "$(classify_api_field "${ANN_143}" "${STEPS_STUCK}" "${RECEIPT_LOG}" gap_receipt_matches)"
+
+expect_eq "API: silent retrieved log without markers takes the api-evidence path" \
+  "infra-no-proof" "$(classify_api_field "${ANN_LOST}" "${STEPS_CONCLUDED}" "${SILENT_LOG}" classification)"
+
+expect_eq "API: missing annotations file is absent evidence, not positive evidence" \
+  "ripr-failure" "$(classify_api_field "${WORK}/does-not-exist.json" "${STEPS_CONCLUDED}" "" classification)"
+
+if bash "$CLASSIFIER" --api-evidence "${ANN_EMPTY}" >/dev/null 2>&1; then
+  fail "incomplete api-evidence arguments must be a usage error"
+else
+  pass "incomplete api-evidence arguments are a usage error (exit 64)"
+fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
