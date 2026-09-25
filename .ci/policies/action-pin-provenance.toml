@@ -315,11 +315,13 @@ value = 'stable (master)'
 
 # Same verified master-head commit serving the nightly-toolchain jobs; the
 # channel prefix records those jobs' toolchain input, the parenthetical
-# records the verified ref projection.
+# records the verified ref projection. Recorded as legacy debt because the
+# ledger projects one reviewed non-legacy mapping per pin, mirroring the
+# 6c977a6 block above.
 [[pin]]
 action = 'dtolnay/rust-toolchain'
 sha = '02cb101ec7c40f2c49e1d9714d64511d8e1b74de'
-kind = 'branch_commit'
+kind = 'legacy_debt'
 value = 'nightly (master)'
 
 [[pin]]
