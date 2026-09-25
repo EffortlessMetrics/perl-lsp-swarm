@@ -29,8 +29,12 @@ on:
 
 # Cancel in-progress runs for PR events on new pushes; let push/merge_group runs complete.
 # The preflight SHA-staleness check provides additional skip logic for superseded SHAs.
+# #16168: push runs group per commit SHA. Under the previous shared refs/heads/main
+# group with cancel-in-progress: false, each newly queued main-push run cancelled the
+# previously *pending* run in the group (76% of main-push runs were cancelled before
+# scheduling a job). Per-SHA groups give every landed commit its own baseline run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 permissions:
