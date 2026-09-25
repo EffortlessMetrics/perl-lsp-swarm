@@ -1632,7 +1632,7 @@ verify_install() {
     if _got_version="$("$_bin" --version 2>&1)"; then
         info "verified: $_got_version"
     else
-        warn "could not run '$BIN_NAME --version'; the binary may require a restart to load shared libraries"
+        err "installed binary failed to run '$BIN_NAME --version': $_bin (output: $_got_version)"
     fi
 }
 
@@ -1736,9 +1736,13 @@ main() {
     if [ "$INSTALL_MODE" = "release" ]; then
         # Archive inspection classifies entries from the ustar headers rather
         # than from a tar listing, so the release path needs `od` as well as
-        # `tar` (#11508). A source build never inspects an archive, so the
-        # requirement stays inside this branch instead of gating both modes.
+        # `tar` (#11508). Size probing and bounded extraction shell out to
+        # `gzip -l` / `gzip -dc`, so `gzip` joins them — without it a missing
+        # tool misreports as a corrupt archive. A source build never inspects
+        # an archive, so the requirements stay inside this branch instead of
+        # gating both modes.
         need_cmd od
+        need_cmd gzip
         download_and_verify
         extract_archive
     else

@@ -371,6 +371,7 @@ fn extract_die_message(line: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

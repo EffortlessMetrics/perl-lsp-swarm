@@ -42,10 +42,18 @@ static FAILED_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 // Matches both pre-1.73 format ("panicked at 'msg', path:row:col") and
 // post-1.73 format ("panicked at path:row:col:") where the location appears
-// directly after "panicked at " without a quoted message.
+// directly after "panicked at " without a quoted message. The first character
+// class accepts a letter (relative paths like `crates/...`), `.` (`./`-relative
+// paths), or `/` (absolute paths) so panics whose frame is outside the
+// workspace root — a dependency's own `unwrap`, a `registry/src/...` frame, or
+// any build whose `CARGO_MANIFEST_DIR` is not a prefix of the compiled file —
+// are still captured (#16147). The `[^:\s]` segments forbid whitespace and
+// inner `:` across the whole path, so a token like `./ something:100:200` —
+// whitespace inside the "path" — cannot be captured as a location (review
+// finding on #16189, FC-WHITESPACE-PATH-GRAMMAR).
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
-static PANIC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z][^:\s][^:]*:\d+:\d+)")
+pub(crate) static PANIC_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z./][^:\s][^:\s]*:\d+:\d+)")
         .expect("panic regex must compile")
 });
 

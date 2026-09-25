@@ -631,7 +631,7 @@ jobs:
 
       - name: Install just
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
           tool: just
 
@@ -820,7 +820,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
           tool: just
 
@@ -1063,7 +1063,19 @@ jobs:
         # ten-annotation fold -- are only falsifiable from a test harness:
         # scripts/ci/test_summarize_pr_fast_gates.py, run by
         # .github/workflows/ci-gate-self-tests.yml.
-        run: python3 scripts/ci/summarize_pr_fast_gates.py
+        # Existence guard (#16375): the workflow definition is loaded from
+        # `main` even when the PR checkout predates the script, so an unguarded
+        # `python3 scripts/ci/summarize_pr_fast_gates.py` exits with
+        # `No such file or directory` and turns this advisory step red. Skip
+        # with an explicit annotation instead; the missing summary is not a
+        # gate failure, and re-basing restores the full behaviour without any
+        # other change to this step.
+        run: |
+          if [ -f scripts/ci/summarize_pr_fast_gates.py ]; then
+            python3 scripts/ci/summarize_pr_fast_gates.py
+          else
+            echo "::warning title=pr-fast summary::summarize_pr_fast_gates.py is not present on this checkout; skipping PR-fast gate summary (rebase onto current main to restore it; issue #16375)."
+          fi
 
       - name: Convert PR-fast receipt to JUnit
         if: always()
@@ -1206,7 +1218,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
           tool: just
 
@@ -1790,7 +1802,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
           tool: just
 
@@ -2027,7 +2039,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
           tool: just
 
@@ -2194,6 +2206,29 @@ jobs:
       # drop from this surface.
       - name: Changelog fragment gate contract (required merge surface)
         run: cargo test -p xtask --bin xtask --locked -- --nocapture changelog changie
+
+      # #15040: same defect shape as #13484 directly above. PR #14513 added 12
+      # `ci_subject_materializer::tests` and 3 `file_policy::tests::preapproved`
+      # unit tests, but no workflow invoked them — `xtask` is a bin target so
+      # `cargo test --workspace --lib` does not build them, the only
+      # `--bin xtask` invocations are in `emacs-train-context-contract.yml`
+      # for unrelated modules, and `ci-gate-self-tests.yml` is path-gated to
+      # other paths. Without these steps a future revert of the
+      # `-c core.autocrlf=false -c merge.renormalize=false` git wrapper flags,
+      # a bump of `PREAPPROVED_SUBJECT_CONTRACT_VERSION` without retargeting
+      # the live workflow contract-version, or a relaxation of
+      # `validate_preapproved_subject_workflow` could land without the merge
+      # surface ever failing — the very failure mode #13484 added to keep
+      # `tasks::changelog::tests` honest. Scoped to the exact module paths
+      # rather than substring filters on purpose: only those modules carry
+      # the structural-validator regressions this claim covers, and broader
+      # filters would re-introduce the inventory-ratchet red that #13484
+      # was specifically avoiding.
+      - name: PR-subject materializer unit tests (required merge surface)
+        run: cargo test -p xtask --bin xtask --locked ci_subject_materializer::tests -- --nocapture
+
+      - name: File-policy preapproval unit tests (required merge surface)
+        run: cargo test -p xtask --bin xtask --locked file_policy::tests::preapproved -- --nocapture
 
       - name: Workflow policy CLI wiring (required merge surface)
         run: cargo test -p xtask --bin xtask --locked -- workflow_policy_lint

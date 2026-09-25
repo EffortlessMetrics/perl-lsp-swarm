@@ -826,6 +826,12 @@ enum Commands {
         /// Head revision used for diff-scoped RIPR receipt commands.
         #[arg(long, default_value = "HEAD")]
         ripr_head: String,
+        /// Commit the repo-wide RIPR+ total-debt receipt may be bound to
+        /// instead of the head, for `--mode enforce-new-ripr` only. Normally
+        /// the merge base the pull request is measured against. Must name the
+        /// commit exactly; omitting it keeps the receipt head-bound.
+        #[arg(long)]
+        ripr_baseline_commit: Option<String>,
         /// Quality-gate JSON receipt path.
         #[arg(long, default_value = "target/receipts/quality/quality-gate.json")]
         receipt: PathBuf,
@@ -3256,6 +3262,13 @@ enum VimEditorCompatCommand {
         /// Host run timeout in milliseconds (default 240000).
         #[arg(long, default_value_t = 240_000)]
         timeout_ms: u64,
+
+        /// Envelope schema version this run must emit and validate (#15340).
+        /// Only the current `editor_client_compat` envelope is supported;
+        /// anything else fails closed before any work instead of emitting a
+        /// shape the caller does not parse.
+        #[arg(long, default_value = xtask::editor_client_compat::SCHEMA_VERSION)]
+        api_version: String,
     },
 }
 
@@ -4948,6 +4961,13 @@ enum EmacsIntegrationCommand {
         /// Host run timeout in milliseconds (default 180000).
         #[arg(long, default_value_t = 180_000)]
         timeout_ms: u64,
+
+        /// Envelope schema version this run must emit and validate (#15340).
+        /// Only the current `editor_client_compat` envelope is supported;
+        /// anything else fails closed before any work instead of emitting a
+        /// shape the caller does not parse.
+        #[arg(long, default_value = xtask::editor_client_compat::SCHEMA_VERSION)]
+        api_version: String,
     },
     /// Governed Emacs host-journey and fixture/cell manifest operations
     /// (#11768). Offline, deterministic, and second-run clean; validating or
@@ -5609,7 +5629,10 @@ fn run_cli(cli: Cli) -> Result<()> {
                     candidate,
                     out,
                     timeout_ms,
+                    api_version,
                 } => {
+                    xtask::editor_client_compat::ensure_api_version(&api_version)
+                        .map_err(|error| eyre!("{error:#}"))?;
                     let repo_root =
                         utils::project_root().map_err(|error| eyre!(error.to_string()))?;
                     if journey == "save-format" {
@@ -5927,6 +5950,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
                         &repo_root,
+                        &api_version,
                         &subject,
                         vim,
                         vim_lsp_dir,
@@ -6134,6 +6158,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_baseline_commit,
             receipt,
             summary,
             check,
@@ -6148,6 +6173,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_baseline_commit,
             receipt,
             summary,
             check,
@@ -6553,11 +6579,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                     client_package,
                     out,
                     timeout_ms,
+                    api_version,
                 } => {
                     let root =
                         crate::utils::project_root().map_err(|error| eyre!(error.to_string()))?;
                     let outcome = xtask::emacs_host_run::host_run_from_cli(
                         &root,
+                        &api_version,
                         &subject,
                         emacs,
                         candidate,
