@@ -453,7 +453,9 @@ expensive = false
 blocking_promotion_allowed = false
 duplicate_of = ["nightly:mutation"]
 review_after = "2026-06-07"
-expires = "2026-08-07"
+# 2026-08-07 had already passed while the lane stayed active (#16431 flagged
+# the stale date when the infra-retry arming was investigated).
+expires = "2026-12-31"
 
 [[lane]]
 id = "ripr_infra_retry"
@@ -466,9 +468,9 @@ default_pr = true
 runner = "ubuntu_latest"
 base_lem = 1
 owner = "testing"
-intent = "Bounded automatic same-head retry when the gate classifies a ripr lane kill as infra-no-proof (#6807, #12563, #12771)."
+intent = "Bounded automatic same-head retry when the gate classifies a ripr lane kill as infra-no-proof (#6807, #12563, #12771, #16431)."
 failure_mode = "A runner eviction otherwise false-reds the required ripr+ New Gap Gate with no terminal evidence for the SHA."
-proof_obligation = "Consume the gate's ripr-gate-classification artifact strictly as data; rerun-failed-jobs exactly once while run_attempt == 1; attempt >= 2 surfaces NOT_PROVEN loudly."
+proof_obligation = "Consume the gate's ripr-gate-classification artifact strictly as data; rerun-failed-jobs exactly once while run_attempt == 1; attempt >= 2 surfaces NOT_PROVEN loudly. The gate may classify from lane-log markers or from API-side evidence (check-run annotations / job steps-state fallback, #16431); this consumer stays classifier-agnostic."
 evidence = []
 allowed_triggers = ["workflow_run"]
 labels = ["ripr", "ci-reliability"]
