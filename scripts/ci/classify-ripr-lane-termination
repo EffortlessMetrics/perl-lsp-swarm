@@ -155,12 +155,14 @@ emit_api_verdict() {
   local ann_file="$1" steps_file="$2" receipt_file="$3"
   local gap_hits=0 shut_hits=0 term143_hits=0 cancel_hits=0 lost_hits=0
   local stuck_hits=0 job_conclusion="" ann_read=false steps_read=false
+  local receipt_scanned=false receipt_capable_failed=false
   local class msgs
 
   # The receipt outranks everything, exactly as in log mode. The gate hands
   # us whatever lane-log text it did retrieve; a genuine receipt in it keeps
   # the class red even when teardown annotations exist.
   if [ -n "$receipt_file" ] && [ -f "$receipt_file" ]; then
+    receipt_scanned=true
     gap_hits=$(grep -cE 'quality gate failed; see receipt' "$receipt_file" 2>/dev/null || true)
   fi
 
@@ -186,11 +188,36 @@ emit_api_verdict() {
       job_conclusion="$(jq -r '.conclusion // empty' "$steps_file" 2>/dev/null || true)"
       stuck_hits="$(jq -r '[.steps[]? | select(.status == "in_progress" and .conclusion == null)] | length' "$steps_file" 2>/dev/null || true)"
       case "$stuck_hits" in ''|*[!0-9]*) stuck_hits=0 ;; esac
+      # A receipt-capable step that itself concluded failure means the lane
+      # reached (and failed) the point where a gap receipt would exist: the
+      # missing receipt is the finding, not eviction evidence. exit-143
+      # annotations are NOT runner-only — xtask SIGTERMs the ripr child at
+      # the guidance bound (ripr.yml guidance-step comment) and the runner
+      # then writes the same 143 annotation for a genuine red.
+      receipt_capable_failed="$(jq -r '[.steps[]? | select(.conclusion == "failure" and (.name | test("Enforce new RIPR gap quality gate")))] | length > 0' "$steps_file" 2>/dev/null || true)"
+      [ "$receipt_capable_failed" = "true" ] || receipt_capable_failed=false
+    fi
+  fi
+
+  # When no receipt was scanned (log fetch failed), arming additionally
+  # requires readable steps state in which no receipt-capable step concluded
+  # failure — without that, a genuine red wearing a teardown-shaped
+  # annotation could take the retry path (#16433 review).
+  api_arming_allowed=true
+  if [ "$receipt_scanned" != "true" ]; then
+    if [ "$steps_read" != "true" ] || [ "$receipt_capable_failed" = "true" ]; then
+      api_arming_allowed=false
     fi
   fi
 
   if [ "$gap_hits" -gt 0 ]; then
     # Boundary rule 1: a genuine terminal red outranks every infra marker.
+    class="ripr-failure"
+  elif [ "$api_arming_allowed" != "true" ]; then
+    # Boundary rule 1b (receipt-unscanned guard): without a scanned receipt,
+    # arming requires positive proof the receipt-capable step never ran to a
+    # failure; unreadable steps state or a failed receipt-capable step means
+    # a genuine red cannot be ruled out.
     class="ripr-failure"
   elif [ "$shut_hits" -gt 0 ] || [ "$term143_hits" -gt 0 ] || [ "$cancel_hits" -gt 0 ] || [ "$lost_hits" -gt 0 ]; then
     # Boundary rule 2a: positive teardown annotations only.
@@ -209,6 +236,8 @@ emit_api_verdict() {
   cat <<EOF
 classification=$class
 gap_receipt_matches=$gap_hits
+receipt_scanned=$receipt_scanned
+receipt_capable_failed=$receipt_capable_failed
 shutdown_signal_matches=$shut_hits
 sigterm143_matches=$term143_hits
 op_cancelled_matches=$cancel_hits

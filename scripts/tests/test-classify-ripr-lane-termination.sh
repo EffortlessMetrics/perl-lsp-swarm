@@ -305,6 +305,23 @@ EOF
 
 # Fixture: a cancelled job with an unconcluded step. The steps-state rule is
 # bounded to conclusion == failure, exactly as designed (#16431).
+# Fixture: the receipt-capable gate step itself concluded failure while an
+# exit-143 annotation is present — xtask SIGTERMs the ripr child at the
+# guidance bound with exit 143 (ripr.yml guidance-step comment), so this
+# annotation shape is a GENUINE red, not runner teardown (#16433 review).
+STEPS_GATE_FAILED="${WORK}/steps-gate-failed.json"
+cat >"${STEPS_GATE_FAILED}" <<'EOF'
+{
+  "conclusion": "failure",
+  "steps": [
+    {"name": "Set up job", "status": "completed", "conclusion": "success"},
+    {"name": "Generate review guidance", "status": "completed", "conclusion": "failure"},
+    {"name": "Enforce new RIPR gap quality gate", "status": "completed", "conclusion": "failure"},
+    {"name": "Complete job", "status": "completed", "conclusion": "success"}
+  ]
+}
+EOF
+
 STEPS_CANCELLED="${WORK}/steps-cancelled.json"
 cat >"${STEPS_CANCELLED}" <<'EOF'
 {
@@ -378,6 +395,21 @@ expect_eq "API: silent retrieved log without markers takes the api-evidence path
 
 expect_eq "API: missing annotations file is absent evidence, not positive evidence" \
   "ripr-failure" "$(classify_api_field "${WORK}/does-not-exist.json" "${STEPS_CONCLUDED}" "" classification)"
+
+# Receipt-unscanned guard (#16433 review): exit-143 is not runner-only — a
+# failed receipt-capable gate step with no scanned receipt is a genuine red
+# that must never take the retry path.
+expect_eq "API GUARD: 143 annotation + failed receipt-capable gate step + no receipt is a genuine red"   "ripr-failure" "$(classify_api_field "${ANN_143}" "${STEPS_GATE_FAILED}" "" classification)"
+
+# The guard must not disturb the eviction shape: a skipped gate step with a
+# 143 annotation and no receipt stays infra-no-proof.
+expect_eq "API GUARD: 143 annotation + skipped gate step + no receipt still arms"   "infra-no-proof" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" classification)"
+
+expect_eq "API GUARD: unreadable steps state with no scanned receipt fails closed"   "ripr-failure" "$(classify_api_field "${ANN_143}" "${WORK}/does-not-exist-steps.json" "" classification)"
+
+expect_eq "API GUARD: receipt_scanned field carries into api-evidence output"   "false" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" receipt_scanned)"
+
+expect_eq "API GUARD: receipt_capable_failed field carries into api-evidence output"   "false" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" receipt_capable_failed)"
 
 if bash "$CLASSIFIER" --api-evidence "${ANN_EMPTY}" >/dev/null 2>&1; then
   fail "incomplete api-evidence arguments must be a usage error"

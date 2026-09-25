@@ -93,8 +93,13 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
   classifier's `--api-evidence` mode applies the same positive-marker boundary;
   unreadable or marker-free evidence still fails closed. Every classified lane
   failure leaves a `ripr-gate-classification` artifact carrying its class and
-  reason, so absence of the artifact always means the gate itself died before
-  classifying.
+  reason. When the artifact is absent, the gate's classification step did not
+  produce a file — which points at a gate-side failure, though it is not by
+  itself proof of any single cause: paths that exit before classification and
+  upload-step skip conditions also leave no artifact (the upload step ignores
+  missing files). The authoritative signal is the classification content when
+  the artifact exists; consumers such as ripr-infra-retry treat absence as
+  no-arm and surface NOT_PROVEN rather than guessing a class.
 - Produces diff-scoped PR evidence under `target/ripr/pr/`.
 - Produces the repo-wide RIPR+ baseline receipt at
   `target/receipts/quality/ripr-plus.json`.
