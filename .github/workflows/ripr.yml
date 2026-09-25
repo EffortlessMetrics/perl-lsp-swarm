@@ -811,9 +811,67 @@ jobs:
           printf "container_exit=%s\n" "$container_status" >> target/ripr/pr/ripr-measurement-config.txt
           exit "$container_status"
 
+      # #16431: the repo-wide RIPR+ receipt is a function of the checked-out
+      # HEAD tree alone -- it embeds `head: <current_head>` and every consumer
+      # head-binds it (`ripr-plus --check` byte-compares; the quality gate
+      # marks a receipt `stale` unless its head matches) -- so a re-run of the
+      # same head can restore the receipt instead of recomputing the
+      # whole-workspace seam/closure scan (~44m on 2026-09-25 against ~33s
+      # warm). The key pins the full content identity: toolchain version,
+      # exact head sha, suppression-ledger hash. The `restore-keys` prefix
+      # mirrors the fact-cache shape above, but a prefix hit restores a
+      # DIFFERENT head's receipt, so only an exact-key hit may be consumed --
+      # the adjudicator below translates the action's exact-match-only
+      # `cache-hit` output into the env var the receipt step guards on, and
+      # the produce branch simply overwrites whatever a prefix hit restored.
+      - name: Restore memoized ripr-plus receipt
+        id: ripr-plus-receipt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/receipts/quality/ripr-plus.json
+          key: ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-${{ github.sha }}-${{ hashFiles('policy/ripr-suppressions.toml') }}
+          restore-keys: |
+            ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-
+
+      # `actions/cache/restore` reports `cache-hit=true` only when the exact
+      # primary key matched; a `restore-keys` prefix match restores another
+      # head's entry with `cache-hit=false`. Bridge that decision into the
+      # environment so the receipt step's guard stays plain bash and can
+      # never consume a receipt for a head other than the one checked out.
+      # The action output rides `env:` as data, not interpreter source
+      # (workflow-security ratchet).
+      - name: Adjudicate receipt cache exactness
+        if: always()
+        env:
+          RIPR_RECEIPT_CACHE_MATCHED: ${{ steps.ripr-plus-receipt-cache.outputs.cache-hit }}
+          RIPR_RECEIPT_CACHE_MATCHED_KEY: ${{ steps.ripr-plus-receipt-cache.outputs.cache-matched-key }}
+        run: |
+          if [ "$RIPR_RECEIPT_CACHE_MATCHED" = "true" ] && [ -f target/receipts/quality/ripr-plus.json ]; then
+            echo "RIPR_RECEIPT_CACHE_HIT=true" >> "$GITHUB_ENV"
+            echo "exact-head memoized receipt restored: $RIPR_RECEIPT_CACHE_MATCHED_KEY"
+          else
+            echo "RIPR_RECEIPT_CACHE_HIT=false" >> "$GITHUB_ENV"
+            echo "no exact-head receipt cache hit; the receipt step will produce fresh"
+          fi
+
       - name: Generate repo-wide RIPR+ baseline receipt
         if: always()
-        run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+        # #16431: consume the memoized receipt only on an exact-head hit;
+        # otherwise produce fresh. Either way the mandatory handshake stays
+        # the `ripr-plus --check` byte-compare in "Validate PR evidence
+        # contracts" below -- any byte drift or head mismatch fails closed
+        # exactly as before, with no auto-regenerate-and-retry. The freshness
+        # marker records "this run produced the receipt itself" so the save
+        # step at the end of the job never re-publishes a restored receipt.
+        run: |
+          if [ -f target/receipts/quality/ripr-plus.json ] && [ "${RIPR_RECEIPT_CACHE_HIT:-}" = "true" ]; then
+            echo "head-memoized receipt restored; validating"
+            rm -f target/receipts/quality/.ripr-plus-fresh
+          else
+            cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+            mkdir -p target/receipts/quality
+            printf 'produced-fresh head=%s\n' "$(git rev-parse HEAD)" > target/receipts/quality/.ripr-plus-fresh
+          fi
 
       - name: Record exact RIPR badge producer
         if: always()
@@ -953,6 +1011,22 @@ jobs:
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
           if-no-files-found: error
+
+      # #16431: publish the freshly produced receipt under its exact head key
+      # so a re-run of the same head restores it (~44m -> ~33s warm). The
+      # freshness marker exists only when this run produced the receipt
+      # itself, so a restored receipt is never re-saved. GitHub scopes
+      # PR-branch caches to that PR: this memoizes re-runs of the same head
+      # -- the dominant failure mode per #16431 -- and cannot warm other
+      # PRs. docs/ci/cache-policy.md § "Exact-head RIPR+ receipt
+      # memoization" records the reviewed compensating controls for this
+      # candidate-reachable writer.
+      - name: Save memoized ripr-plus receipt
+        if: success() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/receipts/quality/ripr-plus.json
+          key: ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-${{ github.sha }}-${{ hashFiles('policy/ripr-suppressions.toml') }}
 
   # -------------------------------------------------------------------------
   # 2d. ripr disk-full failover -- runs ripr on GitHub-hosted when the primary
@@ -1066,9 +1140,62 @@ jobs:
       - name: Generate PR evidence
         run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
 
+      # #16431: exact-head memoization of the repo-wide RIPR+ receipt -- same
+      # restore/adjudicate/guard contract as the primary hosted lane above.
+      # The receipt is a function of the checked-out HEAD tree (it embeds
+      # `head: <current_head>` and every consumer head-binds it), the key
+      # pins toolchain version + exact head sha + suppression-ledger hash,
+      # and only an exact-key hit (`cache-hit` output) may be consumed: a
+      # `restore-keys` prefix hit restores a different head's receipt, which
+      # the adjudicator refuses and the produce branch overwrites.
+      - name: Restore memoized ripr-plus receipt
+        id: ripr-plus-receipt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/receipts/quality/ripr-plus.json
+          key: ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-${{ github.sha }}-${{ hashFiles('policy/ripr-suppressions.toml') }}
+          restore-keys: |
+            ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-
+
+      # `actions/cache/restore` reports `cache-hit=true` only when the exact
+      # primary key matched; a `restore-keys` prefix match restores another
+      # head's entry with `cache-hit=false`. Bridge that decision into the
+      # environment so the receipt step's guard stays plain bash and can
+      # never consume a receipt for a head other than the one checked out.
+      # The action output rides `env:` as data, not interpreter source
+      # (workflow-security ratchet).
+      - name: Adjudicate receipt cache exactness
+        if: always()
+        env:
+          RIPR_RECEIPT_CACHE_MATCHED: ${{ steps.ripr-plus-receipt-cache.outputs.cache-hit }}
+          RIPR_RECEIPT_CACHE_MATCHED_KEY: ${{ steps.ripr-plus-receipt-cache.outputs.cache-matched-key }}
+        run: |
+          if [ "$RIPR_RECEIPT_CACHE_MATCHED" = "true" ] && [ -f target/receipts/quality/ripr-plus.json ]; then
+            echo "RIPR_RECEIPT_CACHE_HIT=true" >> "$GITHUB_ENV"
+            echo "exact-head memoized receipt restored: $RIPR_RECEIPT_CACHE_MATCHED_KEY"
+          else
+            echo "RIPR_RECEIPT_CACHE_HIT=false" >> "$GITHUB_ENV"
+            echo "no exact-head receipt cache hit; the receipt step will produce fresh"
+          fi
+
       - name: Generate repo-wide RIPR+ baseline receipt
         if: always()
-        run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+        # #16431: consume the memoized receipt only on an exact-head hit;
+        # otherwise produce fresh. Either way the mandatory handshake stays
+        # the `ripr-plus --check` byte-compare in "Validate PR evidence
+        # contracts" below -- any byte drift or head mismatch fails closed
+        # exactly as before, with no auto-regenerate-and-retry. The freshness
+        # marker records "this run produced the receipt itself" so the save
+        # step at the end of the job never re-publishes a restored receipt.
+        run: |
+          if [ -f target/receipts/quality/ripr-plus.json ] && [ "${RIPR_RECEIPT_CACHE_HIT:-}" = "true" ]; then
+            echo "head-memoized receipt restored; validating"
+            rm -f target/receipts/quality/.ripr-plus-fresh
+          else
+            cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+            mkdir -p target/receipts/quality
+            printf 'produced-fresh head=%s\n' "$(git rev-parse HEAD)" > target/receipts/quality/.ripr-plus-fresh
+          fi
 
       - name: Record exact RIPR badge producer
         if: always()
@@ -1208,6 +1335,22 @@ jobs:
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
           if-no-files-found: error
+
+      # #16431: publish the freshly produced receipt under its exact head key
+      # so a re-run of the same head restores it (~44m -> ~33s warm). The
+      # freshness marker exists only when this run produced the receipt
+      # itself, so a restored receipt is never re-saved. GitHub scopes
+      # PR-branch caches to that PR: this memoizes re-runs of the same head
+      # -- the dominant failure mode per #16431 -- and cannot warm other
+      # PRs. docs/ci/cache-policy.md § "Exact-head RIPR+ receipt
+      # memoization" records the reviewed compensating controls for this
+      # candidate-reachable writer.
+      - name: Save memoized ripr-plus receipt
+        if: success() && hashFiles('target/receipts/quality/.ripr-plus-fresh') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: target/receipts/quality/ripr-plus.json
+          key: ripr-plus-receipt-v1-${{ env.RIPR_VERSION }}-${{ github.sha }}-${{ hashFiles('policy/ripr-suppressions.toml') }}
 
   # -------------------------------------------------------------------------
   # 3. Cache seed (#12563) -- scheduled or explicit canonical main-ref run that

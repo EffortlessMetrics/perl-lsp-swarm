@@ -3,6 +3,8 @@ name: Release History
 on:
   pull_request:
     paths:
+      - ".github/workflows/release-history.yml"
+      - "rust-toolchain.toml"
       - "RELEASE_HISTORY.md"
       - "docs/releases/**"
       - "policy/release-tag-provenance.toml"
@@ -16,6 +18,8 @@ on:
   push:
     branches: [main]
     paths:
+      - ".github/workflows/release-history.yml"
+      - "rust-toolchain.toml"
       - "RELEASE_HISTORY.md"
       - "docs/releases/**"
       - "policy/release-tag-provenance.toml"
@@ -45,9 +49,44 @@ jobs:
           fetch-depth: 0
       - name: Fetch release tags
         run: git fetch origin --tags --force
+      - name: Read repository toolchain requirements
+        id: toolchain
+        run: |
+          printf 'RUSTUP_HOME=%s/release-history-rustup-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          toolchain = tomllib.loads(Path("rust-toolchain.toml").read_text())["toolchain"]
+          channel = toolchain["channel"]
+          components = toolchain["components"]
+          if not isinstance(channel, str) or not re.fullmatch(r"1\.[0-9]+\.[0-9]+", channel):
+              raise ValueError("expected an exact repository Rust version")
+          if (not isinstance(components, list) or not components
+                  or any(not isinstance(item, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", item)
+                         for item in components)
+                  or len(set(components)) != len(components)):
+              raise ValueError("expected unique repository toolchain components")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"channel={channel}\ncomponents={','.join(components)}\n")
+          PY
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
-          toolchain: 1.95.0
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: ${{ steps.toolchain.outputs.components }}
+      - name: Verify checkout toolchain
+        env:
+          EXPECTED_TOOLCHAIN: ${{ steps.toolchain.outputs.channel }}
+        run: |
+          test "$RUSTUP_HOME" = "$RUNNER_TEMP/release-history-rustup-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rustup show active-toolchain
+          test "$(cargo --version | awk '{print $2}')" = "$EXPECTED_TOOLCHAIN"
+          test "$(rustc --version | awk '{print $2}')" = "$EXPECTED_TOOLCHAIN"
+          rustup component list --installed
+          rustup component list --installed | grep -q '^rustfmt-'
+          cargo clippy --version
       - name: Install just
         uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
