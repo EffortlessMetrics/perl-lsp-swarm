@@ -38,8 +38,7 @@ dependencies, `publish = false`.
 ## Neighbors
 
 - Upstream: none -- zero-dependency leaf crate.
-- Downstream: none in-workspace yet. The crate entered the workspace in
-  `ca4c987` (#5351) and currently has no consumers, so its API has not been
+- Downstream: none in-workspace yet. The crate entered the workspace as a leaf and currently has no consumers, so its API has not been
   exercised by a real caller.
 
 ## Read first
@@ -53,8 +52,8 @@ dependencies, `publish = false`.
 ## Review hotspots
 
 - **Directive vs outcome separation.** `status` is the classified result
-  while `outcome` is the raw `ok` / `not ok` reading. A TODO that fails is
-  `outcome: Fail` but `status: Todo`; collapsing the two would silently change
+  while `outcome` is the raw `ok` / `not ok` reading. A TODO that fails has an
+  `outcome` of `Fail` and a `status` of `Todo`; collapsing the two would silently change
   what counts as a failure.
 - **`is_success` boundary.** It deliberately ignores plan mismatches. Any
   caller treating it as "the run was valid" rather than "nothing hard-failed"

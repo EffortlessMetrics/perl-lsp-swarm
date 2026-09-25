@@ -1254,7 +1254,6 @@ impl<'a> Parser<'a> {
             | TokenKind::Default
             | TokenKind::Catch
             | TokenKind::Finally
-            | TokenKind::Continue
             | TokenKind::Class
             | TokenKind::Method
             | TokenKind::Format
@@ -1294,7 +1293,7 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            TokenKind::Next | TokenKind::Last | TokenKind::Redo => {
+            TokenKind::Next | TokenKind::Last | TokenKind::Redo | TokenKind::Continue => {
                 if self.is_keyword_before_fat_arrow() {
                     let token = self.advance_token()?;
                     self.charge_node(

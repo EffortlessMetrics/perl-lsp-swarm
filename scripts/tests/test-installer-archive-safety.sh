@@ -509,7 +509,9 @@ fi
 # `od` is required by archive inspection, not by a source build. Recording
 # which commands `main` demands in each mode proves the requirement is scoped
 # to the release path rather than gating hosts that never inspect an archive
-# (#11508).
+# (#11508). `gzip` joins `od`: size probing and bounded extraction shell out
+# to `gzip -l` / `gzip -dc`, so the release path must demand it or a missing
+# tool misreports as a corrupt archive (#16310).
 probe_need_cmds() {
     (
         PROBED=""
@@ -537,6 +539,12 @@ if [[ " $RELEASE_NEEDS" == *" od "* ]] && [[ " $SOURCE_NEEDS" != *" od "* ]]; th
     pass "od is required for release inspection and not for a source build"
 else
     fail_case "od is required for release inspection and not for a source build" \
+        "release=[$RELEASE_NEEDS] source=[$SOURCE_NEEDS]"
+fi
+if [[ " $RELEASE_NEEDS" == *" gzip "* ]] && [[ " $SOURCE_NEEDS" != *" gzip "* ]]; then
+    pass "gzip is required for release inspection and not for a source build"
+else
+    fail_case "gzip is required for release inspection and not for a source build" \
         "release=[$RELEASE_NEEDS] source=[$SOURCE_NEEDS]"
 fi
 

@@ -14,8 +14,8 @@
   ],
   "properties": {
     "schema_version": {
-      "type": "integer",
-      "const": 1
+      "type": "string",
+      "const": "editor_ux.v1"
     },
     "receipt_kind": {
       "type": "string",

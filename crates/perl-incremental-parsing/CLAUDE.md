@@ -8,7 +8,7 @@ This file provides guidance to Claude Code when working with code in this crate.
 
 **Purpose**: Minimize re-parsing overhead when Perl documents change by reusing unaffected AST subtrees, lexer checkpoints, and cached token streams.
 
-**Version**: workspace (currently 0.12.3)
+**Version**: tracks the workspace version.
 
 ## Commands
 
@@ -43,7 +43,7 @@ cargo doc -p perl-incremental-parsing --open   # View documentation
 | `LineIndex` | `incremental/mod.rs` | Byte-to-(line,col) mapping via binary search |
 | `LexCheckpoint` / `ParseCheckpoint` / `ScopeSnapshot` | `incremental/mod.rs` | Checkpoint types for resuming lexing/parsing |
 | `Edit` / `ReparseResult` | `incremental/mod.rs` | LSP change conversion and reparse result |
-| `IncrementalDocument` | `incremental_document.rs` | Experimental #7292 generation; fail-closed full fresh parse, current-generation cache, typed invalid edits |
+| `IncrementalDocument` | `incremental_document.rs` | Experimental design; fail-closed full fresh parse, current-generation cache, typed invalid edits |
 | `SubtreeCache` / `SymbolPriority` | `incremental_document.rs` | LRU cache with content-hash and range-based lookup; priority-aware eviction |
 | `SimpleIncrementalParser` | `incremental_simple.rs` | Lightweight parser tracking reused vs reparsed node counts |
 | `CheckpointedIncrementalParser` | `incremental_checkpoint.rs` | Lexer-checkpoint parser with `TokenCache` and `IncrementalStats` |
