@@ -2280,8 +2280,7 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
         "self-test must prove absent evidence fails closed"
     );
     assert!(
-        self_test.contains("--api-evidence")
-            && self_test.contains("API DISCRIMINATOR core"),
+        self_test.contains("--api-evidence") && self_test.contains("API DISCRIMINATOR core"),
         "self-test must pin the #16431 api-evidence mode and its boundary"
     );
 
@@ -2398,9 +2397,7 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     if failed_classification.contains("classification=infra-no-proof")
         || !failed_classification.contains("classification=ripr-failure")
     {
-        bail!(
-            "failed retrieval must not create an infra retry artifact:\n{failed_classification}"
-        );
+        bail!("failed retrieval must not create an infra retry artifact:\n{failed_classification}");
     }
     // #14774: the bound is the shared deadline, not an attempt count. With the
     // 30s request model the budget is what stops the loop, so the warning must
@@ -2738,7 +2735,9 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         .ok_or_else(|| anyhow!("ripr-failure classification artifact is missing"))?
         .contains("classification=ripr-failure")
     {
-        bail!("a genuine receipt must land in the classification artifact as ripr-failure:\n{reused_output}");
+        bail!(
+            "a genuine receipt must land in the classification artifact as ripr-failure:\n{reused_output}"
+        );
     }
 
     {
