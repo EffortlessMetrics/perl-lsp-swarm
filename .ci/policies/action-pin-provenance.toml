@@ -303,6 +303,25 @@ sha = '6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772'
 kind = 'legacy_debt'
 value = 'stable'
 
+# Verified against upstream on 2026-09-23 via the GitHub branches API:
+#   refs/heads/master -> 02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+#   (merge of upstream PR 185, committed 2026-09-12; refs/heads/stable and
+#   refs/heads/nightly point elsewhere, so master is the one verified ref)
+[[pin]]
+action = 'dtolnay/rust-toolchain'
+sha = '02cb101ec7c40f2c49e1d9714d64511d8e1b74de'
+kind = 'branch_commit'
+value = 'stable (master)'
+
+# Same verified master-head commit serving the nightly-toolchain jobs; the
+# channel prefix records those jobs' toolchain input, the parenthetical
+# records the verified ref projection.
+[[pin]]
+action = 'dtolnay/rust-toolchain'
+sha = '02cb101ec7c40f2c49e1d9714d64511d8e1b74de'
+kind = 'branch_commit'
+value = 'nightly (master)'
+
 [[pin]]
 action = 'github/codeql-action/upload-sarif'
 sha = '24c7eb380a2dc368f2d129e4c65e51d172983a1e'
@@ -422,6 +441,16 @@ action = 'taiki-e/install-action'
 sha = '5bf6ce016fd2e72eefc647cbca1e4213f65955b8'
 kind = 'release_tag'
 value = 'v2.87.5'
+
+# Verified against upstream on 2026-09-24:
+#   git ls-remote --tags https://github.com/taiki-e/install-action v2.87.8
+#   d438492cf8a250514fa2d34b30bc3c0dc37c65ff  refs/tags/v2.87.8
+# (lightweight tag; the tagged commit's message is "Release 2.87.8", 2026-09-07)
+[[pin]]
+action = 'taiki-e/install-action'
+sha = 'd438492cf8a250514fa2d34b30bc3c0dc37c65ff'
+kind = 'release_tag'
+value = 'v2.87.8'
 
 # Verified against upstream on 2026-08-29:
 # github/codeql-action v4.37.8 -> db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28

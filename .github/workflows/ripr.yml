@@ -75,13 +75,100 @@ jobs:
       (github.event.pull_request.draft != true || github.event_name != 'pull_request') &&
       github.event_name != 'schedule' &&
       (github.event_name != 'workflow_dispatch' || inputs.seed_cache != true)
+    permissions:
+      contents: read
+      # #16141: read this pull request's live head, so a run carrying an
+      # already-superseded snapshot can decline to start an analysis of it.
+      pull-requests: read
     outputs:
-      target: ${{ steps.route.outputs.target }}
-      reason: ${{ steps.route.outputs.reason }}
-      fallback_allowed: ${{ steps.route.outputs.fallback_allowed }}
+      # `Check head freshness` only writes outputs when it finds this run's
+      # snapshot superseded, and `Decide target runner` does not run when it
+      # did. Exactly one of the two speaks, and an unset output is empty, so
+      # `||` selects the one that did.
+      target: ${{ steps.freshness.outputs.target || steps.route.outputs.target }}
+      reason: ${{ steps.freshness.outputs.reason || steps.route.outputs.reason }}
+      fallback_allowed: ${{ steps.freshness.outputs.fallback_allowed || steps.route.outputs.fallback_allowed }}
     steps:
+      # #16141: a run whose snapshot of the pull request head is no longer the
+      # live head cannot produce a verdict anyone will merge. A check run
+      # attaches to the SHA its run was triggered for and branch protection
+      # evaluates the current head only, so the ~60 minutes of analysis this run
+      # is about to spend lands on a commit no gate consults.
+      #
+      # `cancel-in-progress` is false here by design (#5460): an active analysis
+      # must not be terminated into a false red. This step is the other half of
+      # that distinction -- declining to *start* one for a head that is already
+      # stale, before any lane runs and before anything is published to the
+      # required context. Measured over 2026-09-20 06:07-16:26Z: 108 of the 216
+      # ripr runs that produced a verdict analyzed a head the pull request had
+      # already replaced, 6,045 runner-minutes across 51 pull requests.
+      #
+      # Fail OPEN on every uncertainty. Declaring supersession wrongly would
+      # skip analysis for the head that actually merges and leave the required
+      # context unsatisfied on it -- the failure this work exists to avoid, and
+      # strictly worse than the waste it removes. Only a successful read that
+      # disagrees with the snapshot routes `superseded`.
+      - name: Check head freshness
+        id: freshness
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SNAPSHOT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          note() {
+            echo "head_freshness=$1"
+            {
+              echo "### ripr Head Freshness"
+              echo ""
+              echo "- head_freshness: \`$1\`"
+              echo "- snapshot_head: \`${SNAPSHOT_HEAD_SHA:-<none>}\`"
+              echo "- live_head: \`${2:-<unread>}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          if [ -z "${PR_NUMBER:-}" ] || [ -z "${SNAPSHOT_HEAD_SHA:-}" ]; then
+            note "unknown-no-pr-head" ""
+            exit 0
+          fi
+
+          if ! live_head="$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"; then
+            note "unreadable-live-head" ""
+            exit 0
+          fi
+
+          # A truncated, empty, or non-sha body is an unanswered question, not a
+          # disagreement. Routing `superseded` on one would skip the live head's
+          # own analysis. Matched in bash rather than through a pipe: `grep -q`
+          # exits on its first match, and pipefail would then report the SIGPIPE
+          # as a failed read for exactly the shas that are valid.
+          if ! [[ "$live_head" =~ ^[0-9a-f]{40}$ ]]; then
+            note "unreadable-live-head" "$live_head"
+            exit 0
+          fi
+
+          if [ "$live_head" = "$SNAPSHOT_HEAD_SHA" ]; then
+            note "current" "$live_head"
+            exit 0
+          fi
+
+          {
+            echo "target=superseded"
+            echo "reason=head_superseded"
+            echo "fallback_allowed=false"
+          } >> "$GITHUB_OUTPUT"
+          note "superseded" "$live_head"
+          echo "::notice::ripr head superseded: this run analyzes ${SNAPSHOT_HEAD_SHA}, the pull request head is now ${live_head}. No lane will start; the run for the current head owns that head's verdict."
+
       - name: Decide target runner
         id: route
+        if: steps.freshness.outputs.target == ''
         env:
           GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}
           ORG: EffortlessMetrics
@@ -238,6 +325,28 @@ jobs:
       CARGO_HOME: /mnt/ci-cache/cargo-home
       SCCACHE_DIR: /mnt/ci-cache/sccache
       SCCACHE_CACHE_SIZE: 60G
+      # #16126: ripr derives its fact cache from the workspace root --
+      # {workspace}/target/ripr/cache, independently of CARGO_TARGET_DIR -- so
+      # it lands inside the per-run checkout and never survives to the next
+      # run. This lane already keeps its durable state on /mnt/ci-cache, so the
+      # fact cache belongs there beside CARGO_HOME and SCCACHE_DIR and needs no
+      # cache action at all. A write failure is counted, not propagated (ripr
+      # analysis/facts/build.rs:48-51), so an unwritable or absent mount
+      # degrades to today's cold behaviour rather than failing the gate.
+      #
+      # #16209: docs/ci/cache-policy.md's writer-authority rule asks every
+      # writer this lane can reach to name an explicit event/ref/data-authority
+      # decision. route-ripr already excludes fork PRs and bot PRs from this
+      # runner pool (self-hosted has no secrets for them), so every run that
+      # reaches ripr-selfhosted is the same trusted-pr context CARGO_HOME and
+      # SCCACHE_DIR already write to unconditionally -- the runner pool
+      # membership is the authority boundary, not a per-run save-if. This mount
+      # is set (not just declared) at the "Run ripr evidence and gate" step
+      # below and passed into the container via -e/-v. Lifetime: it persists on
+      # host disk across runs like CARGO_HOME/SCCACHE_DIR (no automatic TTL);
+      # it is not the per-run scratch under /mnt/ci-scratch that the orphan
+      # reaper below sweeps at >2h.
+      RIPR_CACHE_DIR: /mnt/ci-cache/ripr-facts
       CARGO_BUILD_JOBS: "12"
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/ripr-${{ github.run_id }}-${{ github.run_attempt }}
@@ -321,7 +430,7 @@ jobs:
             echo "::error::Self-hosted preflight failed after cleanup. Failover job will run on GitHub-hosted."
             exit 1
           fi
-          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
+          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR" "$RIPR_CACHE_DIR"
 
       - name: Run ripr evidence and gate (Docker)
         shell: bash
@@ -341,6 +450,7 @@ jobs:
             -e SCCACHE_DIR=/sccache \
             -e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
             -e RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+            -e RIPR_CACHE_DIR=/ripr-facts \
             -e CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
             -e CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" \
             -e CARGO_TARGET_DIR=/target \
@@ -351,6 +461,7 @@ jobs:
             -v "$RIPR_FRESHNESS_HANDOFF:/freshness" \
             -v "$CARGO_HOME:/cargo-home" \
             -v "$SCCACHE_DIR:/sccache" \
+            -v "$RIPR_CACHE_DIR:/ripr-facts" \
             -v "$CARGO_TARGET_DIR:/target" \
             -v "$TMPDIR:/tmp/jobtmp" \
             -w /workspace \
@@ -561,6 +672,38 @@ jobs:
           # dispatch) instead.
           # Analysis jobs restore the canonical seed but never publish shared state.
           save-if: ${{ false }}
+
+      # #16126: ripr derives its fact cache from the workspace root, so it
+      # lands inside the per-run checkout and never survives. Point it at the
+      # runner's temp dir instead. Declared here rather than in the job's
+      # `env:` because that is the shape ci.yml:827 already uses for a
+      # per-runner path, and because `runner` is a step-level context -- no
+      # other job-level `env:` in this repository reaches for it.
+      - name: Point ripr's fact cache outside the workspace
+        run: echo "RIPR_CACHE_DIR=$RUNNER_TEMP/ripr-facts" >> "$GITHUB_ENV"
+
+      # #16126: the cargo cache above never covered ripr's own fact cache, so
+      # the repo-wide scan rebuilt it from cold on every run -- ~31 minutes,
+      # against ~25 seconds for the identical second scan later in this same
+      # job. Restore-only here for the same reason as the step above: this is
+      # a candidate-reachable job and docs/ci/cache-policy.md reserves writes
+      # to the canonical main-ref seed.
+      #
+      # A coarse restore is sound because ripr's key is content-addressed:
+      # RepoSeamCacheKey covers files_content_hash, cfg/features, config, test
+      # intent, suppressions, analyzer and schema version and the seam limit,
+      # and per-file FileFacts are keyed on (schema, analyzer, path, content).
+      # A cache from another commit can only hit where the inputs are
+      # byte-identical; anything else misses and recomputes. Corrupt entries
+      # degrade to Miss. So this changes how long the answer takes, never
+      # which answer it is.
+      - name: Restore ripr fact cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ripr-facts
+          key: ripr-facts-${{ env.RIPR_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ripr-facts-${{ env.RIPR_VERSION }}-
 
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
@@ -893,6 +1036,24 @@ jobs:
           # Analysis jobs restore the canonical seed but never publish shared state.
           save-if: ${{ false }}
 
+      # #16126: ripr derives its fact cache from the workspace root, so it
+      # lands inside the per-run checkout and never survives. Point it at the
+      # runner's temp dir instead. Declared here rather than in the job's
+      # `env:` because that is the shape ci.yml:827 already uses for a
+      # per-runner path, and because `runner` is a step-level context -- no
+      # other job-level `env:` in this repository reaches for it.
+      - name: Point ripr's fact cache outside the workspace
+        run: echo "RIPR_CACHE_DIR=$RUNNER_TEMP/ripr-facts" >> "$GITHUB_ENV"
+
+      # #16126: same restore-only fact cache as the primary hosted lane.
+      - name: Restore ripr fact cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ripr-facts
+          key: ripr-facts-${{ env.RIPR_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ripr-facts-${{ env.RIPR_VERSION }}-
+
       - name: Install ripr
         run: cargo install ripr --version "$RIPR_VERSION" --locked
 
@@ -1062,7 +1223,11 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) &&
       (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # 90m (#16126): was 45m for install + xtask build (~7m). This job now also
+    # runs the repo-wide scan once, which is the ~31m the analysis lanes were
+    # each paying from cold. 90m holds both with the same headroom 45m gave the
+    # original pair.
+    timeout-minutes: 90
     env:
       RIPR_VERSION: "0.10.0"
     steps:
@@ -1087,6 +1252,64 @@ jobs:
       - name: Build xtask
         run: cargo build -p xtask --locked
 
+      # #16126: ripr derives its fact cache from the workspace root, so it
+      # lands inside the per-run checkout and never survives. Point it at the
+      # runner's temp dir instead. Declared here rather than in the job's
+      # `env:` because that is the shape ci.yml:827 already uses for a
+      # per-runner path, and because `runner` is a step-level context -- no
+      # other job-level `env:` in this repository reaches for it.
+      - name: Point ripr's fact cache outside the workspace
+        run: echo "RIPR_CACHE_DIR=$RUNNER_TEMP/ripr-facts" >> "$GITHUB_ENV"
+
+      # #16126: until now this job warmed only the cargo cache, so ripr's own
+      # fact cache had no writer anywhere and every analysis lane paid the cold
+      # ~31 minutes. Run the repo-wide scan once here, on main, so the lanes
+      # restore it. This is the same command ripr.yml already runs twice per
+      # analysis job; it produces no receipt anyone consumes from this job.
+      - name: Warm the ripr fact cache
+        run: |
+          # The gap verdict belongs to the analysis lanes and the required
+          # check, not to the seeder -- the lanes already spell this the same
+          # way, guarding generation with `|| RIPR_FAILED=1` so a finding still
+          # yields artifacts. A finding here must not cost the whole warm
+          # cache, and a partial scan still leaves sound entries: each one is
+          # keyed on its own content, so a later lane hits only where the
+          # inputs match and recomputes everything else.
+          status=0
+          cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || status=$?
+          echo "repo-wide scan exit: $status"
+
+      # Read the size into the log. docs/ci/cache-policy.md budgets against a
+      # 10 GB account-wide quota and this entry's size on this repository was
+      # unmeasured when the step was written; the first seed run answers it.
+      - name: Report fact cache size
+        if: always()
+        run: |
+          if [ -d "$RIPR_CACHE_DIR" ]; then
+            echo "ripr fact cache: $(du -sh "$RIPR_CACHE_DIR" | cut -f1)"
+            echo "entries: $(find "$RIPR_CACHE_DIR" -type f | wc -l)"
+          else
+            echo "ripr fact cache: absent at $RIPR_CACHE_DIR"
+          fi
+
+      # docs/ci/cache-policy.md § Direct cache-save actions: "An explicit writer
+      # such as `actions/cache/save` must carry its own trusted event/ref
+      # guard." The job's `if:` already restricts this job to a scheduled or
+      # opted-in dispatch on a canonical ref, and the cache inventory reads that
+      # as `job_static_exclusion` -- but the policy asks the writer to state its
+      # own authority rather than inherit it, and the rust-cache step above
+      # already repeats the guard for the same reason. Same spelling, so the two
+      # writers in this job cannot drift apart.
+      - name: Save ripr fact cache
+        if: >-
+          (github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' && inputs.seed_cache == true)) &&
+          (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ripr-facts
+          key: ripr-facts-${{ env.RIPR_VERSION }}-${{ github.sha }}
+
   # -------------------------------------------------------------------------
   # 4. Result aggregator -- owns the "ripr+ New Gap Gate" required-check name.
   # -------------------------------------------------------------------------
@@ -1099,11 +1322,16 @@ jobs:
       - ripr-fallback
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # #16431: the retrieval budget is 660s minus the 60s finalization reserve
+    # (~600s of bounded log/annotation retrieval). The previous 300s budget
+    # expired before run 35507463908's evicted lane log — which carried the
+    # shutdown marker — became retrievable, so the gate could only fail
+    # closed. The job must outlive the evaluator deadline plus checkout.
+    timeout-minutes: 12
     env:
       # Start the evaluator's clock before checkout/setup so those steps cannot
       # consume the verdict, summary, and artifact-upload reserve.
-      RIPR_GATE_TIMEOUT_SECONDS: 300
+      RIPR_GATE_TIMEOUT_SECONDS: 660
       RIPR_GATE_FINALIZATION_RESERVE_SECONDS: 60
     permissions:
       contents: read
@@ -1332,8 +1560,9 @@ jobs:
           #
           # It does not remove the long one, and this does not claim to. The
           # required lane itself takes tens of minutes, while this aggregator
-          # job is budgeted in single-digit ones — this one allows five — so
-          # waiting for that lane is not available here at any honest budget.
+          # job is budgeted far below one — this one allows twelve (#16431
+          # raised the retrieval budget inside it) — so waiting for that lane
+          # is not available here at any honest budget.
           # The stale red then stands until the real run publishes a newer
           # check run for this name and supersedes it. That residual belongs to
           # #16101, whose fix is for a draft-routed run to publish nothing on a
@@ -1401,6 +1630,29 @@ jobs:
             exit 1
           fi
 
+          # Head supersession (#16141). `Check head freshness` in route-ripr
+          # compares this run's snapshot of the pull request head against the
+          # live head before any lane starts, and routes `superseded` when they
+          # disagree. No lane ran, so no proof exists for this SHA and the gate
+          # is NOT_PROVEN -- the same rule the draft-snapshot and cancelled-lane
+          # branches apply.
+          #
+          # Failing closed here costs nothing and is the only safe direction. A
+          # check run attaches to the SHA its run was triggered for and branch
+          # protection reads the pull request's current head only, so this red
+          # lands on a commit no gate consults, while the run for the live head
+          # publishes that head's verdict. A pass would instead leave a
+          # required-context success sitting on an unanalyzed commit, which a
+          # later force-push back to it would make live. A wrong red is
+          # recovered by the next run for that head; a wrong success on a
+          # required context is not superseded by any later failure.
+          if [ "${ROUTER_TARGET:-}" = "superseded" ]; then
+            echo "RIPR_GATE_VERDICT=superseded-head-no-proof"
+            echo "::error::ripr head superseded -- the pull request moved off ${HEAD_SHA:-the analyzed head} before analysis started, so no proof was produced for it. This is NOT a new RIPR gap; the run for the current head owns that head's verdict."
+            echo "- verdict: superseded-head-no-proof (NOT_PROVEN)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
           remaining_until_deadline() {
             local now
             now="$(date +%s)"
@@ -1447,6 +1699,8 @@ jobs:
             lane_result="$FALLBACK_RESULT"
           fi
           lane_class="ripr-failure"
+          lane_gap_hits=0
+          lane_evidence_source="unavailable"
           lane_job_id=""
           # Classification evidence is read only by report_lane_failure. When
           # the primary CX lane failed but the GitHub-hosted fallback
@@ -1537,9 +1791,13 @@ jobs:
                 lane_fetch_attempts=$((lane_fetch_attempts + 1))
                 if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
                   fetched=true
+                  lane_evidence_source="lane-log"
                   clf_out=$(bash scripts/ci/classify-ripr-lane-termination "$lane_log") || clf_out=""
                   printf '%s\n' "$clf_out"
                   clf_class=$(printf '%s\n' "$clf_out" | sed -n 's/^classification=//p' | head -1)
+                  clf_gap=$(printf '%s\n' "$clf_out" | sed -n 's/^gap_receipt_matches=//p' | head -1)
+                  case "$clf_gap" in ''|*[!0-9]*) clf_gap=0 ;; esac
+                  lane_gap_hits="$clf_gap"
                   if [ "${clf_class:-}" = "infra-no-proof" ]; then
                     lane_class="infra-no-proof"
                   fi
@@ -1563,6 +1821,71 @@ jobs:
                   echo "::warning::lane log for ${lane_name} (job ${lane_job_id}) was not retrievable after ${lane_fetch_attempts} attempts; eviction classification skipped and the gate will fail closed"
                 fi
               fi
+              # #16431: the log is not the only eviction evidence the API
+              # keeps. When the bounded log fetch failed outright, or came
+              # back with neither a genuine receipt nor teardown markers, the
+              # lane job's check-run annotations and its steps state still
+              # carry positive platform-teardown evidence: "The hosted runner
+              # lost communication..." evictions end mid-cargo with zero
+              # in-log markers (runs 35444262230 / 35501271465), and a log
+              # carrying the shutdown marker arrived too late for the old
+              # budget on run 35507463908. Gather the API evidence under the
+              # same deadline and let the classifier's --api-evidence mode
+              # decide; it fails closed on anything else.
+              if [ "$lane_class" != "infra-no-proof" ] && [ "$lane_gap_hits" -eq 0 ]; then
+                annotations_json=$(mktemp)
+                steps_json=$(mktemp)
+                annotations_ok=false
+                steps_ok=false
+                api_evidence_attempts=0
+                while [ "$(remaining_until_deadline)" -gt 0 ]; do
+                  api_evidence_attempts=$((api_evidence_attempts + 1))
+                  if [ "$annotations_ok" != "true" ]; then
+                    # For Actions jobs the check-run id equals the job id
+                    # (verified via check_run_url on the #16431 runs).
+                    if bounded_gh_api "repos/${GITHUB_REPOSITORY}/check-runs/${lane_job_id}/annotations" > "$annotations_json" 2>/dev/null; then
+                      annotations_ok=true
+                    fi
+                  fi
+                  if [ "$steps_ok" != "true" ]; then
+                    if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+                      --jq "first(.jobs[] | select(.name == \"${lane_name}\") | {conclusion: .conclusion, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]})" \
+                      > "$steps_json" 2>/dev/null; then
+                      steps_ok=true
+                    fi
+                  fi
+                  if [ "$annotations_ok" = "true" ] && [ "$steps_ok" = "true" ]; then
+                    break
+                  fi
+                  if ! bounded_sleep "$(next_backoff "$api_evidence_attempts")"; then
+                    break
+                  fi
+                done
+                if [ "$annotations_ok" = "true" ] || [ "$steps_ok" = "true" ]; then
+                  lane_evidence_source="api-evidence"
+                  # A retrieved lane log stays receipt evidence even when it
+                  # held no teardown marker: hand it to the classifier so a
+                  # genuine gap receipt in it keeps outranking API markers.
+                  if [ "$fetched" = "true" ]; then
+                    clf_out=$(bash scripts/ci/classify-ripr-lane-termination --api-evidence "$annotations_json" "$steps_json" --gap-receipt "$lane_log") || clf_out=""
+                  else
+                    clf_out=$(bash scripts/ci/classify-ripr-lane-termination --api-evidence "$annotations_json" "$steps_json") || clf_out=""
+                  fi
+                  printf '%s\n' "$clf_out"
+                  clf_class=$(printf '%s\n' "$clf_out" | sed -n 's/^classification=//p' | head -1)
+                  if [ "${clf_class:-}" = "infra-no-proof" ]; then
+                    lane_class="infra-no-proof"
+                  fi
+                else
+                  printf '%s\n' "classification=ripr-failure"
+                  if [ "$(remaining_until_deadline)" -le 0 ]; then
+                    echo "::warning::API classification evidence for ${lane_name} (job ${lane_job_id}) reached the job-level retrieval deadline; eviction classification stays fail-closed"
+                  else
+                    echo "::warning::API classification evidence for ${lane_name} (job ${lane_job_id}) was not retrievable after ${api_evidence_attempts} attempts; eviction classification stays fail-closed"
+                  fi
+                fi
+                rm -f "$annotations_json" "$steps_json"
+              fi
               rm -f "$lane_log"
             else
               printf '%s\n' "classification=ripr-failure"
@@ -1573,6 +1896,26 @@ jobs:
               fi
             fi
           fi
+          # #6807 slice 2 + #16431: hand the lane verdict to the bounded
+          # auto-retry (ripr-infra-retry.yml) as data so there is exactly one
+          # eviction classifier. Every classified lane failure now leaves the
+          # file — infra-no-proof and ripr-failure alike — so the consumer
+          # reads a verdict from an artifact that always exists for lane
+          # failures and never has to treat artifact absence (the rarer
+          # "gate died before classifying" class) as the classifier's voice.
+          # The consumer greps fields; it must never source this file.
+          write_gate_classification() {
+            {
+              echo "classification=$1"
+              echo "reason=$2"
+              echo "lane_name=${lane_name:-unknown}"
+              echo "lane_job_id=${lane_job_id:-unknown}"
+              echo "head_sha=${GITHUB_SHA}"
+              echo "router_target=${ROUTER_TARGET:-unknown}"
+              echo "run_id=${GITHUB_RUN_ID}"
+              echo "evidence=${lane_evidence_source}"
+            } > ripr-gate-classification.env
+          }
           report_lane_failure() {
             if [ "$lane_class" = "infra-no-proof" ]; then
               # Machine-checkable verdicts (#12563): every application of this
@@ -1580,27 +1923,18 @@ jobs:
               # can audit the infra-no-verdict decision boundary.
               echo "RIPR_GATE_VERDICT=infra-no-proof"
               echo "RIPR_GATE_DECISION boundary=\"infra-no-proof needs positive runner-teardown evidence with no genuine gap receipt; a real red always reds; one automatic same-head retry max via ripr-infra-retry, then the manual path\""
-              echo "::error::ripr lane \`${lane_name}\` was killed by the runner (infra-no-proof: shutdown signal / SIGTERM / API cancellation), NOT by a ripr source gap. No proof exists for ${GITHUB_SHA}. Safe same-head recovery: \`gh run rerun ${GITHUB_RUN_ID} --failed\` — the evaluated tree is unchanged by an infra kill, so a rerun re-runs this exact head (#6807, #12563)."
-              # #6807 slice 2: hand the verdict to the bounded auto-retry
-              # (ripr-infra-retry.yml) as data so there is exactly one
-              # eviction classifier. The consumer greps fields; it must
-              # never source this file.
-              {
-                echo "classification=infra-no-proof"
-                echo "lane_name=${lane_name}"
-                echo "lane_job_id=${lane_job_id:-unknown}"
-                echo "head_sha=${GITHUB_SHA}"
-                echo "router_target=${ROUTER_TARGET:-unknown}"
-                echo "run_id=${GITHUB_RUN_ID}"
-              } > ripr-gate-classification.env
+              echo "::error::ripr lane \`${lane_name}\` was killed by the runner (infra-no-proof: shutdown signal / SIGTERM / API cancellation / lost communication), NOT by a ripr source gap. No proof exists for ${GITHUB_SHA}. Safe same-head recovery: \`gh run rerun ${GITHUB_RUN_ID} --failed\` — the evaluated tree is unchanged by an infra kill, so a rerun re-runs this exact head (#6807, #12563, #16431)."
+              write_gate_classification "infra-no-proof" "runner eviction: positive teardown evidence (lane log markers or job annotations/steps state) with no genuine gap receipt"
               {
                 echo "- classification: \`infra-no-proof (runner eviction)\`"
                 echo "- lane: \`${lane_name}\` (job \`${lane_job_id:-unknown}\`)"
                 echo "- head: \`${GITHUB_SHA}\`"
+                echo "- evidence: \`${lane_evidence_source}\`"
                 echo "- rerun: \`gh run rerun ${GITHUB_RUN_ID} --failed\` (automatic bounded retry armed once; second eviction = manual path)"
               } >> "$GITHUB_STEP_SUMMARY"
             else
               echo "RIPR_GATE_VERDICT=ripr-failure"
+              write_gate_classification "ripr-failure" "$1"
               echo "::error::$1"
             fi
             exit 1
@@ -1634,10 +1968,12 @@ jobs:
           echo "RIPR_GATE_VERDICT=success"
           echo "ripr+ New Gap Gate: success (runner: ${ROUTER_TARGET:-unknown}, reason: ${ROUTER_REASON:-unknown})"
 
-      # #6807 slice 2: on an infra-no-proof failure the evaluate step leaves
-      # ripr-gate-classification.env for the bounded auto-retry workflow
-      # (ripr-infra-retry.yml). Genuine ripr failures produce no file, which
-      # is why a missing file is not an error here.
+      # #6807 slice 2 + #16431: every classified lane failure leaves
+      # ripr-gate-classification.env (infra-no-proof or ripr-failure with a
+      # reason) for the bounded auto-retry workflow (ripr-infra-retry.yml),
+      # which ignores every non-infra class. `ignore` remains correct for the
+      # rarer exits that happen before any lane classification (deadline
+      # setup, abrupt termination, non-lane verdicts).
       - name: Upload gate classification
         if: failure()
         # New pin uses must carry the reviewed v7.0.1 projection; v7.0.0 is

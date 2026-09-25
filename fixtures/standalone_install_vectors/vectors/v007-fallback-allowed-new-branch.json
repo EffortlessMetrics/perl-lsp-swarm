@@ -1,0 +1,76 @@
+{
+  "vector_id": "v007-fallback-allowed-new-branch",
+  "contract_generation": 1,
+  "family": "explicit_fallback_allowed",
+  "platform_classification": "platform_neutral",
+  "intent": {
+    "operation_id": "txn-v007",
+    "attempt_id": "attempt-a1",
+    "route": "first_party_posix",
+    "mode": "release_archive",
+    "selector": { "exact": { "tag": "synthetic-v2.0.0" } },
+    "target": { "platform": "synthetic-platform", "arch": "synthetic-arch", "libc": "synthetic-libc" },
+    "requested_product_unit": "server_only",
+    "fallback_policy": "archive_to_source_allowed",
+    "path_policy": "persist",
+    "config_digest": "cfg-digest-v007"
+  },
+  "resolved_subject": {
+    "subject_id": "subject-v007-archive",
+    "mode": "release_archive",
+    "release_ref": { "repo": "synthetic/example", "tag": "synthetic-v2.0.0" },
+    "topology": { "topology_id": "topology-syn-v007", "digest": "sha256:topology-syn-v007", "row": "row-syn-v007", "maturity": "current" },
+    "archive": { "name": "perllsp-synthetic-v2.0.0.tar.gz", "format": "tar.gz", "integrity_policy_id": "integrity-syn-v007" },
+    "product_unit": "server_only",
+    "required_executables": ["perllsp"],
+    "destination_role": "install_root",
+    "provenance_required": false
+  },
+  "fallback_subject": {
+    "subject_id": "subject-v007-source",
+    "mode": "exact_registry_source",
+    "registry_subject": { "registry_id": "registry-synthetic", "package": "synthetic-perllsp-server", "version": "2.0.0-synthetic", "toolchain_policy_id": "toolchain-syn-v007" },
+    "product_unit": "server_only",
+    "required_executables": ["perllsp"],
+    "destination_role": "install_root",
+    "provenance_required": false
+  },
+  "stage_graph": [
+    { "stage_id": "resolve_subject", "applicability": "required", "predecessors": [], "port_script": "resolve" },
+    { "stage_id": "transport", "applicability": "required", "predecessors": ["resolve_subject"], "port_script": "transport" },
+    { "stage_id": "checksum_integrity", "applicability": "required", "predecessors": ["transport"], "port_script": "checksum" },
+    { "stage_id": "provenance", "applicability": "not_applicable", "predecessors": ["checksum_integrity"], "port_script": "unused-provenance" },
+    { "stage_id": "archive_manifest_and_staging", "applicability": "required", "predecessors": ["checksum_integrity"], "port_script": "staging" },
+    { "stage_id": "executable_observation", "applicability": "required", "predecessors": ["archive_manifest_and_staging"], "port_script": "observe" },
+    { "stage_id": "source_build", "applicability": "not_applicable", "predecessors": ["resolve_subject"], "port_script": "source-build" },
+    { "stage_id": "promotion", "applicability": "required", "predecessors": ["executable_observation"], "port_script": "promote" },
+    { "stage_id": "path_persistence", "applicability": "required", "predecessors": ["promotion"], "port_script": "path" },
+    { "stage_id": "fresh_process_observation", "applicability": "required", "predecessors": ["path_persistence"], "port_script": "fresh" },
+    { "stage_id": "installed_transition", "applicability": "required", "predecessors": ["fresh_process_observation"], "port_script": "install" }
+  ],
+  "port_scripts": {
+    "resolve": { "calls": [{ "result": "success" }, { "result": "success" }] },
+    "transport": { "calls": [{ "result": "failure" }] },
+    "checksum": { "calls": [{ "result": "success" }] },
+    "unused-provenance": { "calls": [{ "result": "success" }] },
+    "staging": { "calls": [{ "result": "success" }] },
+    "observe": { "calls": [{ "result": "success", "executables": { "perllsp": "ok" }, "effects": [] }] },
+    "source-build": { "calls": [{ "result": "success", "artifacts": ["artifact-built-v007-fallback"] }] },
+    "promote": { "calls": [{ "result": "success", "effects": [{ "level": "promotion_reached", "kind": "promoted" }] }] },
+    "path": { "calls": [{ "result": "success", "effects": [{ "level": "path_persisted", "kind": "path_persisted" }] }] },
+    "fresh": { "calls": [{ "result": "success" }] },
+    "install": { "calls": [{ "result": "success", "effects": [{ "level": "installed_claim", "kind": "installed_claim" }] }] }
+  },
+  "expected": {
+    "terminal_result": "succeeded",
+    "terminal_stage": "installed_transition",
+    "reason_family": "none",
+    "action_class": "none",
+    "side_effect_ceiling": "installed_claim",
+    "claim_ceiling": "installed_release_claim",
+    "pair_claims_satisfied": false,
+    "branch_count": 2,
+    "attempt_count": 2
+  },
+  "redaction": { "forbidden_tokens": [] }
+}

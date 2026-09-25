@@ -146,6 +146,12 @@ echo "=== public-api ratchet executable regression fixture ==="
 
 mkdir -p "${FIXTURE_ROOT}/scripts" "${FIXTURE_ROOT}/.ci/public-api-baselines"
 cp "${REPO_ROOT}/justfile" "${FIXTURE_ROOT}/justfile"
+# The shared filter's awk stage resolves scripts/ci/public_api_filter.awk
+# relative to the recipe cwd. Without staging it the sandbox filter errors to
+# empty and every non-empty generation misclassifies as INSTRUMENT-FAIL
+# instead of reaching the diff verdict.
+mkdir -p "${FIXTURE_ROOT}/scripts/ci"
+cp "${REPO_ROOT}/scripts/ci/public_api_filter.awk" "${FIXTURE_ROOT}/scripts/ci/public_api_filter.awk"
 write_fake_cargo_safe
 
 # The recipes read their crate set from the fixture's own ratchet list

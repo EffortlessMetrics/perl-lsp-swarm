@@ -31,6 +31,10 @@ impl<'a> Parser<'a> {
                     // `DoWhileTrailingBlock` joins them because the trailing
                     // `{` has no recovery that stays honest about source that
                     // real `perl` refuses to compile (#15649).
+                    // `CStyleForContinueBlock` joins them for the same reason
+                    // on C-style `for` (#16296).
+                    // `QualifiedLoopControlLabel` joins them for the same
+                    // reason on package-qualified loop labels (#16296).
                     if matches!(
                         e,
                         ParseError::RecursionLimit
@@ -43,6 +47,8 @@ impl<'a> Parser<'a> {
                             | ParseError::NestingTooDeep { .. }
                             | ParseError::Cancelled
                             | ParseError::DoWhileTrailingBlock { .. }
+                            | ParseError::CStyleForContinueBlock { .. }
+                            | ParseError::QualifiedLoopControlLabel { .. }
                     ) {
                         return Err(e);
                     }
@@ -353,6 +359,20 @@ impl<'a> Parser<'a> {
                 // Loop control — next/last/redo can be followed by a word operator at statement level,
                 // e.g. `last and die` means `(last) and (die)`.
                 TokenKind::Next | TokenKind::Last | TokenKind::Redo => {
+                    let ctrl = self.parse_loop_control()?;
+                    Ok(self.parse_word_or_expr(ctrl)?)
+                }
+
+                // `continue` at statement level is the when-block fall-through op
+                // (e.g. `given ($x) { when (1) { ...; continue } }`). It belongs
+                // with the loop-control siblings, but the LeftBrace guard keeps
+                // the post-loop `continue { BLOCK }` form (consumed by the
+                // surrounding while/until/for/foreach parser) from being
+                // misrouted into a labeled loop-control node.
+                TokenKind::Continue
+                    if self.tokens.peek_second().ok().map(|t| t.kind())
+                        != Some(TokenKind::LeftBrace) =>
+                {
                     let ctrl = self.parse_loop_control()?;
                     Ok(self.parse_word_or_expr(ctrl)?)
                 }
@@ -1909,7 +1929,10 @@ impl<'a> Parser<'a> {
                         // `DoWhileTrailingBlock` joins them: the trailing block
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
-                        // compile (#15649).
+                        // compile (#15649). `CStyleForContinueBlock` joins them
+                        // for the same reason on C-style `for`, and
+                        // `QualifiedLoopControlLabel` on qualified labels
+                        // (#16296).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
@@ -1917,6 +1940,8 @@ impl<'a> Parser<'a> {
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }
+                                | ParseError::CStyleForContinueBlock { .. }
+                                | ParseError::QualifiedLoopControlLabel { .. }
                         ) {
                             return Err(e);
                         }
@@ -2086,6 +2111,9 @@ impl<'a> Parser<'a> {
         // Check for optional label.
         // Labels may be ordinary identifiers, and phase keywords are also
         // valid labels when used in labeled-loop control (`last CHECK`).
+        // `continue` never takes a label in real Perl (`continue OUTER` is a
+        // syntax error), so an identifier after it is rejected rather than
+        // attached (#16285).
         let label = if matches!(
             self.peek_kind(),
             Some(TokenKind::Identifier)
@@ -2095,11 +2123,43 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Init)
                 | Some(TokenKind::Unitcheck)
         ) {
+            let label_pos = self.current_position();
             let label_token = self.consume_token()?;
+            // Labels are plain identifiers: a package-qualified name is a
+            // syntax error in real Perl. Fail outright rather than
+            // attaching it — the name would otherwise re-parse as a
+            // package call and silently accept what `perl` refuses (#16296).
+            if label_token.text.contains("::") {
+                return Err(ParseError::QualifiedLoopControlLabel { location: label_pos });
+            }
+            if op == "continue" {
+                return Err(ParseError::syntax("`continue` does not take a label", label_pos));
+            }
             Some(label_token.text.to_string())
         } else {
             None
         };
+
+        // An empty parenthesized invocation (`next()`, `continue()`) is one
+        // loop-control node in real Perl; anything else in the parens
+        // (`continue(1)`) or parens after a label (`last OUTER()`) is a
+        // syntax error (#16285).
+        if label.is_none() && self.peek_kind() == Some(TokenKind::LeftParen) {
+            self.consume_token()?;
+            if self.peek_kind() == Some(TokenKind::RightParen) {
+                self.consume_token()?;
+            } else {
+                return Err(ParseError::syntax(
+                    "loop-control operators take no arguments",
+                    self.current_position(),
+                ));
+            }
+        } else if self.peek_kind() == Some(TokenKind::LeftParen) {
+            return Err(ParseError::syntax(
+                "loop-control labels take no argument list",
+                self.current_position(),
+            ));
+        }
 
         let end = self.previous_position();
         self.charge_node(NodeKind::LoopControl { op, label }, SourceLocation { start, end })

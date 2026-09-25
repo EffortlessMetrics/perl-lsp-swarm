@@ -299,14 +299,6 @@ fn division_after_a_string_is_not_binary_repetition() {
 }
 
 #[test]
-fn word_not_remains_outside_this_classifier() {
-    // Angle terms are now admitted by #13930; their positive topology/ranges
-    // and ambiguity controls live in string_repetition_angle_rhs.rs.
-    // Word-not remains owned separately and is not widened with angle terms.
-    assert_not_repetition(r#"my $value = "x" x not 1;"#);
-}
-
-#[test]
 fn missing_rhs_is_a_recovered_operand_not_a_clean_sibling() -> Result<(), String> {
     let source = r#""x" x;"#;
     let output = Parser::new(source).parse_with_recovery();

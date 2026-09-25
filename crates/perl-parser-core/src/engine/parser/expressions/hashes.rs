@@ -85,7 +85,10 @@ impl<'a> Parser<'a> {
         let first_expr = match self.parse_expression() {
             Ok(expr) => expr,
             Err(e) => {
-                // Propagate recursion/nesting limits immediately - don't try alternative parse
+                // Propagate recursion/nesting limits immediately - don't try alternative parse.
+                // `QualifiedLoopControlLabel` joins them: a qualified label is a
+                // hard error in real Perl, so brace reinterpretation must not
+                // swallow it into a recovered block (#16296).
                 if matches!(
                     e,
                     ParseError::RecursionLimit
@@ -94,6 +97,7 @@ impl<'a> Parser<'a> {
                             | ParseError::AngleContextFallback { .. }
                             | ParseError::AngleScan { error: perl_lexer::LexerError::AngleBudgetExhausted { .. } }
                         | ParseError::NestingTooDeep { .. }
+                        | ParseError::QualifiedLoopControlLabel { .. }
                 ) {
                     return Err(e);
                 }

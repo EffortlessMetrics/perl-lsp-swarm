@@ -1494,7 +1494,7 @@ def _fixture_manifest_text(catalog_predecessor_exit: str = "") -> str:
         "executable_policy_control",
         "current_head_reviewer_packet",
         "Ledger schema widens dishonestly.",
-        ["docs/agents/pr-ledger.schema.json", "xtask/src/tasks/pr_ledger.rs"],
+        ["xtask/src/tasks/pr_ledger.rs"],
     )
     body += surface(
         "repo_settings",

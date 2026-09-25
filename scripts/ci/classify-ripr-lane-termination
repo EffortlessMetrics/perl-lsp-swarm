@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Classify how a ripr evidence lane terminated, from its own job log only.
+# Classify how a ripr evidence lane terminated, from its own job log and/or
+# its lane job's API-side evidence.
 #
 # Claims: #12563 / #6807, complementing #12771 (bounded auto-retry handoff).
 # This script is THE single eviction classifier consumed by the required
@@ -8,27 +9,54 @@
 # artifact strictly as data. The decision boundary is audited on every
 # application via this output being echoed into the gate's run log.
 #
-# Decision boundary:
+# Modes:
+#   classify-ripr-lane-termination <logfile|-> [max_bytes]
+#       Log mode. Classifies from the lane job's own log text alone.
+#   classify-ripr-lane-termination --api-evidence <annotations.json> <steps.json> [--gap-receipt <path>]
+#       API-evidence mode (#16431). Classifies from the lane job's check-run
+#       annotations and its steps state when the log itself is not usable
+#       evidence: not retrievable within the gate's budget, or retrieved
+#       without any teardown marker. This covers the hosted-runner
+#       "lost communication" evictions, which end mid-cargo with zero in-log
+#       markers, and the evictions whose log finalizes too late to fetch.
+#       <annotations.json> is the raw /check-runs/<job>/annotations array;
+#       <steps.json> is the jobs-API lane-job object projected to
+#       {conclusion, steps: [{name, status, conclusion}]}. --gap-receipt
+#       optionally points at whatever log text the gate did retrieve, so a
+#       genuine receipt in it keeps outranking API-side markers.
+#
+# Decision boundary (identical in kind across modes):
 #   1. A genuine ripr red ALWAYS outranks infra markers. If the lane printed
 #      the terminal quality-gate receipt line ("quality gate failed; see
 #      receipt ...", xtask/src/tasks/quality_gate.rs bail!), the analysis
 #      completed and found gaps -> classification=ripr-failure. Such a log
 #      must NEVER take the infra/retry path even if the runner was torn down
 #      later during artifact upload.
-#   2. Infra termination requires platform teardown evidence produced by the
-#      runner itself, not by the analyzed workload (same marker set as the
-#      landed #12771 classifier):
+#   2. Infra termination requires positive platform teardown evidence
+#      produced by the runner itself, not by the analyzed workload. Log mode
+#      (same marker set as the landed #12771 classifier):
 #        "The runner has received a shutdown signal"
 #        "Process completed with exit code 143."
 #        "The operation was canceled."
-#   3. A truncated (capped) scan fails closed: if the complete log was not
-#      inspected, the classifier can never rule out a genuine receipt beyond
-#      the truncation point, so it returns ripr-failure even when a teardown
-#      marker sits inside the scanned prefix (#12563 review P2).
+#      API-evidence mode adds the annotation-only marker the log never gets
+#      to print, and the steps-state shape of an eviction that killed the
+#      runner mid-step:
+#        an annotation carrying any marker above, or the hosted-runner
+#        "...lost communication with the server..." notice; OR
+#        lane-job conclusion == failure AND at least one started step that
+#        never concluded (status in_progress, conclusion null) AND no gap
+#        receipt.
+#   3. A truncated (capped) log scan fails closed: if the complete log was
+#      not inspected, the classifier can never rule out a genuine receipt
+#      beyond the truncation point, so it returns ripr-failure even when a
+#      teardown marker sits inside the scanned prefix (#12563 review P2). In
+#      API-evidence mode the analogue is unreadable evidence: truncated or
+#      invalid JSON counts as no evidence of that kind, which cannot arm the
+#      infra path (rule 4).
 #   4. Anything else is fail-closed to ripr-failure: absence of evidence is
 #      a blocking red, never a pass and never a retry.
 #
-# Output (machine-checkable; first line is what the gate greps):
+# Output (machine-checkable; first line is what the gate greps). Log mode:
 #   classification=<infra-no-proof|ripr-failure>
 #   gap_receipt_matches=<n>
 #   shutdown_signal_matches=<n>
@@ -39,15 +67,24 @@
 #   partial_read=<true|false>              true when the size cap truncated
 #   verdict=<same as classification>       explicit alias for auditability
 #   decision_boundary="<one-line summary>"
+# API-evidence mode shares classification/gap_receipt_matches/verdict/
+# decision_boundary and reports its own evidence counters:
+#   shutdown_signal_matches / sigterm143_matches / op_cancelled_matches /
+#   lost_communication_matches (annotation marker counts),
+#   stuck_in_progress_steps + lane_job_conclusion (steps-state shape),
+#   annotations_read / steps_read (evidence readability), mode=api-evidence.
 #
 # Exit status is ALWAYS 0 for a performed classification (the verdict is the
 # data); non-zero only signals misuse (bad arguments). Retrieval problems are
 # reported as ripr-failure so callers fail closed deterministically.
+# API-evidence mode parses JSON with jq; where jq is unavailable every
+# evidence counter stays zero and the mode fails closed to ripr-failure.
 
 set -u
 
 usage() {
   printf 'usage: %s <logfile|-> [max_bytes]\n' "${0##*/}" >&2
+  printf '       %s --api-evidence <annotations.json> <steps.json> [--gap-receipt <path>]\n' "${0##*/}" >&2
 }
 
 MAX_BYTES_DEFAULT=$((16 * 1024 * 1024)) # bounded reads; logs are capped
@@ -110,7 +147,154 @@ decision_boundary="genuine gap receipt outranks infra markers; retry requires po
 EOF
 }
 
+# API-evidence mode (#16431): classify from the lane job's check-run
+# annotations and its steps state. Same boundary rules as log mode — a
+# genuine gap receipt always outranks infra markers, and only positive
+# runner-teardown evidence arms the infra/retry path.
+emit_api_verdict() {
+  local ann_file="$1" steps_file="$2" receipt_file="$3"
+  local gap_hits=0 shut_hits=0 term143_hits=0 cancel_hits=0 lost_hits=0
+  local stuck_hits=0 job_conclusion="" ann_read=false steps_read=false
+  local receipt_scanned=false receipt_capable_failed=false
+  local class msgs
+
+  # The receipt outranks everything, exactly as in log mode. The gate hands
+  # us whatever lane-log text it did retrieve; a genuine receipt in it keeps
+  # the class red even when teardown annotations exist.
+  if [ -n "$receipt_file" ] && [ -f "$receipt_file" ]; then
+    receipt_scanned=true
+    gap_hits=$(grep -cE 'quality gate failed; see receipt' "$receipt_file" 2>/dev/null || true)
+  fi
+
+  # Unreadable, empty, or truncated JSON counts as no evidence of that kind:
+  # it can never arm the infra path, so every branch below fails closed.
+  if command -v jq >/dev/null 2>&1; then
+    if [ -s "$ann_file" ] && jq -e 'type == "array"' "$ann_file" >/dev/null 2>&1; then
+      ann_read=true
+      msgs="$(jq -r '.[]?.message // empty' "$ann_file" 2>/dev/null || true)"
+      if [ -n "$msgs" ]; then
+        shut_hits=$(printf '%s\n' "$msgs" | grep -cE 'The runner has received a shutdown signal' || true)
+        term143_hits=$(printf '%s\n' "$msgs" | grep -cE 'Process completed with exit code 143\.' || true)
+        cancel_hits=$(printf '%s\n' "$msgs" | grep -cE 'The operation was canceled' || true)
+        # Annotation-only marker: the hosted runner died before it could print
+        # any in-log teardown line (measured on #16431 runs 35444262230 and
+        # 35501271465). The phrase is GitHub's fixed runner-service notice, so
+        # the loose match stays specific to platform teardown.
+        lost_hits=$(printf '%s\n' "$msgs" | grep -cE 'lost communication with the server' || true)
+      fi
+    fi
+    if [ -s "$steps_file" ] && jq -e 'type == "object"' "$steps_file" >/dev/null 2>&1; then
+      steps_read=true
+      job_conclusion="$(jq -r '.conclusion // empty' "$steps_file" 2>/dev/null || true)"
+      stuck_hits="$(jq -r '[.steps[]? | select(.status == "in_progress" and .conclusion == null)] | length' "$steps_file" 2>/dev/null || true)"
+      case "$stuck_hits" in ''|*[!0-9]*) stuck_hits=0 ;; esac
+      # A receipt-capable step that itself concluded failure means the lane
+      # reached (and failed) the point where a gap receipt would exist: the
+      # missing receipt is the finding, not eviction evidence. exit-143
+      # annotations are NOT runner-only — xtask SIGTERMs the ripr child at
+      # the guidance bound (ripr.yml guidance-step comment) and the runner
+      # then writes the same 143 annotation for a genuine red.
+      # Receipt-capable steps: the hosted gate step and the self-hosted
+      # Docker step both produce the gap receipt when they run — a failure
+      # in either means a missing receipt is the finding, not eviction
+      # evidence (#16433 review).
+      receipt_capable_failed="$(jq -r '[.steps[]? | select(.conclusion == "failure" and (.name | test("Enforce new RIPR gap quality gate|Run ripr evidence and gate")))] | length > 0' "$steps_file" 2>/dev/null || true)"
+      [ "$receipt_capable_failed" = "true" ] || receipt_capable_failed=false
+    fi
+  fi
+
+  # When no receipt was scanned (log fetch failed), arming additionally
+  # requires readable steps state in which no receipt-capable step concluded
+  # failure — without that, a genuine red wearing a teardown-shaped
+  # annotation could take the retry path (#16433 review).
+  api_arming_allowed=true
+  if [ "$receipt_scanned" != "true" ]; then
+    if [ "$steps_read" != "true" ] || [ "$receipt_capable_failed" = "true" ]; then
+      api_arming_allowed=false
+    fi
+  fi
+
+  if [ "$gap_hits" -gt 0 ]; then
+    # Boundary rule 1: a genuine terminal red outranks every infra marker.
+    class="ripr-failure"
+  elif [ "$api_arming_allowed" != "true" ]; then
+    # Boundary rule 1b (receipt-unscanned guard): without a scanned receipt,
+    # arming requires positive proof the receipt-capable step never ran to a
+    # failure; unreadable steps state or a failed receipt-capable step means
+    # a genuine red cannot be ruled out.
+    class="ripr-failure"
+  elif [ "$shut_hits" -gt 0 ] || [ "$term143_hits" -gt 0 ] || [ "$cancel_hits" -gt 0 ] || [ "$lost_hits" -gt 0 ]; then
+    # Boundary rule 2a: positive teardown annotations only.
+    class="infra-no-proof"
+  elif [ "$stuck_hits" -gt 0 ] && [ "$job_conclusion" = "failure" ]; then
+    # Boundary rule 2b: the lane failed while a step it had started never
+    # concluded, and no receipt exists — the steps-state shape of a runner
+    # killed mid-analysis. A non-failure conclusion stays fail-closed.
+    class="infra-no-proof"
+  else
+    # Boundary rule 4: fail closed on silence, unreadable evidence, and
+    # concluded steps alike.
+    class="ripr-failure"
+  fi
+
+  cat <<EOF
+classification=$class
+gap_receipt_matches=$gap_hits
+receipt_scanned=$receipt_scanned
+receipt_capable_failed=$receipt_capable_failed
+shutdown_signal_matches=$shut_hits
+sigterm143_matches=$term143_hits
+op_cancelled_matches=$cancel_hits
+lost_communication_matches=$lost_hits
+stuck_in_progress_steps=$stuck_hits
+lane_job_conclusion=${job_conclusion:-none}
+annotations_read=$ann_read
+steps_read=$steps_read
+mode=api-evidence
+verdict=$class
+decision_boundary="genuine gap receipt outranks infra markers; teardown annotations or a failed lane with an unconcluded step arm the retry, everything else fails closed"
+EOF
+}
+
 main() {
+  if [ "${1:-}" = "--api-evidence" ]; then
+    shift
+    local ann_file="" steps_file="" receipt_file=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --gap-receipt)
+          if [ "$#" -lt 2 ]; then
+            usage
+            exit 64
+          fi
+          receipt_file="$2"
+          shift 2
+          ;;
+        -*)
+          usage
+          exit 64
+          ;;
+        *)
+          if [ -z "$ann_file" ]; then
+            ann_file="$1"
+          elif [ -z "$steps_file" ]; then
+            steps_file="$1"
+          else
+            usage
+            exit 64
+          fi
+          shift
+          ;;
+      esac
+    done
+    if [ -z "$ann_file" ] || [ -z "$steps_file" ]; then
+      usage
+      exit 64
+    fi
+    emit_api_verdict "$ann_file" "$steps_file" "$receipt_file"
+    return 0
+  fi
+
   if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     usage
     exit 64

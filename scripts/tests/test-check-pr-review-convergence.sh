@@ -237,6 +237,135 @@ for subcommand in review-start review-done verify; do
     fi
 done
 
+# ── Schema-version gate (issue #15278) ──────────────────────────────────────
+# The convergence-core output now carries `schema_version` as its first field
+# so consumers (notably scripts/reviews/state) can detect shape bumps instead
+# of failing silently. The state helper checks the version, warns on missing,
+# and refuses on greater-than-supported.
+
+# 1. The production core emits a schema_version field at the top of the
+#    envelope, before any of the existing fields. jq preserves object key
+#    order from its input, so to_object + keys[0] tells us whether the field
+#    really is first.
+expect_case "all-resolved-converges" 0 \
+    'has("schema_version") and .schema_version == "convergence_core.v1"
+     and (. | to_entries[0].key) == "schema_version"' \
+    "convergence-core publishes schema_version as the first field"
+
+# 2. The wrapper inherits the core's schema_version via `$core + {...}`, so
+#    callers using the wrapper (not the core directly) also see the field.
+run_state_case "all-resolved-converges"
+if [[ "$STATE_EXIT" -eq 0 ]]; then
+    pass "state helper sees a versioned wrapper output"
+else
+    fail "state helper should accept a versioned wrapper output — exit=$STATE_EXIT output=$STATE_STDOUT"
+fi
+
+# 3. A version higher than what this projection supports must be refused with
+#    a structured NOT_PROVEN, not silently parsed. Mirror the scripts/{reviews,ci}
+#    tree under a temp root so a copy of the state script resolves its CLOSEOUT
+#    to the fake wrapper, and the fake wrapper resolves its CORE to a fake core
+#    that pretends to be a future version.
+TMP_FUTURE="$(mktemp -d)"
+mkdir -p "$TMP_FUTURE/scripts/reviews" "$TMP_FUTURE/scripts/ci"
+cp "$STATE_SCRIPT" "$TMP_FUTURE/scripts/reviews/state"
+cp "$SCRIPT" "$TMP_FUTURE/scripts/ci/check-pr-review-convergence"
+cat >"$TMP_FUTURE/scripts/ci/check-pr-review-convergence-core" <<'EOF'
+#!/usr/bin/env bash
+jq -n --arg pr "${1:-9999}" '{
+  schema_version: "convergence_core.v2",
+  pr: ($pr | tonumber? // $pr),
+  headRefOid: "future-head",
+  is_draft: false,
+  pending_reviewers: [],
+  independent_review_pending: false,
+  current_change_requests: [],
+  stale_reviews: [],
+  stale_bot_reviews: [],
+  current_human_reviews: [],
+  dismissed_human_reviews: [],
+  human_review_count: 0,
+  current_human_review_count: 0,
+  dismissed_human_review_count: 0,
+  review_decision: "",
+  unresolved_active: 0,
+  unresolved_outdated: 0,
+  unresolved_total: 0,
+  resolved_threads: 0,
+  resolved_without_disposition: 0,
+  review_protocol_enforce: false,
+  review_runs_in_flight: 0,
+  verification_runs_in_flight: 0,
+  deep_review_receipt_head_match: true,
+  verification_receipt_head_match: true,
+  dispositions_missing_marker: 0,
+  followups_without_issue: 0,
+  unreachable_fix_commits: 0
+}'
+EOF
+chmod +x "$TMP_FUTURE/scripts/ci/check-pr-review-convergence-core"
+future_state_exit=0
+future_state_out="$(bash "$TMP_FUTURE/scripts/reviews/state" 9999 test-owner/test-repo 2>/dev/null)" || future_state_exit=$?
+if [[ "$future_state_exit" -eq 2 ]] \
+   && jq -e '.state == "NOT_PROVEN" and .reason == "unsupported_closeout_schema_version" and .observed_schema_version == "convergence_core.v2"' >/dev/null <<<"$future_state_out"; then
+    pass "state helper refuses unknown schema_version with structured NOT_PROVEN"
+else
+    fail "state helper should refuse unknown schema_version — exit=$future_state_exit output=$future_state_out"
+fi
+
+# 4. A core that omits schema_version entirely should still be accepted but
+#    surface a deprecation warning to stderr. The state helper's projection
+#    stays structured; consumers learn the gap from the warning.
+TMP_LEGACY="$(mktemp -d)"
+mkdir -p "$TMP_LEGACY/scripts/reviews" "$TMP_LEGACY/scripts/ci"
+cp "$STATE_SCRIPT" "$TMP_LEGACY/scripts/reviews/state"
+cp "$SCRIPT" "$TMP_LEGACY/scripts/ci/check-pr-review-convergence"
+cat >"$TMP_LEGACY/scripts/ci/check-pr-review-convergence-core" <<'EOF'
+#!/usr/bin/env bash
+jq -n --arg pr "${1:-9999}" '{
+  pr: ($pr | tonumber? // $pr),
+  headRefOid: "legacy-head",
+  is_draft: false,
+  pending_reviewers: [],
+  independent_review_pending: false,
+  current_change_requests: [],
+  stale_reviews: [],
+  stale_bot_reviews: [],
+  current_human_reviews: [],
+  dismissed_human_reviews: [],
+  human_review_count: 0,
+  current_human_review_count: 0,
+  dismissed_human_review_count: 0,
+  review_decision: "",
+  unresolved_active: 0,
+  unresolved_outdated: 0,
+  unresolved_total: 0,
+  resolved_threads: 0,
+  resolved_without_disposition: 0,
+  review_protocol_enforce: false,
+  review_runs_in_flight: 0,
+  verification_runs_in_flight: 0,
+  deep_review_receipt_head_match: true,
+  verification_receipt_head_match: true,
+  dispositions_missing_marker: 0,
+  followups_without_issue: 0,
+  unreachable_fix_commits: 0
+}'
+EOF
+chmod +x "$TMP_LEGACY/scripts/ci/check-pr-review-convergence-core"
+legacy_state_err="$(bash "$TMP_LEGACY/scripts/reviews/state" 9999 test-owner/test-repo 2>&1 1>/dev/null)"
+legacy_state_out="$(bash "$TMP_LEGACY/scripts/reviews/state" 9999 test-owner/test-repo 2>/dev/null)"
+legacy_state_exit=$?
+if [[ "$legacy_state_exit" -eq 0 ]] \
+   && [[ "$legacy_state_err" == *"WARN"* ]] \
+   && [[ "$legacy_state_err" == *"schema_version"* ]] \
+   && jq -e '.state != "NOT_PROVEN"' >/dev/null <<<"$legacy_state_out"; then
+    pass "missing schema_version is a deprecation warning, not a refusal"
+else
+    fail "missing schema_version should warn and continue — exit=$legacy_state_exit stderr=$legacy_state_err"
+fi
+rm -rf "$TMP_FUTURE" "$TMP_LEGACY"
+
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
 [[ "$FAIL_COUNT" -eq 0 ]]
