@@ -24,6 +24,7 @@ on:
       - 'xtask/tests/agent_merge_review_backstop.rs'
       - 'xtask/tests/agent_shift_left_entry_contract.rs'
       - 'xtask/tests/agent_remote_wait_attention.rs'
+      - 'xtask/tests/agent_shift_left_mutation_admission_contract.rs'
       - 'xtask/tests/pr_convergence_contract.rs'
       - 'xtask/tests/shift_left_publication_contract.rs'
       - 'policy/skill-provider-parity.toml'
@@ -49,6 +50,7 @@ on:
       - 'xtask/tests/agent_merge_review_backstop.rs'
       - 'xtask/tests/agent_shift_left_entry_contract.rs'
       - 'xtask/tests/agent_remote_wait_attention.rs'
+      - 'xtask/tests/agent_shift_left_mutation_admission_contract.rs'
       - 'xtask/tests/pr_convergence_contract.rs'
       - 'xtask/tests/shift_left_publication_contract.rs'
       - 'policy/skill-provider-parity.toml'
@@ -72,7 +74,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable (master)
         with:
           toolchain: stable
 
@@ -89,6 +91,8 @@ jobs:
         run: cargo test -p xtask --test shift_left_publication_contract --locked
       - name: Check shift-left claim admission
         run: cargo test -p xtask --test agent_shift_left_entry_contract --locked
+      - name: Check shift-left mutation admission
+        run: cargo test -p xtask --test agent_shift_left_mutation_admission_contract --locked
 
       - name: Check agent-flow validator regression controls
         run: cargo test -p xtask --bin xtask tasks::agent_flow --locked

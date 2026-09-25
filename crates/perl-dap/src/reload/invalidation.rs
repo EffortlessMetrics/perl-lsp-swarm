@@ -223,12 +223,22 @@ pub struct DapReferenceBinding {
 /// suspension generation advanced past it (the existing suspension
 /// authority). Both-at-current is current; fail closed on any older bind
 /// point.
+///
+/// At the saturating ceiling (`current_runtime_module.is_exhausted()`)
+/// the runtime-module clock cannot move any further. Any retained
+/// reference is stale from that point on, independent of the bind
+/// point — the executor refuses further reloads at admission, so no
+/// fresh reference can be minted against an exhausted clock, but a
+/// defense-in-depth check here keeps the predicate correct if a
+/// reference ever reaches this function with the current generation at
+/// the ceiling (#14643).
 pub fn reference_is_stale(
     binding: &DapReferenceBinding,
     current_runtime_module: RuntimeModuleGeneration,
     current_stopped: u64,
 ) -> bool {
-    binding.runtime_module_generation < current_runtime_module
+    current_runtime_module.is_exhausted()
+        || binding.runtime_module_generation < current_runtime_module
         || binding.stopped_generation < current_stopped
 }
 
@@ -391,6 +401,50 @@ mod tests {
             RuntimeModuleGeneration::new(2),
             7
         ));
+    }
+
+    /// At the saturating ceiling every retained reference is stale,
+    /// independent of the bind point. The runtime-module clock cannot
+    /// move any further, so a fresh reference cannot be minted there
+    /// by a reload executor (which refuses at admission) and any
+    /// earlier reference cannot be trusted (#14643).
+    #[test]
+    fn reference_is_stale_fails_closed_at_the_ceiling_independent_of_bind_point() {
+        let ceiling = RuntimeModuleGeneration::new(u64::MAX);
+        assert!(ceiling.is_exhausted());
+
+        // Bind point at the ceiling itself: with the strict-`<` rule
+        // this would have looked current, which is exactly the
+        // fail-open the issue calls out. The ceiling guard closes it.
+        let bound_at_ceiling =
+            DapReferenceBinding { runtime_module_generation: ceiling, stopped_generation: 7 };
+        assert!(
+            reference_is_stale(&bound_at_ceiling, ceiling, 7),
+            "a bind point at the ceiling must be stale when the current is exhausted"
+        );
+
+        // Bind point below the ceiling: still stale — once the clock
+        // saturates, no reference against this debuggee process is
+        // trustworthy.
+        let bound_below_ceiling = DapReferenceBinding {
+            runtime_module_generation: RuntimeModuleGeneration::new(u64::MAX - 1),
+            stopped_generation: 7,
+        };
+        assert!(
+            reference_is_stale(&bound_below_ceiling, ceiling, 7),
+            "any retained reference is stale once the clock is exhausted"
+        );
+
+        // The non-exhausted negative control: a ceiling bind point at
+        // the previous tick is stale by the normal strict-`<` rule, so
+        // the test is exercising both the ceiling guard and the normal
+        // rule.
+        let non_ceiling = DapReferenceBinding {
+            runtime_module_generation: RuntimeModuleGeneration::new(3),
+            stopped_generation: 7,
+        };
+        assert!(!reference_is_stale(&non_ceiling, RuntimeModuleGeneration::new(3), 7));
+        assert!(reference_is_stale(&non_ceiling, RuntimeModuleGeneration::new(4), 7));
     }
 
     #[test]

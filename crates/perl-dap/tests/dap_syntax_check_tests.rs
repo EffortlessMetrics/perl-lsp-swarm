@@ -27,6 +27,10 @@ fn perl_available() -> bool {
 }
 
 fn initialize_adapter(adapter: &mut DebugAdapter) {
+    // Syntax-check scenarios exercise perl -c behavior, not the
+    // launch-authority contract; without an installed authority every launch
+    // is refused before the script is checked (#8656).
+    common::install_unbounded_test_authority(adapter);
     let response = adapter.handle_request(1, "initialize", None);
     assert!(
         matches!(response, DapMessage::Response { success: true, .. }),

@@ -246,5 +246,48 @@ class RedFirstTest(unittest.TestCase):
         self.assert_parity_fails(bodies, "Validate bounded-result overflow invariants")
 
 
+class DeadlineCancelTest(unittest.TestCase):
+    """A queued-forever trusted lane must reach an explicit terminal state.
+
+    Job queue time ignores timeout-minutes, so a trusted lane that never
+    receives a runner keeps the run and its check pending forever (#15900).
+    The aggregate (PR-triggered, no write authority per the workflow
+    security ratchet) must emit actionable deadline diagnostics; the
+    scheduled policy-validators-nano-reaper workflow owns the explicit
+    cancel.
+    """
+
+    def read_result_block(self) -> str:
+        return job_block(read_workflow(), RESULT_JOB)
+
+    def test_aggregate_reports_deadline_diagnostics(self):
+        result = self.read_result_block()
+        self.assertIn("::warning::", result)
+        self.assertIn("GITHUB_STEP_SUMMARY", result)
+        self.assertIn("em-ci-nano", result)
+        self.assertIn("#15900", result)
+        self.assertIn("nano-reaper", result)
+
+    def test_aggregate_holds_no_write_authority(self):
+        text = read_workflow()
+        self.assertNotIn("actions: write", text)
+        self.assertNotIn("/cancel", text)
+        self.assertNotIn("secrets.", text)
+
+    def test_reaper_owns_the_cancel(self):
+        reaper = (
+            ROOT / ".github" / "workflows" / "policy-validators-nano-reaper.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("schedule:", reaper)
+        self.assertNotIn("pull_request", reaper)
+        self.assertIn("actions: write", reaper)
+        self.assertNotIn("actions/checkout", reaper)
+        self.assertIn("/cancel", reaper)
+        self.assertIn("em-ci-nano", reaper)
+        self.assertIn("#15900", reaper)
+        self.assertIn("MAX_QUEUE_SECONDS", reaper)
+        self.assertNotIn("secrets.", reaper)
+
+
 if __name__ == "__main__":
     unittest.main()

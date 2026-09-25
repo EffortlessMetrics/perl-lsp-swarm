@@ -165,6 +165,7 @@ merge-gate: _check-tools-basic pr-fast
     just _timed "security-audit" "just security-audit" && \
     just _timed "ci-policy" "just ci-policy" && \
     just _timed "ci-agent-ledgers-validate" "just ci-agent-ledgers-validate" && \
+    just _timed "ci-unsafe-prod" "just ci-unsafe-prod" && \
     just _timed "ci-v2-bundle-sync" "just ci-v2-bundle-sync" && \
     just _timed "ci-v2-parity" "just ci-v2-parity" && \
     just _timed "ci-lsp-def" "just ci-lsp-def" && \
@@ -418,7 +419,8 @@ quick-ref:
     @echo "  One-off lint check            just check                       ~30 sec"
     @echo "  Reformat all code             cargo xtask fmt                  ~20 sec"
     @echo "  Run tests only                cargo test --workspace --lib     ~1 min"
-    @echo "  Nightly / mutation / fuzz     just ci-full                     ~15-30 min"
+    @echo "  Nightly / mutation / fuzz     just nightly                     ~15-30 min"
+    @echo "  Mutation / fuzz subsets       just mutation-subset / just fuzz-bounded"
     @echo ""
     @echo "  TIP: install the pre-push hook so pr-fast runs automatically:"
     @echo "       bash scripts/install-githooks.sh"
@@ -1011,7 +1013,7 @@ gates tier='merge-gate' *args='':
 # Validate release-history surfaces (tags ↔ ledger ↔ notes ↔ changelog).
 ci-release-history:
     bash scripts/check_release_history.sh
-    @python3 -m unittest scripts.tests.test_release_channel_actuals         scripts.test_release_build_identity         scripts.test_release_package_evidence         scripts.test_release_tag_authority         scripts.test_release_topology_json -v
+    @python3 -m unittest scripts.tests.test_release_channel_actuals         scripts.test_release_build_identity         scripts.test_release_package_evidence         scripts.test_release_tag_authority         scripts.test_release_topology_json         scripts.tests.test_domain6_fragment -v
 
 # Validate installer Linux libc target selection without downloading artifacts.
 ci-install-target-selection:
@@ -1077,7 +1079,19 @@ ci-agent-ledgers-validate:
     cargo xtask agent ledgers validate --format json
     @echo "✅ Agent ledger contracts valid"
 
-# Clippy lint (catches common issues, allow missing_docs during systematic resolution)
+
+# Production-unsafe SAFETY ratchet (#16215) — runs `check-unsafe-prod`, which
+# fails when any production unsafe block lacks a preceding `// SAFETY:`
+# comment or the ci/unsafe_prod_baseline.txt count is exceeded. The checker
+# existed and was unit-tested, but nothing in CI invoked it, so drift was
+# silently absorbed; this recipe plus the merge-gate `_timed` call close that
+# gap, mirroring `ci-agent-ledgers-validate`.
+ci-unsafe-prod:
+    @echo "Checking production unsafe blocks carry SAFETY reasoning..."
+    bash ci/check_unsafe_prod.sh
+    @echo "Production unsafe SAFETY reasoning present"
+
+
 ci-clippy:
     @echo "🔍 Running clippy (all targets)..."
     cargo clippy --workspace --all-targets -- -D warnings -A missing_docs
@@ -1468,6 +1482,7 @@ ci-policy:
     @python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
     @python3 scripts/ci/test_validate_cargo_feature_roles.py
     @python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
+    @python3 scripts/ci/test_public_api_filter.py
     @cargo xtask check-from-raw
     @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
@@ -2374,6 +2389,17 @@ _api-ratchet-crates:
 # `pub ` items plus items fronted by any run of bracketed attributes.
 # Non-item lines stay out.
 #
+# The final awk stage (scripts/ci/public_api_filter.awk, covered by
+# scripts/ci/test_public_api_filter.py) resolves method-signature `Self`
+# to the owning type path (`pub fn krate::Type::clone(&self) -> Self`
+# folds to `... -> krate::Type`). Nightly rustdoc-JSON started rendering
+# `Self` this way in September 2026 (1.100.0-nightly 2026-09-20; August
+# renderings spell the full path), which reddened every API-scope PR with
+# thousands of phantom lines (#16324, sequel to the io-path drift in
+# #16007). The owner path derives from the line itself, so a real rename
+# still diffs; a `Self`-looking substring inside a longer identifier (e.g.
+# `Selfish`) keeps its spelling via the boundary check.
+#
 # Usage: just _public-api-filter <raw-file> <filtered-file>
 [private]
 _public-api-filter raw out:
@@ -2395,6 +2421,7 @@ _public-api-filter raw out:
         | sed -E \
             -e 's#(^|[ <([&,=?])core::io::(write::|error::)?#\1std::io::#g' \
             -e 's#(^|[ <([&,=?])alloc::io::(buf_read::|read::)?#\1std::io::#g' \
+        | awk -f scripts/ci/public_api_filter.awk \
         > "{{out}}" || true
 
 # Check public API surface of the ratcheted crates against committed baselines

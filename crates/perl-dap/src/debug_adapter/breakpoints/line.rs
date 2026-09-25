@@ -380,7 +380,7 @@ mod source_boundary_tests {
     use std::collections::HashMap;
     use std::error::Error;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -411,12 +411,33 @@ mod source_boundary_tests {
 
     fn bounded_adapter(root: &Path) -> Result<DebugAdapter, Box<dyn Error>> {
         let adapter = DebugAdapter::new();
-        adapter.set_workspace_root(root.canonicalize()?);
+        adapter.set_workspace_root(canonical_fixture(root)?);
         Ok(adapter)
     }
 
     fn source_text(path: &Path) -> Result<&str, Box<dyn Error>> {
         path.to_str().ok_or_else(|| "test fixture path is not UTF-8".into())
+    }
+
+    /// Canonicalize `path` and normalize the result the way the validation
+    /// boundary (`validate_workspace_path` → `normalize_filesystem_path`)
+    /// does: `canonicalize` yields verbatim `\\?\` and `\\?\UNC\` spellings on
+    /// Windows while validation strips the device prefix, turning
+    /// `\\?\UNC\server\share` into `\\server\share`. Unlike drive paths, those
+    /// two forms are not suffix-comparable, so fixtures that seed store keys
+    /// or boundary roots must carry the post-validation identity.
+    fn canonical_fixture(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
+        let canonical = path.canonicalize()?;
+        #[cfg(windows)]
+        if let Some(text) = canonical.to_str() {
+            if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+                return Ok(PathBuf::from(format!(r"\\{rest}")));
+            }
+            if let Some(rest) = text.strip_prefix(r"\\?\") {
+                return Ok(PathBuf::from(rest));
+            }
+        }
+        Ok(canonical)
     }
 
     fn request(adapter: &mut DebugAdapter, path: &str, entries: Value) -> DapMessage {
@@ -462,7 +483,7 @@ mod source_boundary_tests {
         let source_contents =
             (1..=20).map(|line| format!("my $v{line} = {line};\n")).collect::<String>();
         fs::write(&source, source_contents.as_bytes())?;
-        let source_path = source.canonicalize()?;
+        let source_path = canonical_fixture(&source)?;
         let source_text = source_path.to_str().ok_or("source path is not UTF-8")?;
 
         let child = Command::new("perl")
@@ -472,7 +493,7 @@ mod source_boundary_tests {
             .stderr(Stdio::piped())
             .spawn()?;
         let adapter = DebugAdapter::new();
-        adapter.set_workspace_root(root.path().canonicalize()?);
+        adapter.set_workspace_root(canonical_fixture(root.path())?);
         let digest =
             perl_source_identity::ContentDigest::of_bytes(source_contents.as_bytes()).to_string();
         *adapter.launch_source_identity.lock().map_err(|_| "launch identity lock poisoned")? =
@@ -557,12 +578,15 @@ mod source_boundary_tests {
         let root = tempfile::tempdir()?;
         let source = root.path().join("boundary_fixture.pl");
         fs::write(&source, "my $value = 1;\nprint $value;\n")?;
-        let canonical = source.canonicalize()?;
-        let absolute_spelling = source_text(&canonical)?;
+        let verbatim = source.canonicalize()?;
+        let absolute_spelling = source_text(&verbatim)?;
         // Windows canonicalize adds a verbatim drive prefix; the shared path
         // boundary intentionally returns a normal filesystem spelling. Keep the
-        // verbatim request as an alias control, but query the admitted store key.
-        let canonical_key = absolute_spelling.strip_prefix(r"\\?\").unwrap_or(absolute_spelling);
+        // verbatim request as an alias control, but query the admitted store
+        // key in its post-normalization spelling — for UNC roots the two
+        // forms are not even suffix-comparable.
+        let canonical = canonical_fixture(&source)?;
+        let canonical_key = source_text(&canonical)?;
         let mut adapter = bounded_adapter(root.path())?;
 
         let absolute =
@@ -666,7 +690,7 @@ mod source_boundary_tests {
         fs::create_dir(&root)?;
         let source = parent.path().join("outside.pl");
         fs::write(&source, "print 'fixture';\n")?;
-        let canonical = source.canonicalize()?;
+        let canonical = canonical_fixture(&source)?;
         let key = source_text(&canonical)?;
         let mut adapter = DebugAdapter::new();
         successful_body(request(&mut adapter, key, json!([{ "line": 1 }])))?;
@@ -677,7 +701,7 @@ mod source_boundary_tests {
             1,
             "seeded-record control must read the source exactly once",
         )?;
-        adapter.set_workspace_root(root.canonicalize()?);
+        adapter.set_workspace_root(canonical_fixture(&root)?);
 
         require_refused(request(&mut adapter, key, json!([])))?;
         require_equal(
@@ -762,19 +786,25 @@ mod source_boundary_tests {
     -> Result<(), Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let outside = tempfile::tempdir()?;
-        let cwd = root.path().join("subdir");
+        // Canonicalize the tempdir roots before deriving fixture paths: on
+        // Windows runners %TEMP% resolves through an 8.3 short-name spelling
+        // while `validate_source_path_at` canonicalizes lookups to the long
+        // form, so mixed spellings would leave seeded store keys unreachable.
+        let root_path = canonical_fixture(root.path())?;
+        let outside_path = canonical_fixture(outside.path())?;
+        let cwd = root_path.join("subdir");
         fs::create_dir_all(cwd.join("lib"))?;
-        fs::create_dir(root.path().join("lib"))?;
-        fs::create_dir(outside.path().join("lib"))?;
+        fs::create_dir(root_path.join("lib"))?;
+        fs::create_dir(outside_path.join("lib"))?;
         // Seed native filesystem spellings, matching admitted store keys even
         // when the debugger uses forward slashes on Windows.
         let source = cwd.join("lib").join("module.pl");
-        let decoy = root.path().join("lib").join("module.pl");
-        let outside_source = outside.path().join("lib").join("module.pl");
+        let decoy = root_path.join("lib").join("module.pl");
+        let outside_source = outside_path.join("lib").join("module.pl");
         for path in [&source, &decoy, &outside_source] {
             fs::write(path, "print 'fixture';\n")?;
         }
-        let adapter = bounded_adapter(root.path())?;
+        let adapter = bounded_adapter(&root_path)?;
         // Trusted store fixtures exercise retained hit/logpoint semantics without
         // promoting the handler's currently floored optional capabilities.
         let logpoint = serde_json::from_value(json!({
@@ -792,12 +822,11 @@ mod source_boundary_tests {
                 "wrong-directory controls must contain verified stopping breakpoints",
             )?;
         }
-        let authority = root.path().canonicalize()?;
         let first = DebugAdapter::register_observed_breakpoint_hit(
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
+            Some(&root_path),
             &cwd,
         );
         require(
@@ -808,7 +837,7 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
+            Some(&root_path),
             &cwd,
         );
         require(
@@ -824,8 +853,8 @@ mod source_boundary_tests {
             &adapter.breakpoints,
             "lib/module.pl",
             1,
-            Some(&authority),
-            outside.path(),
+            Some(&root_path),
+            &outside_path,
         );
         require(
             !refused.matched && !refused.should_stop && refused.log_messages.is_empty(),
@@ -874,7 +903,7 @@ mod source_boundary_tests {
             !adapter.breakpoints.register_breakpoint_hit(source_text(&alias)?, 1).matched,
             "control must distinguish raw alias spelling from its canonical target",
         )?;
-        let authority = root.path().canonicalize()?;
+        let authority = canonical_fixture(root.path())?;
         let outcome = DebugAdapter::register_observed_breakpoint_hit(
             &adapter.breakpoints,
             source_text(&alias)?,
