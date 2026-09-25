@@ -163,3 +163,28 @@ fn lexer_sigiled_print_is_a_shift_operand_not_a_heredoc_introducer() {
     );
     assert!(table.is_known_sub("real"), "suffix declaration lost: {unprototyped:?}");
 }
+
+#[test]
+fn lexer_typeglob_and_last_index_terms_are_shift_operands_not_heredoc_introducers() {
+    use perl_lexer::LocalSymbolTable;
+
+    // `*print` and `$#print` are completed terms too, so their `<<` is a
+    // left shift and the following lines stay live code, exactly like the
+    // `$print` scalar form. Bare `print <<END` is the matching-marker
+    // opposite control: it stays a heredoc introducer, so its body prose
+    // must stay out of the known-sub scan.
+    let glob = "my $width = *print <<'END';\nsub fake { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(glob);
+    assert!(table.is_known_sub("fake"), "shift operand swallowed live code: {glob:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {glob:?}");
+
+    let last_index = "my $width = $#print <<'END';\nsub fake { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(last_index);
+    assert!(table.is_known_sub("fake"), "shift operand swallowed live code: {last_index:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {last_index:?}");
+
+    let heredoc = "print <<END;\nsub fake { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(heredoc);
+    assert!(!table.is_known_sub("fake"), "heredoc body leaked: {heredoc:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {heredoc:?}");
+}

@@ -678,10 +678,11 @@ fn scan_quote_like_character(line: &str, mut offset: usize, state: &mut ScanStat
     offset + ch.len_utf8()
 }
 
-/// The word ending at `end`, together with the variable sigil (`$`, `@`, `%`)
-/// immediately preceding it when one is present. A sigiled word names a
-/// variable, not a callable: `$print` is a completed term even though the
-/// bare name `print` is a builtin.
+/// The word ending at `end`, together with the variable sigil (`$`, `@`, `%`,
+/// the typeglob `*`, or the two-byte last-index `$#`) immediately preceding it
+/// when one is present. A sigiled word names a completed variable term, not a
+/// callable: `$print`, `*print`, and `$#print` are all finished terms even
+/// though the bare name `print` is a builtin.
 fn previous_word_and_sigil_before(text: &str, end: usize) -> Option<(Option<char>, &str)> {
     let prefix = text[..end].trim_end_matches([' ', '\t']);
     let mut start = prefix.len();
@@ -695,7 +696,11 @@ fn previous_word_and_sigil_before(text: &str, end: usize) -> Option<(Option<char
     if start >= prefix.len() {
         return None;
     }
-    let sigil = prefix[..start].chars().next_back().filter(|ch| matches!(*ch, '$' | '@' | '%'));
+    let sigil = match prefix[..start].chars().next_back() {
+        Some(ch @ ('$' | '@' | '%' | '*')) => Some(ch),
+        _ if prefix[..start].ends_with("$#") => Some('$'),
+        _ => None,
+    };
     Some((sigil, &prefix[start..]))
 }
 
@@ -941,6 +946,9 @@ mod tests {
         assert_eq!(previous_word_and_sigil_before("my $print", 9), Some((Some('$'), "print")));
         assert_eq!(previous_word_and_sigil_before("local @ARGV", 11), Some((Some('@'), "ARGV")));
         assert_eq!(previous_word_and_sigil_before("%h", 2), Some((Some('%'), "h")));
+        assert_eq!(previous_word_and_sigil_before("*print", 6), Some((Some('*'), "print")));
+        assert_eq!(previous_word_and_sigil_before("$#print", 7), Some((Some('$'), "print")));
+        assert_eq!(previous_word_and_sigil_before("&print", 6), Some((None, "print")));
         assert_eq!(previous_word_and_sigil_before("print <<END", 5), Some((None, "print")));
         assert_eq!(previous_word_and_sigil_before(" <<END", 1), None);
     }
@@ -955,8 +963,11 @@ mod tests {
         let hints: HashSet<Box<str>> = HashSet::new();
         // `$print` names a variable, so `'` stays the old-style package
         // separator (`$print'Foo` is `$print::Foo`) even though the bare
-        // name `print` is a callable builtin.
+        // name `print` is a callable builtin. The typeglob `*print` and the
+        // last-index `$#print` are completed terms too.
         assert!(apostrophe_is_package_separator("$print'Foo", 6, &known, &hints));
+        assert!(apostrophe_is_package_separator("*print'Foo", 6, &known, &hints));
+        assert!(apostrophe_is_package_separator("$#print'Foo", 7, &known, &hints));
         assert!(!apostrophe_is_package_separator("print'Foo", 5, &known, &hints));
         assert!(apostrophe_is_package_separator("Foo'Bar", 3, &known, &hints));
     }
@@ -967,6 +978,30 @@ mod tests {
         // the lines that follow stay live code: `sub fake` must be scanned.
         assert_membership_and_slash(
             "my $print = shift;\nmy $width = $print <<'END';\nsub fake { }\nEND\nsub real { }\n",
+            &["fake", "real"],
+            &[],
+        );
+        // Matching-marker opposite control: bare `print` keeps heredoc
+        // authority, so the body prose stays out of the scan.
+        assert_membership_and_slash(
+            "print <<END;\nsub fake { }\nEND\nsub real { }\n",
+            &["real"],
+            &["fake"],
+        );
+    }
+
+    #[test]
+    fn typeglob_and_last_index_terms_keep_the_shift_reading() {
+        // `*print` and `$#print` are completed terms too, so their `<<` is a
+        // left shift and the lines that follow stay live code, exactly like
+        // the `$print` scalar form.
+        assert_membership_and_slash(
+            "my $width = *print <<'END';\nsub fake { }\nEND\nsub real { }\n",
+            &["fake", "real"],
+            &[],
+        );
+        assert_membership_and_slash(
+            "my $width = $#print <<'END';\nsub fake { }\nEND\nsub real { }\n",
             &["fake", "real"],
             &[],
         );
