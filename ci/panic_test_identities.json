@@ -3707,7 +3707,7 @@
       "normalized_snippet": "other => panic!(\"{test} has unknown verification_state `{other}`\"),",
       "selector_identity": "invocation:7568fcb9385b4eba:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-parser/src/incremental/incremental_v2.rs",
@@ -5282,6 +5282,150 @@
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"fixture terminal must serialize: {error}\"));",
       "selector_identity": "invocation:81148b34d40f7225:occurrence:1",
       "accepted_reason": "Intentional test-fixture emission diagnostic; the helper's own contract is to fail loudly when a frame does not serialize, because a silently dropped frame would let a dependent test pass for the wrong reason. Test-only: the module is declared `#[cfg(test)]` in crates/perl-core-harness/src/lib.rs.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_continue_with_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected Program, got {:?}\", ast.kind);",
+      "selector_identity": "invocation:f9d27b61b544ff54:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for the `continue OUTER` label rejection (#16285): let-else refutation binds `statements` for the no-LoopControl-label assertion below; only fires when the AST root is not a Program.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_qualified_loop_control_label_is_hard_error",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(other) => panic!(\"expected QualifiedLoopControlLabel, got {other:?}\"),",
+      "selector_identity": "invocation:9470cfb5772b561f:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for the qualified-label hard error (#16296, PR #16348): match arms pin the exact QualifiedLoopControlLabel variant plus byte location and fail when the parser wrongly accepts; the accepted arm asserts the location.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_qualified_loop_control_label_is_hard_error",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(ast) => panic!(\"qualified loop label must fail to parse, got {:?}\", ast.kind),",
+      "selector_identity": "invocation:d29bd99e5377a1d6:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for the qualified-label hard error (#16296, PR #16348): match arms pin the exact QualifiedLoopControlLabel variant plus byte location and fail when the parser wrongly accepts; the accepted arm asserts the location.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_qualified_label_survives_brace_fallback",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(other) => panic!(\"expected QualifiedLoopControlLabel, got {other:?}\"),",
+      "selector_identity": "invocation:9470cfb5772b561f:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for the qualified-label hard error (#16296, PR #16348): match arms pin the exact QualifiedLoopControlLabel variant plus byte location and fail when the parser wrongly accepts; the accepted arm asserts the location.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_qualified_label_survives_brace_fallback",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(ast) => panic!(\"qualified loop label must fail to parse, got {:?}\", ast.kind),",
+      "selector_identity": "invocation:d29bd99e5377a1d6:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for the qualified-label hard error (#16296, PR #16348): match arms pin the exact QualifiedLoopControlLabel variant plus byte location and fail when the parser wrongly accepts; the accepted arm asserts the location.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_post_loop_continue_block_unaffected",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected While, got {:?}\", while_stmt.kind);",
+      "selector_identity": "invocation:557a77889b43f3dd:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for post-loop `continue { BLOCK }` attach: let-else refutation binds `continue_block` for the attach assertion below; only fires when the statement is not a While.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "parse_one_statement",
+      "macro_family": "panic!",
+      "normalized_snippet": "let ast = parser.parse().unwrap_or_else(|e| panic!(\"`{src}` must parse, got: {e:?}\"));",
+      "selector_identity": "invocation:9202d4ed13cafb97:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected Program, got {:?}\", ast.kind);",
+      "selector_identity": "invocation:f9d27b61b544ff54:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "statements.first().unwrap_or_else(|| panic!(\"expected one statement for `{source}`\"));",
+      "selector_identity": "invocation:649c74258df61189:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected LabeledStatement, got {:?}\", outer.kind);",
+      "selector_identity": "invocation:5616fc544a0a1e9b:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected While under the label, got {:?}\", statement.kind);",
+      "selector_identity": "invocation:4c65068e87d8203d:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected Block loop body, got {:?}\", body.kind);",
+      "selector_identity": "invocation:939ae083a55671e7:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"expected a loop-control statement in `{source}`\"));",
+      "selector_identity": "invocation:d674b497c80d3a0d:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected LoopControl in loop body, got {:?}\", ctrl.kind);",
+      "selector_identity": "invocation:e46928af1902a4d1:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_qualified_loop_control_label_16296.rs",
+      "enclosing_test_or_function": "parse_err",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(_) => panic!(\"expected outright parse failure for `{code}`\"),",
+      "selector_identity": "invocation:e8d55bd23f5b3760:occurrence:1",
+      "accepted_reason": "File oracle helpers for #16296 perl -c parity (PR #16348): parse_err must yield the ParseError value and parse_clean the AST; each panics only when the parser wrongly accepts or rejects, and callers assert the exact QualifiedLoopControlLabel variant.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_qualified_loop_control_label_16296.rs",
+      "enclosing_test_or_function": "parse_clean",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(err) => panic!(\"expected clean parse for `{code}`, got: {err:?}\"),",
+      "selector_identity": "invocation:d958e5e104cf2cdc:occurrence:1",
+      "accepted_reason": "File oracle helpers for #16296 perl -c parity (PR #16348): parse_err must yield the ParseError value and parse_clean the AST; each panics only when the parser wrongly accepts or rejects, and callers assert the exact QualifiedLoopControlLabel variant.",
       "state": "active"
     }
   ]
