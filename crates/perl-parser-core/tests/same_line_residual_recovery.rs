@@ -459,7 +459,7 @@ fn possible_repetition_terms_are_not_mislabeled_missing() -> Result<(), String> 
         }
         let output = Parser::new(source).parse_with_recovery();
         if output.diagnostics.iter().any(|error| {
-            // Existing unsupported-term diagnostics at `not` or `//` are
+            // Existing unsupported-term diagnostics at `//` are
             // separate work; do not invent an absent operand at `x` itself.
             matches!(
                 error,

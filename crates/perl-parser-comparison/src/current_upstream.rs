@@ -15,7 +15,7 @@ const MAX_ROOT_SEXP_BYTES: usize = 4_096;
 const MAX_ADAPTER_DIAGNOSTIC_BYTES: usize = 1_024;
 
 /// Checked-in machine-readable projection of [`CURRENT_UPSTREAM_SUBJECT`].
-pub const SUBJECT_MANIFEST_TOML: &str = include_str!("../upstream/ts-parser-perl-1.2.1.toml");
+pub const SUBJECT_MANIFEST_TOML: &str = include_str!("../upstream/ts-parser-perl-2.0.0.toml");
 
 /// One canonical exact manifest for the maintained-current upstream subject.
 pub const CURRENT_UPSTREAM_SUBJECT: CurrentUpstreamSubjectManifest =
@@ -23,17 +23,17 @@ pub const CURRENT_UPSTREAM_SUBJECT: CurrentUpstreamSubjectManifest =
         schema_version: "parser-comparison-subject.v1",
         subject_role: "current_upstream_tree_sitter",
         package_name: "ts-parser-perl",
-        package_version: "1.2.1",
-        package_requirement: "=1.2.1",
-        package_checksum: "d125f7bfdd1fd82a7e87d2e85793f486ad1b5f465144e9e22132dbe5bd80e694",
+        package_version: "2.0.0",
+        package_requirement: "=2.0.0",
+        package_checksum: "db3cd8574afc19af4d3db44fe0cf94a5e8fc3f4056c0326baf5ba01a29666129",
         upstream_repository: "https://github.com/tree-sitter-perl/tree-sitter-perl",
-        upstream_tag: "v1.2.1",
-        upstream_commit: "c3e17b31179bf8f658c9f37c7a3ea6a202212d5a",
-        tree_sitter_runtime_version: "0.26.12",
-        tree_sitter_language_version: "0.1.7",
-        upstream_rust_version: "1.77",
-        semantic_digest: "sha256:750bf42fd1190088c649e5c0ab50995b8895a8002ac15d6bbe560721a97134b2",
-        reviewed_on: "2026-08-17",
+        upstream_tag: "v2.0.0",
+        upstream_commit: "50904961d6a87c5191e611276aa2ecb9d66ca4ff",
+        tree_sitter_runtime_version: "0.26.13",
+        tree_sitter_language_version: "0.1.8",
+        upstream_rust_version: "1.90",
+        semantic_digest: "sha256:5a2130961782eb11e91aae5ef611a7df736632b9ba82a7c6bbb040b9a64fc995",
+        reviewed_on: "2026-09-23",
         refresh_owner: "#7255",
         claim_boundary: "exact current-upstream comparison subject; no consumer migration or superiority claim",
     };

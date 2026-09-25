@@ -2413,16 +2413,19 @@ mod server_request_tests {
                             decision.response
                         ));
                     }
-                } else if !decision
-                    .capability_violation
-                    .as_ref()
-                    .is_some_and(|v| v.capability == path)
-                    || decision.response.pointer("/error/code") != Some(&json!(-32601))
-                {
-                    return Err(anyhow!(
-                        "non-true advertisement must reject {path}: {}",
-                        decision.response
-                    ));
+                } else {
+                    let violation_on_path = decision
+                        .capability_violation
+                        .as_ref()
+                        .is_some_and(|v| v.capability == path);
+                    if !violation_on_path
+                        || decision.response.pointer("/error/code") != Some(&json!(-32601))
+                    {
+                        return Err(anyhow!(
+                            "non-true advertisement must reject {path}: {}",
+                            decision.response
+                        ));
+                    }
                 }
             }
         }

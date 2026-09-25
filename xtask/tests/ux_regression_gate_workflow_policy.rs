@@ -356,6 +356,92 @@ fn unavailable_harness_has_no_executed_test_receipt() -> Result<()> {
     Ok(())
 }
 
+/// One receipt, two printers, and until now only one of them read the field
+/// that carries the per-test discrimination.
+///
+/// `failure_class` is inferred from the whole log, so it answers a question
+/// nobody asked; `human_summary` carries what the first failing test's own
+/// block proved (#16103). `ci.yml` printed that field and
+/// `ux-regression-gate.yml` did not, so the same receipt read one way in one
+/// job and another way in the other, and which job a reader happened to open
+/// decided what they were told. A field added to the producer reaches a reader
+/// only through a printer, so both printers are pinned here rather than left
+/// to agree by habit.
+#[test]
+fn both_ux_summaries_print_the_receipts_human_summary() -> Result<()> {
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    for (file, job, step) in [
+        ("ux-regression-gate.yml", "ux-regression-gate", "Summarize UX evidence"),
+        ("ci.yml", "ux-tests", "UX regression summary"),
+    ] {
+        let wf = workflow(file)?;
+        let job_steps = steps(&wf, job)?;
+        let run = run_step(job_steps, step)?;
+        let source = heredoc_python(run, file, step)?;
+        let code = executable_python(source);
+
+        // Two independent substrings would also be satisfied by a decorative
+        // `- Summary: unavailable` sitting beside an unrelated `human_summary`
+        // mention. Requiring the Summary line to *be* the one that reads the field
+        // is what makes this a contract on the behaviour rather than on vocabulary.
+        // Raised in review as FC-CONTRACT-UNCOUPLED-NEEDLES.
+        let summary_line = code
+            .lines()
+            .find(|line| line.contains("- Summary:"))
+            .ok_or_else(|| anyhow!("{file}: step `{step}` must append a `- Summary:` line"))?;
+        assert!(
+            summary_line.contains("human_summary"),
+            "{file}: step `{step}` appends `- Summary:` without reading human_summary: \
+             `{}`",
+            summary_line.trim()
+        );
+
+        // YAML-valid is not runtime-valid: a heredoc step can parse as a string
+        // and still raise on the runner. Parsing it here is what makes the edit
+        // proven live rather than merely present.
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("step.py");
+        fs::write(&script, source)?;
+        let parsed = Command::new(python)
+            .arg("-c")
+            .arg("import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())")
+            .arg(&script)
+            .output()
+            .with_context(|| format!("{file}: could not run {python} to parse step `{step}`"))?;
+        assert!(
+            parsed.status.success(),
+            "{file}: step `{step}` is not valid python: {}",
+            String::from_utf8_lossy(&parsed.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// The python source of a step whose `run:` is a single `python3 - <<'PY'` heredoc.
+fn heredoc_python<'a>(run: &'a str, file: &str, step: &str) -> Result<&'a str> {
+    const OPEN: &str = "python3 - <<'PY'\n";
+    let start = run
+        .find(OPEN)
+        .ok_or_else(|| anyhow!("{file}: step `{step}` must be a single python3 heredoc"))?
+        + OPEN.len();
+    let body = &run[start..];
+    let end = body
+        .find("\nPY")
+        .ok_or_else(|| anyhow!("{file}: step `{step}` heredoc is not terminated by PY"))?;
+    Ok(&body[..end])
+}
+
+/// The lines of a python source the runner actually executes.
+///
+/// A whole-line comment is prose, and prose can satisfy a substring search. The
+/// gate step carries a comment block naming `human_summary` several times, so a
+/// search over the raw source stayed green when only the print was deleted —
+/// review caught exactly that on `7bc961452`. Stripping comments first is what
+/// makes the falsification real.
+fn executable_python(source: &str) -> String {
+    source.lines().filter(|line| !line.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n")
+}
+
 #[test]
 fn final_jobs_fail_after_captured_ux_failure() -> Result<()> {
     for (file, job) in WORKFLOWS {

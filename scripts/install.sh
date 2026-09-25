@@ -1142,17 +1142,18 @@ verify_source_install_identity() {
     esac
 }
 
-build_from_source() {
-    need_cmd cargo
-
-    # Toolchain guard (#12593): the source build parses edition-2024 manifests;
-    # refuse a stale non-rustup cargo before any build work. The prebuilt
-    # download path above does not need cargo, so the guard lives here. In the
-    # standalone remote bootstrap (the root install.sh runs this file without
-    # its scripts/ siblings) the library cannot be sourced, so an inline
-    # floor check refuses the same confusing pre-1.85 failures instead of
-    # silently skipping the guard; from 1.85 up to the workspace rust-version,
-    # cargo's own rust-version enforcement reports the requirement cleanly.
+# Toolchain guard (#12593, #15030): the source build parses edition-2024
+# manifests; refuse a stale non-rustup cargo before any build or network work.
+# The release download path does not need cargo, so the guard is conditional on
+# INSTALL_MODE=source. In the standalone remote bootstrap (the root install.sh
+# runs this file without its scripts/ siblings) the library cannot be sourced,
+# so an inline floor check refuses the same confusing pre-1.85 failures instead
+# of silently skipping the guard; from 1.85 up to the workspace rust-version,
+# cargo's own rust-version enforcement reports the requirement cleanly.
+# The guard must run before resolve_version() because the GitHub release query
+# is network work that would otherwise mask the toolchain refusal from a user
+# who has a stale cargo and no internet (#15030).
+run_cargo_toolchain_guard() {
     _guard_lib="$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh"
     if [ -f "$_guard_lib" ]; then
         # shellcheck source=lib/cargo-toolchain-guard.sh
@@ -1168,6 +1169,10 @@ build_from_source() {
         fi
     fi
     unset _guard_lib _guard_version _guard_major _guard_minor
+}
+
+build_from_source() {
+    need_cmd cargo
 
     local _target_arg=()
     local _version_arg=()
@@ -1627,7 +1632,7 @@ verify_install() {
     if _got_version="$("$_bin" --version 2>&1)"; then
         info "verified: $_got_version"
     else
-        warn "could not run '$BIN_NAME --version'; the binary may require a restart to load shared libraries"
+        err "installed binary failed to run '$BIN_NAME --version': $_bin (output: $_got_version)"
     fi
 }
 
@@ -1715,6 +1720,14 @@ main() {
     need_cmd curl
     need_cmd tar
 
+    # Toolchain guard must run before any network work in the source-build path
+    # (#15030): a user with a stale cargo and no internet was getting a
+    # misleading "check your internet connection" message instead of the typed
+    # cargo-toolchain-guard: REFUSED banner.
+    if [ "$INSTALL_MODE" = "source" ]; then
+        run_cargo_toolchain_guard
+    fi
+
     resolve_version
     TMPDIR="$(mktemp -d)"
     # shellcheck disable=SC2064
@@ -1723,9 +1736,13 @@ main() {
     if [ "$INSTALL_MODE" = "release" ]; then
         # Archive inspection classifies entries from the ustar headers rather
         # than from a tar listing, so the release path needs `od` as well as
-        # `tar` (#11508). A source build never inspects an archive, so the
-        # requirement stays inside this branch instead of gating both modes.
+        # `tar` (#11508). Size probing and bounded extraction shell out to
+        # `gzip -l` / `gzip -dc`, so `gzip` joins them — without it a missing
+        # tool misreports as a corrupt archive. A source build never inspects
+        # an archive, so the requirements stay inside this branch instead of
+        # gating both modes.
         need_cmd od
+        need_cmd gzip
         download_and_verify
         extract_archive
     else
