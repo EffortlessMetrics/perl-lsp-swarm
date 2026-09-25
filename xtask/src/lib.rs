@@ -43,6 +43,7 @@ pub mod neovim_activation_root_envelope;
 pub mod no_panic_debt;
 pub mod parser_accuracy_legacy_population;
 pub mod publication_drift;
+pub mod release_live_controls;
 pub mod release_trust_invariants;
 pub mod routed_result;
 pub mod rust_hygiene;
@@ -65,5 +66,6 @@ pub mod worktree_cleanup;
 pub mod worktree_forensic_recovery;
 pub mod writer_preflight;
 
+pub mod pre_freeze_public_beta_acceptance;
 #[cfg(test)]
 mod test_support;

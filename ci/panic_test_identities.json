@@ -80,7 +80,7 @@
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"disabled must serialize: {error}\"));",
       "selector_identity": "invocation:391a9f260a6a96de:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
@@ -89,7 +89,7 @@
       "normalized_snippet": "panic!(\"accepted state must serialize: {error}\");",
       "selector_identity": "invocation:9e42aecf5a7a23f8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
@@ -98,7 +98,7 @@
       "normalized_snippet": "panic!(\"canonical representation must deserialize: {error}\");",
       "selector_identity": "invocation:de2b82bbd0d8b804:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/critic_state.rs",
@@ -107,7 +107,7 @@
       "normalized_snippet": "panic!(\"disabled state must not expose a native policy object\")",
       "selector_identity": "invocation:55024bd7ba4c64b6:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/checked.rs",
@@ -116,7 +116,7 @@
       "normalized_snippet": "let field = authority_by_id(id).unwrap_or_else(|| panic!(\"missing authority row {id}\"));",
       "selector_identity": "invocation:9d15281f9d6d02e4:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/mod.rs",
@@ -125,7 +125,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"missing ai.effective_enabled\"));",
       "selector_identity": "invocation:355eb1b6edf24398:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/mod.rs",
@@ -134,7 +134,7 @@
       "normalized_snippet": "let field = authority_by_id(id).unwrap_or_else(|| panic!(\"missing {id}\"));",
       "selector_identity": "invocation:80b2cb58e934d64f:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/mod.rs",
@@ -143,7 +143,7 @@
       "normalized_snippet": "let field = authority_by_id(id).unwrap_or_else(|| panic!(\"missing {id}\"));",
       "selector_identity": "invocation:80b2cb58e934d64f:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/mod.rs",
@@ -152,7 +152,7 @@
       "normalized_snippet": "let body = body.split_once(\"\\n}\").unwrap_or_else(|| panic!(\"unterminated {struct_name}\")).0;",
       "selector_identity": "invocation:7b1a7d1d119073f8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_authority/mod.rs",
@@ -161,7 +161,7 @@
       "normalized_snippet": "let body = source.split_once(&marker).unwrap_or_else(|| panic!(\"missing {struct_name}\")).1;",
       "selector_identity": "invocation:f6ce999c2e807a9b:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -170,7 +170,7 @@
       "normalized_snippet": "other => panic!(\"expected CodeActionProviderCapability::Options, got {other:?}\"),",
       "selector_identity": "invocation:f1d18438aa488814:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -179,7 +179,7 @@
       "normalized_snippet": "other => panic!(\"expected CodeActionProviderCapability::Options, got {other:?}\"),",
       "selector_identity": "invocation:f1d18438aa488814:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -188,7 +188,7 @@
       "normalized_snippet": "other => panic!( \"documentSymbolProvider must be Some(true) when document_symbol is enabled, \\ got {other:?}\" ),",
       "selector_identity": "invocation:32c47ff326522f9a:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -197,7 +197,7 @@
       "normalized_snippet": "panic!( \"documentSymbolProvider must be true when document_symbol is enabled, \\ not false\" );",
       "selector_identity": "invocation:23b043b4cfa4f4c0:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -206,7 +206,7 @@
       "normalized_snippet": "other => panic!( \"expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}\" ),",
       "selector_identity": "invocation:817273e04338d1a7:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -215,7 +215,7 @@
       "normalized_snippet": "other => panic!( \"expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}\" ),",
       "selector_identity": "invocation:817273e04338d1a7:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -224,7 +224,7 @@
       "normalized_snippet": "other => panic!(\"expected TextDocumentSyncCapability::Options, got {other:?}\"),",
       "selector_identity": "invocation:6cafbb2df5d77115:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -233,7 +233,7 @@
       "normalized_snippet": "panic!( \"expected workspaceSymbolProvider to use the Options variant (with \\ resolveProvider), not the simple boolean variant, when \\ workspace_symbol_resolve is enabled\" );",
       "selector_identity": "invocation:192d81fed2a20e08:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/capabilities.rs",
@@ -242,7 +242,7 @@
       "normalized_snippet": "panic!( \"workspaceSymbolProvider must be advertised when workspace_symbol_resolve \\ is enabled\" );",
       "selector_identity": "invocation:f08a319190540d26:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/document_version.rs",
@@ -251,7 +251,7 @@
       "normalized_snippet": "panic!(\"expected Explicit\");",
       "selector_identity": "invocation:05d3a6b9d07bdf4f:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/document_version.rs",
@@ -260,7 +260,7 @@
       "normalized_snippet": "panic!(\"expected Explicit\");",
       "selector_identity": "invocation:05d3a6b9d07bdf4f:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/final_surface_inventory/rows.rs",
@@ -269,7 +269,7 @@
       "normalized_snippet": "panic!(\"compatibility row {} must carry a boundary\", row.surface_id)",
       "selector_identity": "invocation:ee1e6ca3c493c000:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/final_surface_inventory/tests.rs",
@@ -314,7 +314,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"data-flow PL404 must carry an observation: {dataflow:?}\"));",
       "selector_identity": "invocation:3f529ec3ca6aa014:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/common_mistakes.rs",
@@ -323,7 +323,7 @@
       "normalized_snippet": "panic!(\"literal undef PL404 must carry an observation: {literal:?}\")",
       "selector_identity": "invocation:946c6a3fb589b86a:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/common_mistakes.rs",
@@ -332,7 +332,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"PL404 must be emitted for {source}\"));",
       "selector_identity": "invocation:52a81ac43cf7596f:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/common_mistakes.rs",
@@ -341,7 +341,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"PL404 must carry an observation: {diags:?}\"));",
       "selector_identity": "invocation:eacbc2082dffb197:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/common_mistakes.rs",
@@ -350,7 +350,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"PL404 must carry an ordinary suggestion\"));",
       "selector_identity": "invocation:afb265e1ad5f90c0:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/common_mistakes.rs",
@@ -359,7 +359,7 @@
       "normalized_snippet": "panic!(\"PL404 must carry an observation: {diags:?}\")",
       "selector_identity": "invocation:5d3ee786868537fc:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -368,7 +368,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{code} must carry a critic observation: {diags:?}\"));",
       "selector_identity": "invocation:bee988b494918490:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -377,7 +377,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"backtick must carry an observation: {diags:?}\"));",
       "selector_identity": "invocation:6808b4eb4bb43b11:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -386,7 +386,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{code} must be emitted for {source}\"));",
       "selector_identity": "invocation:ef32d0afae7bddf2:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -395,7 +395,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{code} must carry a critic observation: {diags:?}\"));",
       "selector_identity": "invocation:bee988b494918490:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -404,7 +404,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{code} must carry an ordinary suggestion\"));",
       "selector_identity": "invocation:2dc74bd444ef3fff:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/inline_completion/prepared_context.rs",
@@ -422,7 +422,7 @@
       "normalized_snippet": "panic!(\"no `${name}` variable token found in source: {source:?}\");",
       "selector_identity": "invocation:e386df44afef8864:occurrence:1",
       "accepted_reason": "Intentional test-helper diagnostic; panics when no semantic token matching the named variable is found in the computed output, which means the test fixture did not produce the token under inspection.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/semantic_snapshot.rs",
@@ -431,7 +431,7 @@
       "normalized_snippet": ".unwrap_or_else(|e| panic!(\"{state:?} must be constructible: {e}\"));",
       "selector_identity": "invocation:6834d13717db2bc0:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/semantic_snapshot.rs",
@@ -440,7 +440,7 @@
       "normalized_snippet": ".unwrap_or_else(|e| panic!(\"{state:?} must round-trip: {e}\\n{json}\"));",
       "selector_identity": "invocation:5d2fd50d7bed4d58:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/tests/perllsp_settings_schema_tests.rs",
@@ -629,7 +629,7 @@
       "normalized_snippet": "panic!(\"production source {} must be readable: {error}\", path.display())",
       "selector_identity": "invocation:defe604a8b7be3e8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/tests/critic_normalization_wiring_tests.rs",
@@ -638,7 +638,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"transport dedup must remain defined for non-migrated pairs\"));",
       "selector_identity": "invocation:2459a5294051548b:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/tests/critic_normalization_wiring_tests.rs",
@@ -647,7 +647,7 @@
       "normalized_snippet": "panic!(\"production source {} must be readable: {error}\", path.display())",
       "selector_identity": "invocation:defe604a8b7be3e8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/tests/lsp4ij_installer_topology_tests.rs",
@@ -2006,7 +2006,7 @@
       "normalized_snippet": "let raw = fs::read_to_string(path).unwrap_or_else(|err| panic!(\"read receipt: {err}\"));",
       "selector_identity": "invocation:ab2897b9b8b1cf2c:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/lsp_smoke_atomic.rs",
@@ -2015,7 +2015,7 @@
       "normalized_snippet": "serde_json::from_str(&raw).unwrap_or_else(|err| panic!(\"parse receipt: {err}\"))",
       "selector_identity": "invocation:74f332f70586c2ea:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/module_train_live_tests.rs",
@@ -2033,7 +2033,7 @@
       "normalized_snippet": "Ok(true) => panic!(\"all-zeros SHA should not be an ancestor\"),",
       "selector_identity": "invocation:20110db351542216:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/train_edge_contract.rs",
@@ -2042,7 +2042,7 @@
       "normalized_snippet": "None => panic!(\"profile {profile} must resolve\"),",
       "selector_identity": "invocation:84564de3785a8a9a:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/update_status/lsp.rs",
@@ -2753,7 +2753,7 @@
       "normalized_snippet": "panic!(\"perl is available; the harness must not report the mechanism unmeasured\");",
       "selector_identity": "invocation:a77a95500e29f1d8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/reload/measurement.rs",
@@ -2762,7 +2762,7 @@
       "normalized_snippet": "panic!(\"perl is available but the harness declined to run for {mechanism:?}\");",
       "selector_identity": "invocation:820e1114d211a7d4:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/reload/measurement.rs",
@@ -2771,7 +2771,7 @@
       "normalized_snippet": "panic!(\"live measurement failed for {mechanism:?}: {error}\")",
       "selector_identity": "invocation:5d15a5f52460f06e:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/reload/measurement.rs",
@@ -2780,7 +2780,7 @@
       "normalized_snippet": "panic!( \"live measurement disagrees with the frozen record for {mechanism:?}: {error:?}\" )",
       "selector_identity": "invocation:e5ccb119bd100307:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/reload/measurement.rs",
@@ -2789,7 +2789,7 @@
       "normalized_snippet": "panic!(\"perl is available but the harness declined to run\");",
       "selector_identity": "invocation:db0a0003aa5e59c1:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/debug_adapter/execution.rs",
@@ -3023,7 +3023,7 @@
       "normalized_snippet": "route_disposition_inputs(authority).unwrap_or_else(|error| panic!(\"{error}\"));",
       "selector_identity": "invocation:d43eec1e0162210c:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3032,7 +3032,7 @@
       "normalized_snippet": "other => panic!(\"expected quarantined outcome, got {other:?}\"),",
       "selector_identity": "invocation:49198566f6e65666:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3041,7 +3041,7 @@
       "normalized_snippet": "other => panic!(\"expected error outcome, got {other:?}\"),",
       "selector_identity": "invocation:e3e08719853d8dfc:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3050,7 +3050,7 @@
       "normalized_snippet": "other => panic!(\"expected error outcome, got {other:?}\"),",
       "selector_identity": "invocation:e3e08719853d8dfc:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3059,7 +3059,7 @@
       "normalized_snippet": "other => panic!(\"expected typed error outcome, got {other:?}\"),",
       "selector_identity": "invocation:6106d21e91ee92b0:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/gates/planning_types.rs",
@@ -3068,7 +3068,7 @@
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"authority projects: {error}\"));",
       "selector_identity": "invocation:f4bc9b08eed82b48:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/metrics/parser_accuracy.rs",
@@ -3086,7 +3086,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"interpolated prepare must be flagged as PL607: {diags:?}\"));",
       "selector_identity": "invocation:58896686da31eee9:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/tests/branch_deletion_admission.rs",
@@ -3131,7 +3131,7 @@
       "normalized_snippet": "panic!(\"`$&` match text in SQL must be flagged as PL607: {diags:?}\")",
       "selector_identity": "invocation:288a8026a09d3545:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -3140,7 +3140,7 @@
       "normalized_snippet": "panic!(\"`` $` `` pre-match text in SQL must be flagged as PL607: {diags:?}\")",
       "selector_identity": "invocation:7872b73c02a8cf47:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -3149,7 +3149,7 @@
       "normalized_snippet": "panic!(\"`$'` post-match text in SQL must be flagged as PL607: {diags:?}\")",
       "selector_identity": "invocation:9320150ca5679517:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
@@ -3158,7 +3158,7 @@
       "normalized_snippet": "panic!(\"`$+` capture text in SQL must be flagged as PL607: {diags:?}\")",
       "selector_identity": "invocation:1d579b7ef990bd57:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/src/backend/native_perldb.rs",
@@ -3383,7 +3383,7 @@
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"failed to read {rel}: {error}\"));",
       "selector_identity": "invocation:7af66160d02dcdd8:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/native_neovim_train/tests.rs",
@@ -3392,7 +3392,7 @@
       "normalized_snippet": "serde_json::from_str(&bytes).unwrap_or_else(|error| panic!(\"invalid JSON in {rel}: {error}\"))",
       "selector_identity": "invocation:15c5f0f1f1598787:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/native_neovim_train/tests.rs",
@@ -3401,7 +3401,7 @@
       "normalized_snippet": "panic!(\"core profile present\");",
       "selector_identity": "invocation:d3c1f0b3252c2b36:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/src/tasks/check_tautology/detect.rs",
@@ -3464,7 +3464,7 @@
       "normalized_snippet": "Err(error) => panic!(\"surface construction refused: {error}\"),",
       "selector_identity": "invocation:42013e9d2c24b3d9:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/effective_surface/tests.rs",
@@ -3473,7 +3473,7 @@
       "normalized_snippet": "other => panic!(\"expected downgraded-to-planned-dynamic, got {other:?}\"),",
       "selector_identity": "invocation:ba7ce4cefeb79ca4:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/effective_surface/tests.rs",
@@ -3482,7 +3482,7 @@
       "normalized_snippet": "other => panic!(\"expected watcher registration with relative patterns, got {other:?}\"),",
       "selector_identity": "invocation:1b9f3f2f758cdec6:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/semantic_construction.rs",
@@ -3518,7 +3518,7 @@
       "normalized_snippet": "other => panic!(\"expected digest-only evidence, got {other:?}\"),",
       "selector_identity": "invocation:cc52f20ad70e4644:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/configuration_observation.rs",
@@ -3527,7 +3527,7 @@
       "normalized_snippet": "other => panic!(\"expected digest-only evidence, got {other:?}\"),",
       "selector_identity": "invocation:cc52f20ad70e4644:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/src/runtime/language/completion.rs",
@@ -3608,7 +3608,7 @@
       "normalized_snippet": "other => panic!(\"expected PeerReported from a peer success:false, got {other:?}\"),",
       "selector_identity": "invocation:597da1e9c968eb1e:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-dap/tests/external_peer_conformance.rs",
@@ -3617,7 +3617,7 @@
       "normalized_snippet": "other => panic!(\"a crossed command must not be reported as an outcome, got {other:?}\"),",
       "selector_identity": "invocation:47992d21a405fc9c:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "xtask/tests/vim_host_freshness_contract.rs",
@@ -3662,7 +3662,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{shell} completions\"));",
       "selector_identity": "invocation:4c2ec5d811ae65ac:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/runtime/launcher/checking_guidance.rs",
@@ -3671,7 +3671,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{shell} completions\"));",
       "selector_identity": "invocation:4c2ec5d811ae65ac:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-core-harness/src/invocation_trace/adapter.rs",
@@ -3689,7 +3689,7 @@
       "normalized_snippet": "other => panic!(\"expected PeerReported, got {other:?}\"),",
       "selector_identity": "invocation:b15b64657f975ced:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/protocol/error_inventory.rs",
@@ -3698,7 +3698,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{name} must remain inventoried\"))",
       "selector_identity": "invocation:5f85dc9c186e5877:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/quarantine_registry_contract.rs",
@@ -3707,7 +3707,7 @@
       "normalized_snippet": "other => panic!(\"{test} has unknown verification_state `{other}`\"),",
       "selector_identity": "invocation:7568fcb9385b4eba:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-parser/src/incremental/incremental_v2.rs",
@@ -3779,7 +3779,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"{accessor} must stay defined in capabilities.rs\"));",
       "selector_identity": "invocation:db4ae179308bf545:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
@@ -3815,6 +3815,1617 @@
       "normalized_snippet": "serde_yaml_ng::from_str(&yaml).unwrap_or_else(|e| panic!(\"{label} parses: {e}\"));",
       "selector_identity": "invocation:8241e06f30d2ee76:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/cargo_rustc_wrappers.rs",
+      "enclosing_test_or_function": "unix_home_discovery_ignores_userprofile",
+      "macro_family": "panic!",
+      "normalized_snippet": "CargoHome::Unknown => panic!(\"HOME should win when windows=false\"),",
+      "selector_identity": "invocation:6748820c2057eb5f:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/cargo_rustc_wrappers.rs",
+      "enclosing_test_or_function": "windows_home_discovery_prefers_userprofile",
+      "macro_family": "panic!",
+      "normalized_snippet": "CargoHome::Unknown => panic!(\"USERPROFILE should win when windows=true\"),",
+      "selector_identity": "invocation:2c2ad7dae1d99475:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/cargo_rustc_wrappers.rs",
+      "enclosing_test_or_function": "windows_home_discovery_prefers_userprofile",
+      "macro_family": "panic!",
+      "normalized_snippet": "CargoHome::Unknown => panic!(\"HOME is the Windows fallback\"),",
+      "selector_identity": "invocation:bf769cc93ecf5e53:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/cargo_rustc_wrappers.rs",
+      "enclosing_test_or_function": "toml_path_value_round_trips_windows_tempdir_shape",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"literal path must parse: {err}\"));",
+      "selector_identity": "invocation:b8aad669043c33c9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/cargo_rustc_wrappers.rs",
+      "enclosing_test_or_function": "toml_path_value_escapes_apostrophe_paths_as_basic_strings",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"apostrophe path must parse: {err}\"));",
+      "selector_identity": "invocation:b121e4f54bdd5229:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/cargo_rustc_wrappers.rs",
+      "enclosing_test_or_function": "posix_shaped_home_without_cwd_follows_host_absolute_semantics",
+      "macro_family": "panic!",
+      "normalized_snippet": "CargoHome::Unknown => panic!(\"POSIX absolute HOME should resolve on this host\"),",
+      "selector_identity": "invocation:353f52bc059effb3:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/cargo_rustc_wrappers.rs",
+      "enclosing_test_or_function": "relative_cargo_home_without_cwd_is_unknown_not_a_relative_fallback",
+      "macro_family": "panic!",
+      "normalized_snippet": "CargoHome::Unknown => panic!(\"cwd should resolve relative CARGO_HOME\"),",
+      "selector_identity": "invocation:2820f8e6f610f3af:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/neovim_activation_root_envelope.rs",
+      "enclosing_test_or_function": "the_observation_cell_is_the_single_exemption_and_is_declared_as_one",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"the observation cell is not in the required census\");",
+      "selector_identity": "invocation:1fc5cea4c274c10d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/neovim_activation_root_envelope.rs",
+      "enclosing_test_or_function": "a_rejection_carries_the_path_it_was_raised_against",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"the constructed rejection did not survive the Result\");",
+      "selector_identity": "invocation:4ecce8d5e313f6eb:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/neovim_activation_root_envelope.rs",
+      "enclosing_test_or_function": "the_recorded_config_carries_both_flattened_marker_shapes",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"the constructed envelope is not an object\");",
+      "selector_identity": "invocation:6694b71af5b0de7f:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/neovim_activation_root_envelope.rs",
+      "enclosing_test_or_function": "the_recorded_config_carries_both_flattened_marker_shapes",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a well-formed config did not validate\");",
+      "selector_identity": "invocation:fcded9981efad1ba:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/no_panic_debt/join.rs",
+      "enclosing_test_or_function": "site_json",
+      "macro_family": "panic!",
+      "normalized_snippet": "\"normalized_snippet\": \"panic!(\\\"known\\\")\", \"selector_identity\": \"invocation:abc:occurrence:1\", \"accepted_reason\": reason, \"state\": state })",
+      "selector_identity": "invocation:1a82488e591fdbfa:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/no_panic_debt/join.rs",
+      "enclosing_test_or_function": "classify_site_uses_registry_owner_and_direct_debt_arms",
+      "macro_family": "panic!",
+      "normalized_snippet": "normalized_snippet: \"panic!(\\\"known\\\")\".to_string(), selector_identity: \"invocation:abc:occurrence:1\".to_string(), };",
+      "selector_identity": "invocation:12596d6ea2b6e678:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/no_panic_debt/join.rs",
+      "enclosing_test_or_function": "classify_site_uses_registry_owner_and_direct_debt_arms",
+      "macro_family": "panic!",
+      "normalized_snippet": "source_identity: \"panic!(\\\"known\\\")\".to_string(), selector_identity: \"invocation:abc:occurrence:1\".to_string(), declaration_identity: String::new(), declaration_scope: String::new(), registry_relation: \"none\".to_string(), owner: \"#13397\".to_string(), status: DebtStatus::DirectDebt, proof_requirement: \"source-scan\".to_string(), limitations: Vec::new(), }],",
+      "selector_identity": "invocation:9c093f064364206e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/no_panic_debt/model.rs",
+      "enclosing_test_or_function": "public_projection_types_round_trip_identity_and_status_names",
+      "macro_family": "panic!",
+      "normalized_snippet": "source_identity: \"panic!(\\\"known\\\")\".to_string(), selector_identity: \"invocation:abc:occurrence:1\".to_string(), declaration_identity: String::new(), declaration_scope: String::new(), registry_relation: \"none\".to_string(), owner: \"#13397\".to_string(), status: DebtStatus::DirectDebt, proof_requirement: \"source-scan\".to_string(), limitations: Vec::new(), };",
+      "selector_identity": "invocation:e7d3a90003afd4bc:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/no_panic_debt/model.rs",
+      "enclosing_test_or_function": "public_projection_types_round_trip_identity_and_status_names",
+      "macro_family": "panic!",
+      "normalized_snippet": "snippet: \"panic!(\\\"known\\\")\".to_string(), line: 4, column: 8, feature: None, platform: None, covering_declaration: None, covering_scope: None, covering_owner: None, }],",
+      "selector_identity": "invocation:68127d7bad440ee0:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/no_panic_debt/model.rs",
+      "enclosing_test_or_function": "public_projection_types_round_trip_identity_and_status_names",
+      "macro_family": "panic!",
+      "normalized_snippet": "normalized_snippet: \"panic!(\\\"known\\\")\".to_string(), selector_identity: \"invocation:abc:occurrence:1\".to_string(), };",
+      "selector_identity": "invocation:12596d6ea2b6e678:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/schema_apply.rs",
+      "enclosing_test_or_function": "invalid_schema_is_an_error_not_an_empty_violation_list",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"an uncompilable schema must not report a clean payload\");",
+      "selector_identity": "invocation:5914cd5e5625f55a:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/stack_increment/tests.rs",
+      "enclosing_test_or_function": "validate_admission",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(_) => panic!(\"admission unexpectedly succeeded\"),",
+      "selector_identity": "invocation:4fb6729b553b03c9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/stack_increment/tests.rs",
+      "enclosing_test_or_function": "ci_stack_increment_missing_scope_gate_is_a_visible_error_row",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected selector-evidence error row, found {other:?}\"),",
+      "selector_identity": "invocation:a1cc5b3df6a8e4bb:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/stack_increment/tests.rs",
+      "enclosing_test_or_function": "ci_stack_increment_green_requires_executed_bound_run_rows",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected run-passed row, found {other:?}\"),",
+      "selector_identity": "invocation:5a2506d9c19375cc:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/stack_increment/tests.rs",
+      "enclosing_test_or_function": "ci_stack_increment_pending_runs_hold_green_back",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected pending row, found {other:?}\"),",
+      "selector_identity": "invocation:69d54ef9122d8e1f:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/stack_increment/tests.rs",
+      "enclosing_test_or_function": "ci_stack_increment_failed_run_rows_publish_failure",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected run-failed row, found {other:?}\"),",
+      "selector_identity": "invocation:43428a492ab541b9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/check_tautology/detect.rs",
+      "enclosing_test_or_function": "typed_rule",
+      "macro_family": "panic!",
+      "normalized_snippet": "let expr = parse_str(src).unwrap_or_else(|error| panic!(\"parse `{src}`: {error}\"));",
+      "selector_identity": "invocation:9bdecf60b127be41:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/check_tautology/expr.rs",
+      "enclosing_test_or_function": "expr",
+      "macro_family": "panic!",
+      "normalized_snippet": "parse_str(src).unwrap_or_else(|error| panic!(\"parse `{src}`: {error}\"))",
+      "selector_identity": "invocation:f42b0352ad558f15:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/check_tautology/expr.rs",
+      "enclosing_test_or_function": "ty",
+      "macro_family": "panic!",
+      "normalized_snippet": "parse_str(src).unwrap_or_else(|error| panic!(\"parse type `{src}`: {error}\"))",
+      "selector_identity": "invocation:34a7d87e71344adf:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/ci_cache_inventory.rs",
+      "enclosing_test_or_function": "find_row",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"no row for {workflow}/{job} in {rows:#?}\"))",
+      "selector_identity": "invocation:24c8bae94ad494f1:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/ci_explain.rs",
+      "enclosing_test_or_function": "producer_receipt_envelope_survives_consumer_parse_path",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"consumer must keep every producer gate entry, got {:?}\", loaded.gates);",
+      "selector_identity": "invocation:7ab1a08c85b6e587:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/ci_explain.rs",
+      "enclosing_test_or_function": "consumer_refuses_receipt_whose_schema_version_drifts",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"drifted schema_version must be a typed refusal, got {other:?}\")",
+      "selector_identity": "invocation:d5966ad85ae29034:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/compiler_performance_receipt.rs",
+      "enclosing_test_or_function": "decode_error",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(_) => panic!(\"the typed boundary accepted a receipt it must reject\"),",
+      "selector_identity": "invocation:ec6023148ed8f9c3:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/compiler_performance_receipt.rs",
+      "enclosing_test_or_function": "tree",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a link named {link_name} must not fail this gate: {error:#}\")",
+      "selector_identity": "invocation:1a3e55cb6b22d320:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/completion_candidates.rs",
+      "enclosing_test_or_function": "refuses",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(()) => panic!(\"validator accepted a ledger it must refuse: {expected}\"),",
+      "selector_identity": "invocation:429aaa6ec54a519a:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/completion_candidates.rs",
+      "enclosing_test_or_function": "load_sources_caches_every_scanned_file_once",
+      "macro_family": "panic!",
+      "normalized_snippet": "loaded.sources.get(file).unwrap_or_else(|| panic!(\"source cache misses {file}\"));",
+      "selector_identity": "invocation:592f04dfca539aa8:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/completion_candidates.rs",
+      "enclosing_test_or_function": "load_sources_caches_every_scanned_file_once",
+      "macro_family": "panic!",
+      "normalized_snippet": "let first = loaded.asts.get(file).unwrap_or_else(|| panic!(\"AST cache misses {file}\"));",
+      "selector_identity": "invocation:731fbefc606249ca:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/completion_candidates.rs",
+      "enclosing_test_or_function": "discovery_finds_the_live_surface",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"no direct calls collected for {entry}\"));",
+      "selector_identity": "invocation:823c70fd117e74bc:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/completion_candidates.rs",
+      "enclosing_test_or_function": "refuses_an_append_after_finalization",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(()) => panic!(\"post-finalizer append was not refused\"),",
+      "selector_identity": "invocation:94bfa87ad229f80c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
+      "enclosing_test_or_function": "coding_packet_without_live_observation_refuses_fail_closed",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{profile} must not assume the claim is vacant\"));",
+      "selector_identity": "invocation:3d8f5f6a3534e7c0:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
+      "enclosing_test_or_function": "reconcile_refuses_incomplete_or_duplicate_candidate_facts",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"incomplete candidate facts must refuse: {candidates}\"));",
+      "selector_identity": "invocation:d578cf4b2f328b3e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
+      "enclosing_test_or_function": "missing_spec_disposition_fails_the_load_with_the_exact_node",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(refusal) => panic!(\"unexpected typed refusal path: {}\", refusal.line()),",
+      "selector_identity": "invocation:78c49355227914b2:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
+      "enclosing_test_or_function": "missing_spec_disposition_fails_the_load_with_the_exact_node",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(_) => panic!(\"a missing checked disposition must never compose a packet\"),",
+      "selector_identity": "invocation:67642d52e4f1f278:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
+      "enclosing_test_or_function": "duplicate_or_mismatched_ledger_records_fail_the_load",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(_) => panic!(\"duplicate E02 records must fail the adapter load\"),",
+      "selector_identity": "invocation:c8b92f278d82acca:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/emacs_train_packet/tests.rs",
+      "enclosing_test_or_function": "stale_hand_edited_disposition_fails_the_full_e02_gate",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a stale manifest-provenance disposition must fail the adapter load\")",
+      "selector_identity": "invocation:18e2c607e2d68d77:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/intent_diff_gate.rs",
+      "enclosing_test_or_function": "failed_resolution_maps_to_unavailable_source",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected Unavailable, got: {other:?}\"),",
+      "selector_identity": "invocation:189927b0382e05f2:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/metrics/parser_accuracy.rs",
+      "enclosing_test_or_function": "every_metric_is_registered_under_its_producing_family",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"metric '{name}' is not registered\"));",
+      "selector_identity": "invocation:87c2e3df0a91f875:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/metrics/parser_accuracy/registry.rs",
+      "enclosing_test_or_function": "apply_derives_direction_and_confidence_from_sample_count",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a measured row\");",
+      "selector_identity": "invocation:da94c3e56b01a5b4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/metrics/parser_accuracy/registry.rs",
+      "enclosing_test_or_function": "apply_permits_high_confidence_at_the_declared_threshold",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a measured row\");",
+      "selector_identity": "invocation:da94c3e56b01a5b4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/module_train_live_tests.rs",
+      "enclosing_test_or_function": "corpus_carries_observed_review_facts_through_normalization",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"fixture PR {number} must normalize\"))",
+      "selector_identity": "invocation:797c6642b1763f84:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/pr_close_proof.rs",
+      "enclosing_test_or_function": "test_interpret_ancestry_maps_every_disposition",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"{name} must fail closed, reported reachable={reachable}\")",
+      "selector_identity": "invocation:690a2c8f8287a2e6:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_manifest_check.rs",
+      "enclosing_test_or_function": "publish_true",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(err) => panic!(\"manifest should parse: {err}\"),",
+      "selector_identity": "invocation:369f956d42ca772e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_manifest_check.rs",
+      "enclosing_test_or_function": "baseline_walk_rejects_a_directory_under_a_txt_name",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(err) => panic!(\"tempdir: {err}\"),",
+      "selector_identity": "invocation:173835f730ccd5b4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_manifest_check.rs",
+      "enclosing_test_or_function": "baseline_walk_rejects_a_directory_under_a_txt_name",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"create fixture: {err}\");",
+      "selector_identity": "invocation:a5cae3c7a6ee2281:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_manifest_check.rs",
+      "enclosing_test_or_function": "baseline_walk_rejects_a_directory_under_a_txt_name",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"write list: {err}\");",
+      "selector_identity": "invocation:8ccfb178a28973ad:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_manifest_check.rs",
+      "enclosing_test_or_function": "baseline_walk_rejects_a_directory_under_a_txt_name",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(inputs) => panic!(\"directory accepted as a baseline: {inputs:?}\"),",
+      "selector_identity": "invocation:b085ef0620e40ee7:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_manifest_check.rs",
+      "enclosing_test_or_function": "baseline_walk_reads_regular_files_and_their_emptiness",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(err) => panic!(\"tempdir: {err}\"),",
+      "selector_identity": "invocation:173835f730ccd5b4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_manifest_check.rs",
+      "enclosing_test_or_function": "baseline_walk_reads_regular_files_and_their_emptiness",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"create fixture: {err}\");",
+      "selector_identity": "invocation:a5cae3c7a6ee2281:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_manifest_check.rs",
+      "enclosing_test_or_function": "f",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"write {name}: {err}\");",
+      "selector_identity": "invocation:7e544a4f455c57ac:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_manifest_check.rs",
+      "enclosing_test_or_function": "f",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(err) => panic!(\"load: {err}\"),",
+      "selector_identity": "invocation:b2a60191d24517db:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/ripr_evidence.rs",
+      "enclosing_test_or_function": "read",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"injected stderr drain panic\")",
+      "selector_identity": "invocation:7cb7970904ad8c73:occurrence:1",
+      "accepted_reason": "Intentional panic injection used to exercise scheduler or worker recovery, poisoning, or panic-payload handling.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "rejection",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(()) => panic!(\"verification accepted a receipt it must reject\"),",
+      "selector_identity": "invocation:87bf8db4c4210553:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_receipt_that_omits_a_required_field_is_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"receipt must serialize\");",
+      "selector_identity": "invocation:c32470ee9cebd700:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_receipt_that_omits_a_required_field_is_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"receipt must parse as json\");",
+      "selector_identity": "invocation:6ad5ab77b021ecd9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_receipt_that_omits_a_required_field_is_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"receipt must carry a subject object\");",
+      "selector_identity": "invocation:8d4f06251b6e4783:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_receipt_that_omits_a_required_field_is_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"receipt must parse as json\");",
+      "selector_identity": "invocation:6ad5ab77b021ecd9:occurrence:2",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_prior_receipt_is_destroyed_before_a_run_can_fail",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"temp dir must be creatable\");",
+      "selector_identity": "invocation:a6a2d918418b4cdf:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_prior_receipt_is_destroyed_before_a_run_can_fail",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"receipt must serialize\");",
+      "selector_identity": "invocation:c32470ee9cebd700:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_prior_receipt_is_destroyed_before_a_run_can_fail",
+      "macro_family": "panic!",
+      "normalized_snippet": "let Ok(()) = fs::write(&path, json) else { panic!(\"seed receipt must be writable\") };",
+      "selector_identity": "invocation:40a4388d3028b7e7:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_prior_receipt_is_destroyed_before_a_run_can_fail",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"invalidation must succeed\");",
+      "selector_identity": "invocation:772956acf1d9e944:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "scratch_dir",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"temp dir must be creatable\");",
+      "selector_identity": "invocation:a6a2d918418b4cdf:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "the_receipt_destination_is_not_working_tree_drift_for_the_dirty_signal",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"exclusions must resolve inside a git checkout\");",
+      "selector_identity": "invocation:5e89e82e5c1de9da:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_nested_untracked_receipt_is_not_mistaken_for_tree_drift",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"repository root\");",
+      "selector_identity": "invocation:58af236a67be23df:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_nested_untracked_receipt_is_not_mistaken_for_tree_drift",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"initial dirty capture\");",
+      "selector_identity": "invocation:79ccae3f1c6bd061:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_nested_untracked_receipt_is_not_mistaken_for_tree_drift",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"receipt parent\");",
+      "selector_identity": "invocation:f460a7a66cc411a9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_nested_untracked_receipt_is_not_mistaken_for_tree_drift",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"probe directory\");",
+      "selector_identity": "invocation:837fc289e871baf0:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_nested_untracked_receipt_is_not_mistaken_for_tree_drift",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"probe receipt\");",
+      "selector_identity": "invocation:d1704e70bee1847d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_nested_untracked_receipt_is_not_mistaken_for_tree_drift",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"dirty capture with receipt\");",
+      "selector_identity": "invocation:dd81d8c824e248f7:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_receipt_is_published_atomically_leaving_no_partial_file",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"write must succeed\");",
+      "selector_identity": "invocation:af36e46a0fb5c735:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "the_failure_emission_path_writes_a_complete_coherent_receipt",
+      "macro_family": "panic!",
+      "normalized_snippet": "let Ok(live) = capture_subject(&path) else { panic!(\"subject capture\") };",
+      "selector_identity": "invocation:f80dce71eeac2ff8:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "the_failure_emission_path_writes_a_complete_coherent_receipt",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a failed lane must still propagate its failure\");",
+      "selector_identity": "invocation:79180bb55c338237:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "the_failure_emission_path_writes_a_complete_coherent_receipt",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a failed lane must leave a receipt on disk\");",
+      "selector_identity": "invocation:a3e9b3ab7318826a:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "the_failure_emission_path_writes_a_complete_coherent_receipt",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"the emitted receipt must be readable\");",
+      "selector_identity": "invocation:45e15ec9f2ec00e4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "an_invalid_failure_receipt_is_withheld_without_masking_the_lane_failure",
+      "macro_family": "panic!",
+      "normalized_snippet": "let Ok(live) = capture_subject(&path) else { panic!(\"subject capture\") };",
+      "selector_identity": "invocation:f80dce71eeac2ff8:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "an_invalid_failure_receipt_is_withheld_without_masking_the_lane_failure",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"the lane must still fail\");",
+      "selector_identity": "invocation:ef00cbf9041546b3:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "a_failure_receipt_is_withheld_when_the_subject_moved",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"the lane must still fail\");",
+      "selector_identity": "invocation:ef00cbf9041546b3:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "the_success_emission_path_round_trips_through_a_real_file",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"write_receipt must create missing parents and write\");",
+      "selector_identity": "invocation:30514fbfde4180fb:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "the_success_emission_path_round_trips_through_a_real_file",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"the receipt must exist on disk\");",
+      "selector_identity": "invocation:37a248b986f6d66e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "the_success_emission_path_round_trips_through_a_real_file",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"the emitted receipt must be readable\");",
+      "selector_identity": "invocation:45e15ec9f2ec00e4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "receipt_round_trips_and_uses_a_stable_wire_vocabulary",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"receipt must serialize\");",
+      "selector_identity": "invocation:c32470ee9cebd700:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "receipt_round_trips_and_uses_a_stable_wire_vocabulary",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"receipt must deserialize\");",
+      "selector_identity": "invocation:03c3f63b4df7ffdf:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/update_status/parser/accuracy/tests.rs",
+      "enclosing_test_or_function": "example_artifact_is_consumable_by_the_production_reader",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"example artifact must be readable: {error}\"));",
+      "selector_identity": "invocation:1465f97dd3b994c1:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/update_status/parser/accuracy/tests.rs",
+      "enclosing_test_or_function": "example_artifact_is_consumable_by_the_production_reader",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"temp root must be creatable\");",
+      "selector_identity": "invocation:c475cf911abb78d4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/update_status/parser/accuracy/tests.rs",
+      "enclosing_test_or_function": "example_artifact_is_consumable_by_the_production_reader",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"metrics directory must be creatable: {error}\");",
+      "selector_identity": "invocation:99904265b0b515fa:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/update_status/parser/accuracy/tests.rs",
+      "enclosing_test_or_function": "example_artifact_is_consumable_by_the_production_reader",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"example artifact must be writable into the temp root: {error}\");",
+      "selector_identity": "invocation:1955247d97318420:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/workflow_authority_inventory.rs",
+      "enclosing_test_or_function": "must_kind",
+      "macro_family": "panic!",
+      "normalized_snippet": "None => panic!(\"missing derivation kind {kind:?} in {rows:?}\"),",
+      "selector_identity": "invocation:a4164b41859a3b38:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/workflow_authority_inventory.rs",
+      "enclosing_test_or_function": "parse_fixture",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"fixture YAML must parse: {error}\"),",
+      "selector_identity": "invocation:0c89f60493689d3f:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/file_policy.rs",
+      "enclosing_test_or_function": "poisoned_inventory_lock_is_recovered",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"fixture failure must poison the lock for this regression\");",
+      "selector_identity": "invocation:8411f22989602209:occurrence:1",
+      "accepted_reason": "Intentional panic injection used to exercise scheduler or worker recovery, poisoning, or panic-payload handling.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/no_panic_debt/support.rs",
+      "enclosing_test_or_function": "known_panic",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"known\");",
+      "selector_identity": "invocation:c9ae0412fdf10026:occurrence:1",
+      "accepted_reason": "Panic text in a fixture the no-panic-debt falsifiers compile, not a panic this test executes; the checker under test has to see it to be falsified.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/no_panic_debt_falsifiers.rs",
+      "enclosing_test_or_function": "known_panic",
+      "macro_family": "panic!",
+      "normalized_snippet": "\"#[test]\\nfn known_panic() { panic!(\\\"known\\\"); }\\n\\n#[test]\\nfn extra() { let _ = Some(1).unwrap(); }\\n\", )",
+      "selector_identity": "invocation:5d6d66d97305e8f2:occurrence:1",
+      "accepted_reason": "Panic text in a fixture the no-panic-debt falsifiers compile, not a panic this test executes; the checker under test has to see it to be falsified.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/no_panic_debt_falsifiers.rs",
+      "enclosing_test_or_function": "platform_site",
+      "macro_family": "panic!",
+      "normalized_snippet": "fn platform_site() { panic!(\"win\"); }",
+      "selector_identity": "invocation:57f2def63576e023:occurrence:1",
+      "accepted_reason": "Panic text in a fixture the no-panic-debt falsifiers compile, not a panic this test executes; the checker under test has to see it to be falsified.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/no_panic_debt_falsifiers.rs",
+      "enclosing_test_or_function": "retired_registry_row_for_a_missing_file_is_not_converted_absent",
+      "macro_family": "panic!",
+      "normalized_snippet": "\"normalized_snippet\": \"panic!(\\\"known\\\")\", \"selector_identity\": \"invocation:missing:occurrence:1\", \"accepted_reason\": \"retired conversion.\", \"state\": \"retired\" }]",
+      "selector_identity": "invocation:25da4af05f62345b:occurrence:1",
+      "accepted_reason": "Panic text in a fixture the no-panic-debt falsifiers compile, not a panic this test executes; the checker under test has to see it to be falsified.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/no_panic_debt_falsifiers.rs",
+      "enclosing_test_or_function": "unrelated_allow",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"still debt\");",
+      "selector_identity": "invocation:aeb77593ad4d75bc:occurrence:1",
+      "accepted_reason": "Panic text in a fixture the no-panic-debt falsifiers compile, not a panic this test executes; the checker under test has to see it to be falsified.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/no_panic_debt_falsifiers.rs",
+      "enclosing_test_or_function": "real_allow",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"owned\");",
+      "selector_identity": "invocation:47172cebbfc297d4:occurrence:1",
+      "accepted_reason": "Panic text in a fixture the no-panic-debt falsifiers compile, not a panic this test executes; the checker under test has to see it to be falsified.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/no_panic_debt_falsifiers.rs",
+      "enclosing_test_or_function": "unit",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"still unowned\");",
+      "selector_identity": "invocation:978bc51b18f0c10d:occurrence:1",
+      "accepted_reason": "Panic text in a fixture the no-panic-debt falsifiers compile, not a panic this test executes; the checker under test has to see it to be falsified.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/quality_gate_ownership_contract.rs",
+      "enclosing_test_or_function": "facade_source",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"could not read quality_gate_facade.rs at {}: {error}\", path.display())",
+      "selector_identity": "invocation:5d4ad22baf55f850:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/routed_gate_result.rs",
+      "enclosing_test_or_function": "every_runner_status_variant_builds_a_consistent_valid_result",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"consistent {status:?} observation must build: {error}\")",
+      "selector_identity": "invocation:c971e96e1102e70e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/routed_gate_result.rs",
+      "enclosing_test_or_function": "every_runner_status_variant_builds_a_consistent_valid_result",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"consistent {status:?} result must validate: {error}\"));",
+      "selector_identity": "invocation:c8b0de3adde0da60:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/error_recovery_tests.rs",
+      "enclosing_test_or_function": "test_15750_bare_double_sigil_emits_error_and_recovers",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected Program node, got: {}\", ast.to_sexp());",
+      "selector_identity": "invocation:96e0ff0f27312e7c:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "perl",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"expected {full:?} to decode, got {error}\"),",
+      "selector_identity": "invocation:ee73fe577458911e:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "perl_error",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(invocation) => panic!(\"expected {full:?} to be refused, decoded {invocation:?}\"),",
+      "selector_identity": "invocation:f9ce8c4d5187a7af:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "find_fact",
+      "macro_family": "panic!",
+      "normalized_snippet": "None => panic!(\"expected fact {wanted:?}, have {:?}\", facts(invocation)),",
+      "selector_identity": "invocation:db21ee28a0dcee26:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "spans_locate_their_values",
+      "macro_family": "panic!",
+      "normalized_snippet": "None => panic!(\"span {span:?} names argument {} of {argv:?}\", span.argument_index),",
+      "selector_identity": "invocation:fec4b8a06951fdb7:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_non_ascii_switch_letter_is_refused_without_splitting_a_character",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected an unrecognized-switch refusal, got {other:?}\"),",
+      "selector_identity": "invocation:b725c87449580b37:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "non_ascii_fragments_survive_decoding_with_byte_accurate_spans",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"expected {argv:?} to decode, got {error}\"),",
+      "selector_identity": "invocation:7be9113c0ae13c53:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "uppercase_hex_marker_is_not_accepted_and_numeric_module_components_are_plain",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "module_imports_decode_form_negation_and_import_arguments",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "module_imports_decode_form_negation_and_import_arguments",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:2",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "import_arguments_are_split_from_the_module_at_the_first_equals",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:2",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:3",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:4",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import for {module}\");",
+      "selector_identity": "invocation:09e3cfc99ce7ae0e:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import for {expression}\");",
+      "selector_identity": "invocation:679dca06b72ea9cc:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import for {module}\");",
+      "selector_identity": "invocation:09e3cfc99ce7ae0e:occurrence:2",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "lowercase_module_switch_still_imports_with_explicit_arguments",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import for {argv}\");",
+      "selector_identity": "invocation:b02bfe8a312a9974:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "lowercase_module_switch_still_imports_with_explicit_arguments",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "an_argument_that_is_not_a_module_name_claims_no_method_call",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import for {argv}\");",
+      "selector_identity": "invocation:b02bfe8a312a9974:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "an_argument_that_is_not_a_module_name_claims_no_method_call",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "module_names_perl_refuses_at_option_parsing_are_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "the_legacy_apostrophe_is_a_package_separator_not_arbitrary_code",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "the_legacy_apostrophe_is_a_package_separator_not_arbitrary_code",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:2",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "the_legacy_apostrophe_is_a_package_separator_not_arbitrary_code",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a module import\");",
+      "selector_identity": "invocation:e74e2b293aa7b663:occurrence:3",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "the_lead_declaration_decides_whether_argv_zero_is_the_interpreter",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"expected a switches-only argv to decode, got {error}\"),",
+      "selector_identity": "invocation:693e5c4efed60494:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "the_lead_declaration_decides_whether_argv_zero_is_the_interpreter",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"an empty switches-only argv is legal, got {error}\"),",
+      "selector_identity": "invocation:fe92a7463126bb5d:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/command_line_argv_decoding.rs",
+      "enclosing_test_or_function": "every_decoded_value_is_located_by_its_span",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"expected {argv:?} to decode, got {error}\"),",
+      "selector_identity": "invocation:7be9113c0ae13c53:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "subroutine_body",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"expected a subroutine body, got {} bodies\", file.bodies.len()))",
+      "selector_identity": "invocation:b49e90a1d4d949b1:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "try_expr",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"no HirExpr::Try in body; exprs = {:?}\", collect_kinds(body)));",
+      "selector_identity": "invocation:b7616fabba6afb7a:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "block_stmts",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"block {block:?} missing from arena\"))",
+      "selector_identity": "invocation:f223d3e7527a713e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "catch_binding_is_a_source_exact_write_place",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"catch binding must lower to a Variable place, got {:?}\", body.exprs.get(binding.0))",
+      "selector_identity": "invocation:f6d4307622d51898:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_pir_try_regions.rs",
+      "enclosing_test_or_function": "catch_binding_shadows_an_outer_lexical_of_the_same_name",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"no binding for $e at byte {start}; bindings = {:?}\", graph.bindings.iter().map(|b| (&b.name, b.range.start)).collect::<Vec<_>>() )",
+      "selector_identity": "invocation:b9a46c54aa6b64e7:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-corpus/src/gold/hover_observation.rs",
+      "enclosing_test_or_function": "substring_assertions_use_full_text_past_the_render_bound",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected content, got {other:?}\"),",
+      "selector_identity": "invocation:37271a5b3a2faf23:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/tests/dap_server_and_adapter_tests.rs",
+      "enclosing_test_or_function": "dap_server_trusted_root_that_does_not_exist_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(_) => panic!(\"a missing trusted root must be rejected\"),",
+      "selector_identity": "invocation:dad0c265ed4e9b67:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/tests/security_evaluate_tests.rs",
+      "enclosing_test_or_function": "refusal_message",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected Response, got {other:?}\"),",
+      "selector_identity": "invocation:5a3ab277da9e9c15:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/tests/security_evaluate_tests.rs",
+      "enclosing_test_or_function": "read_oriented_contexts_still_evaluate_safe_expressions",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected Response for context {context:?}, got {other:?}\"),",
+      "selector_identity": "invocation:7f505450c248742b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-evidence-envelope/tests/dependency_contract.rs",
+      "enclosing_test_or_function": "dependency_tree",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"dependency contract is unproven: could not run `cargo tree` ({error}). \\ The contract fails closed rather than skipping.\" )",
+      "selector_identity": "invocation:81474b1573ef7b56:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-perltidy/tests/support/formatter_property_harness/mod.rs",
+      "enclosing_test_or_function": "name",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"Family::ALL order drifted from the exhaustive pinned_index enumeration\");",
+      "selector_identity": "invocation:542c36c7da88b013:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-perltidy/tests/support/formatter_property_harness/mod.rs",
+      "enclosing_test_or_function": "name",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"FAMILY_TABLE order drifted from the exhaustive pinned_index enumeration\");",
+      "selector_identity": "invocation:e7dc4023b2f63259:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-perltidy/tests/support/formatter_property_harness/mod.rs",
+      "enclosing_test_or_function": "name",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"FAMILY_TABLE row count drifted from the exhaustive pinned_index enumeration\");",
+      "selector_identity": "invocation:d8043b2cd497eec6:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/providers/ai/inflight.rs",
+      "enclosing_test_or_function": "permit_is_released_when_the_holder_panics",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"simulated panic while holding a permit\");",
+      "selector_identity": "invocation:9ed4b2689ec154b0:occurrence:1",
+      "accepted_reason": "Intentional panic injection used to exercise scheduler or worker recovery, poisoning, or panic-payload handling.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs",
+      "enclosing_test_or_function": "concurrent_initialize_attempts_have_exactly_one_owner",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unexpected concurrent initialize outcomes: {other:?}\"),",
+      "selector_identity": "invocation:0ec4a736e06a2ad5:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/v0_18_text_sync_envelope.rs",
+      "enclosing_test_or_function": "full_replacement_array_is_admitted_and_last_text_wins",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected admission, got {reason}\")",
+      "selector_identity": "invocation:163e1e1d6021849b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-operation-trace/tests/dependency_contract.rs",
+      "enclosing_test_or_function": "dependency_tree",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"dependency contract is unproven: could not run `cargo tree` ({error}). \\ The contract fails closed rather than skipping.\" )",
+      "selector_identity": "invocation:81474b1573ef7b56:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser/src/heredoc_anti_patterns/detectors/tests.rs",
+      "enclosing_test_or_function": "test_detector_state_helpers_call_observation",
+      "macro_family": "panic!",
+      "normalized_snippet": "_ => panic!(\"required_state must report Unavailable for missing patterns\"),",
+      "selector_identity": "invocation:e9a674d1b22edaca:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "parse_fixture",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"fixture {label} failed to parse: {err}\"))",
+      "selector_identity": "invocation:077536ce77a7116c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "resolve_operator",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unknown operator in fixture: {other:?}\"),",
+      "selector_identity": "invocation:4c0c59bbaa7b30fa:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "resolve_feature_state",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unknown enhanced_xx value in fixture: {other:?}\"),",
+      "selector_identity": "invocation:09dbfabe815b9788:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "all_fixture_ids_are_globally_unique",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"duplicate conformance id {:?} in {file} (first seen in {prior_file})\", row.id );",
+      "selector_identity": "invocation:211f34fddba301bf:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "all_fixture_files_on_disk_are_loaded",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"failed to read fixture dir {}: {err}\", dir.display()))",
+      "selector_identity": "invocation:70f893bcb86d6150:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "assert_row_facts",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"fixture {file}/{}: modifier_sequence offset overflow\", row.id));",
+      "selector_identity": "invocation:fdc9e975493782da:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "assert_row_facts",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{ctx}: diagnostic_codes field is required\"))",
+      "selector_identity": "invocation:73a64acab9439c02:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-regex/tests/conformance_matrix_tests.rs",
+      "enclosing_test_or_function": "run_modifier_analysis",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"modifier sequence overflow for {raw:?}\"));",
+      "selector_identity": "invocation:a52b97bd0d311a5d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-core-harness/src/invocation_trace/test_support.rs",
+      "enclosing_test_or_function": "emit",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"fixture header must serialize: {error}\"));",
+      "selector_identity": "invocation:d4b61bccaf4a7720:occurrence:1",
+      "accepted_reason": "Intentional test-fixture emission diagnostic; the helper's own contract is to fail loudly when a frame does not serialize, because a silently dropped frame would let a dependent test pass for the wrong reason. Test-only: the module is declared `#[cfg(test)]` in crates/perl-core-harness/src/lib.rs.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-core-harness/src/invocation_trace/test_support.rs",
+      "enclosing_test_or_function": "emit",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"fixture terminal must serialize: {error}\"));",
+      "selector_identity": "invocation:81148b34d40f7225:occurrence:1",
+      "accepted_reason": "Intentional test-fixture emission diagnostic; the helper's own contract is to fail loudly when a frame does not serialize, because a silently dropped frame would let a dependent test pass for the wrong reason. Test-only: the module is declared `#[cfg(test)]` in crates/perl-core-harness/src/lib.rs.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_continue_with_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected Program, got {:?}\", ast.kind);",
+      "selector_identity": "invocation:f9d27b61b544ff54:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for the `continue OUTER` label rejection (#16285): let-else refutation binds `statements` for the no-LoopControl-label assertion below; only fires when the AST root is not a Program.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_qualified_loop_control_label_is_hard_error",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(other) => panic!(\"expected QualifiedLoopControlLabel, got {other:?}\"),",
+      "selector_identity": "invocation:9470cfb5772b561f:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for the qualified-label hard error (#16296, PR #16348): match arms pin the exact QualifiedLoopControlLabel variant plus byte location and fail when the parser wrongly accepts; the accepted arm asserts the location.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_qualified_loop_control_label_is_hard_error",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(ast) => panic!(\"qualified loop label must fail to parse, got {:?}\", ast.kind),",
+      "selector_identity": "invocation:d29bd99e5377a1d6:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for the qualified-label hard error (#16296, PR #16348): match arms pin the exact QualifiedLoopControlLabel variant plus byte location and fail when the parser wrongly accepts; the accepted arm asserts the location.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_qualified_label_survives_brace_fallback",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(other) => panic!(\"expected QualifiedLoopControlLabel, got {other:?}\"),",
+      "selector_identity": "invocation:9470cfb5772b561f:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for the qualified-label hard error (#16296, PR #16348): match arms pin the exact QualifiedLoopControlLabel variant plus byte location and fail when the parser wrongly accepts; the accepted arm asserts the location.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_qualified_label_survives_brace_fallback",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(ast) => panic!(\"qualified loop label must fail to parse, got {:?}\", ast.kind),",
+      "selector_identity": "invocation:d29bd99e5377a1d6:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for the qualified-label hard error (#16296, PR #16348): match arms pin the exact QualifiedLoopControlLabel variant plus byte location and fail when the parser wrongly accepts; the accepted arm asserts the location.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/loop_control_tests.rs",
+      "enclosing_test_or_function": "test_post_loop_continue_block_unaffected",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected While, got {:?}\", while_stmt.kind);",
+      "selector_identity": "invocation:557a77889b43f3dd:occurrence:1",
+      "accepted_reason": "Parser loop-control exact oracle for post-loop `continue { BLOCK }` attach: let-else refutation binds `continue_block` for the attach assertion below; only fires when the statement is not a While.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "parse_one_statement",
+      "macro_family": "panic!",
+      "normalized_snippet": "let ast = parser.parse().unwrap_or_else(|e| panic!(\"`{src}` must parse, got: {e:?}\"));",
+      "selector_identity": "invocation:9202d4ed13cafb97:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected Program, got {:?}\", ast.kind);",
+      "selector_identity": "invocation:f9d27b61b544ff54:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "statements.first().unwrap_or_else(|| panic!(\"expected one statement for `{source}`\"));",
+      "selector_identity": "invocation:649c74258df61189:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected LabeledStatement, got {:?}\", outer.kind);",
+      "selector_identity": "invocation:5616fc544a0a1e9b:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected While under the label, got {:?}\", statement.kind);",
+      "selector_identity": "invocation:4c65068e87d8203d:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected Block loop body, got {:?}\", body.kind);",
+      "selector_identity": "invocation:939ae083a55671e7:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"expected a loop-control statement in `{source}`\"));",
+      "selector_identity": "invocation:d674b497c80d3a0d:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_loop_control_phase_keyword_label_16300.rs",
+      "enclosing_test_or_function": "test_loop_control_with_phase_keyword_label",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected LoopControl in loop body, got {:?}\", ctrl.kind);",
+      "selector_identity": "invocation:e46928af1902a4d1:occurrence:1",
+      "accepted_reason": "Phase-keyword-label AST-shape oracle (#16300, PR #16301): helper plus let-else chain pins Program/LabeledStatement/While/Block/ LoopControl shape with CHECK label and operator identity; each refutation names the expected node kind.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_qualified_loop_control_label_16296.rs",
+      "enclosing_test_or_function": "parse_err",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(_) => panic!(\"expected outright parse failure for `{code}`\"),",
+      "selector_identity": "invocation:e8d55bd23f5b3760:occurrence:1",
+      "accepted_reason": "File oracle helpers for #16296 perl -c parity (PR #16348): parse_err must yield the ParseError value and parse_clean the AST; each panics only when the parser wrongly accepts or rejects, and callers assert the exact QualifiedLoopControlLabel variant.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_qualified_loop_control_label_16296.rs",
+      "enclosing_test_or_function": "parse_clean",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(err) => panic!(\"expected clean parse for `{code}`, got: {err:?}\"),",
+      "selector_identity": "invocation:d958e5e104cf2cdc:occurrence:1",
+      "accepted_reason": "File oracle helpers for #16296 perl -c parity (PR #16348): parse_err must yield the ParseError value and parse_clean the AST; each panics only when the parser wrongly accepts or rejects, and callers assert the exact QualifiedLoopControlLabel variant.",
       "state": "active"
     }
   ]

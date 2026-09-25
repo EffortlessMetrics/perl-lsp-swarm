@@ -33,10 +33,23 @@ fn target_gc_is_dry_run_default_and_apply_gated() -> Result<(), Box<dyn std::err
         "deletion must target vetted candidates only"
     );
     // The candidate shape guard must reject anything that is not a target/
-    // dir at the root or directly under .worktrees.
+    // dir at the repo root, directly under .worktrees, or under the real
+    // agent-worktree home .claude/worktrees (the home clean-worktrees.sh
+    // reconciled agents to, #3573). Each allowed alternative is asserted
+    // separately so extending the allowlist does not invalidate the other
+    // alternatives' needles, and the last alternative is asserted with the
+    // case-pattern terminator so the allowlist still ends closed.
     assert!(
-        script.contains("\"$root\"/target|\"$root\"/.worktrees/*/target)"),
-        "the candidate shape guard must restrict deletion to repo target/ dirs"
+        script.contains("\"$root\"/target|"),
+        "the candidate shape guard must allow the repo root target/ dir"
+    );
+    assert!(
+        script.contains("\"$root\"/.worktrees/*/target"),
+        "the candidate shape guard must allow .worktrees/*/target dirs"
+    );
+    assert!(
+        script.contains("\"$root\"/.claude/worktrees/*/target)"),
+        "the candidate shape guard must allow .claude/worktrees/*/target dirs and terminate the allowlist there"
     );
 
     let justfile = fs::read_to_string(root.join("justfile"))?;

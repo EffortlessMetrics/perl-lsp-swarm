@@ -116,6 +116,54 @@ become the fact that authorizes publication or supplies unreviewed cached bytes.
 A successful install, build, test, or corpus sweep may prove that bytes are eligible to
 be cached. It does not prove that the current run is trusted to publish them.
 
+One reviewed exception exists to the content-success rejection above; see
+[§ Exact-head RIPR+ receipt memoization](#exact-head-ripr-receipt-memoization-16431).
+
+---
+
+## Exact-head RIPR+ receipt memoization (#16431)
+
+`ripr.yml`'s two analysis lanes (`ripr-github`, `ripr-fallback`) restore and save
+`target/receipts/quality/ripr-plus.json` under the key
+`ripr-plus-receipt-v1-<RIPR_VERSION>-<github.sha>-<hash(policy/ripr-suppressions.toml)>`
+with the same pinned `actions/cache` refs the fact cache uses. The save guard is
+`success() && hashFiles(target/receipts/quality/.ripr-plus-fresh) != ''` — content
+success, not an event/ref guard — inside candidate-reachable jobs, so under the
+inventory's writer taxonomy these rows honestly read `candidate_writer_violation` /
+`candidate_tree` (#9177). This section is the reviewed disposition for exactly this
+site, and it holds only while all four compensating controls below stay pinned by
+`scripts/ci/test_ripr_cache_authority_15055.py`; adding another trigger, lane, or
+cached path under this guard invalidates the exception without changing the cache
+step.
+
+The load-bearing distinction from the shared-cache rule is publication scope: this is
+not shared state. GitHub scopes PR-branch caches to that PR, so a `pull_request` save
+cannot warm another PR, and merge-group saves key on the queue's own merge sha. The
+cache memoizes re-runs of the same head — the dominant rerun cost measured in #16431
+(~44m to regenerate, ~33s to validate warm) — and cannot leak bytes across subjects.
+
+Compensating controls, each contract-checked:
+
+1. **Exact content identity in the key.** Toolchain version, exact head sha, and the
+   suppression-ledger hash pin the receipt's full input identity; only a run of the
+   same head, toolchain, and suppressions can collide with the entry.
+2. **The cached bytes self-identify and are re-validated on every consumption.** The
+   receipt embeds `head: <current checkout>` (`xtask/src/tasks/ripr_evidence.rs`,
+   `current_head` / packet `head`), `ripr-plus --check` byte-compares the file, and
+   the quality gate marks a receipt `stale` / `ripr_receipt_not_current` unless its
+   head matches the evaluated head (`xtask/src/tasks/quality_gate.rs`,
+   `assert_current`). A wrong or drifted entry therefore fails closed exactly like a
+   missing one: the cache can change how long the answer takes, never which answer it
+   is — this policy's opening invariant.
+3. **Only exact-key hits are consumed.** `restore-keys` carries only the version
+   prefix (shape parity with the fact cache), and a prefix hit restores a different
+   head's receipt with `cache-hit=false`; the run consumes the restored file only on
+   the action's exact-match output, and any miss falls through to fresh production
+   with no auto-regenerate-and-retry.
+4. **Only freshly produced output is published.** A freshness marker written by the
+   produce branch guards the save, so a restored receipt is never re-saved, and a run
+   that failed before the receipt step publishes nothing.
+
 ---
 
 ## What this does not change

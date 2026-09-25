@@ -25,6 +25,25 @@ impl LspServer {
     }
 
     fn complete_initialization(&self) {
+        // Fail-closed lifecycle backstop (review 5059982819, Finding 1):
+        // completion requires an ACCEPTED text-sync session contract, never
+        // merely a requested initialize. This guards the narrow window where
+        // the one-shot guard was consumed but acceptance did not complete
+        // (e.g. a typed response/contract verification failure): registering
+        // watchers, starting indexing, and the ready log must never run on a
+        // connection without an accepted contract. Every completion path —
+        // the `initialized` notification and the compat auto-initialize —
+        // funnels through here, so this single gate closes them all. The
+        // router's -32002 arm and the formatting intercept derive from the
+        // same predicate (`initialization_accepted`), so the window cannot
+        // serve either (review 5061915323).
+        if !self.initialization_accepted() {
+            tracing::warn!(
+                "Refusing to complete initialization without an accepted text-sync session contract"
+            );
+            return;
+        }
+
         if self
             .initialized
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -79,13 +98,14 @@ impl LspServer {
     }
 
     pub(super) fn auto_initialize_for_compat(&self, method: &str) {
-        if self.initialization_accepted.load(Ordering::Acquire)
-            && !self.initialized.load(Ordering::Acquire)
-        {
+        if self.initialization_accepted() && !self.initialized.load(Ordering::Acquire) {
             tracing::warn!(
                 method,
                 "Client skipped initialized notification; auto-initializing for compatibility"
             );
+            // `complete_initialization` gates on the accepted text-sync
+            // session, so a consumed guard without an accepted contract
+            // (rejected or failed initialize) cannot activate the server here.
             self.complete_initialization();
         }
     }
@@ -189,7 +209,14 @@ impl LspServer {
 
     /// Handle initialized notification
     pub(crate) fn handle_initialized_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
-        if !self.initialization_accepted.load(Ordering::Acquire) {
+        // The -32002 guard keys on the accepted-session authority: an
+        // `initialized` notification is only in-lifecycle once initialize has
+        // ACCEPTED. A rejected first initialize consumed its one-shot attempt
+        // but never opened the session, so a later `initialized` is still
+        // ServerNotInitialized — refusing here also keeps the post-`initialized`
+        // configuration pull (`routing.rs`) from running on a rejected
+        // connection.
+        if !self.initialization_accepted() {
             return Err(JsonRpcError {
                 code: -32002, // ServerNotInitialized per LSP spec
                 message: "Server not initialized".to_string(),
@@ -293,6 +320,46 @@ mod tests {
 
         // Then
         assert!(!server.is_initialized(), "compat mode must no-op before initialize request");
+    }
+
+    #[test]
+    fn given_requested_but_unaccepted_initialize_when_completion_paths_run_then_server_stays_uninitialized()
+    -> TestResult {
+        // Review 5059982819, Finding 1 backstop: a consumed one-shot guard
+        // WITHOUT an accepted text-sync session — reachable when acceptance
+        // fails after the lifecycle CAS (e.g. a typed response/contract
+        // verification failure) — must never reach a serving state through
+        // either completion path. The state is constructed directly because
+        // the live initialize path now classifies before the CAS.
+        let server = LspServer::new();
+        server.initialize_requested.store(true, Ordering::Release);
+
+        // When — compat auto-initialize (preflight compat path)
+        server.auto_initialize_for_compat("textDocument/hover");
+
+        // Then
+        assert!(
+            !server.is_initialized(),
+            "compat completion must refuse without an accepted text-sync contract"
+        );
+
+        // When — explicit `initialized` notification. The -32002 guard keys
+        // on the accepted-session authority, so a consumed-but-unaccepted
+        // connection is refused outright (ServerNotInitialized), matching the
+        // routing-layer expectation for a rejected first initialize.
+        let err = server.handle_initialized_dispatch().map_err(|e| e.code).unwrap_err();
+        assert_eq!(err, -32002, "initialized without an accepted contract is ServerNotInitialized");
+
+        // Then
+        assert!(
+            !server.is_initialized(),
+            "initialized notification must not complete without an accepted contract"
+        );
+        assert!(
+            server.accepted_text_sync_session().is_none(),
+            "no session may appear without an accepted initialize"
+        );
+        Ok(())
     }
 
     #[test]
@@ -511,6 +578,7 @@ mod tests {
     #[derive(Clone, Copy, Debug)]
     enum LifecycleAction {
         Initialize,
+        MalformedInitialize,
         InitializedNotification,
         AutoInitializeCompat,
     }
@@ -518,7 +586,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct LifecycleModel {
         initialize_requested: bool,
-        initialization_accepted: bool,
+        accepted_session: bool,
         initialized: bool,
     }
 
@@ -528,12 +596,22 @@ mod tests {
                 return Err(-32600);
             }
             self.initialize_requested = true;
-            self.initialization_accepted = true;
+            self.accepted_session = true;
             Ok(())
         }
 
+        fn malformed_initialize(&mut self) -> Result<(), i32> {
+            if self.initialize_requested {
+                return Err(-32600);
+            }
+            self.initialize_requested = true;
+            Err(-32602)
+        }
+
         fn initialized_notification(&mut self) -> Result<(), i32> {
-            if !self.initialization_accepted {
+            // `initialized` is in-lifecycle only once initialize has ACCEPTED;
+            // a consumed-but-rejected attempt still yields -32002.
+            if !self.accepted_session {
                 return Err(-32002);
             }
             if self.initialized {
@@ -544,7 +622,7 @@ mod tests {
         }
 
         fn auto_initialize_compat(&mut self) {
-            if self.initialization_accepted {
+            if self.accepted_session {
                 self.initialized = true;
             }
         }
@@ -553,9 +631,40 @@ mod tests {
     fn action_strategy() -> impl Strategy<Value = LifecycleAction> {
         prop_oneof![
             Just(LifecycleAction::Initialize),
+            Just(LifecycleAction::MalformedInitialize),
             Just(LifecycleAction::InitializedNotification),
             Just(LifecycleAction::AutoInitializeCompat),
         ]
+    }
+
+    #[test]
+    fn malformed_initialize_then_completion_remains_unaccepted() -> TestResult {
+        let server = LspServer::new();
+        let rejection = server
+            .handle_initialize(Some(json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-16", 7] } }
+            })))
+            .err()
+            .ok_or("malformed initialize must be rejected")?;
+        if rejection.code != -32602 {
+            return Err(format!("malformed initialize returned {}", rejection.code));
+        }
+
+        let completion = server.handle_initialized_dispatch();
+        if completion.err().map(|error| error.code) != Some(-32002) {
+            return Err(
+                "initialized after a rejected initialize must be ServerNotInitialized".to_string()
+            );
+        }
+        if server.is_initialized() || server.accepted_text_sync_session().is_some() {
+            return Err("rejected initialize gained lifecycle authority".to_string());
+        }
+
+        server.auto_initialize_for_compat("textDocument/completion");
+        if server.is_initialized() {
+            return Err("compat completion activated rejected initialize".to_string());
+        }
+        Ok(())
     }
 
     proptest! {
@@ -576,6 +685,16 @@ mod tests {
                             expected.is_ok(),
                             "initialize result should match model"
                         );
+                        if let (Err(actual_error), Err(expected_code)) = (&actual, &expected) {
+                            prop_assert_eq!(actual_error.code, *expected_code);
+                        }
+                    }
+                    LifecycleAction::MalformedInitialize => {
+                        let actual = server.handle_initialize(Some(json!({
+                            "capabilities": { "general": { "positionEncodings": ["utf-16", 7] } }
+                        }))).map(|_| ());
+                        let expected = model.malformed_initialize();
+                        prop_assert_eq!(actual.is_ok(), expected.is_ok());
                         if let (Err(actual_error), Err(expected_code)) = (&actual, &expected) {
                             prop_assert_eq!(actual_error.code, *expected_code);
                         }
@@ -605,14 +724,14 @@ mod tests {
                     "initialize_requested flag must track model"
                 );
                 prop_assert_eq!(
-                    server.initialization_accepted.load(Ordering::Acquire),
-                    model.initialization_accepted,
-                    "initialization_accepted flag must track model"
-                );
-                prop_assert_eq!(
                     server.is_initialized(),
                     model.initialized,
                     "initialized flag must track model"
+                );
+                prop_assert_eq!(
+                    server.accepted_text_sync_session().is_some(),
+                    model.accepted_session,
+                    "accepted session must track model"
                 );
             }
         }

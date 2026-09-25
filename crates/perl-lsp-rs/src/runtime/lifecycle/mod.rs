@@ -54,6 +54,8 @@ mod final_surface_census;
 pub(crate) mod inc_context;
 pub mod module_resolution;
 pub(crate) mod position_encoding;
+pub(crate) mod root_input;
+pub(crate) mod session_contract;
 mod tools;
 mod watchers;
 mod workspace;
