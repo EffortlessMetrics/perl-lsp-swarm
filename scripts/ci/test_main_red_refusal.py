@@ -270,9 +270,8 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    def test_probe_has_read_permission_and_no_push_trigger(self) -> None:
+    def test_probe_has_read_permission_and_push_is_not_a_refusal_subject(self) -> None:
         self.assertIn("  checks: read", self.workflow)
-        self.assertNotIn("\n  push:", self.workflow)
         self.assertNotIn("pr-smoke", self.workflow)
         probe_start = self.workflow.index("      - name: Probe main-red refusal")
         evaluate_start = self.workflow.index("      - name: Evaluate routed result")
@@ -281,6 +280,27 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
             "(github.event_name != 'pull_request' || github.event.pull_request.draft != true)",
             probe,
         )
+        # #16168: landed main commits now carry their own `Perl LSP Rust Small
+        # Result` baseline run, so this workflow declares a push trigger. The
+        # refusal probe stays candidate-vs-main; on push the candidate IS main,
+        # so there is no distinct subject to compare and the probe must stay
+        # non-applicable instead of comparing main against itself. Pin the
+        # trigger and the subject binding that keep those two facts together.
+        on_start = self.workflow.index("\non:\n")
+        permissions_start = self.workflow.index("\npermissions:\n")
+        triggers = self.workflow[on_start:permissions_start]
+        self.assertIn("  push:\n    branches: [main, master]", triggers)
+        binding = next(
+            line for line in probe.splitlines() if line.strip().startswith("CANDIDATE_SHA:")
+        )
+        self.assertIn("github.event_name == 'pull_request'", binding)
+        self.assertIn("github.event_name == 'merge_group'", binding)
+        self.assertIn("|| '' }}", binding)
+        self.assertNotIn("push", binding)
+        # An event with no bound subject (push, workflow_dispatch) must take
+        # the neutral path, never the refusal evaluation.
+        self.assertIn('if [ -n "${CANDIDATE_SHA:-}" ]; then', probe)
+        self.assertIn("main-red refusal probe is non-applicable", probe)
 
     def test_probe_reads_main_before_and_after_exact_check_lookup(self) -> None:
         probe_start = self.workflow.index("      - name: Probe main-red refusal")
