@@ -45,12 +45,15 @@ jobs:
           fetch-depth: 0
       - name: Fetch release tags
         run: git fetch origin --tags --force
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
       - name: Install just
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
           tool: just
+      - name: Install pinned release schema dependencies
+        run: python3 -m pip install -r scripts/requirements-release.txt
+
       - name: Run release-history provenance checks
         run: just ci-release-history

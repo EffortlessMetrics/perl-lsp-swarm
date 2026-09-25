@@ -191,53 +191,16 @@ fn is_excluded_test_path(path: &Path) -> bool {
     false
 }
 
+/// The 1-based line where the file's test scope begins, or [`usize::MAX`].
+///
+/// Delegates to [`test_scope::first_cfg_test_boundary`], the within-file half
+/// of the one attribute reader for production scope. The two-regex reader this
+/// used to be needed `test` on the same physical line as `#[cfg(all(`, so a
+/// gate spelled across several lines — the live shape in
+/// `crates/perl-corpus/src/loading/` — read as no boundary at all (#16281).
 pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
     let contents = read_lines(path)?;
-    // Plain #[cfg(test)] is an unconditional test-scope boundary: any item guarded
-    // this way is test-only regardless of what follows, so treat the first occurrence
-    // as the boundary immediately (matches the original heuristic).
-    //
-    // #[cfg(all(test, ...))] requires a lookahead: it must be followed (possibly after
-    // blank lines or other attributes) by a `mod` declaration to count as a boundary.
-    // This prevents a lone `#[cfg(all(test, not(target_arch = "wasm32")))] use …` near
-    // the top of a file (e.g. config/mod.rs:9) from falsely excluding the rest of the
-    // file from production CI checks.
-    //
-    // #[cfg(any(test, feature = "…"))] is intentionally NOT matched because such items
-    // are compiled into production builds when the feature is active.
-    let cfg_test_plain_re = Regex::new(r"^\s*#\[cfg\(test\)\]")?;
-    let cfg_all_test_re = Regex::new(r"^\s*#\[cfg\(all\(test[,\)]")?;
-    let attr_re = Regex::new(r"^\s*#\[")?;
-    let mod_re = Regex::new(r"^\s*(?:pub\s+)?mod\s+")?;
-    for (idx, line) in contents.iter().enumerate() {
-        if cfg_test_plain_re.is_match(line) {
-            return Ok(idx + 1);
-        }
-        if cfg_all_test_re.is_match(line) {
-            // Only treat #[cfg(all(test, ...))] as a boundary when the next
-            // non-blank, non-attribute line is a `mod` declaration.
-            let mut j = idx + 1;
-            loop {
-                if j >= contents.len() {
-                    break;
-                }
-                let next = &contents[j];
-                if next.trim().is_empty() {
-                    j += 1;
-                    continue;
-                }
-                if attr_re.is_match(next) {
-                    j += 1;
-                    continue;
-                }
-                if mod_re.is_match(next) {
-                    return Ok(idx + 1);
-                }
-                break;
-            }
-        }
-    }
-    Ok(usize::MAX)
+    Ok(test_scope::first_cfg_test_boundary(&contents))
 }
 
 /// Return true when a `// SAFETY:` comment directly documents `lines[unsafe_idx]`.
@@ -1321,10 +1284,15 @@ fn cmd_simple_lsp_test(repo_root: &Path) -> Result<i32> {
     }
     #[cfg(not(windows))]
     {
+        // Content-Length must equal the frame body exactly; the previous 205
+        // over-declared the 180-byte body, so the reader waited on bytes that
+        // never arrived. `workspaceFolders` is omitted rather than null so the
+        // declared `rootUri` is actually adopted (#8161: a present null is an
+        // explicit no-active-folder declaration).
         let shell_script = r#"cat <<'EOF' | cargo run -p perl-parser --bin perl-lsp 2>&1 | head -20
-Content-Length: 205
+Content-Length: 156
 
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":123,"rootUri":"file:///tmp","capabilities":{},"initializationOptions":{},"trace":"off","workspaceFolders":null}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":123,"rootUri":"file:///tmp","capabilities":{},"initializationOptions":{},"trace":"off"}}
 EOF
 "#;
         let output = command_with_output(repo_root, "sh", &["-c", shell_script], &[])?;
@@ -1509,7 +1477,11 @@ fn cmd_quick_receipts(repo_root: &Path) -> Result<i32> {
         "total_all_tests": 0,
         "pass_rate_active": 0.0,
         "pass_rate_total": 0.0,
-        "note": "Run generate-receipts.sh for actual test metrics"
+        // #15350: zeroes from a no-test quick run are explicitly not_run_by_mode,
+        // never a measured zero. Bundle publishers refuse this status, so a
+        // fresh timestamp cannot pass synthetic state off as current evidence.
+        "status": "not_run_by_mode",
+        "note": "Synthetic quick receipt: tests not run. Use the canonical typed producer `cargo xtask receipts` for subject-bound test metrics."
     });
     fs::write(artifacts_dir.join("test-summary.json"), serde_json::to_string(&test_summary)?)
         .with_context(|| "writing test-summary.json")?;
@@ -2598,7 +2570,71 @@ pub(crate) fn production_source_files_for_ci_checks(repo_root: &Path) -> Result<
     Ok(walked.into_iter().filter(|path| !test_only.contains(path)).collect())
 }
 
-fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
+pub(crate) fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
+    let report = scan_prod_unwraps_and_panics(repo_root)?;
+    report.print_and_exit()
+}
+
+/// The two production-line checks share a single walk so neither scanner
+/// reads ahead of the other. Splitting them apart used to mean an early
+/// return on the first failure hid the second; keeping them in one struct
+/// forces the printing layer to see both lists before deciding an exit
+/// code. #16253.
+pub(crate) struct ProdUnwrapsAndPanicsReport {
+    pub unwrap_offenders: Vec<String>,
+    pub panic_offenders: Vec<String>,
+    pub unwrap_baseline: usize,
+    pub panic_baseline: usize,
+}
+
+impl ProdUnwrapsAndPanicsReport {
+    fn print_and_exit(&self) -> Result<i32> {
+        let mut failed = false;
+        println!(
+            "unwrap/expect: {} (baseline: {})",
+            self.unwrap_offenders.len(),
+            self.unwrap_baseline
+        );
+        if self.unwrap_offenders.len() > self.unwrap_baseline {
+            failed = true;
+            println!(
+                "FAIL: unwrap/expect count ({}) exceeds baseline ({})",
+                self.unwrap_offenders.len(),
+                self.unwrap_baseline
+            );
+            println!();
+            println!("Offenders:");
+            for line in self.unwrap_offenders.iter().take(10) {
+                println!("{line}");
+            }
+        }
+
+        println!(
+            "panic-family macros: {} (baseline: {})",
+            self.panic_offenders.len(),
+            self.panic_baseline
+        );
+        if self.panic_offenders.len() > self.panic_baseline {
+            failed = true;
+            println!(
+                "FAIL: panic-family count ({}) exceeds baseline ({})",
+                self.panic_offenders.len(),
+                self.panic_baseline
+            );
+            println!();
+            println!("Offenders:");
+            for line in self.panic_offenders.iter().take(10) {
+                println!("{line}");
+            }
+            println!(
+                "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count."
+            );
+        }
+        Ok(if failed { 1 } else { 0 })
+    }
+}
+
+pub(crate) fn scan_prod_unwraps_and_panics(repo_root: &Path) -> Result<ProdUnwrapsAndPanicsReport> {
     let unwrap_re = Regex::new(r"\.unwrap\(|\.expect\(")?;
     let panic_re = Regex::new(r"(panic!\(|todo!\(|unimplemented!\(|unreachable!\()")?;
     let comment_re = Regex::new(r"^\s*//")?;
@@ -2635,39 +2671,12 @@ fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
 
     let unwrap_baseline = read_usize_file(&repo_root.join("ci/unwrap_prod_baseline.txt"), 0)?;
     let panic_baseline = read_usize_file(&repo_root.join("ci/panic_prod_baseline.txt"), 0)?;
-    println!("unwrap/expect: {} (baseline: {})", unwrap_offenders.len(), unwrap_baseline);
-    if unwrap_offenders.len() > unwrap_baseline {
-        println!(
-            "FAIL: unwrap/expect count ({}) exceeds baseline ({})",
-            unwrap_offenders.len(),
-            unwrap_baseline
-        );
-        println!();
-        println!("Offenders:");
-        for line in unwrap_offenders.iter().take(10) {
-            println!("{line}");
-        }
-        return Ok(1);
-    }
-
-    println!("panic-family macros: {} (baseline: {})", panic_offenders.len(), panic_baseline);
-    if panic_offenders.len() > panic_baseline {
-        println!(
-            "FAIL: panic-family count ({}) exceeds baseline ({})",
-            panic_offenders.len(),
-            panic_baseline
-        );
-        println!();
-        println!("Offenders:");
-        for line in panic_offenders.iter().take(10) {
-            println!("{line}");
-        }
-        println!(
-            "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count."
-        );
-        return Ok(1);
-    }
-    Ok(0)
+    Ok(ProdUnwrapsAndPanicsReport {
+        unwrap_offenders,
+        panic_offenders,
+        unwrap_baseline,
+        panic_baseline,
+    })
 }
 
 fn is_allowlisted_prod_panic_hit(_rel_path: &str, line: &str) -> bool {
@@ -4080,6 +4089,68 @@ mod tests {
         Ok(())
     }
 
+    // ── cmd_check_unwraps_prod tests (#16253) ─────────────────────────────────
+    //
+    // The two scanners (unwrap/expect and panic-family) used to early-return on
+    // the first failure so the second count was hidden. A regression that
+    // lands both kinds simultaneously must surface both — a single `Ok(1)` is
+    // indistinguishable from "only unwrap failed" once the second count is
+    // never printed.
+
+    /// Build a fixture with one crate whose production code carries both an
+    /// unwrap and a panic-family macro, with both baselines set to zero so
+    /// both checks fail. The function must report both failures (exit 1, both
+    /// FAIL lines printed) rather than hiding the second behind an early
+    /// return on the first.
+    fn unwraps_prod_dual_failure_fixture(name: &str) -> Result<PathBuf> {
+        let root = std::env::temp_dir().join(format!("pch_unwraps_prod_{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let crate_root = root.join("crates/demo");
+        std::fs::create_dir_all(crate_root.join("src"))?;
+        std::fs::create_dir_all(root.join("ci"))?;
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/demo\"]\n")?;
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )?;
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn unwrap_call() { let _ = \"x\".parse::<i32>().unwrap(); }\n\
+             pub fn panic_call() { unreachable!(\"dual\"); }\n",
+        )?;
+        std::fs::write(root.join("ci/unwrap_prod_baseline.txt"), "0\n")?;
+        std::fs::write(root.join("ci/panic_prod_baseline.txt"), "0\n")?;
+        Ok(root)
+    }
+
+    #[test]
+    fn check_unwraps_prod_reports_both_failures_when_both_exceed_baseline() -> Result<()> {
+        // Regression for the early-return defect called out in #16253: when
+        // both unwrap and panic-family counts exceed their baselines, the
+        // scanner must populate both lists before the printing layer decides
+        // the exit code, so a regression that re-introduces an early return
+        // visibly empties one of the two lists.
+        let root = unwraps_prod_dual_failure_fixture("both_fail")?;
+        let report = scan_prod_unwraps_and_panics(&root)?;
+        assert_eq!(
+            report.unwrap_offenders.len(),
+            1,
+            "expected exactly one unwrap offender; got {:?}",
+            report.unwrap_offenders
+        );
+        assert_eq!(
+            report.panic_offenders.len(),
+            1,
+            "expected exactly one panic-family offender; got {:?}",
+            report.panic_offenders
+        );
+        let exit = report.print_and_exit()?;
+        assert_eq!(exit, 1, "expected exit 1 when both checks fail");
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
     // ── first_cfg_test_line_number tests (#2894) ───────────────────────────────
 
     #[test]
@@ -4138,11 +4209,12 @@ mod tests {
     }
 
     #[test]
-    fn cfg_test_line_number_plain_cfg_test_is_immediate_boundary() -> Result<()> {
-        // Plain #[cfg(test)] is an unconditional boundary: the lookahead-for-mod
-        // check applies only to #[cfg(all(test, ...))].  Verify that intermediate
-        // attributes between the cfg line and the `mod` block do not change the
-        // reported boundary line.
+    fn cfg_test_line_number_plain_cfg_test_with_attrs_then_mmod_is_boundary() -> Result<()> {
+        // The plain `#[cfg(test)]` boundary now goes through the same
+        // mod-lookahead as `#[cfg(all(test, …))]`. Intermediate attributes
+        // (`#[allow(…)]`, etc.) between the cfg line and the `mod` block are
+        // skipped, so the boundary is still the `#[cfg(test)]` line — not the
+        // `mod` line. Regression guard for the unified lookahead (#16389).
         let tmp = std::env::temp_dir().join("pch_test_attrs_between.rs");
         std::fs::write(
             &tmp,
@@ -4153,6 +4225,152 @@ mod tests {
         )?;
         // #[cfg(test)] is at line 3; that is the boundary, not the `mod` line.
         assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_on_use_is_not_boundary() -> Result<()> {
+        // A `#[cfg(test)]` on a non-mod item must NOT trigger the boundary
+        // heuristic — the next non-blank line is `use`, not `mod`. Without
+        // this guard the production scan would be truncated at the early
+        // test-only import and miss any later per-call `Regex::new(...)` the
+        // ratchet is supposed to gate (#16389).
+        let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test_use.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\nuse std::cell::Cell;\n\npub fn prod() {}\n")?;
+        // No `mod` follows the cfg attr → no boundary → usize::MAX.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_with_blank_lines_then_mmod_is_boundary() -> Result<()> {
+        // Blank lines between the `#[cfg(test)]` and the `mod` declaration
+        // must not break the lookahead (#16389 follow-up).
+        let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test_blanks.rs");
+        std::fs::write(&tmp, "fn prod() {}\n\n#[cfg(test)]\n\n\nmod tests { \n}\n")?;
+        // #[cfg(test)] is at line 3; the `mod` on line 6 confirms it.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_use_then_outer_cfg_test_mmod_is_boundary_at_the_mmod()
+    -> Result<()> {
+        // The first `#[cfg(test)] use …;` is not a boundary; the second
+        // `#[cfg(test)] mod tests { … }` *is*. The boundary is the line of
+        // the opening cfg attribute (#16389 follow-up: the unified lookahead
+        // must not skip a real test-module opener behind a non-mod
+        // predecessor).
+        let tmp = std::env::temp_dir().join("pch_test_use_then_mod.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(test)]\n\
+             use std::cell::Cell;\n\n\
+             #[cfg(test)]\n\
+             mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
+        // Second `#[cfg(test)]` is at line 6; the `mod` opener is at line 7.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 6);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_on_const_is_not_boundary() -> Result<()> {
+        // The non-mod item need not be a `use`; a `const`, `static`,
+        // `thread_local!`, etc. must not trigger truncation either
+        // (#16389 generalisation).
+        let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test_const.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\nconst SEED: u32 = 42;\n\npub fn prod() {}\n")?;
+        // No `mod` follows the cfg attr → no boundary → usize::MAX.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_pub_crate_mod_is_boundary() -> Result<()> {
+        // A visibility-qualified test module is still a test module: the
+        // lookahead must recognise `pub(crate) mod` (and `pub(super)` /
+        // `pub(in …)`) as the opener, not only a bare `mod`.
+        let tmp = std::env::temp_dir().join("pch_test_pub_crate_mod.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(test)]\n\
+             pub(crate) mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
+        // #[cfg(test)] is at line 3; the `pub(crate) mod` on line 4 confirms it.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_multiline_all_test_is_boundary() -> Result<()> {
+        // #16281: the two-regex reader this function used to wrap needed
+        // `test` on the `#[cfg(all(` line, so a gate spelled across several
+        // physical lines — the live shape at
+        // crates/perl-corpus/src/loading/sectioned_identity.rs:65 — returned
+        // usize::MAX and read the guarded test module as production.
+        let tmp = std::env::temp_dir().join("pch_test_multiline_all_test.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(all(\n    test,\n    not(target_arch = \"wasm32\"),\n))]\n\
+             mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_pub_super_and_pub_in_mod_are_boundaries() -> Result<()> {
+        let tmp = std::env::temp_dir().join("pch_test_pub_super_mod.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\npub(super) mod tests {\n}\n")?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 1);
+        let _ = std::fs::remove_file(&tmp);
+
+        let tmp = std::env::temp_dir().join("pch_test_pub_in_mod.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\npub(in crate::sniff) mod tests {\n}\n")?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 1);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_comment_between_cfg_test_and_mod_is_skipped() -> Result<()> {
+        // A `//` comment between the attribute and the `mod` must not break
+        // the lookahead.
+        let tmp = std::env::temp_dir().join("pch_test_comment_then_mod.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(test)]\n\
+             // Unit tests for the scanner live here.\n\
+             mod tests {\n}\n",
+        )?;
+        // #[cfg(test)] is at line 3; the comment does not hide the `mod`.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_commented_out_mod_is_not_boundary() -> Result<()> {
+        // A commented-out `mod` line must not satisfy the lookahead: the next
+        // real code item decides, and a `use` is not a boundary.
+        let tmp = std::env::temp_dir().join("pch_test_commented_mod_not_boundary.rs");
+        std::fs::write(
+            &tmp,
+            "#[cfg(test)]\n// mod tests {}\nuse std::cell::Cell;\n\npub fn prod() {}\n",
+        )?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
         let _ = std::fs::remove_file(&tmp);
         Ok(())
     }
