@@ -322,6 +322,21 @@ cat >"${STEPS_GATE_FAILED}" <<'EOF'
 }
 EOF
 
+# Fixture: the self-hosted Docker gate step concluded failure with a 143
+# annotation and no scanned receipt — same genuine-red class as the hosted
+# gate step (#16433 review second pass).
+STEPS_DOCKER_GATE_FAILED="${WORK}/steps-docker-gate-failed.json"
+cat >"${STEPS_DOCKER_GATE_FAILED}" <<'EOF'
+{
+  "conclusion": "failure",
+  "steps": [
+    {"name": "Set up job", "status": "completed", "conclusion": "success"},
+    {"name": "Run ripr evidence and gate (Docker)", "status": "completed", "conclusion": "failure"},
+    {"name": "Complete job", "status": "completed", "conclusion": "success"}
+  ]
+}
+EOF
+
 STEPS_CANCELLED="${WORK}/steps-cancelled.json"
 cat >"${STEPS_CANCELLED}" <<'EOF'
 {
@@ -406,6 +421,8 @@ expect_eq "API GUARD: 143 annotation + failed receipt-capable gate step + no rec
 expect_eq "API GUARD: 143 annotation + skipped gate step + no receipt still arms"   "infra-no-proof" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" classification)"
 
 expect_eq "API GUARD: unreadable steps state with no scanned receipt fails closed"   "ripr-failure" "$(classify_api_field "${ANN_143}" "${WORK}/does-not-exist-steps.json" "" classification)"
+
+expect_eq "API GUARD: 143 annotation + failed Docker gate step + no receipt is a genuine red"   "ripr-failure" "$(classify_api_field "${ANN_143}" "${STEPS_DOCKER_GATE_FAILED}" "" classification)"
 
 expect_eq "API GUARD: receipt_scanned field carries into api-evidence output"   "false" "$(classify_api_field "${ANN_143}" "${STEPS_CONCLUDED}" "" receipt_scanned)"
 

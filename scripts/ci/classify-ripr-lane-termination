@@ -194,7 +194,11 @@ emit_api_verdict() {
       # annotations are NOT runner-only — xtask SIGTERMs the ripr child at
       # the guidance bound (ripr.yml guidance-step comment) and the runner
       # then writes the same 143 annotation for a genuine red.
-      receipt_capable_failed="$(jq -r '[.steps[]? | select(.conclusion == "failure" and (.name | test("Enforce new RIPR gap quality gate")))] | length > 0' "$steps_file" 2>/dev/null || true)"
+      # Receipt-capable steps: the hosted gate step and the self-hosted
+      # Docker step both produce the gap receipt when they run — a failure
+      # in either means a missing receipt is the finding, not eviction
+      # evidence (#16433 review).
+      receipt_capable_failed="$(jq -r '[.steps[]? | select(.conclusion == "failure" and (.name | test("Enforce new RIPR gap quality gate|Run ripr evidence and gate")))] | length > 0' "$steps_file" 2>/dev/null || true)"
       [ "$receipt_capable_failed" = "true" ] || receipt_capable_failed=false
     fi
   fi
