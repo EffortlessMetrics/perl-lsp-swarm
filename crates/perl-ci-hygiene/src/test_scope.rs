@@ -425,12 +425,16 @@ fn attribute_extent(
 /// a multiline `#[cfg(all(…))]` opens here is the same gate that declares the
 /// module it guards test-only.
 ///
-/// Plain `#[cfg(test)]` is an unconditional boundary: any item guarded this
-/// way is test-only regardless of what follows. `#[cfg(all(test, …))]` counts
-/// only when the item it guards is a `mod`, so a lone conjunction on a `use`
-/// near the top of a file does not cut the file in half.
-/// `cfg(any(test, …))` never bounds anything — it holds in production builds
-/// whenever its other arm does.
+/// Both `#[cfg(test)]` and `#[cfg(all(test, …))]` count only when the item
+/// they guard is a `mod` — block or declared, visibility-qualified spellings
+/// (`pub(crate) mod`, `pub(super) mod`, `pub(in path) mod`) included — so a
+/// test-gated attribute on any other item (a single-line `use` import, a
+/// `const`, a `thread_local!`) does not cut the file in half.
+/// `crates/perl-lsp-rs/src/runtime/language/symbols.rs` carried exactly that
+/// shape: a `#[cfg(test)] use` near the top truncated every production check
+/// that stops here, hiding the per-call `Regex::new(...)` calls it was meant
+/// to gate (#16389). `cfg(any(test, …))` never bounds anything — it holds in
+/// production builds whenever its other arm does.
 pub(crate) fn first_cfg_test_boundary(lines: &[String]) -> usize {
     let mut index = 0usize;
     while index < lines.len() {
@@ -440,25 +444,35 @@ pub(crate) fn first_cfg_test_boundary(lines: &[String]) -> usize {
             continue;
         }
         let item = guarded_item(lines, index);
-        if let Some((line, _)) =
-            item.attributes.iter().find(|(_, attr)| attribute_is_plain_cfg_test(attr))
-        {
-            return line + 1;
-        }
-        if let Some((line, _)) =
-            item.attributes.iter().find(|(_, attr)| attribute_is_a_test_gate(attr))
-            && (inline_module_name(item.text).is_some()
-                || declared_module_name(item.text).is_some())
-        {
-            return line + 1;
+        // A test gate bounds the file only when it guards a module: the
+        // mod-lookahead the line-based reader used to spell as "skip blanks,
+        // attributes, and comments, then require `mod`" is what
+        // `inline_module_name` / `declared_module_name` answer about the
+        // guarded item's head. Comment and attribute lines between the gate
+        // and the `mod` change nothing — `guarded_item` skips them — and a
+        // commented-out `mod` line is a comment, so it can never satisfy the
+        // check (#16389).
+        let guards_a_module =
+            inline_module_name(item.text).is_some() || declared_module_name(item.text).is_some();
+        if guards_a_module {
+            if let Some((line, _)) =
+                item.attributes.iter().find(|(_, attr)| attribute_is_plain_cfg_test(attr))
+            {
+                return line + 1;
+            }
+            if let Some((line, _)) =
+                item.attributes.iter().find(|(_, attr)| attribute_is_a_test_gate(attr))
+            {
+                return line + 1;
+            }
         }
         index = item.line + 1;
     }
     usize::MAX
 }
 
-/// Whether `attr` is `#[cfg(test)]` itself — the unconditional boundary — as
-/// opposed to a conjunction that merely requires `test`.
+/// Whether `attr` is `#[cfg(test)]` itself — the plain spelling of the test
+/// gate — as opposed to a conjunction that merely requires `test`.
 fn attribute_is_plain_cfg_test(attr: &str) -> bool {
     attr.strip_prefix("#[cfg(")
         .and_then(|rest| rest.strip_suffix(")]"))
@@ -638,12 +652,14 @@ fn module_directory(path: &Path) -> Option<PathBuf> {
 }
 
 fn inline_module_name(trimmed: &str) -> Option<String> {
-    let rest = trimmed.strip_suffix('{')?.trim_end();
+    // Trailing whitespace after the brace is rustfmt-incidental but legal in
+    // hand-written fixtures; the mod check must not break on it (#16389).
+    let rest = trimmed.trim_end().strip_suffix('{')?.trim_end();
     module_name_after_visibility(rest)
 }
 
 fn declared_module_name(trimmed: &str) -> Option<String> {
-    let rest = trimmed.strip_suffix(';')?;
+    let rest = trimmed.trim_end().strip_suffix(';')?;
     module_name_after_visibility(rest)
 }
 
