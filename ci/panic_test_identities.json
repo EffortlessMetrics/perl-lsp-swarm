@@ -575,7 +575,7 @@
       "normalized_snippet": "panic!(\"parse_worker test panic injection for {}:{}\", job.normalized_uri, job.generation);",
       "selector_identity": "invocation:c54fa1f5b9bc527e:occurrence:1",
       "accepted_reason": "Intentional panic injection used to exercise scheduler or worker recovery, poisoning, or panic-payload handling.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/src/runtime/scheduler.rs",
@@ -5426,6 +5426,42 @@
       "normalized_snippet": "Err(err) => panic!(\"expected clean parse for `{code}`, got: {err:?}\"),",
       "selector_identity": "invocation:d958e5e104cf2cdc:occurrence:1",
       "accepted_reason": "File oracle helpers for #16296 perl -c parity (PR #16348): parse_err must yield the ParseError value and parse_clean the AST; each panics only when the parser wrongly accepts or rejects, and callers assert the exact QualifiedLoopControlLabel variant.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_orphaned_else_recovery_16300.rs",
+      "enclosing_test_or_function": "parse_recovered",
+      "macro_family": "panic!",
+      "normalized_snippet": "parser.parse().unwrap_or_else(|e| panic!(\"`{src}` must recover, got hard error: {e:?}\"));",
+      "selector_identity": "invocation:e872f27375afc9f1:occurrence:1",
+      "accepted_reason": "Parser-test oracle asserting recovery shape for the orphaned-else fix (#16300).",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/fix_orphaned_else_recovery_16300.rs",
+      "enclosing_test_or_function": "assert_recovered_if",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected Program, got {:?}\", ast.kind);",
+      "selector_identity": "invocation:f9d27b61b544ff54:occurrence:1",
+      "accepted_reason": "Parser-test oracle asserting recovery shape for the orphaned-else fix (#16300).",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_receipts.rs",
+      "enclosing_test_or_function": "unwrap_ok",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(err) => panic!(\"expected valid bundle, got: {err}\"),",
+      "selector_identity": "invocation:eefb47127ce81c3f:occurrence:1",
+      "accepted_reason": "Test-helper oracle unwrapping a valid bundle; panics only if the valid fixture is rejected.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/publish_receipts.rs",
+      "enclosing_test_or_function": "unwrap_err",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(_) => panic!(\"expected bundle refusal, got Ok\"),",
+      "selector_identity": "invocation:0b18fed2ab2d7d97:occurrence:1",
+      "accepted_reason": "Test-helper oracle extracting a refusal message; panics only if an invalid bundle is accepted.",
       "state": "active"
     }
   ]
