@@ -799,8 +799,11 @@ fn heredoc_allowed_before(
     // name authority: a word still has to be callable by the known-sub rule,
     // and unknown bareword callables stay unresolved under #14927.
     previous_word_before(line, offset).is_some_and(|word| {
-        let is_return_keyword =
-            word == "return" && !prefix[..prefix.len() - word.len()].ends_with("->");
+        // The slice before the word carries the same trailing-space trim as
+        // `previous_word_before`, so spaced forms (`$object-> return`) are
+        // recognized as method invocations too, not only the tight form.
+        let before_word = prefix[..prefix.len() - word.len()].trim_end_matches([' ', '\t']);
+        let is_return_keyword = word == "return" && !before_word.ends_with("->");
         is_return_keyword || is_callable_word(word, known_subs, hints)
     })
 }

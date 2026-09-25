@@ -146,6 +146,23 @@ fn lexer_dereferenced_return_method_keeps_shift_lines_live() {
         }
     }
     assert!(took_regex_path, "fake /x/ lost the known-sub regex path");
+}    assert!(took_regex_path, "fake /x/ lost the known-sub regex path");
+}
+
+#[test]
+fn lexer_dereferenced_return_method_with_space_keeps_shift_lines_live() {
+    // The spaced form exercises the guard's trailing-space trim: the slice
+    // before the word is `"$object-> "` and must still read as a method
+    // invocation, not the `return` keyword (#16433-review finding on the
+    // tight-form-only guard).
+    let source = "my $x = $object-> return <<END;
+sub fake { }
+END
+sub real { }
+";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("fake"), "spaced-form shift operand swallowed live code: {source:?}");
+    assert!(table.is_known_sub("real"), "spaced-form suffix declaration lost: {source:?}");
 }
 
 #[test]
