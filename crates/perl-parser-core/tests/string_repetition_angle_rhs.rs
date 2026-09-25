@@ -226,6 +226,68 @@ fn non_repetition_x_contexts_and_existing_recovery_remain_distinct() -> R {
 }
 
 #[test]
+fn bare_subscript_after_angle_rhs_pins_the_generic_postfix_boundary() -> R {
+    // FC-ANGLE-RHS-BARE-POSTFIX observation. Pinned oracle (perl 5.42 `-c`,
+    // same grammar family as the pinned 5.44): a direct subscript on an angle
+    // term is a syntax error in Perl — both `"x" x <STDIN>[0];` and the
+    // repetition-free `my @l = <STDIN>[0];` fail near "<STDIN>[" — while the
+    // parenthesized form `"x" x (<STDIN>)[0];` and the bare term are clean.
+    // The postfix chain (parse_unary -> parse_postfix -> parse_postfix_chain)
+    // is context-independent, so this admission reaches the same chain every
+    // primary reaches. Refusing the bare subscript therefore belongs to that
+    // postfix owner (source-aware angle scanning, #16256), not to this
+    // classifier; this fixture pins the exact candidate topology until then.
+    let source = "my $value = \"x\" x <STDIN>[0]; my $after = 7;";
+    let ast = clean(source)?;
+    let found = repetitions(&ast);
+    check(found.len() == 1, "expected exactly one binary x")?;
+    let binary = found.first().ok_or("missing repetition")?;
+    let NodeKind::Binary { right, .. } = &binary.kind else {
+        return Err("wrong repetition kind".into());
+    };
+    check(slice(source, right)? == "<STDIN>[0]", "bare postfix left the repetition RHS")?;
+    let subscripts = subscript_nodes(&ast);
+    check(subscripts.len() == 1, "expected exactly one bare subscript")?;
+    let NodeKind::Binary { left, right: index, .. } =
+        &subscripts.first().ok_or("missing subscript")?.kind
+    else {
+        return Err("wrong subscript kind".into());
+    };
+    check(
+        matches!(&left.kind, NodeKind::Readline { filehandle: Some(handle) } if handle == "STDIN"),
+        "subscript base is not the angle term",
+    )?;
+    check(
+        matches!(&index.kind, NodeKind::Number { value } if value == "0"),
+        "subscript index changed",
+    )?;
+    after(&ast, source)?;
+
+    // The parenthesized form is the accepted Perl shape: one repetition whose
+    // RHS carries the subscript.
+    let parenthesized = "my $value = \"x\" x (<STDIN>)[0]; my $after = 7;";
+    let ast = clean(parenthesized)?;
+    check(repetitions(&ast).len() == 1, "parenthesized postfix lost the repetition")?;
+    check(subscript_nodes(&ast).len() == 1, "parenthesized postfix lost the subscript")?;
+    after(&ast, parenthesized)?;
+
+    // The same bare subscript reaches the generic chain with no repetition at
+    // all, so the mis-parse is not owned by this admission.
+    let baseline = "my @lines = <STDIN>[0]; my $after = 7;";
+    let ast = clean(baseline)?;
+    check(repetitions(&ast).is_empty(), "baseline invented a repetition")?;
+    check(subscript_nodes(&ast).len() == 1, "baseline lost the subscript")?;
+    after(&ast, baseline)?;
+    Ok(())
+}
+
+fn subscript_nodes(node: &Node) -> Vec<&Node> {
+    let mut found = Vec::new();
+    nodes(node, &|kind| matches!(kind, NodeKind::Binary { op, .. } if op == "[]"), &mut found);
+    found
+}
+
+#[test]
 fn public_lexer_and_parser_token_observations() -> R {
     for source in [
         "\"x\" x <>;",
