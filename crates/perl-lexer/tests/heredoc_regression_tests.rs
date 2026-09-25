@@ -146,7 +146,6 @@ fn lexer_dereferenced_return_method_keeps_shift_lines_live() {
         }
     }
     assert!(took_regex_path, "fake /x/ lost the known-sub regex path");
-}    assert!(took_regex_path, "fake /x/ lost the known-sub regex path");
 }
 
 #[test]
