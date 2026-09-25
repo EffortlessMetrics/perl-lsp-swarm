@@ -341,7 +341,14 @@ EOF
 
         local page_nodes
         page_nodes=$(printf '%s' "$page" | jq ".data.repository.pullRequest.${field}.nodes")
-        all_nodes=$(jq -n --argjson a "$all_nodes" --argjson b "$page_nodes" '$a + $b')
+        # Accumulate via stdin (`jq -s 'add'`) rather than `--argjson`, so the
+        # growing accumulator never has to fit through `argv`. On Windows the
+        # command-line length cap is ~8-32 KB; once `all_nodes` passes ~30
+        # review-thread pages the `--argjson` form blew that cap and the
+        # helper failed mid-pagination with NO_FACTS, so high-thread PRs lost
+        # their convergence verdict. The pipeline pipe keeps argv empty and
+        # works identically on Linux, macOS, Windows git-bash, and WSL.
+        all_nodes=$(printf '%s\n%s\n' "$all_nodes" "$page_nodes" | jq -s 'add')
 
         has_next=$(printf '%s' "$page" | jq -r ".data.repository.pullRequest.${field}.pageInfo.hasNextPage")
         cursor=$(printf '%s' "$page" | jq -r ".data.repository.pullRequest.${field}.pageInfo.endCursor")
@@ -633,7 +640,11 @@ while IFS= read -r marker; do
     [[ -z "$marker" ]] && continue
     sha="$(printf '%s' "$marker" | jq -r '.evidence.commit // empty')"
     if ! commit_reachable_from_head "$sha"; then
-        UNREACHABLE_FIX_COMMITS="$(jq -n --argjson acc "$UNREACHABLE_FIX_COMMITS" --argjson m "$marker" '$acc + [$m]')"
+        # Same Windows-portability fix as `paginate_pr_connection`: pipe the
+        # accumulator and the new marker wrapper through stdin rather than
+        # `--argjson`, so a long disposition list never hits argv length cap
+        # mid-loop. See #15034.
+        UNREACHABLE_FIX_COMMITS="$(printf '%s\n[%s]\n' "$UNREACHABLE_FIX_COMMITS" "$marker" | jq -s '.[0] + .[1]')"
     fi
 done < <(printf '%s' "$DISPOSITION_MARKERS" | jq -c '.[] | select(.class == "fixed")')
 UNREACHABLE_FIX_COMMITS_COUNT="$(printf '%s' "$UNREACHABLE_FIX_COMMITS" | jq 'length')"
