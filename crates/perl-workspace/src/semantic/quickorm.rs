@@ -757,17 +757,15 @@ fn parse_quote_like_literal(source: &str) -> Option<(&str, QuoteLikeForm, &str)>
         return None;
     }
 
-    let paired = matches!(opening, b'(' | b'[' | b'{' | b'<');
-    let closing = if paired {
-        match opening {
-            b'(' => b')',
-            b'[' => b']',
-            b'{' => b'}',
-            b'<' => b'>',
-            _ => unreachable!(),
-        }
-    } else {
-        opening
+    // Same shape as the `char` form at the top of this file: one total match
+    // yields both halves, so the unpaired case is an arm rather than a branch
+    // the compiler has to be told is unreachable.
+    let (closing, paired) = match opening {
+        b'(' => (b')', true),
+        b'[' => (b']', true),
+        b'{' => (b'}', true),
+        b'<' => (b'>', true),
+        other => (other, false),
     };
 
     let after_open = after_operator.get(1..)?;

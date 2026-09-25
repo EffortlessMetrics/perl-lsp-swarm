@@ -650,12 +650,14 @@ fn mutation_rows() -> Vec<SurfaceRow> {
                 "workspace.workspaceFolders.changeNotifications",
                 "workspace.textDocumentContent.schemes[]",
             ],
-            client_capability_inputs: &["workspace.workspaceFolders"],
+            // #8161: `supported` is server implementation truth, so no client
+            // capability input feeds this row's workspace-folder pointers.
+            client_capability_inputs: NO_INPUTS,
             ..mut_row(
                 "mut.handle_initialize.workspaceReplacement",
                 "workspace",
                 &["workspace.workspaceFolders"],
-                "workspace_capabilities(); lifecycle test initialize_disables_workspace_folder_server_capability_when_client_lacks_support; matrix workspace/textDocumentContent row",
+                "workspace_capabilities(SERVER_WORKSPACE_FOLDER_SUPPORT); lifecycle tests initialize_keeps_server_workspace_folder_support_when_client_lacks_support, initialize_server_workspace_folder_support_is_independent_of_active_folder_count, initialize_explicit_empty_workspace_folders_never_adopts_root_uri, initialize_explicit_null_workspace_folders_never_adopts_root_uri; matrix workspace/textDocumentContent row",
             )
         },
         SurfaceRow {

@@ -1103,15 +1103,36 @@ default_pr = false
 runner = "ubuntu_latest"
 base_lem = 1
 owner = "ci"
-intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status."
-failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, or a validator failure masks as a routing skip."
-proof_obligation = "Run both lanes; aggregate passes on agreement or on a fallback success when the trusted lane never completes, and fails on trusted failure or divergence; run the fallback contract test."
+intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status. Reports actionable deadline diagnostics when the trusted lane stays queued without a runner (#15900)."
+failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, a validator failure masks as a routing skip, or a queued-forever trusted lane leaves the run and its check permanently pending without diagnostics."
+proof_obligation = "Run both lanes; aggregate passes on agreement or on a fallback success when the trusted lane never completes, and fails on trusted failure or divergence; report deadline diagnostics for a trusted lane still queued without a runner; run the fallback contract test."
 evidence = ["job output", "step-summary"]
 allowed_triggers = ["pull_request", "workflow_dispatch"]
 expensive = false
 duplicate_of = []
 review_after = "2026-09-18"
 expires = "2027-02-18"
+
+[[lane]]
+id = "policy_validators_nano_reaper"
+workflow = ".github/workflows/policy-validators-nano-reaper.yml"
+job = "reap"
+tier = "frontdoor"
+kind = "control"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 1
+owner = "ci"
+intent = "Cancel Policy Validators trusted-lane jobs that stayed queued without a runner past the service window so affected runs reach an explicit terminal state (#15900)."
+failure_mode = "A queued-forever trusted lane leaves affected PR runs and their checks permanently pending without diagnostics."
+proof_obligation = "Find queued policy-validators trusted-lane jobs older than the service window, cancel them with actionable diagnostics naming the em-ci-nano group and the follow-up."
+evidence = ["job output", "step-summary"]
+allowed_triggers = ["schedule", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-03-18"
 
 [[lane]]
 id = "commit_checks"
@@ -1290,3 +1311,28 @@ expensive = false
 duplicate_of = []
 review_after = "2026-11-26"
 expires = "2026-12-26"
+
+# =============================================================================
+# Default-branch baseline re-measurement
+# =============================================================================
+
+[[lane]]
+id = "content_anchored_baselines"
+workflow = ".github/workflows/content-anchored-baselines.yml"
+job = "measure"
+tier = "commit"
+kind = "policy"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 12
+owner = "ci"
+intent = "Re-measure the content-anchored baselines on every default-branch commit, so drift is dated to the commit that caused it rather than reported against the next pull request (#16264)."
+failure_mode = "A namespace reference or audited surface changes in a file outside the crates the scope-aware pull-request gates select, so nothing measures it before it lands."
+proof_obligation = "Run cargo xtask kwalitee-inventory --check and cargo test -p xtask --lib --locked ast_v2_lifecycle_audit against the pushed tree, with no path filter."
+evidence = ["job output"]
+allowed_triggers = ["push", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2027-03-20"
+expires = "2027-09-20"

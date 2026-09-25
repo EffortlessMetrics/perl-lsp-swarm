@@ -15,12 +15,21 @@ Inputs:
 
 Output: target/ci/ci-plan.json (or path passed via --json-out).
 
+Exit codes:
+  0  planned (a genuinely empty diff is a valid empty plan);
+  2  over the hard LEM ceiling;
+  3  changed-file discovery unavailable: a NOT_PROVEN receipt is written
+     and no lanes are planned (a failed diff must never look like an
+     empty diff).
+
 This is the Python prototype. PR 12 replaces it with `cargo xtask ci plan`,
-which reuses the existing ci-scope changed-file classifier.
+which reuses the existing ci-scope changed-file classifier and must keep
+these typed change-set semantics (#15347).
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -36,16 +45,46 @@ def read_toml(path: Path) -> dict[str, Any]:
         return tomllib.load(f)
 
 
-def changed_files(base: str, head: str) -> list[str]:
+def discover_changed_files(base: str, head: str) -> dict[str, Any]:
+    """Typed changed-set discovery for the plan's diff subject (#15347).
+
+    Returns exactly one of:
+
+      {"status": "known", "files": [...], "digest": "<sha256>"}
+        a non-empty diff from a successful `git diff` (exit 0);
+      {"status": "known_empty", "files": [], "digest": "<sha256>"}
+        a genuinely empty diff from a successful `git diff` (exit 0);
+      {"status": "unavailable", "code", "detail", "command"}
+        an instrument failure: missing base object, bad ref, non-ancestor,
+        shallow clone, unreadable repository, or unspawnable git.
+
+    A true empty diff and an unavailable diff are opposite facts. Discovery
+    must never map a failed diff command to an empty file list; callers plan
+    only from `known`/`known_empty` change sets.
+    """
+    command = ["git", "diff", "--name-only", f"{base}...{head}"]
     try:
-        out = subprocess.check_output(
-            ["git", "diff", "--name-only", f"{base}...{head}"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except subprocess.CalledProcessError:
-        return []
-    return [line for line in out.splitlines() if line.strip()]
+        proc = subprocess.run(command, text=True, capture_output=True)
+    except OSError as exc:
+        return {
+            "status": "unavailable",
+            "code": "git-unspawnable",
+            "detail": f"cannot run git: {exc}",
+            "command": command,
+        }
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        return {
+            "status": "unavailable",
+            "code": f"git-diff-exit-{proc.returncode}",
+            "detail": stderr or f"git diff exited {proc.returncode} with no stderr",
+            "command": command,
+        }
+    files = [line for line in proc.stdout.splitlines() if line.strip()]
+    digest = hashlib.sha256("\n".join(sorted(files)).encode("utf-8")).hexdigest()
+    if files:
+        return {"status": "known", "files": files, "digest": digest}
+    return {"status": "known_empty", "files": [], "digest": digest}
 
 
 def path_matches_glob(path: str, pattern: str) -> bool:
@@ -520,6 +559,84 @@ def band_for(lem: float, budget: dict[str, Any]) -> str:
     return "over_ceiling"
 
 
+EXIT_OK = 0
+EXIT_OVER_CEILING = 2
+EXIT_DISCOVERY_UNAVAILABLE = 3
+
+
+def not_proven_plan(
+    *,
+    base: str,
+    head: str,
+    labels: list[str],
+    changeset: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a machine-refusable NOT_PROVEN receipt for unavailable discovery.
+
+    The refusal is structured (`posture`, `changed_set.status`, and
+    `refusal.reason`) so a downstream consumer can refuse the plan without
+    parsing prose, and it carries the exact failure code, detail, and the
+    reproduce command.
+    """
+    code = str(changeset.get("code", "unknown"))
+    detail = str(changeset.get("detail", "changed-file discovery failed"))
+    reproduce = " ".join(changeset.get("command", []))
+    warning = (
+        f"::error::Changed-file discovery failed ({code}): {detail}. Plan is "
+        "NOT_PROVEN; no lanes are selected because the changed set is "
+        f"unknown. Reproduce: `{reproduce}`"
+    )
+    return {
+        "schema_version": 1,
+        "repo": "perl-lsp",
+        "base_sha": base,
+        "head_sha": head,
+        "labels": labels,
+        "posture": "NOT_PROVEN",
+        "changed_set": changeset,
+        "refusal": {
+            "reason": "changed_file_discovery_unavailable",
+            "code": code,
+            "detail": detail,
+            "reproduce": reproduce,
+        },
+        "selection": {
+            "risk_packs": [],
+            "lanes": [],
+            "skipped_lanes": [],
+            "refused": True,
+        },
+        "warnings": [warning],
+        "guard": {
+            "hard_ceiling_exceeded": False,
+            "override_present": False,
+            "ack_present": False,
+            "failed": True,
+        },
+    }
+
+
+def render_not_proven_summary(plan: dict[str, Any]) -> str:
+    refusal = plan["refusal"]
+    changeset = plan["changed_set"]
+    lines = [
+        "# PR Plan — NOT_PROVEN",
+        "",
+        "Changed-file discovery failed, so the changed set is unknown.",
+        "No lanes were planned; downstream consumers must refuse this",
+        "receipt via `posture: NOT_PROVEN` / `refusal.reason`.",
+        "",
+        f"- Code: `{refusal['code']}`",
+        f"- Detail: {refusal['detail']}",
+        f"- Reproduce: `{refusal['reproduce']}`",
+        f"- Change-set status: `{changeset['status']}`",
+        "",
+        "Fix discovery (fetch the base, unshallow, or repair the ref) and",
+        "re-run the plan.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def render_summary(plan: dict[str, Any]) -> str:
     bud = plan["budget"]
     lines = [
@@ -695,7 +812,33 @@ def main() -> int:
     except json.JSONDecodeError:
         labels = []
 
-    files = changed_files(args.base, args.head)
+    changeset = discover_changed_files(args.base, args.head)
+    if changeset["status"] == "unavailable":
+        plan = not_proven_plan(
+            base=args.base, head=args.head, labels=labels, changeset=changeset
+        )
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(json.dumps(plan, indent=2) + "\n")
+        if args.summary:
+            summary_path = Path(args.summary)
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            with summary_path.open("a", encoding="utf-8") as f:
+                f.write(render_not_proven_summary(plan))
+        # The annotation must reach the workflow log, not only the receipt:
+        # GitHub renders `::error::` lines from the process output.
+        print(plan["warnings"][0], file=sys.stderr)
+        print(
+            json.dumps(
+                {
+                    "posture": "NOT_PROVEN",
+                    "reason": plan["refusal"]["code"],
+                    "detail": plan["refusal"]["detail"],
+                }
+            )
+        )
+        return EXIT_DISCOVERY_UNAVAILABLE
+
+    files = changeset["files"]
     selected_packs, areas = classify_areas(files, risk_packs)
     selected_lanes, skipped_lanes = select_lanes(
         files=files,
@@ -777,6 +920,7 @@ def main() -> int:
             "hard_limit_lem": int(budget.get("hard_limit_lem", 125)),
             "estimated_usd": estimated_lem * rate,
         },
+        "changed_set": changeset,
         "changed": {
             "files": files,
             "areas": areas,
@@ -813,8 +957,8 @@ def main() -> int:
 
     print(json.dumps({"estimated_lem": estimated_lem, "band": band, "lanes": len(selected_lanes)}))
     if over_ceiling_failure:
-        return 2  # distinct from generic error so workflow can branch on it
-    return 0
+        return EXIT_OVER_CEILING  # distinct from generic error so workflow can branch on it
+    return EXIT_OK
 
 
 if __name__ == "__main__":

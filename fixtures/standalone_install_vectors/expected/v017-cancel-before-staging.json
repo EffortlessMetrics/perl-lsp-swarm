@@ -1,0 +1,72 @@
+{
+  "schema": "standalone_semantic_packet.v1",
+  "vector_id": "v017-cancel-before-staging",
+  "contract_generation": 1,
+  "route": "first_party_powershell",
+  "mode": "release_archive",
+  "requested_product_unit": "server_only",
+  "effective_product_unit": "server_only",
+  "effective_path_policy": "persist",
+  "resolved_subject_digest": "sha256:4460e035652d6fcabb35413ba688750c014002010b75619e5e62770bbdb1c043",
+  "attempts": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "outcome": "cancelled",
+      "reason_family": "cancelled"
+    }
+  ],
+  "branches": [
+    {
+      "branch_id": "branch-main",
+      "subject_digest": "sha256:4460e035652d6fcabb35413ba688750c014002010b75619e5e62770bbdb1c043",
+      "terminal_result": "cancelled",
+      "reason_family": "cancelled"
+    }
+  ],
+  "executed_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "resolve_subject",
+      "result": "succeeded",
+      "reason_family": "none",
+      "receipt_digest": "sha256:8946903333d8b1c426e6a615271a38da3f1f198218a6dc190fca3d3da9c6c4fd",
+      "predecessor_digests": []
+    },
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "transport",
+      "result": "failed",
+      "reason_family": "cancelled",
+      "receipt_digest": "sha256:c3051edc941d73a69c9707b6417f078d57a48a0ece5c02b93033577034f23659",
+      "predecessor_digests": []
+    }
+  ],
+  "skipped_stages": [
+    {
+      "attempt_id": "attempt-a1",
+      "branch_id": "branch-main",
+      "stage_id": "source_build",
+      "authorization": "mode_authorized"
+    }
+  ],
+  "observations": [],
+  "effects": [
+    {
+      "level": "transport_artifacts",
+      "kind": "transport_artifacts"
+    }
+  ],
+  "side_effect_ceiling": "transport_artifacts",
+  "claim_ceiling": "none",
+  "pair_claims_satisfied": false,
+  "terminal": {
+    "result": "cancelled",
+    "stage_id": "transport",
+    "reason_family": "cancelled",
+    "action_class": "abort_install"
+  },
+  "redaction_disposition": "roles_only"
+}
