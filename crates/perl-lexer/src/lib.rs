@@ -915,7 +915,17 @@ impl<'a> PerlLexer<'a> {
         // We must NOT fire the guard at statement level (paren_depth == 0) because
         // `print $fh <<END` is valid Perl: `$fh` sets ExpectOperator but `<<END`
         // is a heredoc.  The depth check distinguishes the two cases.
-        if self.mode == LexerMode::ExpectOperator && self.paren_depth > 0 {
+        //
+        // Per #16163, the same exception applies inside the parens of a list-
+        // operator `print(...)` call: the filehandle-like preceding term is still
+        // a print argument, not a regular expression operand, so `<<'END'` after
+        // `$fh` is a heredoc opener, not a left shift. `print_list_paren_depth`
+        // is incremented when `print` is invoked as a list operator with parens
+        // (no preceding `->` or `&`) and decremented on the matching `)`.
+        if self.mode == LexerMode::ExpectOperator
+            && self.paren_depth > 0
+            && self.print_list_paren_depth == 0
+        {
             return None;
         }
 
@@ -2221,10 +2231,30 @@ impl<'a> PerlLexer<'a> {
                 TokenType::Identifier(Arc::from(text))
             };
 
+            // Detect `print(` invoked as a list operator at term position
+            // (no preceding `->` or `&`) for #16163. When the immediately
+            // following non-whitespace byte is `(`, mark the next open paren
+            // as the list-operator opener so `<<` inside the parens is
+            // recognized as a heredoc. Method (`->print`) and function
+            // (`&print`) calls are excluded; the parser sees `<<` as a
+            // left-shift operator there.
+            //
+            // The check runs BEFORE `after_arrow` is cleared below so the
+            // operator state at the start of the identifier still reflects
+            // whether `->` immediately preceded `print`.
+            if text == "print"
+                && !self.after_arrow
+                && self.print_list_paren_follows(start)
+                && !self.preceded_by_ampersand(start)
+            {
+                self.pending_print_list_paren = true;
+            }
+
             self.after_arrow = false;
             // A keyword/identifier is not a variable; `{` after it is a block opener.
             self.after_var_subscript = false;
             // hash_brace_depth is managed by { and } handlers, not cleared per-token
+
             Some(Token { token_type, text: Arc::from(text), start, end: self.position })
         } else {
             None
@@ -2573,6 +2603,14 @@ impl<'a> PerlLexer<'a> {
                 } else if self.in_prototype {
                     self.prototype_depth += 1;
                 }
+                // Track `print(...)` list-operator parens for #16163. The flag
+                // is set by the identifier handler when `print` at term position
+                // is followed (after horizontal whitespace) by `(`. The flag is
+                // consumed here even when nested prototypes re-enter the path.
+                if self.pending_print_list_paren {
+                    self.pending_print_list_paren = false;
+                    self.print_list_paren_depth += 1;
+                }
                 self.paren_depth += 1;
                 self.after_var_subscript = false;
                 self.mode = LexerMode::ExpectTerm;
@@ -2593,6 +2631,14 @@ impl<'a> PerlLexer<'a> {
                 }
                 self.after_arrow = false;
                 self.paren_depth = self.paren_depth.saturating_sub(1);
+                // A closing paren decrements the `print(...)` list-operator
+                // counter for #16163. We pop the most recent open print paren;
+                // nested parens inside the print list (e.g. `print((1)x<<E);`)
+                // do not change the counter because the inner `(` did not open
+                // a print list.
+                if self.print_list_paren_depth > 0 {
+                    self.print_list_paren_depth -= 1;
+                }
                 // A closing paren ends any var-subscript context: `if ($var)` should
                 // NOT leave after_var_subscript set, otherwise the following `{` would
                 // incorrectly increment hash_brace_depth and suppress regex operators
