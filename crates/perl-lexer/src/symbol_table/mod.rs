@@ -852,10 +852,10 @@ fn heredoc_allowed_before(
 
     // A callable that can still take arguments makes `<<MARKER` its heredoc
     // argument (`print <<END`, unprototyped `foo <<END`). A nullary authority
-    // instead completes a term: `sub foo ()` and `time` leave `<<` as the
-    // left-shift operator (local Perl oracle, #16165). A sigiled word is a
-    // variable, not a callable: `$print <<'END'` is a left shift too, so only
-    // a sigil-free callable word introduces a heredoc.
+    // instead completes a bare call: `sub foo ()` and `time` leave `<<` as the
+    // left-shift operator (local Perl oracle, #16165). An explicit `&foo` call
+    // bypasses prototypes and still accepts a heredoc argument (#16445).
+    // Variable sigils name completed terms: `$print <<'END'` is left shift.
     previous_word_and_sigil_before(line, offset).is_some_and(|(sigil, word)| {
         // A sigiled word is a completed term first: `$print <<'END'` and the
         // typeglob/last-index forms are left shifts, never heredoc
@@ -872,6 +872,9 @@ fn heredoc_allowed_before(
         // helper, so spaced forms (`$object-> return`) are recognized as
         // method invocations as well (#16336).
         let before_word = prefix[..prefix.len() - word.len()].trim_end_matches([' ', '\t']);
+        if before_word.ends_with('&') {
+            return true;
+        }
         let is_return_keyword = word == "return" && !before_word.ends_with("->");
         is_return_keyword
             || (is_callable_word(word, known_subs, &hints.callables)
@@ -1088,6 +1091,24 @@ mod tests {
             "print <<END;\nsub fake { }\nEND\nsub real { }\n",
             &["real"],
             &["fake"],
+        );
+    }
+
+    #[test]
+    fn ampersand_call_bypasses_nullary_prototype_for_heredoc() {
+        // Perl accepts &foo <<END as a heredoc argument even when the local
+        // declaration has an empty prototype. The body is not live code.
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = &foo <<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        // Without the ampersand, the empty prototype completes the call and
+        // leaves << as shift; the following declaration must remain visible.
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = foo <<END;\nsub visible { }\nEND\n",
+            &["visible"],
+            &[],
         );
     }
 
