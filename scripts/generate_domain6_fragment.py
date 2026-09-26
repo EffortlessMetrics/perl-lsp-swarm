@@ -54,7 +54,7 @@ PREFILTER = [
 
 EXPECTED_NON_MERGE = 682
 EXPECTED_UNITS = 672
-EXPECTED_SEEDS = 11
+EXPECTED_SEEDS = 14
 # Unsimplified range merge population (START_SHA..OBSERVED_HEAD,
 # --full-history): 2 kept + 1 related-record + 62 content-free +
 # 11 blob-covered + 18 created = 94. Pinned: the range is fixed, the
@@ -1177,6 +1177,322 @@ SEEDS = {
         "(#15101)(#15103); merge_commit_sha of PR #15103 equals the "
         "commit (verified 2026-09-25); issue #15101 is the tracked "
         "reconciliation",
+    },
+    "PR#15447": {
+        "commits": ["66e09df5aa31df58ab2353c1524787f27186bf80"],
+        "subject": "fix(release): align topology with publication "
+        "dependency graph (#15446) (#15447)",
+        "paths_or_components": [
+            ".github/workflows/publish-crates.yml",
+            "scripts/generate_release_topology.py",
+            "scripts/publish-topo.py",
+            "scripts/test_generate_release_topology.py",
+            "scripts/tests/test-publish-topo.py",
+        ],
+        "release_domains": ["release", "install"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/tests/test-publish-topo.py",
+            "scripts/test_generate_release_topology.py",
+        ],
+        "known_limitations": [
+            "mechanism-stage only: no tagged release has been produced "
+            "through this publication graph, so crate publish ordering "
+            "and archive production remain unproven end to end; the "
+            "workflow step contract is executed in tests, not observed "
+            "in a run",
+            "the masked downloader scan was superseded in range by "
+            "PR#15911 (#15453): regex-literal pseudo-returns and "
+            "commented Darwin/Linux branches its masking could still "
+            "admit now fail closed under the position-aware lexer",
+            "publish-crates.yml receipt shape changed after this commit "
+            "by PR#15478 (schema_version publication_receipt.v1, "
+            "release_version key) so an unreadable receipt is non-green; "
+            "this row's diff predates the envelope",
+            "later in-range rows re-bound shared sources: PR#15726 "
+            "attestation subjects and reviewed PR#16207 topology v4; "
+            "the graph builder and helper loading are unchanged through "
+            "current main (verified 2026-09-25)",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["15446-CLOSED"],
+        "invalidators": [
+            "publish-topo.py graph policy rework (SCC dev-edge policy, "
+            "registry-edge handling, or allowlist drift checks)",
+            "generate_release_topology helper loading or --root source "
+            "binding rework",
+            "publish-crates.yml topological-order step rework without "
+            "the workflow-step contract test following",
+            "downloader constant set or derive_downloader_targets "
+            "admission rework (position-aware lexer owner PR#15911)",
+        ],
+        "platforms_and_targets": [
+            "portable release tooling: python stdlib topology generation "
+            "plus the publish-crates workflow",
+            "downloader-derived target admission spans linux, macOS "
+            "(aarch64-apple-darwin), and windows "
+            "(x86_64-pc-windows-msvc, aarch64-pc-windows-msvc) through "
+            "the constants in vscode-extension/src/downloader.ts",
+        ],
+        "artifact_or_route_effects": [
+            "one shared publication dependency graph owner: "
+            "publish-topo.py build_publish_dependency_graph retains "
+            "normal and build internal edges always, keeps dev edges "
+            "across Tarjan SCC boundaries, and drops only intra-SCC dev "
+            "edges so the test-only cycle cannot block publication "
+            "ordering; registry (non-workspace) dependencies create no "
+            "local cycle",
+            "generate_release_topology derives crate publish order by "
+            "compiling scripts/publish-topo.py from the selected --root "
+            "source bytes and calling its builder, failing closed on "
+            "unreadable, uncompilable, or builder-less helpers; the "
+            "second inline SCC implementation is deleted from the "
+            "generator",
+            "publish-crates.yml Compute topological order reduces to "
+            "cargo metadata piped through python3 scripts/publish-topo.py "
+            "under set -euo pipefail; tests execute the extracted step "
+            "against real metadata (registry-edge shared helper, "
+            "fail-closed malformed metadata, cargo failure propagation) "
+            "and isolate fixture output with surfaced cleanup failures",
+            "downloader target derivation masks TypeScript comments, "
+            "strings, and regex/template bodies so a literal return "
+            "pseudo-return outside executable positions no longer "
+            "admits a target; windows targets require the declared "
+            "constant plus constant-return pair in executable positions",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#15447) of subject pair "
+        "(#15446)(#15447); merge_commit_sha of PR #15447 equals the "
+        "commit (verified 2026-09-25); issue #15446 is the tracked "
+        "problem",
+    },
+    "PR#15449": {
+        "commits": ["29dc123932371348a470febd11a21a07056bdc98"],
+        "subject": "fix(release): retain truthful external digest packet "
+        "limitation (#15448) (#15449)",
+        "paths_or_components": [
+            "scripts/prepare_vsix_prebuilt_payload.py",
+            "scripts/release_build_identity.py",
+            "scripts/release_terminal_manifest.py",
+            "scripts/test_prepare_vsix_prebuilt_payload.py",
+            "scripts/test_release_build_identity.py",
+            "scripts/test_release_terminal_manifest.py",
+        ],
+        "release_domains": ["editor", "install", "release"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "compatibility: exact packets carrying the previous empty "
+            "limitations shape (absent or []) fail validation from this "
+            "commit forward; existing frozen evidence with the old "
+            "packet shape must be regenerated rather than admitted, and "
+            "no externally bound digest path exists to migrate to"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/test_release_build_identity.py",
+            "scripts/test_release_terminal_manifest.py",
+            "scripts/test_prepare_vsix_prebuilt_payload.py",
+        ],
+        "known_limitations": [
+            "the limitation is a machine-checked admission law only: "
+            "nothing on main binds an artifact digest externally; "
+            "#15448 (CLOSED) owned accepting the truthful limitation "
+            "and no open issue currently tracks binding digests "
+            "externally",
+            "adapter receipts (build_execution adapter) are local "
+            "composition authorities for the VSIX prebuilt payload; the "
+            "terminal manifest still admits external_release_workflow "
+            "only as public authority, and no production run through "
+            "either path is proven in-unit",
+            "later in-range rows reworked neighboring proof: reviewed "
+            "PR#16207 (RC/numeric VSIX binding) reworked "
+            "prepare_vsix_prebuilt_payload.py and "
+            "release_build_identity.py, and PR#15726 re-routed terminal "
+            "subjects through release_subject_projection.py; the "
+            "limitation-law lines are unchanged through current main "
+            "(verified 2026-09-25)",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["15448-CLOSED"],
+        "invalidators": [
+            "packet limitations law change (accepted limitation set, "
+            "exact-match requirement, or where validate_packet is "
+            "enforced)",
+            "artifact row shape change re-introducing a digest or "
+            "tolerating unknown fields",
+            "terminal-manifest execution-authority loosening beyond "
+            "external_release_workflow, or adapter acceptance rework "
+            "(RC/numeric binding owner reviewed PR#16207)",
+            "future externally bound digest work changing what "
+            "artifact_digest_not_externally_bound means",
+        ],
+        "platforms_and_targets": [
+            "portable release receipt tooling: python stdlib admission "
+            "for perllsp and perl-dap binary packets across the archive "
+            "target matrix; no platform-specific code paths in-unit",
+        ],
+        "artifact_or_route_effects": [
+            "exact release packets must carry limitations exactly "
+            "[artifact_digest_not_externally_bound]: missing, empty, "
+            "wrong, or extra limitations fail closed in "
+            "release_build_identity.validate_packet and in "
+            "terminal-manifest binary rows",
+            "binary packet artifact rows reject unknown fields and "
+            "require role archive with the matching candidate_identity "
+            "and no digest (omitted or null), so the packet honestly "
+            "records that the artifact digest is not externally bound",
+            "the VSIX prebuilt payload adapter accepts receipts with "
+            "build_execution adapter or external_release_workflow for "
+            "local composition while release_terminal_manifest keeps "
+            "the default external_release_workflow-only admission; a "
+            "test proves a local adapter receipt is not public terminal "
+            "authority",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#15449) of subject pair "
+        "(#15448)(#15449); merge_commit_sha of PR #15449 equals the "
+        "commit (verified 2026-09-25); issue #15448 is the tracked "
+        "problem",
+    },
+    "PR#15726": {
+        "commits": ["2290ff8295018fc91fd9a08ea19b048c892d8277"],
+        "subject": "feat(release): project topology attestation subjects "
+        "(#15281) (#15726)",
+        "paths_or_components": [
+            "docs/releases/v0.18-release-topology.md",
+            "policy/non-rust-allowlist.toml",
+            "schemas/release_topology.v3.schema.json",
+            "scripts/generate_release_topology.py",
+            "scripts/release_subject_projection.py",
+            "scripts/release_terminal_manifest.py",
+            "scripts/release_topology_json.py",
+            "scripts/test_generate_release_topology.py",
+            "scripts/test_release_terminal_manifest.py",
+        ],
+        "release_domains": ["release", "security"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "adopting v3 requires regenerating fresh frozen and prepared "
+            "v3 authorities with byte-identical schema, helper, and "
+            "terminal producer sources; rollback is to stop selecting "
+            "v3, preserving existing v1/v2 evidence rather than "
+            "downgrading a v3 authority in place; v3 fields must never "
+            "be retrofitted into historical v1/v2 evidence"
+        ],
+        "api_schema_package_effects": [
+            "schemas/release_topology.v3.schema.json (new; opt-in "
+            "--schema-version 3 extends v2 with subject_projection; "
+            "default v1/v2 output, source inventories, terminal "
+            "manifest, and checksum-list bytes unchanged)",
+            "policy/non-rust-allowlist.toml: two production "
+            "release-contract entries (v3 schema, "
+            "scripts/release_subject_projection.py), review_after "
+            "2026-12-15",
+        ],
+        "proof_owner_refs": [
+            "scripts/test_generate_release_topology.py",
+            "scripts/test_release_terminal_manifest.py",
+            "policy/non-rust-allowlist.toml covered_by pins the "
+            "cross-checks (unittest modules, cargo xtask "
+            "check-file-policy)",
+        ],
+        "known_limitations": [
+            "v3 is opt-in only and not an end-to-end release input: the "
+            "generator default remains schema 1, no workflow requests "
+            "v3, and build-identity, public-release-claims, and the Rust "
+            "topology port still refuse v3 explicitly (load_topology_json "
+            "default supported_versions (1, 2) is unchanged through "
+            "current main)",
+            "the projection describes sources, not execution: external "
+            "attestation execution stays not_proven by construction; no "
+            "publication, tag, attestation, or observed upload is "
+            "authorized or proven, and publisher authority, ordering, "
+            "and intermediate-asset-mutation protection stay out of "
+            "scope",
+            "the release.yml recognizer is a fail-closed body contract, "
+            "not execution; action pins (actions/attest 1e69f48 v4.2.2, "
+            "softprops/action-gh-release efb3536 v3.0.3) and the "
+            "candidate/attestation-subjects.sha256 input re-verified on "
+            "current main 2026-09-25; reviewed PR#15260 owns the "
+            "consolidated-SHA256SUMS producer contract",
+            "topology versions extended to 4 after this commit by "
+            "reviewed PR#16207 (mapped-RC transition); the v3 schema, "
+            "projection owner, and raw-JSON admission defaults are "
+            "byte-unchanged through the denominator head and current "
+            "main",
+            "#15281 (CLOSED) is packet 2 of #6067 (OPEN) topology "
+            "convergence; remaining-consumer adoption is a separate "
+            "prerequisite owned there",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["15281-CLOSED"],
+        "invalidators": [
+            "release_topology.v3 schema byte changes or "
+            "subject_projection shape change",
+            "release_subject_projection.py subject relationship changes "
+            "(fixed subjects, subject list, dynamic classes, "
+            "conditional paths)",
+            "normalized AST admission rework (formatting or empty "
+            "type-parameter sensitivity, refreshed-hash refusal)",
+            "release.yml producer step, action pin, or publish-release "
+            "file selection change without the recognizer following",
+            "bounded consumers adopting v3 by default changes the "
+            "explicit-refusal law (reviewed v4 row PR#16207)",
+        ],
+        "platforms_and_targets": [
+            "portable release tooling: python stdlib projection plus the "
+            "release.yml workflow body contract; the subject list and "
+            "SBOM path selection are target-independent",
+        ],
+        "artifact_or_route_effects": [
+            "opt-in release_topology.v3 adds subject_projection: fixed "
+            "subjects dist/SHA256SUMS (checksum set), dist/sbom-spdx.json "
+            "(SPDX-2.3, github_release channel), and "
+            "dist/release-terminal-manifest.json; local subject list "
+            "attestation-subjects.sha256; dynamic classes "
+            "release_archives and validated_build_evidence; conditional "
+            "release_notes.md; external attestation records via "
+            "actions/attest with execution not_proven; the list is not "
+            "its own subject",
+            "closed workflow recognizer binds the selected schema, "
+            "helper, and terminal producer sources: ordered candidate "
+            "producer steps, SBOM command, terminal invocation, "
+            "actions/attest subject-checksums input, and the unique "
+            "publish-release step whose files candidate/dist/* selects "
+            "the projected SBOM path (a source channel-selection edge, "
+            "not publisher authority or an observed upload)",
+            "normalized AST identities admit the shared helper and "
+            "entire terminal producer module independent of formatting "
+            "and comments, refuse changed producers even with refreshed "
+            "source hashes, and ignore only empty Python 3.12 type "
+            "parameters",
+            "terminal manifest subjects are built through the shared "
+            "terminal_subject_paths owner preserving prior bytes; "
+            "bounded raw-JSON consumers keep refusing v3 by default "
+            "(load_topology_json supported_versions parameter)",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#15726) of subject pair "
+        "(#15281)(#15726); merge_commit_sha of PR #15726 equals the "
+        "commit (verified 2026-09-25); issue #15281 is the tracked "
+        "problem (packet 2 of #6067)",
     },
 }
 
