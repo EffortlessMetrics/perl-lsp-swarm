@@ -838,7 +838,7 @@ impl Lowerer {
                     Some(site_scope),
                 );
             }
-            NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
+            NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code, .. } => {
                 self.push_item(
                     node,
                     None,
@@ -5475,12 +5475,12 @@ impl<'a> BodyBuilder2<'a> {
             // operator that range covers the target and binding operator too,
             // so it is an enclosing anchor and not an exact record key — see
             // `RegexAnalysisAnchor`.
-            NodeKind::Regex { modifiers, has_embedded_code, .. } => {
-                // Unbound regex construct. The AST does not distinguish `qr//`
-                // (regex value) from an unbound `m//` or bare `/.../` against
-                // the default topic, so this form claims neither.
+            NodeKind::Regex { form, modifiers, has_embedded_code, .. } => {
+                // Preserve the parser's source operator: `qr//` constructs a
+                // regex value; `m//` and `/.../` match the default topic.
                 self.alloc_expr(
                     HirExpr::Regex(HirRegex {
+                        form: *form,
                         modifiers: modifiers.clone(),
                         embedded_code: *has_embedded_code,
                         analysis: RegexAnalysisAnchor {

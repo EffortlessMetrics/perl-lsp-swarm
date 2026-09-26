@@ -26,7 +26,7 @@
 //! [`NativeDebugSexpResult`]. [`Node::to_sexp`] is a `String` convenience over
 //! that engine and cannot prove completeness.
 
-use super::{FieldId, GotoTargetForm, Node, NodeKind, Token, TokenKind};
+use super::{FieldId, GotoTargetForm, Node, NodeKind, RegexSurfaceForm, Token, TokenKind};
 use std::fmt::{self, Write as _};
 
 /// Grammar identity for this native debug projection.
@@ -587,7 +587,8 @@ fn write_payloads(kind: &NodeKind, out: &mut impl SexpSink) -> Result<(), Render
         NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
             write_named(out, "name", name)
         }
-        NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
+        NodeKind::Regex { form, pattern, replacement, modifiers, has_embedded_code } => {
+            write_named(out, "form", regex_form_atom(form))?;
             write_named(out, "pattern", pattern)?;
             if let Some(replacement) = replacement {
                 write_named(out, "replacement", replacement)?;
@@ -698,6 +699,14 @@ fn goto_form_atom(form: &GotoTargetForm) -> &'static str {
         GotoTargetForm::Label => "label",
         GotoTargetForm::Sub => "sub",
         GotoTargetForm::Expr => "expr",
+    }
+}
+
+fn regex_form_atom(form: &RegexSurfaceForm) -> &'static str {
+    match form {
+        RegexSurfaceForm::Qr => "qr",
+        RegexSurfaceForm::MatchOperator => "m",
+        RegexSurfaceForm::BarePattern => "bare",
     }
 }
 
