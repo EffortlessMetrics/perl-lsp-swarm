@@ -5951,8 +5951,8 @@ impl<'a> BodyBuilder2<'a> {
         let (sigil, name) = split_catch_variable(spelling);
 
         let binding = self.binding_declared_at(sigil, name, range);
-        let resolved = binding
-            .and_then(|id| self.scope_graph.bindings.iter().find(|entry| entry.id == id));
+        let resolved =
+            binding.and_then(|id| self.scope_graph.bindings.iter().find(|entry| entry.id == id));
         let kind = Self::kind_for(name, resolved);
 
         self.alloc_expr(
