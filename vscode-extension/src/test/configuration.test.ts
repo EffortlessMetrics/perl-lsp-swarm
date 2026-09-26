@@ -743,13 +743,6 @@ describe('package.json contributes', () => {
       expect(setting.scope).toBe('machine');
     });
 
-    test('defines autoPopulateNewFiles as opt-in', () => {
-      const setting = getSetting(properties, 'perl-lsp.autoPopulateNewFiles');
-      expect(setting).toBeDefined();
-      expect(setting.type).toBe('boolean');
-      expect(setting.default).toBe(false);
-    });
-
     test('defines updateCheckInterval setting used by background update checker', () => {
       const setting = getSetting(properties, 'perl-lsp.updateCheckInterval');
       expect(setting).toBeDefined();
@@ -804,7 +797,6 @@ describe('package.json contributes', () => {
         'perl-lsp.perlcritic.enabled',
         'perl-lsp.perlcritic.severity',
         'perl-lsp.enableTestIntegration',
-        'perl-lsp.autoPopulateNewFiles',
       ];
       for (const key of resourceScoped) {
         expect(getSetting(properties, key).scope).toBe('resource');

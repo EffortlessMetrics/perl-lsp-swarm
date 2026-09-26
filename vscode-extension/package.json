@@ -605,14 +605,6 @@
             "order": 60,
             "description": "Enable Test::More and Test2 integration for the VS Code Test Explorer panel.",
             "markdownDescription": "Enable `Test::More` and `Test2` integration for the VS Code Test Explorer panel."
-          },
-          "perl-lsp.autoPopulateNewFiles": {
-            "type": "boolean",
-            "default": false,
-            "scope": "resource",
-            "order": 70,
-            "description": "Opt in to automatic boilerplate for newly created .pm and .t files. Off by default.",
-            "markdownDescription": "Opt in to automatic `package` and `Test::More` boilerplate for newly created `.pm` and `.t` files."
           }
         }
       },
@@ -1004,6 +996,18 @@
         "icon": "$(file-code)"
       },
       {
+        "command": "perl-lsp.createModule",
+        "title": "%command.createModule.title%",
+        "category": "Perl",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "perl-lsp.createTest",
+        "title": "%command.createTest.title%",
+        "category": "Perl",
+        "icon": "$(new-file)"
+      },
+      {
         "command": "perl-lsp.showParserAst",
         "title": "%command.showParserAst.title%",
         "category": "Perl",
@@ -1132,6 +1136,14 @@
         },
         {
           "command": "perl-lsp.openModule",
+          "when": "workspaceFolderCount >= 1"
+        },
+        {
+          "command": "perl-lsp.createModule",
+          "when": "workspaceFolderCount >= 1"
+        },
+        {
+          "command": "perl-lsp.createTest",
           "when": "workspaceFolderCount >= 1"
         },
         {

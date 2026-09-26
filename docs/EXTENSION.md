@@ -41,7 +41,6 @@ The Marketplace package is designed to work with `PATH`, `serverPath`, or runtim
 | `perl-lsp.perltidyConfig` | `""` | Path to a `.perltidyrc` compatibility file. Native formatting is the default path. |
 | `perl-lsp.includePaths` | `["lib", "local/lib/perl5"]` | Additional Perl include paths passed to the server. |
 | `perl-lsp.enableTestIntegration` | `true` | Enable test integration for `.t` and runnable `.pl` files. |
-| `perl-lsp.autoPopulateNewFiles` | `false` | Opt in to automatic boilerplate for new `.pm` and `.t` files. |
 | `perl-lsp.featureProfile` | `"auto"` | Forward a concrete feature profile to `perl-lsp` when needed. |
 | `perl-lsp.disabledFeatures` | `[]` | Array of LSP feature IDs to disable (e.g. `["lsp.hover", "lsp.semantic_tokens"]`). See the feature catalog via `perllsp --features-json`. |
 | `perl-lsp.aiCompletion.enabled` | `false` | Enable AI-assisted inline completion. |
@@ -76,6 +75,7 @@ Refactoring is exposed through server-backed code actions when available. The ex
 | `Perl: Show Output Channel` | Open the extension output channel. |
 | `Perl: Show Status Menu` | Open the quick status/action menu. |
 | `Perl: Run Tests in Current File` | Run tests for the active `.t` or `.pl` file. |
+| `Perl: Create Module` / `Perl: Create Test` | Choose a new file in a local workspace folder and create it with starter content. Ordinary file creation never inserts boilerplate. |
 | `Perl: Extract Variable` | Extract the selected expression into a new variable (`Shift+Alt+V`). |
 | `Perl: Extract Method` | Extract the selected code into a new subroutine (`Shift+Alt+M`). |
 
