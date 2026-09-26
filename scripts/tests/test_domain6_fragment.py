@@ -74,23 +74,26 @@ START_SHA = "f6b7b2c6626fbefbf01c9c9934cac5789186f8b2"
 OBSERVED_HEAD = "102974155487bc955e01d5d5222053c4c449136c"
 
 SEED_IDS = [
-    "PR#6180",
-    "PR#6186",
-    "PR#7897",
     "PR#10198",
     "PR#12086",
     "PR#12742",
     "PR#12808",
     "PR#14523",
     "PR#15103",
+    "PR#15221",
     "PR#15260",
     "PR#15443",
     "PR#15447",
     "PR#15449",
     "PR#15450",
+    "PR#15456",
     "PR#15726",
+    "PR#15911",
     "PR#16207",
     "PR#16371",
+    "PR#6180",
+    "PR#6186",
+    "PR#7897",
 ]
 SEED_FRAGMENTS = {
     "PR#16371": "distribution",
@@ -107,6 +110,9 @@ SEED_FRAGMENTS = {
     "PR#15447": "distribution",
     "PR#15449": "distribution",
     "PR#15726": "distribution",
+    "PR#15221": "editor",
+    "PR#15456": "editor",
+    "PR#15911": "distribution",
     "PR#6180": "distribution",
     "PR#6186": "distribution",
     "PR#7897": "distribution",
@@ -162,8 +168,8 @@ class Domain6FragmentTest(unittest.TestCase):
         self.assertEqual(counts["total_rows"], 705)
         self.assertEqual(counts["unique_commits"], 702)
         self.assertEqual(self.doc["work_unit_count"], 672)
-        self.assertEqual(self.doc["reviewed_seed_count"], 17)
-        self.assertEqual(self.doc["not_proven_unit_count"], 655)
+        self.assertEqual(self.doc["reviewed_seed_count"], 20)
+        self.assertEqual(self.doc["not_proven_unit_count"], 652)
         self.assertEqual(len(self.doc["work_units"]), 672)
 
     def test_exactly_once_coverage(self) -> None:
