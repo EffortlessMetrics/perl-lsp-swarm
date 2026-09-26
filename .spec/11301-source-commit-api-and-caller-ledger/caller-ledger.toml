@@ -111,6 +111,15 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # conversion is behavior-identical and costs no coverage. It is also what this
 # prefix's own removal_condition asks for: "initial profile and internal tests
 # use canonical initial names". Baseline therefore stays 710.
+# Held at 710 by the main-red repair for run 36205635261 (#16430): #16019
+# (#15466 lone-minus constructor-arg guard) landed green on its PR-head tree
+# and pushed post-merge main to 711 with one `.index_file(Url::parse(...)?,
+# ...)` fixture seed in
+# crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
+# (checker-equivalent scan: base b262397dc = 710, tip 2e34b1124 = 711, that
+# file 110 -> 111, the only changed caller). Resolved by the same burndown
+# shape as the #16102 recurrence: the fixture seeds initial on-disk state, so
+# the call converts to `index_initial_file` and the baseline stays 710.
 compatibility_baseline = 710
 
 # Structural recurrence control (#11305): files under these prefixes must

@@ -1922,6 +1922,34 @@
       ]
     },
     {
+      "id": "inline_completion_position_encoding_guard",
+      "scenario_file": "ux_scenario_63_inline_completion_position_encoding_guard.rs",
+      "subsystem_owner": "editor_trust",
+      "ci_tier": "pr",
+      "component": "completion",
+      "instrumentation": {
+        "run_receipt": false,
+        "first_useful_result": false,
+        "protocol_goldens": false
+      },
+      "user_journey": "request inline completion over non-BMP trigger content with a utf-8-preferring client and record session position-encoding-pinned ghost text",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate"
+      ],
+      "expected_outcomes": [
+        "dynamic inline-completion registration is observed for an LSP4IJ-shaped client",
+        "the session keeps the advertised positionEncoding pinned to utf-16 when the client prefers utf-8",
+        "a non-BMP trigger line still yields the loop-binding candidate when the trigger position is encoded in utf-16 code units",
+        "the encoding guard avoids forbidden insert texts that raw byte-offset decoding would surface"
+      ],
+      "confidence_signals": [
+        "first_five_minutes_harness",
+        "manual_editor_smoke",
+        "issue_burndown_regression_guard"
+      ]
+    },
+    {
       "id": "project_constructor_inline_completion_quality",
       "scenario_file": "ux_scenario_64_project_constructor_inline_completion_quality.rs",
       "subsystem_owner": "editor_trust",

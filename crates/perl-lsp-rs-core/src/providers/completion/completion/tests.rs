@@ -982,7 +982,9 @@ $factory->build()-
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    // Canonical initial fixture seed (`index_file` is a one-line forward to
+    // `index_initial_file`); holds the #11301 compatibility baseline at 710.
+    index.index_initial_file(
         Url::parse("file:///workspace/MyFactory.pm")?,
         "package MyFactory;\nsub build { }\n1;\n".to_string(),
     )?;
