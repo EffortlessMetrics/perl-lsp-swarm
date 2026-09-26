@@ -731,27 +731,141 @@ jobs:
               -f inputs[manifest_sha256]="$MANIFEST_SHA256"
           fi
 
-      - name: Dispatch downstream package refresh workflows
+      - name: Dispatch brew-bump workflow
         if: needs.release-metadata.outputs.prerelease != 'true'
+        id: dispatch-brew
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          workflows=(
-            brew-bump.yml
-            scoop-bump.yml
-            chocolatey-bump.yml
-            winget-bump.yml
-          )
-          for workflow in "${workflows[@]}"; do
-            printf 'Dispatching %s for %s\n' "$workflow" "$RELEASE_TAG"
-            gh workflow run "$workflow" \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref "$DEFAULT_BRANCH" \
-              --field "tag=$RELEASE_TAG"
-          done
+          # #15460: per-channel idempotency check. A prior workflow_dispatch of
+          # brew-bump.yml on the default branch with the same release SHA means
+          # this channel was already dispatched for the same release (e.g., a
+          # re-run of the dispatch-publishers job). Skip rather than dispatch
+          # again — the bump workflows have their own per-tag concurrency group,
+          # so a duplicate would just queue behind the in-flight run.
+          existing_id=""
+          if response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&per_page=100" 2>/dev/null); then
+            existing_id=$(printf '%s' "$response" | jq -r --arg branch "$DEFAULT_BRANCH" --arg sha "$RELEASE_SHA" \
+              '.workflow_runs[]? | select(.head_branch == $branch and .path == ".github/workflows/brew-bump.yml" and .head_sha == $sha) | .id' \
+              2>/dev/null | head -n1 || true)
+          fi
+          existing_id="${existing_id:-}"
+          if [ -n "$existing_id" ]; then
+            printf '::notice::brew-bump already dispatched for %s on %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$RELEASE_SHA" "$existing_id"
+            exit 0
+          fi
+          printf 'Dispatching brew-bump for %s on %s\n' "$RELEASE_TAG" "$RELEASE_SHA"
+          gh workflow run brew-bump.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field "tag=$RELEASE_TAG"
+
+      - name: Dispatch scoop-bump workflow
+        if: needs.release-metadata.outputs.prerelease != 'true'
+        id: dispatch-scoop
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          existing_id=""
+          if response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&per_page=100" 2>/dev/null); then
+            existing_id=$(printf '%s' "$response" | jq -r --arg branch "$DEFAULT_BRANCH" --arg sha "$RELEASE_SHA" \
+              '.workflow_runs[]? | select(.head_branch == $branch and .path == ".github/workflows/scoop-bump.yml" and .head_sha == $sha) | .id' \
+              2>/dev/null | head -n1 || true)
+          fi
+          existing_id="${existing_id:-}"
+          if [ -n "$existing_id" ]; then
+            printf '::notice::scoop-bump already dispatched for %s on %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$RELEASE_SHA" "$existing_id"
+            exit 0
+          fi
+          printf 'Dispatching scoop-bump for %s on %s\n' "$RELEASE_TAG" "$RELEASE_SHA"
+          gh workflow run scoop-bump.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field "tag=$RELEASE_TAG"
+
+      - name: Dispatch chocolatey-bump workflow
+        if: needs.release-metadata.outputs.prerelease != 'true'
+        id: dispatch-chocolatey
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          existing_id=""
+          if response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&per_page=100" 2>/dev/null); then
+            existing_id=$(printf '%s' "$response" | jq -r --arg branch "$DEFAULT_BRANCH" --arg sha "$RELEASE_SHA" \
+              '.workflow_runs[]? | select(.head_branch == $branch and .path == ".github/workflows/chocolatey-bump.yml" and .head_sha == $sha) | .id' \
+              2>/dev/null | head -n1 || true)
+          fi
+          existing_id="${existing_id:-}"
+          if [ -n "$existing_id" ]; then
+            printf '::notice::chocolatey-bump already dispatched for %s on %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$RELEASE_SHA" "$existing_id"
+            exit 0
+          fi
+          printf 'Dispatching chocolatey-bump for %s on %s\n' "$RELEASE_TAG" "$RELEASE_SHA"
+          gh workflow run chocolatey-bump.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field "tag=$RELEASE_TAG"
+
+      - name: Dispatch winget-bump workflow
+        if: needs.release-metadata.outputs.prerelease != 'true'
+        id: dispatch-winget
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          existing_id=""
+          if response=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&per_page=100" 2>/dev/null); then
+            existing_id=$(printf '%s' "$response" | jq -r --arg branch "$DEFAULT_BRANCH" --arg sha "$RELEASE_SHA" \
+              '.workflow_runs[]? | select(.head_branch == $branch and .path == ".github/workflows/winget-bump.yml" and .head_sha == $sha) | .id' \
+              2>/dev/null | head -n1 || true)
+          fi
+          existing_id="${existing_id:-}"
+          if [ -n "$existing_id" ]; then
+            printf '::notice::winget-bump already dispatched for %s on %s as run %s; skipping duplicate dispatch\n' "$RELEASE_TAG" "$RELEASE_SHA" "$existing_id"
+            exit 0
+          fi
+          printf 'Dispatching winget-bump for %s on %s\n' "$RELEASE_TAG" "$RELEASE_SHA"
+          gh workflow run winget-bump.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field "tag=$RELEASE_TAG"
+
+      - name: Summarize package-channel fan-out disposition
+        # #15460: report which channels dispatched, which were skipped as
+        # duplicates, and which failed, instead of leaving partial fan-out to
+        # be inferred from the Actions history.
+        if: always() && needs.release-metadata.outputs.prerelease != 'true'
+        env:
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          DISPATCH_BREW_OUTCOME: ${{ steps['dispatch-brew'].conclusion }}
+          DISPATCH_SCOOP_OUTCOME: ${{ steps['dispatch-scoop'].conclusion }}
+          DISPATCH_CHOCOLATEY_OUTCOME: ${{ steps['dispatch-chocolatey'].conclusion }}
+          DISPATCH_WINGET_OUTCOME: ${{ steps['dispatch-winget'].conclusion }}
+        run: |
+          printf 'Package-channel fan-out disposition for %s:\n' "$RELEASE_TAG"
+          printf '  brew:       %s\n' "${DISPATCH_BREW_OUTCOME:-skipped}"
+          printf '  scoop:      %s\n' "${DISPATCH_SCOOP_OUTCOME:-skipped}"
+          printf '  chocolatey: %s\n' "${DISPATCH_CHOCOLATEY_OUTCOME:-skipped}"
+          printf '  winget:     %s\n' "${DISPATCH_WINGET_OUTCOME:-skipped}"
 
       - name: Record prerelease package refresh disposition
         if: needs.release-metadata.outputs.prerelease == 'true'
