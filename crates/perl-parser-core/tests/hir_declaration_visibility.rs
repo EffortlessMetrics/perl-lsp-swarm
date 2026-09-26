@@ -220,7 +220,11 @@ fn compound_declaration_modifies_its_own_binding_while_rhs_reads_outer() {
         assert_eq!(rhs_reads[0].binding, Some(x[0].id));
         let graph = lower_hir_bodies(&file);
         assert_eq!(
-            graph.nodes.iter().filter(|n| matches!(n.operation, PirOperation::Modify { .. })).count(),
+            graph
+                .nodes
+                .iter()
+                .filter(|n| matches!(n.operation, PirOperation::Modify { .. }))
+                .count(),
             1,
             "the declaration must produce one lexical modification: {source}"
         );
