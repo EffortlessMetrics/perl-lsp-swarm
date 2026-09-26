@@ -1886,7 +1886,7 @@ impl LspServer {
                                         cap.get(1).is_some_and(|receiver| {
                                             receiver.as_str() == qualified_name
                                                 && cursor_in_text >= receiver.start()
-                                                && cursor_in_text < receiver.end()
+                                                && cursor_in_text <= receiver.end()
                                         })
                                     },
                                 ) {

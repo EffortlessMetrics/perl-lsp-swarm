@@ -3678,7 +3678,6 @@ sub new {
     return bless {}, $class;
 }
 
-
 1;
 "#,
     )?;
@@ -3738,9 +3737,24 @@ fn arrow_receiver_does_not_navigate_to_coincidental_sub() -> TestResult {
     // The receiver's package is defined inline, so there is no Module.pm path
     // for the earlier filesystem lookup to return. The workspace index also
     // contains a real, unrelated Some::Module callable.
-    let caller = "package Some::Module;\nsub new { return bless {}, shift; }\npackage main;\nSome::Module->new();\n";
+    let caller = "package Some::Module;\nsub new { return bless {}, shift; }\npackage main;\nSome::Module->new();\nSome::Module();\n";
     harness.open("file:///app.pl", caller)?;
     harness.barrier();
+
+    // Prove the colliding callable is actually indexed and reachable. If it
+    // is absent, a null receiver response would not distinguish the fix.
+    let callable = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///app.pl"},
+            "position": {"line": 4, "character": 7}
+        }),
+    )?;
+    let callable_location = first_location(&callable)?;
+    assert!(callable_location["uri"]
+        .as_str()
+        .is_some_and(|uri| uri.contains("Some.pm") || uri.contains("Some%2Epm")));
+    assert_eq!(callable_location["range"]["start"]["line"], 1);
 
     let receiver = harness.request(
         "textDocument/definition",
@@ -3749,7 +3763,9 @@ fn arrow_receiver_does_not_navigate_to_coincidental_sub() -> TestResult {
             "position": {"line": 3, "character": 7}
         }),
     )?;
+    assert!(receiver.is_null() || receiver.is_array(), "unexpected definition result: {receiver}");
     assert_no_location_points_to(&receiver, "Some.pm");
+    assert_no_location_points_to(&receiver, "Some%2Epm");
 
     // A blanket refusal of this whole call would pass the first assertion.
     // The cursor on the actual method must still navigate to its definition.
