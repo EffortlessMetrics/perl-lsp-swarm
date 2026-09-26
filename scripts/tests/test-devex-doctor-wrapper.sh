@@ -56,6 +56,15 @@ write_fake_cargo_safe() {
 #!/usr/bin/env bash
 pwd > "${pwd_log}"
 printf '%s\n' "\$@" > "${args_log}"
+if [[ "\${FAKE_BOOTSTRAP_FAILURE:-0}" != 1 ]]; then
+  echo 'devex-doctor: started'
+  if [[ "\${FAKE_CARGO_SAFE_EXIT:-0}" != 0 ]]; then
+    echo 'doctor_check_failed: fixture'
+  fi
+fi
+if [[ -n "\${FAKE_CARGO_ERROR:-}" ]]; then
+  echo "\$FAKE_CARGO_ERROR" >&2
+fi
 exit "\${FAKE_CARGO_SAFE_EXIT:-0}"
 FAKE
   chmod +x "${script_dir}/cargo-safe"
@@ -122,6 +131,28 @@ code=0
   FAKE_CARGO_SAFE_EXIT=37 bash "${TEST_SCRIPTS}/devex-doctor.sh"
 ) > "${FAIL_DIR}/out.txt" 2> "${FAIL_DIR}/err.txt" || code=$?
 assert_exit_nonzero "propagates cargo-safe failure from delegated command" "$code"
+if grep -Fq 'doctor_exited (exit 37' "${FAIL_DIR}/err.txt"; then
+  pass "doctor failure is distinguished from bootstrap failure"
+else
+  fail "doctor failure is distinguished from bootstrap failure"
+fi
+
+for case_name in locked toolchain generic; do
+  case "$case_name" in
+    locked) error='error: failed to replace xtask.exe: The process cannot access the file because it is being used by another process'; expected=bootstrap_artifact_locked_or_in_use ;;
+    toolchain) error='cargo-toolchain-guard: REFUSED: cargo predates edition-2024 support'; expected=bootstrap_toolchain_rejected ;;
+    generic) error='error: failed to compile xtask'; expected=bootstrap_build_failed ;;
+  esac
+  code=0
+  FAKE_BOOTSTRAP_FAILURE=1 FAKE_CARGO_SAFE_EXIT=37 FAKE_CARGO_ERROR="$error" \
+    bash "${TEST_SCRIPTS}/devex-doctor.sh" > "${FAIL_DIR}/${case_name}.out" 2> "${FAIL_DIR}/${case_name}.err" || code=$?
+  if [[ "$code" -eq 37 ]] && grep -Fq "$expected (exit 37" "${FAIL_DIR}/${case_name}.err" && \
+    ! grep -Eq 'doctor_check_failed|Missing required tools|Install Rust' "${FAIL_DIR}/${case_name}.err"; then
+    pass "$case_name bootstrap failure keeps exit and avoids false doctor finding"
+  else
+    fail "$case_name bootstrap failure keeps exit and avoids false doctor finding"
+  fi
+done
 
 TOTAL=$((PASS + FAIL))
 echo ""
