@@ -747,7 +747,7 @@ describe('package.json contributes', () => {
       const setting = getSetting(properties, 'perl-lsp.autoPopulateNewFiles');
       expect(setting).toBeDefined();
       expect(setting.type).toBe('boolean');
-      expect(setting.default).toBe(true);
+      expect(setting.default).toBe(false);
     });
 
     test('defines updateCheckInterval setting used by background update checker', () => {
