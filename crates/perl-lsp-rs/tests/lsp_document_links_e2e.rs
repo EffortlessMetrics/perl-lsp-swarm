@@ -113,16 +113,9 @@ fn document_links_preserve_uri_reserved_characters_in_literal_filenames() -> Tes
         "textDocument/documentLink",
         json!({ "textDocument": { "uri": document_url.as_str() } }),
     )?;
-    assert!(
-        links_response.get("error").is_none(),
-        "documentLink failed: {links_response:#}"
-    );
+    assert!(links_response.get("error").is_none(), "documentLink failed: {links_response:#}");
     let links = response_result_array(&links_response)?;
-    assert_eq!(
-        links.len(),
-        paths.len(),
-        "expected one file link per require: {links:#?}"
-    );
+    assert_eq!(links.len(), paths.len(), "expected one file link per require: {links:#?}");
 
     for path in paths {
         let link = links
@@ -133,10 +126,7 @@ fn document_links_preserve_uri_reserved_characters_in_literal_filenames() -> Tes
         assert!(link.get("target").is_none(), "file link resolved eagerly: {link:#}");
 
         let resolved = client.request("documentLink/resolve", link.clone())?;
-        assert!(
-            resolved.get("error").is_none(),
-            "resolve failed for {path}: {resolved:#}"
-        );
+        assert!(resolved.get("error").is_none(), "resolve failed for {path}: {resolved:#}");
         let actual = resolved
             .pointer("/result/target")
             .and_then(Value::as_str)
@@ -146,9 +136,7 @@ fn document_links_preserve_uri_reserved_characters_in_literal_filenames() -> Tes
             .map_err(|()| format!("failed to build file URI for {}", expected_path.display()))?;
         assert_eq!(actual, expected.as_str(), "literal filename changed during resolution");
         assert_eq!(
-            url::Url::parse(actual)?
-                .to_file_path()
-                .map_err(|()| "target is not a file path")?,
+            url::Url::parse(actual)?.to_file_path().map_err(|()| "target is not a file path")?,
             expected_path,
             "resolved URI must open the literal file"
         );
