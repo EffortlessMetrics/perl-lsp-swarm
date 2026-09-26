@@ -22,7 +22,7 @@
     "total_rows 705 = 682 unit-mapping rows + 20 merge rows + 3 true-NOREF watchlist rows; the 3 watchlist rows intentionally duplicate commits already mapped once (unique commits 702)"
   ],
   "coverage": {
-    "digest": "sha256:07c833c9ab4e0ae2b5a572e3d894e00397331a074e3a079d79b3756811730ffd",
+    "digest": "sha256:32de0f0760b6c6a02f3bd973822ef729c333f696e19481aa55f9a9a4c322fb3d",
     "duplicate_records": 0,
     "duplicate_work_units": 0,
     "omitted_records": 0,
@@ -1626,7 +1626,7 @@
       "subject": "fix(parser): persist live lexer restart state"
     }
   ],
-  "not_proven_unit_count": 658,
+  "not_proven_unit_count": 655,
   "parent_denominator": {
     "observed_head": "102974155487bc955e01d5d5222053c4c449136c",
     "start_sha": "f6b7b2c6626fbefbf01c9c9934cac5789186f8b2"
@@ -1651,7 +1651,7 @@
     "total_rows": 705,
     "unique_commits": 702
   },
-  "reviewed_seed_count": 14,
+  "reviewed_seed_count": 17,
   "schema": "post_sync_release_reconciliation.v1",
   "work_unit_count": 672,
   "work_units": [
@@ -9772,11 +9772,42 @@
       "work_unit_id": "PR#15197"
     },
     {
+      "api_schema_package_effects": [
+        "vscode-extension package.json: production dependency adm-zip ^0.6.0 removed and yauzl ^3.4.0 added; devDependencies swap @types/adm-zip for @types/yauzl and add jszip for synthetic test archives"
+      ],
+      "artifact_or_route_effects": [
+        "managed zip extraction replaces adm-zip with yauzl opened lazyEntries/decodeStrings/strictFileNames/validateEntrySizes; unsupported compression methods (non-STORE/DEFLATE) refuse; yauzl unsafe-path failures rethrow as 'unsafe archive member path'",
+        "entry inspection and extraction stream under a cancellation token: checked before, during (per chunk), and after each phase; active streams are destroyed and the open/cancel race is closed by racing the open promise and re-checking before return",
+        "directory classification moves to trailing slash plus the DOS directory attribute bit and versionMadeBy/externalFileAttributes fields; the inspect-then-extract two-pass member laws and size ceilings are unchanged",
+        "the VSIX inventory checker reads archives with yauzl; the inventory baseline and transition refresh declare the reviewed size-only move under owner issue #15219"
+      ],
       "commits": [
         "e3c581240f59fdf7b249e496a48174a5ba169e95"
       ],
-      "disposition_state": "not_proven",
-      "grouping_evidence": "trailing (#15221) of subject pair; provisional PR-keyed unit, merge_commit_sha not verified, disposition owns verification",
+      "controlling_issues": [
+        "15219-CLOSED"
+      ],
+      "disposition_state": "reviewed",
+      "editor_manifest_or_protocol_effects": [],
+      "grouping_evidence": "trailing (#15221) of subject pair (#15219)(#15221); merge_commit_sha of PR #15221 equals the commit (verified 2026-09-25); issue #15219 is the tracked problem",
+      "installed_evidence_stage": "source",
+      "invalidators": [
+        "yauzl open options or entry-iteration semantics change (lazyEntries, decodeStrings, strictFileNames, validateEntrySizes)",
+        "zip member classification change (trailing slash plus DOS directory/reparse/device attribute bits, versionMadeBy high byte)",
+        "cancellation contract change (stream destroy, pre-return and post-loop cancellation re-checks, per-chunk budget enforcement)",
+        "dependency rework reintroducing a bundled archive reader (closes the reviewed PR#12808 reader-swap invalidator)"
+      ],
+      "known_limitations": [
+        "unit/source stage only: cancellation and reader-swap proofs are jest suites; installed managed-download acceptance belongs to the #6056 lane",
+        "the advisory exposure (GHSA-vwc7-r8mq-g2x9 / CVE-2026-76845, Dependabot alert #65) was already unreachable through this installer: managedArchiveExtract never called adm-zip's extractAllTo, so the swap is dependency hygiene plus reader hardening, not a reachable-vulnerability repair; alert #65 verified fixed 2026-09-25 (fixed_at 2026-09-09T12:32:03Z)",
+        "in-range successors evolved the same inventory-checker files: validated native manifest inventory (PR#15241, #9933), packaged DAP startup on Linux (PR#15464, #6694), alpine bundle members target-owned (PR#15535, #15534), reviewed PR#16207 mapped-RC binding; managedArchiveExtract.ts, its test, rolldown.test.ts, and rolldown.config.mjs are byte-unchanged through current main (verified 2026-09-25)",
+        "the vsix-inventory-transition.json ratchet moved on after the head (owner_issue #16381 post-head); later re-baselines own later sizes, not this row",
+        "vscode-extension/CHANGELOG.md still names adm-zip in the bundled-dependency list on current main; the stale doc line is not repaired by this unit"
+      ],
+      "migration_or_upgrade_refs": [
+        "no settings or on-disk format change: managed archives keep the vscode-managed-archive-safety.v1 member laws and ceilings; the bundled reader swap (adm-zip -> yauzl) and stream cancellation are internal to the installed extension"
+      ],
+      "open_pr_relationships": [],
       "paths_or_components": [
         "vscode-extension/package-lock.json",
         "vscode-extension/package.json",
@@ -9791,8 +9822,28 @@
         "vscode-extension/src/test/rolldown.test.ts",
         "vscode-extension/test/grammar/README.md"
       ],
+      "platforms_and_targets": [
+        "vscode extension host: windows .zip managed path and linux/macos tar.gz path (tar reader unchanged)",
+        "vsix inventory measurement path: check-vsix-inventory.js reads archives via yauzl fromBuffer",
+        "dev-only jszip builds synthetic archives in tests"
+      ],
+      "primary_disposition": "packaging_install_or_editor",
       "primary_fragment": "editor",
-      "primary_fragment_basis": "single_family_paths",
+      "primary_fragment_basis": "seed_review",
+      "proof_owner_refs": [
+        "vscode-extension/src/test/managedArchiveExtract.test.ts",
+        "vscode-extension/src/test/rolldown.test.ts",
+        "vscode-extension/scripts/check-vsix-inventory-transition.test.js",
+        "vscode-extension/scripts/vsix-inventory-transition.json"
+      ],
+      "public_claim_refs": [],
+      "reachable_installed_effect": "yes",
+      "release_domains": [
+        "editor",
+        "install",
+        "security"
+      ],
+      "release_note_disposition": "required",
       "work_unit_id": "PR#15221"
     },
     {
@@ -10478,19 +10529,65 @@
       "work_unit_id": "PR#15450"
     },
     {
+      "api_schema_package_effects": [],
+      "artifact_or_route_effects": [
+        "packagedDapTargetDirectoryForContext validates the declared package.json __metadata.targetPlatform against the host-derived target list and refuses a well-formed but incompatible packaged target instead of selecting it",
+        "host targets derive per platform: linux gnu/alpine by detectMusl with android/termux excluded, darwin by arch, win32 x64, and win32 arm64 native plus emulated win32-x64 only when classifyWindowsArm64Support reports windows-11-or-newer",
+        "fallback selection picks the first host target with an executable bin/<target>/perl-dap[.exe] (find), replacing the previous exactly-one-candidate filter",
+        "declared size-only VSIX inventory transition (+114 bytes out/extension.js) under owner issue #15451"
+      ],
       "commits": [
         "dd4145a18ecc496a992693510103aac63c0f963b"
       ],
-      "disposition_state": "not_proven",
-      "grouping_evidence": "trailing (#15456) of subject pair; provisional PR-keyed unit, merge_commit_sha not verified, disposition owns verification",
+      "controlling_issues": [
+        "15451-CLOSED"
+      ],
+      "disposition_state": "reviewed",
+      "editor_manifest_or_protocol_effects": [],
+      "grouping_evidence": "trailing (#15456) of subject pair (#15451)(#15456); merge_commit_sha of PR #15456 equals the commit (verified 2026-09-25); issue #15451 is the tracked problem",
+      "installed_evidence_stage": "source",
+      "invalidators": [
+        "packaged __metadata.targetPlatform contract or bin/<target> payload layout change",
+        "classifyWindowsArm64Support build-number law or the win32-arm64 hostTargets mapping change",
+        "DAP executable selection precedence change",
+        "linux host android/termux exclusion or detectMusl alpine/linux split rework"
+      ],
+      "known_limitations": [
+        "unit/source stage only: packaged-target rejection is proven by table-driven debugAdapter tests and the declared size-only inventory transition; installed packaged-VSIX acceptance belongs to the open #6694/#6056 lane",
+        "classifyWindowsArm64Support gates emulated x64 on a parsed Windows build number; unknown builds stay native-only (fail closed, may refuse a working emulation path)",
+        "an incompatible declared packaged target ends the packaged path and the descriptor falls through to the auto-download directory, managed storage, and PATH — the ordering reviewed PR#15443 already owns",
+        "in-range successors changed surroundings, not this selection: launch authority (reviewed PR#14523), processId attach fail-closed (PR#14402), language-id coherence (PR#15810 + CI repair PR#15818); packagedDapTargetDirectoryForContext is byte-unchanged through current main (verified 2026-09-25)",
+        "the inventory transition record moved on after the head (owner_issue #16381 post-head ratchet); later re-baselines own later sizes, not this row"
+      ],
+      "migration_or_upgrade_refs": [
+        "upgrade: a packaged VSIX whose __metadata.targetPlatform mismatches the host no longer uses its bundled adapter; a Windows ARM64 host emulates the x64 packaged adapter only on Windows 11 or newer (build-number classified); no settings migration"
+      ],
+      "open_pr_relationships": [],
       "paths_or_components": [
         "vscode-extension/scripts/vsix-inventory-baseline.json",
         "vscode-extension/scripts/vsix-inventory-transition.json",
         "vscode-extension/src/debugAdapter.ts",
         "vscode-extension/src/test/debugAdapter.test.ts"
       ],
+      "platforms_and_targets": [
+        "vscode-packaged-dap",
+        "windows-arm64 (native preferred; emulated win32-x64 only on Windows 11 or newer)",
+        "linux gnu/alpine by detectMusl with android/termux hosts excluded; darwin arm64/x64"
+      ],
+      "primary_disposition": "packaging_install_or_editor",
       "primary_fragment": "editor",
-      "primary_fragment_basis": "single_family_paths",
+      "primary_fragment_basis": "seed_review",
+      "proof_owner_refs": [
+        "vscode-extension/src/test/debugAdapter.test.ts",
+        "vscode-extension/scripts/vsix-inventory-transition.json"
+      ],
+      "public_claim_refs": [],
+      "reachable_installed_effect": "yes",
+      "release_domains": [
+        "editor",
+        "install"
+      ],
+      "release_note_disposition": "required",
       "work_unit_id": "PR#15456"
     },
     {
@@ -11258,17 +11355,62 @@
       "work_unit_id": "PR#15892"
     },
     {
+      "api_schema_package_effects": [],
+      "artifact_or_route_effects": [
+        "derive_downloader_targets admits a target only from position-aware evidence: the needle must appear in the raw source AND its leading identifier must sit outside comments, string literals, and regex literals under a character-based TypeScript mask",
+        "regex literals are distinguished from division by term position; unterminated literals fail closed; template literal bodies stay visible by default because the Linux construction needle lives inside one, while the Windows constant-return check runs an identifier-strict mask",
+        "commented-out Darwin ternary branches, regex-literal pseudo-returns, and template-literal Windows pseudo-returns stop admitting targets; the real downloader admits all 8 targets",
+        "three unit tests pin the rejection laws (regex-literal pseudo-returns, commented Darwin ternary, commented Linux construction)"
+      ],
       "commits": [
         "257735cd6e2803ca8494033c4432a4373a2f64d8"
       ],
-      "disposition_state": "not_proven",
-      "grouping_evidence": "trailing (#15911) of subject pair; provisional PR-keyed unit, merge_commit_sha not verified, disposition owns verification",
+      "controlling_issues": [
+        "15453-CLOSED"
+      ],
+      "disposition_state": "reviewed",
+      "editor_manifest_or_protocol_effects": [],
+      "grouping_evidence": "trailing (#15911) of subject pair (#15453)(#15911); merge_commit_sha of PR #15911 equals the commit (verified 2026-09-25); issue #15453 is the tracked problem",
+      "installed_evidence_stage": "mechanism",
+      "invalidators": [
+        "derive_downloader_targets needle set or admission-law rework (darwin ternary, Windows constant-return, Linux construction needles)",
+        "_mask_typescript_non_code lexer semantics change (term-position rule, template-literal default pass, identifier-strict second pass)",
+        "vscode-extension/src/downloader.ts construction shapes drifting so the fixed needles no longer match production code (targets silently drop from the topology)"
+      ],
+      "known_limitations": [
+        "mechanism stage: the admission law is proven by unit tests against synthetic and current downloader sources; no tagged release has been produced through this derivation path",
+        "the mask is a conservative hand-written TypeScript lexer, not a parser: term-position regex disambiguation and template-literal pass-through are tuned to the managed downloader's shapes; unterminated literals fail closed",
+        "template literal bodies stay visible in the default mask because the Linux construction needle lives inside one; only the Windows constant-return check runs an identifier-strict second pass",
+        "supersedes the reviewed PR#15447-era masking scan: regex-literal pseudo-returns and commented Darwin/Linux branches its regex mask could still admit now fail closed",
+        "in-range successor reviewed PR#16207 (topology v4) extended the same generator file for schema admission and byte-identical schema binding; the lexer and derive_downloader_targets are byte-unchanged since this commit (verified 2026-09-25), and the real downloader admits all 8 targets",
+        "post-head drift on the file is a dependabot toolchain pin (PR#16357) inside checksum_candidate_steps, not the derivation law"
+      ],
+      "migration_or_upgrade_refs": [],
+      "open_pr_relationships": [
+        "16230-OPEN carrier touches scripts/generate_release_topology.py (mapped-RC packaging; its branch predates the landed reviewed PR#16207 v4 admission)"
+      ],
       "paths_or_components": [
         "scripts/generate_release_topology.py",
         "scripts/test_generate_release_topology.py"
       ],
+      "platforms_and_targets": [
+        "portable release tooling: python stdlib topology generator",
+        "downloader target admission spans linux (gnu/musl), macOS (x86_64/aarch64-apple-darwin), and windows (x86_64/aarch64-pc-windows-msvc) through the constants in vscode-extension/src/downloader.ts"
+      ],
+      "primary_disposition": "release_integrity_or_lineage",
       "primary_fragment": "distribution",
-      "primary_fragment_basis": "single_family_paths",
+      "primary_fragment_basis": "seed_review",
+      "proof_owner_refs": [
+        "scripts/test_generate_release_topology.py (three downloader-target derivation rejection tests)",
+        "scripts/generate_release_topology.py derive_downloader_targets position-aware admission"
+      ],
+      "public_claim_refs": [],
+      "reachable_installed_effect": "bounded",
+      "release_domains": [
+        "release",
+        "install"
+      ],
+      "release_note_disposition": "required",
       "work_unit_id": "PR#15911"
     },
     {
