@@ -6,6 +6,20 @@
 - Verdict: **READY** (with two named qualifications, §5–§6)
 - Re-verify: `python3 -m unittest scripts.tests.test_domain6_fragment`
   plus the per-item commands below, all run at the pinned SHA.
+  Each item re-runs green individually as
+  `python3 -m unittest
+  scripts.tests.test_domain6_fragment.Domain6FragmentTest.<name>` with
+  `<name>` one of: `test_header_pins_exact_range_and_prefilter`,
+  `test_record_counts`, `test_exactly_once_coverage`,
+  `test_five_seed_rows_reviewed`,
+  `test_all_other_units_explicit_not_proven`, `test_merge_units_named`,
+  `test_no_private_temp_path_references`, `test_digest_valid`,
+  `test_schema_validates_checked_artifact_draft_2020_12`,
+  `test_grouping_identity_rules`, `test_merge_terminal_arithmetic`,
+  `test_excluded_merges_ledger_complete`, `test_no_placeholder_identity`,
+  `test_noref_body_evidence_emitted`, `test_checked_artifact_is_lf_only`,
+  `test_check_rejects_crlf_mutation`,
+  `test_deterministic_rerender_byte_identical`.
 
 Phase 0 carriers are all landed at this SHA: #16227 (verbatim `34fce6f7e`),
 #16419 (denominator fragment, owner-landed `f4d370e1a`), #16420-base, and the
@@ -86,5 +100,6 @@ Frontier state is time-sensitive; re-map before acting on it.
 - Windows (§5) and first-mile (§6) rest on scope analysis and the reviewed
   distribution row respectively, not on dedicated execution receipts.
 - The frontier table (§7) was true at writing time only.
-- Denominator review extends to 5 of 667 Domain-6 units; the remaining
-  `not_proven` units are explicitly unclaimed, not implicitly proven.
+- Denominator review extends to 5 of 672 Domain-6 units (667 of them
+  `not_proven`); the remaining `not_proven` units are explicitly
+  unclaimed, not implicitly proven.
