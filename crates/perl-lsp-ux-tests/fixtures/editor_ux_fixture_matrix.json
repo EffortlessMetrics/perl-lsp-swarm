@@ -1893,6 +1893,33 @@
       ]
     },
     {
+      "id": "inline_completion_position_encoding_guard",
+      "scenario_file": "ux_scenario_63_inline_completion_position_encoding_guard.rs",
+      "subsystem_owner": "editor_trust",
+      "ci_tier": "pr",
+      "component": "completion",
+      "instrumentation": {
+        "run_receipt": false,
+        "first_useful_result": false,
+        "protocol_goldens": false
+      },
+      "user_journey": "request inline completion on a non-BMP trigger line with a UTF-8-preferring client and record session-pinned UTF-16 position-encoding ghost text",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate"
+      ],
+      "expected_outcomes": [
+        "session keeps the advertised position encoding pinned to utf-16 even when the client prefers utf-8",
+        "loop binding candidate derives from the session's utf-16 position encoding over non-BMP content",
+        "encoding-guard inline completions avoid raw byte-offset decoding artifacts and forbidden insert texts"
+      ],
+      "confidence_signals": [
+        "first_five_minutes_harness",
+        "manual_editor_smoke",
+        "issue_burndown_regression_guard"
+      ]
+    },
+    {
       "id": "project_control_flow_inline_completion_quality",
       "scenario_file": "ux_scenario_63_project_control_flow_inline_completion_quality.rs",
       "subsystem_owner": "editor_trust",
