@@ -23,7 +23,11 @@ Use existing queue tooling to gather queue context before train construction:
 
 ```bash
 cargo xtask queue-snapshot --out target/queue-snapshot.json
-cargo xtask queue-health --fixture xtask/tests/fixtures/queue-health/master-green.json # existing fixture filename; live branch is main
+# Live queue health: reads target/receipts/master-ci-state.json and fails
+# closed to NOT_PROVEN when no current typed live observation exists. Checked-in
+# fixtures (for example master-green.json) are offline replays and can never
+# authorize live train construction (#15387).
+cargo xtask queue-health
 ```
 
 Use the protected merge preflight and current GitHub facts; do not reconcile
