@@ -4924,12 +4924,24 @@ impl<'a> BodyBuilder2<'a> {
         let binding = self.binding_declared_at(sigil_str, &var_name, binding_node.location);
 
         let init_expr_id = match (initializer, &variable.kind) {
-            // `local $x = EXPR` / `local $x .= EXPR`: the parser stores the
-            // whole assignment in `variable`, so lower that node directly. It
-            // already owns the place, RHS, operator mode, and exact range; a
-            // second synthetic assignment would double-count the write.
-            (None, NodeKind::Assignment { .. }) => Some(self.lower_expr(variable)),
+            // An embedded assignment owns its declaration place and RHS. The
+            // place is the newly declared binding even though an explicit RHS
+            // reference at this position still sees an outer binding.
+            (None, NodeKind::Assignment { .. }) => Some(match binding {
+                Some(id) => self.lower_assignment_with_declared_place(variable, id),
+                None => self.lower_expr(variable),
+            }),
             (None, _) => None,
+            // Compound declarations such as `my $x += $x` can put a cloned
+            // assignment in `initializer` instead. Its LHS is the declaration
+            // place, not a second ordinary occurrence or a second write.
+            (Some(init_node), _)
+                if !is_legacy_call
+                    && initializer_is_target_assignment(init_node, binding_node)
+                    && binding.is_some() =>
+            {
+                binding.map(|id| self.lower_assignment_with_declared_place(init_node, id))
+            }
             (Some(init_node), _) => Some({
                 // Allocate the write-place for the declared variable.
                 // Real declarations own their place; legacy calls resolve
@@ -5001,6 +5013,41 @@ impl<'a> BodyBuilder2<'a> {
             },
             range,
         )
+    }
+
+    /// Lower an assignment whose LHS is the token that declares `binding`.
+    /// Only the RHS uses occurrence visibility; the declaration place keeps
+    /// its exact source-backed identity regardless of its activation offset.
+    fn lower_assignment_with_declared_place(
+        &mut self,
+        assignment: &Node,
+        binding: HirBindingId,
+    ) -> HirExprId {
+        let NodeKind::Assignment { lhs, rhs, op } = &assignment.kind else {
+            return self.lower_expr(assignment);
+        };
+        let Some(declared) = self.scope_graph.bindings.iter().find(|entry| entry.id == binding)
+        else {
+            return self.lower_expr(assignment);
+        };
+        if lhs.location != declared.range {
+            return self.lower_expr(assignment);
+        }
+        let (mode, access) = if op == "=" {
+            (AssignMode::Simple, AccessMode::Write)
+        } else {
+            (AssignMode::ReadModifyWrite, AccessMode::ReadModifyWrite)
+        };
+        let place = HirExpr::Variable(HirVariable {
+            sigil: sigil_from_str(&declared.sigil),
+            name: declared.name.clone(),
+            kind: Self::kind_for(&declared.name, Some(declared)),
+            access,
+            binding: Some(binding),
+        });
+        let lhs_id = self.alloc_expr(place, lhs.location);
+        let rhs_id = self.lower_expr(rhs);
+        self.alloc_expr(HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode }, assignment.location)
     }
 
     /// Effect of a complex-lvalue `local`: the embedded assignment, a separate
@@ -5300,7 +5347,7 @@ impl<'a> BodyBuilder2<'a> {
                     // so it is lowered first and the arena order matches source
                     // evaluation order.
                     let binding = binding.as_ref().map(|(spelling, binding_range)| {
-                        self.lower_catch_binding(spelling, *binding_range, block)
+                        self.lower_catch_binding(spelling, *binding_range)
                     });
                     let block = self.lower_nested_block(block);
                     catch_handlers.push(HirCatchHandler { binding, block });
@@ -5897,27 +5944,16 @@ impl<'a> BodyBuilder2<'a> {
     /// rather than the whole `catch (…)` header — the same anchoring rule as
     /// [`lower_iterator_binding`](Self::lower_iterator_binding).
     ///
-    /// The binding kind is resolved through the scope graph rather than assumed
-    /// lexical, from inside the handler's own scope. The first pass registers
-    /// the binding in a frame wrapping the handler (see the `NodeKind::Try` arm
-    /// there), so resolving from the handler block finds it and agrees with how
-    /// reads of the same variable inside that handler resolve. Assuming
-    /// `Lexical` here instead would emit a lexical write whose reads resolve as
-    /// package accesses — the exact mismatch this slice exists to remove.
-    fn lower_catch_binding(
-        &mut self,
-        spelling: &str,
-        range: SourceLocation,
-        handler: &Node,
-    ) -> HirExprId {
+    /// The write names the declaration at this exact token. Ordinary reads in
+    /// the handler use source-order visibility after the token; resolving the
+    /// declaration write as an occurrence at `range.start` would miss itself.
+    fn lower_catch_binding(&mut self, spelling: &str, range: SourceLocation) -> HirExprId {
         let (sigil, name) = split_catch_variable(spelling);
 
-        let previous_scope = self.start_scope;
-        self.start_scope = find_body_scope(self.scope_graph, handler.location);
-        let resolved = self.resolve_visible_binding(sigil, name, range.start);
+        let binding = self.binding_declared_at(sigil, name, range);
+        let resolved = binding
+            .and_then(|id| self.scope_graph.bindings.iter().find(|entry| entry.id == id));
         let kind = Self::kind_for(name, resolved);
-        let binding = resolved.map(|found| found.id);
-        self.start_scope = previous_scope;
 
         self.alloc_expr(
             HirExpr::Variable(HirVariable {
