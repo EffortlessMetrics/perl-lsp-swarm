@@ -1,0 +1,25 @@
+{
+  "schema_version": "standalone_fresh_process.v1",
+  "bound_plan_id": "path-plan-package-manager-owned",
+  "bound_plan_sha256": "3fe52d840b0369f2d9d5f1f1d883826a6b22a44601365f9f50148c537877b3fb",
+  "bound_persistence_result": "package_manager_owned",
+  "observed_environment": {
+    "platform": "posix",
+    "shell_family": "zsh"
+  },
+  "session": {
+    "origin": "new_login_session",
+    "environment_source": "ambient_session",
+    "path_prepared_by_harness": false
+  },
+  "lookup": {
+    "method": "not_attempted",
+    "resolved": null,
+    "competing_candidates": [],
+    "ambiguous": false
+  },
+  "startup_disposition": "not_required",
+  "result": "package_manager_owned_path",
+  "instrument_complete": true,
+  "redaction_policy": "bounded_typed_fields_only"
+}

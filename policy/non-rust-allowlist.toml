@@ -5355,6 +5355,89 @@ review_after = "2026-09-23"
 
 
 [[allow]]
+id = "non-rust-standalone-path-plan-schema"
+path = "schemas/standalone_path_plan.v1.schema.json"
+kind = "contract_schema"
+language = "json"
+surface = "distribution"
+classification = "config"
+owner = "distribution"
+reason = "Closed PATH policy and mutation-intent contract (#11521): the confirmation gate that a candidate must pass before installer-owned PATH mutation, single-owner entry ownership, platform-bound persistence mechanisms, user/system/shell/session scope separation, and literal non-expanding path identities."
+covered_by = [
+  "cargo test -p xtask --example standalone_path_persistence --locked",
+  "python -m unittest scripts/ci/test_standalone_path_contract_schemas.py",
+]
+created = "2026-09-19"
+review_after = "2026-12-19"
+
+
+[[allow]]
+id = "non-rust-standalone-path-persistence-schema"
+path = "schemas/standalone_path_persistence.v1.schema.json"
+kind = "contract_schema"
+language = "json"
+surface = "distribution"
+classification = "config"
+owner = "distribution"
+reason = "Closed PATH persistence result vocabulary (#11521) with coherence rules: outcomes that wrote nothing cannot claim an added entry, a current-process or session-only change is never durable persistence, and exactly one canonical owned entry is idempotent."
+covered_by = [
+  "cargo test -p xtask --example standalone_path_persistence --locked",
+  "python -m unittest scripts/ci/test_standalone_path_contract_schemas.py",
+]
+created = "2026-09-19"
+review_after = "2026-12-19"
+
+
+[[allow]]
+id = "non-rust-standalone-fresh-process-schema"
+path = "schemas/standalone_fresh_process.v1.schema.json"
+kind = "contract_schema"
+language = "json"
+surface = "distribution"
+classification = "config"
+owner = "distribution"
+reason = "Closed fresh-process command-resolution vocabulary (#11521): a visibility claim cannot be manufactured by an absolute-path invocation, a harness-prepared PATH, the installer's own mutated environment, or by ignoring a wrong ambient binary that won the lookup."
+covered_by = [
+  "cargo test -p xtask --example standalone_path_persistence --locked",
+  "python -m unittest scripts/ci/test_standalone_path_contract_schemas.py",
+]
+created = "2026-09-19"
+review_after = "2026-12-19"
+
+
+[[allow]]
+id = "non-rust-standalone-path-contract-schema-harness"
+path = "scripts/ci/test_standalone_path_contract_schemas.py"
+kind = "test_script"
+language = "python"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "Schema-only parity harness for the #11521 PATH packet. The POSIX and Windows installer adapters that will implement these mechanics are not Rust, so each published law is probed without the Rust validator; standard-library unittest plus jsonschema, mirroring scripts/ci/test_standalone_contract_schemas.py."
+covered_by = [
+  "python -m unittest scripts/ci/test_standalone_path_contract_schemas.py",
+]
+created = "2026-09-19"
+review_after = "2026-12-19"
+
+[[allow]]
+id = "non-rust-install-path-persistence-fixtures"
+glob = "fixtures/experience/install_path_persistence/*.json"
+kind = "contract_fixture"
+language = "json"
+surface = "distribution"
+classification = "test"
+owner = "distribution"
+reason = "Deterministic PATH plan, persistence-receipt, and fresh-process scenarios for the #11521 checked validator, including the committed invalid documents whose single violated law each negative control names."
+covered_by = [
+  "cargo test -p xtask --example standalone_path_persistence --locked",
+  "python -m unittest scripts/ci/test_standalone_path_contract_schemas.py",
+]
+created = "2026-09-19"
+review_after = "2026-12-19"
+broad_glob_reason = "the fixture set is the reviewed unit: every file is one scenario consumed by the same validator battery and schema harness, and per-file rows would carry no policy information the directory does not"
+
+[[allow]]
 id = "non-rust-install-owned-state-canonical-full-install-manifest"
 path = "fixtures/experience/install_owned_state/manifest_canonical_full_install.json"
 kind = "contract_fixture"
