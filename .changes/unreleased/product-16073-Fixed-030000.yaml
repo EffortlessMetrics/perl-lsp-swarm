@@ -1,0 +1,17 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: >
+  Wired the `xtask release-live-controls` subcommand back into the CLI
+  dispatch and added a regression test that runs the built binary. The
+  `release_live_controls` module landed fully tested in #14689 but its
+  clap variant and dispatch arm were lost in a 39-file conflict
+  resolution, so the observer compiled and passed all 54 library tests
+  yet was unreachable from the shell. `cargo xtask release-live-controls
+  --json` now exits 3 (NOT_PROVEN) on a host without credentials and
+  surfaces both repositories declared in `policy/product-identity.toml`.
+time: 2026-09-20T03:00:00Z
+custom:
+  PR: "16073"
+  Slug: release-live-controls-cli-wiring
+  Breaking: "no"
