@@ -119,7 +119,7 @@ jobs:
             # job-level (ci.yml excludes `labeled`; workflow-level paths
             # filters leave required contexts unreported), manual label
             # widening remains on ci-nightly.yml pull_request(labeled).
-            api_scope="$(PR_NUMBER="${pr_number}" REPOSITORY="${GITHUB_REPOSITORY}" GH_TOKEN="${GITHUB_TOKEN}" \
+            api_scope="$(PR_NUMBER="${pr_number}" REPOSITORY="${GITHUB_REPOSITORY}" GH_TOKEN="${GH_TOKEN}" \
             python3 - "${changed_files[@]}" <<'PY'
           import json
           import os
