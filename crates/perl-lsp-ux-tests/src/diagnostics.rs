@@ -1,8 +1,8 @@
 //! Diagnostics-focused helpers for UX harness orchestration.
 
 use crate::LspEvent;
-use crate::client::EventSource;
 use crate::WaitEnd;
+use crate::client::EventSource;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -204,11 +204,8 @@ mod tests {
         inbox.push_event(publish("file:///other.pl", vec![]));
         let timeout = Duration::from_millis(20);
 
-        let result = DiagnosticsTracker::wait_for_first_uri_event(
-            &inbox,
-            "file:///wanted.pl",
-            timeout,
-        );
+        let result =
+            DiagnosticsTracker::wait_for_first_uri_event(&inbox, "file:///wanted.pl", timeout);
         anyhow::ensure!(
             result == Err(WaitEnd::Deadline { timeout }),
             "missing matching event must remain a typed deadline: {result:?}"
@@ -227,9 +224,10 @@ mod tests {
             Duration::from_secs(1),
         );
         anyhow::ensure!(
-            result == Err(WaitEnd::Ended(StreamEnd::TransportFailure {
-                detail: "invalid frame".to_string()
-            })),
+            result
+                == Err(WaitEnd::Ended(StreamEnd::TransportFailure {
+                    detail: "invalid frame".to_string()
+                })),
             "closed transport must remain distinct from deadline: {result:?}"
         );
         Ok(())
