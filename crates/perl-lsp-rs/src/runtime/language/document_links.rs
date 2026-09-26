@@ -352,10 +352,8 @@ mod tests {
 
     #[test]
     fn resolve_file_link_target_keeps_non_file_uri_joining() {
-        let resolved = resolve_file_link_target(
-            "https://example.test/project/file.pl",
-            "lib/Thing.pl",
-        );
+        let resolved =
+            resolve_file_link_target("https://example.test/project/file.pl", "lib/Thing.pl");
         assert_eq!(resolved, Some("https://example.test/project/lib/Thing.pl".to_string()));
     }
 
