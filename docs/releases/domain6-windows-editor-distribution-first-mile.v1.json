@@ -22,7 +22,7 @@
     "total_rows 705 = 682 unit-mapping rows + 20 merge rows + 3 true-NOREF watchlist rows; the 3 watchlist rows intentionally duplicate commits already mapped once (unique commits 702)"
   ],
   "coverage": {
-    "digest": "sha256:37edfc0867f6e4c38307abe0894f3e8c1a9f2a90e4f8b7e11b8a1546c968ef77",
+    "digest": "sha256:3f20ccc4ff65ed8216a59999ef64ad1380a16dffcd9ce5679644de3e6a45afa4",
     "duplicate_records": 0,
     "duplicate_work_units": 0,
     "omitted_records": 0,
@@ -4963,24 +4963,34 @@
     {
       "api_schema_package_effects": [],
       "artifact_or_route_effects": [
-        "managed candidates namespaced by exact host compatibility target"
+        "managed selection moves from bin/<platform>-<arch> to managed/<compatibility-key>/ with a per-install target.json; one spelling is both the logical key and the path segment",
+        "resolution walks the keys a host may legitimately consume, most preferred first; an install whose target.json names another key is not selected",
+        "legacy installs revalidate by ELF/PE/Mach-O headers (arch, libc via PT_INTERP on Linux) before adoption-by-reference; missing evidence stays unadopted",
+        "perl-lsp.lastUpdateCheck becomes perl-lsp.lastUpdateCheck.<key>; rollback and GC become target-scoped by living inside the namespace"
       ],
       "commits": [
         "bed531ec598d84662dc3f146ff74db1b0ffaf974"
       ],
       "controlling_issues": [
-        "9847"
+        "9847-CLOSED"
       ],
       "disposition_state": "reviewed",
       "editor_manifest_or_protocol_effects": [],
       "grouping_evidence": "trailing (#10198) of subject pair (#9847)(#10198); merge_commit_sha of PR #10198 equals the commit; issue #9847 is the tracked problem",
       "installed_evidence_stage": "source",
-      "invalidators": [],
+      "invalidators": [
+        "managedStorageIdentity key-projection or legacy-adoption revalidation rework",
+        "#10073 landing changing downloader side-effect gating",
+        "retention/GC rework that bypasses target-scoped namespaces"
+      ],
       "known_limitations": [
-        "unit/source stage only; installed-acceptance proof belongs to #6056 lane"
+        "unit/source stage only; installed-acceptance proof belongs to #6056 lane",
+        "static ELF (no PT_INTERP) yields unknown libc and stays unadopted — conservative, may cost an extra download",
+        "whether a Windows ARM64 release shipped a native ARM64 asset is a property of the release, not the host; the emulated x64 namespace remains the fallback row",
+        "residual: #10073 (OPEN) still gates managed downloader side effects on the workspace-host target decision"
       ],
       "migration_or_upgrade_refs": [
-        "per-host candidate namespace isolation"
+        "upgrade: legacy unscoped perl-lsp.lastUpdateCheck seeds the per-target key once; legacy bin/<platform>-<arch> installs are revalidated and adopted by reference, never moved or deleted, so an incompatible host downloads its own candidate"
       ],
       "open_pr_relationships": [],
       "paths_or_components": [
@@ -4993,7 +5003,8 @@
         "vscode-extension/src/test/managedStorageIdentity.test.ts"
       ],
       "platforms_and_targets": [
-        "vscode-managed"
+        "vscode-managed",
+        "per-target namespaces: GNU vs musl Linux distinguished via PT_INTERP (Bionic separate), Windows ARM64 native vs x64-emulation as distinct rows"
       ],
       "primary_disposition": "packaging_install_or_editor",
       "primary_fragment": "editor",
@@ -5777,24 +5788,32 @@
     {
       "api_schema_package_effects": [],
       "artifact_or_route_effects": [
-        "managed binary download/retain/GC lifecycle on user machines"
+        "installs mint an immutable candidate.json manifest from verified digests and commit a versioned managed_current_selection.v1 record next to the legacy current pointer",
+        "each extension-host session persists a live host reference before its server process spawns and releases it at clean client teardown (a crashed session never releases)",
+        "stale-generation cleanup enumerates catalog, selection, and host references and deletes only stale_unreferenced candidates per classifyManagedCandidateRetention; unreadable, malformed, or incomplete evidence blocks destructive cleanup",
+        "the mtime-recency pruneOldVersionedInstalls heuristic is deleted"
       ],
       "commits": [
         "19ba2dd4c5c3d0c9e6363f4cb0a174be25636f7c"
       ],
       "controlling_issues": [
-        "10083"
+        "10083-OPEN"
       ],
       "disposition_state": "reviewed",
       "editor_manifest_or_protocol_effects": [],
       "grouping_evidence": "trailing (#12086) of subject pair (#10083)(#12086); merge_commit_sha of PR #12086 equals the commit; issue #10083 is the tracked problem",
       "installed_evidence_stage": "source",
-      "invalidators": [],
+      "invalidators": [
+        "retention-classification rework in managedCandidateSelection.ts (policy owner #11780)",
+        "#11540 deletion-boundary revalidation changing GC guarantees",
+        "any re-introduction of age/mtime-authorized deletion"
+      ],
       "known_limitations": [
-        "unit/source stage only; installed-acceptance proof belongs to #6056 lane"
+        "unit/source stage only; installed-acceptance proof belongs to #6056 lane",
+        "residual scope stays on open issues: #7859 cross-process GC-vs-launch race matrix, #11540 deletion-boundary revalidation lease seam, #11539 crashed-session live-reference recovery (a crashed window pins its candidate — fail-safe direction, not reclamation)"
       ],
       "migration_or_upgrade_refs": [
-        "stale-generation GC behavior"
+        "upgrade keeps legacy current-pointer resolution for pre-policy namespaces and rollback; policy namespaces activate as installs mint candidate manifests and managed_current_selection.v1 records; pre-policy namespaces without a selection record are skipped"
       ],
       "open_pr_relationships": [],
       "paths_or_components": [
@@ -5824,7 +5843,7 @@
         "editor",
         "install"
       ],
-      "release_note_disposition": "required",
+      "release_note_disposition": "covered",
       "work_unit_id": "PR#12086"
     },
     {
@@ -8369,28 +8388,41 @@
     },
     {
       "api_schema_package_effects": [
-        ".ci/public-api-baselines/perl-dap.txt"
+        ".ci/public-api-baselines/perl-dap.txt (refreshed)",
+        "crates/perl-dap: sha2 promoted dev-dependency -> dependency (workspace-pinned)"
       ],
       "artifact_or_route_effects": [
-        "typed DAP launch-authority startup contract plus perl-dap launch-authority implementation"
+        "perl-dap gains a typed launch-authority startup contract (workspace_bound trusted roots | explicit_unbounded acknowledgement) validated by DapServer::new before any debuggee process spawns; the two historical fail-open launch paths are retired fail-closed",
+        "launch-args workspaceRoot may only narrow a trusted root; trusted-root retargeting is rejected; authority identity is an immutable sha256 over mode, canonical roots, and acknowledgement",
+        "vscode/sublime/neovim clients pass host-owned workspace authority; launch.json cwd cannot create or widen authority",
+        "dap editor-transport inventory and scorecard workflows gate the client transport; DAP_USER_GUIDE documents Startup Authority"
       ],
       "commits": [
         "f6a34fde7abe2f2662fae91b14453b02313e8e65"
       ],
       "controlling_issues": [
-        "8656"
+        "8656-CLOSED"
       ],
       "disposition_state": "reviewed",
       "editor_manifest_or_protocol_effects": [
-        "dap startup contract"
+        "dap startup contract: launch admitted only under installed authority; --trusted-root (repeatable) and --allow-unbounded CLI startup inputs, user/machine-owned sources only"
       ],
       "grouping_evidence": "trailing (#14523) of subject pair (#8656)(#14523); merge_commit_sha of PR #14523 equals the commit; issue #8656 is the tracked problem",
       "installed_evidence_stage": "mechanism",
-      "invalidators": [],
-      "known_limitations": [
-        "sublime client surface plus perl-dap launch-authority implementation; VS Code DAP startup covered by separate units"
+      "invalidators": [
+        "#8145 landing reworking admission breadth or retiring the legacy single-root surface",
+        "editor authority pass-through no longer sourced from host-owned workspace state",
+        "public-api baseline drift without regeneration"
       ],
-      "migration_or_upgrade_refs": [],
+      "known_limitations": [
+        "parent program #8145 (OPEN) owns enforcement breadth beyond the launch path and full retirement of the legacy single-root workspace_root surface",
+        "startup without authority inputs does not exit (boundary-free management flows keep working); only launches are refused fail-closed",
+        "symlink-root rejection is unix-verified in-unit; Windows symlink behavior unproven",
+        "no installed DAP-launch acceptance (real editors, real debuggees) in-unit; belongs to #6056/#4346 lanes"
+      ],
+      "migration_or_upgrade_refs": [
+        "upgrade: DAP launches with neither authority nor a configured boundary now refuse (previously failed open); editors pass the host workspace folder as trusted root; no settings migration"
+      ],
       "open_pr_relationships": [],
       "paths_or_components": [
         ".ci/dap/editor-transport-inventory.v1.json",
@@ -8438,22 +8470,29 @@
         "vscode-extension/src/test/debugAdapter.test.ts"
       ],
       "platforms_and_targets": [
-        "sublime"
+        "perl-dap server: cross-platform managed bundle",
+        "vscode adapter: host workspace root canonicalized (realpath) before --trusted-root so native symlink rejection does not refuse symlinked workspaces",
+        "sublime and neovim clients: editor-owned workspace folder becomes the trusted root"
       ],
       "primary_disposition": "product_behavior",
       "primary_fragment": "editor",
       "primary_fragment_basis": "seed_review",
       "proof_owner_refs": [
-        "clients/sublime host_tests",
-        "editor-transport inventory"
+        "crates/perl-dap tests (dap_launch_security_test.rs, security_regression_tests.rs, wave_h_external_red_tests.rs)",
+        ".ci/dap/editor-transport-inventory.v1.json",
+        ".github/workflows/dap-editor-transport.yml",
+        "clients/sublime/LSP-perllsp/host_tests",
+        "scripts/ci/dap_scorecard_runtime.py"
       ],
       "public_claim_refs": [],
       "reachable_installed_effect": "bounded",
       "release_domains": [
         "editor",
-        "dap"
+        "dap",
+        "security",
+        "docs"
       ],
-      "release_note_disposition": "covered",
+      "release_note_disposition": "required",
       "work_unit_id": "PR#14523"
     },
     {
@@ -11201,11 +11240,14 @@
     },
     {
       "api_schema_package_effects": [
-        "release_topology.v4",
-        "vsix_candidate_payload.v2"
+        "release_topology.v4 (new; accepted topology versions extend 1-3 with 4, opt-in only)",
+        "vsix_candidate_payload.v2 (new; legacy v1 default admission unchanged)"
       ],
       "artifact_or_route_effects": [
-        "RC/numeric VSIX identity binding offline; candidate payload composition"
+        "opt-in offline RC/numeric VSIX identity binding: release_vsix_mapping validates the supplied extension/candidate identity against the prepared package (canonical X.Y.Z-rc.N, preRelease=true, one prepared source SHA) and derives the exact RC asset basename; never allocates a version",
+        "release topology gains schema v4 with a frozen-v3 -> prepared-v4 mapped transition law (byte-identical schema files in both roots, stale selected-schema identity refused, no implicit v1/v2 upgrades)",
+        "vsix-prebuilt-payload verifier gains a mapped route: expected archive SHA, package/XML identity, prerelease, payload and native members, semantic inventory",
+        "release-history and vscode-prebuilt-payload-adapter workflows install the pinned release-schema requirements"
       ],
       "commits": [
         "f6bf580309b5e0f8cb7f82e84f9e2f0d6a37d8d3"
@@ -11218,14 +11260,18 @@
       "grouping_evidence": "trailing (#16207) of subject pair (#14923)(#16207); merge_commit_sha of PR #16207 equals the commit; issue #14923 is the tracked problem",
       "installed_evidence_stage": "mechanism",
       "invalidators": [
-        "#16230 conflict; topology v4 evolution"
+        "carrier #16230 rework or supersession changes packaged selection",
+        "release_topology.v4 or vsix_candidate_payload.v2 schema byte changes after candidate composition",
+        "mapping-law changes (canonical X.Y.Z-rc.N, preRelease=true, one prepared sourceSha, exact RC asset basename)"
       ],
       "known_limitations": [
-        "packaged selection lands via carrier PR #16230, verified OPEN 2026-09-23"
+        "offline binding only: production package-vsix.js still rejects payload v2 on main, so packaged selection lands via carrier PR #16230 (verified OPEN 2026-09-25); that carrier's disposition stays with #13215/#5888, not this row",
+        "no production VSIX packaging, installed Windows/Linux acceptance, publication, or release qualification is proven in-unit; synthetic-ZIP verifier proof carries none",
+        "frozen-v3 -> prepared-v4 is opt-in and requires both schema files byte-identical in frozen and prepared roots; legacy defaults and prerelease admission remain unchanged"
       ],
       "migration_or_upgrade_refs": [],
       "open_pr_relationships": [
-        "16230-OPEN"
+        "16230-OPEN carrier: production mapped-RC packaging consumes this binding (stacked on #16207), verified OPEN 2026-09-25; disposition owned by #13215/#5888"
       ],
       "paths_or_components": [
         ".github/workflows/release-history.yml",
@@ -11251,14 +11297,20 @@
         "vscode-extension/src/vsixPackageProjection.ts"
       ],
       "platforms_and_targets": [
-        "portable"
+        "portable",
+        "topology-v4 managed/bundled VSIX target matrix; the verifier requires native XML platform to match the selected target and universal packages to omit the attribute"
       ],
       "primary_disposition": "packaging_install_or_editor",
       "primary_fragment": "editor",
       "primary_fragment_basis": "seed_review",
       "proof_owner_refs": [
         ".spec/14923-rc-vsix-binding/README.md",
-        "fixtures/rc_vsix_binding/valid.topology.v4.json"
+        "fixtures/rc_vsix_binding/valid.topology.v4.json",
+        "scripts/test_generate_release_topology.py",
+        "scripts/test_release_build_identity.py",
+        "scripts/test_prepare_vsix_prebuilt_payload.py",
+        "vscode-extension/scripts/check-vsix-prebuilt-payload.test.js",
+        "vscode-extension/src/test/vsixPackageProjection.test.ts"
       ],
       "public_claim_refs": [],
       "reachable_installed_effect": "bounded",
