@@ -73,13 +73,25 @@ REVIEWED_FIELD_VALUES = {
 START_SHA = "f6b7b2c6626fbefbf01c9c9934cac5789186f8b2"
 OBSERVED_HEAD = "102974155487bc955e01d5d5222053c4c449136c"
 
-SEED_IDS = ["PR#10198", "PR#12086", "PR#14523", "PR#16207", "PR#16371"]
+SEED_IDS = [
+    "PR#10198",
+    "PR#12086",
+    "PR#14523",
+    "PR#15103",
+    "PR#15443",
+    "PR#15450",
+    "PR#16207",
+    "PR#16371",
+]
 SEED_FRAGMENTS = {
     "PR#16371": "distribution",
     "PR#16207": "editor",
     "PR#12086": "editor",
     "PR#10198": "editor",
     "PR#14523": "editor",
+    "PR#15443": "editor",
+    "PR#15450": "editor",
+    "PR#15103": "first_mile",
 }
 REVIEWED_ONLY_KEYS = [
     "release_domains",
@@ -132,8 +144,8 @@ class Domain6FragmentTest(unittest.TestCase):
         self.assertEqual(counts["total_rows"], 705)
         self.assertEqual(counts["unique_commits"], 702)
         self.assertEqual(self.doc["work_unit_count"], 672)
-        self.assertEqual(self.doc["reviewed_seed_count"], 5)
-        self.assertEqual(self.doc["not_proven_unit_count"], 667)
+        self.assertEqual(self.doc["reviewed_seed_count"], 8)
+        self.assertEqual(self.doc["not_proven_unit_count"], 664)
         self.assertEqual(len(self.doc["work_units"]), 672)
 
     def test_exactly_once_coverage(self) -> None:
@@ -150,7 +162,7 @@ class Domain6FragmentTest(unittest.TestCase):
         # Watchlist rows are intentional duplicates of mapped commits.
         self.assertTrue(watch_commits <= set(covered))
 
-    def test_five_seed_rows_reviewed(self) -> None:
+    def test_eight_seed_rows_reviewed(self) -> None:
         reviewed = [
             u
             for u in self.doc["work_units"]
