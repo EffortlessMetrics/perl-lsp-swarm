@@ -403,8 +403,12 @@ fn definition_long_fqn_receipts_respect_prefix_refusal()
         let result = server.test_handle_definition(Some(params.clone()))?;
         assert_eq!(result, Some(Value::Null), "prefix at {character} must return null");
         let explanation = explain_provider_decision(&server, "goto_definition")?;
+        let request_receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing persisted goto-definition request receipt")?;
         assert!(
-            explanation.pointer("/request_receipt/semantic_shadow_receipt").is_none(),
+            request_receipt.get("semantic_shadow_receipt").is_none(),
             "prefix at {character} must not persist a trailing-callable candidate"
         );
         let runtime = server
