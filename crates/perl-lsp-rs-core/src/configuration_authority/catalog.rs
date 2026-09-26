@@ -1169,7 +1169,10 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         WorkspaceFolder,
         Unsigned,
         CLIENT_FOLDER,
-        Validation::UnsignedRange { minimum: 1, maximum: 60_000 },
+        // Hard envelope owned by `config::RESOLUTION_TIMEOUT_HARD_CAP_MS`
+        // (#16182); keep the maximum in sync with it and with the published
+        // schemas so no admission channel widens the envelope.
+        Validation::UnsignedRange { minimum: 1, maximum: 10_000 },
         KeepLastValid,
         Ordinary,
         SafeValue,

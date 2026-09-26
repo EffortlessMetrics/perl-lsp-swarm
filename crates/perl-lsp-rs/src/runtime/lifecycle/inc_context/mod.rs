@@ -349,7 +349,14 @@ impl LspServer {
             effective_roots,
             use_system_inc: config.use_system_inc,
             use_perl5lib: config.use_perl5lib,
-            resolution_timeout_ms: config.resolution_timeout_ms,
+            // Hard envelope (#16182): the delivered resolution deadline is
+            // bounded even when a programmatically composed or unvalidated
+            // config value reaches this seam, so no consumer can observe a
+            // single-resolution wait wider than the product envelope owned by
+            // `RESOLUTION_TIMEOUT_MS_RANGE` in perl-lsp-rs-core config.
+            resolution_timeout_ms: config
+                .resolution_timeout_ms
+                .min(perl_lsp_rs_core::config::RESOLUTION_TIMEOUT_HARD_CAP_MS),
             system_inc_state,
         })
     }
@@ -589,6 +596,44 @@ mod tests {
         assert!(holder.get().is_none());
         assert!(holder.get().is_none());
         assert_eq!(probe.count(), 1, "the absent case must be memoized, not retried");
+        Ok(())
+    }
+
+    /// #16182: the delivered deadline is bounded at the consumption seam even
+    /// when a programmatically composed config value exceeds the product
+    /// envelope, so consumers cannot wait unbounded on one resolution.
+    /// 60_000 ms was admissible under the previous unbounded parser/catalog
+    /// pair and must now arrive as the hard cap.
+    #[test]
+    fn effective_inc_context_bounds_resolution_deadline_to_hard_envelope() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let script = workspace.join("script").join("run.pl");
+        std::fs::create_dir_all(script.parent().ok_or("missing script parent")?)?;
+
+        let workspace_uri = file_uri(&workspace)?;
+        let doc_uri = file_uri(&script)?;
+        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string()];
+        config.use_perl5lib = false;
+        config.resolution_timeout_ms = 60_000;
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            WorkspaceFolderState::new(workspace_uri.clone())
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        ];
+        *server.root_path.lock() = Some(workspace.clone());
+
+        let source = "use Demo::Worker;\n";
+        let context = server
+            .effective_inc_context_for_doc(Some(&doc_uri), Some(source), Some(source.len()))
+            .ok_or("expected effective @INC context")?;
+        assert_eq!(
+            context.resolution_timeout_ms,
+            perl_lsp_rs_core::config::RESOLUTION_TIMEOUT_HARD_CAP_MS,
+        );
         Ok(())
     }
 
