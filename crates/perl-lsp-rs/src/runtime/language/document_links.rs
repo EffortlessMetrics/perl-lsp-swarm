@@ -30,10 +30,8 @@ fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
     }
 
     let base_url = url::Url::parse(base_uri).ok()?;
-    if let Ok(target_url) = base_url.join(file_path) {
-        return Some(target_url.to_string());
-    }
-
+    // A require path is literal filesystem text, not a URL reference. Joining
+    // URLs first would turn '#' and '?' in a filename into fragment/query data.
     if let Ok(base_path) = base_url.to_file_path()
         && let Some(parent) = base_path.parent()
     {
@@ -41,6 +39,12 @@ fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
         if let Ok(target_url) = url::Url::from_file_path(&resolved) {
             return Some(target_url.to_string());
         }
+    }
+
+    // Retain URL resolution for non-file document URIs (and file URIs that
+    // cannot be represented as paths on this host).
+    if let Ok(target_url) = base_url.join(file_path) {
+        return Some(target_url.to_string());
     }
 
     None
@@ -339,6 +343,24 @@ mod tests {
             "//server/share/lib/Thing.pm",
         );
         assert_eq!(resolved, Some("file://server/share/lib/Thing.pm".to_string()));
+    }
+
+    #[test]
+    fn resolve_file_link_target_encodes_literal_filename_url_metacharacters() {
+        let base_path = std::env::temp_dir().join("perl-lsp-link-literals").join("main.pl");
+        let base_uri = url::Url::from_file_path(&base_path).expect("absolute test path");
+        for (name, encoded) in [
+            ("Foo#Bar.pl", "Foo%23Bar.pl"),
+            ("Foo?Bar.pl", "Foo%3FBar.pl"),
+            ("Foo%Bar.pl", "Foo%25Bar.pl"),
+        ] {
+            let path = format!("lib/{name}");
+            let expected = url::Url::from_file_path(base_path.parent().expect("parent").join(&path))
+                .expect("absolute target path");
+            let actual = resolve_file_link_target(base_uri.as_str(), &path);
+            assert_eq!(actual.as_deref(), Some(expected.as_str()), "literal path: {path}");
+            assert!(expected.as_str().ends_with(&format!("/lib/{encoded}")));
+        }
     }
 
     #[test]

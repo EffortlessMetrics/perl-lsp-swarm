@@ -97,3 +97,49 @@ require "lib/Local.pl";
     client.shutdown()?;
     Ok(())
 }
+
+#[test]
+fn document_links_resolve_literal_require_filenames_over_stdio() -> TestResult {
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
+    let document_path =
+        std::env::temp_dir().join("lsp_document_links_literals").join("main.pl");
+    let document_url = url::Url::from_file_path(&document_path)
+        .map_err(|()| "failed to build file URI for literal-link test")?;
+    let uri = document_url.as_str();
+    let paths = [
+        ("lib/Foo#Bar.pl", "Foo%23Bar.pl"),
+        ("lib/Foo?Bar.pl", "Foo%3FBar.pl"),
+        ("lib/Foo%Bar.pl", "Foo%25Bar.pl"),
+    ];
+    let source = paths
+        .iter()
+        .map(|(path, _)| format!("require \"{path}\";\n"))
+        .collect::<String>();
+    client.did_open(uri, "perl", &source)?;
+
+    let response = client.request("textDocument/documentLink", json!({
+        "textDocument": { "uri": uri }
+    }))?;
+    assert!(response.get("error").is_none(), "documentLink failed: {response:#}");
+    let links = response_result_array(&response)?;
+
+    for (path, encoded) in paths {
+        let link = links
+            .iter()
+            .find(|link| data_field(link, "path") == Some(path))
+            .ok_or_else(|| format!("missing deferred file link for {path}: {links:#?}"))?;
+        assert!(link.get("target").is_none(), "link should be deferred: {link:#}");
+        let resolved = client.request("documentLink/resolve", link.clone())?;
+        assert!(resolved.get("error").is_none(), "resolve failed: {resolved:#}");
+        let actual = resolved.pointer("/result/target").and_then(Value::as_str);
+        let expected =
+            url::Url::from_file_path(document_path.parent().ok_or("missing parent")?.join(path))
+                .map_err(|()| "failed to build expected file URI")?;
+        assert_eq!(actual, Some(expected.as_str()), "require path: {path}");
+        assert!(expected.as_str().ends_with(&format!("/lib/{encoded}")));
+    }
+
+    client.shutdown()?;
+    Ok(())
+}
