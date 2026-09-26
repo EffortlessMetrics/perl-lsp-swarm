@@ -102,8 +102,7 @@ require "lib/Local.pl";
 fn document_links_resolve_literal_require_filenames_over_stdio() -> TestResult {
     let bin = support::product_binary_path()?;
     let mut client = LspClient::spawn(&bin)?;
-    let document_path =
-        std::env::temp_dir().join("lsp_document_links_literals").join("main.pl");
+    let document_path = std::env::temp_dir().join("lsp_document_links_literals").join("main.pl");
     let document_url = url::Url::from_file_path(&document_path)
         .map_err(|()| "failed to build file URI for literal-link test")?;
     let uri = document_url.as_str();
@@ -112,15 +111,15 @@ fn document_links_resolve_literal_require_filenames_over_stdio() -> TestResult {
         ("lib/Foo?Bar.pl", "Foo%3FBar.pl"),
         ("lib/Foo%Bar.pl", "Foo%25Bar.pl"),
     ];
-    let source = paths
-        .iter()
-        .map(|(path, _)| format!("require \"{path}\";\n"))
-        .collect::<String>();
+    let source = paths.iter().map(|(path, _)| format!("require \"{path}\";\n")).collect::<String>();
     client.did_open(uri, "perl", &source)?;
 
-    let response = client.request("textDocument/documentLink", json!({
-        "textDocument": { "uri": uri }
-    }))?;
+    let response = client.request(
+        "textDocument/documentLink",
+        json!({
+            "textDocument": { "uri": uri }
+        }),
+    )?;
     assert!(response.get("error").is_none(), "documentLink failed: {response:#}");
     let links = response_result_array(&response)?;
 

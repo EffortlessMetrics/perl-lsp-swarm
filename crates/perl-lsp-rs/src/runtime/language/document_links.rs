@@ -355,8 +355,9 @@ mod tests {
             ("Foo%Bar.pl", "Foo%25Bar.pl"),
         ] {
             let path = format!("lib/{name}");
-            let expected = url::Url::from_file_path(base_path.parent().expect("parent").join(&path))
-                .expect("absolute target path");
+            let expected =
+                url::Url::from_file_path(base_path.parent().expect("parent").join(&path))
+                    .expect("absolute target path");
             let actual = resolve_file_link_target(base_uri.as_str(), &path);
             assert_eq!(actual.as_deref(), Some(expected.as_str()), "literal path: {path}");
             assert!(expected.as_str().ends_with(&format!("/lib/{encoded}")));
