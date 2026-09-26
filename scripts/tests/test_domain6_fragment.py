@@ -76,10 +76,10 @@ OBSERVED_HEAD = "102974155487bc955e01d5d5222053c4c449136c"
 SEED_IDS = [
     "PR#10198",
     "PR#12086",
-    "PR#12742",
-    "PR#12808",
     "PR#14523",
-    "PR#15260",
+    "PR#15103",
+    "PR#15443",
+    "PR#15450",
     "PR#16207",
     "PR#16371",
 ]
@@ -89,9 +89,9 @@ SEED_FRAGMENTS = {
     "PR#12086": "editor",
     "PR#10198": "editor",
     "PR#14523": "editor",
-    "PR#12742": "distribution",
-    "PR#12808": "editor",
-    "PR#15260": "distribution",
+    "PR#15443": "editor",
+    "PR#15450": "editor",
+    "PR#15103": "first_mile",
 }
 REVIEWED_ONLY_KEYS = [
     "release_domains",
