@@ -35,6 +35,14 @@ my $first = target();
 my $second = Real::Nav::target();
 "#;
 
+const LONG_FQN_URI: &str = "file:///workspace/long_fqn.pl";
+const LONG_FQN: &str = concat!(
+    "package My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff;\n",
+    "sub process { return 1; }\n",
+    "package main;\n",
+    "My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff::process();\n",
+);
+
 const LIVE_REFS_URI: &str = "file:///workspace/lib/Live/Refs.pm";
 
 const LIVE_REFS: &str = r#"package Live::Refs;
@@ -367,6 +375,47 @@ fn definition_provider_does_not_persist_shadow_receipt_for_fqn_prefix()
         receipt.get("semantic_shadow_receipt").is_none(),
         "FQN package-prefix refusal must not persist candidates for the final component"
     );
+    Ok(())
+}
+
+#[test]
+fn definition_long_fqn_receipts_respect_prefix_refusal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_document(&server, LONG_FQN_URI, LONG_FQN)?;
+    let params_at = |character| json!({
+        "textDocument": {"uri": LONG_FQN_URI},
+        "position": {"line": 3, "character": character}
+    });
+
+    let final_result = server.test_handle_definition(Some(params_at(66)))?;
+    assert_eq!(location_count(final_result.as_ref()), 1, "final callable must resolve");
+    let final_runtime = server
+        .test_definition_runtime_quality_receipt(Some(params_at(66)))?
+        .ok_or("missing final-component runtime receipt")?;
+    assert!(
+        final_runtime.get("source_backed_receipt").is_some_and(|receipt| !receipt.is_null()),
+        "final callable must produce source-backed comparison: {final_runtime}"
+    );
+
+    for character in [0, 2, 3, 4, 30, 63, 64, 65] {
+        let params = params_at(character);
+        let result = server.test_handle_definition(Some(params.clone()))?;
+        assert_eq!(result, Some(Value::Null), "prefix at {character} must return null");
+        let explanation = explain_provider_decision(&server, "goto_definition")?;
+        assert!(
+            explanation.pointer("/request_receipt/semantic_shadow_receipt").is_none(),
+            "prefix at {character} must not persist a trailing-callable candidate"
+        );
+        let runtime = server
+            .test_definition_runtime_quality_receipt(Some(params))?
+            .ok_or("missing runtime receipt")?;
+        assert!(
+            runtime.get("source_backed_receipt").is_some_and(Value::is_null),
+            "prefix at {character} must not manufacture source-backed proof: {runtime}"
+        );
+    }
+
     Ok(())
 }
 

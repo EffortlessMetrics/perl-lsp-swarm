@@ -1086,6 +1086,22 @@ pub(super) fn fqn_component_at_cursor(
     })
 }
 
+/// Classify the complete qualified name while leaving the shared, fixed-radius
+/// navigation window available to its other consumers.
+#[cfg(feature = "workspace")]
+fn fqn_component_in_document(
+    text: &str,
+    offset: usize,
+) -> Result<Option<FqnCursorComponent>, JsonRpcError> {
+    let (line_start, line_text) = crate::util::line_window_around_offset(text, offset);
+    let cursor_in_line = offset.min(text.len()).saturating_sub(line_start);
+    Ok(fqn_component_at_cursor(
+        get_fqn_regex()?,
+        line_text,
+        cursor_in_line,
+    ))
+}
+
 /// Whether the cursor at `offset` sits *off* the token that names `symbol_name`.
 ///
 /// Rename and find-references both need this before acting on a resolved symbol:
@@ -1867,10 +1883,7 @@ impl LspServer {
                 // consults the workspace index — stays gated.
                 #[cfg(feature = "workspace")]
                 {
-                    let fqn_regex = get_fqn_regex()?;
-                    if let Some(component) =
-                        fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text)
-                    {
+                    if let Some(component) = fqn_component_in_document(&doc.text, offset)? {
                         match component {
                             FqnCursorComponent::Final { package, name } => {
                                 if workspace_index_is_fresh()
@@ -2240,13 +2253,9 @@ impl LspServer {
     fn definition_semantic_shadow_receipt(&self, params: &Value) -> Option<Value> {
         let uri = req_uri(params).ok()?;
         let (line, character) = req_position(params).ok()?;
-        let (symbol, byte_offset, text_around, cursor_in_text, document_generation) =
+        let (symbol, byte_offset, component, document_generation) =
             self.navigation_runtime_snapshot(uri, line, character)?;
-        let fqn_regex = get_fqn_regex().ok()?;
-        if matches!(
-            fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text),
-            Some(FqnCursorComponent::Prefix)
-        ) {
+        if matches!(component, Some(FqnCursorComponent::Prefix)) {
             return None;
         }
         let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
@@ -2388,7 +2397,7 @@ impl LspServer {
 
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
-            let Some((symbol, byte_offset, _, _, _)) =
+            let Some((symbol, byte_offset, component, _)) =
                 self.navigation_runtime_snapshot(uri, line, character)
             else {
                 return Ok(Some(json!({
@@ -2400,6 +2409,21 @@ impl LspServer {
                     "note": "definition runtime proof found no symbol at request position"
                 })));
             };
+
+            // The source-backed comparison must respect the same cursor refusal
+            // as the live provider; the symbol resolver can otherwise report the
+            // trailing callable from a package component.
+            if matches!(component, Some(FqnCursorComponent::Prefix)) {
+                return Ok(Some(json!({
+                    "provider": "definition",
+                    "symbol": symbol,
+                    "live_provider_result": live_provider_result,
+                    "live_provider_count": live_provider_count,
+                    "source_backed_receipt": null,
+                    "no_live_behavior_change": true,
+                    "live_cutover": null
+                })));
+            }
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
             let source_backed_receipt = if self.workspace_index_stale_for_any_open_document() {
@@ -2457,16 +2481,15 @@ impl LspServer {
         uri: &str,
         line: u32,
         character: u32,
-    ) -> Option<(String, u32, String, usize, u32)> {
+    ) -> Option<(String, u32, Option<FqnCursorComponent>, u32)> {
         let documents = self.documents_guard();
         let doc = self.get_document(&documents, uri)?;
         let document_generation = doc.current_generation();
         let offset = self.pos16_to_offset(doc, line, character);
         let (symbol, byte_offset) =
             self.navigation_runtime_symbol_from_document(doc, line, character, offset)?;
-        let (text_start, text_around) = self.get_text_window_around_offset(&doc.text, offset, 50);
-        let cursor_in_text = offset.min(doc.text.len()).saturating_sub(text_start);
-        Some((symbol, byte_offset, text_around, cursor_in_text, document_generation))
+        let component = fqn_component_in_document(&doc.text, offset).ok()?;
+        Some((symbol, byte_offset, component, document_generation))
     }
 
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -3349,6 +3372,35 @@ mod tests {
             Some(FqnCursorComponent::Final { package: "Foo".to_string(), name: "bar".to_string() })
         );
         assert_eq!(fqn_component_at_cursor(regex, "Foo::bar", 9), None);
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn definition_fqn_component_uses_complete_line_for_long_middle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let text = concat!(
+            "package main;\n",
+            "My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff::process();\n",
+        );
+        let offset = text.find("My::").ok_or("missing qualified name")? + 4;
+        // A radius-50 slice ends inside the middle component at this offset.
+        let clipped = &text.lines().nth(1).ok_or("missing call line")?[..54];
+        assert_eq!(
+            fqn_component_at_cursor(get_fqn_regex()?, clipped, 4),
+            Some(FqnCursorComponent::Final {
+                package: "My".to_owned(),
+                name: clipped[4..].to_owned(),
+            })
+        );
+        assert_eq!(fqn_component_in_document(text, offset)?, Some(FqnCursorComponent::Prefix));
+        assert_eq!(
+            fqn_component_in_document(text, text.find("::process").ok_or("missing sub")? + 2)?,
+            Some(FqnCursorComponent::Final {
+                package: "My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff".to_owned(),
+                name: "process".to_owned(),
+            })
+        );
         Ok(())
     }
 
