@@ -5543,6 +5543,16 @@ our $single_root_var;
             let items = run_workspace_pass_over_secrets_module(uri, source, None);
             assert!(items.is_empty(), "runtime fallback leaked into {source:?}: {items:?}");
         }
+
+        // The gate concerns the role at the cursor, not an arrow or an
+        // earlier hash subscript elsewhere in the document.
+        for source in ["$obj->call();\n$api", "$hash{key};\n$api"] {
+            let items = run_workspace_pass_over_secrets_module(uri, source, None);
+            assert!(
+                items.iter().any(|(label, _, _)| label == "$api_token"),
+                "ordinary variable position after a completed access lost enrichment: {items:?}"
+            );
+        }
     }
 
     /// A package variable owned by an unimported module must be inserted fully
