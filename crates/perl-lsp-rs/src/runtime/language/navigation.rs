@@ -1095,11 +1095,7 @@ fn fqn_component_in_document(
 ) -> Result<Option<FqnCursorComponent>, JsonRpcError> {
     let (line_start, line_text) = crate::util::line_window_around_offset(text, offset);
     let cursor_in_line = offset.min(text.len()).saturating_sub(line_start);
-    Ok(fqn_component_at_cursor(
-        get_fqn_regex()?,
-        line_text,
-        cursor_in_line,
-    ))
+    Ok(fqn_component_at_cursor(get_fqn_regex()?, line_text, cursor_in_line))
 }
 
 /// Whether the cursor at `offset` sits *off* the token that names `symbol_name`.
@@ -3393,11 +3389,15 @@ mod tests {
                 name: clipped[4..].to_owned(),
             })
         );
-        assert_eq!(fqn_component_in_document(text, offset)?, Some(FqnCursorComponent::Prefix));
+        assert_eq!(
+            fqn_component_in_document(text, offset)?,
+            Some(FqnCursorComponent::Prefix)
+        );
+        let expected_package = "My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff";
         assert_eq!(
             fqn_component_in_document(text, text.find("::process").ok_or("missing sub")? + 2)?,
             Some(FqnCursorComponent::Final {
-                package: "My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff".to_owned(),
+                package: expected_package.to_owned(),
                 name: "process".to_owned(),
             })
         );

@@ -379,14 +379,15 @@ fn definition_provider_does_not_persist_shadow_receipt_for_fqn_prefix()
 }
 
 #[test]
-fn definition_long_fqn_receipts_respect_prefix_refusal()
--> Result<(), Box<dyn std::error::Error>> {
+fn definition_long_fqn_receipts_respect_prefix_refusal() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_server();
     open_document(&server, LONG_FQN_URI, LONG_FQN)?;
-    let params_at = |character| json!({
-        "textDocument": {"uri": LONG_FQN_URI},
-        "position": {"line": 3, "character": character}
-    });
+    let params_at = |character| {
+        json!({
+            "textDocument": {"uri": LONG_FQN_URI},
+            "position": {"line": 3, "character": character}
+        })
+    };
 
     let final_result = server.test_handle_definition(Some(params_at(66)))?;
     assert_eq!(location_count(final_result.as_ref()), 1, "final callable must resolve");
@@ -394,7 +395,9 @@ fn definition_long_fqn_receipts_respect_prefix_refusal()
         .test_definition_runtime_quality_receipt(Some(params_at(66)))?
         .ok_or("missing final-component runtime receipt")?;
     assert!(
-        final_runtime.get("source_backed_receipt").is_some_and(|receipt| !receipt.is_null()),
+        final_runtime
+            .get("source_backed_receipt")
+            .is_some_and(|receipt| !receipt.is_null()),
         "final callable must produce source-backed comparison: {final_runtime}"
     );
 
