@@ -1848,9 +1848,9 @@ mod tests {
 
         let cases = [("my $re = qr/(a+)+b/;\n", "PL1000"), ("sub broken {\n", "PL001")];
         for (source, expected_code) in cases {
-            let items = get_full_items(provider.get_document_diagnostics_with_context(
-                &uri, source, None, &context, None,
-            ));
+            let items = get_full_items(
+                provider.get_document_diagnostics_with_context(&uri, source, None, &context, None),
+            );
             let diagnostic = items
                 .iter()
                 .find(|item| {
