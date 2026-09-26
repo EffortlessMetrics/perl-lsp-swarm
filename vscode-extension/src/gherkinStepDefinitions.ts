@@ -143,7 +143,9 @@ export function buildGeneratedStepPattern(stepText: string): string {
     QUOTED_CAPTURE_RE.lastIndex = cursor;
     const quoted = QUOTED_CAPTURE_RE.exec(stepText);
     if (quoted && quoted.index === cursor) {
-      pattern += '"([^"]+)"';
+      // Quoted arguments can be empty. The generated stub must match its
+      // originating step or the Quick Fix keeps offering a duplicate.
+      pattern += '"([^"]*)"';
       cursor += quoted[0].length;
       continue;
     }

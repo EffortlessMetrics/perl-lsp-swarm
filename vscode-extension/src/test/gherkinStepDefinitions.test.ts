@@ -38,13 +38,25 @@ describe('gherkin step definition support', () => {
 
   test('builds conservative generated regex patterns', () => {
     expect(buildGeneratedStepPattern('a user exists with name "alice"')).toBe(
-      '^a user exists with name "([^"]+)"$',
+      '^a user exists with name "([^"]*)"$',
+    );
+    expect(buildGeneratedStepPattern('a user exists with name ""')).toBe(
+      '^a user exists with name "([^"]*)"$',
     );
     // Outline placeholders must not span newlines (#5997).
     expect(buildGeneratedStepPattern('I add <item> to the cart')).toBe(
       '^I add ([^\\r\\n]+) to the cart$',
     );
     expect(buildGeneratedStepPattern('the total is 19.99')).toBe('^the total is 19\\.99$');
+  });
+
+  test('generated stub matches an empty quoted argument in its originating step', () => {
+    const step = parseGherkinStepLine('Given a user exists with name ""', 0);
+    expect(step).not.toBeNull();
+    const pattern = buildGeneratedStepPattern(step!.text);
+    expect(classifyStepDefinitionStatus(step!, [`Given qr/${pattern}/, sub { return; };`])).toBe(
+      'defined',
+    );
   });
 
   test('extracts slash-delimited step definitions and flags unsupported forms as ambiguous', () => {
