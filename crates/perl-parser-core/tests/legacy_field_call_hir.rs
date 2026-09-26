@@ -106,6 +106,33 @@ fn bare_field_argument_preserves_package_read() -> TestResult {
 }
 
 #[test]
+fn future_my_does_not_swallow_legacy_field_argument() -> TestResult {
+    let source = "sub m { field $x; }\nmy $x;\n";
+    let mut parser = Parser::new(source);
+    let parsed = parser.parse_with_recovery();
+    let file = lower_ast(&parsed.ast);
+    let argument = source.find("field $x").ok_or("legacy call")? + "field ".len();
+    let nodes: Vec<_> = file.bodies.iter().enumerate().flat_map(|(idx, body)| {
+        lower_single_body(body, HirBodyId(idx as u32), &file)
+    }).collect();
+    assert!(
+        nodes.iter().any(|node| {
+            matches!(node.operation, PirOperation::StashRead { .. })
+                && node.source_anchor.range.map(|range| range.start) == Some(argument)
+        }),
+        "legacy field argument before `my` remains a package read: {nodes:?}"
+    );
+    assert!(
+        nodes.iter().all(|node| {
+            !matches!(node.operation, PirOperation::LexicalRead { .. })
+                || node.source_anchor.range.map(|range| range.start) != Some(argument)
+        }),
+        "future lexical must not consume the earlier legacy call's argument: {nodes:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn legacy_field_call_reuses_existing_lexical_target() -> TestResult {
     let source = "my $x; field $x = 1;\n";
     let mut parser = Parser::new(source);
