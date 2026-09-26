@@ -229,6 +229,7 @@ fn printf_list_valued_arguments_do_not_claim_exact_arity() {
         "my @values = ('a', 'b'); printf '%s %s', @values;",
         "my @values = ('b', 'c'); sprintf '%s %s', $prefix, @values;",
         "sub values { return ('a', 'b') } printf '%s %s', values();",
+        "printf '%s %s', qx{printf 'a\\nb\\n'};",
     ] {
         assert!(
             diagnostics_for(source).iter().all(|diag| diag.code.as_deref() != Some("PL405")),
