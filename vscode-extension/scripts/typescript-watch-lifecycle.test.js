@@ -142,6 +142,19 @@ void test(
   },
 );
 
+async function cleanupFixtureGroup(pidFile) {
+  if (!fs.existsSync(pidFile)) return;
+  const [groupPid] = fs.readFileSync(pidFile, 'utf8').trim().split(/\s+/).map(Number);
+  if (groupPid === undefined || !Number.isSafeInteger(groupPid) || groupPid <= 0)
+    throw new Error('invalid fixture group PID');
+  const cleanup = await stopTree({ pid: groupPid });
+  assert.equal(
+    cleanup.tree_proven,
+    true,
+    'fixture group must be stopped even after assertion failure',
+  );
+}
+
 for (const signal of /** @type {NodeJS.Signals[]} */ (['SIGINT', 'SIGTERM', 'SIGHUP'])) {
   void test(
     `signal ${signal} cleans an active watcher and descendant`,
@@ -152,7 +165,7 @@ for (const signal of /** @type {NodeJS.Signals[]} */ (['SIGINT', 'SIGTERM', 'SIG
       const fixture = path.join(temp, 'fixture.js');
       fs.writeFileSync(
         fixture,
-        `const fs=require('node:fs'); const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); fs.writeFileSync(process.env.PROOF_PID_FILE, String(child.pid)); setInterval(()=>{},1000);`,
+        `const fs=require('node:fs'); const {spawn}=require('node:child_process'); fs.writeFileSync(process.env.PROOF_PID_FILE, String(process.pid)); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); fs.appendFileSync(process.env.PROOF_PID_FILE, ' '+child.pid); setInterval(()=>{},1000);`,
       );
       const modulePath = path.join(__dirname, 'typescript-watch-lifecycle.js');
       const root = path.resolve(__dirname, '..');
@@ -165,9 +178,18 @@ for (const signal of /** @type {NodeJS.Signals[]} */ (['SIGINT', 'SIGTERM', 'SIG
       let timeout;
       try {
         const deadline = Date.now() + 5000;
-        while (!fs.existsSync(pidFile) && Date.now() < deadline)
+        while (
+          (!fs.existsSync(pidFile) ||
+            fs.readFileSync(pidFile, 'utf8').trim().split(/\s+/).length < 2) &&
+          Date.now() < deadline
+        )
           await new Promise((resolve) => setTimeout(resolve, 20));
-        assert.ok(fs.existsSync(pidFile), 'fixture descendant did not start');
+        assert.ok(fs.existsSync(pidFile), 'fixture watcher did not start');
+        assert.equal(
+          fs.readFileSync(pidFile, 'utf8').trim().split(/\s+/).length,
+          2,
+          'fixture descendant did not start',
+        );
         timeout = setTimeout(() => harness.kill('SIGKILL'), 15000);
         harness.kill(signal);
         const result = await new Promise((resolve) =>
@@ -186,8 +208,37 @@ for (const signal of /** @type {NodeJS.Signals[]} */ (['SIGINT', 'SIGTERM', 'SIG
       } finally {
         if (timeout) clearTimeout(timeout);
         if (harness.exitCode === null) harness.kill('SIGKILL');
-        fs.rmSync(temp, { recursive: true, force: true });
+        try {
+          await cleanupFixtureGroup(pidFile);
+        } finally {
+          fs.rmSync(temp, { recursive: true, force: true });
+        }
       }
     },
   );
 }
+
+void test(
+  'fixture cleanup still stops a group after an injected assertion failure',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'perl lsp failure '));
+    const pidFile = path.join(temp, 'fixture.pid');
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    fs.writeFileSync(pidFile, String(child.pid));
+    try {
+      await assert.rejects(async () => {
+        throw new Error('injected assertion failure');
+      }, /injected assertion failure/);
+    } finally {
+      try {
+        await cleanupFixtureGroup(pidFile);
+      } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
+      }
+    }
+  },
+);
