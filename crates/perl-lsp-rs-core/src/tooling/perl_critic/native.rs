@@ -3323,7 +3323,7 @@ mod tests {
 
     #[test]
     fn native_printf_format_arity_skips_unknown_list_cardinality() {
-        let source = "my @values = ('a', 'b'); printf '%s %s', @values; sprintf '%s %s', $prefix, @values;";
+        let source = "my @values = ('a', 'b'); printf '%s %s', @values; sprintf '%s %s', $prefix, @values; printf '%s %s', qx{printf 'a\\nb\\n'};";
         let ast = parse_source(source);
         let config = CriticConfig::default();
         let ctx = CriticContext::new(source, &ast, &config);
