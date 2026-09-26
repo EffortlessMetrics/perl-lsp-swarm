@@ -160,25 +160,59 @@ SEEDS = {
             "docs/tutorials/GETTING_STARTED.md",
             "scripts/post-publish-smoke.sh",
         ],
-        "release_domains": ["install", "docs"],
+        "release_domains": ["install", "docs", "release"],
         "primary_disposition": "packaging_install_or_editor",
         "reachable_installed_effect": "bounded",
         "public_claim_refs": [],
-        "release_note_disposition": "not_user_facing",
+        "release_note_disposition": "required",
         "migration_or_upgrade_refs": [],
         "api_schema_package_effects": [],
-        "proof_owner_refs": ["scripts/post-publish-smoke.sh"],
-        "known_limitations": [
-            "smoke runs post-publish; no isolated-install extraction "
-            "proof on Windows in-unit"
+        "proof_owner_refs": [
+            "scripts/post-publish-smoke.sh",
+            ".github/workflows/post-publish-smoke.yml",
         ],
-        "open_pr_relationships": [],
+        "known_limitations": [
+            "smoke Section 1b runs post-publish; its Linux/macOS happy "
+            "path has not executed through current main (v0.17.0 "
+            "predates it, no later release, zero post-publish-smoke.yml "
+            "runs)",
+            "installer supports Linux/macOS hosts only; Windows takes a "
+            "labeled skip, so Windows archive install/extraction proof "
+            "belongs to #16408, not this unit",
+            "generated INSTALLER_REF/INSTALLER_SHA256 are "
+            "convenience-level (derived from the same host that serves "
+            "the installer), not independent review; the reviewed "
+            "closeout digest remains unpublished",
+            "the v0.17.0 root wrapper ignores the identity env vars and "
+            "re-execs floating master; docs repaired after the "
+            "denominator head by PR#16398 (#16396, still open for the "
+            "other wrapper docs) with two routes and "
+            "VERSION=${RELEASE_TAG:-latest} binding",
+        ],
+        "open_pr_relationships": [
+            "16359-OPEN touches GETTING_STARTED.md (config-limits "
+            "examples only; installer Option 2 section untouched)"
+        ],
         "controlling_issues": ["16368"],
-        "invalidators": ["archive layout/member changes after snapshot"],
-        "platforms_and_targets": ["portable"],
+        "invalidators": [
+            "archive layout/member changes after snapshot",
+            "install.sh or root-wrapper verification semantics change "
+            "before the next release-archive smoke run",
+            "a future Section 1b run whose outcome contradicts this "
+            "mechanism-stage row",
+        ],
+        "platforms_and_targets": ["linux", "macos"],
         "artifact_or_route_effects": [
-            "bootstrap values feed installer docs; smoke covers "
-            "release-archive install route"
+            "docs Option 2 generated-values step derives INSTALLER_REF "
+            "(tag-dereferenced publish commit) and INSTALLER_SHA256 "
+            "(digest of scripts/install.sh at that ref) from a pinned "
+            "RELEASE_TAG, replacing unusable placeholders",
+            "smoke Section 1b executes scripts/install.sh against the "
+            "published GitHub release archive into an isolated "
+            "INSTALL_DIR (download, SHA256SUMS verify, install, "
+            "installed perllsp --version must report the release "
+            "version); SKIP_INSTALL=1 and non-Linux/macOS hosts take "
+            "labeled skips",
         ],
         "editor_manifest_or_protocol_effects": [],
         "installed_evidence_stage": "mechanism",
