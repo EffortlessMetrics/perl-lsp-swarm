@@ -502,6 +502,25 @@ mod tests {
         );
 
         assert_eq!(printf_format_arity_metadata_by_range(&call).get(&(0, 23)), None);
+
+        let command = Node::new(
+            NodeKind::String { value: "qx{printf 'a\\nb\\n'}".to_string(), interpolated: true },
+            SourceLocation { start: 16, end: 36 },
+        );
+        let command_call = Node::new(
+            NodeKind::FunctionCall {
+                name: "printf".to_string(),
+                args: vec![
+                    Node::new(
+                        NodeKind::String { value: "'%s %s'".to_string(), interpolated: false },
+                        SourceLocation { start: 7, end: 14 },
+                    ),
+                    command,
+                ],
+            },
+            SourceLocation { start: 0, end: 36 },
+        );
+        assert_eq!(printf_format_arity_metadata_by_range(&command_call).get(&(0, 36)), None);
     }
 
     #[test]
