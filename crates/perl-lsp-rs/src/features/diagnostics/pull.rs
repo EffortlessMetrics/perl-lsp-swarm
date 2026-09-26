@@ -16,6 +16,7 @@ use lsp_types::{
 use serde::{Deserialize, Serialize};
 
 use crate::state::DocumentState;
+use crate::util::escape_markdown_text;
 use crate::util::uri::parse_uri;
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_lsp_rs_core::config::{AcceptedCriticSnapshot, CriticEngine, ServerConfig};
@@ -1370,7 +1371,11 @@ impl PullDiagnosticsProvider {
 
                 // Add LSP 3.18 markup message support if enabled
                 if context.markup_message_support {
-                    let markdown = format!("**{}**: {}", code_str, diagnostic.message);
+                    // The plain message has already accumulated the suggestion.
+                    // Render that same complete content, escaping source-derived
+                    // text before placing it in Markdown.
+                    let markdown =
+                        format!("**{}**: {}", code_str, escape_markdown_text(&message));
                     return serde_json::to_value(data_obj).ok().map(|mut v| {
                         v["messageMarkup"] = serde_json::json!({
                             "kind": "markdown",
@@ -1472,7 +1477,7 @@ impl PullDiagnosticsProvider {
 
         // Add LSP 3.18 markup message support if enabled
         let data = if context.markup_message_support {
-            let markdown = format!("**{}**: {}", code_str, message);
+            let markdown = format!("**{}**: {}", code_str, escape_markdown_text(&message));
             serde_json::to_value(data_obj).ok().map(|mut v| {
                 v["messageMarkup"] = serde_json::json!({
                     "kind": "markdown",
@@ -1832,6 +1837,45 @@ mod tests {
             .documentation_url()
             .ok_or("PL1000 should have docs")?;
         assert_eq!(code_description.href.to_string(), expected_url);
+        Ok(())
+    }
+
+    #[test]
+    fn markup_keeps_regex_and_parse_error_remediation() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///markup_remediation.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.markup_message_support = true;
+
+        for (source, expected_code) in [
+            ("my $re = qr/(a+)+b/;\n", "PL1000"),
+            ("sub broken {\n", "PL001"),
+        ] {
+            let items = get_full_items(provider.get_document_diagnostics_with_context(
+                &uri, source, None, &context, None,
+            ));
+            let diagnostic = items
+                .iter()
+                .find(|item| {
+                    item.code.as_ref().is_some_and(|code| {
+                        matches!(code, NumberOrString::String(value) if value == expected_code)
+                    })
+                })
+                .ok_or(format!("expected {expected_code} for {source:?}"))?;
+            assert!(
+                diagnostic.message.contains("Suggestion:"),
+                "control: the plain diagnostic must carry remediation: {diagnostic:?}"
+            );
+            let markup = diagnostic
+                .data
+                .as_ref()
+                .and_then(|data| data["messageMarkup"]["value"].as_str())
+                .ok_or("expected markup for a markup-capable client")?;
+            assert!(
+                markup.contains("Suggestion:"),
+                "{expected_code} markup lost the plain diagnostic's remediation: {markup:?}"
+            );
+        }
         Ok(())
     }
 
