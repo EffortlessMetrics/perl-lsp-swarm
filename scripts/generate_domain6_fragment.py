@@ -54,7 +54,7 @@ PREFILTER = [
 
 EXPECTED_NON_MERGE = 682
 EXPECTED_UNITS = 672
-EXPECTED_SEEDS = 5
+EXPECTED_SEEDS = 8
 # Unsimplified range merge population (START_SHA..OBSERVED_HEAD,
 # --full-history): 2 kept + 1 related-record + 62 content-free +
 # 11 blob-covered + 18 created = 94. Pinned: the range is fixed, the
@@ -449,6 +449,251 @@ SEEDS = {
         "grouping_evidence": "trailing (#14523) of subject pair "
         "(#8656)(#14523); merge_commit_sha of PR #14523 equals the "
         "commit; issue #8656 is the tracked problem",
+    },
+    "PR#15443": {
+        "commits": ["9472177fcac6c43741b800e986dea619f20483e8"],
+        "subject": "fix(vscode): prefer packaged DAP adapter (#6694) "
+        "(#15443)",
+        "paths_or_components": [
+            "vscode-extension/scripts/vsix-inventory-baseline.json",
+            "vscode-extension/scripts/vsix-inventory-transition.json",
+            "vscode-extension/src/debugAdapter.ts",
+            "vscode-extension/src/test/debugAdapter.test.ts",
+        ],
+        "release_domains": ["editor", "install"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "packaged adapter now precedes the auto-download directory, "
+            "managed storage, and PATH in DAP executable selection"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "vscode-extension/src/test/debugAdapter.test.ts",
+            "vscode-extension/scripts/vsix-inventory-transition.json",
+        ],
+        "known_limitations": [
+            "selection proof is source-stage unit tests plus recorded "
+            "inventory transitions; installed packaged-VSIX selection "
+            "proof belongs to the open #6694/#6056 lane",
+            "in-range successor PR#15456 tightened the same seam by "
+            "rejecting incompatible packaged DAP targets (#15451)",
+            "later in-range startup-contract work changed the "
+            "surroundings, not this selection: launch authority "
+            "(PR#14523), processId attach fail-closed (PR#14402), "
+            "language-id coherence (PR#15810)",
+        ],
+        "open_pr_relationships": [
+            "16230-OPEN repackages the VSIX payload family (mapped "
+            "universal RC); packaged-target resolution reads package.json "
+            "__metadata.targetPlatform and the bin/<target> payload "
+            "layout this row selects within"
+        ],
+        "controlling_issues": ["6694"],
+        "invalidators": [
+            "packaged target metadata contract "
+            "(__metadata.targetPlatform) or bin/<target> payload layout "
+            "change",
+            "DAP executable selection precedence change",
+            "#16230 payload-shape conflict",
+        ],
+        "platforms_and_targets": ["vscode-packaged-dap", "portable"],
+        "artifact_or_route_effects": [
+            "packagedDapTargetDirectoryForContext resolves the shipped "
+            "adapter from the installed package.json "
+            "__metadata.targetPlatform (validated against "
+            "linux|alpine|darwin|win32 x64/arm64), falling back to one "
+            "host-derived target (musl-aware on Linux) with exactly one "
+            "executable bin/<target>/perl-dap[.exe] candidate; a clean "
+            "installed profile stays bound to the package it loaded "
+            "instead of an unrelated adapter from managed storage or PATH"
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#15443) of subject pair "
+        "(#6694)(#15443); merge_commit_sha of PR #15443 equals the "
+        "commit (verified 2026-09-25); issue #6694 is the tracked "
+        "problem",
+    },
+    "PR#15450": {
+        "commits": ["f5f0c05350e3e0053eef7d563f4f9d17330fabf9"],
+        "subject": "fix(dap): run and stop packaged Windows sessions "
+        "cleanly (#6694) (#15450)",
+        "paths_or_components": [
+            "crates/perl-dap/src/debug_adapter/mod.rs",
+            "crates/perl-dap/src/debug_adapter/process.rs",
+            "crates/perl-dap/src/debug_adapter/sync_utils.rs",
+            "crates/perl-dap/src/debug_adapter/tcp_attach_forwarder.rs",
+            "crates/perl-dap/src/debug_adapter/transport.rs",
+            "crates/perl-dap/tests/common/mod.rs",
+            "crates/perl-dap/tests/dap_lifecycle_event_body_e2e_test.rs",
+            "crates/perl-dap/tests/dap_stdio_transport_e2e.rs",
+            "crates/perl-dap/tests/debuggee_perl_launch_paths.rs",
+            "crates/perl-dap/tests/session_lifecycle_tests.rs",
+            "vscode-extension/src/test/published/journeySupport.ts",
+            "vscode-extension/src/test/published/packagedBundleJourney.test.ts",
+            "vscode-extension/src/test/publishedJourneyRegistration.test.ts",
+        ],
+        "release_domains": ["editor", "dap"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "crates/perl-dap/tests/session_lifecycle_tests.rs",
+            "crates/perl-dap/tests/debuggee_perl_launch_paths.rs",
+            "crates/perl-dap/tests/dap_stdio_transport_e2e.rs",
+            "vscode-extension/src/test/published/packagedBundleJourney.test.ts",
+        ],
+        "known_limitations": [
+            "proof is repo-CI mechanism stage (adapter e2e over real "
+            "adapter/debuggee processes plus the published-journey "
+            "harness); installed-VSIX wired-session proof belongs to the "
+            "open #6694/#6056 lane",
+            "later in-range repairs evolved the same seams rather than "
+            "reverting them: request-scoped drain barrier (PR#15851), "
+            "terminal-producer retirement before dispatch (PR#15738), "
+            "owned-subprocess descendant kill (PR#15944), bounded "
+            "Windows child cleanup instrumentation (PR#15817)",
+            "post-head suite work landed after the denominator head: "
+            "Windows-timing de-flake (PR#15948) and launch-authority "
+            "wiring in bare in-process factories (PR#16088)",
+            "the same squash commit carried release-topology and "
+            "inventory work outside this fragment's prefilter paths; "
+            "those files are dispositioned by other fragments",
+        ],
+        "open_pr_relationships": [
+            "15977-OPEN touches debug_adapter/mod.rs and "
+            "debuggee_perl_launch_paths.rs (Windows-host clippy residue)",
+            "13576-OPEN touches debug_adapter/mod.rs (prompt/context "
+            "suspension correlation)",
+        ],
+        "controlling_issues": ["6694"],
+        "invalidators": [
+            "EventSender admission/close contract change",
+            "Windows pipe-launch environment contract change (EMACS=1, "
+            "ReadLine=0 appended to the child's effective PERLDB_OPTS)",
+            "disconnect drain handshake or terminated-event emission "
+            "discipline change",
+            "packaged journey harness change",
+        ],
+        "platforms_and_targets": [
+            "windows",
+            "linux",
+            "vscode-packaged-dap",
+        ],
+        "artifact_or_route_effects": [
+            "Windows owned pipe launches mark the child EMACS=1 so "
+            "Strawberry Perl's debugger keeps its pipe transport, and "
+            "append ReadLine=0 to the child's effective PERLDB_OPTS "
+            "(case-insensitive lookup, user options preserved) so the "
+            "console ReadLine backend never calls GetConsoleMode on a "
+            "pipe",
+            "disconnect drains admitted events through an "
+            "EventSender admission gate whose close never waits on a "
+            "producer; terminate-then-disconnect no longer emits a "
+            "second terminated event for the already-closed session",
+            "packaged-journey VS Code tests exercise real packaged DAP "
+            "startup and clean shutdown",
+        ],
+        "editor_manifest_or_protocol_effects": [
+            "dap disconnect/terminated event sequence discipline",
+        ],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#15450) of subject pair "
+        "(#6694)(#15450); merge_commit_sha of PR #15450 equals the "
+        "commit (verified 2026-09-25); issue #6694 is the tracked "
+        "problem",
+    },
+    "PR#15103": {
+        "commits": ["2144a9a0779f2d026459945656f9d165da2e8c41"],
+        "subject": "docs(windows): reconcile published installer guidance "
+        "(#15101) (#15103)",
+        "paths_or_components": [
+            "docs/how-to/INSTALLATION.md",
+            "docs/tutorials/GETTING_STARTED.md",
+        ],
+        "release_domains": ["install", "docs"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "Windows installer guidance: the broken floating published "
+            "script was replaced by a pinned published-script route plus "
+            "the manual archive as the full both-binaries path"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "docs/how-to/INSTALLATION.md",
+            "docs/tutorials/GETTING_STARTED.md",
+        ],
+        "known_limitations": [
+            "published-script checksum verification is warn-and-continue "
+            "when SHA256SUMS is missing, unparseable, or unhashable - "
+            "not fail-closed, and never independent publisher "
+            "provenance",
+            "the published script installs perllsp.exe only: no "
+            "perl-dap.exe, no atomic product-unit promotion, no rollback; "
+            "PATH is never updated automatically and a similar directory "
+            "name can make its PATH check report success incorrectly",
+            "x64-only: Windows 11 ARM64 runs the x64 archive under "
+            "emulation; Windows 10 ARM64 is rejected before download and "
+            "must build from source",
+            "guidance pins publication revision 866d832 on the unmerged "
+            "publication sync line ahead of the default-branch script; "
+            "#4348 remains open",
+            "no repository-recorded executed run of the pinned published "
+            "route exists (post-publish smoke Section 1b has zero runs "
+            "and skips Windows), so the route stays mechanism-stage",
+            "post-head repairs revised the same surfaces: wrapper "
+            "identity-bound guarantee (PR#16398, #16396 still open) and "
+            "wrapper positional args (PR#16315); in-range PR#16371 added "
+            "generated bootstrap values to the GETTING_STARTED Option 2 "
+            "section",
+        ],
+        "open_pr_relationships": [
+            "16359-OPEN touches GETTING_STARTED.md (config-limits "
+            "examples only; installer sections untouched)",
+            "16396-OPEN tracks the remaining wrapper-docs repairs",
+        ],
+        "controlling_issues": ["15101"],
+        "invalidators": [
+            "publication-repo sync (#4348) supersedes or changes pinned "
+            "revision 866d832",
+            "published-script checksum or ARM64 fallback semantics "
+            "change",
+            "wrapper/installer identity docs change again (#16396)",
+        ],
+        "platforms_and_targets": [
+            "windows-x64",
+            "windows-arm64-emulation-bounded",
+        ],
+        "artifact_or_route_effects": [
+            "INSTALLATION.md published-powershell-script section documents "
+            "the pinned publication revision (asset name "
+            "perllsp-<version>-x86_64-pc-windows-msvc.zip, SHA256SUMS "
+            "check with labeled warn-and-continue limits, "
+            "%USERPROFILE%\\.local\\bin default, manual PATH steps, "
+            "perllsp --version verification) alongside the manual "
+            "archive route that carries both perllsp.exe and perl-dap.exe",
+            "GETTING_STARTED.md Windows pointer now routes readers to "
+            "the reviewed INSTALLATION.md sections instead of declaring "
+            "every published-script use broken",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "first_mile",
+        "grouping_evidence": "trailing (#15103) of subject pair "
+        "(#15101)(#15103); merge_commit_sha of PR #15103 equals the "
+        "commit (verified 2026-09-25); issue #15101 is the tracked "
+        "reconciliation",
     },
 }
 
@@ -1083,7 +1328,7 @@ def build_document() -> dict:
     )
     reviewed = [u for u in units if u["disposition_state"] == "reviewed"]
     if len(reviewed) != EXPECTED_SEEDS:
-        raise FragmentError(f"reviewed seed count {len(reviewed)} != 5")
+        raise FragmentError(f"reviewed seed count {len(reviewed)} != 8")
     if set(SEEDS) != {u["work_unit_id"] for u in reviewed}:
         raise FragmentError("reviewed seed identity set drifted")
     not_proven = [u for u in units if u["disposition_state"] == "not_proven"]
