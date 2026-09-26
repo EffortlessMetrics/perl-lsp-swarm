@@ -112,9 +112,12 @@ fn future_my_does_not_swallow_legacy_field_argument() -> TestResult {
     let parsed = parser.parse_with_recovery();
     let file = lower_ast(&parsed.ast);
     let argument = source.find("field $x").ok_or("legacy call")? + "field ".len();
-    let nodes: Vec<_> = file.bodies.iter().enumerate().flat_map(|(idx, body)| {
-        lower_single_body(body, HirBodyId(idx as u32), &file)
-    }).collect();
+    let nodes: Vec<_> = file
+        .bodies
+        .iter()
+        .enumerate()
+        .flat_map(|(idx, body)| lower_single_body(body, HirBodyId(idx as u32), &file))
+        .collect();
     assert!(
         nodes.iter().any(|node| {
             matches!(node.operation, PirOperation::StashRead { .. })
