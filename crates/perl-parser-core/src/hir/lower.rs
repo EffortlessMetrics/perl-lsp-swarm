@@ -1643,6 +1643,9 @@ impl Lowerer {
         declaration_item: Option<HirId>,
     ) -> HirBindingId {
         let shadows = self.resolve_visible_binding(scope_id, &sigil, &name, Some(range.start));
+        let visible_from = declaration_item
+            .and_then(|item| self.items.get(item.index() as usize))
+            .map_or(range.end, |item| item.range.end);
         let id = HirBindingId::from_index(to_u32_saturating(self.scope_graph.bindings.len()));
         self.scope_graph.bindings.push(Binding {
             id,
@@ -1650,6 +1653,7 @@ impl Lowerer {
             sigil,
             name,
             range,
+            visible_from,
             storage,
             package_context: self.package_context.clone(),
             declaration_item,
@@ -2892,9 +2896,10 @@ impl Lowerer {
 /// cannot answer differently. A field-visibility rule applied in only one of
 /// them is exactly the disagreement this shape exists to prevent (#13817).
 ///
-/// `reference_start` is the source offset the lookup happens at, used for
-/// declaration-order visibility of class fields. `None` means the caller has no
-/// position to compare, and skips only that check.
+/// `reference_start` is the source offset the lookup happens at. A declaration
+/// becomes eligible after its declaration, even when the scope graph was fully
+/// collected before this lookup. `None` is reserved for callers without a
+/// reference position and skips the source-order check.
 fn resolve_binding_in_scope_graph<'graph>(
     scope_graph: &'graph ScopeGraph,
     scope_id: HirScopeId,
@@ -2915,23 +2920,18 @@ fn resolve_binding_in_scope_graph<'graph>(
     let mut left_a_class = false;
     while let Some(current_scope) = cursor {
         let scope = scope_graph.scopes.get(current_scope.index() as usize);
-        for binding in scope_graph.bindings.iter().rev() {
-            if binding.scope_id != current_scope || binding.sigil != sigil || binding.name != name {
-                continue;
-            }
-            if binding.storage == StorageClass::ClassField
-                && !class_field_is_visible(
-                    binding,
-                    crossed_named_subroutine,
-                    left_a_class,
-                    reference_start,
-                )
-            {
-                // Out of view from here. Keep walking outward instead of
-                // binding to it, so the reference resolves exactly as it would
-                // if this field had never been declared.
-                continue;
-            }
+        let visible = scope_graph.bindings.iter().filter(|binding| {
+            binding.scope_id == current_scope
+                && binding.sigil == sigil
+                && binding.name == name
+                && reference_start.is_none_or(|start| binding.visible_from <= start)
+                && (binding.storage != StorageClass::ClassField
+                    || class_field_is_visible(crossed_named_subroutine, left_a_class))
+        });
+        // The graph may be assembled in a different order from the source.
+        // Prefer the closest eligible declaration by position; graph order
+        // breaks ties without changing stable binding identity.
+        if let Some(binding) = visible.max_by_key(|binding| binding.visible_from) {
             return Some(binding);
         }
         match scope.map(|scope| scope.kind) {
@@ -2947,7 +2947,8 @@ fn resolve_binding_in_scope_graph<'graph>(
 /// Whether a class field declared in a class frame is visible to a reference
 /// that reached that frame.
 ///
-/// Perl gives a field three visibility conditions, and this decides all three.
+/// Perl gives a field three visibility conditions. The shared caller checks
+/// declaration order; this helper checks the two class/scope conditions.
 ///
 /// It belongs to its own class. A sibling class's frame is never an ancestor,
 /// so that case is structural; `outside_its_class` covers the case a nested
@@ -2963,22 +2964,8 @@ fn resolve_binding_in_scope_graph<'graph>(
 /// the way it captures a lexical, while a closure created in a named sub still
 /// sees nothing, because the named frame is on the path either way.
 ///
-/// It is visible only after its own declaration, which the offset comparison
-/// carries. `reference_start` of `None` means the caller has no position to
-/// compare and skips only that condition.
-fn class_field_is_visible(
-    binding: &Binding,
-    in_named_sub: bool,
-    outside_its_class: bool,
-    reference_start: Option<usize>,
-) -> bool {
-    if outside_its_class || in_named_sub {
-        return false;
-    }
-    match reference_start {
-        Some(start) => start >= binding.range.start,
-        None => true,
-    }
+fn class_field_is_visible(in_named_sub: bool, outside_its_class: bool) -> bool {
+    !outside_its_class && !in_named_sub
 }
 
 /// Storage class for a declaration.
@@ -4618,37 +4605,20 @@ impl<'a> BodyBuilder2<'a> {
     /// `lower_nested_block`), two same-spelling lexicals declared in nested
     /// scopes of one body resolve to their own bindings.
     ///
-    /// Two known boundaries, both pre-existing and deliberately preserved here
-    /// rather than changed under an identity-threading slice:
-    ///
-    /// 1. Within a *single* scope the walk takes the last matching binding, so a
-    ///    read placed between two same-scope redeclarations resolves to the
-    ///    later one. This position-insensitivity is shared with the first-pass
-    ///    `resolve_visible_binding` and applies to occurrences
-    ///    only; declarations are span-matched and stay distinct. Two instances:
-    ///    `my $x = $x` reads the binding it declares rather than the outer one,
-    ///    and a `foreach my $i` iterator — recorded in the *enclosing* scope
-    ///    rather than a loop-private one — captures the read after the loop.
-    ///
-    ///    Making occurrences position-sensitive would also flip
-    ///    use-before-declare (`print $x; my $x = 1;`) from `Lexical` with a
-    ///    binding to `Package` with none, a consumer-visible `VariableKind`
-    ///    change, so it is left to the owning issue rather than made here.
-    /// 2. The walk only ascends. A `package NAME;` statement opens a *child*
-    ///    scope, while the program-root body still starts at the file scope, so
-    ///    declarations made at package top level are not visible to program-root
-    ///    occurrences and resolve to `None`. The pre-existing `VariableKind`
-    ///    fallback already mis-reported such a `my` as `Package`.
-    ///
-    /// Both boundaries are tracked by #14173.
+    /// The known package-root boundary remains separate from position-aware
+    /// binding lookup (#14173). The walk only ascends. A `package NAME;`
+    /// statement opens a *child* scope, while the program-root body still
+    /// starts at the file scope, so declarations made at package top level
+    /// are not visible to program-root occurrences and resolve to `None`.
+    /// The pre-existing `VariableKind` fallback already mis-reported such a
+    /// `my` as `Package`.
     ///
     /// The walk itself is the shared [`resolve_binding_in_scope_graph`], the
     /// same lookup the first pass uses, so the two views cannot answer
     /// differently. Class-field visibility — no access from a named `sub` or
     /// anything written inside one, no access from outside the field's own
-    /// class, and no access before the field's own declaration — lives inside
-    /// that walk and consumes this reference's offset; `my`/`state` resolution
-    /// stays position-insensitive (#13817, #13868).
+    /// class — lives inside that walk. The reference offset filters all later
+    /// declarations, including `my`, `state`, and fields (#13868).
     fn resolve_visible_binding(
         &self,
         sigil: &str,
@@ -4667,10 +4637,9 @@ impl<'a> BodyBuilder2<'a> {
     /// Canonical identity for the binding introduced *at* `range`.
     ///
     /// A declaration must name the binding it introduces, which ordinary
-    /// visibility resolution cannot do: two same-scope declarations of one
-    /// spelling are both "visible" from the same scope, and the scope walk
-    /// takes the last, so `my $x = 1; my $x = 2;` would give both declarations
-    /// the second binding. `Binding::range` is the declaration token's own
+    /// visibility resolution cannot do: a declaration is not visible at the
+    /// beginning of its own token, and a later redeclaration can use the same
+    /// spelling. `Binding::range` is the declaration token's own
     /// span, so matching on it selects the exact binding.
     ///
     /// Returns `None` when the scope graph recorded no binding at this range.
