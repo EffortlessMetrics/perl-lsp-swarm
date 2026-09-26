@@ -631,6 +631,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse one argument whose caller owns the following comma / fat-arrow
+    /// separator.  Only the unparenthesized ternary else tail is bounded, so
+    /// `f($cond ? 'C' : 'D', $seed)` keeps `$seed` as a sibling argument
+    /// instead of the ternary absorbing it (#16210).
+    fn parse_assignment_or_declaration_before_separator(&mut self) -> ParseResult<Node> {
+        if matches!(
+            self.peek_kind(),
+            Some(TokenKind::My | TokenKind::Our | TokenKind::Local | TokenKind::State)
+        ) && !self.is_keyword_before_fat_arrow()
+        {
+            self.parse_declaration_expression()
+        } else {
+            self.parse_assignment_before_separator()
+        }
+    }
+
     /// Parse a declaration used as an expression and consume any binary operator
     /// that binds to the declaration itself.
     ///
@@ -853,7 +869,7 @@ impl<'a> Parser<'a> {
                 // Filehandle form: parse `$fh` or `{ *FH }` as first argument,
                 // then remaining args without requiring a comma separator.
                 let mut args = Vec::new();
-                let filehandle = s.parse_assignment_or_declaration()?;
+                let filehandle = s.parse_assignment_or_declaration_before_separator()?;
                 args.push(filehandle);
 
                 // Collect remaining arguments (no comma required after filehandle)
@@ -869,7 +885,7 @@ impl<'a> Parser<'a> {
                     if s.peek_kind() == Some(TokenKind::RightParen) {
                         break;
                     }
-                    args.push(s.parse_assignment_or_declaration()?);
+                    args.push(s.parse_assignment_or_declaration_before_separator()?);
                 }
 
                 s.expect_closing_delimiter(TokenKind::RightParen)?;
@@ -879,7 +895,7 @@ impl<'a> Parser<'a> {
                 let mut args = Vec::new();
 
                 while s.peek_kind() != Some(TokenKind::RightParen) && !s.tokens.is_eof() {
-                    let mut arg = s.parse_assignment_or_declaration()?;
+                    let mut arg = s.parse_assignment_or_declaration_before_separator()?;
                     if s.peek_kind() == Some(TokenKind::FatArrow) {
                         s.auto_quote_bareword_before_fat_comma(&mut arg)?;
                     }
@@ -908,8 +924,10 @@ impl<'a> Parser<'a> {
 
             while s.peek_kind() != Some(TokenKind::RightParen) && !s.tokens.is_eof() {
                 // Handle variable declarations (my/our/local/state) inside argument lists,
-                // otherwise parse as a normal assignment expression.
-                let mut arg = s.parse_assignment_or_declaration()?;
+                // otherwise parse as a normal assignment expression. The caller owns the
+                // comma / fat-arrow separator, so the ternary else tail must not
+                // absorb the next sibling argument (#16210).
+                let mut arg = s.parse_assignment_or_declaration_before_separator()?;
 
                 // A fat comma auto-quotes a bare identifier on its left.
                 if s.peek_kind() == Some(TokenKind::FatArrow) {
