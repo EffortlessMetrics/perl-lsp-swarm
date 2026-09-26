@@ -144,7 +144,7 @@ class Domain6FragmentTest(unittest.TestCase):
         self.assertEqual(counts["total_rows"], 705)
         self.assertEqual(counts["unique_commits"], 702)
         self.assertEqual(self.doc["work_unit_count"], 672)
-        self.assertEqual(self.doc["reviewed_seed_count"], 8)
+        self.assertEqual(self.doc["reviewed_seed_count"], 11)
         self.assertEqual(self.doc["not_proven_unit_count"], 664)
         self.assertEqual(len(self.doc["work_units"]), 672)
 
