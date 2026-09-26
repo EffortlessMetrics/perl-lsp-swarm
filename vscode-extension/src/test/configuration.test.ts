@@ -644,7 +644,7 @@ describe('package.json contributes', () => {
       const setting = getSetting(properties, 'perl-lsp.critic.enabled');
       expect(setting).toBeDefined();
       expect(setting.type).toBe('boolean');
-      expect(setting.default).toBe(false);
+      expect(setting.default).toBe(true);
     });
 
     test('defines critic.engine as a native/legacy picker defaulting to native', () => {
