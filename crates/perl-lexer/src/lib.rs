@@ -218,7 +218,7 @@ use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
-    empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
+    empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast, is_nullary_builtin,
     is_perl_punctuation_variable, is_quote_op_word_prefix,
 };
 use crate::limits::{MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
@@ -910,17 +910,57 @@ impl<'a> PerlLexer<'a> {
         }
     }
 
+    /// Return the bareword ending right before the cursor, if any.
+    ///
+    /// A leading sigil (`$fh <<END`) means a variable, not a bareword call, so
+    /// it yields an empty word and never counts as nullary authority.
+    fn preceding_bareword(&self) -> &str {
+        let before = self.input[..self.position].trim_end_matches([' ', '\t']);
+        let mut start = before.len();
+        while let Some(ch) = before[..start].chars().next_back() {
+            if ch.is_alphanumeric() || ch == '_' || ch == ':' || ch == '\'' {
+                start -= ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if before[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| matches!(ch, '$' | '@' | '%' | '&' | '*'))
+        {
+            return "";
+        }
+        &before[start..]
+    }
+
+    /// Nullary authority (#16165): the preceding bareword is a `time`-class
+    /// builtin or a name declared `sub foo ()`, so the bare call completes a
+    /// term and a following `<<` is the left-shift operator.
+    fn preceding_word_is_nullary(&self) -> bool {
+        let word = self.preceding_bareword();
+        !word.is_empty()
+            && (is_nullary_builtin(word)
+                || self.config.symbol_table.as_ref().is_some_and(|st| st.is_nullary_sub(word)))
+    }
+
     fn try_heredoc(&mut self) -> Option<Token> {
-        // `<<` is the left-shift operator, not a heredoc, when we are inside
-        // a parenthesized expression and have just finished a term.
-        // E.g. `(1<<index(...))` — the `1` sets ExpectOperator and paren_depth > 0,
-        // so `<<index` must be the bitshift operator, not a heredoc start.
-        //
-        // We must NOT fire the guard at statement level (paren_depth == 0) because
-        // `print $fh <<END` is valid Perl: `$fh` sets ExpectOperator but `<<END`
-        // is a heredoc.  The depth check distinguishes the two cases.
-        if self.mode == LexerMode::ExpectOperator && self.paren_depth > 0 {
-            return None;
+        if self.mode == LexerMode::ExpectOperator {
+            // `<<` is the left-shift operator, not a heredoc, when we are
+            // inside a parenthesized expression and have just finished a term.
+            // E.g. `(1<<index(...))` — the `1` sets ExpectOperator and
+            // paren_depth > 0, so `<<index` must be the bitshift operator, not
+            // a heredoc start.
+            //
+            // The paren guard alone must not fire at statement level
+            // (paren_depth == 0) because `print $fh <<END` is valid Perl:
+            // `$fh` sets ExpectOperator but `<<END` is a heredoc. A nullary
+            // authority is different (#16165): `sub foo ()` and `time`
+            // complete a term, so `foo <<END` and `time <<END` shift even at
+            // statement level (local Perl oracle).
+            if self.paren_depth > 0 || self.preceding_word_is_nullary() {
+                return None;
+            }
         }
 
         // Check for heredoc start
@@ -2202,8 +2242,11 @@ impl<'a> PerlLexer<'a> {
                         // We'll need to check for the = after the format name
                         // For now, just mark that we saw format
                     }
-                    _ if is_builtin_function(text) => {
-                        // Bare builtins are term-introducing in Perl.
+                    _ if is_builtin_function(text) && !is_nullary_builtin(text) => {
+                        // Bare builtins are term-introducing in Perl. A nullary
+                        // builtin completes a term instead (#16165), so it
+                        // falls through to the operator arm: `<<` after `time`
+                        // is left shift, never a heredoc.
                         self.mode = LexerMode::ExpectTerm;
                     }
                     _ => {
@@ -2215,9 +2258,13 @@ impl<'a> PerlLexer<'a> {
                 // Mirror parser bare-builtin handling so `/` after builtins like
                 // `join` or `print` is lexed as a regex term, not division.
                 // Also treat known user-declared subs as term-introducing (issue #1353).
-                if is_builtin_function(text)
-                    || self.config.symbol_table.as_ref().is_some_and(|st| st.is_known_sub(text))
-                {
+                // Nullary authority completes a term instead (#16165): after
+                // `sub foo ()` or `time`, `<<` is left shift, never a heredoc.
+                let known_sub =
+                    self.config.symbol_table.as_ref().is_some_and(|st| st.is_known_sub(text));
+                let nullary = is_nullary_builtin(text)
+                    || self.config.symbol_table.as_ref().is_some_and(|st| st.is_nullary_sub(text));
+                if (is_builtin_function(text) || known_sub) && !nullary {
                     self.mode = LexerMode::ExpectTerm;
                 } else {
                     self.mode = LexerMode::ExpectOperator;
