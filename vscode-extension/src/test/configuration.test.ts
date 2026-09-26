@@ -644,7 +644,7 @@ describe('package.json contributes', () => {
       const setting = getSetting(properties, 'perl-lsp.critic.enabled');
       expect(setting).toBeDefined();
       expect(setting.type).toBe('boolean');
-      expect(setting.default).toBe(true);
+      expect(setting.default).toBe(false);
     });
 
     test('defines critic.engine as a native/legacy picker defaulting to native', () => {
@@ -743,7 +743,7 @@ describe('package.json contributes', () => {
       expect(setting.scope).toBe('machine');
     });
 
-    test('defines autoPopulateNewFiles with default true', () => {
+    test('defines autoPopulateNewFiles as opt-in', () => {
       const setting = getSetting(properties, 'perl-lsp.autoPopulateNewFiles');
       expect(setting).toBeDefined();
       expect(setting.type).toBe('boolean');
