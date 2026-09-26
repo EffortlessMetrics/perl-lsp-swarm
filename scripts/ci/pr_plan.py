@@ -39,6 +39,13 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+GIT_DIFF_TIMEOUT_SECONDS = 30
+
+
+def escape_workflow_command_data(value: str) -> str:
+    """Keep untrusted subprocess text inside one GitHub annotation line."""
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
 
 def read_toml(path: Path) -> dict[str, Any]:
     with path.open("rb") as f:
@@ -56,7 +63,7 @@ def discover_changed_files(base: str, head: str) -> dict[str, Any]:
         a genuinely empty diff from a successful `git diff` (exit 0);
       {"status": "unavailable", "code", "detail", "command"}
         an instrument failure: missing base object, bad ref, non-ancestor,
-        shallow clone, unreadable repository, or unspawnable git.
+        shallow clone, unreadable repository, timed-out or unspawnable git.
 
     A true empty diff and an unavailable diff are opposite facts. Discovery
     must never map a failed diff command to an empty file list; callers plan
@@ -64,7 +71,16 @@ def discover_changed_files(base: str, head: str) -> dict[str, Any]:
     """
     command = ["git", "diff", "--name-only", f"{base}...{head}"]
     try:
-        proc = subprocess.run(command, text=True, capture_output=True)
+        proc = subprocess.run(
+            command, text=True, capture_output=True, timeout=GIT_DIFF_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "unavailable",
+            "code": "git-diff-timeout",
+            "detail": f"git diff exceeded {GIT_DIFF_TIMEOUT_SECONDS}s timeout",
+            "command": command,
+        }
     except OSError as exc:
         return {
             "status": "unavailable",
@@ -581,8 +597,8 @@ def not_proven_plan(
     code = str(changeset.get("code", "unknown"))
     detail = str(changeset.get("detail", "changed-file discovery failed"))
     reproduce = " ".join(changeset.get("command", []))
-    warning = (
-        f"::error::Changed-file discovery failed ({code}): {detail}. Plan is "
+    warning = "::error::" + escape_workflow_command_data(
+        f"Changed-file discovery failed ({code}): {detail}. Plan is "
         "NOT_PROVEN; no lanes are selected because the changed set is "
         f"unknown. Reproduce: `{reproduce}`"
     )
