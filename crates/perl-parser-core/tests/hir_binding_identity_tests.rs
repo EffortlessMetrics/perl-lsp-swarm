@@ -359,11 +359,7 @@ fn self_referential_initializer_reads_the_outer_binding() {
     let rhs = must_some(
         occurrences(&file).into_iter().rfind(|o| o.name == "x" && o.access == AccessMode::Read),
     );
-    assert_eq!(
-        rhs.binding,
-        Some(outer),
-        "the initializer must read the outer binding"
-    );
+    assert_eq!(rhs.binding, Some(outer), "the initializer must read the outer binding");
 }
 
 /// Known boundary, not a claim of correctness: a `foreach my $i` iterator is
