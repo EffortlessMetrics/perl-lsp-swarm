@@ -4491,3 +4491,39 @@ expires = "2026-12-20"
 ast_kind = "attribute"
 lint = "dead_code"
 target_fingerprint = "policy:allow-13855-staged-contract"
+
+[[allow]]
+id = "allow-11664-staged-domain-dead-code"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "xtask/src/host_work_status/mod.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "The private pure host-work domain is staged before its production observation consumer. Expect only non-test dead code within this module; remove with #11666. Tests retain normal dead-code diagnostics."
+evidence = ["issue:11664", "issue:11666", "test:xtask/src/host_work_status/tests.rs"]
+created = "2026-09-20"
+review_after = "2026-10-20"
+expires = "2026-12-20"
+
+[allow.selector]
+ast_kind = "attribute"
+lint = "dead_code"
+target_fingerprint = "policy:allow-11664-staged-domain-dead-code"
+
+[[allow]]
+id = "allow-11664-staged-domain-exports"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "xtask/src/host_work_status/mod.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "The staged host-work domain re-exports have no non-test consumer until #11666. Expect only non-test unused imports within this module; remove with that consumer. Test imports retain normal diagnostics."
+evidence = ["issue:11664", "issue:11666", "test:xtask/src/host_work_status/tests.rs"]
+created = "2026-09-20"
+review_after = "2026-10-20"
+expires = "2026-12-20"
+
+[allow.selector]
+ast_kind = "attribute"
+lint = "unused_imports"
+target_fingerprint = "policy:allow-11664-staged-domain-exports"
