@@ -97,7 +97,6 @@ In the LSP configuration (`perllsp.json` or editor settings):
 {
   "perl": {
     "limits": {
-      "astCacheMaxEntries": 2000,
       "astCacheMaxBytes": 10485760
     }
   }

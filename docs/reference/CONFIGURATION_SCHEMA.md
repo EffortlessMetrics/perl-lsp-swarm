@@ -343,28 +343,24 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
           "maximum": 2000,
           "default": 500
         },
-        "astCacheMaxEntries": {
           "type": "integer",
           "description": "Maximum number of AST cache entries (LRU eviction)",
           "minimum": 10,
           "maximum": 500,
           "default": 100
         },
-        "astCacheTtlSecs": {
           "type": "integer",
           "description": "AST cache TTL in seconds",
           "minimum": 10,
           "maximum": 3600,
           "default": 300
         },
-        "symbolCacheMaxEntries": {
           "type": "integer",
           "description": "Maximum symbol cache entries",
           "minimum": 10,
           "maximum": 10000,
           "default": 1000
         },
-        "maxIndexedFiles": {
           "type": "integer",
           "description": "Maximum number of files to index in workspace",
           "minimum": 100,
@@ -378,7 +374,6 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
           "maximum": 50000,
           "default": 5000
         },
-        "maxTotalSymbols": {
           "type": "integer",
           "description": "Maximum total symbols across all indexed files",
           "minimum": 10000,
@@ -398,7 +393,6 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
           "minimum": 1024,
           "default": 1048576
         },
-        "workspaceScanDeadlineMs": {
           "type": "integer",
           "description": "Deadline (ms) for initial workspace folder scan",
           "minimum": 5000,
@@ -835,103 +829,7 @@ Maximum number of completion items to return.
 
 #### Index Limits
 
-##### `perl.limits.astCacheMaxEntries`
-
-| Property | Value |
-|----------|-------|
-| Type | `number` |
-| Default | `100` |
-| Minimum | `10` |
-| Maximum | `500` |
-| Source | `crates/perl-lsp-rs-core/src/runtime/limits/mod.rs` |
-
-Maximum number of AST cache entries. Uses LRU eviction when exceeded.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "limits": {
-      "astCacheMaxEntries": 50
-    }
-  }
-}
-```
-
-##### `perl.limits.maxIndexedFiles`
-
-| Property | Value |
-|----------|-------|
-| Type | `number` |
-| Default | `10000` |
-| Minimum | `100` |
-| Maximum | `100000` |
-| Source | `crates/perl-lsp-rs-core/src/runtime/limits/mod.rs` |
-
-Maximum number of files to index in workspace. Skips older/less-used files when exceeded.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "limits": {
-      "maxIndexedFiles": 5000
-    }
-  }
-}
-```
-
-##### `perl.limits.maxTotalSymbols`
-
-| Property | Value |
-|----------|-------|
-| Type | `number` |
-| Default | `500000` |
-| Minimum | `10000` |
-| Maximum | `1000000` |
-| Source | `crates/perl-lsp-rs-core/src/runtime/limits/mod.rs` |
-
-Maximum total symbols across all indexed files. Uses LRU eviction when exceeded.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "limits": {
-      "maxTotalSymbols": 250000
-    }
-  }
-}
-```
-
 #### Deadline Limits
-
-##### `perl.limits.workspaceScanDeadlineMs`
-
-| Property | Value |
-|----------|-------|
-| Type | `number` |
-| Default | `30000` |
-| Minimum | `5000` |
-| Maximum | `120000` |
-| Source | `crates/perl-lsp-rs-core/src/runtime/limits/mod.rs` |
-
-Deadline (ms) for workspace folder scan. Returns partial index when exceeded.
-
-**Example:**
-
-```json
-{
-  "perl": {
-    "limits": {
-      "workspaceScanDeadlineMs": 20000
-    }
-  }
-}
-```
 
 ##### `perl.limits.referenceSearchDeadlineMs`
 
@@ -1138,10 +1036,6 @@ export PERL5LIB="/path/to/lib:/another/path"
       "workspaceSymbolCap": 100,
       "referencesCap": 200,
       "completionCap": 50,
-      "astCacheMaxEntries": 50,
-      "maxIndexedFiles": 5000,
-      "maxTotalSymbols": 250000,
-      "workspaceScanDeadlineMs": 20000,
       "referenceSearchDeadlineMs": 1500
     }
   }

@@ -84,8 +84,6 @@ This guide provides strategies to optimize performance for different scenarios.
 - Deep module nesting
 
 **Solutions:**
-- Reduce `maxIndexedFiles`
-- Increase `workspaceScanDeadlineMs`
 - Exclude non-Perl directories
 - Use local filesystem when possible
 
@@ -138,9 +136,6 @@ This guide provides strategies to optimize performance for different scenarios.
 - Memory leaks (unlikely, but possible)
 
 **Solutions:**
-- Reduce `astCacheMaxEntries`
-- Reduce `maxIndexedFiles`
-- Reduce `maxTotalSymbols`
 - Restart LSP server periodically
 
 ---
@@ -162,9 +157,6 @@ This guide provides strategies to optimize performance for different scenarios.
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 1000,
-      "maxTotalSymbols": 100000,
-      "astCacheMaxEntries": 100
     },
     "workspace": {
       "useSystemInc": true,
@@ -191,9 +183,6 @@ This guide provides strategies to optimize performance for different scenarios.
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 10000,
-      "maxTotalSymbols": 500000,
-      "astCacheMaxEntries": 100
     },
     "workspace": {
       "useSystemInc": false,
@@ -220,9 +209,6 @@ This guide provides strategies to optimize performance for different scenarios.
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 1000000,
-      "astCacheMaxEntries": 50,
       "workspaceSymbolCap": 100,
       "referencesCap": 200,
       "completionCap": 50
@@ -255,13 +241,9 @@ This guide provides strategies to optimize performance for different scenarios.
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 20000,
-      "maxTotalSymbols": 500000,
-      "astCacheMaxEntries": 25,
       "workspaceSymbolCap": 50,
       "referencesCap": 100,
       "completionCap": 30,
-      "workspaceScanDeadlineMs": 60000,
       "referenceSearchDeadlineMs": 3000
     },
     "workspace": {
@@ -295,9 +277,6 @@ This guide provides strategies to optimize performance for different scenarios.
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 5000,
-      "maxTotalSymbols": 250000,
-      "astCacheMaxEntries": 25,
       "workspaceSymbolCap": 50,
       "referencesCap": 100,
       "completionCap": 30
@@ -330,9 +309,6 @@ This guide provides strategies to optimize performance for different scenarios.
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 10000,
-      "maxTotalSymbols": 500000,
-      "astCacheMaxEntries": 100,
       "workspaceSymbolCap": 200,
       "referencesCap": 500,
       "completionCap": 100
@@ -365,9 +341,6 @@ This guide provides strategies to optimize performance for different scenarios.
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 2000000,
-      "astCacheMaxEntries": 200,
       "workspaceSymbolCap": 500,
       "referencesCap": 1000,
       "completionCap": 200
@@ -408,10 +381,6 @@ This guide provides strategies to optimize performance for different scenarios.
       "includePaths": ["lib", "src"]
     },
     "limits": {
-      "maxIndexedFiles": 5000,
-      "maxTotalSymbols": 250000,
-      "astCacheMaxEntries": 50,
-      "workspaceScanDeadlineMs": 60000
     },
     "inlayHints": {
       "enabled": false
@@ -446,10 +415,6 @@ This guide provides strategies to optimize performance for different scenarios.
       "includePaths": ["lib"]
     },
     "limits": {
-      "maxIndexedFiles": 1000,
-      "maxTotalSymbols": 100000,
-      "astCacheMaxEntries": 25,
-      "workspaceScanDeadlineMs": 120000
     },
     "inlayHints": {
       "enabled": false
@@ -481,8 +446,6 @@ This guide provides strategies to optimize performance for different scenarios.
 {
   "perl": {
     "limits": {
-      "astCacheMaxEntries": 10,
-      "workspaceScanDeadlineMs": 120000
     },
     "workspace": {
       "resolutionTimeout": 100
@@ -509,9 +472,6 @@ This guide provides strategies to optimize performance for different scenarios.
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 1000,
-      "maxTotalSymbols": 50000,
-      "astCacheMaxEntries": 10,
       "workspaceSymbolCap": 50,
       "referencesCap": 100,
       "completionCap": 30
@@ -560,10 +520,6 @@ For general use with good performance:
       "workspaceSymbolCap": 200,
       "referencesCap": 500,
       "completionCap": 100,
-      "astCacheMaxEntries": 100,
-      "maxIndexedFiles": 10000,
-      "maxTotalSymbols": 500000,
-      "workspaceScanDeadlineMs": 30000,
       "referenceSearchDeadlineMs": 2000
     }
   }
@@ -589,10 +545,6 @@ For maximum performance with minimal features:
       "workspaceSymbolCap": 50,
       "referencesCap": 100,
       "completionCap": 30,
-      "astCacheMaxEntries": 25,
-      "maxIndexedFiles": 5000,
-      "maxTotalSymbols": 250000,
-      "workspaceScanDeadlineMs": 20000,
       "referenceSearchDeadlineMs": 1500
     }
   }
@@ -622,10 +574,6 @@ For maximum features with acceptable performance:
       "workspaceSymbolCap": 500,
       "referencesCap": 1000,
       "completionCap": 200,
-      "astCacheMaxEntries": 200,
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 2000000,
-      "workspaceScanDeadlineMs": 60000,
       "referenceSearchDeadlineMs": 3000
     }
   }

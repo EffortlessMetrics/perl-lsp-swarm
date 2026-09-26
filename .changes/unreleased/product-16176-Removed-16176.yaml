@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Removed
+body: "Six perl.limits.* settings (astCacheMaxEntries, astCacheTtlSecs, symbolCacheMaxEntries, maxIndexedFiles, maxTotalSymbols, workspaceScanDeadlineMs) were parsed but never read by any runtime consumer. They are removed from LspLimits and the limits.* configuration-authority catalog together with their settings keys. The settings schema rejects them (additionalProperties: false), so clients still sending them now get an explicit unknown-property diagnostic instead of a silent no-op. No enforcement existed to lose, and all documented result caps, deadlines, file-size and memory-budget limits remain behavior-backed."
+time: 2026-09-20T00:00:00Z
+custom:
+  PR: "16176"
+  Slug: remove-unconsumed-lsp-limits
+  Breaking: "no"
