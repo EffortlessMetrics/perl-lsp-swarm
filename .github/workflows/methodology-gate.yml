@@ -31,10 +31,27 @@ jobs:
           toolchain: stable
 
       - name: Run methodology gate (advisory)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cargo xtask methodology-gate \
-            --fixture "${GITHUB_EVENT_PATH}" \
-            --receipt target/receipts/methodology-gate.json
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # Event-payload body/labels are an immutable snapshot replayed on
+            # reruns (issue #15759); prefer the binary's existing live `--pr`
+            # snapshot. A failed `gh` lookup fails the step (fail-closed) —
+            # never fall back to the stale fixture.
+            pr_number="${{ github.event.pull_request.number }}"
+            echo "methodology-gate: live PR snapshot via gh pr view (pr=${pr_number})"
+            cargo xtask methodology-gate \
+              --pr "${pr_number}" \
+              --receipt target/receipts/methodology-gate.json
+          else
+            # push/merge_group: no PR to fetch; the fixture remains the
+            # locator input for non-PR events and offline self-tests.
+            cargo xtask methodology-gate \
+              --fixture "${GITHUB_EVENT_PATH}" \
+              --receipt target/receipts/methodology-gate.json
+          fi
 
       - name: Upload methodology receipt
         if: always()

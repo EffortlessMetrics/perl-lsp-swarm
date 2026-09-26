@@ -20,6 +20,8 @@ on:
 
 permissions:
   contents: read
+  # Live PR snapshot fetch for the disposition check (issue #15759).
+  pull-requests: read
 
 concurrency:
   group: changelog-advisory-${{ github.event.pull_request.number || github.ref }}
@@ -74,11 +76,21 @@ jobs:
       - name: Disposition check (advisory)
         if: github.event_name == 'pull_request'
         env:
-          # Passed via env (not shell-interpolated) to avoid injection.
-          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           base="${{ github.event.pull_request.base.sha }}"
+          # The event payload's PR body is an immutable snapshot replayed on
+          # reruns (issue #15759), so a body edit could never clear a finding
+          # via rerun. Fetch one live snapshot instead; a failed fetch fails
+          # this step (fail-closed) and never falls back to the stale payload.
+          pr_number="${{ github.event.pull_request.number }}"
+          pr_snapshot="$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json body,updatedAt,headRefOid)"
+          body="$(jq -r '.body // ""' <<<"$pr_snapshot")"
+          printf 'live-pr-snapshot updatedAt=%s head=%s body_sha256=%s\n' \
+            "$(jq -r .updatedAt <<<"$pr_snapshot")" \
+            "$(jq -r .headRefOid <<<"$pr_snapshot")" \
+            "$(printf '%s' "$body" | sha256sum | cut -d' ' -f1)"
           # No `|| true` here: a failing `git diff` must surface as a real CI
           # failure (this step, not the merge gate — the workflow isn't
           # required), not silently degrade to an empty changed-file list.
@@ -88,4 +100,6 @@ jobs:
           echo "Changed files:"
           cat /tmp/changed-files.txt
           echo "---"
-          cargo xtask changelog check --base "$base" --changed-files /tmp/changed-files.txt
+          # Body is passed via env (not shell-interpolated) to avoid injection.
+          CHANGELOG_PR_BODY="$body" \
+            cargo xtask changelog check --base "$base" --changed-files /tmp/changed-files.txt
