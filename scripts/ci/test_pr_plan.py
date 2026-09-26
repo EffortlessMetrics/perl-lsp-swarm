@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -377,6 +378,46 @@ required_checks = ["docs"]
         self.assertEqual("git-unspawnable", changeset["code"])
         self.assertIn("not found", changeset["detail"])
         self.assertEqual(["git", "diff", "--name-only", "origin/main...HEAD"], changeset["command"])
+
+    def test_discover_changed_files_timeout_refuses_without_planning(self) -> None:
+        def stalled_run(command, **kwargs):
+            self.assertEqual(pr_plan.GIT_DIFF_TIMEOUT_SECONDS, kwargs["timeout"])
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        old_run = pr_plan.subprocess.run
+        try:
+            pr_plan.subprocess.run = stalled_run
+            changeset = pr_plan.discover_changed_files("origin/main", "HEAD")
+        finally:
+            pr_plan.subprocess.run = old_run
+
+        self.assertEqual("unavailable", changeset["status"])
+        self.assertEqual("git-diff-timeout", changeset["code"])
+        self.assertNotIn("files", changeset)
+        plan = pr_plan.not_proven_plan(
+            base="origin/main", head="HEAD", labels=[], changeset=changeset
+        )
+        self.assertEqual("NOT_PROVEN", plan["posture"])
+        self.assertTrue(plan["selection"]["refused"])
+        self.assertEqual([], plan["selection"]["lanes"])
+
+    def test_discovery_annotation_escapes_hostile_stderr_without_changing_receipt(self) -> None:
+        detail = "fatal: 100% failed\r\n::warning::forged"
+        changeset = {
+            "status": "unavailable",
+            "code": "git-diff-exit-128",
+            "detail": detail,
+            "command": ["git", "diff", "--name-only", "origin/main...HEAD"],
+        }
+        plan = pr_plan.not_proven_plan(
+            base="origin/main", head="HEAD", labels=[], changeset=changeset
+        )
+        self.assertEqual(detail, plan["refusal"]["detail"])
+        self.assertEqual(detail, plan["changed_set"]["detail"])
+        annotation = plan["warnings"][0]
+        self.assertEqual(1, len(annotation.splitlines()))
+        self.assertIn("100%25 failed%0D%0A::warning::forged", annotation)
+        self.assertNotIn("%250D", annotation)
 
     def test_main_writes_not_proven_receipt_and_fails_when_discovery_fails(self) -> None:
         """Negative control: a Rust change behind a failed diff cannot route
