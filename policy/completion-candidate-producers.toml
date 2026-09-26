@@ -62,7 +62,15 @@ outcome_owner = "#10230"
 # surface to 6307e3bd... (one non-producer helper plus tests added under the
 # scan roots, zero removals or re-channeling); projection diff is digest-only,
 # `check` passes.
-source_digest = "sha256:24f17ee6964d14bfce7a0372c738686b2697fb46972027c822bdae0419116f9c"
+# Re-anchor 2026-09-26 (#16449): #16019 (lone-minus completion fix) drifted
+# the surface to ebfd9283... via exactly two files under the scan roots
+# (completion.rs production gating change plus one private predicate helper
+# `is_operand_shaped_bareword`, and completion/tests.rs regression tests).
+# No producer add/remove/re-channel: the only new function is a private
+# trigger predicate, not a candidate producer, and the dash branch now routes
+# through the existing receiver scan with the finalizer route untouched;
+# scanned set unchanged. Projection diff is digest-only, `check` passes.
+source_digest = "sha256:ebfd92835f0614e1536867af4045bddde70f02d9ecf2b009b2d7f6f64e7c9b3a"
 
 [[delegations]]
 module = "dancer2"
