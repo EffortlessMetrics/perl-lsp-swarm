@@ -6,7 +6,7 @@
 - Verdict: **READY** (with two named qualifications, §5–§6)
 - Re-verify: `python3 -m unittest scripts.tests.test_domain6_fragment`
   plus the per-item commands below, all run at the pinned SHA.
-  Each item re-runs green individually as
+  Each item can be re-run individually using
   `python3 -m unittest
   scripts.tests.test_domain6_fragment.Domain6FragmentTest.<name>` with
   `<name>` one of: `test_header_pins_exact_range_and_prefilter`,
