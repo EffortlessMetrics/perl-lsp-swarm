@@ -837,10 +837,15 @@ fn heredoc_allowed_before(
         return true;
     }
 
-    if prefix
-        .chars()
-        .next_back()
-        .is_some_and(|ch| matches!(ch, '=' | '(' | '[' | '{' | ',' | ';' | ':' | '?'))
+    // Term position: with no left operand, `<<MARKER` is a heredoc, never a
+    // left shift. The fat comma (`key => <<END`) belongs beside the
+    // single-character introducers because its last character is the `>` of
+    // the operator, not a term.
+    if prefix.ends_with("=>")
+        || prefix
+            .chars()
+            .next_back()
+            .is_some_and(|ch| matches!(ch, '=' | '(' | '[' | '{' | ',' | ';' | ':' | '?'))
     {
         return true;
     }
@@ -852,10 +857,26 @@ fn heredoc_allowed_before(
     // variable, not a callable: `$print <<'END'` is a left shift too, so only
     // a sigil-free callable word introduces a heredoc.
     previous_word_and_sigil_before(line, offset).is_some_and(|(sigil, word)| {
-        sigil.is_none()
-            && is_callable_word(word, known_subs, &hints.callables)
-            && !is_nullary_word(word, nullaries, hints)
-            && !is_nullary_builtin(word)
+        // A sigiled word is a completed term first: `$print <<'END'` and the
+        // typeglob/last-index forms are left shifts, never heredoc
+        // introducers, whatever the word spells (#16338).
+        if sigil.is_some() {
+            return false;
+        }
+        // `return` introduces a term slot without being callable, so
+        // `return <<END;` is a definite heredoc even when nothing callable
+        // precedes the opener (oracle-verified under a statement modifier
+        // too). The word is the keyword only when no dereference arrow
+        // precedes it (`$object->return` is a method invocation), and the
+        // slice before the word carries the same trailing-space trim as the
+        // helper, so spaced forms (`$object-> return`) are recognized as
+        // method invocations as well (#16336).
+        let before_word = prefix[..prefix.len() - word.len()].trim_end_matches([' ', '\t']);
+        let is_return_keyword = word == "return" && !before_word.ends_with("->");
+        is_return_keyword
+            || (is_callable_word(word, known_subs, &hints.callables)
+                && !is_nullary_word(word, nullaries, hints)
+                && !is_nullary_builtin(word))
     })
 }
 
@@ -1198,6 +1219,47 @@ mod tests {
         assert!(table.is_known_sub("real"));
         assert!(!table.is_known_sub("first_fake"));
         assert!(!table.is_known_sub("second_fake"));
+    }
+
+    #[test]
+    fn term_slot_heredocs_under_conditional_modifiers_keep_declarations() {
+        // Measured with the local Perl oracle (runtime plus `-MO=Deparse`):
+        // `return <<END` and `key => <<END` keep the heredoc reading under an
+        // `unless` statement modifier, exactly like the initializer forms. The
+        // conditional modifier does not invalidate the statement's declaration
+        // and the body is string content: its prose must not become a known
+        // sub, while declarations after the terminator survive unconditionally.
+        for statement in [
+            "my $x = <<END unless $cond;",
+            "sub f { return <<END; }",
+            "sub f { return <<END unless $cond; }",
+            "my %h = (key => <<END);",
+            "my %h = (key => <<END) unless $cond;",
+        ] {
+            let source = format!("{statement}\nsub fake {{ }}\nEND\nsub real {{ }}\n");
+            assert_membership_and_slash(&source, &["real"], &["fake"]);
+        }
+    }
+
+    #[test]
+    fn dereferenced_return_method_is_not_the_keyword() {
+        // Measured with the local Perl oracle (runtime plus `-MO=Deparse`):
+        // `$object->return << END` is a method invocation whose arrow supplies
+        // the left operand, so the `<<` is a left shift and a bare `END` line
+        // is not a terminator. The lines after the shift stay live code: the
+        // method name must not be classified as the `return` keyword.
+        assert_membership_and_slash(
+            "my $x = $object->return <<END;\nsub fake { }\nEND\nsub real { }\n",
+            &["fake", "real"],
+            &[],
+        );
+        // Keyword control: plain `return <<END` keeps its definite heredoc
+        // reading, so the body prose stays out of the scan.
+        assert_membership_and_slash(
+            "sub f { return <<END; }\nsub fake { }\nEND\nsub real { }\n",
+            &["real"],
+            &["fake"],
+        );
     }
 
     #[test]
