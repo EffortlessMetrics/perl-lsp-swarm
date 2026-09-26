@@ -1481,7 +1481,7 @@ def build_document() -> dict:
     )
     reviewed = [u for u in units if u["disposition_state"] == "reviewed"]
     if len(reviewed) != EXPECTED_SEEDS:
-        raise FragmentError(f"reviewed seed count {len(reviewed)} != 8")
+        raise FragmentError(f"reviewed seed count {len(reviewed)} != {EXPECTED_SEEDS}")
     if set(SEEDS) != {u["work_unit_id"] for u in reviewed}:
         raise FragmentError("reviewed seed identity set drifted")
     not_proven = [u for u in units if u["disposition_state"] == "not_proven"]
