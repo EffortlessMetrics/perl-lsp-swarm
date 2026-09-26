@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: "perl-dap gains the canonical scalar mutation domain contract for DAP variable editing (#10736, S0 of the #8364 train). MutationLocationProvenance (exact writable storage cell), InspectedValueIdentity (observed value/referent), and MutationTarget (admitted writable subject) stay separate propositions, so equal values in different locations and one referent reached through several locations never collapse into one write target; a target is reachable only through MutationTargetCandidate::bind, whose candidate has no field for a DAP frameId, variablesReference, display name, or evaluateName, and whose writability disposition defaults to NotProven so an incomplete claim fails closed. MutationValue carries Undef, ExactInteger, ExactDecimal, and UnicodeString as inert data rather than Perl source, keeping numbers in canonical text so exact integers and decimals round-trip without f64 and reusing the structured profile's ExactDecimal rather than adding a second exact-number authority. The outcome model keeps before-dispatch refusal separate from after-dispatch uncertainty and requires an observed read-back for success, so a backend that silently ignored a write cannot report one. DebugBackend gains supports_scalar_mutation and mutate_scalar with explicit unsupported defaults naming the refusing backend/mode/profile cell. Contract-only: no DAP parsing, target acquisition, Perl rendering, debugger I/O, handler routing, or capability change."
+time: 2026-09-06T05:00:00Z
+custom:
+  PR: "14931"
+  Slug: dap-scalar-mutation-domain-contract-10736
+  Breaking: "no"
