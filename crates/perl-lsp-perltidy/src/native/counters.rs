@@ -251,7 +251,10 @@ impl PipelineCollectorScope {
     }
 }
 
-fn merge_counters(counters: &mut NativePipelineCounters, recorded: &NativePipelineCounters) {
+pub(crate) fn merge_counters(
+    counters: &mut NativePipelineCounters,
+    recorded: &NativePipelineCounters,
+) {
     counters.pipeline_invocations =
         counters.pipeline_invocations.saturating_add(recorded.pipeline_invocations);
     counters.parse_gate_invocations =

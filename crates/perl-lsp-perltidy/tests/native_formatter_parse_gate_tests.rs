@@ -1,4 +1,7 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+use perl_lsp_perltidy::native::{
+    FormatContext, FormatDisposition, FormatIdentity, FormatReasonCode, FormatRequestTarget,
+};
 use perl_lsp_perltidy::{
     FinalNewline, FormatConfig, FormatterMode, NativeFormatter, PerlFormatter, TextPosition,
     TextRange,
@@ -339,6 +342,44 @@ fn range_format_bails_when_range_contains_heredoc() {
         "expected heredoc literal_preserve_region diagnostic; got: {:?}",
         result.diagnostics,
     );
+}
+
+#[test]
+fn typed_range_heredoc_refusal_preserves_request_identity_and_target() {
+    let formatter = NativeFormatter::new();
+    let source = "my $x = 1;\nprint <<'EOF';\nbody\nEOF\nmy $y = 2;\n";
+    let range = TextRange::new(TextPosition::new(2, 0), TextPosition::new(3, 0));
+    let config = FormatConfig::default();
+    let context = FormatContext::new(Some("fixture/heredoc.pl".to_string()), Some(23));
+
+    let result = formatter.format_range_typed(source, range, &config, &context);
+
+    assert_eq!(result.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(result.outcome.reason, FormatReasonCode::LiteralPreservationUnsupported);
+    assert_eq!(result.outcome.target, FormatRequestTarget::Range { range });
+    assert_eq!(result.outcome.identity, FormatIdentity::for_request(source, &config, &context));
+}
+
+#[test]
+fn heredoc_markers_inside_strings_do_not_corrupt_existing_letter_pairs() {
+    let formatter = NativeFormatter::new();
+    let source = "my $text = \"AA AB AC <<LABEL\";\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert_eq!(result.formatted, source);
+    assert!(result.formatted.contains("AA AB AC <<LABEL"));
+}
+
+#[test]
+fn selected_sentinel_inside_a_string_is_restored_without_corruption() {
+    let formatter = NativeFormatter::new();
+    let source = "my $text = \"<<LABEL\";\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert_eq!(result.formatted, source);
+    assert!(result.formatted.contains("<<LABEL"));
 }
 
 /// A POD block outside the range must not block range-format of clean lines.
