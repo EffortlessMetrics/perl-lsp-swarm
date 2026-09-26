@@ -666,14 +666,16 @@ jobs:
           # --all insertions, reintroduced changed-file narrowing, verbose-header
           # misclassification, or a second unowned hosted formatter producer
           # must fail this required check. Draft-skip stays in the evaluate
-          # step (#10006).
+          # step (#10006), and so does the #16187 supersession discriminator,
+          # owned by scripts/ci/test_rust_small_supersession.py.
           python3 -m unittest \
             scripts/ci/test_rustfmt_check.py \
             scripts/ci/test_rustfmt_required_workflow.py \
             scripts/ci/test_rust_small_route_contract.py \
             scripts/ci/test_hosted_formatter_producers.py \
             scripts/ci/test_rust_small_probe_gate.py \
-            scripts/ci/test_main_red_refusal.py
+            scripts/ci/test_main_red_refusal.py \
+            scripts/ci/test_rust_small_supersession.py
 
       - name: Probe main-red refusal
         if: >-
@@ -848,6 +850,90 @@ jobs:
           fi
           if [ "$refusal_status" -eq 1 ]; then
             exit 1
+          fi
+
+      # #16187: on every synchronize push the concurrency group above cancels
+      # this workflow's in-flight lanes, and the aggregate then evaluated the
+      # cancellation as a red required check whose cause could not be stated —
+      # the exact gap #5460 recorded for the routed gates. The discriminator
+      # #16186 landed for ci.yml's advisory aggregate is ported here: resolve
+      # this run's tested head, the pull request's live head, and a demonstrable
+      # replacement run, so the cancelled-lane branch below can say "superseded"
+      # only when the evidence supports it.
+      #
+      # The pull request is resolved by its number, not by branch name:
+      # `github.head_ref` is fork-controlled, which is how a branch called
+      # "main" once made every fork PR look superseded (#5981). Both SHAs come
+      # from the API rather than the event payload, because this job must not
+      # read candidate-controlled pull-request head data (#12911) — the run
+      # object's `head_sha` is the head this run actually tested.
+      #
+      # Fail closed: an unresolved head stays unexported and the gate stays
+      # red, which is the behaviour before this step existed.
+      - name: Resolve the tested head, the live head, and the replacement run
+        if: always() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          # `github.token` rather than `secrets.GITHUB_TOKEN`: the same
+          # installation token, reached without a secret reference in a
+          # PR-triggered workflow, which `workflow_security_ratchet.py` flags
+          # as `pr_secret_reference`. The job's own `permissions:` block is
+          # what bounds the authority, and it is read-only.
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          # One read supplies both this run's tested head and its workflow id.
+          # The workflow id keeps the replacement lookup below to *this*
+          # workflow, so a run of some other workflow on the newer head cannot
+          # be mistaken for the replacement.
+          run_json="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}" 2>/dev/null || true)"
+          tested="$(printf '%s' "$run_json" | jq -r '.head_sha // empty' 2>/dev/null || true)"
+          workflow_id="$(printf '%s' "$run_json" | jq -r '.workflow_id // empty' 2>/dev/null || true)"
+          created="$(printf '%s' "$run_json" | jq -r '.created_at // empty' 2>/dev/null || true)"
+          latest="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)"
+
+          # A moved head shows the candidate changed; it does not show that
+          # anything is proving the new one, so a replacement run is looked up
+          # on the live head and its id bound. Queried only once the head has
+          # actually moved, so this run can never find itself. The endpoint
+          # constrains workflow and head SHA; event, pull-request association
+          # and chronology it does not. `scripts/ci/replacement_run_filter.jq`
+          # applies those three identities — the same file the advisory
+          # aggregate and its tests run, so the rule cannot drift between the
+          # two aggregates (#16186).
+          replacement=""
+          if [[ "${latest}" =~ ^[0-9a-f]{40}$ ]] \
+            && [[ "${tested}" =~ ^[0-9a-f]{40}$ ]] \
+            && [[ "${latest}" != "${tested}" ]] \
+            && [[ "${workflow_id}" =~ ^[0-9]+$ ]] \
+            && [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] \
+            && [[ "${created}" =~ ^[0-9T:Z-]+$ ]]; then
+            # Arguments are passed as jq arguments, never interpolated into the
+            # program text, so neither value can alter what the filter does.
+            replacement="$(gh api \
+              "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${latest}&event=pull_request&per_page=30" \
+              2>/dev/null \
+              | jq -r --argjson pr "${PR_NUMBER}" --arg since "${created}" \
+                  -f scripts/ci/replacement_run_filter.jq 2>/dev/null || true)"
+          fi
+
+          # Only well-formed values are exported. An unexported variable reads
+          # as unknown — never as "different, therefore newer" — and leaves the
+          # gate red, which is the safe direction for all three.
+          for pair in "RUN_HEAD_SHA=${tested}" "LATEST_HEAD_SHA=${latest}"; do
+            if [[ "${pair#*=}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "$pair" >> "$GITHUB_ENV"
+            else
+              echo "::notice::Unresolved ${pair%%=*}; the gate stays red."
+            fi
+          done
+          if [[ "${replacement}" =~ ^[0-9]+$ ]]; then
+            echo "REPLACEMENT_RUN_ID=${replacement}" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No replacement run for the live head; the gate stays red."
           fi
 
       - name: Evaluate routed result
@@ -1091,20 +1177,60 @@ jobs:
           # exits 1 printing nothing but "Process completed with exit code 1",
           # indistinguishable from a real failure without opening the log (#5460).
           #
-          # The cause is deliberately not asserted. The usual one is a newer push
-          # superseding this run via the concurrency group's cancel-in-progress,
-          # but a manual or API cancellation produces an identical `cancelled`
-          # result and no newer run exists in that case. Nothing available here
-          # distinguishes them, so the message names the outcome and offers
-          # supersession as the likely cause rather than directing the reader to
-          # a run that may not exist.
+          # The cause IS now classified, on the discriminator #16187 ports from
+          # the advisory aggregate (#16186): the resolve step above binds this
+          # run's tested head, the pull request's live head, and a replacement
+          # run of this workflow for the pull request on the live head. The
+          # cancelled branch splits on that evidence, and every branch here
+          # stays red — #5460's rule that no proof never becomes green is
+          # unchanged, so no forgiven head can carry a green that a later
+          # force-push could resurrect (the #16187 blocking precondition).
+          #
+          # - A genuine failure next to a cancellation is a failure however far
+          #   the head has moved: a lane that reached a verdict and lost is
+          #   information about the code, and code survives a head move.
+          # - `superseded` requires three facts together: this run's tested head
+          #   and the live head are both well-formed 40-hex object names that
+          #   differ, AND a replacement run id was bound. An unresolved or
+          #   malformed value reads as unknown, never as "different, therefore
+          #   newer" — the direction of failure is deliberate: a missed
+          #   supersession costs one avoidable red, a wrongly claimed one
+          #   reports green over a candidate nothing proved.
+          # - A cancellation with no such evidence is `cancelled-no-verdict` and
+          #   names only what the inputs support: no newer run was identified.
+          any_cancelled=false
+          any_failure=false
           for lane_result in "$CX53_RESULT" "$CX43_RESULT" "$GITHUB_RESULT" "$FALLBACK_RESULT"; do
             if [ "$lane_result" = "cancelled" ]; then
-              echo "::error::Rust Small lane cancelled — no proof produced for this SHA. This is NOT a test failure. Most often a newer push superseded this run; a manual or API cancellation looks the same here. If a newer run exists for this PR, that run is authoritative; otherwise re-run this one."
-              echo "Perl LSP Rust Small Result: cancelled (no proof for this SHA)"
-              exit 1
+              any_cancelled=true
+            elif [ "$lane_result" = "failure" ]; then
+              any_failure=true
             fi
           done
+
+          if [ "$any_cancelled" = "true" ]; then
+            if [ "$any_failure" = "true" ]; then
+              echo "::error::Rust Small lane failed and another was cancelled — the failed lane is a real test failure of this head. Fix the failure; the cancelled lane produced no evidence either way."
+              echo "Perl LSP Rust Small Result: failure (a lane failed alongside a cancelled lane)"
+              exit 1
+            fi
+            run_head="${RUN_HEAD_SHA:-}"
+            latest_head="${LATEST_HEAD_SHA:-}"
+            replacement="${REPLACEMENT_RUN_ID:-}"
+            if [[ "$run_head" =~ ^[0-9a-f]{40}$ ]] \
+              && [[ "$latest_head" =~ ^[0-9a-f]{40}$ ]] \
+              && [ "$run_head" != "$latest_head" ] \
+              && [[ "$replacement" =~ ^[0-9]+$ ]]; then
+              echo "RUST_SMALL_GATE_VERDICT=superseded"
+              echo "::error::Rust Small lane cancelled — no proof was produced for ${run_head}. The pull request has moved to ${latest_head}, and run ${replacement} is this workflow's pull_request run for that head, so that run owns the verdict. This is NOT a test failure."
+              echo "Perl LSP Rust Small Result: cancelled (superseded — run ${replacement} on ${latest_head} owns the verdict)"
+              exit 1
+            fi
+            echo "RUST_SMALL_GATE_VERDICT=cancelled-no-verdict"
+            echo "::error::Rust Small lane cancelled — no proof was produced for this SHA. This is NOT a test failure. A newer push is the usual cause, but no newer run of this workflow was identified for this pull request, and a manual or API cancellation looks the same; re-run this workflow or push again."
+            echo "Perl LSP Rust Small Result: cancelled (no proof for this SHA; no newer run identified)"
+            exit 1
+          fi
 
           case "${ROUTER_TARGET:-}" in
             cx53)
