@@ -54,7 +54,7 @@ PREFILTER = [
 
 EXPECTED_NON_MERGE = 682
 EXPECTED_UNITS = 672
-EXPECTED_SEEDS = 5
+EXPECTED_SEEDS = 8
 # Unsimplified range merge population (START_SHA..OBSERVED_HEAD,
 # --full-history): 2 kept + 1 related-record + 62 content-free +
 # 11 blob-covered + 18 created = 94. Pinned: the range is fixed, the
@@ -602,6 +602,336 @@ SEEDS = {
         "grouping_evidence": "trailing (#14523) of subject pair "
         "(#8656)(#14523); merge_commit_sha of PR #14523 equals the "
         "commit; issue #8656 is the tracked problem",
+    },
+    "PR#12742": {
+        "commits": ["ee8427f6d63bc8b6dc3131b0ca4ca37689bcd384"],
+        "subject": "security(install): inspect standalone archives "
+        "before staging (#8352) (#12742)",
+        "paths_or_components": [
+            ".changes/unreleased/product-8352-Security-114500.yaml",
+            ".github/workflows/installer-checksum-contract.yml",
+            ".github/workflows/installer-powershell-checksum-contract.yml",
+            "install.ps1",
+            "policy/standalone-archive-safety.v1.toml",
+            "scripts/install.sh",
+            "scripts/tests/lib/standalone_archive_fixtures.py",
+            "scripts/tests/test-install-ps1-archive-safety.ps1",
+            "scripts/tests/test-install-ps1-checksum-required.ps1",
+            "scripts/tests/test-installer-archive-safety.sh",
+        ],
+        "release_domains": ["install", "security", "release"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "covered",
+        "migration_or_upgrade_refs": [
+            "upgrade: standalone installers refuse archives the naive "
+            "tar -xzf / Expand-Archive path accepted (links, special "
+            "types, unexpected or misnamed members, oversized entries); "
+            "the changelog fragment carries Breaking: yes and "
+            "PERL_LSP_ARCHIVE_SAFETY_MAX_* overrides exist for evidence "
+            "runs, defaulting to the policy ceilings"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/tests/test-installer-archive-safety.sh",
+            "scripts/tests/test-install-ps1-archive-safety.ps1",
+            "scripts/tests/lib/standalone_archive_fixtures.py",
+            ".github/workflows/installer-checksum-contract.yml",
+            ".github/workflows/installer-powershell-checksum-contract.yml",
+        ],
+        "known_limitations": [
+            "in-range repair f941be888 (row ISS#11508, #11508 still "
+            "OPEN): this unit's tar -tf/-tv classification trusted human "
+            "tar renderings, so BusyBox links and stripped ../ names "
+            "wearing accepted topology names passed inspection and were "
+            "attested; inspection now decodes ustar/GNU headers, refuses "
+            "PAX and GNU long-name records fail-closed, and the macOS "
+            "one-true-awk leg remains open on #11508",
+            "b62ccabc7 (row ISS#8359, #8359 OPEN) later made perllsp/"
+            "perl-dap promotion atomic on the same staging seam; "
+            "post-head repairs #16312 and #16316 (#16310) require gzip "
+            "on the release path and fail verify_install closed on an "
+            "unrunnable binary",
+            "no published release carries the preflight (v0.17.0 "
+            "2026-06-28 predates the unit, none since), so no real "
+            "release archive has been installed through it; CI proves "
+            "the bash and pwsh adapters on hosted runners only and "
+            "Windows archive extraction acceptance belongs to #16408/"
+            "#6056",
+            "policy/standalone-archive-safety.v1.toml is documentation "
+            "of record, not machine-read at install time: installers "
+            "embed the constants because they run without a checkout, "
+            "and the tests assert identifier equality",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["8352-CLOSED"],
+        "invalidators": [
+            "tar header-decoder or member-law rework changing the "
+            "inspection contract (owner row ISS#11508, #11508 OPEN)",
+            "standalone-archive-safety.v1.toml limit or membership "
+            "change without the embedded installer constants following",
+            "staging or promotion rework (row ISS#8359) moving the "
+            "private-staging or fail-unchanged boundary",
+        ],
+        "platforms_and_targets": [
+            "linux x86_64/aarch64 (musl/gnu) and macOS x86_64/aarch64: "
+            "bash installer inspects tar.gz via a capped gzip -dc bound "
+            "and ustar header classification",
+            "windows: install.ps1 inspects .zip members (symlink mode "
+            "bit, reserved device names, trailing dot/space components) "
+            "and stages windows flat or nested package layouts",
+        ],
+        "artifact_or_route_effects": [
+            "standalone installers replace naive tar -xzf / "
+            "Expand-Archive with a versioned preflight "
+            "(standalone-archive-safety.v1): compressed/uncompressed/"
+            "entry size ceilings, entry-count and path caps, canonical "
+            "member paths (no absolute/backslash/drive/UNC/ADS/../ or "
+            "reserved device names), type admission (regular files plus "
+            "one package directory; links and special types refused), "
+            "duplicate and case-fold collision refusal, executable "
+            "allowlist (perllsp, perl-dap), required topology members",
+            "only accepted members are written into a new private "
+            "staging root; any failure leaves the install destination "
+            "and known-good files unchanged",
+            "archive_safety_receipt binds policy id, layout kind, and "
+            "archive plus member SHA256 digests without private paths",
+            "installer-checksum-contract and "
+            "installer-powershell-checksum-contract workflows become "
+            "checksum and archive safety, run the new bash and pwsh "
+            "suites against the shared fixture library, and raise their "
+            "timeouts",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#12742) of subject pair "
+        "(#8352)(#12742); merge_commit_sha of PR #12742 equals the "
+        "commit; issue #8352 is the tracked problem",
+    },
+    "PR#12808": {
+        "commits": ["6517541baee0d8fc0338578cbc45a201fa38d60c"],
+        "subject": "security(vscode): bound managed archive download "
+        "and extract (#7432) (#12808)",
+        "paths_or_components": [
+            ".changes/unreleased/vscode-12808-Security-213000.yaml",
+            "vscode-extension/src/boundedFileDownload.ts",
+            "vscode-extension/src/downloader.ts",
+            "vscode-extension/src/managedArchiveExtract.ts",
+            "vscode-extension/src/managedArchiveSafetyPolicy.ts",
+            "vscode-extension/src/test/boundedFileDownload.test.ts",
+            "vscode-extension/src/test/downloader.test.ts",
+            "vscode-extension/src/test/managedArchiveExtract.test.ts",
+            "vscode-extension/src/test/managedArchiveSafetyPolicy.test.ts",
+        ],
+        "release_domains": ["editor", "install", "security"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "covered",
+        "migration_or_upgrade_refs": [
+            "upgrade: managed candidate downloads gain a hard compressed-"
+            "byte ceiling independent of the timeout and delete partial "
+            "output on oversize, error, and cancel; extraction admits "
+            "only the perllsp server plus optional perl-dap; no settings "
+            "migration"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "vscode-extension/src/test/managedArchiveSafetyPolicy.test.ts",
+            "vscode-extension/src/test/managedArchiveExtract.test.ts",
+            "vscode-extension/src/test/boundedFileDownload.test.ts",
+            "vscode-extension/src/test/downloader.test.ts",
+        ],
+        "known_limitations": [
+            "unit/source stage only; installed managed-download "
+            "acceptance belongs to the #6056 lane",
+            "in-range repairs on the same seam stay owned by their own "
+            "not_proven rows: PR#14423 and PR#14940 (#14422 CLOSED) "
+            "complete bounded-download cleanup before rejection, PR#15221 "
+            "(#15219 CLOSED) replaces the AdmZip reader with yauzl after "
+            "the vulnerable-dependency finding, and PR#15494 (#15493 "
+            "CLOSED) decouples the GitHub credential policy from "
+            "proxyStrictSSL in downloader.ts",
+            "zip membership preflight is fail-closed on ZIP64 sentinels: "
+            "a legitimate ZIP64 managed artifact would be refused until "
+            "reviewed (current managed Windows artifacts are not ZIP64)",
+            "extractDir symlink/junction refusal and alias unlinks are "
+            "proven in hosted CI (junction on win32, directory symlink "
+            "elsewhere), not on a real installed machine",
+            "the envelope does not cover release-JSON metadata (#6018), "
+            "provenance (#7425), transaction schemas (#11099), or "
+            "owned-state manifests (#11470)",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["7432-CLOSED"],
+        "invalidators": [
+            "managedArchiveSafetyPolicy limit or member-law edits "
+            "without re-proof",
+            "archive reader swap changing preflight ordering or "
+            "materialization timing (row PR#15221)",
+            "downloader rework dropping the bounded ceilings or "
+            "partial-file deletion (rows PR#14423/PR#14940)",
+        ],
+        "platforms_and_targets": [
+            "vscode extension host: windows .zip managed path (DOS "
+            "reparse-point and junction proof on win32 CI runners), "
+            "linux/macos tar.gz path via the tar parser",
+            "vscode-managed managed-candidate archives from cargo-dist "
+            "per-target releases; checksum catalog capped separately "
+            "from the archive envelope",
+        ],
+        "artifact_or_route_effects": [
+            "managed downloads run through downloadBoundedFile: "
+            "oversized Content-Length is rejected before the body, "
+            "streaming byte counts destroy chunked or lying responses at "
+            "the ceiling, and partial destinations are deleted on "
+            "oversize, error, timeout, and cancel; SHA256SUMS is capped "
+            "separately at 1 MiB",
+            "tar.gz and zip members are inspected before extraction: "
+            "entry counts (zip EOCD checked before materialization, "
+            "ZIP64 sentinels fail-closed, central-directory budget), "
+            "per-entry size, path escape, link and special types, and "
+            "duplicate or case-colliding executable identities",
+            "extraction writes only the perllsp server and optional "
+            "perl-dap into the extract root; a symlink/junction "
+            "extractDir is refused and alias trees are unlinked without "
+            "following them (DOS reparse-point attribute is a forbidden "
+            "link)",
+            "limits live in vscode-managed-archive-safety.v1 mirroring "
+            "the standalone installer sibling (#8352) so cargo-dist "
+            "artifacts fit; changing a limit is a reviewable policy edit",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#12808) of subject pair "
+        "(#7432)(#12808); merge_commit_sha of PR #12808 equals the "
+        "commit; issue #7432 is the tracked problem",
+    },
+    "PR#15260": {
+        "commits": ["26bef7645add75885fe2ba62ed6ad8e68a577931"],
+        "subject": "feat(release): add opt-in checksum topology v2 "
+        "(#6067) (#15260)",
+        "paths_or_components": [
+            "docs/releases/v0.18-release-topology.md",
+            "policy/non-rust-allowlist.toml",
+            "schemas/release_topology.v2.schema.json",
+            "scripts/generate_release_topology.py",
+            "scripts/release_build_identity.py",
+            "scripts/release_topology_json.py",
+            "scripts/test_generate_release_topology.py",
+            "scripts/test_release_build_identity.py",
+            "scripts/test_release_topology_json.py",
+            "scripts/tests/test-validate-public-release-claims.py",
+            "scripts/validate_public_release_claims.py",
+            "xtask/Cargo.toml",
+            "xtask/examples/install_transition.rs",
+            "xtask/examples/public_beta_experience.rs",
+            "xtask/src/release_topology_json.rs",
+        ],
+        "release_domains": ["release", "install", "security"],
+        "primary_disposition": "release_integrity_or_lineage",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "upgrade: adopting v2 requires regenerating fresh frozen and "
+            "prepared v2 authorities with byte-identical selected schema "
+            "files; a v1 frozen manifest cannot prepare v2 or vice "
+            "versa, and rolling back the opt-in leaves v1 evidence and "
+            "default callers intact with no automatic downgrade"
+        ],
+        "api_schema_package_effects": [
+            "schemas/release_topology.v2.schema.json (new; const 2 adds "
+            "a required checksum_assets row; v1 schema and historical "
+            "manifest bytes unchanged)",
+            "policy/non-rust-allowlist.toml: two production "
+            "release-contract entries (scripts/release_topology_json.py "
+            "admission, v2 schema)",
+            "xtask: serde_json gains the raw_value feature for the Rust "
+            "exact-admission port",
+        ],
+        "proof_owner_refs": [
+            "scripts/test_generate_release_topology.py",
+            "scripts/test_release_topology_json.py",
+            "scripts/test_release_build_identity.py",
+            "scripts/tests/test-validate-public-release-claims.py",
+            "policy/non-rust-allowlist.toml covered_by pins the "
+            "cross-checks (unittest modules, public-claims validator, "
+            "cargo xtask check-file-policy)",
+        ],
+        "known_limitations": [
+            "opt-in only on current main: the generator default remains "
+            "SCHEMA = 1, no workflow requests v2, and no frozen or "
+            "prepared v2 authority exists in-repo; topology convergence "
+            "stays with #6067 (OPEN)",
+            "the inventory declares expected checksum subjects and does "
+            "not contain built digests nor prove checksum generation, "
+            "publication, SBOM, attestation, or Docker completion "
+            "(#4145 owns checksum production, #8970 Docker identity)",
+            "release.yml producer recognition is a fail-closed body "
+            "contract, not execution; later rows re-proofed it (PR#15447 "
+            "publication-dependency alignment, PR#15449 external "
+            "digest-packet limitation, row ISS#15445 Windows downloader "
+            "constants, PR#15911 pseudo-return guards, PR#15726 "
+            "attestation subjects)",
+            "topology versions extended to 3 and 4 after the head and "
+            "the reviewed v4 row PR#16207 owns the mapped-RC transition; "
+            "the exact-number admission law (integral semantics, "
+            "NaN/Infinity and duplicate-schema-field refusal) still "
+            "governs all four versions",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["6067-OPEN"],
+        "invalidators": [
+            "topology admission or producer-recognition rework in the "
+            "shared generator (rows PR#15447/PR#15449/PR#15726/PR#15911/"
+            "ISS#15445)",
+            "v3/v4 evolution changing the accepted-version set or the "
+            "exact-number admission law (reviewed v4 row PR#16207)",
+            "release.yml consolidated-SHA256SUMS producer change without "
+            "the fail-closed recognizer following",
+        ],
+        "platforms_and_targets": [
+            "portable release tooling: python stdlib admission plus the "
+            "xtask Rust port; checksum_assets archive_targets resolve "
+            "through binary_targets rows covering linux, macos, and "
+            "windows release archives",
+        ],
+        "artifact_or_route_effects": [
+            "release_topology.v2 is an explicit opt-in (--schema-version "
+            "2 on generation and check) adding exactly one "
+            "checksum_assets row: public SHA256SUMS, sha256, "
+            "github_release channel, sorted unique archive_targets "
+            "covering exactly binary_targets; v1 stays the default, a "
+            "mismatched or unsupported selection fails, and the checker "
+            "never infers an upgrade",
+            "the generator recognizes the consolidated-SHA256SUMS "
+            "producer body in .github/workflows/release.yml fail-closed: "
+            "complete ordered prefix, both archive formats, sorting, "
+            "hash algorithm, and output name, with duplicate filename "
+            "refusal; extra, missing, reordered, or altered steps fail "
+            "and isolated presence of download plus producer proves "
+            "nothing",
+            "all six topology boundaries admit an exact top-level schema "
+            "number before ordinary JSON decoding: one schema field, "
+            "integral-number semantics (2.00 valid, near-integral "
+            "literals and ambiguous duplicates fail), NaN/Infinity "
+            "rejected; original evidence bytes are preserved",
+            "bounded consumers (build identity, public-claim validation, "
+            "install-transition, public-beta experience, xtask "
+            "release_topology_json.rs) accept v1/v2 projections; "
+            "public-beta child envelopes must name the matching schema "
+            "and gain no checksum-completeness authority",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#15260) of subject pair "
+        "(#6067)(#15260); merge_commit_sha of PR #15260 equals the "
+        "commit; issue #6067 is the tracked problem",
     },
 }
 
@@ -1236,7 +1566,7 @@ def build_document() -> dict:
     )
     reviewed = [u for u in units if u["disposition_state"] == "reviewed"]
     if len(reviewed) != EXPECTED_SEEDS:
-        raise FragmentError(f"reviewed seed count {len(reviewed)} != 5")
+        raise FragmentError(f"reviewed seed count {len(reviewed)} != 8")
     if set(SEEDS) != {u["work_unit_id"] for u in reviewed}:
         raise FragmentError("reviewed seed identity set drifted")
     not_proven = [u for u in units if u["disposition_state"] == "not_proven"]
