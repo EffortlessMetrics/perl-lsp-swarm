@@ -251,6 +251,23 @@ fn is_method_receiver_char(ch: char) -> bool {
         || matches!(ch, '_' | '$' | '@' | '%' | ':' | '-' | '>' | '{' | '}' | '[' | ']')
 }
 
+/// True when the token [`method_receiver_start`] handed back is shaped like an
+/// expression operand, not a method receiver: empty, or a plain run of ASCII
+/// lowercase letters, digits, and underscores (`foo`, `1`).
+///
+/// The backward scan cannot tell `Point->new(foo-` from `$obj-` on its own —
+/// both stop at the preceding open paren or whitespace and return a word. A
+/// bareword that can only be an operand head (a constructor argument, a
+/// subtraction right-hand side) must keep the ordinary prefix, which the
+/// dash-trigger gate then answers with no completions. Everything else the
+/// scan can return keeps the arrow rewrite — sigiled variables (`$obj-`),
+/// package names (`Foo-`, `Foo::Bar-`), chained calls
+/// (`$factory->build()-`), and non-ASCII barewords — matching what the
+/// explicit `->` trigger path already accepts.
+fn is_operand_shaped_bareword(receiver: &str) -> bool {
+    receiver.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
 fn next_char_boundary_after(source: &str, index: usize) -> usize {
     source[index..].chars().next().map_or(source.len(), |ch| index + ch.len_utf8())
 }
@@ -835,12 +852,20 @@ impl CompletionProvider {
             && (position < 2 || source.as_bytes()[position - 2] != b'-')
         {
             // Cursor is right after a lone `-` (not `--`). This fires when `-` is a
-            // trigger character and the user has typed the first char of `->`.
-            // Build the prefix as receiver + `->` so that downstream method-completion
-            // functions see the same shape as the `>` trigger path.
+            // trigger character and the user has typed the first char of `->`,
+            // but only when the text before the `-` can end a method receiver
+            // (`$obj`, `Foo::Bar`, a balanced `(...)` call); a minus that starts
+            // an operand (`Point->new(-`, `Point->new(foo-`, `1 -`) keeps the
+            // ordinary prefix. Build the prefix as receiver + `->` so that
+            // downstream method-completion functions see the same shape as the
+            // `>` trigger path.
             let receiver_start = method_receiver_start(source, position.saturating_sub(1));
             let receiver = &source[receiver_start..position - 1];
-            (format!("{receiver}->"), receiver_start)
+            if is_operand_shaped_bareword(receiver) {
+                word_prefix(source, position)
+            } else {
+                (format!("{receiver}->"), receiver_start)
+            }
         } else if let Some(arrow_start) = source[..position].rfind("->") {
             // Preserve the receiver in the context while replacing only the
             // method token after `->` (for example, `Mojo::Pg->d`).

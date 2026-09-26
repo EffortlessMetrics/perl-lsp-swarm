@@ -1125,6 +1125,7 @@
       "trigger_event_set": [
         "merge_group",
         "pull_request",
+        "push",
         "workflow_dispatch"
       ],
       "candidate_event_reachability": "reachable",
@@ -1158,6 +1159,7 @@
       "trigger_event_set": [
         "merge_group",
         "pull_request",
+        "push",
         "workflow_dispatch"
       ],
       "candidate_event_reachability": "reachable",
