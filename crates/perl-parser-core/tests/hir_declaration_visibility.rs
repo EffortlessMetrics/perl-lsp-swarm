@@ -1,7 +1,10 @@
 //! Source-order visibility of bindings in both HIR projections (#13868).
 
 use perl_parser_core::Parser;
-use perl_parser_core::hir::{HirExpr, HirExprId, HirFile, StorageClass, VariableKind, lower_ast};
+use perl_parser_core::hir::{
+    AccessMode, HirExpr, HirExprId, HirFile, StorageClass, VariableKind, lower_ast,
+};
+use perl_parser_core::pir::{PirOperation, lower_hir_bodies};
 
 fn lower(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
@@ -185,6 +188,103 @@ fn foreach_iterator_is_visible_in_its_body() {
     let file = lower(source);
     let read = source.rfind("$i").expect("body read");
     check_reference(&file, source, read, Some(StorageClass::LexicalMy));
+}
+
+#[test]
+fn compound_declaration_modifies_its_own_binding_while_rhs_reads_outer() {
+    for op in ["+=", "||="] {
+        let source = format!("sub f {{ my $x = 7; if ($ok) {{ my $x {op} $x; }} }}");
+        let file = lower(&source);
+        let x: Vec<_> = file.scope_graph.bindings.iter().filter(|b| b.name == "x").collect();
+        assert_eq!(x.len(), 2);
+        let inner = source.rfind("my $x").expect("inner declaration") + 3;
+        let rhs = source.rfind("$x").expect("explicit RHS");
+        let mut declaration_places = Vec::new();
+        let mut rhs_reads = Vec::new();
+        for body in &file.bodies {
+            for (idx, range) in body.source_map.expr_ranges.iter().enumerate() {
+                if let Some(HirExpr::Variable(var)) = body.expr(HirExprId(idx as u32)) {
+                    if range.start == inner {
+                        declaration_places.push(var);
+                    } else if range.start == rhs {
+                        rhs_reads.push(var);
+                    }
+                }
+            }
+        }
+        assert_eq!(declaration_places.len(), 1, "one declaration place: {source}");
+        assert_eq!(declaration_places[0].access, AccessMode::ReadModifyWrite);
+        assert_eq!(declaration_places[0].binding, Some(x[1].id));
+        assert_eq!(declaration_places[0].kind, VariableKind::Lexical);
+        assert_eq!(rhs_reads.len(), 1, "one explicit RHS read: {source}");
+        assert_eq!(rhs_reads[0].binding, Some(x[0].id));
+        let graph = lower_hir_bodies(&file);
+        assert_eq!(
+            graph.nodes.iter().filter(|n| matches!(n.operation, PirOperation::Modify { .. })).count(),
+            1,
+            "the declaration must produce one lexical modification: {source}"
+        );
+        assert!(
+            graph.nodes.iter().all(|n| !matches!(n.operation, PirOperation::StashModify { .. })),
+            "the declaration's own LHS must not turn into a package modification: {source}"
+        );
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .filter(|n| {
+                    matches!(&n.operation, PirOperation::LexicalRead { name } if name.name == "x")
+                        && n.source_anchor.range.map(|range| (range.start, range.end))
+                            == Some((rhs, rhs + "$x".len()))
+                })
+                .count(),
+            1,
+            "the explicit RHS must reach PIR as one anchored outer lexical read: {source}"
+        );
+    }
+}
+
+#[test]
+fn compound_declaration_without_outer_binding_does_not_modify_package() {
+    let source = "sub f { my $x += $x; }";
+    let file = lower(source);
+    let declared = file.scope_graph.bindings.iter().find(|b| b.name == "x").expect("declaration");
+    let target = source.find("$x").expect("declaration target");
+    let rhs = source.rfind("$x").expect("explicit RHS");
+    let vars: Vec<_> = file
+        .bodies
+        .iter()
+        .flat_map(|body| {
+            body.source_map.expr_ranges.iter().enumerate().filter_map(|(idx, range)| {
+                match body.expr(HirExprId(idx as u32)) {
+                    Some(HirExpr::Variable(var)) => Some((range.start, var)),
+                    _ => None,
+                }
+            })
+        })
+        .collect();
+    assert!(vars.iter().any(|(start, var)| {
+        *start == target && var.binding == Some(declared.id) && var.kind == VariableKind::Lexical
+    }));
+    assert!(vars.iter().any(|(start, var)| {
+        *start == rhs && var.binding.is_none() && var.kind == VariableKind::Package
+    }));
+    let graph = lower_hir_bodies(&file);
+    assert!(graph.nodes.iter().any(|n| matches!(n.operation, PirOperation::Modify { .. })));
+    assert!(graph.nodes.iter().all(|n| !matches!(n.operation, PirOperation::StashModify { .. })));
+    assert_eq!(
+        graph
+            .nodes
+            .iter()
+            .filter(|n| {
+                matches!(&n.operation, PirOperation::StashRead { symbol } if symbol.name == "x")
+                    && n.source_anchor.range.map(|range| (range.start, range.end))
+                        == Some((rhs, rhs + "$x".len()))
+            })
+            .count(),
+        1,
+        "the explicit RHS without an outer binding must reach PIR as a package read"
+    );
 }
 
 #[test]
