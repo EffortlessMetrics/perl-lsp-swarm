@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-24T05:29:59Z",
+  "generated_at": "2026-09-26T05:27:32Z",
   "window_days": 14,
   "min_samples_for_learned": 5,
   "lane_count": 25,
@@ -66,15 +66,15 @@
       "learned": false
     },
     "merge_gate_shards": {
-      "samples": 180,
+      "samples": 163,
       "static_floor": 24.0,
       "learned": true,
-      "p50": 38.039091666666664,
-      "p90": 42.65750166666667,
-      "p95": 43.068236666666664,
+      "p50": 37.97236666666667,
+      "p90": 42.690409999999986,
+      "p95": 43.105693333333335,
       "min": 29.31576666666668,
       "max": 43.934,
-      "mean": 38.10432962962963
+      "mean": 38.07318854805726
     },
     "mutation": {
       "samples": 0,
@@ -138,42 +138,18 @@
     }
   },
   "validation": {
-    "files_seen": 1448,
-    "files_accepted": 1440,
-    "jobs_seen": 7610,
-    "accepted_samples": 7610,
-    "jobs_with_sample": 7610,
-    "jobs_with_lane_id": 7610,
-    "lane_executions": 180,
+    "files_seen": 1304,
+    "files_accepted": 1304,
+    "jobs_seen": 6943,
+    "accepted_samples": 6943,
+    "jobs_with_sample": 6943,
+    "jobs_with_lane_id": 6943,
+    "lane_executions": 163,
     "unmapped_samples": 0,
     "unmapped_keys": {},
-    "rejected": {
-      "outside_window": 8
-    },
-    "source_run_count": 180,
+    "rejected": {},
+    "source_run_count": 163,
     "source_run_ids": [
-      34442974116,
-      34448990581,
-      34455472649,
-      34462012577,
-      34470893427,
-      34473607643,
-      34490637799,
-      34501953549,
-      34520734300,
-      34528772922,
-      34528949357,
-      34536921888,
-      34539696756,
-      34541104493,
-      34547795728,
-      34550965481,
-      34553964753,
-      34554979442,
-      34558543997,
-      34581305367,
-      34636376687,
-      34662878701,
       34679873721,
       34706016797,
       34706294379,
@@ -331,7 +307,12 @@
       35670606064,
       35675573263,
       35684352994,
-      35687455422
+      35687455422,
+      35960366073,
+      35982166531,
+      35985815891,
+      35988795749,
+      35999923281
     ],
     "limits": {
       "max_actual_lem": 125.0,
@@ -339,6 +320,6 @@
       "max_jobs_per_receipt": 100,
       "max_samples_per_lane": 1000
     },
-    "runs_scanned": 189
+    "runs_scanned": 176
   }
 }
