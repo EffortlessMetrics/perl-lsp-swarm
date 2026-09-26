@@ -54,7 +54,7 @@ PREFILTER = [
 
 EXPECTED_NON_MERGE = 682
 EXPECTED_UNITS = 672
-EXPECTED_SEEDS = 17
+EXPECTED_SEEDS = 20
 # Unsimplified range merge population (START_SHA..OBSERVED_HEAD,
 # --full-history): 2 kept + 1 related-record + 62 content-free +
 # 11 blob-covered + 18 created = 94. Pinned: the range is fixed, the
@@ -1796,6 +1796,309 @@ SEEDS = {
         "(#15453)(#15911); merge_commit_sha of PR #15911 equals the "
         "commit (verified 2026-09-25); issue #15453 is the tracked "
         "problem",
+    },
+    "PR#6180": {
+        "commits": ["e7481112d94e7680e8efa1204de922c6abc0266b"],
+        "subject": "security(install): require exact release checksums "
+        "(#6097) (#6180)",
+        "paths_or_components": [
+            ".github/workflows/installer-checksum-contract.yml",
+            "docs/how-to/INSTALLATION.md",
+            "scripts/install.sh",
+            "scripts/tests/test-installer-checksum-required.sh",
+        ],
+        "release_domains": ["install", "security", "docs"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "install (POSIX release-download): hosts now need "
+            "sha256sum or shasum before any network access and a "
+            "downloadable SHA256SUMS carrying exactly one normalized "
+            "row for the selected asset; missing, duplicate, "
+            "malformed, or mismatched evidence fails closed where it "
+            "previously warned and continued",
+            "docs stop advertising the canonical installer as a "
+            "mutable curl-pipe authority; it runs from a reviewed "
+            "clone or the identity-bound root wrapper",
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/tests/test-installer-checksum-required.sh",
+            ".github/workflows/installer-checksum-contract.yml",
+        ],
+        "known_limitations": [
+            "mechanism-stage: the hosted workflow sources install.sh "
+            "under PERL_LSP_INSTALLER_LIBRARY_ONLY=1 and exercises "
+            "checksum_for_asset and download_and_verify against "
+            "fixture manifests, not a live release download; v0.17.0 "
+            "predates this commit and no later release exists, so no "
+            "tagged release has been installed through the fail-closed "
+            "path",
+            "artifact-integrity control only: archive and SHA256SUMS "
+            "are co-hosted by the release, so this is not independent "
+            "publisher provenance",
+            "the merge reintroduced a stale 'PowerShell installer also "
+            "retains its separate fail-open checksum boundary' "
+            "sentence into docs/how-to/INSTALLATION.md about 48 "
+            "minutes after #6186 had made install.ps1 fail closed; the "
+            "contradictory sentence is still present on current main "
+            "(verified 2026-09-25) while the same file's Windows "
+            "section is correct",
+            "later in-range rows re-bound shared seams: #12742 "
+            "(reviewed) archive inspection before staging, #11508 "
+            "ustar-header classification requiring od and gzip, #8359 "
+            "(PR#12815) atomic product-unit promotion reusing these "
+            "helpers, #16312/#16316 release-path gzip and verify_install "
+            "fail-closed; the select_sha256_tool, calculate_sha256, "
+            "and checksum_for_asset bodies are byte-identical through "
+            "current main (verified 2026-09-25)",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["6097-CLOSED"],
+        "invalidators": [
+            "install.sh checksum helpers, required-manifest gating, or "
+            "the PERL_LSP_INSTALLER_LIBRARY_ONLY seam rework",
+            "installer-checksum-contract workflow reduction or "
+            "negative-control removal",
+            "release publication dropping SHA256SUMS from release "
+            "assets",
+            "download_and_verify download or extraction flow rework "
+            "without the checksum contract following",
+        ],
+        "platforms_and_targets": [
+            "linux x86_64/aarch64 (gnu, musl) and macOS x86_64/aarch64 "
+            "release-download installs; a SHA-256 tool is required on "
+            "the host before any network access",
+            "hosted contract execution on ubuntu-24.04",
+        ],
+        "artifact_or_route_effects": [
+            "download_and_verify becomes fail-closed: tool selection "
+            "fails before network access, SHA256SUMS is required "
+            "before the asset request, checksum_for_asset demands "
+            "exactly one normalized exact-name row (64 lowercase hex; "
+            "binary-marker and CRLF forms accepted), and a mismatch "
+            "aborts before extraction",
+            "the grep-substring, warn-and-continue checksum path "
+            "(skip on missing manifest, missing row, or absent tool) "
+            "is deleted",
+            "PERL_LSP_INSTALLER_LIBRARY_ONLY=1 adds an internal proof "
+            "seam so tests source the installer functions without "
+            "executing main",
+            "new Installer Checksum Contract workflow verifies the "
+            "checked-out candidate SHA, parses shell sources, and runs "
+            "the negative controls on ubuntu-24.04",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#6180) of subject pair "
+        "(#6097)(#6180); merge_commit_sha of PR #6180 equals the "
+        "commit (verified against the API 2026-09-25); issue #6097 is "
+        "the tracked problem",
+    },
+    "PR#6186": {
+        "commits": ["e73624a3acabad3247ff4421616888fa6358437c"],
+        "subject": "security(install): require PowerShell release "
+        "checksums (#6097) (#6186)",
+        "paths_or_components": [
+            ".github/workflows/installer-powershell-checksum-contract.yml",
+            "docs/how-to/INSTALLATION.md",
+            "install.ps1",
+            "scripts/tests/test-install-ps1-checksum-required.ps1",
+        ],
+        "release_domains": ["install", "security", "docs"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "install (Windows): install.ps1 now downloads and "
+            "row-validates SHA256SUMS before requesting the asset; "
+            "missing, substring, duplicate, uppercase, malformed, or "
+            "short rows and any hash mismatch abort before extraction "
+            "where it previously warned and continued",
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/tests/test-install-ps1-checksum-required.ps1",
+            ".github/workflows/"
+            "installer-powershell-checksum-contract.yml",
+        ],
+        "known_limitations": [
+            "mechanism-stage: the hosted windows-latest job drives the "
+            "real install.ps1 end to end against a simulated transport "
+            "(Invoke-WebRequest override) and a fixture payload; no "
+            "tagged-release Windows install through the fail-closed "
+            "path has been observed (v0.17.0 predates this commit, no "
+            "later release)",
+            "artifact-integrity control only: zip and SHA256SUMS are "
+            "co-hosted by the release, so this is not independent "
+            "publisher provenance",
+            "merge-provenance note recorded in the commit itself: the "
+            "branch was rebuilt on main's base before landing after an "
+            "earlier state carried triplicated flows and unparseable "
+            "debris, and the as-merged diff removes two legacy "
+            "merged-process-PATH guidance blocks left by PR#7897's "
+            "merge (about eight hours earlier), repairing the "
+            "anti-pattern that row forbids",
+            "later in-range rows re-bound shared seams: #12742 "
+            "(reviewed) archive inspection before staging and #8359 "
+            "(PR#12815) atomic product-unit promotion extended the "
+            "same workflow with archive-safety and promotion controls, "
+            "reworked the harness extraction expectations, and "
+            "corrected the checkout pin comment v7.0.0 to v7.0.1; "
+            "Get-ExpectedAssetHash keeps exact case-sensitive row "
+            "matching through current main (verified 2026-09-25)",
+            "docs residue: the bootstrap paragraph of "
+            "docs/how-to/INSTALLATION.md still carries the stale "
+            "fail-open PowerShell sentence introduced by the "
+            "later-merging #6180; the Windows section of the same file "
+            "correctly describes the required checksums",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["6097-CLOSED"],
+        "invalidators": [
+            "Get-ExpectedAssetHash row matching or hash verification "
+            "rework",
+            "installer-powershell-checksum-contract workflow reduction "
+            "or negative-control removal",
+            "install.ps1 download or extraction flow rework without "
+            "the checksum contract following",
+            "release publication dropping SHA256SUMS from release "
+            "assets",
+        ],
+        "platforms_and_targets": [
+            "windows x86_64-pc-windows-msvc default flow; ARM64 host "
+            "detection is separate installer machinery this row does "
+            "not touch; hosted proof on windows-latest",
+            "exact case-sensitive row matching accepting "
+            "binary-marker (*) and CRLF forms",
+        ],
+        "artifact_or_route_effects": [
+            "Get-ExpectedAssetHash reads SHA256SUMS rows split on "
+            "whitespace, trims the binary-marker star, and demands "
+            "exactly one case-sensitive exact-name match whose hash is "
+            "64 lowercase hex; zero, duplicate, uppercase, malformed, "
+            "or short hash rows throw",
+            "the manifest is downloaded and validated before the asset "
+            "request; missing manifest, hash mismatch, and failed "
+            "asset download now throw instead of warning and "
+            "continuing",
+            "new Installer PowerShell Checksum Contract workflow on "
+            "windows-latest verifies the checked-out candidate SHA, "
+            "parses PowerShell sources, and runs negative controls "
+            "that invoke install.ps1 against a fixture payload",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#6186) of subject pair "
+        "(#6097)(#6186); merge_commit_sha of PR #6186 equals the "
+        "commit (verified against the API 2026-09-25); issue #6097 is "
+        "the tracked problem",
+    },
+    "PR#7897": {
+        "commits": ["6b8a3f448caed87ace8b3daf0599692c6c351839"],
+        "subject": "fix(install): persist perllsp on the Windows user "
+        "PATH (#7832) (#7897)",
+        "paths_or_components": [
+            ".github/workflows/ci-gate-self-tests.yml",
+            "install.ps1",
+            "scripts/tests/test-install-path-contract.sh",
+        ],
+        "release_domains": ["install"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "install (Windows): the installer replaces the "
+            "copy-$env:Path-into-user-PATH guidance, which permanently "
+            "duplicated system entries, with a user-scope-only write "
+            "of the existing user PATH plus the install dir; "
+            "-NoModifyPath opts out and a failed write falls back to "
+            "manual_path_action_required guidance",
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/tests/test-install-path-contract.sh",
+            ".github/workflows/ci-gate-self-tests.yml",
+        ],
+        "known_limitations": [
+            "source-stage here: the Linux CI job runs a static source "
+            "contract because Windows PowerShell cannot run on the "
+            "Linux gate host; PR#8899 later added a fixture-scoped "
+            "fresh-process Machine+User oracle "
+            "(scripts/windows_fresh_path_oracle.py --self-test) that "
+            "is still not live-host install proof",
+            "issue #7832 stays OPEN: user-scope persistence is proven "
+            "at source/contract level, but fresh-process PATH "
+            "visibility for primary installs (the issue title) and "
+            "hosted install-transition proof remain open under "
+            "#7832/#5903",
+            "the as-merged install.ps1 left two legacy "
+            "merged-process-PATH guidance completion blocks behind; "
+            "PR#6186's rebuild (about eight hours later) removed them, "
+            "so between the two merges main briefly carried the "
+            "anti-pattern this row forbids",
+            "later in-range rows re-bound the same installer: #12742 "
+            "(reviewed) and #8359 (PR#12815) reworked staging and "
+            "promotion around the PATH block; Normalize-PathEntry, "
+            "Test-PathContainsEntry, Ensure-InstallDirOnUserPath, and "
+            "the three dispositions are byte-identical through current "
+            "main (verified 2026-09-25)",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["7832-OPEN"],
+        "invalidators": [
+            "install.ps1 PATH persistence or disposition rework "
+            "(Ensure-InstallDirOnUserPath, Test-PathContainsEntry, "
+            "Normalize-PathEntry, PathDisposition values)",
+            "installer PATH contract self-test or its "
+            "ci-gate-self-tests wiring removal",
+            "a fresh-process oracle result contradicting the "
+            "persistence claims",
+        ],
+        "platforms_and_targets": [
+            "windows: user-scope (HKCU) PATH persistence with "
+            "-NoModifyPath opt-out; default install dir "
+            "%USERPROFILE%\\.local\\bin; running processes need a "
+            "restart to inherit the persisted PATH",
+            "static source contract runs on ubuntu-24.04 CI; "
+            "case-insensitive, environment-variable-expanded, "
+            "trailing-slash-trimmed entry comparison",
+        ],
+        "artifact_or_route_effects": [
+            "Ensure-InstallDirOnUserPath writes only the existing user "
+            "PATH plus the install dir, never the merged process PATH; "
+            "write failures are caught as "
+            "manual_path_action_required with manual guidance",
+            "persistence no longer short-circuits on process-visible "
+            "membership: a temporary-session PATH edit still writes "
+            "the User scope so fresh terminals inherit it",
+            "Test-PathContainsEntry normalizes entries "
+            "(ExpandEnvironmentVariables, GetFullPath for rooted "
+            "paths, trailing-slash trim) and compares "
+            "case-insensitively, so the expanded install dir and its "
+            "%USERPROFILE% spelling count as the same entry",
+            "three machine-readable dispositions: "
+            "path_visible_current_process, "
+            "persisted_user_path_restart_required, "
+            "manual_path_action_required",
+            "new installer-path-contract-self-test job runs the bash "
+            "source contract on ubuntu-24.04, passing job status "
+            "through env to stay outside the workflow-security "
+            "expression_in_run_source ratchet",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#7897) of subject pair "
+        "(#7832)(#7897); merge_commit_sha of PR #7897 equals the "
+        "commit (verified against the API 2026-09-25); issue #7832 is "
+        "the tracked problem",
     },
 }
 
