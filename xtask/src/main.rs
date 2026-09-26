@@ -4191,7 +4191,8 @@ enum FeaturesCommand {
 
 #[derive(Subcommand)]
 enum ReleaseCommand {
-    /// Prepare release artifacts.
+    /// Retired front door (#15392): always refuses non-zero with a typed
+    /// reason and routes to `release-turnkey`; no argument can bypass it.
     Prepare {
         /// Version to release
         version: String,
