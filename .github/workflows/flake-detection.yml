@@ -19,9 +19,14 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# Fail-closed contract (#15349): this job observes workspace *library* tests
+# only (--lib). Every harness, toolchain, stream, or extractor failure
+# produces a typed non-success verdict and fails the job; a broken detector
+# can never report "no flakes detected".
+
 jobs:
   detect-flakes:
-    name: Detect Flaky Tests
+    name: Detect Flaky Tests (workspace library tests)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
@@ -46,60 +51,169 @@ jobs:
         with:
           tool: just
 
-      - name: Run full test suite (capture results)
+      - name: Run workspace library tests (capture results)
         id: initial_run
         env:
           TEST_FILTER_INPUT: ${{ github.event.inputs.test_filter }}
         run: |
           set -euo pipefail
+
           # Split the test filter into an argv array using Python's shlex
           # to prevent shell injection from the workflow_dispatch input (#5979).
-          # Use mapfile with newline-delimited output to preserve arguments
-          # containing spaces (read -r -a would re-split on spaces).
-          mapfile -t FILTER < <(python3 -c 'import shlex, os; print("\n".join(shlex.split(os.environ.get("TEST_FILTER_INPUT", ""))))')
-          cargo test --workspace --lib --locked -Z unstable-options --format json \
-            "${FILTER[@]}" > test-results.jsonl 2>&1 || true
-
-          python3 .ci/scripts/extract-failed-tests.py \
-            test-results.jsonl > failed-tests.txt || true
-
-          FLAKE_COUNT=0
-          if [ -s failed-tests.txt ]; then
-            FLAKE_COUNT=$(wc -l < failed-tests.txt)
-            echo "Found $FLAKE_COUNT initially failed tests"
-          else
-            echo "No failed tests in initial run"
+          # A malformed filter fails the step before any different subject
+          # can run (#15349).
+          FILTER=()
+          if [ -n "${TEST_FILTER_INPUT:-}" ]; then
+            FILTER_FILE=$(mktemp)
+            if ! python3 -c 'import shlex, os; print("\n".join(shlex.split(os.environ.get("TEST_FILTER_INPUT", ""))))' > "$FILTER_FILE"; then
+              echo "::error::malformed test_filter input; refusing to run a different subject"
+              rm -f "$FILTER_FILE"
+              exit 1
+            fi
+            mapfile -t FILTER < "$FILTER_FILE"
+            rm -f "$FILTER_FILE"
           fi
-          echo "flake_count=$FLAKE_COUNT" >> "$GITHUB_OUTPUT"
 
-      - name: Retry failed tests 3x
-        if: steps.initial_run.outputs.flake_count != '0'
+          # One observation block per package so every test event carries an
+          # exact (package, target) identity; libtest JSON alone has no
+          # package identity, so a single concatenated workspace stream could
+          # not be replayed exactly (#15349).
+          PKG_FILE=$(mktemp)
+          if ! cargo metadata --format-version 1 --no-deps > "$PKG_FILE"; then
+            echo "::error::cargo metadata failed; no valid observation possible"
+            rm -f "$PKG_FILE"
+            exit 1
+          fi
+          mapfile -t PACKAGES < <(python3 -c '
+          import json, sys
+          md = json.load(open(sys.argv[1]))
+          for p in md["packages"]:
+              if any("lib" in (t.get("kind") or []) for t in p["targets"]):
+                  print(p["name"])' "$PKG_FILE")
+          rm -f "$PKG_FILE"
+          if [ "${#PACKAGES[@]}" -eq 0 ]; then
+            echo "::error::no workspace packages with a lib target were discovered"
+            exit 1
+          fi
+
+          OBS=test-observations.jsonl
+          : > "$OBS"
+          for pkg in "${PACKAGES[@]}"; do
+            echo "::group::Initial run: $pkg (lib)"
+            printf '{"type":"run","package":"%s","target":"lib","command":["cargo","test","-p","%s","--lib","--locked","--","-Z","unstable-options","--format","json"]}\n' \
+              "$pkg" "$pkg" >> "$OBS"
+            rc=0
+            cargo test -p "$pkg" --lib --locked "${FILTER[@]}" -- \
+              -Z unstable-options --format json >> "$OBS" 2>&1 || rc=$?
+            printf '{"type":"run_end","package":"%s","exit_status":%d}\n' "$pkg" "$rc" >> "$OBS"
+            echo "::endgroup::"
+          done
+
+          # Fail closed: the extractor exit code is authoritative and its
+          # typed verdict gates every downstream step. Never `|| true` here.
+          python3 .ci/scripts/extract-failed-tests.py "$OBS" \
+            --head "${GITHUB_SHA:-unknown}" \
+            --toolchain "$(cargo --version)" \
+            > flake-receipt.json
+
+          verdict=$(python3 -c 'import json; print(json.load(open("flake-receipt.json"))["verdict"])')
+          flake_count=$(python3 -c 'import json; print(json.load(open("flake-receipt.json"))["counts"]["failed"])')
+          echo "Observation verdict: $verdict (initial failed tests: $flake_count)"
+
+          case "$verdict" in
+            COMPLETE_PASS)
+              echo "All workspace library tests ran and passed."
+              ;;
+            COMPLETE_WITH_FAILURES)
+              python3 - <<'PY'
+          import json
+          receipt = json.load(open("flake-receipt.json"))
+          with open("failed-tests.tsv", "w") as f:
+              for failure in receipt["failures"]:
+                  f.write(f'{failure["package"]}\t{failure["name"]}\n')
+          PY
+              ;;
+            NO_TESTS_DISCOVERED)
+              if [ "${#FILTER[@]}" -eq 0 ]; then
+                echo "::error::NO_TESTS_DISCOVERED without an explicit test filter is not a complete pass"
+                python3 -c 'import json; [print("::error::" + r) for r in json.load(open("flake-receipt.json"))["stream"]["reasons"]]'
+                exit 1
+              fi
+              echo "No tests discovered for the requested subject; observation complete."
+              ;;
+            *)
+              python3 -c 'import json; [print("::error::" + r) for r in json.load(open("flake-receipt.json"))["stream"]["reasons"]]'
+              echo "::error::flake instrument failure: verdict=$verdict; failing closed (#15349)"
+              exit 1
+              ;;
+          esac
+
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          echo "flake_count=$flake_count" >> "$GITHUB_OUTPUT"
+
+      - name: Retry failed tests 3x with exact identity
+        if: steps.initial_run.outputs.verdict == 'COMPLETE_WITH_FAILURES'
         id: retry_results
         run: |
           set -euo pipefail
           declare -a FLAKES=()
           declare -a STABLE_FAILURES=()
+          declare -a INSTRUMENT_FAILURES=()
 
-          while IFS= read -r test_name; do
-            [[ -z "$test_name" ]] && continue
-            PASSED=false
-            RETRY_LOG=""
+          # Replay the exact subject: same package, same target (--lib), same
+          # locked feature resolution, same test identity via --exact. A
+          # replay that does not run this exact test is an instrument
+          # failure, never evidence that the original event was flaky.
+          run_exact_replay() {
+            local pkg="$1" name="$2" outfile="$3" rc=0
+            printf '{"type":"run","package":"%s","target":"lib","command":["cargo","test","-p","%s","--lib","--locked","--","--exact","%s","--test-threads=1"]}\n' \
+              "$pkg" "$pkg" "$name" > "$outfile"
+            cargo test -p "$pkg" --lib --locked -- --exact "$name" --test-threads=1 \
+              >> "$outfile" 2>&1 || rc=$?
+            printf '{"type":"run_end","package":"%s","exit_status":%d}\n' "$pkg" "$rc" >> "$outfile"
+          }
 
+          verdict_of() {
+            python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["verdict"])' "$1"
+          }
+
+          while IFS=$'\t' read -r pkg test_name; do
+            [[ -z "${pkg:-}" ]] && continue
+            echo "::group::Exact replay: $pkg :: $test_name"
+            passed=false
+            had_instrument_failure=false
             for i in 1 2 3; do
-              echo "::group::Retry $i/3 for $test_name"
-              if cargo test "$test_name" --lib --locked -- --test-threads=1 2>&1 | tee retry-run.log; then
-                PASSED=true
-                RETRY_LOG=$(cat retry-run.log)
-                echo "::endgroup::"
+              run_exact_replay "$pkg" "$test_name" retry-obs.jsonl
+              # The extractor writes a typed receipt even on non-zero exit.
+              python3 .ci/scripts/extract-failed-tests.py retry-obs.jsonl \
+                --head "${GITHUB_SHA:-unknown}" > retry-receipt.json || true
+              verdict=$(verdict_of retry-receipt.json)
+              if [ "$verdict" = "COMPLETE_PASS" ]; then
+                passed=true
+                cp retry-obs.jsonl retry-run.log
+                break
+              elif [ "$verdict" = "COMPLETE_WITH_FAILURES" ]; then
+                cp retry-obs.jsonl retry-run.log
+              else
+                # Retry process failure, non-identical replay, truncated or
+                # invalid stream: instrument failure, not a stable test
+                # failure (#15349).
+                echo "Instrument failure on retry $i for $pkg :: $test_name: verdict=$verdict"
+                INSTRUMENT_FAILURES+=("$pkg :: $test_name retry $i verdict=$verdict")
+                had_instrument_failure=true
                 break
               fi
-              echo "::endgroup::"
               sleep 1
             done
+            echo "::endgroup::"
 
-            if $PASSED; then
-              echo "FLAKY: $test_name passed on retry"
+            if $had_instrument_failure; then
+              continue
+            fi
+            if $passed; then
+              echo "FLAKY: $pkg :: $test_name passed on exact replay"
               FLAKES+=("$test_name")
+              RETRY_LOG=$(cat retry-run.log)
               if echo "$RETRY_LOG" | grep -qi "timeout\|timed out"; then
                 echo "$test_name|timing" >> flake-classification.txt
               elif echo "$RETRY_LOG" | grep -qi "deadlock\|race\|poison"; then
@@ -112,18 +226,25 @@ jobs:
                 echo "$test_name|unknown" >> flake-classification.txt
               fi
             else
-              echo "STABLE FAILURE: $test_name failed all retries"
+              echo "STABLE FAILURE: $pkg :: $test_name failed all exact replays"
               STABLE_FAILURES+=("$test_name")
             fi
-          done < failed-tests.txt
+          done < failed-tests.tsv
+
+          if [ "${#INSTRUMENT_FAILURES[@]}" -gt 0 ]; then
+            printf '%s\n' "${INSTRUMENT_FAILURES[@]}"
+            echo "::error::flake replay instrument failure; failing closed instead of classifying (#15349)"
+            exit 1
+          fi
 
           printf '%s\n' "${FLAKES[@]}" > flaky-tests.txt
           printf '%s\n' "${STABLE_FAILURES[@]}" > stable-failures.txt
           echo "flake_count=${#FLAKES[@]}" >> "$GITHUB_OUTPUT"
           echo "stable_failure_count=${#STABLE_FAILURES[@]}" >> "$GITHUB_OUTPUT"
+          echo "instrument_failure=${#INSTRUMENT_FAILURES[@]}" >> "$GITHUB_OUTPUT"
 
       - name: Auto-quarantine flaky tests
-        if: steps.retry_results.outputs.flake_count > 0
+        if: steps.retry_results.outputs.flake_count > 0 && steps.retry_results.outputs.instrument_failure == '0'
         id: quarantine
         run: |
           bash .ci/scripts/quarantine-flaky.sh \
@@ -148,7 +269,8 @@ jobs:
               --title "chore: auto-quarantine flaky tests" \
               --body "Automated quarantine from flake detection run #${{ github.run_number }}.
 
-              Tests detected as flaky (pass on retry after initial failure):
+              Tests detected as flaky (failed the initial run, passed an exact same-subject replay:
+              same package, target, locked features, and --exact test identity):
               $(cat flaky-tests.txt | sed 's/^/- \`/;s/$/\`/')
 
               Closes #2093" \
@@ -176,15 +298,18 @@ jobs:
             if (flakes.length === 0 && stable.length === 0) return;
 
             const body = [
-              '## 🔄 Flake Detection Report',
+              '## 🔄 Flake Detection Report (workspace library tests)',
               '',
               `**Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
               '',
-              flakes.length > 0 ? `**Flaky tests** (failed initially, passed on retry): ${flakes.length}\n${flakes.map(t => '- `' + t + '`').join('\n')}` : '',
-              stable.length > 0 ? `\n**Stable failures** (failed all retries): ${stable.length}\n${stable.map(t => '- `' + t + '`').join('\n')}` : '',
+              'Denominator: workspace library test targets (`--lib`) only. Integration, binary,',
+              'example, and doc tests are not observed by this job.',
+              '',
+              flakes.length > 0 ? `**Flaky tests** (failed initially, passed an exact replay): ${flakes.length}\n${flakes.map(t => '- `' + t + '`').join('\n')}` : '',
+              stable.length > 0 ? `\n**Stable failures** (failed initial run + all exact replays): ${stable.length}\n${stable.map(t => '- `' + t + '`').join('\n')}` : '',
               '',
               'Flaky tests will be auto-quarantined if threshold is exceeded.',
-              '_Generated by flake-detection.yml · #2093_',
+              '_Generated by flake-detection.yml · #2093 · fail-closed receipt per #15349_',
             ].filter(Boolean).join('\n');
 
             try {
@@ -210,9 +335,9 @@ jobs:
             if (stable.length === 0) return;
 
             const body = [
-              '## Stable Test Failures Detected',
+              '## Stable Test Failures Detected (workspace library tests)',
               '',
-              `${stable.length} test(s) failed consistently (initial run + 3 retries):`,
+              `${stable.length} test(s) failed consistently (initial run + all exact replays):`,
               '',
               stable.map(t => '- `' + t + '`').join('\n'),
               '',
@@ -236,9 +361,11 @@ jobs:
         with:
           name: flake-detection-report-${{ github.run_number }}
           path: |
-            test-results.jsonl
-            failed-tests.txt
+            test-observations.jsonl
+            flake-receipt.json
+            failed-tests.tsv
             flaky-tests.txt
             flake-classification.txt
             stable-failures.txt
+          if-no-files-found: ignore
           retention-days: 30
