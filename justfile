@@ -453,7 +453,7 @@ doctor-env:
     @echo "=============================================="
     @echo "  perl-lsp developer environment doctor"
     @echo "=============================================="
-    @{{cargo_safe}} xtask devex-doctor
+    @bash scripts/devex-doctor.sh
 
 # Short alias for the developer environment quick check
 devex: doctor-env
