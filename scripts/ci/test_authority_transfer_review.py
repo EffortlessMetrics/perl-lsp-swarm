@@ -123,6 +123,43 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             atr.NOT_PROVEN_GITHUB, receipt["verdicts"][0]["result"]
         )
 
+    def test_not_proven_github_exits_neutral_never_reds_the_advisory_job(self) -> None:
+        # #16150 Shape 3: until a packet channel exists, every governed change
+        # yields NOT_PROVEN_GITHUB. That evidence boundary must not exit
+        # non-zero — a red job every governed PR earns identically carries no
+        # information and trains readers to ignore red. The typed verdict
+        # stays in the summary; the instrument-failure and typed-failure
+        # classes stay loud.
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = atr.main(
+                [
+                    "--root",
+                    str(self.base),
+                    "--repository",
+                    REPOSITORY,
+                    "--pr-number",
+                    "1",
+                    "--base-sha",
+                    "c" * 40,
+                    "--head-sha",
+                    HEAD,
+                    "--changed-file",
+                    GOVERNED_CHANGED[0],
+                ]
+            )
+        self.assertEqual(atr.EXIT_PASS, code)
+        self.assertIn("Result: `NOT_PROVEN_GITHUB`", buffer.getvalue())
+        self.assertEqual(
+            atr.EXIT_PASS, atr.exit_code_for_result(atr.NOT_PROVEN_SUBJECT)
+        )
+        self.assertEqual(
+            atr.EXIT_NOT_PROVEN, atr.exit_code_for_result(atr.INSTRUMENT_FAILURE)
+        )
+        self.assertEqual(
+            atr.EXIT_TYPED_FAILURE, atr.exit_code_for_result(atr.FAIL_REVIEW_MISSING)
+        )
+
     def test_governed_change_with_off_surface_packets_is_typed_missing(self) -> None:
         # Regression coverage for #16100: packets supplied but none cover the
         # governed row is a real review-absence (FAIL_REVIEW_MISSING), distinct
@@ -534,21 +571,23 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             "--summary",
             str(summary_path),
         ]
-        # Governed change with no packet supplied exits not-proven (3) under
-        # #16100: the workflow has no packet source configured at this run, so
-        # the verifier cannot establish that the proposition was attempted at
-        # all. A typed-failure exit would lie about what was checked.
+        # Governed change with no packet supplied keeps its typed NOT_PROVEN_GITHUB
+        # verdict in the receipt and summary, but exits neutral (0) under #16150
+        # Shape 3: the advisory context must not red the job on a wiring/evidence
+        # boundary every governed PR earns identically. A typed-failure exit
+        # would lie about what was checked; a non-zero exit trains readers to
+        # ignore red.
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             status = atr.main(argv)
-        self.assertEqual(atr.EXIT_NOT_PROVEN, status)
+        self.assertEqual(atr.EXIT_PASS, status)
         written = json.loads(receipt_path.read_text(encoding="utf-8"))
         self.assertEqual(atr.NOT_PROVEN_GITHUB, written["result"])
         summary = summary_path.read_text(encoding="utf-8")
         self.assertIn("NOT_PROVEN_GITHUB", summary)
         self.assertIn(HEAD, summary)
 
-    def test_cli_not_proven_exit_code_is_distinct_from_typed_failure(self) -> None:
+    def test_cli_not_proven_verdict_is_advisory_neutral_distinct_from_typed_failure(self) -> None:
         receipt_path = self.base / "out" / "receipt.json"
         argv = [
             "--root",
@@ -569,7 +608,10 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             status = atr.main(argv)
-        self.assertEqual(atr.EXIT_NOT_PROVEN, status)
+        # #16150 Shape 3: the trusted_workflow_run row's NOT_PROVEN_GITHUB
+        # verdict is advisory-neutral at the job surface; the typed verdict
+        # stays in the receipt.
+        self.assertEqual(atr.EXIT_PASS, status)
         written = json.loads(receipt_path.read_text(encoding="utf-8"))
         self.assertEqual(atr.NOT_PROVEN_GITHUB, written["result"])
 
