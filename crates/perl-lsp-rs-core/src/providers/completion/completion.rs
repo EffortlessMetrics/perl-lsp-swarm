@@ -1187,9 +1187,12 @@ impl CompletionProvider {
     /// - The source before `position` contains `$varname{` (with no `->` immediately before `{`)
     /// - The context is not inside a comment or string literal
     ///
-    /// Returns `None` for hashref dereferences (`$ref->{...}`), double-sigil derefs
-    /// (`$$ref{...}`), or contexts where hash key completion is not meaningful.
-    fn detect_hash_key_context(source: &str, position: usize) -> Option<(String, String)> {
+    /// Identify the hash-key role claimed by the core completion dispatcher.
+    /// Runtime enrichment uses the same decision to avoid adding unrelated
+    /// workspace names after the core provider has selected hash keys.
+    /// Returns `None` for double-sigil derefs (`$$ref{...}`) or contexts
+    /// where hash key completion is not meaningful.
+    pub fn detect_hash_key_context(source: &str, position: usize) -> Option<(String, String)> {
         if position == 0 || !source.is_char_boundary(position) {
             return None;
         }
