@@ -25,6 +25,53 @@ Lexical scope restoration is handled for ordinary blocks and other block-like fo
 - **`PragmaTracker`** -- walks an AST via `build()` to produce a sorted `Vec<(Range<usize>, PragmaState)>`, and offers `state_for_offset()` to query it.
 - **Version/feature helpers** -- `parse_perl_version`, `version_implies_strict`, `version_implies_warnings`, and `features_enabled_by_version`.
 
+## Compile-environment schema
+
+`compile_environment` provides the versioned canonical state and transition
+schema for [#8520](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8520).
+It accepts constructed schema inputs; the existing AST tracker does not produce
+these states yet. Drafts pass through `admit` or bounded `read` before obtaining a
+`CompileEnvironmentState`, `CompileEnvironmentTransition`, or `TransitionBundle`.
+
+Each facet retains exact, conditional, limited, unsupported, stale, unavailable,
+or resource/instrument status. Warning, language-profile, effect, and boundary
+ports reference qualified external authority; absent ports never imply empty
+policies. Closed `PortRole` values enforce warning/profile/effect/boundary
+compatibility at every destination. Admission checks role and subject bindings;
+it does not authenticate the opaque contract payload or implement its semantics.
+`VersionDeclaration::Absent` is distinct from an unavailable version.
+Strict categories are independent; signatures cannot enable full strict.
+
+Source-file and semantic document-instance identities remain distinct. A binding
+explicitly declares a common accepted opaque source-generation cursor domain,
+while retaining the complete source, parser, compiler, and profile identities.
+Admission requires a nonempty common generation label even when every facet is
+non-exact; facet uncertainty cannot invent a binding. It revalidates nested shared
+wire records through their constructors and rejects ignored nested wire fields.
+Deltas use external variant keys (`{"strict_vars": {...}}`); the unpublished
+adjacent `facet`/`value` form is rejected because buffering could hide ignored fields.
+A transition's aggregate affected classes include every delta and boundary class.
+Bundle order is the strict numeric `(byte_anchor, context_ordinal)` tuple; context
+digests identify contexts but never break ties or impose lexicographic order.
+Canonical serialization sorts set collections, preserves transition order, and
+hashes domain-tagged bytes with the shared SHA-256 `ContentDigest` implementation.
+
+Operational bounds are 65,536 transitions per bundle, 256 provenance/boundary
+references per record, 1,024 custom feature/warning names, 256 bytes per name,
+4,096 builtin imports or delta entries, 1 MiB per snapshot, 16 MiB bundle wire
+input, and JSON depth 32. Reads include whitespace in their cap and stop after
+at most cap+1 bytes; output serialization is bounded before appending bytes.
+Caller-owned drafts already occupy caller memory; admission cannot retroactively
+bound that allocation. Exceeding limits returns a typed failure without truncation.
+
+`project_strict` is a fallible, one-way projection of only the three strict bits
+into an existing legacy state. It clears the legacy signatures-to-strict bridge
+while preserving the independent signatures feature and every unrelated field.
+There is no reverse constructor or whole-state legacy reconstruction.
+
+No directive application, warning catalog, version table, timeline, provider
+publication, or migration of live consumers is implemented here.
+
 ## Benchmarks
 
 Run the Criterion benchmark suite for build-heavy and query-heavy pragma workloads:
@@ -47,8 +94,9 @@ Criterion reports per-benchmark timing statistics (including time per iteration 
 
 ## Workspace Role
 
-Tier 1 leaf crate. Depends only on `perl-ast`. Consumed by
-`perl-parser-core` and `perl-lsp-diagnostics` for scope-aware pragma analysis.
+Uses `perl-ast` for legacy extraction and the lower-layer `perl-source-identity`
+and `perl-semantic-facts` vocabulary plus serde for the canonical schema.
+`perl-parser-core` remains a consumer, never a normal dependency.
 
 ## License
 
