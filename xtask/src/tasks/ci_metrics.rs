@@ -19,6 +19,14 @@ const ANNUAL_BUDGET_TARGET: f64 = 720.0;
 /// consumer.
 pub const SUPPORTED_API_VERSION: &str = "v1";
 
+/// Wire envelope this producer writes into every CI cost report and ci-baseline
+/// JSON output (#15327). Bump the suffix (`.v2`, …) when a structural change
+/// lands and add a consumer pin alongside, mirroring the agent_lease/agent_receipt
+/// pattern. The CLI `--api-version v1` (above) is the producer side; this
+/// constant is the producer-side stamp a consumer reads.
+pub const SCHEMA_VERSION_COST: &str = "ci-cost-monitor.v1";
+pub const SCHEMA_VERSION_BASELINE: &str = "ci-baseline.v1";
+
 fn ensure_supported_api_version(api_version: &str) -> Result<()> {
     if api_version != SUPPORTED_API_VERSION {
         bail!(
@@ -39,7 +47,7 @@ struct RepoOwner {
     login: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct CiCostWorkflow {
     name: String,
     runs: u64,
@@ -48,7 +56,7 @@ struct CiCostWorkflow {
     cost: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct CostProjection {
     minutes: u64,
     cost: f64,
@@ -56,14 +64,20 @@ struct CostProjection {
     budget_percentage: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct AnnualProjection {
     cost: f64,
     budget_target: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CiCostReport {
+    /// Producer schema envelope (#15327). The CLI `--api-version v1` pins the
+    /// producer side; this field stamps the JSON a consumer reads. Bumping
+    /// the constant in lockstep with this envelope lets a future consumer
+    /// refuse a v2 producer instead of silently absorbing it.
+    pub schema_version: String,
     period_days: u64,
     start_date: String,
     repository: String,
@@ -96,7 +110,7 @@ struct BaselineCounters {
     name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct BaselineWorkflow {
     name: String,
     total_runs: u64,
@@ -114,7 +128,7 @@ struct BaselineWorkflow {
     signal_per_dollar: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct BaselineSummary {
     total_runs: u64,
     total_billable_minutes: u64,
@@ -123,8 +137,13 @@ struct BaselineSummary {
     overall_signal_per_dollar: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BaselineReport {
+    /// Producer schema envelope (#15327). Same rationale as `CiCostReport`
+    /// (see comments there); a consumer reading `ci_baseline.json` checks
+    /// this before trusting any of the surrounding fields.
+    pub schema_version: String,
     generated_at: String,
     branch: String,
     days_analyzed: u64,
@@ -151,7 +170,7 @@ struct BaselineReport {
 ///
 /// Serialized as `complete` / `partial_sample` so JSON consumers can match
 /// without tracking Rust variant renames.
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 enum SampleCompleteness {
     Complete,
@@ -314,6 +333,7 @@ pub fn run_cost_monitor(days: u64, json_output: bool, api_version: &str) -> Resu
     };
 
     let report = CiCostReport {
+        schema_version: SCHEMA_VERSION_COST.to_string(),
         period_days: days,
         start_date,
         repository,
@@ -774,6 +794,7 @@ fn build_baseline_report(
         if total_cost > 0.0 { total_unique_failures as f64 / total_cost } else { 0.0 };
 
     Some(BaselineReport {
+        schema_version: SCHEMA_VERSION_BASELINE.to_string(),
         generated_at: generated_at.to_rfc3339(),
         branch: branch.to_string(),
         days_analyzed: days,
@@ -1080,6 +1101,171 @@ mod tests {
         ensure!(error.to_string().contains("unsupported --api-version `v2`"), "got error: {error}");
         ensure!(error.to_string().contains("`v1`"), "got error: {error}");
         Ok(())
+    }
+
+    /// The producer-side schema envelope (#15327) must stamp the wire JSON
+    /// the consumer reads. A v2 producer that adds (or splits) fields must
+    /// not be silently absorbed by an v1-only consumer that never checked
+    /// the envelope.
+    #[test]
+    fn ci_cost_report_carries_schema_version_envelope() -> Result<()> {
+        let report = CiCostReport {
+            schema_version: SCHEMA_VERSION_COST.to_string(),
+            period_days: 7,
+            start_date: "2026-09-01T00:00:00Z".to_string(),
+            repository: "EffortlessMetrics/perl-lsp-swarm".to_string(),
+            total_runs: 0,
+            successful_runs: 0,
+            failed_runs: 0,
+            total_minutes: 0,
+            total_cost: 0.0,
+            monthly_projection: CostProjection {
+                minutes: 0,
+                cost: 0.0,
+                budget_target: MONTHLY_BUDGET_TARGET,
+                budget_percentage: 0.0,
+            },
+            annual_projection: AnnualProjection { cost: 0.0, budget_target: ANNUAL_BUDGET_TARGET },
+            workflows: Vec::new(),
+        };
+
+        let bytes = serde_json::to_vec(&report).context("failed to serialize cost report")?;
+        let value: Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(
+            value["schema_version"].as_str(),
+            Some(SCHEMA_VERSION_COST),
+            "CiCostReport must stamp the producer-side schema envelope"
+        );
+
+        // Round-trip: a consumer parsing the JSON must see the same envelope
+        // value the producer wrote. This is the structural defense against
+        // the v2 silent-absorption scenario the issue cites.
+        let parsed: CiCostReport = serde_json::from_value(value)?;
+        assert_eq!(parsed.schema_version, SCHEMA_VERSION_COST);
+        Ok(())
+    }
+
+    /// `deny_unknown_fields` on `CiCostReport` is the second half of the
+    /// fail-closed posture: a producer that adds an unexpected field cannot
+    /// round-trip through a v1-only consumer, even when `schema_version`
+    /// happens to still read as `ci-cost-monitor.v1`.
+    #[test]
+    fn ci_cost_report_rejects_unknown_field_at_parse() {
+        // Build a structurally valid report, then inject a v2-shaped field.
+        let mut value = json!({
+            "schema_version": SCHEMA_VERSION_COST,
+            "period_days": 7,
+            "start_date": "2026-09-01T00:00:00Z",
+            "repository": "EffortlessMetrics/perl-lsp-swarm",
+            "total_runs": 0,
+            "successful_runs": 0,
+            "failed_runs": 0,
+            "total_minutes": 0,
+            "total_cost": 0.0,
+            "monthly_projection": {
+                "minutes": 0,
+                "cost": 0.0,
+                "budget_target": MONTHLY_BUDGET_TARGET,
+                "budget_percentage": 0.0,
+            },
+            "annual_projection": {
+                "cost": 0.0,
+                "budget_target": ANNUAL_BUDGET_TARGET,
+            },
+            "workflows": [],
+        });
+        // Simulate the issue's motivating scenario: a v2 envelope that splits
+        // `total_minutes` into `compute_minutes` and `queue_minutes` would
+        // land both fields in a v2 payload; under `deny_unknown_fields`, a
+        // v1 consumer must refuse the payload outright rather than reading
+        // a misleading 0.
+        value["queue_minutes"] = json!(42);
+
+        let err = serde_json::from_value::<CiCostReport>(value)
+            .err()
+            .expect("unknown v2 field must fail to deserialize");
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected deny_unknown_fields rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn baseline_report_carries_schema_version_envelope() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-09-21T00:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-09-20T00:00:00Z")?.with_timezone(&Utc);
+        // Non-empty runs slice — `build_baseline_report` returns `None` for an
+        // empty input (the existing `build_baseline_report_returns_none_for_empty_runs`
+        // test pins that contract). Two in-window success rows are enough to
+        // exercise the schema envelope round-trip without coupling this test
+        // to the unique-catch or partial-sample math.
+        let runs = vec![
+            json!({
+                "workflowName": "CI",
+                "conclusion": "success",
+                "createdAt": "2026-09-20T12:00:00Z",
+                "startedAt": "2026-09-20T12:00:00Z",
+                "updatedAt": "2026-09-20T12:01:00Z",
+                "headSha": "a".repeat(40),
+            }),
+            json!({
+                "workflowName": "Lint",
+                "conclusion": "success",
+                "createdAt": "2026-09-20T12:30:00Z",
+                "startedAt": "2026-09-20T12:30:00Z",
+                "updatedAt": "2026-09-20T12:31:00Z",
+                "headSha": "a".repeat(40),
+            }),
+        ];
+        let report = build_baseline_report("main", 1, generated_at, cutoff, 200, &runs)
+            .ok_or_else(|| eyre!("expected baseline report"))?;
+
+        let bytes = serde_json::to_vec(&report).context("failed to serialize baseline report")?;
+        let value: Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(
+            value["schema_version"].as_str(),
+            Some(SCHEMA_VERSION_BASELINE),
+            "BaselineReport must stamp the producer-side schema envelope"
+        );
+
+        let parsed: BaselineReport = serde_json::from_value(value)?;
+        assert_eq!(parsed.schema_version, SCHEMA_VERSION_BASELINE);
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_report_rejects_unknown_field_at_parse() {
+        // A v2 baseline payload that adds `failure_buckets` (or any other
+        // shape change) must not deserialize into a v1 `BaselineReport`,
+        // matching the cost-monitor half of the contract.
+        let mut value = json!({
+            "schema_version": SCHEMA_VERSION_BASELINE,
+            "generated_at": "2026-09-21T00:00:00Z",
+            "branch": "main",
+            "days_analyzed": 1,
+            "sample_completeness": "complete",
+            "fetched_runs": 0,
+            "oldest_fetched_at": null,
+            "newest_fetched_at": null,
+            "workflows": {},
+            "summary": {
+                "total_runs": 0,
+                "total_billable_minutes": 0,
+                "overall_success_rate_percent": 0.0,
+                "total_unique_failures": 0,
+                "overall_signal_per_dollar": 0.0,
+            },
+        });
+        value["failure_buckets"] = json!([]);
+
+        let err = serde_json::from_value::<BaselineReport>(value)
+            .err()
+            .expect("unknown v2 field must fail to deserialize");
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected deny_unknown_fields rejection, got: {err}"
+        );
     }
 
     #[test]
