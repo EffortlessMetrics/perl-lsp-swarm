@@ -2940,7 +2940,7 @@ export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent)
 export async function populateCreatedFiles(event: vscode.FileCreateEvent): Promise<void> {
   for (const uri of event.files) {
     const scoped = vscode.workspace.getConfiguration('perl-lsp', uri);
-    if (!scoped.get<boolean>('autoPopulateNewFiles', true)) {
+    if (!scoped.get<boolean>('autoPopulateNewFiles', false)) {
       continue;
     }
 
