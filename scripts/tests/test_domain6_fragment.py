@@ -82,7 +82,10 @@ SEED_IDS = [
     "PR#15103",
     "PR#15260",
     "PR#15443",
+    "PR#15447",
+    "PR#15449",
     "PR#15450",
+    "PR#15726",
     "PR#16207",
     "PR#16371",
 ]
@@ -98,6 +101,9 @@ SEED_FRAGMENTS = {
     "PR#12742": "distribution",
     "PR#12808": "editor",
     "PR#15260": "distribution",
+    "PR#15447": "distribution",
+    "PR#15449": "distribution",
+    "PR#15726": "distribution",
 }
 REVIEWED_ONLY_KEYS = [
     "release_domains",
@@ -150,8 +156,8 @@ class Domain6FragmentTest(unittest.TestCase):
         self.assertEqual(counts["total_rows"], 705)
         self.assertEqual(counts["unique_commits"], 702)
         self.assertEqual(self.doc["work_unit_count"], 672)
-        self.assertEqual(self.doc["reviewed_seed_count"], 11)
-        self.assertEqual(self.doc["not_proven_unit_count"], 661)
+        self.assertEqual(self.doc["reviewed_seed_count"], 14)
+        self.assertEqual(self.doc["not_proven_unit_count"], 658)
         self.assertEqual(len(self.doc["work_units"]), 672)
 
     def test_exactly_once_coverage(self) -> None:
@@ -168,7 +174,7 @@ class Domain6FragmentTest(unittest.TestCase):
         # Watchlist rows are intentional duplicates of mapped commits.
         self.assertTrue(watch_commits <= set(covered))
 
-    def test_eleven_seed_rows_reviewed(self) -> None:
+    def test_fourteen_seed_rows_reviewed(self) -> None:
         reviewed = [
             u
             for u in self.doc["work_units"]
