@@ -608,10 +608,10 @@
           },
           "perl-lsp.autoPopulateNewFiles": {
             "type": "boolean",
-            "default": true,
+            "default": false,
             "scope": "resource",
             "order": 70,
-            "description": "Auto-populate new .pm files with a package declaration and new .t files with Test::More boilerplate.",
+            "description": "Opt in to automatic boilerplate for newly created .pm and .t files. Off by default.",
             "markdownDescription": "Auto-populate new `.pm` files with a `package` declaration and new `.t` files with `Test::More` boilerplate."
           }
         }
