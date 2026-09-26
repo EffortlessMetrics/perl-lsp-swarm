@@ -1457,6 +1457,19 @@ impl Lowerer {
                 // No children: the payload is an opaque source region and is
                 // never traversed or lowered as Perl.
             }
+            // Singular element-subscript access (`$arr[i]`, `$h{k}`,
+            // `$ref->[i]`). Record the container with the aggregate-sigil
+            // fallback so `$arr[0]` carries the canonical identity of an
+            // `@arr` declaration when no `$arr` is in scope (#14682). The
+            // subscript index/key is walked through `visit` so its own
+            // references still land in the scope graph; we deliberately do
+            // NOT call `visit_children` because `visit_subscript_container`
+            // records the container's reference and a duplicate record
+            // would distort first-pass counts.
+            NodeKind::Binary { op, left, right } if is_element_subscript(op, left) => {
+                self.visit_subscript_container(left, op);
+                self.visit(right, confidence);
+            }
             _ => self.visit_children(node, confidence),
         }
     }
@@ -1662,6 +1675,44 @@ impl Lowerer {
         let scope_id = self.current_scope();
         let resolved_binding =
             self.resolve_visible_binding(scope_id, sigil, name, Some(range.start));
+        self.scope_graph.references.push(BindingReference {
+            scope_id,
+            sigil: sigil.to_string(),
+            name: name.to_string(),
+            range,
+            resolved_binding,
+        });
+    }
+
+    /// Record a reference to a `$`-sigil variable that is the container of a
+    /// singular element subscript (`$arr[i]`, `$h{k}`, `$ref->[i]`).
+    ///
+    /// When the source-side sigil is `$` but the matched declaration uses an
+    /// aggregate sigil (`@` for array index, `%` for hash key), fall back to
+    /// the aggregate's binding so the reference carries the aggregate's
+    /// canonical identity. Without this fallback, every
+    /// `my @arr; $arr[0]` reading silently resolves to a package global and
+    /// the element access cannot be linked back to its declaration (#14682).
+    ///
+    /// The non-subscript container of a slice or a generic Binary still goes
+    /// through [`record_reference`] — only the element-subscript arm here
+    /// applies the aggregate fallback.
+    fn record_reference_for_subscript_container(
+        &mut self,
+        sigil: &str,
+        name: &str,
+        range: SourceLocation,
+        aggregate_fallback_sigil: Option<&str>,
+    ) {
+        let scope_id = self.current_scope();
+        let primary = self.resolve_visible_binding(scope_id, sigil, name, Some(range.start));
+        let resolved_binding = match (primary, aggregate_fallback_sigil) {
+            (Some(_), _) => primary,
+            (None, Some(agg)) => {
+                self.resolve_visible_binding(scope_id, agg, name, Some(range.start))
+            }
+            (None, None) => None,
+        };
         self.scope_graph.references.push(BindingReference {
             scope_id,
             sigil: sigil.to_string(),
@@ -2881,6 +2932,43 @@ impl Lowerer {
                 self.visit(variable, confidence);
             }
         }
+    }
+
+    /// Walk the container of a singular element-subscript binary (`$arr[i]`,
+    /// `$h{k}`, `$ref->[i]`) and record the resulting reference with the
+    /// aggregate-sigil fallback when the container is a `$`-sigil `Variable`
+    /// (#14682).
+    ///
+    /// For `->[]` / `->{}` the container is the reference being dereferenced
+    /// (also a `$`-sigil `Variable`, or a `Unary { op: "${}" }` wrapping one),
+    /// and the aggregate fallback is irrelevant — the reference is what is
+    /// being indexed, not the aggregate it eventually points to. We still
+    /// walk the container so its own references land in the scope graph; we
+    /// just don't substitute the aggregate binding.
+    fn visit_subscript_container(&mut self, container: &Node, op: &str) {
+        if matches!(op, "[]" | "{}")
+            && let NodeKind::Variable { sigil, name } = &container.kind
+            && sigil == "$"
+        {
+            let agg = match op {
+                "[]" => "@",
+                "{}" => "%",
+                _ => unreachable!(),
+            };
+            // The subscript expression itself still needs a walk
+            // for any nested element access (`$arr[$i][0]`), but
+            // a plain `$`-sigil Variable has no children to
+            // recurse into — recording the reference is the whole
+            // job for this shape.
+            self.record_reference_for_subscript_container(
+                sigil,
+                name,
+                container.location,
+                Some(agg),
+            );
+            return;
+        }
+        self.visit(container, RecoveryConfidence::Parsed);
     }
 }
 
@@ -5861,7 +5949,7 @@ impl<'a> BodyBuilder2<'a> {
     ) -> HirExprId {
         let kind =
             if op == "[]" || op == "->[]" { SubscriptKind::Array } else { SubscriptKind::Hash };
-        let container_id = self.lower_expr(container);
+        let container_id = self.lower_subscript_container(container, kind);
         let subscript_id = self.lower_expr(subscript);
         self.alloc_expr(
             HirExpr::Subscript(HirSubscript {
@@ -5872,6 +5960,52 @@ impl<'a> BodyBuilder2<'a> {
             }),
             range,
         )
+    }
+
+    /// Lower the container of a singular element-subscript access, applying the
+    /// aggregate-sigil fallback that lets `$arr[0]` carry the canonical
+    /// identity of an `@arr` declaration when no `$arr` scalar is in scope
+    /// (#14682).
+    ///
+    /// Without the fallback, `my @arr; my $x = $arr[0]` produced a
+    /// `VariableKind::Package` for the container with no binding, the same
+    /// shape the body view used for an undeclared package global — so every
+    /// element read over a `my @arr` looked like an unresolved reference,
+    /// and the two HIR views (first-pass `BindingReference` and body view's
+    /// `resolve_variable_kind`) silently disagreed.
+    ///
+    /// Only the singular-element forms (`is_element_subscript`) reach here,
+    /// and only for a `$`-sigil `Variable` container. Arrow-deref containers
+    /// (`$ref->[i]`) and slice/deref containers fall through to `lower_expr`
+    /// — the fallback would be wrong for them.
+    fn lower_subscript_container(&mut self, container: &Node, kind: SubscriptKind) -> HirExprId {
+        if let NodeKind::Variable { sigil, name } = &container.kind
+            && sigil == "$"
+        {
+            let range = container.location;
+            let primary = self.resolve_visible_binding(sigil, name, range.start);
+            let resolved = match primary {
+                Some(binding) => Some(binding),
+                None => {
+                    let agg = match kind {
+                        SubscriptKind::Array => "@",
+                        SubscriptKind::Hash => "%",
+                    };
+                    self.resolve_visible_binding(agg, name, range.start)
+                }
+            };
+            if let Some(binding) = resolved {
+                let var = HirVariable {
+                    sigil: sigil_from_str(sigil),
+                    name: name.clone(),
+                    kind: Self::kind_for(name, Some(binding)),
+                    access: AccessMode::Read,
+                    binding: Some(binding.id),
+                };
+                return self.alloc_expr(HirExpr::Variable(var), range);
+            }
+        }
+        self.lower_expr(container)
     }
 
     /// Lower a nested block and retain its statement sequence in the block arena.
