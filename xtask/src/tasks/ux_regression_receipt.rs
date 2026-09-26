@@ -1031,14 +1031,37 @@ test result: FAILED. 0 passed; 1 failed";
 
     #[test]
     fn panic_re_classify_extracts_panic_location_from_absolute_path() {
-        // End-to-end: a whole log carrying a panic in a dependency frame must
-        // surface the absolute path through `panic_location` on the receipt.
-        // This is the discriminating proof #16147 requires at the call-site
-        // boundary, not just at the regex level.
-        let log = "running 1 test\n\
+        // A panic outside the named test's stdout block is not evidence for
+        // that test, even when the whole log contains an absolute path.
+        let blockless_log = "running 1 test\n\
 test ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix ... FAILED\n\
 thread 'x' panicked at /home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1:\n\
 boom\n\
+test result: FAILED. 0 passed; 1 failed";
+        let blockless_receipt = classify(blockless_log, None);
+        assert_eq!(
+            blockless_receipt.first_failing_test.as_deref(),
+            Some("ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix")
+        );
+        assert!(
+            blockless_receipt.panic_location.is_none(),
+            "a blockless panic must not be attributed to the first failing test"
+        );
+
+        // The matching stdout block makes the absolute path attributable to
+        // the first failure. Exercise classify(), not just the regex (#16147).
+        let log = "running 1 test\n\
+test ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix stdout ----\n\
+thread 'x' panicked at /home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1:\n\
+boom\n\
+\n\
+failures:\n\
+    ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix\n\
+\n\
 test result: FAILED. 0 passed; 1 failed";
         let receipt = classify(log, Some("abs-sha".to_string()));
         assert_eq!(
