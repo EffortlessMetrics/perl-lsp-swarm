@@ -98,6 +98,78 @@ fn lexer_rejects_unterminated_backtick_heredoc_label() {
 }
 
 #[test]
+fn lexer_term_slot_heredoc_bodies_stay_out_of_the_public_slash_path() {
+    // `return <<END` is a definite heredoc (local Perl oracle), so the body
+    // prose must not become a known sub and must not take the known-sub regex
+    // path, while the declaration after the terminator keeps it.
+    let source = "sub f { return <<END unless $cond; }\nsub fake { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(!table.is_known_sub("fake"), "body prose leaked: {source:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+    let with_slash = format!("{source}fake /x/;\n");
+    let config = LexerConfig { symbol_table: Some(table), ..LexerConfig::default() };
+    let mut lx = PerlLexer::with_config_and_body_tokens(&with_slash, config);
+    let mut saw_division = false;
+    let mut took_regex_path = false;
+    while let Some(token) = lx.next_token() {
+        match token.token_type {
+            TokenType::Division => saw_division = true,
+            TokenType::RegexMatch => took_regex_path = true,
+            TokenType::EOF => break,
+            _ => {}
+        }
+    }
+    assert!(!took_regex_path, "body prose took the known-sub regex path");
+    assert!(saw_division, "fake /x/ did not lex as division");
+}
+
+#[test]
+fn lexer_dereferenced_return_method_keeps_shift_lines_live() {
+    // `$object->return <<END` is a method invocation, not the `return`
+    // keyword (local Perl oracle): the arrow supplies the left operand, so
+    // the `<<` is a left shift and the lines after it stay live code, with
+    // the declaration between the shift and the bare `END` line keeping the
+    // known-sub regex path.
+    let source = "my $x = $object->return <<END;\nsub fake { }\nEND\nsub real { }\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("fake"), "shift operand swallowed live code: {source:?}");
+    assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
+
+    let with_slash = format!("{source}fake /x/;\n");
+    let config = LexerConfig { symbol_table: Some(table), ..LexerConfig::default() };
+    let mut lx = PerlLexer::with_config_and_body_tokens(&with_slash, config);
+    let mut took_regex_path = false;
+    while let Some(token) = lx.next_token() {
+        match token.token_type {
+            TokenType::RegexMatch => took_regex_path = true,
+            TokenType::EOF => break,
+            _ => {}
+        }
+    }
+    assert!(took_regex_path, "fake /x/ lost the known-sub regex path");
+}
+
+#[test]
+fn lexer_dereferenced_return_method_with_space_keeps_shift_lines_live() {
+    // The spaced form exercises the guard's trailing-space trim: the slice
+    // before the word is `"$object-> "` and must still read as a method
+    // invocation, not the `return` keyword (#16433-review finding on the
+    // tight-form-only guard).
+    let source = "my $x = $object-> return <<END;
+sub fake { }
+END
+sub real { }
+";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(
+        table.is_known_sub("fake"),
+        "spaced-form shift operand swallowed live code: {source:?}"
+    );
+    assert!(table.is_known_sub("real"), "spaced-form suffix declaration lost: {source:?}");
+}
+
+#[test]
 fn lexer_handles_data_markers_with_cr_line_endings() {
     let input = "my $x = 1;\r__DATA__\rline one\rline two\r";
     let mut lx = PerlLexer::new(input);
