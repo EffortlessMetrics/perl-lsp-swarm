@@ -259,6 +259,45 @@ fn symbol_table_mismatch_is_wrong_configuration() {
 }
 
 #[test]
+fn nullary_membership_mismatch_is_wrong_configuration() {
+    // Nullary membership changes how a later `foo <<MARK` tokenizes (#16165),
+    // so a checkpoint captured under a nullary `foo` must not replay under a
+    // plain `foo` with the same callable name — restore fails closed.
+    let call_source = "my $t = foo <<MARK;\nMARK\n";
+    let config_for = |declaration: &str| LexerConfig {
+        symbol_table: Some(LocalSymbolTable::scan_subs(declaration)),
+        ..LexerConfig::default()
+    };
+    let nullary = PerlLexer::with_config(call_source, config_for("sub foo () { 1 }")).checkpoint();
+    let plain = PerlLexer::with_config(call_source, config_for("sub foo { 1 }"));
+    assert_ne!(
+        plain.checkpoint().identity().policy(),
+        nullary.identity().policy(),
+        "same names with different nullary membership must differ in policy identity"
+    );
+    assert_eq!(plain.validate_restore(&nullary), Err(CheckpointRestoreError::WrongConfiguration));
+}
+
+#[test]
+fn same_nullary_table_still_restores() {
+    // Positive control: the added nullary participation must not reject a
+    // same-table restore.
+    let source = "sub foo () { 1 }\nmy $t = foo <<MARK;\nMARK\n";
+    let config = |source: &str| LexerConfig {
+        symbol_table: Some(LocalSymbolTable::scan_subs(source)),
+        ..LexerConfig::default()
+    };
+    let mut lexer = PerlLexer::with_config(source, config(source));
+    let checkpoint = lexer.checkpoint();
+    let first = collect(&mut lexer);
+    assert!(lexer.restore(&checkpoint).is_ok(), "same-table restore must succeed");
+    let replayed = collect(&mut lexer);
+    assert_eq!(first, replayed, "restored suffix must equal uninterrupted suffix");
+    let other = PerlLexer::with_config(source, config(source));
+    assert!(other.can_restore(&checkpoint), "same-table origin restore must succeed");
+}
+
+#[test]
 fn schema_is_explicit_on_live_checkpoints() {
     let checkpoint = PerlLexer::new("1").checkpoint();
     assert_eq!(checkpoint.identity().schema(), CHECKPOINT_SCHEMA_VERSION);

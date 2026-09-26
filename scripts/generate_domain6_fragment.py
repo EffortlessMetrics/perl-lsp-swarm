@@ -1,0 +1,1996 @@
+"""Deterministic generator for the Domain-6 release inventory fragment (#16418).
+
+Reads the exact pinned history range with local git only (no network) and
+renders docs/releases/domain6-windows-editor-distribution-first-mile.v1.json.
+
+Fail-closed: any count, coverage, identity, or seed-drift violation exits
+nonzero before writing. A second run from identical inputs must produce
+byte-identical output (proven by scripts/tests/test_domain6_fragment.py).
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_OUT = (
+    REPO_ROOT
+    / "docs"
+    / "releases"
+    / "domain6-windows-editor-distribution-first-mile.v1.json"
+)
+
+SCHEMA = "post_sync_release_reconciliation.v1"
+FRAGMENT_ID = "domain6_windows_editor_distribution_first_mile"
+START_SHA = "f6b7b2c6626fbefbf01c9c9934cac5789186f8b2"
+OBSERVED_HEAD = "102974155487bc955e01d5d5222053c4c449136c"
+GROUPING_METHOD_VERSION = (
+    "subject-trailing-pair.v1 "
+    "+ transplant-PR-key correction "
+    "+ merge_commit_sha verification for reviewed rows "
+    "+ placeholder-0000 per-commit split "
+    "+ NOREF body-mention evidence"
+)
+
+PREFILTER = [
+    "vscode-extension",
+    "distribution",
+    "clients",
+    "crates/perl-install",
+    "docs/install",
+    "docs/tutorials",
+    "book",
+    "CONTRIBUTING.md",
+    "scripts",
+    "Formula",
+    "man",
+]
+
+EXPECTED_NON_MERGE = 682
+EXPECTED_UNITS = 672
+EXPECTED_SEEDS = 11
+# Unsimplified range merge population (START_SHA..OBSERVED_HEAD,
+# --full-history): 2 kept + 1 related-record + 62 content-free +
+# 11 blob-covered + 18 created = 94. Pinned: the range is fixed, the
+# traversal is unsimplified, so drift fails closed.
+EXPECTED_MERGES = 94
+EXPECTED_CONTENT_FREE = 62
+EXPECTED_BLOB_COVERED = 11
+EXPECTED_MERGE_CREATED = 18
+
+PAREN_REF = re.compile(r"\(#(\d+)\)")
+BODY_REF = re.compile(r"#(\d+)")
+# Placeholder issue numbers carry no work-unit identity. (#0000) in a
+# subject never groups: each such commit becomes its own per-commit unit.
+PLACEHOLDER_ISSUE_NUMBERS = {"0000"}
+QUEUE_PREFIX = "queue: merge #"
+SYNC_SUBJECT = re.compile(r"^(sync:|release: history-preserving|chore\(sync\))")
+
+# Merge units kept from the full-history merge enumeration. Every other
+# in-range merge touching the prefilter is excluded only with proof:
+# queue merges (single queued commit already covered as a non-merge record)
+# or sync-lineage merges (second parent predates START_SHA).
+KEEP_MERGES = {
+    "8a7ba49e96c2d1da6137a264815961d42588be23": {
+        "work_unit_id": "PR#12670",
+        "subject": "Merge pull request #12670 from "
+        "EffortlessMetrics/fix/11198-lite-xl-symbols-path-collision",
+        "expected_files": [
+            "clients/lite-xl/candidate_manifest.lua",
+            "clients/lite-xl/tests/init_document_symbol_identity_test.lua",
+            "clients/lite-xl/upstream/init.lua",
+        ],
+        "primary_fragment": "editor",
+    },
+    "fb68dd94a33424bf5007e686306b07c6bb2096e6": {
+        "work_unit_id": "MERGE#fb68dd94",
+        "subject": "merge: reconcile release lineage into swarm main (#0000)",
+        "expected_files": [
+            "book/src/getting-started/configuration.md",
+            "scripts/check_release_channel_actuals.py",
+            "scripts/check_release_container_actuals.py",
+            "scripts/check_release_history.sh",
+            "scripts/check_release_tag_provenance.py",
+            "scripts/tests/test_release_channel_actuals.py",
+            "scripts/tests/test_release_container_actuals.py",
+            "scripts/tests/test_release_tag_provenance.py",
+            "vscode-extension/src/test/configuration.test.ts",
+        ],
+        "primary_fragment": "cross_domain_unassigned",
+    },
+}
+
+# First-parent-visible re-merge of the fb68dd94 lineage. Mechanically verified
+# (verify_related_remerge) to contribute zero uncovered prefilter content:
+# it differs from fb68dd94 in exactly one prefilter file
+# (scripts/ci/validate_gate_lane_mapping.py) whose blob sits in the mapped
+# range records 3dc8ade1 (#4976) and b86ba02a (#5426). Recorded as a related
+# merge on MERGE#fb68dd94, never as a separate unit.
+RELATED_MERGE_984 = "984ff2c897c930e9cbeea331b65487730bda96bd"
+
+# Draft labeled these transplant landings ISS#N from the "[same-root
+# transplant]" marker. merge_commit_sha equality proves each commit IS the
+# merged PR product, so PR-keying is correct per the grouping method.
+TRANSPLANT_CORRECTIONS = {
+    "681af39d7177bb24b34f2294fb0485ead56aacde": "PR#15577",
+    "f4e8a9614bfe8d8d186d207fe30599f93561f84e": "PR#15582",
+    "decd96de6b588dc888767611a43d9d1580998497": "PR#15586",
+}
+
+EDITOR_PREFIXES = ("vscode-extension/", "clients/")
+DISTRIBUTION_PREFIXES = ("distribution/", "crates/perl-install/", "Formula/", "man/")
+FIRST_MILE_PREFIXES = (
+    "docs/install/",
+    "docs/tutorials/",
+    "book/",
+    "CONTRIBUTING.md",
+)
+SCRIPTS_DISTRIBUTION_KEYWORDS = (
+    "install",
+    "archive",
+    "vsix",
+    "topology",
+    "package",
+    "payload",
+    "post-publish",
+    "smoke",
+    "bootstrap",
+)
+
+
+class FragmentError(Exception):
+    """Fail-closed inventory violation."""
+
+
+# Reviewed seed rows (#16418 acceptance). paths_or_components equals the
+# exact effective file list of each commit, verified against current history
+# (merge_commit_sha equality included). The generator re-verifies every run.
+SEEDS = {
+    "PR#16371": {
+        "commits": ["c76a4436b1a0f996e7e4cd76aefac3034319a4b9"],
+        "subject": "fix(release): generated installer bootstrap values "
+        "and release-archive install smoke (#16368) (#16371)",
+        "paths_or_components": [
+            "docs/tutorials/GETTING_STARTED.md",
+            "scripts/post-publish-smoke.sh",
+        ],
+        "release_domains": ["install", "docs", "release"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/post-publish-smoke.sh",
+            ".github/workflows/post-publish-smoke.yml",
+        ],
+        "known_limitations": [
+            "smoke Section 1b runs post-publish; its Linux/macOS happy "
+            "path has not executed through current main (v0.17.0 "
+            "predates it, no later release, zero post-publish-smoke.yml "
+            "runs)",
+            "installer supports Linux/macOS hosts only; Windows takes a "
+            "labeled skip, so Windows archive install/extraction proof "
+            "belongs to #16408, not this unit",
+            "generated INSTALLER_REF/INSTALLER_SHA256 are "
+            "convenience-level (derived from the same host that serves "
+            "the installer), not independent review; the reviewed "
+            "closeout digest remains unpublished",
+            "the v0.17.0 root wrapper ignores the identity env vars and "
+            "re-execs floating master; docs repaired after the "
+            "denominator head by PR#16398 (#16396, still open for the "
+            "other wrapper docs) with two routes and "
+            "VERSION=${RELEASE_TAG:-latest} binding",
+        ],
+        "open_pr_relationships": [
+            "16359-OPEN touches GETTING_STARTED.md (config-limits "
+            "examples only; installer Option 2 section untouched)"
+        ],
+        "controlling_issues": ["16368"],
+        "invalidators": [
+            "archive layout/member changes after snapshot",
+            "install.sh or root-wrapper verification semantics change "
+            "before the next release-archive smoke run",
+            "a future Section 1b run whose outcome contradicts this "
+            "mechanism-stage row",
+        ],
+        "platforms_and_targets": ["linux", "macos"],
+        "artifact_or_route_effects": [
+            "docs Option 2 generated-values step derives INSTALLER_REF "
+            "(tag-dereferenced publish commit) and INSTALLER_SHA256 "
+            "(digest of scripts/install.sh at that ref) from a pinned "
+            "RELEASE_TAG, replacing unusable placeholders",
+            "smoke Section 1b executes scripts/install.sh against the "
+            "published GitHub release archive into an isolated "
+            "INSTALL_DIR (download, SHA256SUMS verify, install, "
+            "installed perllsp --version must report the release "
+            "version); SKIP_INSTALL=1 and non-Linux/macOS hosts take "
+            "labeled skips",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#16371) of subject pair "
+        "(#16368)(#16371); merge_commit_sha of PR #16371 equals the "
+        "commit; issue #16368 is the tracked problem",
+    },
+    "PR#16207": {
+        "commits": ["f6bf580309b5e0f8cb7f82e84f9e2f0d6a37d8d3"],
+        "subject": "feat(release): bind RC and numeric VSIX identities "
+        "offline (#14923) (#16207)",
+        "paths_or_components": [
+            ".github/workflows/release-history.yml",
+            ".github/workflows/vscode-prebuilt-payload-adapter.yml",
+            ".spec/14923-rc-vsix-binding/README.md",
+            "fixtures/rc_vsix_binding/valid.topology.v4.json",
+            "policy/non-rust-allowlist.toml",
+            "schemas/release_topology.v4.schema.json",
+            "schemas/vsix_candidate_payload.v2.schema.json",
+            "scripts/generate_release_topology.py",
+            "scripts/prepare_vsix_prebuilt_payload.py",
+            "scripts/release_build_identity.py",
+            "scripts/release_topology_json.py",
+            "scripts/release_vsix_mapping.py",
+            "scripts/test_generate_release_topology.py",
+            "scripts/test_prepare_vsix_prebuilt_payload.py",
+            "scripts/test_release_build_identity.py",
+            "vscode-extension/scripts/build_vsix_candidate_manifest.js",
+            "vscode-extension/scripts/check-vsix-inventory-transition.js",
+            "vscode-extension/scripts/check-vsix-prebuilt-payload.js",
+            "vscode-extension/scripts/check-vsix-prebuilt-payload.test.js",
+            "vscode-extension/src/test/vsixPackageProjection.test.ts",
+            "vscode-extension/src/vsixPackageProjection.ts",
+        ],
+        "release_domains": ["editor", "install", "release"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "not_user_facing",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [
+            "release_topology.v4 (new; accepted topology versions extend "
+            "1-3 with 4, opt-in only)",
+            "vsix_candidate_payload.v2 (new; legacy v1 default admission "
+            "unchanged)",
+        ],
+        "proof_owner_refs": [
+            ".spec/14923-rc-vsix-binding/README.md",
+            "fixtures/rc_vsix_binding/valid.topology.v4.json",
+            "scripts/test_generate_release_topology.py",
+            "scripts/test_release_build_identity.py",
+            "scripts/test_prepare_vsix_prebuilt_payload.py",
+            "vscode-extension/scripts/check-vsix-prebuilt-payload.test.js",
+            "vscode-extension/src/test/vsixPackageProjection.test.ts",
+        ],
+        "known_limitations": [
+            "offline binding only: production package-vsix.js still "
+            "rejects payload v2 on main, so packaged selection lands via "
+            "carrier PR #16230 (verified OPEN 2026-09-25); that carrier's "
+            "disposition stays with #13215/#5888, not this row",
+            "no production VSIX packaging, installed Windows/Linux "
+            "acceptance, publication, or release qualification is proven "
+            "in-unit; synthetic-ZIP verifier proof carries none",
+            "frozen-v3 -> prepared-v4 is opt-in and requires both schema "
+            "files byte-identical in frozen and prepared roots; legacy "
+            "defaults and prerelease admission remain unchanged",
+        ],
+        "open_pr_relationships": [
+            "16230-OPEN carrier: production mapped-RC packaging consumes "
+            "this binding (stacked on #16207), verified OPEN 2026-09-25; "
+            "disposition owned by #13215/#5888"
+        ],
+        "controlling_issues": ["14923-OPEN"],
+        "invalidators": [
+            "carrier #16230 rework or supersession changes packaged "
+            "selection",
+            "release_topology.v4 or vsix_candidate_payload.v2 schema byte "
+            "changes after candidate composition",
+            "mapping-law changes (canonical X.Y.Z-rc.N, preRelease=true, "
+            "one prepared sourceSha, exact RC asset basename)",
+        ],
+        "platforms_and_targets": [
+            "portable",
+            "topology-v4 managed/bundled VSIX target matrix; the verifier "
+            "requires native XML platform to match the selected target "
+            "and universal packages to omit the attribute",
+        ],
+        "artifact_or_route_effects": [
+            "opt-in offline RC/numeric VSIX identity binding: "
+            "release_vsix_mapping validates the supplied "
+            "extension/candidate identity against the prepared package "
+            "(canonical X.Y.Z-rc.N, preRelease=true, one prepared source "
+            "SHA) and derives the exact RC asset basename; never "
+            "allocates a version",
+            "release topology gains schema v4 with a frozen-v3 -> "
+            "prepared-v4 mapped transition law (byte-identical schema "
+            "files in both roots, stale selected-schema identity "
+            "refused, no implicit v1/v2 upgrades)",
+            "vsix-prebuilt-payload verifier gains a mapped route: "
+            "expected archive SHA, package/XML identity, prerelease, "
+            "payload and native members, semantic inventory",
+            "release-history and vscode-prebuilt-payload-adapter "
+            "workflows install the pinned release-schema requirements",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#16207) of subject pair "
+        "(#14923)(#16207); merge_commit_sha of PR #16207 equals the "
+        "commit; issue #14923 is the tracked problem",
+    },
+    "PR#12086": {
+        "commits": ["19ba2dd4c5c3d0c9e6363f4cb0a174be25636f7c"],
+        "subject": "feat(vscode): retain active managed candidates and GC "
+        "only proven stale generations (#10083) (#12086)",
+        "paths_or_components": [
+            "vscode-extension/CHANGELOG.md",
+            "vscode-extension/scripts/vsix-inventory-baseline.json",
+            "vscode-extension/scripts/vsix-inventory-transition.json",
+            "vscode-extension/src/downloader.ts",
+            "vscode-extension/src/extension.ts",
+            "vscode-extension/src/managedCandidateRuntime.ts",
+            "vscode-extension/src/test/__mocks__/vscode.ts",
+            "vscode-extension/src/test/downloader.test.ts",
+            "vscode-extension/src/test/managedCandidateRuntime.test.ts",
+        ],
+        "release_domains": ["editor", "install"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "covered",
+        "migration_or_upgrade_refs": [
+            "upgrade keeps legacy current-pointer resolution for "
+            "pre-policy namespaces and rollback; policy namespaces "
+            "activate as installs mint candidate manifests and "
+            "managed_current_selection.v1 records; pre-policy namespaces "
+            "without a selection record are skipped"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "vscode-extension/src/test/downloader.test.ts",
+            "vscode-extension/src/test/managedCandidateRuntime.test.ts",
+        ],
+        "known_limitations": [
+            "unit/source stage only; installed-acceptance proof belongs "
+            "to #6056 lane",
+            "residual scope stays on open issues: #7859 cross-process "
+            "GC-vs-launch race matrix, #11540 deletion-boundary "
+            "revalidation lease seam, #11539 crashed-session "
+            "live-reference recovery (a crashed window pins its "
+            "candidate — fail-safe direction, not reclamation)",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["10083-OPEN"],
+        "invalidators": [
+            "retention-classification rework in "
+            "managedCandidateSelection.ts (policy owner #11780)",
+            "#11540 deletion-boundary revalidation changing GC "
+            "guarantees",
+            "any re-introduction of age/mtime-authorized deletion",
+        ],
+        "platforms_and_targets": ["vscode-managed"],
+        "artifact_or_route_effects": [
+            "installs mint an immutable candidate.json manifest from "
+            "verified digests and commit a versioned "
+            "managed_current_selection.v1 record next to the legacy "
+            "current pointer",
+            "each extension-host session persists a live host reference "
+            "before its server process spawns and releases it at clean "
+            "client teardown (a crashed session never releases)",
+            "stale-generation cleanup enumerates catalog, selection, and "
+            "host references and deletes only stale_unreferenced "
+            "candidates per classifyManagedCandidateRetention; "
+            "unreadable, malformed, or incomplete evidence blocks "
+            "destructive cleanup",
+            "the mtime-recency pruneOldVersionedInstalls heuristic is "
+            "deleted",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#12086) of subject pair "
+        "(#10083)(#12086); merge_commit_sha of PR #12086 equals the "
+        "commit; issue #10083 is the tracked problem",
+    },
+    "PR#10198": {
+        "commits": ["bed531ec598d84662dc3f146ff74db1b0ffaf974"],
+        "subject": "fix(vscode): namespace managed candidates by exact "
+        "host compatibility target (#9847) (#10198)",
+        "paths_or_components": [
+            "vscode-extension/scripts/vsix-inventory-baseline.json",
+            "vscode-extension/src/downloader.ts",
+            "vscode-extension/src/managedStorageIdentity.ts",
+            "vscode-extension/src/test/debugAdapter.test.ts",
+            "vscode-extension/src/test/downloader.test.ts",
+            "vscode-extension/src/test/managedNamespaceIsolation.test.ts",
+            "vscode-extension/src/test/managedStorageIdentity.test.ts",
+        ],
+        "release_domains": ["editor", "install"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "upgrade: legacy unscoped perl-lsp.lastUpdateCheck seeds the "
+            "per-target key once; legacy bin/<platform>-<arch> installs "
+            "are revalidated and adopted by reference, never moved or "
+            "deleted, so an incompatible host downloads its own candidate"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "vscode-extension/src/test/managedNamespaceIsolation.test.ts",
+            "vscode-extension/src/test/managedStorageIdentity.test.ts",
+        ],
+        "known_limitations": [
+            "unit/source stage only; installed-acceptance proof belongs "
+            "to #6056 lane",
+            "static ELF (no PT_INTERP) yields unknown libc and stays "
+            "unadopted — conservative, may cost an extra download",
+            "whether a Windows ARM64 release shipped a native ARM64 "
+            "asset is a property of the release, not the host; the "
+            "emulated x64 namespace remains the fallback row",
+            "residual: #10073 (OPEN) still gates managed downloader side "
+            "effects on the workspace-host target decision",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["9847-CLOSED"],
+        "invalidators": [
+            "managedStorageIdentity key-projection or legacy-adoption "
+            "revalidation rework",
+            "#10073 landing changing downloader side-effect gating",
+            "retention/GC rework that bypasses target-scoped namespaces",
+        ],
+        "platforms_and_targets": [
+            "vscode-managed",
+            "per-target namespaces: GNU vs musl Linux distinguished via "
+            "PT_INTERP (Bionic separate), Windows ARM64 native vs "
+            "x64-emulation as distinct rows",
+        ],
+        "artifact_or_route_effects": [
+            "managed selection moves from bin/<platform>-<arch> to "
+            "managed/<compatibility-key>/ with a per-install target.json; "
+            "one spelling is both the logical key and the path segment",
+            "resolution walks the keys a host may legitimately consume, "
+            "most preferred first; an install whose target.json names "
+            "another key is not selected",
+            "legacy installs revalidate by ELF/PE/Mach-O headers (arch, "
+            "libc via PT_INTERP on Linux) before adoption-by-reference; "
+            "missing evidence stays unadopted",
+            "perl-lsp.lastUpdateCheck becomes "
+            "perl-lsp.lastUpdateCheck.<key>; rollback and GC become "
+            "target-scoped by living inside the namespace",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#10198) of subject pair "
+        "(#9847)(#10198); merge_commit_sha of PR #10198 equals the "
+        "commit; issue #9847 is the tracked problem",
+    },
+    "PR#14523": {
+        "commits": ["f6a34fde7abe2f2662fae91b14453b02313e8e65"],
+        "subject": "feat(dap): add typed launch-authority startup "
+        "contract (#8656) (#14523)",
+        "paths_or_components": [
+            ".ci/dap/editor-transport-inventory.v1.json",
+            ".ci/public-api-baselines/perl-dap.txt",
+            ".github/workflows/dap-editor-transport.yml",
+            ".github/workflows/dap-scorecard.yml",
+            "clients/sublime/LSP-perllsp/dap_support.py",
+            "clients/sublime/LSP-perllsp/debugger_adapter.py",
+            "clients/sublime/LSP-perllsp/host_tests/test_sublime_debugger_adapter.py",
+            "clients/sublime/LSP-perllsp/tests/test_dap_receipt.py",
+            "clients/sublime/LSP-perllsp/tests/test_dap_support.py",
+            "clients/sublime/validate_sublime_dap_receipt.py",
+            "crates/perl-dap/Cargo.toml",
+            "crates/perl-dap/src/debug_adapter/mod.rs",
+            "crates/perl-dap/src/debug_adapter/process.rs",
+            "crates/perl-dap/src/lib.rs",
+            "crates/perl-dap/src/main.rs",
+            "crates/perl-dap/src/security/launch_authority.rs",
+            "crates/perl-dap/src/security/mod.rs",
+            "crates/perl-dap/src/server/config.rs",
+            "crates/perl-dap/src/server/lifecycle.rs",
+            "crates/perl-dap/tests/common/mod.rs",
+            "crates/perl-dap/tests/dap_adapter_tests.rs",
+            "crates/perl-dap/tests/dap_attach_e2e.rs",
+            "crates/perl-dap/tests/dap_comprehensive_test.rs",
+            "crates/perl-dap/tests/dap_coverage_audit_tests.rs",
+            "crates/perl-dap/tests/dap_golden_transcript_tests.rs",
+            "crates/perl-dap/tests/dap_integration_test.rs",
+            "crates/perl-dap/tests/dap_launch_error_remediation_tests.rs",
+            "crates/perl-dap/tests/dap_launch_security_test.rs",
+            "crates/perl-dap/tests/dap_module_resolution_smoke.rs",
+            "crates/perl-dap/tests/dap_scorecard_harness.rs",
+            "crates/perl-dap/tests/dap_server_and_adapter_tests.rs",
+            "crates/perl-dap/tests/dap_session_cleanup_e2e.rs",
+            "crates/perl-dap/tests/security_regression_tests.rs",
+            "crates/perl-dap/tests/wave_h_external_red_tests.rs",
+            "docs/tutorials/DAP_USER_GUIDE.md",
+            "scripts/ci/dap_scorecard_probes.py",
+            "scripts/ci/dap_scorecard_runtime.py",
+            "scripts/ci/dap_scorecard_transport.py",
+            "scripts/tests/test_dap_scorecard_runtime.py",
+            "scripts/ux/neovim/perl_dap.lua",
+            "vscode-extension/package-lock.json",
+            "vscode-extension/src/debugAdapter.ts",
+            "vscode-extension/src/test/debugAdapter.test.ts",
+        ],
+        "release_domains": ["editor", "dap", "security", "docs"],
+        "primary_disposition": "product_behavior",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "upgrade: DAP launches with neither authority nor a "
+            "configured boundary now refuse (previously failed open); "
+            "editors pass the host workspace folder as trusted root; no "
+            "settings migration"
+        ],
+        "api_schema_package_effects": [
+            ".ci/public-api-baselines/perl-dap.txt (refreshed)",
+            "crates/perl-dap: sha2 promoted dev-dependency -> dependency "
+            "(workspace-pinned)",
+        ],
+        "proof_owner_refs": [
+            "crates/perl-dap tests (dap_launch_security_test.rs, "
+            "security_regression_tests.rs, wave_h_external_red_tests.rs)",
+            ".ci/dap/editor-transport-inventory.v1.json",
+            ".github/workflows/dap-editor-transport.yml",
+            "clients/sublime/LSP-perllsp/host_tests",
+            "scripts/ci/dap_scorecard_runtime.py",
+        ],
+        "known_limitations": [
+            "parent program #8145 (OPEN) owns enforcement breadth beyond "
+            "the launch path and full retirement of the legacy "
+            "single-root workspace_root surface",
+            "startup without authority inputs does not exit "
+            "(boundary-free management flows keep working); only "
+            "launches are refused fail-closed",
+            "symlink-root rejection is unix-verified in-unit; Windows "
+            "symlink behavior unproven",
+            "no installed DAP-launch acceptance (real editors, real "
+            "debuggees) in-unit; belongs to #6056/#4346 lanes",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["8656-CLOSED"],
+        "invalidators": [
+            "#8145 landing reworking admission breadth or retiring the "
+            "legacy single-root surface",
+            "editor authority pass-through no longer sourced from "
+            "host-owned workspace state",
+            "public-api baseline drift without regeneration",
+        ],
+        "platforms_and_targets": [
+            "perl-dap server: cross-platform managed bundle",
+            "vscode adapter: host workspace root canonicalized (realpath) "
+            "before --trusted-root so native symlink rejection does not "
+            "refuse symlinked workspaces",
+            "sublime and neovim clients: editor-owned workspace folder "
+            "becomes the trusted root",
+        ],
+        "artifact_or_route_effects": [
+            "perl-dap gains a typed launch-authority startup contract "
+            "(workspace_bound trusted roots | explicit_unbounded "
+            "acknowledgement) validated by DapServer::new before any "
+            "debuggee process spawns; the two historical fail-open launch "
+            "paths are retired fail-closed",
+            "launch-args workspaceRoot may only narrow a trusted root; "
+            "trusted-root retargeting is rejected; authority identity is "
+            "an immutable sha256 over mode, canonical roots, and "
+            "acknowledgement",
+            "vscode/sublime/neovim clients pass host-owned workspace "
+            "authority; launch.json cwd cannot create or widen authority",
+            "dap editor-transport inventory and scorecard workflows gate "
+            "the client transport; DAP_USER_GUIDE documents Startup "
+            "Authority",
+        ],
+        "editor_manifest_or_protocol_effects": [
+            "dap startup contract: launch admitted only under installed "
+            "authority; --trusted-root (repeatable) and --allow-unbounded "
+            "CLI startup inputs, user/machine-owned sources only"
+        ],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#14523) of subject pair "
+        "(#8656)(#14523); merge_commit_sha of PR #14523 equals the "
+        "commit; issue #8656 is the tracked problem",
+    },
+    "PR#15443": {
+        "commits": ["9472177fcac6c43741b800e986dea619f20483e8"],
+        "subject": "fix(vscode): prefer packaged DAP adapter (#6694) "
+        "(#15443)",
+        "paths_or_components": [
+            "vscode-extension/scripts/vsix-inventory-baseline.json",
+            "vscode-extension/scripts/vsix-inventory-transition.json",
+            "vscode-extension/src/debugAdapter.ts",
+            "vscode-extension/src/test/debugAdapter.test.ts",
+        ],
+        "release_domains": ["editor", "install"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "packaged adapter now precedes the auto-download directory, "
+            "managed storage, and PATH in DAP executable selection"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "vscode-extension/src/test/debugAdapter.test.ts",
+            "vscode-extension/scripts/vsix-inventory-transition.json",
+        ],
+        "known_limitations": [
+            "selection proof is source-stage unit tests plus recorded "
+            "inventory transitions; installed packaged-VSIX selection "
+            "proof belongs to the open #6694/#6056 lane",
+            "in-range successor PR#15456 tightened the same seam by "
+            "rejecting incompatible packaged DAP targets (#15451)",
+            "later in-range startup-contract work changed the "
+            "surroundings, not this selection: launch authority "
+            "(PR#14523), processId attach fail-closed (PR#14402), "
+            "language-id coherence (PR#15810)",
+        ],
+        "open_pr_relationships": [
+            "16230-OPEN repackages the VSIX payload family (mapped "
+            "universal RC); packaged-target resolution reads package.json "
+            "__metadata.targetPlatform and the bin/<target> payload "
+            "layout this row selects within"
+        ],
+        "controlling_issues": ["6694"],
+        "invalidators": [
+            "packaged target metadata contract "
+            "(__metadata.targetPlatform) or bin/<target> payload layout "
+            "change",
+            "DAP executable selection precedence change",
+            "#16230 payload-shape conflict",
+        ],
+        "platforms_and_targets": ["vscode-packaged-dap", "portable"],
+        "artifact_or_route_effects": [
+            "packagedDapTargetDirectoryForContext resolves the shipped "
+            "adapter from the installed package.json "
+            "__metadata.targetPlatform (validated against "
+            "linux|alpine|darwin|win32 x64/arm64), falling back to one "
+            "host-derived target (musl-aware on Linux) with exactly one "
+            "executable bin/<target>/perl-dap[.exe] candidate; a clean "
+            "installed profile stays bound to the package it loaded "
+            "instead of an unrelated adapter from managed storage or PATH"
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#15443) of subject pair "
+        "(#6694)(#15443); merge_commit_sha of PR #15443 equals the "
+        "commit (verified 2026-09-25); issue #6694 is the tracked "
+        "problem",
+    },
+    "PR#15450": {
+        "commits": ["f5f0c05350e3e0053eef7d563f4f9d17330fabf9"],
+        "subject": "fix(dap): run and stop packaged Windows sessions "
+        "cleanly (#6694) (#15450)",
+        "paths_or_components": [
+            "crates/perl-dap/src/debug_adapter/mod.rs",
+            "crates/perl-dap/src/debug_adapter/process.rs",
+            "crates/perl-dap/src/debug_adapter/sync_utils.rs",
+            "crates/perl-dap/src/debug_adapter/tcp_attach_forwarder.rs",
+            "crates/perl-dap/src/debug_adapter/transport.rs",
+            "crates/perl-dap/tests/common/mod.rs",
+            "crates/perl-dap/tests/dap_lifecycle_event_body_e2e_test.rs",
+            "crates/perl-dap/tests/dap_stdio_transport_e2e.rs",
+            "crates/perl-dap/tests/debuggee_perl_launch_paths.rs",
+            "crates/perl-dap/tests/session_lifecycle_tests.rs",
+            "vscode-extension/src/test/published/journeySupport.ts",
+            "vscode-extension/src/test/published/packagedBundleJourney.test.ts",
+            "vscode-extension/src/test/publishedJourneyRegistration.test.ts",
+        ],
+        "release_domains": ["editor", "dap"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "crates/perl-dap/tests/session_lifecycle_tests.rs",
+            "crates/perl-dap/tests/debuggee_perl_launch_paths.rs",
+            "crates/perl-dap/tests/dap_stdio_transport_e2e.rs",
+            "vscode-extension/src/test/published/packagedBundleJourney.test.ts",
+        ],
+        "known_limitations": [
+            "proof is repo-CI mechanism stage (adapter e2e over real "
+            "adapter/debuggee processes plus the published-journey "
+            "harness); installed-VSIX wired-session proof belongs to the "
+            "open #6694/#6056 lane",
+            "later in-range repairs evolved the same seams rather than "
+            "reverting them: request-scoped drain barrier (PR#15851), "
+            "terminal-producer retirement before dispatch (PR#15738), "
+            "owned-subprocess descendant kill (PR#15944), bounded "
+            "Windows child cleanup instrumentation (PR#15817)",
+            "post-head suite work landed after the denominator head: "
+            "Windows-timing de-flake (PR#15948) and launch-authority "
+            "wiring in bare in-process factories (PR#16088)",
+            "the same squash commit carried release-topology and "
+            "inventory work outside this fragment's prefilter paths; "
+            "those files are dispositioned by other fragments",
+        ],
+        "open_pr_relationships": [
+            "15977-OPEN touches debug_adapter/mod.rs and "
+            "debuggee_perl_launch_paths.rs (Windows-host clippy residue)",
+            "13576-OPEN touches debug_adapter/mod.rs (prompt/context "
+            "suspension correlation)",
+        ],
+        "controlling_issues": ["6694"],
+        "invalidators": [
+            "EventSender admission/close contract change",
+            "Windows pipe-launch environment contract change (EMACS=1, "
+            "ReadLine=0 appended to the child's effective PERLDB_OPTS)",
+            "disconnect drain handshake or terminated-event emission "
+            "discipline change",
+            "packaged journey harness change",
+        ],
+        "platforms_and_targets": [
+            "windows",
+            "linux",
+            "vscode-packaged-dap",
+        ],
+        "artifact_or_route_effects": [
+            "Windows owned pipe launches mark the child EMACS=1 so "
+            "Strawberry Perl's debugger keeps its pipe transport, and "
+            "append ReadLine=0 to the child's effective PERLDB_OPTS "
+            "(case-insensitive lookup, user options preserved) so the "
+            "console ReadLine backend never calls GetConsoleMode on a "
+            "pipe",
+            "disconnect drains admitted events through an "
+            "EventSender admission gate whose close never waits on a "
+            "producer; terminate-then-disconnect no longer emits a "
+            "second terminated event for the already-closed session",
+            "packaged-journey VS Code tests exercise real packaged DAP "
+            "startup and clean shutdown",
+        ],
+        "editor_manifest_or_protocol_effects": [
+            "dap disconnect/terminated event sequence discipline",
+        ],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#15450) of subject pair "
+        "(#6694)(#15450); merge_commit_sha of PR #15450 equals the "
+        "commit (verified 2026-09-25); issue #6694 is the tracked "
+        "problem",
+    },
+    "PR#12742": {
+        "commits": ["ee8427f6d63bc8b6dc3131b0ca4ca37689bcd384"],
+        "subject": "security(install): inspect standalone archives "
+        "before staging (#8352) (#12742)",
+        "paths_or_components": [
+            ".changes/unreleased/product-8352-Security-114500.yaml",
+            ".github/workflows/installer-checksum-contract.yml",
+            ".github/workflows/installer-powershell-checksum-contract.yml",
+            "install.ps1",
+            "policy/standalone-archive-safety.v1.toml",
+            "scripts/install.sh",
+            "scripts/tests/lib/standalone_archive_fixtures.py",
+            "scripts/tests/test-install-ps1-archive-safety.ps1",
+            "scripts/tests/test-install-ps1-checksum-required.ps1",
+            "scripts/tests/test-installer-archive-safety.sh",
+        ],
+        "release_domains": ["install", "security", "release"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "covered",
+        "migration_or_upgrade_refs": [
+            "upgrade: standalone installers refuse archives the naive "
+            "tar -xzf / Expand-Archive path accepted (links, special "
+            "types, unexpected or misnamed members, oversized entries); "
+            "the changelog fragment carries Breaking: yes and "
+            "PERL_LSP_ARCHIVE_SAFETY_MAX_* overrides exist for evidence "
+            "runs, defaulting to the policy ceilings"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/tests/test-installer-archive-safety.sh",
+            "scripts/tests/test-install-ps1-archive-safety.ps1",
+            "scripts/tests/lib/standalone_archive_fixtures.py",
+            ".github/workflows/installer-checksum-contract.yml",
+            ".github/workflows/installer-powershell-checksum-contract.yml",
+        ],
+        "known_limitations": [
+            "in-range repair f941be888 (row ISS#11508, #11508 still "
+            "OPEN): this unit's tar -tf/-tv classification trusted human "
+            "tar renderings, so BusyBox links and stripped ../ names "
+            "wearing accepted topology names passed inspection and were "
+            "attested; inspection now decodes ustar/GNU headers, refuses "
+            "PAX and GNU long-name records fail-closed, and the macOS "
+            "one-true-awk leg remains open on #11508",
+            "b62ccabc7 (row ISS#8359, #8359 OPEN) later made perllsp/"
+            "perl-dap promotion atomic on the same staging seam; "
+            "post-head repairs #16312 and #16316 (#16310) require gzip "
+            "on the release path and fail verify_install closed on an "
+            "unrunnable binary",
+            "no published release carries the preflight (v0.17.0 "
+            "2026-06-28 predates the unit, none since), so no real "
+            "release archive has been installed through it; CI proves "
+            "the bash and pwsh adapters on hosted runners only and "
+            "Windows archive extraction acceptance belongs to #16408/"
+            "#6056",
+            "policy/standalone-archive-safety.v1.toml is documentation "
+            "of record, not machine-read at install time: installers "
+            "embed the constants because they run without a checkout, "
+            "and the tests assert identifier equality",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["8352-CLOSED"],
+        "invalidators": [
+            "tar header-decoder or member-law rework changing the "
+            "inspection contract (owner row ISS#11508, #11508 OPEN)",
+            "standalone-archive-safety.v1.toml limit or membership "
+            "change without the embedded installer constants following",
+            "staging or promotion rework (row ISS#8359) moving the "
+            "private-staging or fail-unchanged boundary",
+        ],
+        "platforms_and_targets": [
+            "linux x86_64/aarch64 (musl/gnu) and macOS x86_64/aarch64: "
+            "bash installer inspects tar.gz via a capped gzip -dc bound "
+            "and ustar header classification",
+            "windows: install.ps1 inspects .zip members (symlink mode "
+            "bit, reserved device names, trailing dot/space components) "
+            "and stages windows flat or nested package layouts",
+        ],
+        "artifact_or_route_effects": [
+            "standalone installers replace naive tar -xzf / "
+            "Expand-Archive with a versioned preflight "
+            "(standalone-archive-safety.v1): compressed/uncompressed/"
+            "entry size ceilings, entry-count and path caps, canonical "
+            "member paths (no absolute/backslash/drive/UNC/ADS/../ or "
+            "reserved device names), type admission (regular files plus "
+            "one package directory; links and special types refused), "
+            "duplicate and case-fold collision refusal, executable "
+            "allowlist (perllsp, perl-dap), required topology members",
+            "only accepted members are written into a new private "
+            "staging root; any failure leaves the install destination "
+            "and known-good files unchanged",
+            "archive_safety_receipt binds policy id, layout kind, and "
+            "archive plus member SHA256 digests without private paths",
+            "installer-checksum-contract and "
+            "installer-powershell-checksum-contract workflows become "
+            "checksum and archive safety, run the new bash and pwsh "
+            "suites against the shared fixture library, and raise their "
+            "timeouts",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#12742) of subject pair "
+        "(#8352)(#12742); merge_commit_sha of PR #12742 equals the "
+        "commit; issue #8352 is the tracked problem",
+    },
+    "PR#12808": {
+        "commits": ["6517541baee0d8fc0338578cbc45a201fa38d60c"],
+        "subject": "security(vscode): bound managed archive download "
+        "and extract (#7432) (#12808)",
+        "paths_or_components": [
+            ".changes/unreleased/vscode-12808-Security-213000.yaml",
+            "vscode-extension/src/boundedFileDownload.ts",
+            "vscode-extension/src/downloader.ts",
+            "vscode-extension/src/managedArchiveExtract.ts",
+            "vscode-extension/src/managedArchiveSafetyPolicy.ts",
+            "vscode-extension/src/test/boundedFileDownload.test.ts",
+            "vscode-extension/src/test/downloader.test.ts",
+            "vscode-extension/src/test/managedArchiveExtract.test.ts",
+            "vscode-extension/src/test/managedArchiveSafetyPolicy.test.ts",
+        ],
+        "release_domains": ["editor", "install", "security"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "covered",
+        "migration_or_upgrade_refs": [
+            "upgrade: managed candidate downloads gain a hard compressed-"
+            "byte ceiling independent of the timeout and delete partial "
+            "output on oversize, error, and cancel; extraction admits "
+            "only the perllsp server plus optional perl-dap; no settings "
+            "migration"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "vscode-extension/src/test/managedArchiveSafetyPolicy.test.ts",
+            "vscode-extension/src/test/managedArchiveExtract.test.ts",
+            "vscode-extension/src/test/boundedFileDownload.test.ts",
+            "vscode-extension/src/test/downloader.test.ts",
+        ],
+        "known_limitations": [
+            "unit/source stage only; installed managed-download "
+            "acceptance belongs to the #6056 lane",
+            "in-range repairs on the same seam stay owned by their own "
+            "not_proven rows: PR#14423 and PR#14940 (#14422 CLOSED) "
+            "complete bounded-download cleanup before rejection, PR#15221 "
+            "(#15219 CLOSED) replaces the AdmZip reader with yauzl after "
+            "the vulnerable-dependency finding, and PR#15494 (#15493 "
+            "CLOSED) decouples the GitHub credential policy from "
+            "proxyStrictSSL in downloader.ts",
+            "zip membership preflight is fail-closed on ZIP64 sentinels: "
+            "a legitimate ZIP64 managed artifact would be refused until "
+            "reviewed (current managed Windows artifacts are not ZIP64)",
+            "extractDir symlink/junction refusal and alias unlinks are "
+            "proven in hosted CI (junction on win32, directory symlink "
+            "elsewhere), not on a real installed machine",
+            "the envelope does not cover release-JSON metadata (#6018), "
+            "provenance (#7425), transaction schemas (#11099), or "
+            "owned-state manifests (#11470)",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["7432-CLOSED"],
+        "invalidators": [
+            "managedArchiveSafetyPolicy limit or member-law edits "
+            "without re-proof",
+            "archive reader swap changing preflight ordering or "
+            "materialization timing (row PR#15221)",
+            "downloader rework dropping the bounded ceilings or "
+            "partial-file deletion (rows PR#14423/PR#14940)",
+        ],
+        "platforms_and_targets": [
+            "vscode extension host: windows .zip managed path (DOS "
+            "reparse-point and junction proof on win32 CI runners), "
+            "linux/macos tar.gz path via the tar parser",
+            "vscode-managed managed-candidate archives from cargo-dist "
+            "per-target releases; checksum catalog capped separately "
+            "from the archive envelope",
+        ],
+        "artifact_or_route_effects": [
+            "managed downloads run through downloadBoundedFile: "
+            "oversized Content-Length is rejected before the body, "
+            "streaming byte counts destroy chunked or lying responses at "
+            "the ceiling, and partial destinations are deleted on "
+            "oversize, error, timeout, and cancel; SHA256SUMS is capped "
+            "separately at 1 MiB",
+            "tar.gz and zip members are inspected before extraction: "
+            "entry counts (zip EOCD checked before materialization, "
+            "ZIP64 sentinels fail-closed, central-directory budget), "
+            "per-entry size, path escape, link and special types, and "
+            "duplicate or case-colliding executable identities",
+            "extraction writes only the perllsp server and optional "
+            "perl-dap into the extract root; a symlink/junction "
+            "extractDir is refused and alias trees are unlinked without "
+            "following them (DOS reparse-point attribute is a forbidden "
+            "link)",
+            "limits live in vscode-managed-archive-safety.v1 mirroring "
+            "the standalone installer sibling (#8352) so cargo-dist "
+            "artifacts fit; changing a limit is a reviewable policy edit",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#12808) of subject pair "
+        "(#7432)(#12808); merge_commit_sha of PR #12808 equals the "
+        "commit; issue #7432 is the tracked problem",
+    },
+    "PR#15260": {
+        "commits": ["26bef7645add75885fe2ba62ed6ad8e68a577931"],
+        "subject": "feat(release): add opt-in checksum topology v2 "
+        "(#6067) (#15260)",
+        "paths_or_components": [
+            "docs/releases/v0.18-release-topology.md",
+            "policy/non-rust-allowlist.toml",
+            "schemas/release_topology.v2.schema.json",
+            "scripts/generate_release_topology.py",
+            "scripts/release_build_identity.py",
+            "scripts/release_topology_json.py",
+            "scripts/test_generate_release_topology.py",
+            "scripts/test_release_build_identity.py",
+            "scripts/test_release_topology_json.py",
+            "scripts/tests/test-validate-public-release-claims.py",
+            "scripts/validate_public_release_claims.py",
+            "xtask/Cargo.toml",
+            "xtask/examples/install_transition.rs",
+            "xtask/examples/public_beta_experience.rs",
+            "xtask/src/release_topology_json.rs",
+        ],
+        "release_domains": ["release", "install", "security"],
+        "primary_disposition": "release_integrity_or_lineage",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "upgrade: adopting v2 requires regenerating fresh frozen and "
+            "prepared v2 authorities with byte-identical selected schema "
+            "files; a v1 frozen manifest cannot prepare v2 or vice "
+            "versa, and rolling back the opt-in leaves v1 evidence and "
+            "default callers intact with no automatic downgrade"
+        ],
+        "api_schema_package_effects": [
+            "schemas/release_topology.v2.schema.json (new; const 2 adds "
+            "a required checksum_assets row; v1 schema and historical "
+            "manifest bytes unchanged)",
+            "policy/non-rust-allowlist.toml: two production "
+            "release-contract entries (scripts/release_topology_json.py "
+            "admission, v2 schema)",
+            "xtask: serde_json gains the raw_value feature for the Rust "
+            "exact-admission port",
+        ],
+        "proof_owner_refs": [
+            "scripts/test_generate_release_topology.py",
+            "scripts/test_release_topology_json.py",
+            "scripts/test_release_build_identity.py",
+            "scripts/tests/test-validate-public-release-claims.py",
+            "policy/non-rust-allowlist.toml covered_by pins the "
+            "cross-checks (unittest modules, public-claims validator, "
+            "cargo xtask check-file-policy)",
+        ],
+        "known_limitations": [
+            "opt-in only on current main: the generator default remains "
+            "SCHEMA = 1, no workflow requests v2, and no frozen or "
+            "prepared v2 authority exists in-repo; topology convergence "
+            "stays with #6067 (OPEN)",
+            "the inventory declares expected checksum subjects and does "
+            "not contain built digests nor prove checksum generation, "
+            "publication, SBOM, attestation, or Docker completion "
+            "(#4145 owns checksum production, #8970 Docker identity)",
+            "release.yml producer recognition is a fail-closed body "
+            "contract, not execution; later rows re-proofed it (PR#15447 "
+            "publication-dependency alignment, PR#15449 external "
+            "digest-packet limitation, row ISS#15445 Windows downloader "
+            "constants, PR#15911 pseudo-return guards, PR#15726 "
+            "attestation subjects)",
+            "topology versions extended to 3 and 4 after the head and "
+            "the reviewed v4 row PR#16207 owns the mapped-RC transition; "
+            "the exact-number admission law (integral semantics, "
+            "NaN/Infinity and duplicate-schema-field refusal) still "
+            "governs all four versions",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["6067-OPEN"],
+        "invalidators": [
+            "topology admission or producer-recognition rework in the "
+            "shared generator (rows PR#15447/PR#15449/PR#15726/PR#15911/"
+            "ISS#15445)",
+            "v3/v4 evolution changing the accepted-version set or the "
+            "exact-number admission law (reviewed v4 row PR#16207)",
+            "release.yml consolidated-SHA256SUMS producer change without "
+            "the fail-closed recognizer following",
+        ],
+        "platforms_and_targets": [
+            "portable release tooling: python stdlib admission plus the "
+            "xtask Rust port; checksum_assets archive_targets resolve "
+            "through binary_targets rows covering linux, macos, and "
+            "windows release archives",
+        ],
+        "artifact_or_route_effects": [
+            "release_topology.v2 is an explicit opt-in (--schema-version "
+            "2 on generation and check) adding exactly one "
+            "checksum_assets row: public SHA256SUMS, sha256, "
+            "github_release channel, sorted unique archive_targets "
+            "covering exactly binary_targets; v1 stays the default, a "
+            "mismatched or unsupported selection fails, and the checker "
+            "never infers an upgrade",
+            "the generator recognizes the consolidated-SHA256SUMS "
+            "producer body in .github/workflows/release.yml fail-closed: "
+            "complete ordered prefix, both archive formats, sorting, "
+            "hash algorithm, and output name, with duplicate filename "
+            "refusal; extra, missing, reordered, or altered steps fail "
+            "and isolated presence of download plus producer proves "
+            "nothing",
+            "all six topology boundaries admit an exact top-level schema "
+            "number before ordinary JSON decoding: one schema field, "
+            "integral-number semantics (2.00 valid, near-integral "
+            "literals and ambiguous duplicates fail), NaN/Infinity "
+            "rejected; original evidence bytes are preserved",
+            "bounded consumers (build identity, public-claim validation, "
+            "install-transition, public-beta experience, xtask "
+            "release_topology_json.rs) accept v1/v2 projections; "
+            "public-beta child envelopes must name the matching schema "
+            "and gain no checksum-completeness authority",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#15260) of subject pair "
+        "(#6067)(#15260); merge_commit_sha of PR #15260 equals the "
+        "commit; issue #6067 is the tracked problem",
+    },
+    "PR#15103": {
+        "commits": ["2144a9a0779f2d026459945656f9d165da2e8c41"],
+        "subject": "docs(windows): reconcile published installer guidance "
+        "(#15101) (#15103)",
+        "paths_or_components": [
+            "docs/how-to/INSTALLATION.md",
+            "docs/tutorials/GETTING_STARTED.md",
+        ],
+        "release_domains": ["install", "docs"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "Windows installer guidance: the broken floating published "
+            "script was replaced by a pinned published-script route plus "
+            "the manual archive as the full both-binaries path"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "docs/how-to/INSTALLATION.md",
+            "docs/tutorials/GETTING_STARTED.md",
+        ],
+        "known_limitations": [
+            "published-script checksum verification is warn-and-continue "
+            "when SHA256SUMS is missing, unparseable, or unhashable - "
+            "not fail-closed, and never independent publisher "
+            "provenance",
+            "the published script installs perllsp.exe only: no "
+            "perl-dap.exe, no atomic product-unit promotion, no rollback; "
+            "PATH is never updated automatically and a similar directory "
+            "name can make its PATH check report success incorrectly",
+            "x64-only: Windows 11 ARM64 runs the x64 archive under "
+            "emulation; Windows 10 ARM64 is rejected before download and "
+            "must build from source",
+            "guidance pins publication revision 866d832 on the unmerged "
+            "publication sync line ahead of the default-branch script; "
+            "#4348 remains open",
+            "no repository-recorded executed run of the pinned published "
+            "route exists (post-publish smoke Section 1b has zero runs "
+            "and skips Windows), so the route stays mechanism-stage",
+            "post-head repairs revised the same surfaces: wrapper "
+            "identity-bound guarantee (PR#16398, #16396 still open) and "
+            "wrapper positional args (PR#16315); in-range PR#16371 added "
+            "generated bootstrap values to the GETTING_STARTED Option 2 "
+            "section",
+        ],
+        "open_pr_relationships": [
+            "16359-OPEN touches GETTING_STARTED.md (config-limits "
+            "examples only; installer sections untouched)",
+            "16396-OPEN tracks the remaining wrapper-docs repairs",
+        ],
+        "controlling_issues": ["15101"],
+        "invalidators": [
+            "publication-repo sync (#4348) supersedes or changes pinned "
+            "revision 866d832",
+            "published-script checksum or ARM64 fallback semantics "
+            "change",
+            "wrapper/installer identity docs change again (#16396)",
+        ],
+        "platforms_and_targets": [
+            "windows-x64",
+            "windows-arm64-emulation-bounded",
+        ],
+        "artifact_or_route_effects": [
+            "INSTALLATION.md published-powershell-script section documents "
+            "the pinned publication revision (asset name "
+            "perllsp-<version>-x86_64-pc-windows-msvc.zip, SHA256SUMS "
+            "check with labeled warn-and-continue limits, "
+            "%USERPROFILE%\\.local\\bin default, manual PATH steps, "
+            "perllsp --version verification) alongside the manual "
+            "archive route that carries both perllsp.exe and perl-dap.exe",
+            "GETTING_STARTED.md Windows pointer now routes readers to "
+            "the reviewed INSTALLATION.md sections instead of declaring "
+            "every published-script use broken",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "first_mile",
+        "grouping_evidence": "trailing (#15103) of subject pair "
+        "(#15101)(#15103); merge_commit_sha of PR #15103 equals the "
+        "commit (verified 2026-09-25); issue #15101 is the tracked "
+        "reconciliation",
+    },
+}
+
+
+def git(*args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        try:
+            err = proc.stderr.decode("utf-8", errors="strict").strip()
+        except UnicodeDecodeError as exc:
+            raise FragmentError(
+                f"git {' '.join(args)} failed with undecodable stderr: {exc}"
+            ) from exc
+        raise FragmentError(f"git {' '.join(args)} failed: {err}")
+    try:
+        return proc.stdout.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise FragmentError(
+            f"git {' '.join(args)} produced undecodable output: {exc}"
+        ) from exc
+
+
+def resolve_range() -> None:
+    for sha in (START_SHA, OBSERVED_HEAD):
+        out = git("cat-file", "-t", sha).strip()
+        if out != "commit":
+            raise FragmentError(f"{sha} is not a commit")
+
+
+def list_non_merges() -> list[dict]:
+    raw = git(
+        "log",
+        "--no-merges",
+        "--format=%H%x1f%s%x1f%b%x1e",
+        f"{START_SHA}..{OBSERVED_HEAD}",
+        "--",
+        *PREFILTER,
+    )
+    records = []
+    for chunk in raw.split("\x1e"):
+        chunk = chunk.strip("\n")
+        if not chunk.strip():
+            continue
+        sha, subject, body = chunk.split("\x1f")
+        records.append({"sha": sha, "subject": subject, "body": body.strip()})
+    records.sort(key=lambda r: r["sha"])
+    # Population must reproduce the reviewed draft exactly; order here is
+    # canonical-by-sha for determinism (draft file order was history order).
+    if len(records) != EXPECTED_NON_MERGE:
+        raise FragmentError(
+            f"non-merge record count {len(records)} != {EXPECTED_NON_MERGE}"
+        )
+    return records
+
+
+def list_merges() -> list[dict]:
+    # Complete range enumeration: every merge in START_SHA..OBSERVED_HEAD
+    # touching the prefilter, WITHOUT history simplification. A simplified
+    # `git log -- paths` hides 72 in-range merges (proven: simplified yields
+    # 22, unsimplified yields 94), several carrying merge-unique prefilter
+    # content. `--full-history` disables simplification; the range bounds
+    # keep the pre-range history (262-94=168 older merges) out of scope by
+    # the denominator's own definition. Deterministic: no traversal order
+    # leaks into the artifact (rows sort by sha; only counts are stored).
+    raw = git(
+        "log",
+        "--merges",
+        "--full-history",
+        "--format=%H%x1f%s%x1e",
+        f"{START_SHA}..{OBSERVED_HEAD}",
+        "--",
+        *PREFILTER,
+    )
+    merges = []
+    for chunk in raw.split("\x1e"):
+        chunk = chunk.strip("\n")
+        if not chunk.strip():
+            continue
+        sha, subject = chunk.split("\x1f")
+        merges.append({"sha": sha, "subject": subject})
+    return merges
+
+
+def commit_files(sha: str, *, merge: bool = False) -> list[str]:
+    if merge:
+        first_parent = git("rev-parse", f"{sha}^1").strip()
+        raw = git("diff", "--name-only", first_parent, sha, "--", *PREFILTER)
+    else:
+        raw = git("diff-tree", "--no-commit-id", "--name-only", "-r", sha)
+    return sorted({line for line in raw.splitlines() if line.strip()})
+
+
+def group_unit_id(subject: str) -> str:
+    refs = PAREN_REF.findall(subject)
+    if len(refs) >= 2:
+        if refs[-1] in PLACEHOLDER_ISSUE_NUMBERS:
+            refs = [r for r in refs if r not in PLACEHOLDER_ISSUE_NUMBERS]
+            if not refs:
+                return "ISS#0000"
+            if len(refs) >= 2:
+                return f"PR#{refs[-1]}"
+            return f"ISS#{refs[0]}"
+        return f"PR#{refs[-1]}"
+    if len(refs) == 1:
+        return f"ISS#{refs[0]}"
+    return "NOREF"
+
+
+def split_unit_id(record: dict, provisional: str) -> str:
+    """Replace the placeholder sentinel with a per-commit identity.
+
+    (#0000) carries no issue identity, so two commits sharing that marker
+    must never become one unit from title text. Each becomes its own
+    COMMIT#<short-sha> unit.
+    """
+    if provisional == "ISS#0000":
+        return f"COMMIT#{record['sha'][:8]}"
+    return provisional
+
+
+def file_family(path: str) -> str | None:
+    for prefix in EDITOR_PREFIXES:
+        if path.startswith(prefix):
+            return "editor"
+    for prefix in DISTRIBUTION_PREFIXES:
+        if path.startswith(prefix):
+            return "distribution"
+    for prefix in FIRST_MILE_PREFIXES:
+        if path.startswith(prefix):
+            return "first_mile"
+    if path.startswith("scripts/"):
+        base = path.rsplit("/", 1)[-1].lower()
+        if any(key in base for key in SCRIPTS_DISTRIBUTION_KEYWORDS):
+            return "distribution"
+        return None
+    return None
+
+
+def route_fragment(files: list[str]) -> tuple[str, str]:
+    families = {file_family(path) for path in files} - {None}
+    if len(families) == 1:
+        only = next(iter(families))
+        return only, "single_family_paths"
+    return "cross_domain_unassigned", "mixed_or_mechanics_paths"
+
+
+def merge_parents(sha: str) -> tuple[str, str]:
+    parents = git("rev-parse", f"{sha}^1", f"{sha}^2").split()
+    if len(parents) != 2:
+        raise FragmentError(f"merge {sha} does not have two parents")
+    return parents[0], parents[1]
+
+
+def resolution_files(sha: str, first_parent: str) -> list[str]:
+    """Prefilter paths where the merge tree differs from its first parent.
+
+    Empty means the merge contributes zero prefilter content beyond its
+    first-parent line (TREESAME): whatever that line carries is either
+    mapped (in-range records) or out of scope (pre-range), never new.
+    """
+    raw = git("diff", "--name-only", first_parent, sha, "--", *PREFILTER)
+    return sorted({line for line in raw.splitlines() if line.strip()})
+
+
+def tree_blob(commit: str, path: str) -> str | None:
+    # Absence is proven by ls-tree (empty output), never by a failed
+    # rev-parse: any git error below raises instead of masquerading as a
+    # deletion. Error direction stays fail-closed toward unit creation.
+    listing = git("ls-tree", commit, "--", path)
+    if not [line for line in listing.splitlines() if line.strip()]:
+        return None
+    proc = subprocess.run(
+        ["git", "rev-parse", f"{commit}:{path}"],
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        try:
+            err = proc.stderr.decode("utf-8", errors="strict").strip()
+        except UnicodeDecodeError as exc:
+            raise FragmentError(
+                f"git rev-parse produced undecodable stderr: {exc}"
+            ) from exc
+        raise FragmentError(f"git rev-parse {commit}:{path} failed: {err}")
+    try:
+        return proc.stdout.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise FragmentError(
+            f"undecodable blob id for {commit}:{path}: {exc}"
+        ) from exc
+
+
+def range_holders(blob_id: str, path: str) -> list[str]:
+    """In-range non-merge commits whose tree holds this exact blob at path."""
+    raw = git(
+        "log", "--format=%H", f"--find-object={blob_id}",
+        f"{START_SHA}..{OBSERVED_HEAD}", "--", path,
+    )
+    return sorted({line for line in raw.splitlines() if line.strip()})
+
+
+def subject_shape(subject: str) -> str:
+    if subject.startswith(QUEUE_PREFIX):
+        return "queue-shaped"
+    if SYNC_SUBJECT.match(subject):
+        return "sync-shaped"
+    return "other-shaped"
+
+
+def verify_related_remerge(non_merge_shas: set[str]) -> dict:
+    """Mechanically prove RELATED_MERGE_984 carries no uncovered content.
+
+    Proven facts (not prose): against fb68dd94 it differs in exactly one
+    prefilter file, scripts/ci/validate_gate_lane_mapping.py, whose blob
+    sits in the mapped range records 3dc8ade1 (#4976) and b86ba02a
+    (#5426) — the re-merge pulls the #4976 line content, which the range
+    already maps. All other differences are outside the prefilter and out
+    of Domain-6 scope.
+    """
+    base = "fb68dd94a33424bf5007e686306b07c6bb2096e6"
+    target = "scripts/ci/validate_gate_lane_mapping.py"
+    holders = {
+        "3dc8ade1c8bd1bda6bec61331ccfd5c82cacc66e",
+        "b86ba02a1840199d17d621ab36049ba8294e3a69",
+    }
+    raw = git("diff", "--name-only", base, RELATED_MERGE_984, "--", *PREFILTER)
+    files = sorted({line for line in raw.splitlines() if line.strip()})
+    if files != [target]:
+        raise FragmentError(
+            f"related re-merge delta drifted, expected [{target}]: {files}"
+        )
+    if not holders <= non_merge_shas:
+        raise FragmentError(
+            "related re-merge holders are not all mapped range records"
+        )
+    blob_id = tree_blob(RELATED_MERGE_984, target)
+    actual = {
+        h
+        for h in range_holders(blob_id, target)
+        if h in non_merge_shas
+    }
+    if actual != holders:
+        raise FragmentError(
+            f"related re-merge blob holders drifted: {sorted(actual)}"
+        )
+    return {
+        "sha": RELATED_MERGE_984,
+        "subject": "merge: reconcile release lineage into swarm main (#4976)",
+        "reason": "related-record",
+        "detail": (
+            "first-parent-visible re-merge of fb68dd94; prefilter delta "
+            "against fb68dd94 is exactly "
+            "scripts/ci/validate_gate_lane_mapping.py whose blob sits in "
+            "mapped range records 3dc8ade1 (#4976) and b86ba02a (#5426); "
+            "recorded as related, never as a separate unit"
+        ),
+    }
+
+
+def classify_merges(
+    merges: list[dict], non_merge_shas: set[str]
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """Sort every enumerated merge into kept / related / excluded / created.
+
+    - kept: explicit KEEP_MERGES units (file-verified later).
+    - related: RELATED_MERGE_984 (mechanically verified, recorded only).
+    - excluded content-free: merge tree equals first parent on prefilter
+      paths (zero new content by construction).
+    - excluded blob-covered: every resolution path's merge blob already
+      sits in a mapped range record's tree (covering commits named).
+    - created: resolution carries blobs no range record holds (pre-range
+      versions or merge deletions) -> new merge units, never silent.
+    Anything else fails closed.
+    """
+    kept = []
+    related_rows: list[dict] = []
+    excluded: list[dict] = []
+    created: list[dict] = []
+    stats = {"content_free": 0, "blob_covered": 0}
+    seen = set()
+    for merge in merges:
+        sha, subject = merge["sha"], merge["subject"]
+        if sha in seen:
+            raise FragmentError(f"merge {sha} enumerated twice")
+        seen.add(sha)
+        if sha in KEEP_MERGES:
+            kept.append(merge)
+            continue
+        if sha == RELATED_MERGE_984:
+            related_rows.append(verify_related_remerge(non_merge_shas))
+            continue
+        first_parent, _second_parent = merge_parents(sha)
+        files = resolution_files(sha, first_parent)
+        shape = subject_shape(subject)
+        if not files:
+            excluded.append(
+                {
+                    "sha": sha,
+                    "subject": subject,
+                    "reason": "content-free",
+                    "detail": (
+                        f"{shape}; merge tree equals first parent on all "
+                        "prefilter paths, zero new content"
+                    ),
+                }
+            )
+            stats["content_free"] += 1
+            continue
+        uncovered: list[str] = []
+        covered_notes: list[str] = []
+        for path in files:
+            blob_id = tree_blob(sha, path)
+            if blob_id is None:
+                uncovered.append(f"{path} (deleted-in-merge)")
+                continue
+            holders = [
+                h for h in range_holders(blob_id, path)
+                if h in non_merge_shas
+            ]
+            if holders:
+                covered_notes.append(f"{path}->{sorted(holders)[0][:8]}")
+            else:
+                uncovered.append(f"{path} (blob-predates-range)")
+        if not uncovered:
+            excluded.append(
+                {
+                    "sha": sha,
+                    "subject": subject,
+                    "reason": "blob-covered",
+                    "detail": (
+                        f"{shape}; every resolution blob sits in a mapped "
+                        "range record: " + "; ".join(covered_notes)
+                    ),
+                }
+            )
+            stats["blob_covered"] += 1
+            continue
+        created.append(
+            {
+                "sha": sha,
+                "subject": subject,
+                "files": files,
+                "uncovered": uncovered,
+                "shape": shape,
+            }
+        )
+    if {m["sha"] for m in kept} != set(KEEP_MERGES):
+        raise FragmentError("kept merge set drifted from KEEP_MERGES")
+    if len(related_rows) != 1:
+        raise FragmentError("related re-merge record missing")
+    return kept, related_rows, excluded, created
+
+
+def build_work_units(records: list[dict]) -> tuple[list[dict], list[dict]]:
+    by_unit: dict[str, list[dict]] = {}
+    for record in records:
+        unit_id = split_unit_id(record, group_unit_id(record["subject"]))
+        by_unit.setdefault(unit_id, []).append(record)
+    if len(by_unit) != EXPECTED_UNITS:
+        raise FragmentError(
+            f"work-unit identity count {len(by_unit)} != {EXPECTED_UNITS}"
+        )
+    if set(by_unit) != {
+        split_unit_id(r, group_unit_id(r["subject"])) for r in records
+    }:
+        raise FragmentError("unit identity mismatch")
+    if any(u == "ISS#0000" or u == "PR#0000" for u in by_unit):
+        raise FragmentError("placeholder number acts as work-unit identity")
+    # Draft labeled transplant landings ISS#N; merge_commit_sha equality
+    # proves PR-keying. The grouping rule already yields PR#N; record why.
+    for sha, correct in TRANSPLANT_CORRECTIONS.items():
+        found = [u for u, rs in by_unit.items() if any(r["sha"] == sha for r in rs)]
+        if found != [correct]:
+            raise FragmentError(
+                f"transplant correction for {sha} failed: {found}"
+            )
+    files_cache = {r["sha"]: commit_files(r["sha"]) for r in records}
+    units = []
+    noref_watchlist = []
+    for unit_id in sorted(by_unit):
+        members = sorted(by_unit[unit_id], key=lambda r: r["sha"])
+        commits = [r["sha"] for r in members]
+        files = sorted({f for r in members for f in files_cache[r["sha"]]})
+        if unit_id in SEEDS:
+            seed = SEEDS[unit_id]
+            if commits != seed["commits"]:
+                raise FragmentError(f"seed {unit_id} commit set drifted")
+            if files != sorted(seed["paths_or_components"]):
+                raise FragmentError(
+                    f"seed {unit_id} effective file list drifted from the "
+                    "reviewed row"
+                )
+            row = {
+                "work_unit_id": unit_id,
+                "commits": commits,
+                "grouping_evidence": seed["grouping_evidence"],
+                "primary_fragment": seed["primary_fragment"],
+                "primary_fragment_basis": "seed_review",
+                "disposition_state": "reviewed",
+                "paths_or_components": files,
+                "release_domains": seed["release_domains"],
+                "primary_disposition": seed["primary_disposition"],
+                "reachable_installed_effect": seed[
+                    "reachable_installed_effect"
+                ],
+                "public_claim_refs": seed["public_claim_refs"],
+                "release_note_disposition": seed["release_note_disposition"],
+                "migration_or_upgrade_refs": seed["migration_or_upgrade_refs"],
+                "api_schema_package_effects": seed[
+                    "api_schema_package_effects"
+                ],
+                "proof_owner_refs": seed["proof_owner_refs"],
+                "known_limitations": seed["known_limitations"],
+                "open_pr_relationships": seed["open_pr_relationships"],
+                "controlling_issues": seed["controlling_issues"],
+                "invalidators": seed["invalidators"],
+                "platforms_and_targets": seed["platforms_and_targets"],
+                "artifact_or_route_effects": seed["artifact_or_route_effects"],
+                "editor_manifest_or_protocol_effects": seed[
+                    "editor_manifest_or_protocol_effects"
+                ],
+                "installed_evidence_stage": seed["installed_evidence_stage"],
+            }
+            units.append(row)
+            continue
+        fragment, basis = route_fragment(files)
+        subjects = sorted({r["subject"] for r in members})
+        if unit_id.startswith("COMMIT#"):
+            evidence = (
+                "subject carries placeholder (#0000) with no issue identity; "
+                "per-commit unit split from the former ISS#0000 group, "
+                "disposition owns verification"
+            )
+        elif len(subjects) == 1:
+            refs = PAREN_REF.findall(subjects[0])
+            if len(refs) >= 2:
+                evidence = (
+                    f"trailing (#{refs[-1]}) of subject pair; provisional "
+                    "PR-keyed unit, merge_commit_sha not verified, "
+                    "disposition owns verification"
+                )
+            elif len(refs) == 1:
+                evidence = (
+                    f"lone (#{refs[0]}) in subject; provisional "
+                    "issue-grouped direct push, relationship not verified, "
+                    "disposition owns verification"
+                )
+            else:
+                body_refs = sorted(
+                    {m for m in BODY_REF.findall(members[0]["body"])}
+                )
+                evidence = (
+                    "no (#[0-9]+) in subject; #10305 adjudication owns "
+                    "identity"
+                )
+                if body_refs:
+                    evidence += (
+                        "; body mentions candidate "
+                        + ", ".join(f"#{n}" for n in body_refs)
+                        + " (unverified relationship, not a regroup)"
+                    )
+        else:
+            evidence = (
+                f"{len(members)} commits share provisional unit {unit_id}; "
+                "per-commit subjects retained below; title similarity "
+                "alone never groups, disposition verifies each member"
+            )
+            if unit_id == "NOREF":
+                body_notes = []
+                for r in members:
+                    refs_in_body = sorted(
+                        set(BODY_REF.findall(r["body"]))
+                    )
+                    if refs_in_body:
+                        body_notes.append(
+                            f"{r['sha'][:8]}->"
+                            + ",".join(f"#{n}" for n in refs_in_body)
+                        )
+                if body_notes:
+                    evidence += (
+                        "; body mentions candidate "
+                        + "; ".join(body_notes)
+                        + " (unverified relationship, not a regroup; "
+                        "commits stay NOREF)"
+                    )
+        row = {
+            "work_unit_id": unit_id,
+            "commits": commits,
+            "grouping_evidence": evidence,
+            "primary_fragment": fragment,
+            "primary_fragment_basis": basis,
+            "disposition_state": "not_proven",
+            "paths_or_components": files,
+        }
+        if len(subjects) > 1:
+            row["member_subjects"] = [
+                {"commit": r["sha"], "subject": r["subject"]} for r in members
+            ]
+        units.append(row)
+        if unit_id == "NOREF":
+            for r in members:
+                if not BODY_REF.search(r["subject"] + "\n" + r["body"]):
+                    noref_watchlist.append(
+                        {
+                            "commit": r["sha"],
+                            "subject": r["subject"],
+                            "reason": "no (#[0-9]+) in subject or body; "
+                            "#10305 adjudication owns identity",
+                        }
+                    )
+    noref_watchlist.sort(key=lambda w: w["commit"])
+    return units, noref_watchlist
+
+
+def build_merge_units(
+    kept: list[dict], created: list[dict], unit_ids: set[str]
+) -> list[dict]:
+    rows = []
+    for merge in sorted(kept, key=lambda m: m["sha"]):
+        spec = KEEP_MERGES[merge["sha"]]
+        files = commit_files(merge["sha"], merge=True)
+        if files != sorted(spec["expected_files"]):
+            raise FragmentError(
+                f"merge {merge['sha']} effective prefilter file list drifted"
+            )
+        evidence = (
+            "merge kept from unsimplified range enumeration; "
+            f"{merge['subject']}"
+        )
+        if merge["sha"] == "fb68dd94a33424bf5007e686306b07c6bb2096e6":
+            evidence += (
+                "; first-parent-visible re-merge "
+                f"{RELATED_MERGE_984} contributes zero uncovered prefilter "
+                "content (single-file delta "
+                "scripts/ci/validate_gate_lane_mapping.py resolves to "
+                "mapped range records 3dc8ade1 (#4976) and b86ba02a "
+                "(#5426), mechanically verified) and is recorded as "
+                "related, never as a separate unit"
+            )
+        rows.append(
+            {
+                "work_unit_id": spec["work_unit_id"],
+                "commits": [merge["sha"]],
+                "grouping_evidence": evidence,
+                "primary_fragment": spec["primary_fragment"],
+                "primary_fragment_basis": "merge_unit_review",
+                "disposition_state": "not_proven",
+                "paths_or_components": files,
+            }
+        )
+    for item in sorted(created, key=lambda m: m["sha"]):
+        unit_id = f"MERGE#{item['sha'][:8]}"
+        if unit_id in unit_ids:
+            raise FragmentError(f"created merge unit id collides: {unit_id}")
+        unit_ids.add(unit_id)
+        fragment, basis = route_fragment(item["files"])
+        evidence = (
+            f"unsimplified-range merge ({item['shape']}) whose resolution "
+            f"carries prefilter state no range record holds: "
+            + "; ".join(item["uncovered"])
+            + "; subject: "
+            + item["subject"]
+            + "; disposition owns verification"
+        )
+        rows.append(
+            {
+                "work_unit_id": unit_id,
+                "commits": [item["sha"]],
+                "grouping_evidence": evidence,
+                "primary_fragment": fragment,
+                "primary_fragment_basis": basis,
+                "disposition_state": "not_proven",
+                "paths_or_components": item["files"],
+            }
+        )
+    if len(created) != EXPECTED_MERGE_CREATED:
+        raise FragmentError(
+            f"created merge unit count {len(created)} != "
+            f"{EXPECTED_MERGE_CREATED}"
+        )
+    return rows
+
+
+def canonical_digest(payload: dict) -> str:
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_document() -> dict:
+    resolve_range()
+    records = list_non_merges()
+    non_merge_shas = {r["sha"] for r in records}
+    merges = list_merges()
+    if len(merges) != EXPECTED_MERGES:
+        raise FragmentError(
+            f"enumerated merge count {len(merges)} != {EXPECTED_MERGES}"
+        )
+    kept, related_rows, excluded, created = classify_merges(
+        merges, non_merge_shas
+    )
+    if len(excluded) != EXPECTED_CONTENT_FREE + EXPECTED_BLOB_COVERED:
+        raise FragmentError(
+            f"excluded merge count {len(excluded)} != "
+            f"{EXPECTED_CONTENT_FREE + EXPECTED_BLOB_COVERED}"
+        )
+    if (
+        len(kept)
+        + len(related_rows)
+        + len(excluded)
+        + len(created)
+        != len(merges)
+    ):
+        raise FragmentError(
+            "merge terminal arithmetic broken: "
+            f"{len(kept)} kept + {len(related_rows)} related + "
+            f"{len(excluded)} excluded + {len(created)} created != "
+            f"{len(merges)} enumerated"
+        )
+    units, noref_watchlist = build_work_units(records)
+    merge_units = build_merge_units(
+        kept, created, {u["work_unit_id"] for u in units}
+    )
+    reviewed = [u for u in units if u["disposition_state"] == "reviewed"]
+    if len(reviewed) != EXPECTED_SEEDS:
+        raise FragmentError(f"reviewed seed count {len(reviewed)} != {EXPECTED_SEEDS}")
+    if set(SEEDS) != {u["work_unit_id"] for u in reviewed}:
+        raise FragmentError("reviewed seed identity set drifted")
+    not_proven = [u for u in units if u["disposition_state"] == "not_proven"]
+    if len(units) - len(reviewed) != EXPECTED_UNITS - EXPECTED_SEEDS:
+        raise FragmentError("not_proven unit count drifted")
+    covered = sorted(c for u in units for c in u["commits"])
+    if len(covered) != len(set(covered)):
+        raise FragmentError("a non-merge commit is covered twice")
+    if set(covered) != non_merge_shas:
+        raise FragmentError("non-merge coverage is not exactly-once")
+    merge_commits = sorted(m["commits"][0] for m in merge_units)
+    if len(merge_commits) != len(set(merge_commits)):
+        raise FragmentError("a merge commit is covered twice")
+    if set(merge_commits) & non_merge_shas:
+        raise FragmentError("a merge commit collides with a range record")
+    if set(merge_commits) != {m["sha"] for m in kept} | {
+        c["sha"] for c in created
+    }:
+        raise FragmentError("merge unit commit set drifted")
+    excluded_rows = sorted(
+        related_rows + excluded, key=lambda r: r["sha"]
+    )
+    if {r["sha"] for r in excluded_rows} & (
+        set(merge_commits) | non_merge_shas
+    ):
+        raise FragmentError("an excluded merge collides with mapped commits")
+    if (
+        len(merge_commits)
+        + len(excluded_rows)
+        != len(merges)
+    ):
+        raise FragmentError("merge identity coverage is not exactly-once")
+    total_rows = len(records) + len(merge_units) + len(noref_watchlist)
+    payload = {
+        "schema": SCHEMA,
+        "fragment_id": FRAGMENT_ID,
+        "parent_denominator": {
+            "start_sha": START_SHA,
+            "observed_head": OBSERVED_HEAD,
+        },
+        "prefilter_paths": PREFILTER,
+        "grouping_method_version": GROUPING_METHOD_VERSION,
+        "record_counts": {
+            "non_merge": len(records),
+            "merge_units": len(merge_units),
+            "noref_watchlist_rows": len(noref_watchlist),
+            "total_rows": total_rows,
+            "unique_commits": len(non_merge_shas) + len(merge_units),
+        },
+        "work_unit_count": len(units),
+        "reviewed_seed_count": len(reviewed),
+        "not_proven_unit_count": len(not_proven),
+        "work_units": units,
+        "merge_units": merge_units,
+        "excluded_merges": excluded_rows,
+        "noref_watchlist": noref_watchlist,
+        "corrections": [
+            "transplant landings 681af39d/f4e8a961/decd96de are PR-keyed "
+            "(PR#15577/PR#15582/PR#15586): each commit equals the PR "
+            "merge_commit_sha, so the draft ISS#N labels were corrected",
+            f"first-parent-visible re-merge {RELATED_MERGE_984} is "
+            "related to MERGE#fb68dd94, not a separate unit (prefilter "
+            "delta against fb68dd94 is exactly "
+            "scripts/ci/validate_gate_lane_mapping.py resolving to mapped "
+            "range records 3dc8ade1 (#4976) and b86ba02a (#5426), "
+            "mechanically verified)",
+            "subject-NOREF commits are 5; body-aware true-NOREF rows are "
+            "3; the NOREF unit grouping_evidence names the complete "
+            "per-commit body mentions "
+            "(6a4e0ea6->#14501,#14549,#14581,#14678,#14680,#14686,#7866; "
+            "ca11589a->#4346) as unverified candidates, and both commits "
+            "stay NOREF, never regrouped",
+            "former ISS#0000 group split: (#0000) carries no identity, so "
+            "e7c99232 becomes COMMIT#e7c99232 and fecc9de7 becomes "
+            "COMMIT#fecc9de7, each with per-commit placeholder evidence",
+            "merge enumeration corrected from the simplified 22 (13 "
+            "queue + 7 lineage + 2 kept): default history simplification "
+            "hides 72 in-range merges, so the field is renamed to "
+            "range_merges_touching_prefilter and the unsimplified range "
+            "population is 94 = 2 kept + 1 related-record + 62 "
+            "content-free + 11 blob-covered + 18 created merge units; "
+            "the 18 created units carry sync-cut resolutions whose blobs "
+            "predate the range or whose deletions exist in no record",
+            "total_rows 705 = 682 unit-mapping rows + 20 merge rows + 3 "
+            "true-NOREF watchlist rows; the 3 watchlist rows intentionally "
+            "duplicate commits already mapped once (unique commits 702)",
+        ],
+        "merge_enumeration": {
+            "range_merges_touching_prefilter": len(merges),
+            "merge_units_kept": len(kept),
+            "related_remerges_recorded": len(related_rows),
+            "content_free_merges_excluded": sum(
+                1 for r in excluded_rows if r["reason"] == "content-free"
+            ),
+            "blob_covered_merges_excluded": sum(
+                1 for r in excluded_rows if r["reason"] == "blob-covered"
+            ),
+            "merge_units_created": len(created),
+        },
+        "consumers": {
+            "parent_ledger": "#16399",
+            "domain_synthesizer": "#16407",
+            "disposition_children": ["#16414", "#16415", "#16416"],
+            "history_identity": "#10305",
+            "live_pr_disposition": ["#13215", "#5888"],
+        },
+    }
+    payload["coverage"] = {
+        "omitted_records": 0,
+        "duplicate_records": 0,
+        "omitted_work_units": 0,
+        "duplicate_work_units": 0,
+        "digest": canonical_digest(payload),
+    }
+    return payload
+
+
+def render_bytes(payload: dict) -> bytes:
+    # One canonical byte sequence: LF newlines, UTF-8, trailing newline.
+    # Callers must compare and write these exact bytes; decoded text
+    # equality is not byte identity on Windows (CRLF translation).
+    return (
+        json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False)
+        + "\n"
+    ).encode("utf-8")
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        description="Generate the Domain-6 inventory fragment (#16418)."
+    )
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="regenerate and fail when the checked-in artifact bytes "
+        "differ (deterministic-render proof)",
+    )
+    args = parser.parse_args(argv)
+    try:
+        payload = build_document()
+    except FragmentError as exc:
+        print(f"domain6 fragment failed: {exc}", file=sys.stderr)
+        return 1
+    data = render_bytes(payload)
+    if b"\r" in data:
+        print("domain6 fragment failed: rendered bytes contain CR", file=sys.stderr)
+        return 1
+    if args.check:
+        try:
+            expected = args.out.read_bytes()
+        except OSError as exc:
+            print(f"domain6 fragment --check failed: {exc}", file=sys.stderr)
+            return 1
+        if b"\r\n" in expected:
+            print(
+                "domain6 fragment --check failed: checked-in artifact "
+                "contains CRLF; canonical bytes are LF-only",
+                file=sys.stderr,
+            )
+            return 2
+        if data != expected:
+            print(
+                "domain6 fragment drifted: regeneration is not "
+                "byte-identical to the checked-in artifact",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"domain6 fragment deterministic render matches {args.out}")
+        return 0
+    try:
+        args.out.write_bytes(data)
+    except OSError as exc:
+        print(f"domain6 fragment write failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"domain6 fragment wrote {args.out}")
+    print(f"digest: {payload['coverage']['digest']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

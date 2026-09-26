@@ -1,11 +1,12 @@
 //! CLI integration tests for `cargo xtask kwalitee-inventory` (#8752).
 //!
 //! The discriminating proofs run against hermetic fixture trees via `--root`:
-//! an unclassified new reference must fail the checker, a classified line that
-//! moved must fail as stale, historical prose must stay distinct from an active
-//! command caller in the report, and generated/ignored surfaces must not hide
-//! callers. One additional test reconciles the real committed ledger against
-//! the real working tree so the ledger cannot rot silently.
+//! an unclassified new reference must fail the checker, an edited or deleted
+//! classified reference must fail as stale, a reference that only moved must
+//! not, historical prose must stay distinct from an active command caller in
+//! the report, and generated/ignored surfaces must not hide callers. One
+//! additional test reconciles the real committed ledger against the real
+//! working tree so the ledger cannot rot silently.
 
 #![expect(clippy::expect_used, reason = "test harness asserts on fixture setup")]
 #![expect(clippy::unwrap_used, reason = "test harness asserts on fixture setup")]
@@ -16,12 +17,13 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// Recreate the ledger's line-identity contract: full SHA-256 over the
-/// one-based line number and trimmed line bytes. Recomputed independently of
-/// the task code so a hashing regression cannot prove itself.
-fn hash_line(line_no: usize, line: &str) -> String {
+/// Recreate the ledger's reference-identity contract: full SHA-256 over a
+/// domain tag and the trimmed line bytes. Recomputed independently of the task
+/// code so a hashing regression cannot prove itself — including the omission of
+/// the line number, which is the property these tests exist to hold.
+fn hash_reference(line: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(line_no.to_string().as_bytes());
+    hasher.update(b"kwalitee-namespace-reference-v2");
     hasher.update([0]);
     hasher.update(line.trim().as_bytes());
     let digest = hasher.finalize();
@@ -33,12 +35,7 @@ fn hash_line(line_no: usize, line: &str) -> String {
 }
 
 fn hashes(lines: &[&str]) -> String {
-    lines
-        .iter()
-        .enumerate()
-        .map(|(idx, line)| format!("{:?}", hash_line(idx + 1, line)))
-        .collect::<Vec<_>>()
-        .join(", ")
+    lines.iter().map(|line| format!("{:?}", hash_reference(line))).collect::<Vec<_>>().join(", ")
 }
 
 fn entry(path: &str, classification: &str, target: &str, lines: &[&str]) -> String {
@@ -50,7 +47,7 @@ fn entry(path: &str, classification: &str, target: &str, lines: &[&str]) -> Stri
          owner_issue = 7192\n\
          removal_condition = \"test fixture row\"\n\
          allowed_to_remain = true\n\
-         line_hashes = [{}]\n\n",
+         reference_hashes = [{}]\n\n",
         hashes(lines)
     )
 }
@@ -159,9 +156,9 @@ fn new_ambiguous_reference_fails_the_checker() {
 }
 
 #[test]
-fn source_movement_invalidates_the_stale_classification() {
+fn edited_or_deleted_references_invalidate_the_classification() {
     let dir = classified_tree().expect("fixture tree");
-    // Move the classified line's text without adding a new row.
+    // Reword the classified line without adding a new row.
     write(&dir, "ci/nightly.sh", &format!("{CALLER_LINE} --strict\n")).expect("rewrite caller");
     let output = inventory(dir.path()).arg("--check").output().expect("run kwalitee-inventory");
     assert!(!output.status.success(), "a moved classified line must fail as stale");
@@ -181,20 +178,53 @@ fn source_movement_invalidates_the_stale_classification() {
         "failure must explain the vanished path: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
 
-    // Relocating unchanged source text also invalidates its reviewed identity.
+/// The defect the content digest exists to end, end to end through the CLI.
+///
+/// This used to be the third arm of the test above, asserting that relocating
+/// unchanged source text invalidated its reviewed identity. It was the reason
+/// six rows in the committed ledger went stale against unrelated commits and
+/// reddened pull requests that never touched the namespace. A reference that
+/// only moved is the same reference, and the checker must say so.
+#[test]
+fn a_reference_that_only_moved_still_reconciles() {
     let dir = classified_tree().expect("fixture tree");
-    write(&dir, "ci/nightly.sh", &format!("# moved down\n{CALLER_LINE}\n"))
+    write(&dir, "ci/nightly.sh", &format!("# moved down\n# twice\n{CALLER_LINE}\n"))
         .expect("relocate caller");
     let output = inventory(dir.path()).arg("--check").output().expect("run kwalitee-inventory");
-    assert!(!output.status.success(), "a relocated classified line must fail as stale");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("stale classification"),
-        "failure must identify the relocated row: {}",
+        output.status.success(),
+        "a reference that only moved must still reconcile: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
 
+/// The control for the test above. Adding a second copy of an already
+/// classified line is a new occurrence, not a move, and one row claim cannot
+/// cover two references.
+#[test]
+fn duplicating_a_moved_reference_is_still_a_new_occurrence() {
+    let dir = classified_tree().expect("fixture tree");
+    write(&dir, "ci/nightly.sh", &format!("# moved down\n{CALLER_LINE}\n{CALLER_LINE}\n"))
+        .expect("duplicate caller");
+    let output = inventory(dir.path()).arg("--check").output().expect("run kwalitee-inventory");
+    assert!(!output.status.success(), "a duplicated reference must fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unclassified duplicate occurrence"),
+        "failure must name the duplicate: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A second copy of a classified line is a second reference and needs its own
+/// claim.
+///
+/// The digest no longer carries the line number, so the copy now collides with
+/// the original's digest instead of producing a distinct one. The checker still
+/// fails closed and still names the file; it reports the extra occurrence as an
+/// unclaimed duplicate rather than as an unclassified line. The detection is
+/// the same, the wording is not.
 #[test]
 fn duplicate_identical_occurrence_is_not_covered_by_one_claim() {
     let dir = classified_tree().expect("fixture tree");
@@ -204,7 +234,7 @@ fn duplicate_identical_occurrence_is_not_covered_by_one_claim() {
     assert!(!output.status.success(), "an extra identical occurrence must be unclassified");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unclassified reference") && stderr.contains("ci/nightly.sh"),
+        stderr.contains("unclassified duplicate occurrence") && stderr.contains("ci/nightly.sh"),
         "failure must name the extra occurrence and its file: {stderr}"
     );
 }
@@ -234,7 +264,7 @@ fn repeated_tokens_on_one_line_cannot_have_mixed_classifications() {
     let dir = tempfile::tempdir().expect("tempdir");
     let line = "cargo xtask perl-kwalitee and perl-kwalitee report";
     write(&dir, "ci/nightly.sh", &format!("{line}\n")).expect("write repeated caller");
-    let hash = hash_line(1, line);
+    let hash = hash_reference(line);
     let ledger = format!(
         "schema_version = \"kwalitee_namespace_inventory.v1\"\ncontroller_issue = 8752\n\n{}{}",
         entry("ci/nightly.sh", "release_readiness", "independent_readiness_rails", &[line]),
@@ -450,8 +480,8 @@ fn scaffold_prints_hashes_but_writes_nothing() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("path = \"extra/new.md\""), "scaffold covers new files:\n{stdout}");
     assert!(
-        stdout.contains(&hash_line(1, "mentions perl-kwalitee once")),
-        "scaffold prints the exact current line hash:\n{stdout}"
+        stdout.contains(&hash_reference("mentions perl-kwalitee once")),
+        "scaffold prints the exact current reference hash:\n{stdout}"
     );
     let ledger = fs::read_to_string(dir.path().join("policy/kwalitee-namespace-inventory.toml"))
         .expect("read ledger");

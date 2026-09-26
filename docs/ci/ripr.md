@@ -75,18 +75,31 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 ## Behavior
 
 - When a ripr evidence lane is killed by platform runner teardown instead of
-  failing on findings (#6807, #12563, #12771), the gate classifies the lane log
-  through `scripts/ci/classify-ripr-lane-termination` and emits a
+  failing on findings (#6807, #12563, #12771, #16431), the gate classifies the
+  lane log through `scripts/ci/classify-ripr-lane-termination` and emits a
   machine-checkable `RIPR_GATE_VERDICT` into its run log. The boundary: a
   genuine gap receipt ("quality gate failed") always classifies ripr-failure,
-  so real reds are never auto-retried; only positive teardown evidence (runner
-  shutdown signal, exit-143, or operation-canceled) yields
+  so real reds are never auto-retried; only positive teardown evidence yields
   `classification=infra-no-proof`, handed to `ripr-infra-retry.yml` strictly as
   data for exactly one automatic same-head retry while run attempt is 1. A
   second eviction surfaces `RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted`
-  loudly and falls back to the documented manual rerun. Silenced or unreadable
-  lane logs fail closed to ripr-failure. The gate never greens on absent
-  evidence.
+  loudly and falls back to the documented manual rerun. The gate never greens
+  on absent evidence.
+  When the bounded lane-log fetch fails or comes back with neither a receipt
+  nor teardown markers (#16431), the gate falls back to API-side evidence for
+  the same lane job — its check-run annotations (including the hosted-runner
+  "lost communication" notice, which evictions leave on no in-log marker) and
+  its steps state (a failed job with a started-but-never-concluded step). The
+  classifier's `--api-evidence` mode applies the same positive-marker boundary;
+  unreadable or marker-free evidence still fails closed. Every classified lane
+  failure leaves a `ripr-gate-classification` artifact carrying its class and
+  reason. When the artifact is absent, the gate's classification step did not
+  produce a file — which points at a gate-side failure, though it is not by
+  itself proof of any single cause: paths that exit before classification and
+  upload-step skip conditions also leave no artifact (the upload step ignores
+  missing files). The authoritative signal is the classification content when
+  the artifact exists; consumers such as ripr-infra-retry treat absence as
+  no-arm and surface NOT_PROVEN rather than guessing a class.
 - Produces diff-scoped PR evidence under `target/ripr/pr/`.
 - Produces the repo-wide RIPR+ baseline receipt at
   `target/receipts/quality/ripr-plus.json`.

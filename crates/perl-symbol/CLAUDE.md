@@ -5,7 +5,7 @@ This file provides guidance to Claude Code when working with code in this crate.
 ## Crate Overview
 
 - **Crate**: `perl-symbol` (NEW published crate, Wave B collapse of 4 `perl-symbol-*` satellites)
-- **Version**: workspace (currently 0.12.4)
+- **Version**: tracks the workspace version.
 - **Tier**: Tier 2+ (depends on `perl-ast`; consumed by `perl-workspace`, `perl-semantic-analyzer`, `perl-lsp`, `perl-lsp-rename`, `perl-lsp-performance`)
 - **Purpose**: Unified Perl symbol model for the entire perl-lsp ecosystem — taxonomy, cursor extraction, search indexing, and AST surface projection.
 

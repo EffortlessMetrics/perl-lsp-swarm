@@ -12,6 +12,72 @@ required = true
 contract_role = "required-workflow-shape"
 
 [[check]]
+name = "Perl LSP Rust Small Result"
+workflow = ".github/workflows/em-ci-routed-rust.yml"
+required = true
+contract_role = "required-workflow-shape"
+
+  # #16168 closed the `push-targets-master` remainder this row previously
+  # carried: the workflow now defines `push: branches: [main, master]`, so a
+  # landed main commit carries its own `Perl LSP Rust Small Result` baseline
+  # run instead of leaving a red-at-merge lane silently red on main. The push
+  # concurrency group is per commit SHA, so main pushes neither cancel each
+  # other nor inherit ci.yml's 76% pre-scheduling cancellation class.
+
+[[check]]
+name = "ripr+ New Gap Gate"
+workflow = ".github/workflows/ripr.yml"
+required = true
+contract_role = "required-workflow-shape"
+
+  # Deliberate and argued in the workflow itself: RIPR is evidence production,
+  # and a cancelled run becomes a false red on a required context because the
+  # aggregator has no branch for a cancelled child (#16087). The cost of the
+  # current implementation is measured in #16141 — a superseded head's run
+  # holds the concurrency slot while the current head waits — so the exemption
+  # is accepted for the property, not for the implementation.
+  [[check.exemption]]
+  clause = "event-aware-concurrency"
+  status = "accepted"
+  reason = "cancel-in-progress is false so a cancelled run cannot become a false red on a required context; the queueing cost is tracked in #16141."
+  tracking = "16141"
+
+[[check]]
+name = "validate-title"
+workflow = ".github/workflows/pr-title-check.yml"
+required = true
+contract_role = "required-workflow-shape"
+
+  # A metadata-only check. It reads the PR title through the API and never
+  # checks out or executes candidate contents, which is what lets it run on
+  # `pull_request_target` with write permission without crossing the trust
+  # boundary. The contract's remaining clauses assume a workflow that builds
+  # the candidate; they are the wrong requirements here rather than unmet ones.
+  [[check.exemption]]
+  clause = "pull-request-trigger"
+  status = "accepted"
+  reason = "pull_request_target is required to label and check fork PRs; the job never checks out candidate contents."
+  tracking = "16164"
+
+  [[check.exemption]]
+  clause = "merge-group-trigger"
+  status = "accepted"
+  reason = "A merge queue entry has no PR title to validate; the title was already validated on the PR."
+  tracking = "16164"
+
+  [[check.exemption]]
+  clause = "push-targets-master"
+  status = "accepted"
+  reason = "A push to main has no PR title; the check is meaningless outside a pull request."
+  tracking = "16164"
+
+  [[check.exemption]]
+  clause = "event-aware-concurrency"
+  status = "accepted"
+  reason = "A five-minute metadata job with no runner cost worth cancelling; the clause exists to stop long candidate builds stacking up."
+  tracking = "16164"
+
+[[check]]
 name = "Methodology Gate"
 workflow = ".github/workflows/methodology-gate.yml"
 required = false
@@ -63,13 +129,13 @@ producer = "repository-job"
 workflow = ".github/workflows/em-ci-routed-rust.yml"
 job = "rust-small-result"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group", "workflow_dispatch"]
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge, bound to the GitHub Actions integration."
+reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge, bound to the GitHub Actions integration. #16168 added the push trigger so landed main commits carry the required baseline."
 
 [[checks]]
 name = "ripr+ New Gap Gate"

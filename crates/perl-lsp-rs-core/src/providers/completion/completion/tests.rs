@@ -926,6 +926,137 @@ Point->new(
     assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
 }
 
+/// A lone `-` that starts an operand must not be rewritten into an arrow
+/// prefix, while a `-` after a real (balanced-paren) receiver must keep
+/// routing to method completion.
+///
+/// Controlling issue: #15466.
+#[test]
+fn test_dash_trigger_ignores_lone_minus_but_keeps_call_chain_receiver()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `Point->new(-` — the minus opens an operand, not an arrow, so the dash
+    // trigger must answer with no completions at all. The cursor sits right
+    // after the `-` so the lone-dash branch actually runs, and the context
+    // prefix assert distinguishes that reject path from an arrow rewrite.
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param = 0;
+}
+
+Point->new(-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    assert!(
+        completions.is_empty(),
+        "a lone minus inside constructor arguments must not be rewritten as an arrow; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "",
+        "the operand minus must keep the ordinary empty prefix, not an arrow rewrite"
+    );
+
+    // `$factory->build()-` — the `-` follows a balanced-paren call receiver,
+    // so it is the first char of `->` and the rewrite must survive: the scan
+    // keeps the `)` neighbor, the prefix carries the whole chain, and method
+    // completion — not the generic prefix dump — answers the request.
+    let code = r#"
+package MyService;
+sub process { }
+sub validate { }
+package MyFactory;
+sub build { }
+my $factory = MyFactory->create;
+$factory->build()-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = Arc::new(WorkspaceIndex::new());
+    // Canonical initial-name fixture seeding (#16449 burndown): index_file is
+    // a one-line forward to index_initial_file; this seeds initial on-disk
+    // state, so call the canonical API directly.
+    index.index_initial_file(
+        Url::parse("file:///workspace/MyFactory.pm")?,
+        "package MyFactory;\nsub build { }\n1;\n".to_string(),
+    )?;
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "$factory->build()->",
+        "a dash after a balanced-paren call receiver must keep the arrow rewrite"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "build"),
+        "a dash after a balanced-paren call receiver must still offer method completions; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "arrayref" || item.label == "hashref"),
+        "the rewritten call-chain receiver must route to method completion, not the generic dump; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+
+    // `1 -` — binary subtraction with no receiver: no method completions.
+    let code = "1 -";
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.is_empty(),
+        "a subtraction minus must not offer method completions; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+
+    // `Point->new(foo-` — `method_receiver_start` stops at the open paren and
+    // hands back the lowercase bareword `foo`, but a bareword that can only be
+    // an operand head must not become a `foo->` receiver mid-argument. The
+    // ordinary (empty) prefix keeps the dash trigger silent.
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param = 0;
+}
+
+Point->new(foo-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    assert!(
+        completions.is_empty(),
+        "a bareword operand inside constructor arguments must not be rewritten as an arrow; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "",
+        "the bareword operand must keep the ordinary empty prefix, not `foo->`"
+    );
+    Ok(())
+}
+
 /// A named `:param(external_name)` is the keyword `new` actually accepts, so
 /// the completion must offer the explicit name instead of the field name.
 ///
@@ -1018,12 +1149,10 @@ fn test_object_pad_constructor_param_completion_quotes_literal_keys() {
 /// it. This pins the reachable window that the quoting work depends on.
 ///
 /// Boundary, deliberately not asserted here: once the caret follows the `-`
-/// itself, `analyze_context` rewrites the prefix to `foo->` and answers the
-/// position as a method call, so no key survives the `field_name`
-/// `starts_with` filter. That rule is in `analyze_context` and predates this
-/// change; #15466 owns it, with the measured evidence that widening
-/// `object_pad_constructor_package` instead removes the method and variable
-/// completions that currently answer those carets.
+/// itself, the caret is a bareword operand head, not an arrow, so
+/// `analyze_context` keeps the ordinary prefix and the dash trigger answers
+/// with no completions at all — no key survives that caret either. #15466
+/// owns that boundary (the operand-shaped-receiver rule in `analyze_context`).
 ///
 /// Controlling issue: #13449.
 #[test]

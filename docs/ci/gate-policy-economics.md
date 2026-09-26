@@ -41,11 +41,12 @@ Many gates roll up under a single lane (e.g. all `pr_fast` gates contribute to t
 number of gates (e.g. `lsp_tier_a`) span two lanes.
 
 Current state — regenerate with `python3 scripts/ci/validate_gate_lane_mapping.py --strict`,
-which is the authority for these counts. Last refreshed 2026-09-19 (merge of #13774 doctest gates onto #15569):
+which is the authority for these counts. Last refreshed 2026-09-23 (addition of
+`unsafe_prod_check` to the `merge_gate` tier; #16215):
 
-- 92 gates in `.ci/gate-policy.yaml`
+- 95 gates in `.ci/gate-policy.yaml`
 - 25 lanes in `policy/ci-lanes.toml`
-- 92 / 92 gates have at least one lane mapping
+- 95 / 95 gates have at least one lane mapping
 - 0 gates point at a non-existent lane
 
 ---
@@ -55,7 +56,7 @@ which is the authority for these counts. Last refreshed 2026-09-19 (merge of #13
 | Lane | Gates |
 |---|---|
 | `pr_smoke` | `fmt`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `source_commit_api_check`, `serial_test_ratchet`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `policy_checks`, `workflow_audit`, `nested_lock_check`, `unit_routed_full`, `clippy_tests_kernel`, `ci_subject_digest_oracle`, `unit_control_plane_bins`, `inline_completion_registration`, `lsp_registration_contract`, `lsp_capability_snapshots`, `inline_completion_core`, `inline_completion_quality_receipt`, `ignored_tests_check_refs` |
-| `merge_gate_shards` | `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `clippy_full`, `unit_foundation_full`, `unit_parser_stack_full`, `parser_integration`, `parser_behavior_proof`, `unit_analysis_full`, `unit_lsp_core_full`, `unit_lsp_full`, `unit_dap_support_full`, `pending_parse_freshness`, `pull_diagnostics_freshness`, `must_context_check`, `docs_agents_contract_workflows`, `doctest_contract_proof`, `doctest_enforcement`, `common_corpus_clean`, `parser_corpus_ratchet`, `cpan_corpus_ratchet`, `parser_audit_closeout`, `v2_parity`, `v2_bundle_sync`, `agent_context_coverage`, `non_rust_inventory_check`, `lint_policy`, `msrv_authority_sync`, `compiler_concept_ledger`, `compiler_proof_policy`, `compiler_concept_proof`, `compiler_performance_receipt_contract`, `kubernetes_dap_profiles`, `postfix_capability_closure`, `release_trust_invariants`, `agent_ledgers_validate`, `code_action_generation_ledger`, `source_commit_api_check`, `serial_test_ratchet` |
+| `merge_gate_shards` | `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `clippy_full`, `unit_foundation_full`, `unit_parser_stack_full`, `parser_integration`, `parser_behavior_proof`, `unit_analysis_full`, `unit_lsp_core_full`, `unit_lsp_full`, `unit_dap_support_full`, `pending_parse_freshness`, `pull_diagnostics_freshness`, `must_context_check`, `docs_agents_contract_workflows`, `doctest_contract_proof`, `doctest_enforcement`, `common_corpus_clean`, `parser_corpus_ratchet`, `cpan_corpus_ratchet`, `parser_audit_closeout`, `v2_parity`, `v2_bundle_sync`, `agent_context_coverage`, `non_rust_inventory_check`, `completion_candidate_ledger`, `lint_policy`, `msrv_authority_sync`, `compiler_concept_ledger`, `compiler_proof_policy`, `compiler_concept_proof`, `compiler_performance_receipt_contract`, `kubernetes_dap_profiles`, `postfix_capability_closure`, `release_trust_invariants`, `agent_ledgers_validate`, `unsafe_prod_check`, `code_action_generation_ledger`, `source_commit_api_check`, `serial_test_ratchet` |
 | `check_all_targets` | `compile_all_targets` |
 | `conflict_markers` | `check_conflict_markers` |
 | `ux_tests` | `lsp_smoke`, `lsp_tier_a` |
@@ -74,6 +75,14 @@ Lanes without any gate mapping today: `pr_plan`, `draft_guard`, `preflight_lates
 `memory_plateau`, `vscode_smoke_matrix`, `droid_auto_review`, `critic_rule_proof`.
 These either have no `.ci/gate-policy.yaml` entry (workflow-level controls, not
 gates) or run under standalone workflows.
+
+Advisory applies to registration, not to readers. The required
+`Perl LSP Rust Small Result` context consumes `CI Gate shard` results from
+`main` through the main-red refusal (`scripts/ci/main_red_refusal.py`, probe
+step in `.github/workflows/em-ci-routed-rust.yml`), so a shard red on `main`
+blocks the required lane even though no `CI Gate shard` context is itself a
+required check. See
+[Merge-ready protocol → the main-red refusal](./merge-ready-protocol.md#the-main-red-refusal-makes-advisory-gate-shards-de-facto-required-16196).
 
 The two lists above partition the lane set: 14 mapped + 11 unmapped = 25 lanes,
 matching the count block. Both are checkable against
