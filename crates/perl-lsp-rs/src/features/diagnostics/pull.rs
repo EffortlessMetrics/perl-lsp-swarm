@@ -1374,8 +1374,7 @@ impl PullDiagnosticsProvider {
                     // The plain message has already accumulated the suggestion.
                     // Render that same complete content, escaping source-derived
                     // text before placing it in Markdown.
-                    let markdown =
-                        format!("**{}**: {}", code_str, escape_markdown_text(&message));
+                    let markdown = format!("**{}**: {}", code_str, escape_markdown_text(&message));
                     return serde_json::to_value(data_obj).ok().map(|mut v| {
                         v["messageMarkup"] = serde_json::json!({
                             "kind": "markdown",
@@ -1847,10 +1846,8 @@ mod tests {
         let mut context = PullDiagnosticsContext::new();
         context.markup_message_support = true;
 
-        for (source, expected_code) in [
-            ("my $re = qr/(a+)+b/;\n", "PL1000"),
-            ("sub broken {\n", "PL001"),
-        ] {
+        let cases = [("my $re = qr/(a+)+b/;\n", "PL1000"), ("sub broken {\n", "PL001")];
+        for (source, expected_code) in cases {
             let items = get_full_items(provider.get_document_diagnostics_with_context(
                 &uri, source, None, &context, None,
             ));
