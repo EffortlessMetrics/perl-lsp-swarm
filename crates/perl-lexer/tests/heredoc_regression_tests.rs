@@ -1,4 +1,4 @@
-use perl_lexer::{LocalSymbolTable, PerlLexer, TokenType};
+use perl_lexer::{LexerConfig, LocalSymbolTable, PerlLexer, TokenType};
 
 #[test]
 fn lexer_terminates_on_backtick_heredoc_with_cr() {
@@ -108,7 +108,8 @@ fn lexer_term_slot_heredoc_bodies_stay_out_of_the_public_slash_path() {
     assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
 
     let with_slash = format!("{source}fake /x/;\n");
-    let mut lx = PerlLexer::new(&with_slash);
+    let config = LexerConfig { symbol_table: Some(table), ..LexerConfig::default() };
+    let mut lx = PerlLexer::with_config_and_body_tokens(&with_slash, config);
     let mut saw_division = false;
     let mut took_regex_path = false;
     while let Some(token) = lx.next_token() {
@@ -136,7 +137,8 @@ fn lexer_dereferenced_return_method_keeps_shift_lines_live() {
     assert!(table.is_known_sub("real"), "suffix declaration lost: {source:?}");
 
     let with_slash = format!("{source}fake /x/;\n");
-    let mut lx = PerlLexer::new(&with_slash);
+    let config = LexerConfig { symbol_table: Some(table), ..LexerConfig::default() };
+    let mut lx = PerlLexer::with_config_and_body_tokens(&with_slash, config);
     let mut took_regex_path = false;
     while let Some(token) = lx.next_token() {
         match token.token_type {
