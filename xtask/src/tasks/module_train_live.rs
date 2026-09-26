@@ -1412,13 +1412,25 @@ fn gh_review_facts(
     owner: &str,
     name: &str,
 ) -> std::result::Result<GraphqlReviewFacts, ObservationFailure> {
+    let text = run_gh(root, &gh_graphql_review_args(number, owner, name))?;
+    parse_review_facts(number, &text)
+}
+
+/// Parse a `gh api graphql` review-facts response body.
+///
+/// Split from [`gh_review_facts`] so offline proof can feed the parser real
+/// recorded payloads (#15477): a schema drift surfaces here first, and the
+/// parse must be exercisable without a network.
+fn parse_review_facts(
+    number: u64,
+    text: &str,
+) -> std::result::Result<GraphqlReviewFacts, ObservationFailure> {
     let failure = |stderr: String| ObservationFailure {
         program: "gh".into(),
         args: vec![format!("api graphql (pr {number})")],
         stderr,
     };
-    let text = run_gh(root, &gh_graphql_review_args(number, owner, name))?;
-    let value: Value = serde_json::from_str(&text)
+    let value: Value = serde_json::from_str(text)
         .map_err(|error| failure(format!("malformed JSON response: {error}")))?;
     // A GraphQL error payload carries HTTP 200. Treating a partial/errored
     // response as "no threads, no reviews" is exactly the false-absence this

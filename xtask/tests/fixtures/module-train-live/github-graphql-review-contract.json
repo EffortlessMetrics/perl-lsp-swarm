@@ -1,0 +1,2216 @@
+{
+ "fetched_at": "2026-09-19T19:19:35Z",
+ "fetched_via": "gh api graphql, standard full-schema introspection query, trimmed to the nine types the module-train review read selects through. Refresh path: cargo test -p xtask live_github_schema -- --ignored --nocapture, then commit the failing diff (update fetched_at).",
+ "schema_name": "github_graphql_review_contract.v1",
+ "types": {
+  "Actor": {
+   "fields": {
+    "avatarUrl": {
+     "args": {
+      "size": "Int"
+     },
+     "type": "URI!"
+    },
+    "login": {
+     "args": {},
+     "type": "String!"
+    },
+    "resourcePath": {
+     "args": {},
+     "type": "URI!"
+    },
+    "url": {
+     "args": {},
+     "type": "URI!"
+    }
+   },
+   "kind": "INTERFACE"
+  },
+  "Commit": {
+   "fields": {
+    "abbreviatedOid": {
+     "args": {},
+     "type": "String!"
+    },
+    "additions": {
+     "args": {},
+     "type": "Int!"
+    },
+    "associatedPullRequests": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "PullRequestOrder"
+     },
+     "type": "PullRequestConnection"
+    },
+    "author": {
+     "args": {},
+     "type": "GitActor"
+    },
+    "authoredByCommitter": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "authoredDate": {
+     "args": {},
+     "type": "DateTime!"
+    },
+    "authors": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "GitActorConnection!"
+    },
+    "blame": {
+     "args": {
+      "path": "String!"
+     },
+     "type": "Blame!"
+    },
+    "changedFilesIfAvailable": {
+     "args": {},
+     "type": "Int"
+    },
+    "checkSuites": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "filterBy": "CheckSuiteFilter",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "CheckSuiteConnection"
+    },
+    "comments": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "CommitCommentConnection!"
+    },
+    "commitResourcePath": {
+     "args": {},
+     "type": "URI!"
+    },
+    "commitUrl": {
+     "args": {},
+     "type": "URI!"
+    },
+    "committedDate": {
+     "args": {},
+     "type": "DateTime!"
+    },
+    "committedViaWeb": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "committer": {
+     "args": {},
+     "type": "GitActor"
+    },
+    "deletions": {
+     "args": {},
+     "type": "Int!"
+    },
+    "deployments": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "environments": "[String!]",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "DeploymentOrder"
+     },
+     "type": "DeploymentConnection"
+    },
+    "file": {
+     "args": {
+      "path": "String!"
+     },
+     "type": "TreeEntry"
+    },
+    "history": {
+     "args": {
+      "after": "String",
+      "author": "CommitAuthor",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "path": "String",
+      "since": "GitTimestamp",
+      "until": "GitTimestamp"
+     },
+     "type": "CommitHistoryConnection!"
+    },
+    "id": {
+     "args": {},
+     "type": "ID!"
+    },
+    "message": {
+     "args": {},
+     "type": "String!"
+    },
+    "messageBody": {
+     "args": {},
+     "type": "String!"
+    },
+    "messageBodyHTML": {
+     "args": {},
+     "type": "HTML!"
+    },
+    "messageHeadline": {
+     "args": {},
+     "type": "String!"
+    },
+    "messageHeadlineHTML": {
+     "args": {},
+     "type": "HTML!"
+    },
+    "oid": {
+     "args": {},
+     "type": "GitObjectID!"
+    },
+    "onBehalfOf": {
+     "args": {},
+     "type": "Organization"
+    },
+    "parents": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "CommitConnection!"
+    },
+    "repository": {
+     "args": {},
+     "type": "Repository!"
+    },
+    "resourcePath": {
+     "args": {},
+     "type": "URI!"
+    },
+    "signature": {
+     "args": {},
+     "type": "GitSignature"
+    },
+    "status": {
+     "args": {},
+     "type": "Status"
+    },
+    "statusCheckRollup": {
+     "args": {},
+     "type": "StatusCheckRollup"
+    },
+    "submodules": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "SubmoduleConnection!"
+    },
+    "tarballUrl": {
+     "args": {},
+     "type": "URI!"
+    },
+    "tree": {
+     "args": {},
+     "type": "Tree!"
+    },
+    "treeResourcePath": {
+     "args": {},
+     "type": "URI!"
+    },
+    "treeUrl": {
+     "args": {},
+     "type": "URI!"
+    },
+    "url": {
+     "args": {},
+     "type": "URI!"
+    },
+    "viewerCanSubscribe": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerSubscription": {
+     "args": {},
+     "type": "SubscriptionState"
+    },
+    "zipballUrl": {
+     "args": {},
+     "type": "URI!"
+    }
+   },
+   "kind": "OBJECT"
+  },
+  "PullRequest": {
+   "fields": {
+    "activeLockReason": {
+     "args": {},
+     "type": "LockReason"
+    },
+    "additions": {
+     "args": {},
+     "type": "Int!"
+    },
+    "assignedActors": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "AssigneeConnection!"
+    },
+    "assignees": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "UserConnection!"
+    },
+    "author": {
+     "args": {},
+     "type": "Actor"
+    },
+    "authorAssociation": {
+     "args": {},
+     "type": "CommentAuthorAssociation!"
+    },
+    "autoMergeRequest": {
+     "args": {},
+     "type": "AutoMergeRequest"
+    },
+    "baseRef": {
+     "args": {},
+     "type": "Ref"
+    },
+    "baseRefName": {
+     "args": {},
+     "type": "String!"
+    },
+    "baseRefOid": {
+     "args": {},
+     "type": "GitObjectID!"
+    },
+    "baseRepository": {
+     "args": {},
+     "type": "Repository"
+    },
+    "body": {
+     "args": {},
+     "type": "String!"
+    },
+    "bodyHTML": {
+     "args": {},
+     "type": "HTML!"
+    },
+    "bodyText": {
+     "args": {},
+     "type": "String!"
+    },
+    "canBeRebased": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "changedFiles": {
+     "args": {},
+     "type": "Int!"
+    },
+    "checksResourcePath": {
+     "args": {},
+     "type": "URI!"
+    },
+    "checksUrl": {
+     "args": {},
+     "type": "URI!"
+    },
+    "closed": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "closedAt": {
+     "args": {},
+     "type": "DateTime"
+    },
+    "closingIssuesReferences": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "excludeUserLinked": "Boolean",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "IssueOrder",
+      "userLinkedOnly": "Boolean"
+     },
+     "type": "IssueConnection"
+    },
+    "comments": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "IssueCommentOrder"
+     },
+     "type": "IssueCommentConnection!"
+    },
+    "commits": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "PullRequestCommitConnection!"
+    },
+    "createdAt": {
+     "args": {},
+     "type": "DateTime!"
+    },
+    "createdViaEmail": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "deletions": {
+     "args": {},
+     "type": "Int!"
+    },
+    "editor": {
+     "args": {},
+     "type": "Actor"
+    },
+    "files": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "PullRequestChangedFileConnection"
+    },
+    "fullDatabaseId": {
+     "args": {},
+     "type": "BigInt"
+    },
+    "headRef": {
+     "args": {},
+     "type": "Ref"
+    },
+    "headRefName": {
+     "args": {},
+     "type": "String!"
+    },
+    "headRefOid": {
+     "args": {},
+     "type": "GitObjectID!"
+    },
+    "headRepository": {
+     "args": {},
+     "type": "Repository"
+    },
+    "headRepositoryOwner": {
+     "args": {},
+     "type": "RepositoryOwner"
+    },
+    "hovercard": {
+     "args": {
+      "includeNotificationContexts": "Boolean"
+     },
+     "type": "Hovercard!"
+    },
+    "id": {
+     "args": {},
+     "type": "ID!"
+    },
+    "includesCreatedEdit": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isCrossRepository": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isDraft": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isInMergeQueue": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isMergeQueueEnabled": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isReadByViewer": {
+     "args": {},
+     "type": "Boolean"
+    },
+    "labels": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "LabelOrder"
+     },
+     "type": "LabelConnection"
+    },
+    "lastEditedAt": {
+     "args": {},
+     "type": "DateTime"
+    },
+    "latestOpinionatedReviews": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "writersOnly": "Boolean"
+     },
+     "type": "PullRequestReviewConnection"
+    },
+    "latestReviews": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "PullRequestReviewConnection"
+    },
+    "locked": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "maintainerCanModify": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "mergeCommit": {
+     "args": {},
+     "type": "Commit"
+    },
+    "mergeQueue": {
+     "args": {},
+     "type": "MergeQueue"
+    },
+    "mergeQueueEntry": {
+     "args": {},
+     "type": "MergeQueueEntry"
+    },
+    "mergeStateStatus": {
+     "args": {},
+     "type": "MergeStateStatus!"
+    },
+    "mergeable": {
+     "args": {},
+     "type": "MergeableState!"
+    },
+    "merged": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "mergedAt": {
+     "args": {},
+     "type": "DateTime"
+    },
+    "mergedBy": {
+     "args": {},
+     "type": "Actor"
+    },
+    "milestone": {
+     "args": {},
+     "type": "Milestone"
+    },
+    "number": {
+     "args": {},
+     "type": "Int!"
+    },
+    "participants": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "UserConnection!"
+    },
+    "permalink": {
+     "args": {},
+     "type": "URI!"
+    },
+    "potentialMergeCommit": {
+     "args": {},
+     "type": "Commit"
+    },
+    "projectItems": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "includeArchived": "Boolean",
+      "last": "Int"
+     },
+     "type": "ProjectV2ItemConnection"
+    },
+    "projectV2": {
+     "args": {
+      "number": "Int!"
+     },
+     "type": "ProjectV2"
+    },
+    "projectsV2": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "minPermissionLevel": "ProjectV2PermissionLevel",
+      "orderBy": "ProjectV2Order",
+      "query": "String"
+     },
+     "type": "ProjectV2Connection!"
+    },
+    "publishedAt": {
+     "args": {},
+     "type": "DateTime"
+    },
+    "reactionGroups": {
+     "args": {},
+     "type": "[ReactionGroup!]"
+    },
+    "reactions": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "content": "ReactionContent",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "ReactionOrder"
+     },
+     "type": "ReactionConnection!"
+    },
+    "repository": {
+     "args": {},
+     "type": "Repository!"
+    },
+    "resourcePath": {
+     "args": {},
+     "type": "URI!"
+    },
+    "revertResourcePath": {
+     "args": {},
+     "type": "URI!"
+    },
+    "revertUrl": {
+     "args": {},
+     "type": "URI!"
+    },
+    "reviewDecision": {
+     "args": {},
+     "type": "PullRequestReviewDecision"
+    },
+    "reviewRequests": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "ReviewRequestConnection"
+    },
+    "reviewThreads": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "PullRequestReviewThreadConnection!"
+    },
+    "reviews": {
+     "args": {
+      "after": "String",
+      "author": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "states": "[PullRequestReviewState!]"
+     },
+     "type": "PullRequestReviewConnection"
+    },
+    "stack": {
+     "args": {},
+     "type": "PullRequestStack"
+    },
+    "stackEntry": {
+     "args": {},
+     "type": "PullRequestStackEntry"
+    },
+    "state": {
+     "args": {},
+     "type": "PullRequestState!"
+    },
+    "statusCheckRollup": {
+     "args": {},
+     "type": "StatusCheckRollup"
+    },
+    "suggestedActors": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "query": "String"
+     },
+     "type": "AssigneeConnection!"
+    },
+    "suggestedReviewerActors": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "query": "String"
+     },
+     "type": "SuggestedReviewerActorConnection!"
+    },
+    "suggestedReviewers": {
+     "args": {},
+     "type": "[SuggestedReviewer]!"
+    },
+    "timelineItems": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "itemTypes": "[PullRequestTimelineItemsItemType!]",
+      "last": "Int",
+      "since": "DateTime",
+      "skip": "Int"
+     },
+     "type": "PullRequestTimelineItemsConnection!"
+    },
+    "title": {
+     "args": {},
+     "type": "String!"
+    },
+    "titleHTML": {
+     "args": {},
+     "type": "HTML!"
+    },
+    "totalCommentsCount": {
+     "args": {},
+     "type": "Int"
+    },
+    "updatedAt": {
+     "args": {},
+     "type": "DateTime!"
+    },
+    "url": {
+     "args": {},
+     "type": "URI!"
+    },
+    "userContentEdits": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "UserContentEditConnection"
+    },
+    "viewerCanApplySuggestion": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanAssign": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanClose": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanDeleteHeadRef": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanDisableAutoMerge": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanEditFiles": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanEnableAutoMerge": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanLabel": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanMergeAsAdmin": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanReact": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanReopen": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanSubscribe": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanUpdate": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanUpdateBranch": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCannotUpdateReasons": {
+     "args": {},
+     "type": "[CommentCannotUpdateReason!]!"
+    },
+    "viewerDidAuthor": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerLatestReview": {
+     "args": {},
+     "type": "PullRequestReview"
+    },
+    "viewerLatestReviewRequest": {
+     "args": {},
+     "type": "ReviewRequest"
+    },
+    "viewerMergeBodyText": {
+     "args": {
+      "mergeType": "PullRequestMergeMethod"
+     },
+     "type": "String!"
+    },
+    "viewerMergeHeadlineText": {
+     "args": {
+      "mergeType": "PullRequestMergeMethod"
+     },
+     "type": "String!"
+    },
+    "viewerSubscription": {
+     "args": {},
+     "type": "SubscriptionState"
+    }
+   },
+   "kind": "OBJECT"
+  },
+  "PullRequestReview": {
+   "fields": {
+    "author": {
+     "args": {},
+     "type": "Actor"
+    },
+    "authorAssociation": {
+     "args": {},
+     "type": "CommentAuthorAssociation!"
+    },
+    "authorCanPushToRepository": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "body": {
+     "args": {},
+     "type": "String!"
+    },
+    "bodyHTML": {
+     "args": {},
+     "type": "HTML!"
+    },
+    "bodyText": {
+     "args": {},
+     "type": "String!"
+    },
+    "comments": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "PullRequestReviewCommentConnection!"
+    },
+    "commit": {
+     "args": {},
+     "type": "Commit"
+    },
+    "createdAt": {
+     "args": {},
+     "type": "DateTime!"
+    },
+    "createdViaEmail": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "editor": {
+     "args": {},
+     "type": "Actor"
+    },
+    "fullDatabaseId": {
+     "args": {},
+     "type": "BigInt"
+    },
+    "id": {
+     "args": {},
+     "type": "ID!"
+    },
+    "includesCreatedEdit": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isMinimized": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "lastEditedAt": {
+     "args": {},
+     "type": "DateTime"
+    },
+    "minimizedReason": {
+     "args": {},
+     "type": "String"
+    },
+    "onBehalfOf": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "TeamConnection!"
+    },
+    "publishedAt": {
+     "args": {},
+     "type": "DateTime"
+    },
+    "pullRequest": {
+     "args": {},
+     "type": "PullRequest!"
+    },
+    "reactionGroups": {
+     "args": {},
+     "type": "[ReactionGroup!]"
+    },
+    "reactions": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "content": "ReactionContent",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "ReactionOrder"
+     },
+     "type": "ReactionConnection!"
+    },
+    "repository": {
+     "args": {},
+     "type": "Repository!"
+    },
+    "resourcePath": {
+     "args": {},
+     "type": "URI!"
+    },
+    "state": {
+     "args": {},
+     "type": "PullRequestReviewState!"
+    },
+    "submittedAt": {
+     "args": {},
+     "type": "DateTime"
+    },
+    "updatedAt": {
+     "args": {},
+     "type": "DateTime!"
+    },
+    "url": {
+     "args": {},
+     "type": "URI!"
+    },
+    "userContentEdits": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "UserContentEditConnection"
+    },
+    "viewerCanDelete": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanMinimize": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanReact": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanUnminimize": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanUpdate": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCannotUpdateReasons": {
+     "args": {},
+     "type": "[CommentCannotUpdateReason!]!"
+    },
+    "viewerDidAuthor": {
+     "args": {},
+     "type": "Boolean!"
+    }
+   },
+   "kind": "OBJECT"
+  },
+  "PullRequestReviewConnection": {
+   "fields": {
+    "edges": {
+     "args": {},
+     "type": "[PullRequestReviewEdge]"
+    },
+    "nodes": {
+     "args": {},
+     "type": "[PullRequestReview]"
+    },
+    "pageInfo": {
+     "args": {},
+     "type": "PageInfo!"
+    },
+    "totalCount": {
+     "args": {},
+     "type": "Int!"
+    }
+   },
+   "kind": "OBJECT"
+  },
+  "PullRequestReviewThread": {
+   "fields": {
+    "comments": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "skip": "Int"
+     },
+     "type": "PullRequestReviewCommentConnection!"
+    },
+    "diffSide": {
+     "args": {},
+     "type": "DiffSide!"
+    },
+    "id": {
+     "args": {},
+     "type": "ID!"
+    },
+    "isCollapsed": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isOutdated": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isResolved": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "line": {
+     "args": {},
+     "type": "Int"
+    },
+    "originalLine": {
+     "args": {},
+     "type": "Int"
+    },
+    "originalStartLine": {
+     "args": {},
+     "type": "Int"
+    },
+    "path": {
+     "args": {},
+     "type": "String!"
+    },
+    "pullRequest": {
+     "args": {},
+     "type": "PullRequest!"
+    },
+    "repository": {
+     "args": {},
+     "type": "Repository!"
+    },
+    "resolvedBy": {
+     "args": {},
+     "type": "User"
+    },
+    "startDiffSide": {
+     "args": {},
+     "type": "DiffSide"
+    },
+    "startLine": {
+     "args": {},
+     "type": "Int"
+    },
+    "subjectType": {
+     "args": {},
+     "type": "PullRequestReviewThreadSubjectType!"
+    },
+    "viewerCanReply": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanResolve": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanUnresolve": {
+     "args": {},
+     "type": "Boolean!"
+    }
+   },
+   "kind": "OBJECT"
+  },
+  "PullRequestReviewThreadConnection": {
+   "fields": {
+    "edges": {
+     "args": {},
+     "type": "[PullRequestReviewThreadEdge]"
+    },
+    "nodes": {
+     "args": {},
+     "type": "[PullRequestReviewThread]"
+    },
+    "pageInfo": {
+     "args": {},
+     "type": "PageInfo!"
+    },
+    "totalCount": {
+     "args": {},
+     "type": "Int!"
+    }
+   },
+   "kind": "OBJECT"
+  },
+  "Query": {
+   "fields": {
+    "_entities": {
+     "args": {
+      "representations": "[_Any!]!"
+     },
+     "type": "[_Entity]!"
+    },
+    "codeOfConduct": {
+     "args": {
+      "key": "String!"
+     },
+     "type": "CodeOfConduct"
+    },
+    "codesOfConduct": {
+     "args": {},
+     "type": "[CodeOfConduct]"
+    },
+    "enterprise": {
+     "args": {
+      "invitationToken": "String",
+      "slug": "String!"
+     },
+     "type": "Enterprise"
+    },
+    "enterpriseAdministratorInvitation": {
+     "args": {
+      "enterpriseSlug": "String!",
+      "role": "EnterpriseAdministratorRole!",
+      "userLogin": "String!"
+     },
+     "type": "EnterpriseAdministratorInvitation"
+    },
+    "enterpriseAdministratorInvitationByToken": {
+     "args": {
+      "invitationToken": "String!"
+     },
+     "type": "EnterpriseAdministratorInvitation"
+    },
+    "enterpriseMemberInvitation": {
+     "args": {
+      "enterpriseSlug": "String!",
+      "userLogin": "String!"
+     },
+     "type": "EnterpriseMemberInvitation"
+    },
+    "enterpriseMemberInvitationByToken": {
+     "args": {
+      "invitationToken": "String!"
+     },
+     "type": "EnterpriseMemberInvitation"
+    },
+    "id": {
+     "args": {},
+     "type": "ID!"
+    },
+    "license": {
+     "args": {
+      "key": "String!"
+     },
+     "type": "License"
+    },
+    "licenses": {
+     "args": {},
+     "type": "[License]!"
+    },
+    "marketplaceCategories": {
+     "args": {
+      "excludeEmpty": "Boolean",
+      "excludeSubcategories": "Boolean",
+      "includeCategories": "[String!]"
+     },
+     "type": "[MarketplaceCategory!]!"
+    },
+    "marketplaceCategory": {
+     "args": {
+      "slug": "String!",
+      "useTopicAliases": "Boolean"
+     },
+     "type": "MarketplaceCategory"
+    },
+    "marketplaceListing": {
+     "args": {
+      "slug": "String!"
+     },
+     "type": "MarketplaceListing"
+    },
+    "marketplaceListings": {
+     "args": {
+      "adminId": "ID",
+      "after": "String",
+      "allStates": "Boolean",
+      "before": "String",
+      "categorySlug": "String",
+      "first": "Int",
+      "last": "Int",
+      "organizationId": "ID",
+      "primaryCategoryOnly": "Boolean",
+      "slugs": "[String]",
+      "useTopicAliases": "Boolean",
+      "viewerCanAdmin": "Boolean",
+      "withFreeTrialsOnly": "Boolean"
+     },
+     "type": "MarketplaceListingConnection!"
+    },
+    "meta": {
+     "args": {},
+     "type": "GitHubMetadata!"
+    },
+    "node": {
+     "args": {
+      "id": "ID!"
+     },
+     "type": "Node"
+    },
+    "nodes": {
+     "args": {
+      "ids": "[ID!]!"
+     },
+     "type": "[Node]!"
+    },
+    "organization": {
+     "args": {
+      "login": "String!"
+     },
+     "type": "Organization"
+    },
+    "rateLimit": {
+     "args": {
+      "dryRun": "Boolean"
+     },
+     "type": "RateLimit"
+    },
+    "relay": {
+     "args": {},
+     "type": "Query!"
+    },
+    "repository": {
+     "args": {
+      "followRenames": "Boolean",
+      "name": "String!",
+      "owner": "String!"
+     },
+     "type": "Repository"
+    },
+    "repositoryOwner": {
+     "args": {
+      "login": "String!"
+     },
+     "type": "RepositoryOwner"
+    },
+    "resource": {
+     "args": {
+      "url": "URI!"
+     },
+     "type": "UniformResourceLocatable"
+    },
+    "search": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "query": "String!",
+      "type": "SearchType!"
+     },
+     "type": "SearchResultItemConnection!"
+    },
+    "securityAdvisories": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "classifications": "[SecurityAdvisoryClassification!]",
+      "epssPercentage": "Float",
+      "epssPercentile": "Float",
+      "first": "Int",
+      "identifier": "SecurityAdvisoryIdentifierFilter",
+      "last": "Int",
+      "orderBy": "SecurityAdvisoryOrder",
+      "publishedSince": "DateTime",
+      "updatedSince": "DateTime"
+     },
+     "type": "SecurityAdvisoryConnection!"
+    },
+    "securityAdvisory": {
+     "args": {
+      "ghsaId": "String!"
+     },
+     "type": "SecurityAdvisory"
+    },
+    "securityVulnerabilities": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "classifications": "[SecurityAdvisoryClassification!]",
+      "ecosystem": "SecurityAdvisoryEcosystem",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "SecurityVulnerabilityOrder",
+      "package": "String",
+      "severities": "[SecurityAdvisorySeverity!]"
+     },
+     "type": "SecurityVulnerabilityConnection!"
+    },
+    "sponsorables": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "dependencyEcosystem": "SecurityAdvisoryEcosystem",
+      "ecosystem": "DependencyGraphEcosystem",
+      "first": "Int",
+      "last": "Int",
+      "onlyDependencies": "Boolean",
+      "orderBy": "SponsorableOrder",
+      "orgLoginForDependencies": "String"
+     },
+     "type": "SponsorableItemConnection!"
+    },
+    "topic": {
+     "args": {
+      "name": "String!"
+     },
+     "type": "Topic"
+    },
+    "user": {
+     "args": {
+      "login": "String!"
+     },
+     "type": "User"
+    },
+    "viewer": {
+     "args": {},
+     "type": "User!"
+    }
+   },
+   "kind": "OBJECT"
+  },
+  "Repository": {
+   "fields": {
+    "allowUpdateBranch": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "archivedAt": {
+     "args": {},
+     "type": "DateTime"
+    },
+    "assignableUsers": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "query": "String"
+     },
+     "type": "UserConnection!"
+    },
+    "autoMergeAllowed": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "branchProtectionRules": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "BranchProtectionRuleConnection!"
+    },
+    "codeOfConduct": {
+     "args": {},
+     "type": "CodeOfConduct"
+    },
+    "codeowners": {
+     "args": {
+      "refName": "String"
+     },
+     "type": "RepositoryCodeowners"
+    },
+    "collaborators": {
+     "args": {
+      "affiliation": "CollaboratorAffiliation",
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "login": "String",
+      "query": "String"
+     },
+     "type": "RepositoryCollaboratorConnection"
+    },
+    "commitComments": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "CommitCommentConnection!"
+    },
+    "contactLinks": {
+     "args": {},
+     "type": "[RepositoryContactLink!]"
+    },
+    "contributingGuidelines": {
+     "args": {},
+     "type": "ContributingGuidelines"
+    },
+    "createdAt": {
+     "args": {},
+     "type": "DateTime!"
+    },
+    "databaseId": {
+     "args": {},
+     "type": "Int"
+    },
+    "defaultBranchRef": {
+     "args": {},
+     "type": "Ref"
+    },
+    "deleteBranchOnMerge": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "dependencyGraphManifests": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "dependenciesAfter": "String",
+      "dependenciesFirst": "Int",
+      "first": "Int",
+      "last": "Int",
+      "withDependencies": "Boolean"
+     },
+     "type": "DependencyGraphManifestConnection"
+    },
+    "deployKeys": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "DeployKeyConnection!"
+    },
+    "deployments": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "environments": "[String!]",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "DeploymentOrder"
+     },
+     "type": "DeploymentConnection!"
+    },
+    "description": {
+     "args": {},
+     "type": "String"
+    },
+    "descriptionHTML": {
+     "args": {},
+     "type": "HTML!"
+    },
+    "discussion": {
+     "args": {
+      "number": "Int!"
+     },
+     "type": "Discussion"
+    },
+    "discussionCategories": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "filterByAssignable": "Boolean",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "DiscussionCategoryConnection!"
+    },
+    "discussionCategory": {
+     "args": {
+      "slug": "String!"
+     },
+     "type": "DiscussionCategory"
+    },
+    "discussions": {
+     "args": {
+      "after": "String",
+      "answered": "Boolean",
+      "before": "String",
+      "categoryId": "ID",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "DiscussionOrder",
+      "states": "[DiscussionState!]"
+     },
+     "type": "DiscussionConnection!"
+    },
+    "diskUsage": {
+     "args": {},
+     "type": "Int"
+    },
+    "environment": {
+     "args": {
+      "name": "String!"
+     },
+     "type": "Environment"
+    },
+    "environments": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "names": "[String!]",
+      "orderBy": "Environments",
+      "pinnedEnvironmentFilter": "EnvironmentPinnedFilterField"
+     },
+     "type": "EnvironmentConnection!"
+    },
+    "forkCount": {
+     "args": {},
+     "type": "Int!"
+    },
+    "forkingAllowed": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "forks": {
+     "args": {
+      "affiliations": "[RepositoryAffiliation]",
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "hasIssuesEnabled": "Boolean",
+      "isLocked": "Boolean",
+      "last": "Int",
+      "orderBy": "RepositoryOrder",
+      "ownerAffiliations": "[RepositoryAffiliation]",
+      "privacy": "RepositoryPrivacy",
+      "visibility": "RepositoryVisibility"
+     },
+     "type": "RepositoryConnection!"
+    },
+    "fundingLinks": {
+     "args": {},
+     "type": "[FundingLink!]!"
+    },
+    "hasDiscussionsEnabled": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "hasIssuesEnabled": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "hasProjectsEnabled": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "hasPullRequestsEnabled": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "hasSponsorshipsEnabled": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "hasVulnerabilityAlertsEnabled": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "hasWikiEnabled": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "homepageUrl": {
+     "args": {},
+     "type": "URI"
+    },
+    "id": {
+     "args": {},
+     "type": "ID!"
+    },
+    "interactionAbility": {
+     "args": {},
+     "type": "RepositoryInteractionAbility"
+    },
+    "isArchived": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isBlankIssuesEnabled": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isDisabled": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isEmpty": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isFork": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isInOrganization": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isLocked": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isMirror": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isPrivate": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isSecurityPolicyEnabled": {
+     "args": {},
+     "type": "Boolean"
+    },
+    "isTemplate": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "isUserConfigurationRepository": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "issue": {
+     "args": {
+      "number": "Int!"
+     },
+     "type": "Issue"
+    },
+    "issueCreationPolicy": {
+     "args": {},
+     "type": "IssueCreationPolicy"
+    },
+    "issueFields": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "IssueFieldOrder"
+     },
+     "type": "IssueFieldsConnection"
+    },
+    "issueOrPullRequest": {
+     "args": {
+      "number": "Int!"
+     },
+     "type": "IssueOrPullRequest"
+    },
+    "issueTemplates": {
+     "args": {},
+     "type": "[IssueTemplate!]"
+    },
+    "issueType": {
+     "args": {
+      "name": "String!"
+     },
+     "type": "IssueType"
+    },
+    "issueTypes": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "IssueTypeOrder"
+     },
+     "type": "IssueTypeConnection"
+    },
+    "issues": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "filterBy": "IssueFilters",
+      "first": "Int",
+      "labels": "[String!]",
+      "last": "Int",
+      "orderBy": "IssueOrder",
+      "states": "[IssueState!]"
+     },
+     "type": "IssueConnection!"
+    },
+    "label": {
+     "args": {
+      "name": "String!"
+     },
+     "type": "Label"
+    },
+    "labels": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "LabelOrder",
+      "query": "String"
+     },
+     "type": "LabelConnection"
+    },
+    "languages": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "LanguageOrder"
+     },
+     "type": "LanguageConnection"
+    },
+    "latestRelease": {
+     "args": {},
+     "type": "Release"
+    },
+    "licenseInfo": {
+     "args": {},
+     "type": "License"
+    },
+    "lockReason": {
+     "args": {},
+     "type": "RepositoryLockReason"
+    },
+    "mentionableUsers": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "query": "String"
+     },
+     "type": "UserConnection!"
+    },
+    "mergeCommitAllowed": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "mergeCommitMessage": {
+     "args": {},
+     "type": "MergeCommitMessage!"
+    },
+    "mergeCommitTitle": {
+     "args": {},
+     "type": "MergeCommitTitle!"
+    },
+    "mergeQueue": {
+     "args": {
+      "branch": "String"
+     },
+     "type": "MergeQueue"
+    },
+    "milestone": {
+     "args": {
+      "number": "Int!"
+     },
+     "type": "Milestone"
+    },
+    "milestones": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "MilestoneOrder",
+      "query": "String",
+      "states": "[MilestoneState!]"
+     },
+     "type": "MilestoneConnection"
+    },
+    "mirrorUrl": {
+     "args": {},
+     "type": "URI"
+    },
+    "name": {
+     "args": {},
+     "type": "String!"
+    },
+    "nameWithOwner": {
+     "args": {},
+     "type": "String!"
+    },
+    "object": {
+     "args": {
+      "expression": "String",
+      "oid": "GitObjectID"
+     },
+     "type": "GitObject"
+    },
+    "openGraphImageUrl": {
+     "args": {},
+     "type": "URI!"
+    },
+    "owner": {
+     "args": {},
+     "type": "RepositoryOwner!"
+    },
+    "packages": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "names": "[String]",
+      "orderBy": "PackageOrder",
+      "packageType": "PackageType",
+      "repositoryId": "ID"
+     },
+     "type": "PackageConnection!"
+    },
+    "parent": {
+     "args": {},
+     "type": "Repository"
+    },
+    "pinnedDiscussions": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "PinnedDiscussionConnection!"
+    },
+    "pinnedEnvironments": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "PinnedEnvironmentOrder"
+     },
+     "type": "PinnedEnvironmentConnection"
+    },
+    "pinnedIssues": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "PinnedIssueConnection"
+    },
+    "planFeatures": {
+     "args": {},
+     "type": "RepositoryPlanFeatures!"
+    },
+    "primaryLanguage": {
+     "args": {},
+     "type": "Language"
+    },
+    "projectV2": {
+     "args": {
+      "number": "Int!"
+     },
+     "type": "ProjectV2"
+    },
+    "projectsResourcePath": {
+     "args": {},
+     "type": "URI!"
+    },
+    "projectsUrl": {
+     "args": {},
+     "type": "URI!"
+    },
+    "projectsV2": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "minPermissionLevel": "ProjectV2PermissionLevel",
+      "orderBy": "ProjectV2Order",
+      "query": "String"
+     },
+     "type": "ProjectV2Connection!"
+    },
+    "pullRequest": {
+     "args": {
+      "number": "Int!"
+     },
+     "type": "PullRequest"
+    },
+    "pullRequestCreationCapConfig": {
+     "args": {},
+     "type": "PullRequestCreationCapConfig"
+    },
+    "pullRequestCreationPolicy": {
+     "args": {},
+     "type": "PullRequestCreationPolicy"
+    },
+    "pullRequestTemplates": {
+     "args": {},
+     "type": "[PullRequestTemplate!]"
+    },
+    "pullRequests": {
+     "args": {
+      "after": "String",
+      "baseRefName": "String",
+      "before": "String",
+      "first": "Int",
+      "headRefName": "String",
+      "labels": "[String!]",
+      "last": "Int",
+      "orderBy": "IssueOrder",
+      "states": "[PullRequestState!]"
+     },
+     "type": "PullRequestConnection!"
+    },
+    "pushedAt": {
+     "args": {},
+     "type": "DateTime"
+    },
+    "rebaseMergeAllowed": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "recentProjects": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "ProjectV2Connection!"
+    },
+    "ref": {
+     "args": {
+      "qualifiedName": "String!"
+     },
+     "type": "Ref"
+    },
+    "refs": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "direction": "OrderDirection",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "RefOrder",
+      "query": "String",
+      "refPrefix": "String!"
+     },
+     "type": "RefConnection"
+    },
+    "release": {
+     "args": {
+      "tagName": "String!"
+     },
+     "type": "Release"
+    },
+    "releases": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "ReleaseOrder"
+     },
+     "type": "ReleaseConnection!"
+    },
+    "repositoryCustomPropertyValue": {
+     "args": {
+      "propertyName": "String!"
+     },
+     "type": "RepositoryCustomPropertyValue"
+    },
+    "repositoryCustomPropertyValues": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "RepositoryCustomPropertyValueConnection"
+    },
+    "repositoryTopics": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "RepositoryTopicConnection!"
+    },
+    "resourcePath": {
+     "args": {},
+     "type": "URI!"
+    },
+    "ruleset": {
+     "args": {
+      "databaseId": "Int!",
+      "includeParents": "Boolean"
+     },
+     "type": "RepositoryRuleset"
+    },
+    "rulesets": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "includeParents": "Boolean",
+      "last": "Int",
+      "targets": "[RepositoryRulesetTarget!]"
+     },
+     "type": "RepositoryRulesetConnection"
+    },
+    "securityPolicyUrl": {
+     "args": {},
+     "type": "URI"
+    },
+    "shortDescriptionHTML": {
+     "args": {
+      "limit": "Int"
+     },
+     "type": "HTML!"
+    },
+    "squashMergeAllowed": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "squashMergeCommitMessage": {
+     "args": {},
+     "type": "SquashMergeCommitMessage!"
+    },
+    "squashMergeCommitTitle": {
+     "args": {},
+     "type": "SquashMergeCommitTitle!"
+    },
+    "sshUrl": {
+     "args": {},
+     "type": "GitSSHRemote!"
+    },
+    "stargazerCount": {
+     "args": {},
+     "type": "Int!"
+    },
+    "stargazers": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int",
+      "orderBy": "StarOrder"
+     },
+     "type": "StargazerConnection!"
+    },
+    "submodules": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "SubmoduleConnection!"
+    },
+    "suggestedActors": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "capabilities": "[RepositorySuggestedActorFilter!]!",
+      "first": "Int",
+      "last": "Int",
+      "loginNames": "String",
+      "query": "String"
+     },
+     "type": "ActorConnection!"
+    },
+    "tempCloneToken": {
+     "args": {},
+     "type": "String"
+    },
+    "templateRepository": {
+     "args": {},
+     "type": "Repository"
+    },
+    "updatedAt": {
+     "args": {},
+     "type": "DateTime!"
+    },
+    "url": {
+     "args": {},
+     "type": "URI!"
+    },
+    "usesCustomOpenGraphImage": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanAdminister": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanCreateIssues": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanSeeIssueFields": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanSubscribe": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerCanUpdateTopics": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerContentWarning": {
+     "args": {},
+     "type": "ContentWarning"
+    },
+    "viewerDefaultCommitEmail": {
+     "args": {},
+     "type": "String"
+    },
+    "viewerDefaultMergeMethod": {
+     "args": {},
+     "type": "PullRequestMergeMethod!"
+    },
+    "viewerHasStarred": {
+     "args": {},
+     "type": "Boolean!"
+    },
+    "viewerPermission": {
+     "args": {},
+     "type": "RepositoryPermission"
+    },
+    "viewerPossibleCommitEmails": {
+     "args": {},
+     "type": "[String!]"
+    },
+    "viewerSubscription": {
+     "args": {},
+     "type": "SubscriptionState"
+    },
+    "visibility": {
+     "args": {},
+     "type": "RepositoryVisibility!"
+    },
+    "vulnerabilityAlert": {
+     "args": {
+      "number": "Int!"
+     },
+     "type": "RepositoryVulnerabilityAlert"
+    },
+    "vulnerabilityAlerts": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "classifications": "[SecurityAdvisoryClassification!]",
+      "dependencyScopes": "[RepositoryVulnerabilityAlertDependencyScope!]",
+      "first": "Int",
+      "last": "Int",
+      "states": "[RepositoryVulnerabilityAlertState!]"
+     },
+     "type": "RepositoryVulnerabilityAlertConnection"
+    },
+    "watchers": {
+     "args": {
+      "after": "String",
+      "before": "String",
+      "first": "Int",
+      "last": "Int"
+     },
+     "type": "UserConnection!"
+    },
+    "webCommitSignoffRequired": {
+     "args": {},
+     "type": "Boolean!"
+    }
+   },
+   "kind": "OBJECT"
+  }
+ }
+}

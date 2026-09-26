@@ -1642,3 +1642,408 @@ fn corpus_bodies_are_never_stored() -> Result<()> {
     assert!(!text.contains("\"body\""), "no body field may exist in the snapshot");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// External GraphQL contract (#15477)
+//
+// The review read's field selections were verified only by construction:
+// document and parser were written together, so a GitHub schema rename would
+// degrade every live read to `instrument_failed` -> `NOT_PROVEN` — quiet,
+// fail-closed, indistinguishable from normal operation. These tests pin the
+// document against GitHub's actual schema, introspected over the wire, and
+// keep a real recorded payload in the offline corpus.
+// ---------------------------------------------------------------------------
+
+const GITHUB_GRAPHQL_CONTRACT: &str =
+    include_str!("../../tests/fixtures/module-train-live/github-graphql-review-contract.json");
+const REVIEW_FACTS_PAYLOAD: &str =
+    include_str!("../../tests/fixtures/module-train-live/review-facts-payload.json");
+
+/// The standard full-schema introspection document; the pinned fixture
+/// records the same fetch. GitHub limits `__Type.fields` to two textual
+/// occurrences per document, so per-type aliasing is not an option.
+const LIVE_INTROSPECTION_QUERY: &str = "\
+query IntrospectionQuery { __schema { queryType { name } types { ...FullType } } }
+fragment FullType on __Type { kind name fields(includeDeprecated: false) { name args { ...InputValue } type { ...TypeRef } } inputFields { ...InputValue } interfaces { ...TypeRef } enumValues(includeDeprecated: false) { name } possibleTypes { ...TypeRef } }
+fragment InputValue on __InputValue { name type { ...TypeRef } defaultValue }
+fragment TypeRef on __Type { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } }";
+
+use color_eyre::eyre::{bail, eyre};
+
+fn contract_types() -> Result<serde_json::Value> {
+    Ok(serde_json::from_str(GITHUB_GRAPHQL_CONTRACT)?)
+}
+
+/// Innermost named type of a GraphQL type reference: `[PullRequestReview!]!`
+/// reads back `PullRequestReview`.
+fn named_type(type_ref: &str) -> String {
+    type_ref.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect()
+}
+
+/// Render an introspection `__Type` reference the way the pinned fixture
+/// stores it: `NON_NULL` appends `!`, `LIST` brackets, the innermost named
+/// type survives.
+fn type_ref_string(value: &serde_json::Value) -> String {
+    let kind = value.get("kind").and_then(serde_json::Value::as_str).unwrap_or_default();
+    let inner = value.get("ofType").filter(|inner| !inner.is_null());
+    match kind {
+        "NON_NULL" => format!("{}!", type_ref_string(inner.unwrap_or(&serde_json::Value::Null))),
+        "LIST" => format!("[{}]", type_ref_string(inner.unwrap_or(&serde_json::Value::Null))),
+        _ => value.get("name").and_then(serde_json::Value::as_str).unwrap_or(kind).to_string(),
+    }
+}
+
+fn tokenize_selection_document(document: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for character in document.chars() {
+        match character {
+            '{' | '}' | '(' | ')' | ':' | ',' => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                tokens.push(character.to_string());
+            }
+            _ if character.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(character),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// Walk the review document's selection set against a contract `types` map.
+/// Every selected field, argument, and descent target must be declared
+/// exactly where the document uses it, and every violation is a loud, named
+/// error — the adapter this guards fails closed, so the whole point is to
+/// keep that closure from becoming permanent unnoticed.
+struct SelectionValidator<'a> {
+    tokens: Vec<String>,
+    position: usize,
+    types: &'a serde_json::Value,
+    variables: std::collections::BTreeMap<String, String>,
+}
+
+impl<'a> SelectionValidator<'a> {
+    fn new(document: &str, types: &'a serde_json::Value) -> Self {
+        Self {
+            tokens: tokenize_selection_document(document),
+            position: 0,
+            types,
+            variables: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn peek(&self) -> Option<&str> {
+        self.tokens.get(self.position).map(String::as_str)
+    }
+
+    fn advance(&mut self) -> Option<String> {
+        let token = self.tokens.get(self.position).cloned();
+        if token.is_some() {
+            self.position += 1;
+        }
+        token
+    }
+
+    fn expect(&mut self, expected: &str) -> Result<()> {
+        match self.advance() {
+            Some(token) if token == expected => Ok(()),
+            other => bail!("document is malformed: expected {expected:?}, found {other:?}"),
+        }
+    }
+
+    fn validate(&mut self) -> Result<()> {
+        self.expect("query")?;
+        if self.peek().is_some_and(|token| token != "(" && token != "{") {
+            self.advance(); // operation name
+        }
+        if self.peek() == Some("(") {
+            self.advance();
+            while self.peek() != Some(")") {
+                let Some(variable) = self.advance() else {
+                    bail!("document is malformed: the variable definitions never close");
+                };
+                self.expect(":")?;
+                let mut named = String::new();
+                while let Some(token) = self.peek() {
+                    if token == "," || token == ")" {
+                        break;
+                    }
+                    let Some(token) = self.advance() else {
+                        bail!("document is malformed: the type of {variable} never closes");
+                    };
+                    if token.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '[') {
+                        named = named_type(&token);
+                    }
+                }
+                self.variables.insert(variable, named);
+                if self.peek() == Some(",") {
+                    self.advance();
+                }
+            }
+            self.advance();
+        }
+        self.selection_set("Query")
+    }
+
+    fn field_definition(&self, parent: &str, field: &str) -> Result<&'a serde_json::Value> {
+        self.types
+            .get(parent)
+            .and_then(|entry| entry.get("fields"))
+            .and_then(|fields| fields.get(field))
+            .ok_or_else(|| {
+                eyre!(
+                    "schema drift: the document selects {parent}.{field}, which the pinned \
+                     GitHub GraphQL contract does not declare (renamed or retired upstream?)"
+                )
+            })
+    }
+
+    fn selection_set(&mut self, parent: &str) -> Result<()> {
+        self.expect("{")?;
+        while self.peek() != Some("}") {
+            let Some(field) = self.advance() else {
+                bail!("document is malformed: the selection set under {parent} never closes");
+            };
+            let definition = self.field_definition(parent, &field)?;
+            let declared_type =
+                definition.get("type").and_then(serde_json::Value::as_str).ok_or_else(|| {
+                    eyre!("pinned contract is malformed: {parent}.{field} carries no type")
+                })?;
+            if self.peek() == Some("(") {
+                self.advance();
+                while self.peek() != Some(")") {
+                    if self.peek() == Some(",") {
+                        self.advance();
+                        continue;
+                    }
+                    let Some(argument) = self.advance() else {
+                        bail!(
+                            "document is malformed: the argument list of {parent}.{field} never closes"
+                        );
+                    };
+                    self.expect(":")?;
+                    let Some(value) = self.advance() else {
+                        bail!(
+                            "document is malformed: {parent}.{field}({argument}:) carries no value"
+                        );
+                    };
+                    let declared = definition
+                        .get("args")
+                        .and_then(|args| args.get(&argument))
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            eyre!(
+                                "schema drift: the document passes {argument} to {parent}.{field}, \
+                                 which the pinned contract does not accept"
+                            )
+                        })?;
+                    let bound = self.variables.get(&value).ok_or_else(|| {
+                        eyre!(
+                            "document is malformed: {parent}.{field}({argument}: {value}) \
+                             binds an undeclared variable"
+                        )
+                    })?;
+                    if &named_type(declared) != bound {
+                        bail!(
+                            "schema drift: {parent}.{field}({argument}:) is declared {declared}, \
+                             but the document binds {value}: {bound}"
+                        );
+                    }
+                }
+                self.advance();
+            }
+            if self.peek() == Some("{") {
+                let child = named_type(declared_type);
+                if self.types.get(&child).is_none() {
+                    bail!(
+                        "schema drift: the document selects into {parent}.{field}, whose type \
+                         {child} the pinned GitHub GraphQL contract does not declare"
+                    );
+                }
+                self.selection_set(&child)?;
+            }
+        }
+        self.advance(); // closing brace
+        Ok(())
+    }
+}
+
+fn validate_review_document(types: &serde_json::Value, document: &str) -> Result<()> {
+    SelectionValidator::new(document, types).validate()
+}
+
+/// The offline half of the external contract: every field and argument the
+/// live-frontier review read selects must be declared by the pinned copy of
+/// GitHub's GraphQL schema (introspected 2026-09-18; the fixture header names
+/// the fetch). A document regression — a renamed field, a mistyped variable —
+/// fails in CI instead of degrading a live run to quiet `instrument_failed`.
+#[test]
+fn the_review_document_selects_only_fields_the_pinned_github_schema_declares() -> Result<()> {
+    let contract = contract_types()?;
+    validate_review_document(&contract["types"], GH_REVIEW_GRAPHQL)
+}
+
+/// The validator itself must be able to fail: a renamed selected field and a
+/// mistyped variable binding each produce a loud, named drift error.
+#[test]
+fn the_document_validator_fails_loudly_when_a_selection_drifts() -> Result<()> {
+    let contract = contract_types()?;
+    let renamed = GH_REVIEW_GRAPHQL.replace("headRefOid", "headShaOid");
+    if renamed == GH_REVIEW_GRAPHQL {
+        bail!("the renamed-field mutation did not change the GraphQL document");
+    }
+    let Err(error) = validate_review_document(&contract["types"], &renamed) else {
+        bail!("a renamed selected field must fail validation");
+    };
+    if !error.to_string().contains("PullRequest.headShaOid") {
+        bail!("renamed-field error omitted the selected field: {error}");
+    }
+
+    let mistyped = GH_REVIEW_GRAPHQL.replace("$threads: Int!", "$threads: String!");
+    if mistyped == GH_REVIEW_GRAPHQL {
+        bail!("the mistyped-variable mutation did not change the GraphQL document");
+    }
+    let Err(error) = validate_review_document(&contract["types"], &mistyped) else {
+        bail!("a mistyped variable binding must fail validation");
+    };
+    if !error.to_string().contains("reviewThreads(first:)") {
+        bail!("mistyped-variable error omitted the argument location: {error}");
+    }
+    Ok(())
+}
+
+/// The review read's parser, fed a real recorded `gh api graphql` response
+/// (PR #14242 after merge): `headRefOid` binds, the merged PR's null
+/// `reviewDecision` stays `None`, thread counts populate without phantom
+/// truncation, and the empty opinionated-review page is absence — not
+/// failure — because `totalCount` agrees with `nodes`.
+#[test]
+fn a_real_merged_pr_payload_parses_into_review_facts() -> Result<()> {
+    let facts = parse_review_facts(14242, REVIEW_FACTS_PAYLOAD)
+        .map_err(|failure| eyre!("recorded payload failed to parse: {failure}"))?;
+    if facts.head_oid != "cfac38a7ec2d33ba3dbb2b3ba518a8baa6e75073" {
+        bail!("unexpected head oid: {:?}", facts.head_oid);
+    }
+    if facts.review_decision.is_some() {
+        bail!("merged payload should have no review decision: {:?}", facts.review_decision);
+    }
+    if facts.threads.total != 23 || facts.threads.unresolved != 0 {
+        bail!("unexpected thread counts: {:?}", facts.threads);
+    }
+    if facts.threads.truncated || !facts.reviews.is_empty() || facts.reviews_truncated {
+        bail!(
+            "payload reported unexpected truncation or reviews: threads_truncated={}, reviews={}, reviews_truncated={}",
+            facts.threads.truncated,
+            facts.reviews.len(),
+            facts.reviews_truncated
+        );
+    }
+    Ok(())
+}
+
+/// The live half: re-introspect GitHub's schema over the wire and require it
+/// to still equal the pinned contract, then re-validate the document against
+/// the live result. Staleness bound: nothing re-checks on a clock — the
+/// fixture header records `fetched_at`, and this test is the refresh path.
+/// Run `cargo test -p xtask live_github_schema -- --ignored`; on drift,
+/// refresh the fixture and repair the document in the same commit.
+#[test]
+#[ignore = "external truth: needs an authenticated gh and network; run explicitly to re-verify or refresh the pinned schema contract"]
+fn live_github_schema_still_matches_the_pinned_contract() -> Result<()> {
+    let output = std::process::Command::new("gh")
+        .args(["api", "graphql", "-F", &format!("query={LIVE_INTROSPECTION_QUERY}")])
+        .output()
+        .map_err(|error| eyre!("gh api graphql failed to run: {error}"))?;
+    if !output.status.success() {
+        bail!("gh api graphql failed: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    let live: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let contract = contract_types()?;
+    let pinned_types = contract
+        .get("types")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| eyre!("pinned contract is malformed: no types map"))?;
+    let mut live_types = serde_json::Map::new();
+    let entries = live
+        .pointer("/data/__schema/types")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| eyre!("introspection carried no types"))?;
+    for entry in entries {
+        let Some(name) = entry.get("name").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !pinned_types.contains_key(name) {
+            continue;
+        }
+        let mut fields = serde_json::Map::new();
+        for field in entry.get("fields").and_then(serde_json::Value::as_array).into_iter().flatten()
+        {
+            let field_name =
+                field.get("name").and_then(serde_json::Value::as_str).unwrap_or_default();
+            let mut args = serde_json::Map::new();
+            for argument in
+                field.get("args").and_then(serde_json::Value::as_array).into_iter().flatten()
+            {
+                let argument_name =
+                    argument.get("name").and_then(serde_json::Value::as_str).unwrap_or_default();
+                args.insert(
+                    argument_name.to_string(),
+                    serde_json::Value::String(type_ref_string(
+                        argument.get("type").unwrap_or(&serde_json::Value::Null),
+                    )),
+                );
+            }
+            let mut rendered = serde_json::Map::new();
+            rendered.insert(
+                "type".to_string(),
+                serde_json::Value::String(type_ref_string(
+                    field.get("type").unwrap_or(&serde_json::Value::Null),
+                )),
+            );
+            rendered.insert("args".to_string(), serde_json::Value::Object(args));
+            fields.insert(field_name.to_string(), serde_json::Value::Object(rendered));
+        }
+        let mut wrapped = serde_json::Map::new();
+        wrapped.insert(
+            "kind".to_string(),
+            serde_json::Value::String(
+                entry
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
+        );
+        wrapped.insert("fields".to_string(), serde_json::Value::Object(fields));
+        live_types.insert(name.to_string(), serde_json::Value::Object(wrapped));
+    }
+    let live_types = serde_json::Value::Object(live_types);
+    if live_types.as_object() != Some(pinned_types) {
+        let mut drifted = std::collections::BTreeSet::new();
+        for name in pinned_types.keys() {
+            if pinned_types.get(name) != live_types.get(name) {
+                drifted.insert(name.clone());
+            }
+        }
+        for name in live_types.as_object().into_iter().flat_map(|types| types.keys()) {
+            if pinned_types.get(name) != live_types.get(name) {
+                drifted.insert(name.clone());
+            }
+        }
+        bail!(
+            "GitHub's live GraphQL schema drifted from the pinned contract for: {drifted:?}. \
+             Refresh xtask/tests/fixtures/module-train-live/github-graphql-review-contract.json \
+             (re-run this test, update fetched_at and the types) and repair the document in the \
+             same commit."
+        );
+    }
+    validate_review_document(&live_types, GH_REVIEW_GRAPHQL)
+}
