@@ -857,6 +857,25 @@ jobs:
           rm -rf target/receipts
           mkdir -p target/receipts/logs
 
+      # The digest step below runs under `always()`, so it must never find a
+      # receipt this run did not write. `target/` is restored from a shared
+      # rust-cache (#12085), and `xtask gates` writes `receipt.json` only after
+      # the whole plan returns -- so any failure before that point (a degraded
+      # runner caught by the guard below, a timeout, a failed warm build) would
+      # otherwise leave an unrelated SHA's receipt in place for the digest to
+      # publish as this run's failure, `first_failure` and all. Rendering the
+      # wrong test as the cause is worse than rendering nothing, which is the
+      # whole premise of the digest. Cleared here, ahead of everything that can
+      # fail, rather than inside the step that produces them.
+      - name: Clear cache-restored PR-fast receipt surfaces (#12085)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/receipts/receipt.json target/receipts/logs \
+            target/receipts/pr-fast-failure-digest.md \
+            || { echo "::error::cannot clear cache-restored PR-fast receipt surfaces (#12085); refusing to run over a possibly stale receipt"; exit 1; }
+          mkdir -p target/receipts
+
       # #11943 visible arm (pre-build): refuse to start the tier on a runner
       # whose free headroom is below the measured worst-case need, naming the
       # path in an explicit resource-exhaustion diagnostic. A degraded runner
@@ -1000,6 +1019,29 @@ jobs:
           python3 scripts/ci/pr_smoke_disk_guard.py classify \
             --logs-dir target/receipts/logs \
             --target-dir "${CARGO_TARGET_DIR:-target}"
+
+      # PR Smoke is the lane a contributor reads first and it published no
+      # step summary at all: a red sent the reader straight to the job log.
+      # The receipt already carries each gate's command and first failure;
+      # this renders them. Advisory, and never changes the gate outcome.
+      - name: Explain PR-fast failures
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          # target/ is restored from a shared cache (#12085), so anything
+          # already at this path belongs to another run, not this one.
+          rm -f target/receipts/pr-fast-failure-digest.md
+          if [ ! -f target/receipts/receipt.json ]; then
+            echo "no PR-fast receipt; nothing to explain"
+            exit 0
+          fi
+          "$CARGO_TARGET_DIR/debug/xtask" gate-failure-digest \
+            --summary target/receipts/receipt.json \
+            --logs target/receipts/logs \
+            --out target/receipts/pr-fast-failure-digest.md
+          cat target/receipts/pr-fast-failure-digest.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload PR-fast receipt
         if: always()
@@ -1192,6 +1234,22 @@ jobs:
           shared-key: ci-gate-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
+      # Same reasoning as the PR-fast clearance above: the `Explain gate
+      # failures` step runs under `always()`, while the sweep that clears these
+      # surfaces lives inside the shard-running step much further down. A
+      # failure during setup therefore skips that sweep and still reaches the
+      # digest, which would render cache-restored shard summaries and logs from
+      # an unrelated SHA. The in-step sweep stays as the authority for the
+      # uploaded artifact; this one exists so the digest cannot read a stale
+      # input when the run never got that far.
+      - name: Clear cache-restored shard receipt surfaces (#12085)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/receipts/shards target/receipts/shard-summaries \
+            target/receipts/logs target/receipts/gate-failure-digest.md \
+            || { echo "::error::cannot clear cache-restored shard receipt surfaces (#12085); refusing to run over possibly stale logs"; exit 1; }
+
       - name: Clear restored inventory evidence
         id: inventory-clean
         if: matrix.name == 'policy'
@@ -1295,6 +1353,7 @@ jobs:
           # overwrite the failure status.
           rm -rf target/receipts/shards target/receipts/shard-summaries \
             target/receipts/logs target/receipts/artifacts \
+            target/receipts/gate-failure-digest.md \
             target/policy/non-rust-inventory.md \
             target/policy/non-rust-inventory.json \
             || { echo "::error::cannot clear cache-restored target/receipts surfaces (#12085); refusing to run the shard over possibly stale logs/artifacts"; exit 1; }
@@ -1523,6 +1582,32 @@ jobs:
           PY
         env:
           SHARD_NAME: ${{ matrix.name }}
+
+      # The table above names which gate went red and nothing about why, so
+      # reading a failure costs a job-log dive — and the job log is not
+      # reliably reachable (the full-log archive redirects to blob storage,
+      # and the per-job logs API returns a bounded tail a noisy later step can
+      # exhaust). Render the failing test, its panic location and the repro
+      # command here instead, the way ux-regression-gate.yml already does.
+      # Advisory: appends to the summary and never changes a verdict.
+      - name: Explain gate failures
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          SHARD_NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          summary="target/receipts/shard-summaries/${SHARD_NAME}.json"
+          if [ ! -f "$summary" ]; then
+            echo "no shard summary at $summary; nothing to explain"
+            exit 0
+          fi
+          target/debug/xtask gate-failure-digest \
+            --summary "$summary" \
+            --logs target/receipts/logs \
+            --out target/receipts/gate-failure-digest.md
+          cat target/receipts/gate-failure-digest.md >> "$GITHUB_STEP_SUMMARY"
 
   # ── CI Gate aggregate: roll up the deterministic shard + guard lanes ──
   # This established context is hardened under #12911 but remains advisory.

@@ -8,35 +8,7 @@ use perl_lsp_ux_tests::taxonomy::{UxComponent, UxFailureClass, UxRoute, route_fo
 use regex::Regex;
 use serde::Serialize;
 
-#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
-static FAILED_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"test\s+([^\s]+)\s+\.\.\.\s+FAILED").expect("failed test regex must compile")
-});
-// Matches both pre-1.73 format ("panicked at 'msg', path:row:col") and
-// post-1.73 format ("panicked at path:row:col:") where the location appears
-// directly after "panicked at " without a quoted message. The first character
-// class accepts a letter (relative paths like `crates/...`), `.` (`./`-relative
-// paths), or `/` (absolute paths) so panics whose frame is outside the
-// workspace root — a dependency's own `unwrap`, a `registry/src/...` frame, or
-// any build whose `CARGO_MANIFEST_DIR` is not a prefix of the compiled file —
-// are still captured. The `[^:\s]` segments forbid whitespace and inner `:`
-// across the whole path, so a token like `./ something:100:200` — whitespace
-// inside the "path" — cannot be captured as a location.
-#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
-static PANIC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"panicked at (?:'[^']*',\s*)?([a-zA-Z./][^:\s][^:\s]*:\d+:\d+)")
-        .expect("panic regex must compile")
-});
-
-// Cargo prints one `---- <test name> stdout ----` block per failing test in its
-// trailing `failures:` report. Splitting on that header is what lets each failing
-// test be classified from its own evidence instead of from the whole log, where one
-// test's wording silently reclassifies another's (#15988).
-#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
-static FAILURE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^-{4}\s+(\S+)\s+stdout\s+-{4}\s*$")
-        .expect("failure block header regex must compile")
-});
+use crate::tasks::cargo_failure_blocks::{failing_test_names, failure_blocks, panic_location};
 
 // `WaitEnd::Deadline` is the one harness outcome documented to mean "nothing
 // decided": a live stream that simply did not produce the awaited observation in
@@ -182,8 +154,7 @@ fn classify_with_exit_status(
     let lines: Vec<&str> = raw.lines().collect();
     let first_fail_line =
         lines.iter().find(|line| line.contains("FAILED")).map(|line| (*line).trim().to_string());
-    let first_failing_test =
-        lines.iter().find_map(|line| FAILED_TEST_RE.captures(line).map(|cap| cap[1].to_string()));
+    let first_failing_test = failing_test_names(raw).into_iter().next();
     let panic_location =
         first_failing_test.as_ref().and_then(|name| panic_location_for_test(raw, name));
     let scenario = first_failing_test.as_ref().and_then(|name| scenario_from_test_name(name));
@@ -192,13 +163,35 @@ fn classify_with_exit_status(
     let failing_tests = discriminate_failing_tests(raw);
 
     let canonical_repro = first_failing_test.as_ref().map(|name| {
-        format!("cargo test -p perl-lsp-ux-tests {name} -- --test-threads=1 --nocapture")
+        // The filter is quoted because the shared reader now returns doctest
+        // names whole, and a doctest's name carries spaces and parentheses
+        // (`src/lib.rs - item::path (line 12)`). Unquoted, bash rejects the
+        // command at the `(`, and a name with only spaces is silently split
+        // across `cargo test`'s single [TESTNAME] positional. A repro line
+        // that cannot be pasted is the failure this receipt exists to remove.
+        let filter = shell_quote(name);
+        if is_doctest_name(name) {
+            // `cargo test <filter>` never matches a doctest; only --doc runs
+            // them. A syntactically valid command that selects nothing would
+            // be a worse answer than none.
+            format!("cargo test -p perl-lsp-ux-tests --doc {filter} -- --nocapture")
+        } else {
+            format!("cargo test -p perl-lsp-ux-tests {filter} -- --test-threads=1 --nocapture")
+        }
     });
 
-    let friendly_repro = first_failing_test.as_ref().map(|name| {
+    let friendly_repro = first_failing_test.as_ref().and_then(|name| {
+        // The shorthand splits on `::` to reach the bare function name, which
+        // a doctest name does not have -- `src/lib.rs - a::b (line 3)` would
+        // yield `b (line 3)`. `just ux-tests` cannot run a doctest anyway, so
+        // offer no shorthand rather than a wrong one; the canonical command
+        // above is the answer for that case.
+        if is_doctest_name(name) {
+            return None;
+        }
         // Extract just the test function name (after ::) for the shorthand command.
         let short = name.split("::").last().unwrap_or(name);
-        format!("just ux-tests {short}")
+        Some(format!("just ux-tests {short}"))
     });
 
     let has_failed_test = first_failing_test.is_some()
@@ -286,45 +279,19 @@ fn classify_with_exit_status(
     }
 }
 
-/// One failing test's stdout block per cargo `---- <name> stdout ----` header:
-/// (test name, where its body starts, where the next header starts).
-///
-/// Shared by per-block discrimination (#15988) and panic-location scoping
-/// (#16148) so there is exactly one span implementation.
-fn failure_block_spans(raw: &str) -> Vec<(String, usize, usize)> {
-    // (test name, where its body starts, where the next header starts)
-    let mut headers: Vec<(String, usize, usize)> = Vec::new();
-    for capture in FAILURE_BLOCK_RE.captures_iter(raw) {
-        let (Some(header), Some(name)) = (capture.get(0), capture.get(1)) else {
-            continue;
-        };
-        headers.push((name.as_str().to_string(), header.end(), header.start()));
-    }
-    let mut spans: Vec<(String, usize, usize)> = Vec::new();
-    for (index, (name, body_start, _)) in headers.iter().enumerate() {
-        let body_end = headers
-            .get(index + 1)
-            .map_or(raw.len(), |(_, _, next_header_start)| *next_header_start);
-        spans.push((name.clone(), *body_start, body_end));
-    }
-    spans
-}
-
 /// The panic site of one named failing test, read from that test's own stdout
 /// block only (#16148). The receipt is flat, so adjacent fields read as one
 /// pair: a whole-log scan reports a later test's crash site under the first
 /// test's name when the first test fails without panicking.
+///
+/// The blocks come from the shared cargo-output reader, which already splits on
+/// `---- <name> stdout ----`, drops duplicate headers and trims the run trailer,
+/// so this file no longer carries a second span implementation to drift from it.
 fn panic_location_for_test(raw: &str, name: &str) -> Option<String> {
-    for (block_name, body_start, body_end) in failure_block_spans(raw) {
-        if block_name != name {
-            continue;
-        }
-        let block = raw.get(body_start..body_end).unwrap_or_default();
-        return block_body(block)
-            .lines()
-            .find_map(|line| PANIC_RE.captures(line).map(|cap| cap[1].to_string()));
-    }
-    None
+    failure_blocks(raw)
+        .into_iter()
+        .find(|(block_name, _)| block_name == name)
+        .and_then(|(_, block)| panic_location(block))
 }
 
 /// Split cargo's trailing failure report into one block per failing test and
@@ -335,22 +302,13 @@ fn panic_location_for_test(raw: &str, name: &str) -> Option<String> {
 /// mentioning a baseline reclassifies another test's expired budget. Per-block
 /// reading keeps each failure's evidence to itself.
 fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
-    let spans = failure_block_spans(raw);
-
-    let mut discriminated: Vec<UxFailingTest> = Vec::new();
-    for (name, start, end) in spans {
-        if discriminated.iter().any(|existing| existing.name == name) {
-            continue;
-        }
-        let block = raw.get(start..end).unwrap_or_default();
-        let (mode, evidence) = classify_failure_mode(block_body(block));
-        discriminated.push(UxFailingTest {
-            name,
-            mode,
-            discriminated: mode_is_evidence_backed(mode),
-            evidence,
-        });
-    }
+    let mut discriminated: Vec<UxFailingTest> = failure_blocks(raw)
+        .into_iter()
+        .map(|(name, block)| {
+            let (mode, evidence) = classify_failure_mode(block);
+            UxFailingTest { name, mode, discriminated: mode_is_evidence_backed(mode), evidence }
+        })
+        .collect();
 
     // Cargo reported these failures but printed no stdout block for them. Name them
     // and admit the mode is unknown rather than borrowing the whole-log class.
@@ -361,14 +319,13 @@ fn discriminate_failing_tests(raw: &str) -> Vec<UxFailingTest> {
     // `not discriminated`, and to `no_failing_test_compared_anything`, which would
     // have read a run as crash-only while an unexplained failure sat beside the
     // crash. Raised in review as `#discussion_r4058216209`.
-    for line in raw.lines() {
-        let Some(capture) = FAILED_TEST_RE.captures(line) else {
-            continue;
-        };
-        let Some(name) = capture.get(1) else {
-            continue;
-        };
-        let name = name.as_str().to_string();
+    //
+    // The names come from the shared reader rather than a local scan of
+    // `FAILED_TEST_RE`: it anchors the status line so log prose cannot invent a test
+    // name, splits on the bare `\r` a progress writer leaves, and dedups its own
+    // output. Those three properties are pinned by tests here and a second scanner
+    // would drift from them.
+    for name in failing_test_names(raw) {
         if discriminated.iter().any(|existing| existing.name == name) {
             continue;
         }
@@ -414,20 +371,6 @@ fn describe_discrimination(failing: &UxFailingTest) -> String {
         (true, None) => format!("; per-test evidence: {mode}"),
         (false, _) => format!("; per-test evidence: not discriminated — {mode}"),
     }
-}
-
-/// Trim cargo's run-level trailer off the end of a block so the last failing test
-/// does not inherit the summary lines that follow every failure report.
-fn block_body(block: &str) -> &str {
-    let mut offset = 0usize;
-    for line in block.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("failures:") || trimmed.starts_with("test result:") {
-            return block.get(..offset).unwrap_or(block);
-        }
-        offset += line.len();
-    }
-    block
 }
 
 /// Read one failing test's block and say what kind of failure it was.
@@ -663,11 +606,35 @@ fn workflow_from_test_name(test: &str) -> Option<String> {
     if workflow.is_empty() { None } else { Some(workflow.to_string()) }
 }
 
+/// Whether cargo named this a doctest rather than a test function.
+///
+/// Cargo renders a doctest as `<path> - <item path> (line <n>)`; a test
+/// function is a plain `::`-separated path with no spaces. The space before
+/// the dash is what separates the two shapes, since an item path can itself
+/// contain `::` and digits.
+fn is_doctest_name(name: &str) -> bool {
+    name.contains(" - ") && name.ends_with(')') && name.contains("(line ")
+}
+
+/// POSIX single-quoting, so a filter with spaces or parentheses survives being
+/// pasted into a shell. A literal `'` closes the quote, escapes itself, and
+/// reopens -- the standard `'\''` dance.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use color_eyre::eyre::{bail, ensure};
+    use color_eyre::eyre::{bail, ensure, eyre};
+    // The block-reader regexes live on the shared reader
+    // (`cargo_failure_blocks`), which both this classifier and the failure
+    // digest consume. The regex-level discriminating tests (#16147/#16189)
+    // import `PANIC_RE` so they exercise the one shared pattern, not a
+    // private copy; the import sits in the test module because non-test
+    // builds reach the same pattern through the reader's functions.
+    use crate::tasks::cargo_failure_blocks::PANIC_RE;
 
     #[test]
     fn classify_extracts_structured_fields() {
@@ -986,12 +953,67 @@ test result: FAILED. 0 passed; 1 failed";
         Ok(())
     }
 
+    /// A doctest name carries spaces and parentheses, so an unquoted filter
+    /// produces a command bash rejects at the `(` -- and `cargo test` without
+    /// `--doc` would select nothing even if it parsed. Both are worse than no
+    /// repro line, because the reader pastes it and believes the result.
+    #[test]
+    fn a_doctest_repro_is_quoted_and_selects_doctests() -> Result<()> {
+        let name = "src/lib.rs - perl_lsp_ux::render (line 12)";
+        let log = format!(
+            "running 1 test\n\
+             test {name} ... FAILED\n\
+             assertion failed: left == right\n\
+             test result: FAILED. 0 passed; 1 failed"
+        );
+
+        let receipt = classify(&log, Some("deadbeef".to_string()));
+        let canonical =
+            receipt.canonical_repro.as_deref().ok_or_else(|| eyre!("canonical_repro missing"))?;
+
+        assert!(
+            canonical.contains(&format!("'{name}'")),
+            "the doctest filter must be shell-quoted whole, got: {canonical}"
+        );
+        assert!(
+            canonical.contains("--doc"),
+            "a doctest repro must pass --doc or it selects nothing, got: {canonical}"
+        );
+        assert!(
+            receipt.friendly_repro.is_none(),
+            "`just ux-tests` cannot run a doctest, so offer no shorthand rather than a wrong one, \
+             got: {:?}",
+            receipt.friendly_repro
+        );
+        Ok(())
+    }
+
+    /// A test function name keeps the un-suffixed form, and the quoting does
+    /// not change which test it selects.
+    #[test]
+    fn a_plain_test_repro_stays_a_plain_cargo_test() -> Result<()> {
+        let name = "ux_scenario_01_startup::start_server";
+        let log = format!(
+            "running 1 test\n\
+             test {name} ... FAILED\n\
+             test result: FAILED. 0 passed; 1 failed"
+        );
+
+        let receipt = classify(&log, Some("deadbeef".to_string()));
+        let canonical =
+            receipt.canonical_repro.as_deref().ok_or_else(|| eyre!("canonical_repro missing"))?;
+
+        assert!(!canonical.contains("--doc"), "not a doctest, got: {canonical}");
+        assert!(canonical.contains(&format!("'{name}'")), "got: {canonical}");
+        assert!(receipt.friendly_repro.is_some(), "a test function keeps its shorthand");
+        Ok(())
+    }
+
     #[test]
     fn panic_re_matches_modern_rust_format() {
         // Rust 1.73+ format: "panicked at path:row:col:" with no quoted message.
         let line = "thread 'test' panicked at crates/perl-lsp-rs/src/lib.rs:42:8:";
-        let cap = PANIC_RE.captures(line).expect("should match modern panic format");
-        assert_eq!(&cap[1], "crates/perl-lsp-rs/src/lib.rs:42:8");
+        assert_eq!(panic_location(line).as_deref(), Some("crates/perl-lsp-rs/src/lib.rs:42:8"));
     }
 
     #[test]

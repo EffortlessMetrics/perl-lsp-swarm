@@ -7019,6 +7019,114 @@ error: aborting due to previous error
         );
     }
 
+    /// Fixture: the shape that makes an unassociated read wrong — a first
+    /// failing test that returns `Err` (no panic of its own) followed by a
+    /// second failing test that panics. A scan of the whole log finds
+    /// `test_reads_config`'s name and `test_parses_header`'s panic.
+    const CARGO_TEST_TWO_FAILURES_FIRST_HAS_NO_PANIC: &str = r#"
+running 3 tests
+test config::tests::test_reads_config ... FAILED
+test parse::tests::test_parses_header ... FAILED
+test parse::tests::test_ignores_blank ... ok
+
+failures:
+
+---- config::tests::test_reads_config stdout ----
+Error: config file not found at /etc/perl-lsp/config.toml
+
+---- parse::tests::test_parses_header stdout ----
+thread 'parse::tests::test_parses_header' panicked at crates/perl-parser/src/parse/header.rs:118:9:
+assertion `left == right` failed
+  left: "Foo::Bar"
+ right: "Foo::Baz"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    config::tests::test_reads_config
+    parse::tests::test_parses_header
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+"#;
+
+    /// Fixture: the same two-failure shape, but the *first* failing test is
+    /// the one that panicked. The association is then real and must survive.
+    const CARGO_TEST_TWO_FAILURES_FIRST_PANICS: &str = r#"
+running 3 tests
+test parse::tests::test_parses_header ... FAILED
+test config::tests::test_reads_config ... FAILED
+test parse::tests::test_ignores_blank ... ok
+
+failures:
+
+---- parse::tests::test_parses_header stdout ----
+thread 'parse::tests::test_parses_header' panicked at crates/perl-parser/src/parse/header.rs:118:9:
+assertion `left == right` failed
+  left: "Foo::Bar"
+ right: "Foo::Baz"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- config::tests::test_reads_config stdout ----
+Error: config file not found at /etc/perl-lsp/config.toml
+
+failures:
+    parse::tests::test_parses_header
+    config::tests::test_reads_config
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+"#;
+
+    #[test]
+    fn a_panic_from_another_test_is_not_attached_to_the_recovered_name() {
+        let ff = required_first_failure(
+            CARGO_TEST_TWO_FAILURES_FIRST_HAS_NO_PANIC,
+            101,
+            "two failing tests still yield a first failure",
+        );
+
+        assert_eq!(
+            ff.test.as_deref(),
+            Some("config::tests::test_reads_config"),
+            "the first FAILED line still names the recovered test"
+        );
+        // The panic below belongs to `test_parses_header`. Reporting its
+        // location beside `test_reads_config` would send a reader to a file
+        // the named test never touched — the whole point of this receipt is
+        // to say where to look.
+        assert_eq!(
+            ff.site, None,
+            "a panic outside the recovered test's own block is not that test's site"
+        );
+        assert_eq!(
+            ff.message, None,
+            "a panic outside the recovered test's own block is not that test's message"
+        );
+    }
+
+    #[test]
+    fn a_panic_inside_the_recovered_test_block_is_still_reported() {
+        let ff = required_first_failure(
+            CARGO_TEST_TWO_FAILURES_FIRST_PANICS,
+            101,
+            "two failing tests still yield a first failure",
+        );
+
+        assert_eq!(
+            ff.test.as_deref(),
+            Some("parse::tests::test_parses_header"),
+            "the first FAILED line names the recovered test"
+        );
+        assert_eq!(
+            ff.site.as_deref(),
+            Some("crates/perl-parser/src/parse/header.rs:118"),
+            "a panic in the recovered test's own block is that test's site"
+        );
+        assert_eq!(
+            ff.message.as_deref(),
+            Some("assertion `left == right` failed"),
+            "and its message, bounded by the block rather than running into the next"
+        );
+    }
+
     #[test]
     fn parse_first_failure_roundtrips_through_first_failure_struct() {
         // Verify that FirstFailure serializes and deserializes without loss.
