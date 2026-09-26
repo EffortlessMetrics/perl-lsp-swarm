@@ -1181,13 +1181,12 @@ impl CompletionProvider {
         None
     }
 
-    /// Detect whether the cursor is inside a plain hash subscript `$varname{prefix`.
+    /// Detect the syntactic hash-key role at `$varname{prefix` or `$ref->{prefix`.
     ///
-    /// Returns `Some((varname, key_prefix))` when:
-    /// - The source before `position` contains `$varname{` (with no `->` immediately before `{`)
-    /// - The context is not inside a comment or string literal
+    /// This scan does not classify comments, strings, or regexes. The core
+    /// dispatcher applies those lexical guards before calling it.
     ///
-    /// Identify the hash-key role claimed by the core completion dispatcher.
+    /// Identify the same hash-key shape used by the core completion dispatcher.
     /// Runtime enrichment uses the same decision to avoid adding unrelated
     /// workspace names after the core provider has selected hash keys.
     /// Returns `None` for double-sigil derefs (`$$ref{...}`) or contexts
