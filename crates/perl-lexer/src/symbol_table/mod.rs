@@ -857,6 +857,12 @@ fn heredoc_allowed_before(
     // variable, not a callable: `$print <<'END'` is a left shift too, so only
     // a sigil-free callable word introduces a heredoc.
     previous_word_and_sigil_before(line, offset).is_some_and(|(sigil, word)| {
+        // A sigiled word is a completed term first: `$print <<'END'` and the
+        // typeglob/last-index forms are left shifts, never heredoc
+        // introducers, whatever the word spells (#16338).
+        if sigil.is_some() {
+            return false;
+        }
         // `return` introduces a term slot without being callable, so
         // `return <<END;` is a definite heredoc even when nothing callable
         // precedes the opener (oracle-verified under a statement modifier
@@ -871,7 +877,7 @@ fn heredoc_allowed_before(
             || (is_callable_word(word, known_subs, &hints.callables)
                 && !is_nullary_word(word, nullaries, hints)
                 && !is_nullary_builtin(word))
-    });
+    })
 }
 
 /// Recognize the immediate scalar-filehandle `print $handle LIST` term slot.
