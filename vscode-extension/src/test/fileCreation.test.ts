@@ -308,15 +308,13 @@ describe('populateCreatedFiles gates on the folder each file was created in (#14
     expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
   });
 
-  test('an unset value still populates, in a single-root workspace as before', async () => {
+  test('an unset value leaves a new file untouched by default', async () => {
     installScopedConfiguration(undefined);
 
     await populateCreatedFiles(creationEvent('/only-root/lib/Foo/Bar.pm'));
 
-    expect(stagedPaths()).toEqual(['/only-root/lib/Foo/Bar.pm']);
-    const applyEdit = vscode.workspace.applyEdit as jest.Mock;
-    const edit = applyEdit.mock.calls[0]?.[0] as { inserts: Array<{ newText: string }> };
-    expect(edit.inserts[0]?.newText).toContain('package Foo::Bar;');
+    expect(stagedPaths()).toEqual([]);
+    expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled();
   });
 
   test('a file outside every workspace folder falls back to the workspace value', async () => {
