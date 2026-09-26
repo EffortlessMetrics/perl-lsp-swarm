@@ -1355,7 +1355,7 @@
           {
             "id": "try-goto-definition",
             "title": "Go to Definition",
-            "description": "Hold Ctrl and click a symbol to jump to its definition.",
+            "description": "Right-click a symbol and choose Go to Definition, or press F12.",
             "media": {
               "image": "media/walkthrough/try-goto-definition.svg",
               "altText": "Go to Definition"
