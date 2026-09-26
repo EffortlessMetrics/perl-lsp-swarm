@@ -3,7 +3,16 @@ name: PR Title Check
 on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Exact pull request number to validate (branch discovery is never authority).'
+        required: true
+        type: string
+      expected_head_sha:
+        description: 'Expected 40-hex head SHA of that pull request (binds the result to one exact commit).'
+        required: true
+        type: string
 
 permissions:
   pull-requests: write
@@ -20,43 +29,131 @@ jobs:
     steps:
       - name: Check PR title
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          PR_NUMBER_INPUT: ${{ inputs.pr_number }}
+          EXPECTED_HEAD_SHA_INPUT: ${{ inputs.expected_head_sha }}
         with:
           script: |
-            const actor = context.actor;
-            let pr = context.payload.pull_request;
-            if (!pr) {
-              // workflow_dispatch mode (post-merge-status raises this check on
-              // its generated branch, since GITHUB_TOKEN PRs fire no
-              // pull_request_target events): resolve the open PR from the
-              // dispatched ref instead of the absent payload.
-              const branch = context.ref.replace('refs/heads/', '');
-              const { data: pulls } = await github.rest.pulls.list({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                head: `${context.repo.owner}:${branch}`,
-                state: 'open',
-              });
-              if (pulls.length === 0) {
-                core.info(`No open PR found for ${branch}; nothing to validate.`);
+            // Exact-subject title validation (#15351).
+            //
+            // This required context must describe exactly one pull request:
+            // - pull_request_target: the payload PR, resolved by its number and
+            //   bound to its head SHA, then re-read from the API before any
+            //   success is reported;
+            // - workflow_dispatch: the explicitly addressed (pr_number,
+            //   expected_head_sha) pair. Branch-name discovery is never
+            //   authority: it can match zero PRs (a vacuous required success)
+            //   or several (a result about an unintended PR).
+            //
+            // A missing, ambiguous, closed, moved, or edited subject FAILS this
+            // check. It can never succeed without validating one exact open PR
+            // at one exact head commit with one exact title.
+            const inputPrNumber = (process.env.PR_NUMBER_INPUT || '').trim();
+            const inputExpectedHeadSha = (process.env.EXPECTED_HEAD_SHA_INPUT || '').trim();
+            const repoParams = { owner: context.repo.owner, repo: context.repo.repo };
+
+            let subject;
+            if (context.eventName === 'workflow_dispatch') {
+              const number = Number.parseInt(inputPrNumber, 10);
+              if (!Number.isInteger(number) || number <= 0 || String(number) !== inputPrNumber) {
+                core.setFailed(
+                  `workflow_dispatch requires an explicit pr_number input (got "${inputPrNumber || '<missing>'}"). ` +
+                  'A required validate-title result cannot be emitted without an exact PR subject.'
+                );
                 return;
               }
-              pr = pulls[0];
+              const headSha = inputExpectedHeadSha.toLowerCase();
+              if (!/^[0-9a-f]{40}$/.test(headSha)) {
+                core.setFailed(
+                  `workflow_dispatch requires an explicit expected_head_sha input (got "${inputExpectedHeadSha || '<missing>'}"). ` +
+                  'A required validate-title result cannot be emitted without binding to one exact head commit.'
+                );
+                return;
+              }
+              subject = { number, expectedHeadSha: headSha, source: 'workflow_dispatch' };
+            } else {
+              const payloadPr = context.payload && context.payload.pull_request;
+              if (!payloadPr || !payloadPr.number || !payloadPr.head || !payloadPr.head.sha) {
+                core.setFailed(
+                  `Event ${context.eventName} carries no pull_request payload with number/head.sha. ` +
+                  'A required validate-title result cannot be emitted without an exact PR subject.'
+                );
+                return;
+              }
+              subject = {
+                number: payloadPr.number,
+                expectedHeadSha: String(payloadPr.head.sha).toLowerCase(),
+                source: 'pull_request_target',
+              };
             }
+
+            // Resolve the exact subject through its number — never through a
+            // branch-name search, which can match zero or several open PRs.
+            let pr;
+            try {
+              ({ data: pr } = await github.rest.pulls.get({ ...repoParams, pull_number: subject.number }));
+            } catch (e) {
+              core.setFailed(`Could not read PR #${subject.number} (${subject.source}): ${e.message}`);
+              return;
+            }
+            if (!pr || pr.state !== 'open') {
+              core.setFailed(
+                `PR #${subject.number} is ${pr ? pr.state : 'unreadable'}; only an open PR can be title-validated. Failing closed.`
+              );
+              return;
+            }
+            const liveHeadSha = String((pr.head && pr.head.sha) || '').toLowerCase();
+            if (liveHeadSha !== subject.expectedHeadSha) {
+              core.setFailed(
+                `Head mismatch for PR #${subject.number}: expected ${subject.expectedHeadSha}, ` +
+                `found ${liveHeadSha || '<missing>'}. The requested subject is not the live candidate; ` +
+                'refusing to validate a different PR or commit.'
+              );
+              return;
+            }
+
             const title = pr.title;
-            const login = pr.user.login;
+            const titleDigest = require('crypto')
+              .createHash('sha256')
+              .update(title, 'utf8')
+              .digest('hex');
+
+            // Receipt outputs: every success is bound to the exact subject it
+            // validated, so downstream admission can check freshness.
+            const setReceiptOutputs = (disposition) => {
+              core.setOutput('pr_number', String(subject.number));
+              core.setOutput('head_sha', liveHeadSha);
+              core.setOutput('title_sha256', titleDigest);
+              core.setOutput('disposition', disposition);
+            };
+
+            const actor = context.actor;
+            const login = pr.user && pr.user.login ? pr.user.login : '';
 
             if (actor === 'dependabot[bot]' || login.includes('dependabot')) {
+              if (!(await confirmUnchanged())) {
+                return;
+              }
+              setReceiptOutputs('dependabot-exempt');
               core.info('Exempt: dependabot PR');
               return;
             }
 
-            const labels = pr.labels.map(l => l.name);
+            const labels = (pr.labels || []).map(l => l.name);
             if (labels.includes('skip-title-check')) {
+              if (!(await confirmUnchanged())) {
+                return;
+              }
+              setReceiptOutputs('skip-title-check-exempt');
               core.info('Exempt: skip-title-check label present');
               return;
             }
 
             if (/^v?\d+\.\d+\.\d+$/.test(title.trim())) {
+              if (!(await confirmUnchanged())) {
+                return;
+              }
+              setReceiptOutputs('release-stamp-exempt');
               core.info('Exempt: release stamp title');
               return;
             }
@@ -67,7 +164,7 @@ jobs:
               '',
               'The issue should preserve the plan context: problem, scope, constraints, files or surfaces, validation, and explicit non-goals.',
               '',
-              'If you genuinely cannot determine the issue number, use the placeholder `(#0000)` — do NOT guess a real issue number, because a wrong-but-real reference silently pollutes an unrelated issue. `(#0000)` passes this check (non-blocking) but flags the PR with `needs-issue-link`; a real issue must be linked before merge.',
+              'If you genuinely cannot determine the issue number, use the placeholder `(#0000)` — do NOT guess a real issue number, because a wrong-but-real reference silently pollutes an unrelated issue. `(#0000)` passes the format stage (non-blocking) but flags the PR with `needs-issue-link`; a real issue must be linked before merge.',
               '',
               '`skip-title-check` is reserved for maintainer-owned exceptions.',
             ].join('\n');
@@ -101,6 +198,38 @@ jobs:
                 core.info('Posted new bot comment.');
               }
             };
+
+            // Re-read the exact PR immediately before reporting success and
+            // require number, state, head SHA, and title to be unchanged. A
+            // subject that moved during validation is NOT_PROVEN, not success.
+            const confirmUnchanged = async () => {
+              let reread;
+              try {
+                ({ data: reread } = await github.rest.pulls.get({ ...repoParams, pull_number: subject.number }));
+              } catch (e) {
+                core.setFailed(`Could not re-read PR #${subject.number} before reporting success: ${e.message}`);
+                return false;
+              }
+              if (!reread || reread.number !== subject.number || reread.state !== 'open') {
+                core.setFailed(`PR #${subject.number} changed identity or state during validation; failing closed.`);
+                return false;
+              }
+              const rereadHeadSha = String((reread.head && reread.head.sha) || '').toLowerCase();
+              if (rereadHeadSha !== liveHeadSha) {
+                core.setFailed(
+                  `PR #${subject.number} head moved during validation (${liveHeadSha} -> ${rereadHeadSha || '<missing>'}); the result would be stale. Failing closed.`
+                );
+                return false;
+              }
+              if (reread.title !== title) {
+                core.setFailed(
+                  `PR #${subject.number} title changed during validation ("${title}" -> "${reread.title}"); the receipt would not describe the live title. Failing closed.`
+                );
+                return false;
+              }
+              return true;
+            };
+
             const issueMatches = [...title.matchAll(/\B#(\d+)\b/g)];
 
             if (issueMatches.length === 0) {
@@ -128,18 +257,17 @@ jobs:
             }
 
             // Zero-valued references (#0 / #0000) are the sanctioned placeholder
-            // for "issue number not yet known" (issue #724). They are NON-BLOCKING:
-            // the check passes, but the PR is flagged with `needs-issue-link` and a
-            // real issue must be linked before merge (ops is the backstop). This
-            // removes any incentive to guess a real issue number \u2014 a wrong-but-real
-            // reference silently pollutes an unrelated issue's thread.
-            const nonZeroMatch = issueMatches.find((match) => parseInt(match[1], 10) !== 0);
+            // for "issue number not yet known" (issue #724). They pass the format
+            // stage only while the `needs-issue-link` obligation is actually
+            // recorded (#15351): the label carries the executable backstop, so a
+            // failed label write is a failed check — never a swallowed warning.
             const zeroIssueMatch = issueMatches.find((match) => parseInt(match[1], 10) === 0);
+            const nonZeroMatches = issueMatches.filter((match) => parseInt(match[1], 10) !== 0);
 
-            if (!nonZeroMatch && zeroIssueMatch) {
+            if (nonZeroMatches.length === 0 && zeroIssueMatch) {
               core.info(
-                `Placeholder issue reference "${zeroIssueMatch[0]}" accepted (non-blocking). ` +
-                `Flagging needs-issue-link.`
+                `Placeholder issue reference "${zeroIssueMatch[0]}" accepted at the format stage. ` +
+                `Recording the needs-issue-link obligation.`
               );
               const commentBody = [
                 '## \u2139\ufe0f PR Title \u2014 placeholder issue reference',
@@ -164,35 +292,50 @@ jobs:
                   labels: ['needs-issue-link'],
                 });
               } catch (e) {
-                core.warning(`Could not add needs-issue-link label: ${e.message}`);
+                core.setFailed(
+                  `Failed to record the needs-issue-link obligation for placeholder title "${title}": ${e.message}. ` +
+                  'The placeholder backstop is enforced, so an unrecorded placeholder is a failed check, not a pass.'
+                );
+                return;
               }
-              core.info('PR title passes validation (placeholder reference).');
+              if (!(await confirmUnchanged())) {
+                return;
+              }
+              setReceiptOutputs('placeholder-needs-issue-link');
+              core.info('PR title passes validation (placeholder reference; needs-issue-link obligation recorded).');
               return;
             }
 
-            // Validate the first real (non-placeholder) issue reference.
-            const issueNumber = parseInt(nonZeroMatch[1], 10);
-            try {
-              await github.rest.issues.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-              });
-              core.info(`Referenced issue #${issueNumber} exists.`);
-            } catch (e) {
-              core.warning(
-                `Referenced issue #${issueNumber} was not found. Please verify the issue number.`
-              );
-              // Don't fail the check for this — it may be a private/internal reference
+            // Every non-zero reference must resolve in this repository. A
+            // nonexistent reference is a failed check, not a warning (#15351):
+            // a required context that stays green while naming a missing issue
+            // proves nothing.
+            for (const match of nonZeroMatches) {
+              const issueNumber = parseInt(match[1], 10);
+              try {
+                await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                });
+                core.info(`Referenced issue #${issueNumber} exists.`);
+              } catch (e) {
+                core.setFailed(
+                  `Referenced issue #${issueNumber} does not resolve in ${context.repo.owner}/${context.repo.repo}: ${e.message}. ` +
+                  'Fix the title to reference a real issue (or use the `(#0000)` placeholder if the number is genuinely unknown).'
+                );
+                return;
+              }
             }
+            const firstRealRef = nonZeroMatches[0][0];
 
             // Self-clearing needs-issue-link: this check re-runs on `edited` and
             // `synchronize`, so once a PR's title carries a real (non-placeholder)
             // issue reference, drop the label instead of leaving it for a manual
-            // clear at merge time. Per #3356: the title was fixed (a real issue
-            // ref added, this check went green) but `needs-issue-link` survived
-            // and blocked an ops merge under the "no needs-* label may merge"
-            // doctrine — the label-writer never reconciled its own label.
+            // clear at merge time. Per #3356/#15351: a label the checker cannot
+            // reconcile must not silently survive as a stale blocking obligation,
+            // and a failed clear is a failed check because the label carries the
+            // placeholder backstop.
             if (labels.includes('needs-issue-link')) {
               try {
                 await github.rest.issues.removeLabel({
@@ -201,10 +344,18 @@ jobs:
                   issue_number: pr.number,
                   name: 'needs-issue-link',
                 });
-                core.info(`Removed needs-issue-link: title now references real issue #${issueNumber}.`);
+                core.info(`Removed needs-issue-link: title now references real issue ${firstRealRef}.`);
               } catch (e) {
-                core.warning(`Could not remove needs-issue-link label: ${e.message}`);
+                core.setFailed(
+                  `Could not remove the needs-issue-link obligation after the title gained real reference ${firstRealRef}: ${e.message}. ` +
+                  'The stale obligation must not survive silently; retry after fixing label permissions.'
+                );
+                return;
               }
             }
 
+            if (!(await confirmUnchanged())) {
+              return;
+            }
+            setReceiptOutputs('real-issue-reference');
             core.info('PR title passes validation.');
