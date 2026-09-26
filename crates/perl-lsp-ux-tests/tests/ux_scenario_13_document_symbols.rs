@@ -220,6 +220,15 @@ fn require_lsp_range(value: &Value, context: &str) -> Result<SymbolRange, String
 }
 
 fn assert_symbol_shapes(symbols: &[Value]) {
+    // The LSP result is one array variant, not a row-by-row union. An empty
+    // response has no form to choose; each nonempty result must be coherent.
+    if let Some(first) = symbols.first() {
+        let document_symbols = first.get("range").is_some();
+        assert!(
+            symbols.iter().all(|symbol| symbol.get("range").is_some() == document_symbols),
+            "Document symbols and SymbolInformation must not mix in one result: {symbols:?}"
+        );
+    }
     let mut seen = HashSet::new();
     assert_symbol_shapes_with_seen(symbols, &mut seen);
 }
@@ -685,6 +694,31 @@ mod shape_unit_tests {
             std::panic::catch_unwind(|| assert_symbol_shapes(&[nested])).is_err(),
             "the same identity nested under another symbol must fail"
         );
+    }
+
+    #[test]
+    fn rejects_mixed_result_array_forms() {
+        let document_symbol = valid_document_symbol();
+        let symbol_information = json!({
+            "name": "other",
+            "kind": 12,
+            "location": {
+                "uri": "file:///tmp/Greeter.pm",
+                "range": {
+                    "start": {"line": 5, "character": 0},
+                    "end": {"line": 6, "character": 1}
+                }
+            }
+        });
+        for mixed in [
+            [document_symbol.clone(), symbol_information.clone()],
+            [symbol_information, document_symbol],
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| assert_symbol_shapes(&mixed)).is_err(),
+                "both orders of mixed result forms must fail"
+            );
+        }
     }
 
     #[test]
