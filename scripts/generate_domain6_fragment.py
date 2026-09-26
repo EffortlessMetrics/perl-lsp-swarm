@@ -1744,7 +1744,10 @@ SEEDS = {
             "post-head drift on the file is a dependabot toolchain pin "
             "(PR#16357) inside checksum_candidate_steps, not the "
             "derivation law",
-        ],
+                    "position-aware masking does not admit unterminated or malformed "
+            "regex-like constructs: such sources are outside this row's proof "
+            "boundary (a lexer-level rejection test is the follow-up owner)",
+],
         "open_pr_relationships": [
             "16230-OPEN carrier touches "
             "scripts/generate_release_topology.py (mapped-RC packaging; "

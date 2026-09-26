@@ -22,7 +22,7 @@
     "total_rows 705 = 682 unit-mapping rows + 20 merge rows + 3 true-NOREF watchlist rows; the 3 watchlist rows intentionally duplicate commits already mapped once (unique commits 702)"
   ],
   "coverage": {
-    "digest": "sha256:13971509cb7b050c13ddcddaf2395e484038536bb7ef4644395133b51a2f614f",
+    "digest": "sha256:06bd10d0d6281b257e6a96c2a22db1e13e8152778753df016621736a23a17f14",
     "duplicate_records": 0,
     "duplicate_work_units": 0,
     "omitted_records": 0,
@@ -11383,7 +11383,8 @@
         "template literal bodies stay visible in the default mask because the Linux construction needle lives inside one; only the Windows constant-return check runs an identifier-strict second pass",
         "supersedes the reviewed PR#15447-era masking scan: regex-literal pseudo-returns and commented Darwin/Linux branches its regex mask could still admit now fail closed",
         "in-range successor reviewed PR#16207 (topology v4) extended the same generator file for schema admission and byte-identical schema binding; the lexer and derive_downloader_targets are byte-unchanged since this commit (verified 2026-09-25), and the real downloader admits all 8 targets",
-        "post-head drift on the file is a dependabot toolchain pin (PR#16357) inside checksum_candidate_steps, not the derivation law"
+        "post-head drift on the file is a dependabot toolchain pin (PR#16357) inside checksum_candidate_steps, not the derivation law",
+        "position-aware masking does not admit unterminated or malformed regex-like constructs: such sources are outside this row's proof boundary (a lexer-level rejection test is the follow-up owner)"
       ],
       "migration_or_upgrade_refs": [],
       "open_pr_relationships": [
