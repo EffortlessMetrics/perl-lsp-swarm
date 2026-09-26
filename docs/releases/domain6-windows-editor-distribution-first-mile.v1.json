@@ -22,7 +22,7 @@
     "total_rows 705 = 682 unit-mapping rows + 20 merge rows + 3 true-NOREF watchlist rows; the 3 watchlist rows intentionally duplicate commits already mapped once (unique commits 702)"
   ],
   "coverage": {
-    "digest": "sha256:cc24882aef4fe3b4a79cacb969415b21b75d05deb1815a44af57cf851a8fc793",
+    "digest": "sha256:93260612ca678a1d8f5c198d713c5e02e9e34e1f915a7c71786419a7fce65b60",
     "duplicate_records": 0,
     "duplicate_work_units": 0,
     "omitted_records": 0,
@@ -11236,7 +11236,8 @@
     {
       "api_schema_package_effects": [],
       "artifact_or_route_effects": [
-        "bootstrap values feed installer docs; smoke covers release-archive install route"
+        "docs Option 2 generated-values step derives INSTALLER_REF (tag-dereferenced publish commit) and INSTALLER_SHA256 (digest of scripts/install.sh at that ref) from a pinned RELEASE_TAG, replacing unusable placeholders",
+        "smoke Section 1b executes scripts/install.sh against the published GitHub release archive into an isolated INSTALL_DIR (download, SHA256SUMS verify, install, installed perllsp --version must report the release version); SKIP_INSTALL=1 and non-Linux/macOS hosts take labeled skips"
       ],
       "commits": [
         "c76a4436b1a0f996e7e4cd76aefac3034319a4b9"
@@ -11249,33 +11250,43 @@
       "grouping_evidence": "trailing (#16371) of subject pair (#16368)(#16371); merge_commit_sha of PR #16371 equals the commit; issue #16368 is the tracked problem",
       "installed_evidence_stage": "mechanism",
       "invalidators": [
-        "archive layout/member changes after snapshot"
+        "archive layout/member changes after snapshot",
+        "install.sh or root-wrapper verification semantics change before the next release-archive smoke run",
+        "a future Section 1b run whose outcome contradicts this mechanism-stage row"
       ],
       "known_limitations": [
-        "smoke runs post-publish; no isolated-install extraction proof on Windows in-unit"
+        "smoke Section 1b runs post-publish; its Linux/macOS happy path has not executed through current main (v0.17.0 predates it, no later release, zero post-publish-smoke.yml runs)",
+        "installer supports Linux/macOS hosts only; Windows takes a labeled skip, so Windows archive install/extraction proof belongs to #16408, not this unit",
+        "generated INSTALLER_REF/INSTALLER_SHA256 are convenience-level (derived from the same host that serves the installer), not independent review; the reviewed closeout digest remains unpublished",
+        "the v0.17.0 root wrapper ignores the identity env vars and re-execs floating master; docs repaired after the denominator head by PR#16398 (#16396, still open for the other wrapper docs) with two routes and VERSION=${RELEASE_TAG:-latest} binding"
       ],
       "migration_or_upgrade_refs": [],
-      "open_pr_relationships": [],
+      "open_pr_relationships": [
+        "16359-OPEN touches GETTING_STARTED.md (config-limits examples only; installer Option 2 section untouched)"
+      ],
       "paths_or_components": [
         "docs/tutorials/GETTING_STARTED.md",
         "scripts/post-publish-smoke.sh"
       ],
       "platforms_and_targets": [
-        "portable"
+        "linux",
+        "macos"
       ],
       "primary_disposition": "packaging_install_or_editor",
       "primary_fragment": "distribution",
       "primary_fragment_basis": "seed_review",
       "proof_owner_refs": [
-        "scripts/post-publish-smoke.sh"
+        "scripts/post-publish-smoke.sh",
+        ".github/workflows/post-publish-smoke.yml"
       ],
       "public_claim_refs": [],
       "reachable_installed_effect": "bounded",
       "release_domains": [
         "install",
-        "docs"
+        "docs",
+        "release"
       ],
-      "release_note_disposition": "not_user_facing",
+      "release_note_disposition": "required",
       "work_unit_id": "PR#16371"
     },
     {
