@@ -931,11 +931,19 @@ channels remain independently versioned and must be verified before editor use.\
 ## Shipped v0.17.0 Closeout\n\
 GitHub v0.17.0 receipt is historical; other channels have separate receipts.\n";
         let first = sync_release_notes(input, &release_surface())?;
-        assert!(first.contains("**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta"));
+        assert!(
+            first.contains(
+                "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta"
+            )
+        );
         assert!(first.contains("**Workspace version line**: `v0.17.0`"));
         assert!(first.contains("**Published crate surface**: 32 crates"));
-        assert!(first.contains("- #13768 and #5888 govern the first RC; exact freeze evidence is NOT_PROVEN."));
-        assert!(first.contains("GitHub v0.17.0 receipt is historical; other channels have separate receipts."));
+        assert!(first.contains(
+            "- #13768 and #5888 govern the first RC; exact freeze evidence is NOT_PROVEN."
+        ));
+        assert!(first.contains(
+            "GitHub v0.17.0 receipt is historical; other channels have separate receipts."
+        ));
         assert_eq!(sync_release_notes(&first, &release_surface())?, first);
         Ok(())
     }
@@ -963,7 +971,8 @@ GitHub v0.17.0 receipt is historical; other channels have separate receipts.\n";
     }
 
     #[test]
-    fn sync_release_notes_requires_version_and_surface_anchors_but_no_blocker_anchor() -> Result<()> {
+    fn sync_release_notes_requires_version_and_surface_anchors_but_no_blocker_anchor() -> Result<()>
+    {
         let input = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
 **Workspace version line**: `v0.17.0`\n\
 **Published crate surface**: 32 crates\n\
