@@ -157,7 +157,7 @@ fn test_minimal_client_initialization() -> TestResult {
     // Mirrors perl_lsp_rs_core::protocol::capabilities::completion_trigger_characters().
     // `.` is the string-concat trigger (UX_GAP_03) and is deliberate — see the rationale
     // on completion_trigger_characters_include_file_path_and_perl_tokens in that module.
-    let expected_triggers = ["$", "@", "%", "-", ">", ":", ".", "/", "\\", "\"", "'"];
+    let expected_triggers = ["$", "@", "%", ">", ":", ".", "/", "\\", "\"", "'"];
     assert_eq!(triggers.len(), expected_triggers.len());
     for trigger in expected_triggers {
         assert!(trigger_set.contains(trigger), "missing minimal-client trigger: {trigger}");

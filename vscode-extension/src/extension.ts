@@ -1378,11 +1378,6 @@ async function runExtensionActivation(
   });
   activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
 
-  const arrowCompletionWatcher = vscode.workspace.onDidChangeTextDocument((event) => {
-    maybeNudgeArrowCompletion(event);
-  });
-  activation.own('workspace_listeners', 'mandatory_for_activation', arrowCompletionWatcher);
-
   // The document feature group receives a scoped facade context: registrations
   // it pushes during activation join the attempt, while lazily created
   // resources (a POD preview webview panel's onDidDispose hook) fall through
@@ -2832,19 +2827,6 @@ export function presentLspProviderError(
   };
 }
 
-export function shouldNudgeArrowCompletion(linePrefix: string): boolean {
-  if (!linePrefix.endsWith('-')) {
-    return false;
-  }
-
-  const beforeDash = linePrefix.slice(0, -1);
-  if (beforeDash.length === 0 || /\s$/.test(beforeDash) || beforeDash.endsWith(':')) {
-    return false;
-  }
-
-  return /(?:\$[\w:]+|[@%][\w:]+|[A-Z]\w*)$/.test(beforeDash);
-}
-
 /** Map an observed formatting result to the canonical provider presentation. */
 export function presentFormattingProviderOutcome(
   editCount: number,
@@ -2886,38 +2868,6 @@ export function presentFormattingProviderError(
     action: 'Check the formatter configuration or run the Health Check.',
     reasonCode: range ? 'range_formatting_error' : 'formatting_error',
   };
-}
-
-export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent): void {
-  const editor = vscode.window.activeTextEditor;
-  if (
-    !editor ||
-    event.document !== editor.document ||
-    !isPerlLanguageId(event.document.languageId)
-  ) {
-    return;
-  }
-
-  if (event.contentChanges.length !== 1) {
-    return;
-  }
-
-  const change = event.contentChanges[0];
-  if (!change) {
-    return;
-  }
-
-  if (change.rangeLength !== 0 || change.text !== '-') {
-    return;
-  }
-
-  const lineText = event.document.lineAt(change.range.start.line).text;
-  const linePrefix = lineText.slice(0, change.range.start.character + change.text.length);
-  if (!shouldNudgeArrowCompletion(linePrefix)) {
-    return;
-  }
-
-  void vscode.commands.executeCommand('editor.action.triggerSuggest');
 }
 
 /**
