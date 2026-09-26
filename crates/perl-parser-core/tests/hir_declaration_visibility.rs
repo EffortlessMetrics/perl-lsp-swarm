@@ -130,12 +130,8 @@ fn same_scope_redeclaration_selects_the_nearest_prior_binding() {
 fn declaration_list_initializer_reads_outer_bindings() {
     let source = "sub f { my ($a, $b) = (1, 2); if ($ok) { my ($a, $b) = ($b, $a); print $a; } }";
     let file = lower(source);
-    let bindings: Vec<_> = file
-        .scope_graph
-        .bindings
-        .iter()
-        .filter(|b| b.name == "a" || b.name == "b")
-        .collect();
+    let bindings: Vec<_> =
+        file.scope_graph.bindings.iter().filter(|b| b.name == "a" || b.name == "b").collect();
     assert_eq!(bindings.len(), 4);
     let initializer = source.find("= ($b, $a)").expect("inner initializer");
     for (needle, outer_name) in [("$b", "b"), ("$a", "a")] {
@@ -166,12 +162,8 @@ fn declaration_list_initializer_reads_outer_bindings() {
 fn c_style_for_header_sees_its_completed_initializer_binding() {
     let source = "for (my $i = 0; $i < 2; $i++) { print $i; }";
     let file = lower(source);
-    let binding = file
-        .scope_graph
-        .bindings
-        .iter()
-        .find(|b| b.name == "i")
-        .expect("for initializer binding");
+    let binding =
+        file.scope_graph.bindings.iter().find(|b| b.name == "i").expect("for initializer binding");
     for (idx, start) in source.match_indices("$i").map(|(idx, _)| idx).enumerate() {
         if idx == 0 {
             continue;
