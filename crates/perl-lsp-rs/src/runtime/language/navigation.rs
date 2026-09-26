@@ -1873,6 +1873,25 @@ impl LspServer {
                     {
                         match component {
                             FqnCursorComponent::Final { package, name } => {
+                                // `Some::Module` is the final component of the
+                                // qualified-name match in `Some::Module->new()`,
+                                // but it is the method call's receiver. Looking
+                                // up Some::Module as a callable can jump to an
+                                // unrelated `sub Module` in package Some (#14776).
+                                // The earlier module-path lookup has already had
+                                // its chance to resolve this receiver.
+                                let qualified_name = format!("{package}::{name}");
+                                if get_package_arrow_regex()?.captures_iter(&text_around).any(
+                                    |cap| {
+                                        cap.get(1).is_some_and(|receiver| {
+                                            receiver.as_str() == qualified_name
+                                                && cursor_in_text >= receiver.start()
+                                                && cursor_in_text < receiver.end()
+                                        })
+                                    },
+                                ) {
+                                    return Ok(Some(Value::Null));
+                                }
                                 if workspace_index_is_fresh()
                                     && let Some(result) = lookup_workspace_definition(
                                         self.coordinator(),

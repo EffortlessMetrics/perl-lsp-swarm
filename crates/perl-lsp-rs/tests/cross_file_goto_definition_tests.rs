@@ -3678,6 +3678,7 @@ sub new {
     return bless {}, $class;
 }
 
+
 1;
 "#,
     )?;
@@ -3722,5 +3723,45 @@ my $obj = Foo->new();
     assert_no_location_points_to(&result, "Bar.pm");
     assert_no_location_points_to(&result, "Bar%2Epm");
 
+    Ok(())
+}
+
+#[test]
+fn arrow_receiver_does_not_navigate_to_coincidental_sub() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open(
+        "file:///lib/Some.pm",
+        "package Some;\nsub Module { return 'unrelated'; }\n1;\n",
+    )?;
+
+    // The receiver's package is defined inline, so there is no Module.pm path
+    // for the earlier filesystem lookup to return. The workspace index also
+    // contains a real, unrelated Some::Module callable.
+    let caller = "package Some::Module;\nsub new { return bless {}, shift; }\npackage main;\nSome::Module->new();\n";
+    harness.open("file:///app.pl", caller)?;
+    harness.barrier();
+
+    let receiver = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///app.pl"},
+            "position": {"line": 3, "character": 7}
+        }),
+    )?;
+    assert_no_location_points_to(&receiver, "Some.pm");
+
+    // A blanket refusal of this whole call would pass the first assertion.
+    // The cursor on the actual method must still navigate to its definition.
+    let method = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///app.pl"},
+            "position": {"line": 3, "character": 15}
+        }),
+    )?;
+    let location = first_location(&method)?;
+    assert_eq!(location["uri"], "file:///app.pl");
+    assert_eq!(location["range"]["start"]["line"], 1);
     Ok(())
 }
