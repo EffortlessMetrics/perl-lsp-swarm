@@ -476,10 +476,11 @@ mod tests {
         assert_eq!(packet.binary.executable, "perl-dap");
     }
 
-    /// A DAP peer invocation carries a bare address, so the shared resolver must
-    /// pass it through to clap rather than claim it as an identity mix.
+    /// A DAP peer invocation must not be answered with the identity packet, so
+    /// it is rejected as a mix rather than claimed. `perl-dap` has no `--info`
+    /// option, so this shape is invalid for the binary either way.
     #[test]
-    fn a_dap_peer_invocation_is_never_claimed_as_an_identity_request() {
+    fn a_dap_peer_invocation_is_rejected_rather_than_claimed_as_identity() {
         let peer = vec![
             "perl-dap".to_owned(),
             "--external-peer".to_owned(),
@@ -487,7 +488,10 @@ mod tests {
             "--info".to_owned(),
             "--json".to_owned(),
         ];
-        assert_eq!(requested_identity(&peer), IdentityRequest::None);
+        assert_eq!(
+            requested_identity(&peer),
+            IdentityRequest::MixedOperands { flag: "--info --json".to_owned() }
+        );
     }
 
     #[test]

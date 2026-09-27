@@ -12,9 +12,11 @@ body: >-
   to answer a requested JSON packet with the human `--info` projection, dropping
   the request without a word. Both are now rejected with a message naming the flag,
   which is the behaviour the identity resolver's own documentation already claimed.
-  Operands after a bare `--` are still read as file paths, and a composed
-  `--info --json` beside a bare value is still passed through, so checking a file
-  named `--identity` and driving a DAP peer are unaffected.
+  The rejection covers the whole command line, so a valued option such as
+  `perllsp --info --json --feature-profile prod` is refused rather than answered with
+  human text, and extra operands after a bare `--` still count as extra. Operands
+  after a bare `--` are still read as file paths, so checking a file named
+  `--identity` is unaffected.
 time: 2026-09-27T22:45:00Z
 custom:
   PR: "16527"

@@ -371,15 +371,11 @@ impl BinaryIdentityPacketV1 {
 pub fn requested_identity(args: &[String]) -> IdentityRequest {
     let operands = args.get(1..).unwrap_or_default();
 
-    // Operands past a bare `--` are positional file paths, not flags, so
-    // `perllsp --check -- --identity` names a file and must not be read as a
-    // request for the identity surface.
-    let flag_region = match operands.iter().position(|token| token == "--") {
-        Some(terminator) => &operands[..terminator],
-        None => operands,
-    };
-
-    match flag_region {
+    // A one-shot form is honored only when it is the *entire* command line, so
+    // the match reads the full operand list. Classifying a shortened prefix
+    // instead would answer `perllsp --identity -- file.pm` as a clean query
+    // while silently dropping the file the caller also asked about.
+    match operands {
         [flag] if flag == IDENTITY_FLAG => IdentityRequest::Output(IdentityOutputFormat::Human),
         [flag] if flag == IDENTITY_JSON_FLAG => IdentityRequest::Output(IdentityOutputFormat::Json),
         [first, second]
@@ -388,12 +384,21 @@ pub fn requested_identity(args: &[String]) -> IdentityRequest {
         {
             IdentityRequest::Output(IdentityOutputFormat::Json)
         }
-        _ => rejected_mixed_identity(flag_region),
+        _ => rejected_mixed_identity(operands),
     }
 }
 
 /// Name the identity surface that a mixed command line cannot honor.
-fn rejected_mixed_identity(flag_region: &[String]) -> IdentityRequest {
+fn rejected_mixed_identity(operands: &[String]) -> IdentityRequest {
+    // Operands past a bare `--` are positional file paths, not flags, so
+    // `perllsp --check -- --identity` names a file and must not be read as a
+    // request for the identity surface. The terminator bounds only what may be
+    // read as a flag; the operands still counted as extras above.
+    let flag_region = match operands.iter().position(|token| token == "--") {
+        Some(terminator) => &operands[..terminator],
+        None => operands,
+    };
+
     // The one-shot identity flags are this binary's own spellings, so finding
     // one anywhere in the flag region is a mix whatever else is present —
     // including the value half of a value-taking flag such as `--port 9257`.
@@ -403,14 +408,12 @@ fn rejected_mixed_identity(flag_region: &[String]) -> IdentityRequest {
         return IdentityRequest::MixedOperands { flag: flag.clone() };
     }
 
-    // The composed form is not this binary's own spelling: `--info --json` also
-    // reads as a DAP peer invocation, which must reach the ordinary parser
-    // untouched. Escalate only when every other operand is a flag, so a bare
-    // value marks an operational invocation rather than a malformed query.
-    if flag_region.contains(&"--info".to_owned())
-        && flag_region.contains(&"--json".to_owned())
-        && flag_region.iter().all(|token| token.starts_with("--"))
-    {
+    // `--json` on its own is the `--doctor` output switch, so the composed form
+    // only conflicts when `--info` is present too. Every other operand then
+    // makes it a mix, including the value of a value-taking option: answering
+    // `perllsp --info --json --feature-profile prod` with the human `--info`
+    // projection is the silent substitution this surface must not perform.
+    if flag_region.contains(&"--info".to_owned()) && flag_region.contains(&"--json".to_owned()) {
         return IdentityRequest::MixedOperands { flag: "--info --json".to_owned() };
     }
 
@@ -679,7 +682,8 @@ fn artifact_identity_name(packet: &BinaryIdentityPacketV1) -> &'static str {
 mod tests {
     use super::{
         ArtifactRole, BinaryIdentityInput, BinaryIdentityPacketV1, BinaryRole, BuildIdentityState,
-        IDENTITY_FLAG, IdentityOutputFormat, IdentityRequest, requested_identity,
+        IDENTITY_FLAG, IDENTITY_JSON_FLAG, IdentityOutputFormat, IdentityRequest,
+        requested_identity,
     };
     use perl_tdd_support::must_some_with;
 
@@ -907,7 +911,14 @@ mod tests {
             IdentityRequest::MixedOperands { flag: IDENTITY_FLAG.to_owned() }
         );
         assert_eq!(requested_identity(&terminated), IdentityRequest::None);
-        assert_eq!(requested_identity(&mixed_dap), IdentityRequest::None);
+        // `perl-dap` has no `--info` option at all, so this shape is already
+        // invalid for that binary; the resolver now rejects it with the mix
+        // message instead of letting clap report the unknown flag. Either way
+        // no session starts, and the rejection is the more specific message.
+        assert_eq!(
+            requested_identity(&mixed_dap),
+            IdentityRequest::MixedOperands { flag: "--info --json".to_owned() }
+        );
     }
 
     /// A near-miss must not deny that a real, supported flag exists.
@@ -972,10 +983,6 @@ mod tests {
             vec!["perllsp", "--check", "--identity.pm"],
             vec!["perllsp", "--check", "--", "--identity-json"],
             vec!["perllsp", "--stdio", "--port", "9257"],
-            // A bare value beside the composed form marks an operational
-            // invocation (a DAP peer address), not a malformed identity query.
-            vec!["perllsp", "--info", "--json", "prod"],
-            vec!["perl-dap", "--external-peer", "127.0.0.1:5000", "--info", "--json"],
         ];
 
         for control in controls {
@@ -985,6 +992,60 @@ mod tests {
                 IdentityRequest::None,
                 "{control:?} must reach the ordinary parser"
             );
+        }
+    }
+
+    /// A one-shot form is honored only when it is the whole command line, so
+    /// extra operands after a terminator are still extras.
+    #[test]
+    fn extra_operands_after_a_terminator_still_break_a_one_shot_form() {
+        for prefix in [
+            vec![IDENTITY_FLAG.to_owned()],
+            vec![IDENTITY_JSON_FLAG.to_owned()],
+            vec!["--info".to_owned(), "--json".to_owned()],
+        ] {
+            let mut args = vec!["perllsp".to_owned()];
+            args.extend(prefix.iter().cloned());
+            args.push("--".to_owned());
+            args.push("lib/MyModule.pm".to_owned());
+
+            assert_eq!(
+                requested_identity(&args),
+                IdentityRequest::MixedOperands {
+                    flag: if prefix.len() == 1 {
+                        prefix[0].clone()
+                    } else {
+                        "--info --json".to_owned()
+                    }
+                },
+                "{prefix:?} plus a trailing file must be rejected, not answered as a clean query"
+            );
+        }
+    }
+
+    /// The composed form must not be answered with the human `--info`
+    /// projection when a value-taking option is also present.
+    #[test]
+    fn a_valued_option_beside_the_composed_form_is_rejected_not_downgraded() {
+        for valued in [
+            vec!["--feature-profile", "prod"],
+            vec!["--port", "9257"],
+            vec!["--completion", "bash"],
+            vec!["--ripr-root", "."],
+            vec!["--runtime-mode", "e2e"],
+            vec!["prod"],
+        ] {
+            for prefix in [vec!["--info", "--json"], vec!["--json", "--info"]] {
+                let mut args = vec!["perllsp".to_owned()];
+                args.extend(prefix.iter().map(|flag| (*flag).to_owned()));
+                args.extend(valued.iter().map(|token| (*token).to_owned()));
+
+                assert_eq!(
+                    requested_identity(&args),
+                    IdentityRequest::MixedOperands { flag: "--info --json".to_owned() },
+                    "{valued:?} must be rejected, not answered with human --info"
+                );
+            }
         }
     }
 
