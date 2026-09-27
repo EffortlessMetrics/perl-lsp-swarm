@@ -1458,6 +1458,15 @@ pub perl_lsp_rs_core::product_identity::IdentityOutputFormat::Json
 pub fn perl_lsp_rs_core::product_identity::IdentityOutputFormat::clone(&self) -> perl_lsp_rs_core::product_identity::IdentityOutputFormat
 pub fn perl_lsp_rs_core::product_identity::IdentityOutputFormat::eq(&self, other: &perl_lsp_rs_core::product_identity::IdentityOutputFormat) -> bool
 pub fn perl_lsp_rs_core::product_identity::IdentityOutputFormat::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::product_identity::IdentityRequest
+pub perl_lsp_rs_core::product_identity::IdentityRequest::MixedOperands
+pub perl_lsp_rs_core::product_identity::IdentityRequest::MixedOperands::flag: alloc::string::String
+pub perl_lsp_rs_core::product_identity::IdentityRequest::None
+pub perl_lsp_rs_core::product_identity::IdentityRequest::Output(perl_lsp_rs_core::product_identity::IdentityOutputFormat)
+pub fn perl_lsp_rs_core::product_identity::IdentityRequest::rejection_message(&self) -> core::option::Option<alloc::string::String>
+pub fn perl_lsp_rs_core::product_identity::IdentityRequest::clone(&self) -> perl_lsp_rs_core::product_identity::IdentityRequest
+pub fn perl_lsp_rs_core::product_identity::IdentityRequest::eq(&self, other: &perl_lsp_rs_core::product_identity::IdentityRequest) -> bool
+pub fn perl_lsp_rs_core::product_identity::IdentityRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::product_identity::ArtifactIdentity
 pub perl_lsp_rs_core::product_identity::ArtifactIdentity::candidate_identity: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::product_identity::ArtifactIdentity::digest: core::option::Option<alloc::string::String>
@@ -1538,10 +1547,12 @@ pub fn perl_lsp_rs_core::product_identity::ProductIdentity::serialize<__S>(&self
 pub fn perl_lsp_rs_core::product_identity::ProductIdentity::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::product_identity::ProductIdentity, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub const perl_lsp_rs_core::product_identity::BINARY_IDENTITY_SCHEMA_V1: &str
 pub const perl_lsp_rs_core::product_identity::DEVELOPMENT_REPOSITORY: &str
+pub const perl_lsp_rs_core::product_identity::IDENTITY_FLAG: &str
+pub const perl_lsp_rs_core::product_identity::IDENTITY_JSON_FLAG: &str
 pub const perl_lsp_rs_core::product_identity::PRODUCT_IDENTITY_VERSION: u32
 pub const perl_lsp_rs_core::product_identity::PRODUCT_NAME: &str
 pub const perl_lsp_rs_core::product_identity::PUBLIC_REPOSITORY: &str
-pub fn perl_lsp_rs_core::product_identity::requested_identity_output(args: &[alloc::string::String]) -> core::option::Option<perl_lsp_rs_core::product_identity::IdentityOutputFormat>
+pub fn perl_lsp_rs_core::product_identity::requested_identity(args: &[alloc::string::String]) -> perl_lsp_rs_core::product_identity::IdentityRequest
 pub mod perl_lsp_rs_core::protocol
 pub mod perl_lsp_rs_core::protocol::binary_identity
 pub enum perl_lsp_rs_core::protocol::binary_identity::BinaryCompatibilityReason

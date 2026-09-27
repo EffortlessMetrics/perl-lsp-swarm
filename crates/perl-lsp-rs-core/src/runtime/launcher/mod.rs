@@ -320,7 +320,8 @@ pub struct LspArgs {
     )]
     pub dev_environment: bool,
 
-    /// Output machine-readable JSON (currently affects --doctor only)
+    /// Output machine-readable JSON (affects --doctor; paired with --info it is
+    /// the one-shot identity form, resolved ahead of this parser)
     #[arg(long)]
     pub json: bool,
 

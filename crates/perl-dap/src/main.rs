@@ -20,7 +20,7 @@ use perl_dap::ptkdb_bootstrap::render_ptkdbrc;
 use perl_dap::session_plan::DebugSessionPlanBuilder;
 use perl_dap::{DapConfig, DapMode, DapServer};
 use perl_lsp_rs_core::product_identity::{
-    BinaryIdentityPacketV1, IdentityOutputFormat, requested_identity_output,
+    BinaryIdentityPacketV1, IdentityOutputFormat, IdentityRequest, requested_identity,
 };
 use perl_lsp_rs_core::runtime::launcher::{init_logging, log_server_startup};
 
@@ -296,7 +296,14 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
-    if let Some(format) = requested_identity_output(&raw_args) {
+    // The shared resolver owns this decision for both binaries: a mix is
+    // rejected with a message naming the flag rather than falling through to
+    // clap, which would deny `--identity` as unknown.
+    let identity = requested_identity(&raw_args);
+    if let Some(message) = identity.rejection_message() {
+        anyhow::bail!("{message}");
+    }
+    if let IdentityRequest::Output(format) = identity {
         write_runtime_identity(format)?;
         return Ok(());
     }
@@ -400,7 +407,8 @@ mod tests {
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
-        BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, requested_identity_output,
+        BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, IdentityRequest,
+        requested_identity,
     };
 
     #[test]
@@ -454,12 +462,32 @@ mod tests {
     fn dap_identity_flags_select_the_shared_packet_without_starting_clap() {
         let json_args = vec!["perl-dap".to_owned(), "--info".to_owned(), "--json".to_owned()];
         let human_args = vec!["perl-dap".to_owned(), "--identity".to_owned()];
-        assert_eq!(requested_identity_output(&json_args), Some(IdentityOutputFormat::Json));
-        assert_eq!(requested_identity_output(&human_args), Some(IdentityOutputFormat::Human));
+        assert_eq!(
+            requested_identity(&json_args),
+            IdentityRequest::Output(IdentityOutputFormat::Json)
+        );
+        assert_eq!(
+            requested_identity(&human_args),
+            IdentityRequest::Output(IdentityOutputFormat::Human)
+        );
 
         let packet = BinaryIdentityPacketV1::embedded_dap("0.18.0");
         assert_eq!(packet.binary.role, BinaryRole::Dap);
         assert_eq!(packet.binary.executable, "perl-dap");
+    }
+
+    /// A DAP peer invocation carries a bare address, so the shared resolver must
+    /// pass it through to clap rather than claim it as an identity mix.
+    #[test]
+    fn a_dap_peer_invocation_is_never_claimed_as_an_identity_request() {
+        let peer = vec![
+            "perl-dap".to_owned(),
+            "--external-peer".to_owned(),
+            "127.0.0.1:5000".to_owned(),
+            "--info".to_owned(),
+            "--json".to_owned(),
+        ];
+        assert_eq!(requested_identity(&peer), IdentityRequest::None);
     }
 
     #[test]
