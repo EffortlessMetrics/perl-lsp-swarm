@@ -977,6 +977,11 @@ pub fn help_text() -> String {
     out.push_str("  --version            Show version information\n");
     out.push_str("  --features-json      Output features catalog as JSON\n");
     out.push('\n');
+    out.push_str("Identity options (one-shot: must be the only argument):\n");
+    out.push_str("  --identity           Print the installed-binary identity packet and exit\n");
+    out.push_str("  --identity-json      Print that packet as perl_lsp.binary_identity.v1 JSON\n");
+    out.push_str("  --info --json        Same JSON packet (composed one-shot form)\n");
+    out.push('\n');
     out.push_str("Tool options:\n");
     out.push_str("  ");
     out.push_str(checking_guidance::CHECK_FLAG);
@@ -1001,8 +1006,9 @@ pub fn help_text() -> String {
         "  --dev-environment    With --doctor: dev-prerequisite report (symlink, shells, Perl)\n",
     );
     out.push_str(
-        "  --json               Machine-readable JSON output (currently affects --doctor)\n",
+        "  --json               Machine-readable JSON output (affects --doctor; with --info,\n",
     );
+    out.push_str("                       pairs as the one-shot identity form)\n");
     out.push_str("  --perltidy-compat-report <profile>\n");
     out.push_str("                       Report native formatter compatibility for .perltidyrc\n");
     out.push_str("  --perlcritic-compat-report <profile>\n");
@@ -1056,6 +1062,8 @@ pub fn help_text() -> String {
     out.push_str("  perllsp --perltidy-compat-report .perltidyrc\n");
     out.push_str("  perllsp --perlcritic-compat-report .perlcriticrc\n");
     out.push_str("  perllsp --info                          # server information\n");
+    out.push_str("  perllsp --identity                      # installed-binary identity packet\n");
+    out.push_str("  perllsp --identity-json                 # the same packet as JSON\n");
     out.push_str("  perllsp --completion bash >> ~/.bashrc  # install completions\n");
     out.push('\n');
     out.push_str("Environment:\n");
@@ -1113,7 +1121,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --external-tools --critic-compatibility --dev-environment --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
+    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --external-tools --critic-compatibility --dev-environment --json --version --features-json --identity --identity-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
 
     case "${prev}" in
         --port)
@@ -1179,6 +1187,8 @@ _perl-lsp() {
         '--dev-environment[With --doctor: development-environment prerequisites]' \
         '--version[Show version information]' \
         '--features-json[Output features catalog as JSON]' \
+        '--identity[Print the installed-binary identity packet and exit]' \
+        '--identity-json[Print that packet as perl_lsp.binary_identity.v1 JSON]' \
         '--perltidy-compat-report[Report native formatter compatibility for .perltidyrc]:profile:_files' \
         '--perlcritic-compat-report[Report native critic compatibility for .perlcriticrc]:profile:_files' \
         '--feature-profile[Set feature profile]:profile:(ga-lock ga prod production all auto)' \
@@ -1214,6 +1224,8 @@ complete -c perl-lsp -l doctor -d 'Explain Perl path, config, and effective @INC
 complete -c perl-lsp -l dev-environment -d 'With --doctor: development-environment prerequisites'
 complete -c perl-lsp -l version -d 'Show version information'
 complete -c perl-lsp -l features-json -d 'Output features catalog as JSON'
+complete -c perl-lsp -l identity -d 'Print the installed-binary identity packet and exit (one-shot)'
+complete -c perl-lsp -l identity-json -d 'Print that packet as perl_lsp.binary_identity.v1 JSON (one-shot)'
 complete -c perl-lsp -l perltidy-compat-report -F -d 'Report native formatter compatibility for .perltidyrc'
 complete -c perl-lsp -l perlcritic-compat-report -F -d 'Report native critic compatibility for .perlcriticrc'
 complete -c perl-lsp -l feature-profile -x -a 'ga-lock ga prod production all auto' -d 'Set feature profile'
@@ -1251,6 +1263,8 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
         [CompletionResult]::new('--dev-environment', '--dev-environment', 'ParameterName', 'With --doctor: development-environment prerequisites')
         [CompletionResult]::new('--version', '--version', 'ParameterName', 'Show version information')
         [CompletionResult]::new('--features-json', '--features-json', 'ParameterName', 'Output features catalog as JSON')
+        [CompletionResult]::new('--identity', '--identity', 'ParameterName', 'Print the installed-binary identity packet and exit (one-shot)')
+        [CompletionResult]::new('--identity-json', '--identity-json', 'ParameterName', 'Print that packet as perl_lsp.binary_identity.v1 JSON (one-shot)')
         [CompletionResult]::new('--perltidy-compat-report', '--perltidy-compat-report', 'ParameterName', 'Report native formatter compatibility for .perltidyrc')
         [CompletionResult]::new('--perlcritic-compat-report', '--perlcritic-compat-report', 'ParameterName', 'Report native critic compatibility for .perlcriticrc')
         [CompletionResult]::new('--feature-profile', '--feature-profile', 'ParameterName', 'Set feature profile')
@@ -1443,6 +1457,7 @@ mod tests {
         DEFAULT_LSP_PORT, DiagnosticMode, LaunchAction, LaunchParseError, RuntimeMode,
         RuntimeTuning, TransportMode, parse_args,
     };
+    use crate::product_identity::{IDENTITY_FLAG, IDENTITY_JSON_FLAG};
     use perl_parser_core::{ErrorCategory, ErrorClass};
     use perl_tdd_support::{must, must_err, must_some};
 
@@ -1726,6 +1741,39 @@ mod tests {
 
         let error = must_err(parse_args(["perl-lsp", "--mcp"]));
         assert!(matches!(error, LaunchParseError::McpAliasRejected));
+    }
+
+    #[test]
+    fn identity_flags_are_reachable_from_every_completion_surface() {
+        // A supported one-shot surface that no shipped surface names is not
+        // discoverable. Help and the completion scripts are the only places a
+        // user or script can learn the spelling, so both identity flags and the
+        // composed form must appear in every one of them.
+        let help = super::help_text();
+        assert!(help.contains(IDENTITY_FLAG), "help_text omits {IDENTITY_FLAG}: {help}");
+        assert!(help.contains(IDENTITY_JSON_FLAG), "help_text omits {IDENTITY_JSON_FLAG}: {help}");
+        assert!(
+            help.contains("--info --json"),
+            "help_text omits the composed one-shot form: {help}"
+        );
+
+        // Each script spells a long option in its own shell's convention, and
+        // fish names long options without their leading dashes.
+        let spellings: [(&str, &str, &str); 4] = [
+            ("bash", " --identity ", " --identity-json "),
+            ("zsh", "'--identity[", "'--identity-json["),
+            ("fish", "-l identity ", "-l identity-json "),
+            ("powershell", "'--identity',", "'--identity-json',"),
+        ];
+
+        for (shell, human, json) in spellings {
+            let script = must_some(super::shell_completion(shell));
+            assert!(script.contains(human), "{shell} completion omits {IDENTITY_FLAG}: {script}");
+            assert!(
+                script.contains(json),
+                "{shell} completion omits {IDENTITY_JSON_FLAG}: {script}"
+            );
+        }
     }
 
     #[test]
