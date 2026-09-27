@@ -38,6 +38,42 @@ def emit_stdout(payload: dict[str, Any]) -> None:
     body = {key: value for key, value in payload.items() if key != "schema_version"}
     print(json.dumps({"schema_version": SCHEMA_VERSION, **body}))
 
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+# The history file is a versioned wire contract written by
+# `aggregate_lane_history.py`. This gate pins the version *this reader* can
+# parse, not the producer's current `aggregate_lane_history.SCHEMA_VERSION`:
+# importing the producer constant would advance the check automatically when
+# the producer bumps and renames a field, silently accepting a shape the v1
+# field names below cannot read (#15286). Move this constant only together
+# with the parser below. (Named SUPPORTED_*, not SCHEMA_VERSION: that name is
+# this producer's stdout token, a different string contract.)
+SUPPORTED_SCHEMA_VERSION = 1
+
+
+def history_version_refusal(history: Any) -> str | None:
+    """Why this payload cannot be read as a v1 lane history, or `None`.
+
+    The reader below resolves `lanes`, `p50` and `static_floor` by name, so a
+    payload written by any other version is not merely unrecognised -- it is
+    read with the wrong field names. A renamed `static_floor` makes
+    `estimate_for`'s floor guard silently fall through and report a bare
+    `p50 * 1.15`, dropping a static floor that exists to prevent exactly that
+    optimism. Refusing is the only honest answer to a shape this reader does
+    not know.
+    """
+    if not isinstance(history, dict):
+        return f"lane history payload is not a JSON object, got {type(history).__name__}"
+    found = history.get("schema_version")
+    if found != SUPPORTED_SCHEMA_VERSION:
+        return (
+            f"lane history schema_version must be {SUPPORTED_SCHEMA_VERSION}, "
+            f"got {found!r}; refusing to read an unfamiliar shape"
+        )
+    return None
+
 
 def estimate_for(lane_id: str, history: dict[str, Any]) -> dict[str, Any]:
     lane = (history.get("lanes") or {}).get(lane_id)
@@ -136,6 +172,19 @@ def main() -> int:
                     "history payload is not a JSON object, "
                     f"got {type(history).__name__}"
                 ),
+            }
+        )
+        return 0
+
+    refusal = history_version_refusal(history)
+    if refusal is not None:
+        emit_stdout(
+            {
+                "lane": args.lane,
+                "learned": False,
+                "estimate": None,
+                "samples": 0,
+                "reason": refusal,
             }
         )
         return 0
