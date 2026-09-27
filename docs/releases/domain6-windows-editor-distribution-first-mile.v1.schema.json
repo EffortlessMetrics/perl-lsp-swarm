@@ -38,8 +38,8 @@
       }
     },
     "work_unit_count": {"const": 672},
-    "reviewed_seed_count": {"const": 20},
-    "not_proven_unit_count": {"const": 652},
+    "reviewed_seed_count": {"const": 23},
+    "not_proven_unit_count": {"const": 649},
     "work_units": {
       "type": "array",
       "minItems": 672,

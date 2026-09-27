@@ -54,7 +54,7 @@ PREFILTER = [
 
 EXPECTED_NON_MERGE = 682
 EXPECTED_UNITS = 672
-EXPECTED_SEEDS = 20
+EXPECTED_SEEDS = 23
 # Unsimplified range merge population (START_SHA..OBSERVED_HEAD,
 # --full-history): 2 kept + 1 related-record + 62 content-free +
 # 11 blob-covered + 18 created = 94. Pinned: the range is fixed, the
@@ -2100,6 +2100,308 @@ SEEDS = {
         "primary_fragment": "distribution",
         "grouping_evidence": "trailing (#7897) of subject pair "
         "(#7832)(#7897); merge_commit_sha of PR #7897 equals the "
+        "commit (verified against the API 2026-09-25); issue #7832 is "
+        "the tracked problem",
+    },
+    "PR#4788": {
+        "commits": ["1b487414bb858abe377341cf14e6b5b112656a70"],
+        "subject": "fix(cli): reconcile Windows installer binary name "
+        "with docs (#4648) (#4788)",
+        "paths_or_components": [
+            ".changes/unreleased/product-4648-Fixed-000000.yaml",
+            "install.ps1",
+            "scripts/install.sh",
+        ],
+        "release_domains": ["install", "release", "docs"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "install (Windows): the installer now downloads the "
+            "perllsp-* release asset and installs perllsp.exe instead "
+            "of perl-lsp.exe; the unit does not migrate or remove a "
+            "previously installed perl-lsp.exe, so an old copy can "
+            "survive on PATH until manually removed",
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "install.ps1",
+            ".github/workflows/"
+            "installer-powershell-checksum-contract.yml",
+        ],
+        "known_limitations": [
+            "mechanism-stage via successors, not by this diff: the "
+            "as-merged unit is a one-constant rename with no proof of "
+            "its own; the hosted windows-latest checksum harness "
+            "(reviewed PR#6186) later drives the real install.ps1 "
+            "including the $Name-derived asset name against a fixture "
+            "transport, and no tagged-release Windows install has been "
+            "observed (v0.17.0 predates, no later release)",
+            "the swarm fix and the published route diverged: reviewed "
+            "PR#5477 (#5461, 2026-08-05) recorded the copy published "
+            "at $REPO/master as still building the pre-rename "
+            "perl-lsp-*.zip URL, and the product repo promoted a "
+            "perllsp-binding installer on 2026-08-09 (commit "
+            "333497691787, verified via raw fetch 2026-09-25); the "
+            "MINGW fallback comment on current main still says 'fix "
+            "pending promotion in #4348' and is stale, while the "
+            "audited publication join #4348 remains OPEN and the "
+            "published 248-line generation predates the reviewed "
+            "checksum/PATH/archive machinery",
+            "the controlling bundle issue #4648 closed COMPLETED "
+            "citing only criterion 1a; sub-problems 2-4 were not "
+            "addressed by this unit and perl-parse still requires the "
+            "non-default cli feature and the 'Git tag:' version label "
+            "still prints on current main (verified 2026-09-25); the "
+            "doctor exit-code sub-problem was refactored post-range "
+            "(run_doctor split) and stays not_proven here",
+            "later in-range rows re-bound install.ps1 nine times "
+            "(reviewed PR#5477, PR#6186, PR#7897, PR#12742 and "
+            "unreviewed PR#5452, PR#5481, PR#5871, PR#6233, "
+            "PR#12815): checksums, PATH persistence, archive "
+            "inspection, atomic promotion, and ARM64 target "
+            "selection all landed after this rename; the "
+            "$Name = \"perllsp\" binding survives byte-identical "
+            "through current main (verified 2026-09-25, line 29, "
+            "zero post-head commits on install.ps1)",
+            "the unit's own scripts/install.sh edit (fallback URL "
+            "scripts/install.ps1 -> root install.ps1) was rewritten "
+            "in-range by reviewed PR#5477, which stopped recommending "
+            "the piped installer entirely; post-head #16312/#16316 "
+            "touched install.sh release-path robustness without "
+            "touching the fallback",
+                    "docs/EXTENSION.md still directs editor-side users to "
+            "resolve/search perl-lsp on PATH: the editor-side naming "
+            "surface is a separate drift from this unit's installer "
+            "binary-name reconciliation and remains open",
+],
+        "open_pr_relationships": [],
+        "controlling_issues": ["4648-CLOSED"],
+        "invalidators": [
+            "$Name or asset-name derivation rework in install.ps1 "
+            "without the docs/release naming contract following",
+            "release workflow renaming the packaged binary or archive "
+            "name prefix",
+            "publication join (#4348) promoting an installer whose "
+            "naming or generation diverges from the reviewed swarm "
+            "copy",
+            "docs or README reverting to a different canonical binary "
+            "name",
+        ],
+        "platforms_and_targets": [
+            "windows: asset and installed-binary naming for both built "
+            "targets (perllsp.exe); a name-only correction, no target "
+            "set change",
+            "hosted mechanism proof rides the later windows-latest "
+            "checksum harness (reviewed PR#6186), not this unit's "
+            "merge",
+        ],
+        "artifact_or_route_effects": [
+            "install.ps1 $Name binds perllsp with a provenance comment; "
+            "the download URL ($PackageName), extracted binary, and "
+            "destination ($BinaryPath, $DestPath) all derive from it, "
+            "so the installer fetches the perllsp-* release archive "
+            "and installs perllsp.exe, matching POSIX install.sh, the "
+            "release workflow, and every editor doc",
+            "scripts/install.sh MINGW/MSYS/CYGWIN fallback URL "
+            "corrected from the non-existent scripts/install.ps1 to "
+            "the root install.ps1 (superseded in-range by reviewed "
+            "PR#5477 pointing Windows at the manual release archive)",
+            "changelog entry product-4648-Fixed declares the "
+            "user-visible Windows binary-name change",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#4788) of subject pair "
+        "(#4648)(#4788); merge_commit_sha of PR #4788 equals the "
+        "commit (verified against the API 2026-09-25); issue #4648 is "
+        "the tracked problem",
+    },
+    "PR#6371": {
+        "commits": ["cfe1a7eaa36964a4b608c831f90a0f19b750f4bd"],
+        "subject": "test(install): require every built Windows target "
+        "to be reachable (#6196) (#6371)",
+        "paths_or_components": [
+            "scripts/tests/test-install-target-selection.sh",
+        ],
+        "release_domains": ["install", "editor"],
+        "primary_disposition": "proof_or_test_only",
+        "reachable_installed_effect": "no",
+        "public_claim_refs": [],
+        "release_note_disposition": "covered",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/tests/test-install-target-selection.sh",
+            ".github/workflows/ci-gate-self-tests.yml",
+        ],
+        "known_limitations": [
+            "the gate is a static text scrape: after comment "
+            "stripping it counts only literal PS "
+            "$NativeTarget/$Target assignments and TS *TARGET "
+            "constants, so a surface that computes target names "
+            "non-literally fails closed ('names no Windows target "
+            "literally') rather than being checked, and a third "
+            "install surface would not be covered unless wired into "
+            "both directions",
+            "naming, not availability: the gate proves each surface "
+            "names every built Windows target; it executes neither "
+            "PowerShell nor the downloader and does not prove the "
+            "release publishes or serves the asset (release-topology "
+            "rows own that: reviewed PR#16207 owns topology v4 "
+            "admission)",
+            "Windows-scoped by the gate's own comment: POSIX targets "
+            "are selected by uname at runtime and are not enumerable "
+            "statically",
+            "both directions share the release.yml parsing "
+            "(built_windows_targets), so a release.yml format change "
+            "can blind containment and reachability at once; gate "
+            "file is byte-unchanged from the merge through current "
+            "main (zero in-range successors, zero post-head commits, "
+            "verified 2026-09-25) and both reverse-direction "
+            "assertions PASS locally on current main",
+            "the motivating window is historical, per the gate's own "
+            "comment: both surfaces mapped ARM64 Windows to the x64 "
+            "build for five days after the matrix addition (#5208, "
+            "2026-08-03) until the surface fix PR#6233 landed (merged "
+            "2026-08-10), while containment stayed green; this row "
+            "closes that blind spot going forward, it did not repair "
+            "the surfaces",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["6196-CLOSED"],
+        "invalidators": [
+            "test-install-target-selection.sh scrape patterns, "
+            "per-surface split, or bijection assertions reworked or "
+            "removed",
+            "ci-gate-self-tests wiring for the target-selection suite "
+            "removed",
+            "release.yml Windows matrix shape changing without "
+            "built_windows_targets following",
+            "a new install surface shipping without being wired into "
+            "both bijection directions",
+        ],
+        "platforms_and_targets": [
+            "windows: x86_64-pc-windows-msvc and "
+            "aarch64-pc-windows-msvc, the built matrix at merge and "
+            "on current main",
+            "hosted gate execution on ubuntu-24.04 scraping repo text "
+            "(PowerShell and the downloader are not executed)",
+        ],
+        "artifact_or_route_effects": [
+            "new assert_every_built_windows_target_is_reachable "
+            "completes the bijection with "
+            "assert_only_built_windows_targets per surface "
+            "(install.ps1, vscode-extension/src/downloader.ts) "
+            "instead of unioned, so one surface can no longer hide "
+            "behind the other",
+            "counts only target-bearing assignments/constants after "
+            "comment stripping: a diagnostic literal cannot satisfy "
+            "the contract and a surface naming no target fails "
+            "closed",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#6371) of subject pair "
+        "(#6196)(#6371); merge_commit_sha of PR #6371 equals the "
+        "commit (verified against the API 2026-09-25); issue #6196 is "
+        "the tracked problem",
+    },
+    "PR#8899": {
+        "commits": ["f028035dda295df7e82d991ae916e341ff0846da"],
+        "subject": "test(install): add Windows fresh-process PATH "
+        "oracle (#7832) (#8899)",
+        "paths_or_components": [
+            ".github/workflows/ci-gate-self-tests.yml",
+            "scripts/tests/test-install-path-contract.sh",
+            "scripts/tests/test-windows-fresh-path-oracle.sh",
+            "scripts/windows_fresh_path_oracle.py",
+        ],
+        "release_domains": ["install"],
+        "primary_disposition": "proof_or_test_only",
+        "reachable_installed_effect": "no",
+        "public_claim_refs": [],
+        "release_note_disposition": "covered",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/windows_fresh_path_oracle.py",
+            "scripts/tests/test-windows-fresh-path-oracle.sh",
+            ".github/workflows/ci-gate-self-tests.yml",
+        ],
+        "known_limitations": [
+            "fixture-scope oracle only, per the unit's own claim "
+            "boundary: proves fresh-process Machine+User PATH rebuild "
+            "with exact identity/hash matching and that process-PATH "
+            "pollution cannot manufacture a pass; does not prove "
+            "live-host install of a release artifact, POSIX "
+            "package-manager PATH ownership, or runner User-PATH "
+            "mutation",
+            "issue #7832 stays OPEN: primary-route host/product "
+            "receipts consuming this oracle are still pending (the "
+            "same boundary recorded by reviewed PR#7897, merged about "
+            "two hours earlier as the production persistence fix this "
+            "oracle discriminates)",
+            "CI executes only the fixture self-test on ubuntu-24.04; "
+            "the oracle's live-scope read mode (fixture flags omitted "
+            "on a Windows host) exists but no hosted job consumes it",
+            "oracle, wrapper, and path-contract files are "
+            "byte-unchanged from the merge through current main (zero "
+            "in-range successors, zero post-head commits, verified "
+            "2026-09-25); the workflow job survives later workflow "
+            "edits (post-head changes are the #16357 dependabot "
+            "toolchain pin and the #16317 paginator trigger, neither "
+            "touching the oracle job), and the six-discriminator "
+            "self-test PASSES locally on current main",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["7832-OPEN"],
+        "invalidators": [
+            "windows_fresh_path_oracle.py resolution, identity-hash, "
+            "or anti-injection logic rework",
+            "test-windows-fresh-path-oracle.sh wrapper or its "
+            "ci-gate-self-tests job removal",
+            "install.ps1 PATH persistence rework (reviewed PR#7897 "
+            "invalidators) without the oracle discriminators "
+            "following",
+            "a live-host or hosted-install receipt contradicting the "
+            "fixture oracle's claims",
+        ],
+        "platforms_and_targets": [
+            "windows semantics: Machine-then-User PATH rebuild, "
+            "%VAR% expansion, PATHEXT candidate resolution including "
+            "lowercase spellings for case-sensitive hosts, exact "
+            "sha256 identity matching",
+            "hosted self-test on ubuntu-24.04 via python3/python; "
+            "live-scope read mode exists for Windows hosts but no "
+            "hosted job consumes it",
+        ],
+        "artifact_or_route_effects": [
+            "new scripts/windows_fresh_path_oracle.py rebuilds PATH "
+            "from Machine+User fixtures without consulting the "
+            "caller's process PATH, rejects absolute command names, "
+            "expands %VAR%/$VAR entries cross-platform, and fails "
+            "closed when a required identity hash cannot be read",
+            "--self-test runs six discriminating spawn cases: "
+            "user-path subject wins over harness-only process PATH, "
+            "harness PATH injection cannot satisfy fresh-process "
+            "identity, older Machine ambient subject fails "
+            "exact-identity receipt, empty scopes yield no "
+            "resolution, absolute command rejected, expandable User "
+            "entries resolve",
+            "new windows-fresh-path-oracle-self-test job plus path "
+            "filters in ci-gate-self-tests.yml; "
+            "test-install-path-contract.sh header updated to point "
+            "fresh-process proof at the oracle",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#8899) of subject pair "
+        "(#7832)(#8899); merge_commit_sha of PR #8899 equals the "
         "commit (verified against the API 2026-09-25); issue #7832 is "
         "the tracked problem",
     },
