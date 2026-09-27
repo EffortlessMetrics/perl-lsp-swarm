@@ -4,6 +4,6 @@ kind: Fixed
 body: "`perllsp --doctor` no longer contradicts itself or leaks raw child stderr when an external tool's version probe fails. A line now names the step that failed and its exit code, and points at `--doctor --json` for probe detail. The exit status is reported once instead of composing two status phrasings (`exited with status exit code: 29`). The JSON surface is unchanged and still carries the full stderr."
 time: 2026-09-27T23:00:00Z
 custom:
-  PR: "16525"
+  PR: "16529"
   Slug: doctor-version-probe-report
   Breaking: "no"
