@@ -447,13 +447,18 @@ pub(crate) fn first_cfg_test_boundary(lines: &[String]) -> usize {
         // A test gate bounds the file only when it guards a module: the
         // mod-lookahead the line-based reader used to spell as "skip blanks,
         // attributes, and comments, then require `mod`" is what
-        // `inline_module_name` / `declared_module_name` answer about the
-        // guarded item's head. Comment and attribute lines between the gate
-        // and the `mod` change nothing — `guarded_item` skips them — and a
-        // commented-out `mod` line is a comment, so it can never satisfy the
-        // check (#16389).
-        let guards_a_module =
-            inline_module_name(item.text).is_some() || declared_module_name(item.text).is_some();
+        // `module_head_name` answers about the guarded item's head. Comment and
+        // attribute lines between the gate and the `mod` change nothing —
+        // `guarded_item` skips them — and a commented-out `mod` line is a
+        // comment, so it can never satisfy the check (#16389).
+        //
+        // The boundary asks whether the line *declares* a module; the nesting
+        // predicates ask whether the line *opens* one whose scope runs on to
+        // the next line, and they deliberately reject a head that ends in `}`.
+        // Sharing them made a compact `#[cfg(test)] mod tests { fn it() {} }`
+        // indistinguishable from no boundary at all, so every production check
+        // downstream scanned through the test module (#16520).
+        let guards_a_module = module_head_name(item.text).is_some();
         if guards_a_module {
             if let Some((line, _)) =
                 item.attributes.iter().find(|(_, attr)| attribute_is_plain_cfg_test(attr))
@@ -661,6 +666,22 @@ fn inline_module_name(trimmed: &str) -> Option<String> {
 fn declared_module_name(trimmed: &str) -> Option<String> {
     let rest = trimmed.trim_end().strip_suffix(';')?;
     module_name_after_visibility(rest)
+}
+
+/// The module name in a head that declares a module anywhere on the line —
+/// `mod foo { … }`, `pub(crate) mod foo;` — whatever follows the brace.
+///
+/// The within-file boundary reader's half of `mod` recognition, and
+/// deliberately not [`inline_module_name`]: that predicate is also the
+/// `inline` nesting stack's push test, so it must keep requiring the brace to
+/// be the line's last token — a compact module pushed onto that stack opens
+/// and closes on one line and would never be popped, misplacing every
+/// declaration resolved after it. The name grammar itself is still read once,
+/// by [`module_name_after_visibility`]; this only differs in where the head is
+/// allowed to end.
+fn module_head_name(trimmed: &str) -> Option<String> {
+    let end = trimmed.find(['{', ';'])?;
+    module_name_after_visibility(trimmed.get(..end)?)
 }
 
 /// The module name in `pub(crate) mod foo` and its spellings, or `None` when
@@ -1497,6 +1518,57 @@ mod tests {
         ensure!(
             first_cfg_test_boundary(&lines) == 1,
             "the one-line module is test scope from line 1, got {:?}",
+            first_cfg_test_boundary(&lines),
+        );
+        Ok(())
+    }
+
+    /// The compact body must not be enough to make any gated head a module.
+    ///
+    /// The boundary reader now accepts a head that ends in `}` rather than one
+    /// that ends in `{`. Without this control, a reader that simply asked "is
+    /// there a brace somewhere on this line" would bound the file at a
+    /// test-gated `use`/`const` and truncate every production check above the
+    /// real test scope — the same blind spot as the `#[cfg(test)] use` in
+    /// `symbols.rs` this function's own docs cite (#16389).
+    #[test]
+    fn a_compact_non_module_gate_still_does_not_bound_the_file() -> Result<()> {
+        for gated in ["#[cfg(test)] use std::fmt;", "#[cfg(test)] const N: usize = 1;"] {
+            // The gated non-module sits above a *separately* gated module: the
+            // boundary must be the module's gate on line 2, never the
+            // non-module's on line 1.
+            let lines: Vec<String> = [
+                gated.to_string(),
+                "#[cfg(test)]".to_string(),
+                "mod tests {".to_string(),
+                "    fn it() {}".to_string(),
+                "}".to_string(),
+            ]
+            .into_iter()
+            .collect();
+            ensure!(
+                first_cfg_test_boundary(&lines) == 2,
+                "{gated:?} does not guard a module, so scope opens at the gate on line 2, got {:?}",
+                first_cfg_test_boundary(&lines),
+            );
+        }
+        Ok(())
+    }
+
+    /// A `mod` mentioned inside another item's block is not a module head.
+    ///
+    /// `module_head_name` reads the text *before* the first brace, so a `mod`
+    /// that only appears once a function body has already opened cannot be
+    /// mistaken for the file's own module declaration.
+    #[test]
+    fn a_mod_inside_another_item_is_not_a_module_head() -> Result<()> {
+        let lines: Vec<String> = "#[cfg(test)] fn helper() { mod tests { fn it() {} } }\n"
+            .lines()
+            .map(str::to_string)
+            .collect();
+        ensure!(
+            first_cfg_test_boundary(&lines) == usize::MAX,
+            "a gated fn is not a module, got {:?}",
             first_cfg_test_boundary(&lines),
         );
         Ok(())
