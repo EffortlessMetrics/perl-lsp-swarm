@@ -2171,7 +2171,11 @@ SEEDS = {
             "the piped installer entirely; post-head #16312/#16316 "
             "touched install.sh release-path robustness without "
             "touching the fallback",
-        ],
+                    "docs/EXTENSION.md still directs editor-side users to "
+            "resolve/search perl-lsp on PATH: the editor-side naming "
+            "surface is a separate drift from this unit's installer "
+            "binary-name reconciliation and remains open",
+],
         "open_pr_relationships": [],
         "controlling_issues": ["4648-CLOSED"],
         "invalidators": [
