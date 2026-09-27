@@ -2157,8 +2157,8 @@ SEEDS = {
             "doctor exit-code sub-problem was refactored post-range "
             "(run_doctor split) and stays not_proven here",
             "later in-range rows re-bound install.ps1 nine times "
-            "(reviewed PR#5477, PR#6186, PR#7897, PR#12742 and "
-            "unreviewed PR#5452, PR#5481, PR#5871, PR#6233, "
+            "(reviewed PR#5477, PR#6186, PR#7897, PR#12742, "
+            "PR#5481 and PR#6233; unreviewed PR#5452, PR#5871, "
             "PR#12815): checksums, PATH persistence, archive "
             "inspection, atomic promotion, and ARM64 target "
             "selection all landed after this rename; the "
