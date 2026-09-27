@@ -1573,4 +1573,39 @@ mod tests {
         );
         Ok(())
     }
+
+    /// A compact module and its multi-line spelling must bound identically.
+    ///
+    /// The boundary is a line number and every caller treats it as "the rest of
+    /// this file is test scope", so production written *after* the module is
+    /// not scanned — for the multi-line spelling that has always been true, and
+    /// recognising the compact form makes it true there too. That is the point
+    /// of this test: the two spellings are one case, not two, so a future fix
+    /// to the boundary semantics (#16523) cannot land for one and silently miss
+    /// the other.
+    #[test]
+    fn a_compact_test_module_and_its_multiline_spelling_bound_alike() -> Result<()> {
+        let compact = || {
+            vec![
+                "pub fn live() {}".to_string(),
+                "#[cfg(test)] mod tests { fn it() {} }".to_string(),
+            ]
+        };
+        let multiline = || {
+            vec![
+                "pub fn live() {}".to_string(),
+                "#[cfg(test)]".to_string(),
+                "mod tests {".to_string(),
+                "    fn it() {}".to_string(),
+                "}".to_string(),
+            ]
+        };
+        ensure!(
+            first_cfg_test_boundary(&compact()) == first_cfg_test_boundary(&multiline()),
+            "the compact spelling bounded at {:?} but the multi-line spelling at {:?}",
+            first_cfg_test_boundary(&compact()),
+            first_cfg_test_boundary(&multiline()),
+        );
+        Ok(())
+    }
 }
