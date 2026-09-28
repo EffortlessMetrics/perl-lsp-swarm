@@ -5,6 +5,7 @@
 //! `cpanm` card. This classifier keeps module hover for `use`/`require`
 //! (handled before token fallback), arrow receivers (`File::Path->`), and
 //! package prefixes, and names the last component of `Pkg::sub` as a callable.
+//! Arrow detection skips ASCII whitespace, including a newline before `->`.
 
 /// How a `::`-qualified token under the cursor should be hovered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,12 +49,9 @@ pub(super) fn classify_qualified_hover_token(
         return None;
     }
 
-    let followed_by_arrow = text
-        .get(span_end..)
-        .is_some_and(|rest| rest.trim_start_matches([' ', '\t']).starts_with("->"));
-    let followed_by_call = text
-        .get(span_end..)
-        .is_some_and(|rest| rest.trim_start_matches([' ', '\t']).starts_with('('));
+    let rest = skip_ascii_whitespace_after(text, span_end);
+    let followed_by_arrow = rest.starts_with("->");
+    let followed_by_call = rest.starts_with('(');
 
     // `File::Path->method`: the whole span is the receiver package, including
     // a cursor on the `File` prefix (existing package-hover coverage).
@@ -83,6 +81,14 @@ pub(super) fn classify_qualified_hover_token(
         package: package.to_string(),
         name: name.to_string(),
     })
+}
+
+/// Skip ASCII whitespace after `span_end` so `foo::bar\n  ->method` is still
+/// an arrow receiver. Space/tab-only trim missed Perl's line-wrapped `->`.
+fn skip_ascii_whitespace_after(text: &str, span_end: usize) -> &str {
+    text.get(span_end..)
+        .map(|rest| rest.trim_start_matches(|ch: char| ch.is_ascii_whitespace()))
+        .unwrap_or("")
 }
 
 /// `$`, `@`, `%`, and `*` immediately before a `::` span name a variable or glob.
@@ -372,6 +378,39 @@ mod tests {
             classify_qualified_hover_token(text, offset_of(text, "Path")),
             Some(QualifiedHoverKind::Package("File::Path".to_string())),
             "capitalized final without `(` stays Package even when `->` wraps"
+        );
+    }
+
+    #[test]
+    fn lowercase_receiver_with_newline_before_arrow_is_package() {
+        let text = "foo::bar\n  ->make();\n";
+        assert_eq!(
+            classify_qualified_hover_token(text, offset_of(text, "bar")),
+            Some(QualifiedHoverKind::Package("foo::bar".to_string())),
+            "lowercase package receiver must stay Package when `->` wraps to the next line"
+        );
+    }
+
+    #[test]
+    fn lowercase_same_line_receiver_is_package() {
+        let text = "foo::bar->make();\n";
+        assert_eq!(
+            classify_qualified_hover_token(text, offset_of(text, "bar")),
+            Some(QualifiedHoverKind::Package("foo::bar".to_string()))
+        );
+    }
+
+    #[test]
+    fn lowercase_qualified_call_last_component_is_still_callable() {
+        let text = "print foo::bar::make();\n";
+        assert_eq!(
+            classify_qualified_hover_token(text, offset_of(text, "make")),
+            Some(QualifiedHoverKind::Callable {
+                qualified: "foo::bar::make".to_string(),
+                package: "foo::bar".to_string(),
+                name: "make".to_string(),
+            }),
+            "skipping ASCII whitespace before `->` must not reclassify a real qualified call"
         );
     }
 

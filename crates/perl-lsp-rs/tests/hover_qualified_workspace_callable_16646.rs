@@ -94,6 +94,29 @@ fn assert_proven_callable(value: &str, package: &str, qualified: &str) {
     );
 }
 
+fn assert_module_receiver_card(value: &str, package: &str) {
+    assert!(
+        !value.starts_with("**Perl**: `"),
+        "package receiver `{package}` must not collapse to the generic callable card, got: {value}"
+    );
+    assert!(
+        !value.contains("**Subroutine**"),
+        "package receiver `{package}` must not use the subroutine card, got: {value}"
+    );
+    assert!(
+        !value.contains(&format!("Defined in `{package}`")),
+        "package receiver `{package}` must not be presented as a proven sub, got: {value}"
+    );
+    assert!(
+        !value.contains(&format!("sub {package}")),
+        "package receiver `{package}` must not render as a subroutine, got: {value}"
+    );
+    assert!(
+        value.contains(package),
+        "package-receiver hover should mention `{package}`, got: {value}"
+    );
+}
+
 fn open_podheavy_workspace(harness: &mut LspHarness) -> TestResult {
     harness.initialize(None)?;
     harness.open("file:///lib/PodHeavy.pm", PODHEAVY)?;
@@ -382,6 +405,45 @@ sub run { return 1; }
         !value.contains("Defined in `Foo::Bar`"),
         "direct Foo::run must not be attributed to Foo::Bar, got: {value}"
     );
+    Ok(())
+}
+
+/// Lowercase `pkg::name` before a wrapped `->` is a package receiver, not a
+/// callable. Same-line `pkg::name->method` and a real `pkg::name::sub()` call
+/// stay on their existing paths.
+#[test]
+fn hover_on_lowercase_multiline_arrow_receiver_is_module_not_callable() -> TestResult {
+    const MODULE: &str = r#"package foo::bar;
+sub make { return 1; }
+1;
+"#;
+    const SCRIPT: &str = "foo::bar->make();\nfoo::bar\n  ->make();\nprint foo::bar::make();\n";
+
+    let workspace = support::lsp_harness::TempWorkspace::new()?;
+    workspace.write("lib/foo/bar.pm", MODULE)?;
+    workspace.write("caller.pl", SCRIPT)?;
+
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    harness.open(&workspace.uri("lib/foo/bar.pm"), MODULE)?;
+    harness.open(&workspace.uri("caller.pl"), SCRIPT)?;
+    harness.barrier();
+
+    let caller = workspace.uri("caller.pl");
+    let (same_line, same_col) = pos_on_line(SCRIPT, 0, "bar")?;
+    let same = hover_markdown(&hover_at(&mut harness, &caller, same_line, same_col)?)
+        .ok_or("expected hover on same-line foo::bar->make()")?;
+    assert_module_receiver_card(&same, "foo::bar");
+
+    let (nl_line, nl_col) = pos_on_line(SCRIPT, 1, "bar")?;
+    let wrapped = hover_markdown(&hover_at(&mut harness, &caller, nl_line, nl_col)?)
+        .ok_or("expected hover on lowercase foo::bar before newline+arrow")?;
+    assert_module_receiver_card(&wrapped, "foo::bar");
+
+    let (call_line, call_col) = pos_on_line(SCRIPT, 3, "make")?;
+    let call = hover_markdown(&hover_at(&mut harness, &caller, call_line, call_col)?)
+        .ok_or("expected hover on foo::bar::make()")?;
+    assert_proven_callable(&call, "foo::bar", "foo::bar::make");
     Ok(())
 }
 
