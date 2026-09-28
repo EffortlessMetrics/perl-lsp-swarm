@@ -2714,7 +2714,16 @@ impl ProjectConfig {
     ///
     /// Only fields explicitly set in the TOML override defaults; unset fields are untouched.
     /// LSP `didChangeConfiguration` is expected to run after this, overriding any values here.
-    pub fn apply_to_server_config(&self, config: &mut ServerConfig) {
+    ///
+    /// Returns every `[critic]`/`[formatting]` value that failed validation and
+    /// was rejected (the prior accepted value is retained), so runtime callers
+    /// can surface an actionable `window/showMessage` (#16598). The
+    /// tracing-only warnings for the same rejections stay in place for logs.
+    pub fn apply_to_server_config(
+        &self,
+        config: &mut ServerConfig,
+    ) -> Vec<RejectedProjectConfigValue> {
+        let mut rejected_values = Vec::new();
         if let Some(hints) = self.features.inlay_hints {
             config.inlay_hints_enabled = hints;
         }
@@ -2762,14 +2771,21 @@ impl ProjectConfig {
         if let Some(ref engine) = self.formatting.engine {
             match parse_formatter_mode(engine) {
                 Some(mode) => config.formatting_engine = mode,
-                None => tracing::warn!(
-                    target: "perl_lsp::config",
-                    setting = "formatting.engine",
-                    value = %engine,
-                    valid = FORMATTER_MODE_VALID_OPTIONS,
-                    "unrecognized formatting.engine value in .perl-lsp.toml; \
-                     keeping current setting",
-                ),
+                None => {
+                    rejected_values.push(RejectedProjectConfigValue {
+                        setting: "formatting.engine",
+                        value: engine.clone(),
+                        valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    });
+                    tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "formatting.engine",
+                        value = %engine,
+                        valid = FORMATTER_MODE_VALID_OPTIONS,
+                        "unrecognized formatting.engine value in .perl-lsp.toml; \
+                         keeping current setting",
+                    );
+                }
             }
         }
         // Critic initialization from the trusted project file also advances as
@@ -2783,7 +2799,10 @@ impl ProjectConfig {
                     candidate.apply_to(config);
                 }
             }
-            Err(rejection) => rejection.emit_single_condition(),
+            Err(rejection) => {
+                rejected_values.extend(rejection.rejected_project_values());
+                rejection.emit_single_condition();
+            }
         }
         if let Some(ref profile) = self.formatting.perltidy_profile {
             config.perltidy_profile = Some(profile.clone());
@@ -2821,6 +2840,7 @@ impl ProjectConfig {
         if let Some(timeout) = self.formatting.perltidy_timeout_secs {
             config.perltidy_timeout_secs = timeout;
         }
+        rejected_values
     }
 
     /// Apply project config to `WorkspaceConfig` as the base layer.
@@ -2853,6 +2873,14 @@ impl ProjectConfig {
     /// Rejected entries are dropped from `config.include_paths` (never
     /// silently applied) and returned so the caller can surface an actionable
     /// warning — a bad entry must be debuggable, not just silently ignored.
+    ///
+    /// One rejection outcome replaces rather than retains: when the configured
+    /// list was non-empty but **every** entry was rejected, the
+    /// previously-effective list (the built-in defaults when nothing else set
+    /// it) is kept instead of being wiped (#16596) — the same "not set"
+    /// semantics an empty or absent TOML list already has. Callers can detect
+    /// that case with [`ProjectConfig::include_paths_defaults_retained`] to
+    /// state the consequence in their warning.
     pub fn apply_to_workspace_config(
         &self,
         config: &mut WorkspaceConfig,
@@ -2904,11 +2932,24 @@ impl ProjectConfig {
                 valid.push(entry.clone());
             }
             if !skip_include_paths {
-                // Project-file configuration replaces the list; drop detector
-                // ownership for the same reason as the client-settings channel
-                // (#13640).
-                config.detected_dependency_include_paths.clear();
-                config.include_paths = valid;
+                if !valid.is_empty() {
+                    // Project-file configuration replaces the list; drop
+                    // detector ownership for the same reason as the
+                    // client-settings channel (#13640).
+                    config.detected_dependency_include_paths.clear();
+                    config.include_paths = valid;
+                } else {
+                    // #16596: every configured entry was rejected. Assigning
+                    // the empty list here would wipe the previously-effective
+                    // roots — the built-in defaults `lib`, `.`,
+                    // `local/lib/perl5` when nothing else set them — which is
+                    // exactly the accident the documented empty-`[]` safety
+                    // net promises to prevent. Retain the prior list, with
+                    // the same "absent means not set" semantics an empty TOML
+                    // list already has, and leave detector ownership intact
+                    // because the list was not replaced. Callers state the
+                    // consequence via `include_paths_defaults_retained`.
+                }
             }
         }
         if !self.perl.discovery_extensions.is_empty() {
@@ -2927,6 +2968,23 @@ impl ProjectConfig {
         }
         rejected
     }
+
+    /// Whether applying this config retained the previously-effective include
+    /// roots because every configured entry was rejected (#16596).
+    ///
+    /// Mirrors the retention decision in [`Self::apply_to_workspace_config`]
+    /// so doctor and the editor warning can state the consequence ("the
+    /// defaults remain in effect") instead of only listing the rejections.
+    /// The fail-closed workspace-root failure is excluded: that case clears
+    /// the list rather than retaining it, so it is never reported as a
+    /// retention.
+    pub fn include_paths_defaults_retained(&self, rejected: &[RejectedIncludePath]) -> bool {
+        !self.perl.include_paths.is_empty()
+            && rejected.len() == self.perl.include_paths.len()
+            && !rejected.iter().any(|entry| {
+                matches!(entry.reason, RejectedIncludePathReason::WorkspaceRootUnavailable(_))
+            })
+    }
 }
 
 /// A `.perl-lsp.toml` `[perl].include_paths` entry rejected during validation.
@@ -2939,6 +2997,25 @@ pub struct RejectedIncludePath {
     pub entry: String,
     /// Why it was rejected.
     pub reason: RejectedIncludePathReason,
+}
+
+/// A `.perl-lsp.toml` `[critic]`/`[formatting]` value that failed validation
+/// during [`ProjectConfig::apply_to_server_config`] and was rejected — the
+/// previously accepted value is retained (#16598).
+///
+/// This is the project-channel sibling of [`InvalidClientSetting`]: the
+/// config layer keeps a tracing-only disposition, and this structured value
+/// lets runtime callers surface an actionable `window/showMessage` without
+/// re-deriving what the application path rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedProjectConfigValue {
+    /// Dotted setting path as written in `.perl-lsp.toml`
+    /// (e.g. `critic.engine`).
+    pub setting: &'static str,
+    /// The raw, as-configured value.
+    pub value: String,
+    /// Human-readable accepted values for the setting.
+    pub valid_options: &'static str,
 }
 
 /// Why a `.perl-lsp.toml` `include_paths` entry was rejected.
@@ -4831,7 +4908,12 @@ profile = "recommended"
         let prior = config.critic_engine;
         let mut project = ProjectConfig::default();
         project.critic.engine = Some("nativ".to_string());
-        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let captured = capture_warnings(|| {
+            // apply_to_server_config also returns the rejected values for the
+            // runtime's editor-visible surface (#16598); these tracing-level
+            // tests assert the logged disposition only.
+            let _ = project.apply_to_server_config(&mut config);
+        });
         assert_eq!(config.critic_engine, prior);
         assert_warned_contains(&captured, &["critic.engine", "nativ"]);
     }
@@ -4842,7 +4924,12 @@ profile = "recommended"
             ServerConfig { native_critic_profile: "strict".to_string(), ..ServerConfig::default() };
         let mut project = ProjectConfig::default();
         project.critic.profile = Some("recomended".to_string());
-        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let captured = capture_warnings(|| {
+            // apply_to_server_config also returns the rejected values for the
+            // runtime's editor-visible surface (#16598); these tracing-level
+            // tests assert the logged disposition only.
+            let _ = project.apply_to_server_config(&mut config);
+        });
         assert_eq!(config.native_critic_profile, "strict");
         assert_warned_contains(&captured, &["critic.profile", "recomended"]);
     }
@@ -4853,7 +4940,12 @@ profile = "recommended"
         let prior = config.formatting_engine;
         let mut project = ProjectConfig::default();
         project.formatting.engine = Some("perltide".to_string());
-        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let captured = capture_warnings(|| {
+            // apply_to_server_config also returns the rejected values for the
+            // runtime's editor-visible surface (#16598); these tracing-level
+            // tests assert the logged disposition only.
+            let _ = project.apply_to_server_config(&mut config);
+        });
         assert_eq!(config.formatting_engine, prior);
         assert_warned_contains(&captured, &["formatting.engine", "perltide"]);
     }
@@ -4863,7 +4955,12 @@ profile = "recommended"
         let mut config = ServerConfig::default();
         let mut project = ProjectConfig::default();
         project.diagnostics.perlcritic_severity = Some(99);
-        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let captured = capture_warnings(|| {
+            // apply_to_server_config also returns the rejected values for the
+            // runtime's editor-visible surface (#16598); these tracing-level
+            // tests assert the logged disposition only.
+            let _ = project.apply_to_server_config(&mut config);
+        });
         assert_eq!(config.perlcritic_severity, 5);
         assert_warned_contains(&captured, &["perlcritic_severity", "99"]);
     }
@@ -4877,7 +4974,12 @@ profile = "recommended"
         // #8311: `[next_edit]` is no longer public configuration. Supplying it
         // produces one bounded ignored/deprecation reason and never changes
         // server state, in either direction.
-        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let captured = capture_warnings(|| {
+            // apply_to_server_config also returns the rejected values for the
+            // runtime's editor-visible surface (#16598); these tracing-level
+            // tests assert the logged disposition only.
+            let _ = project.apply_to_server_config(&mut config);
+        });
         let combined = captured.join("\n");
         assert_eq!(
             combined.matches("ignoring deprecated").count(),
@@ -4889,7 +4991,12 @@ profile = "recommended"
 
         let mut project = ProjectConfig::default();
         project.next_edit.enabled = Some(false);
-        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let captured = capture_warnings(|| {
+            // apply_to_server_config also returns the rejected values for the
+            // runtime's editor-visible surface (#16598); these tracing-level
+            // tests assert the logged disposition only.
+            let _ = project.apply_to_server_config(&mut config);
+        });
         let combined = captured.join("\n");
         assert_eq!(
             combined.matches("ignoring deprecated").count(),
@@ -5041,6 +5148,160 @@ profile = "recommended"
         assert_eq!(rejected[0].entry, absolute);
         assert_eq!(rejected[0].reason, RejectedIncludePathReason::Absolute);
         Ok(())
+    }
+
+    /// #16596: a `.perl-lsp.toml` `include_paths` list in which EVERY entry
+    /// is rejected must retain the previously-effective roots (the built-in
+    /// defaults when nothing else set them) instead of assigning an empty
+    /// list and wiping module resolution — the same "not set" semantics the
+    /// documented empty-`[]` safety net already provides.
+    #[test]
+    fn apply_to_workspace_config_all_rejected_include_paths_keep_defaults() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let baseline = workspace.include_paths.clone();
+        let mut project = ProjectConfig::default();
+        // "/etc" is not absolute on Windows; mirror the platform handling of
+        // `apply_to_workspace_config_rejects_absolute_include_paths`. The
+        // traversal entry escapes the workspace root via the tempdir parent.
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        project.perl.include_paths = vec![absolute.to_string(), "../outside".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(rejected.len(), 2, "every configured entry is rejected");
+        assert_eq!(
+            workspace.include_paths, baseline,
+            "all-rejected list must not wipe the built-in defaults"
+        );
+        assert!(project.include_paths_defaults_retained(&rejected));
+        Ok(())
+    }
+
+    /// The #16596 retention is specific to the all-rejected outcome: a list
+    /// with at least one valid entry replaces the defaults exactly as before,
+    /// and the retention flag must not fire for it.
+    #[test]
+    fn apply_to_workspace_config_partial_rejection_still_replaces_list() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
+        project.perl.include_paths = vec![absolute.to_string(), "relative/lib".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, temp.path());
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(
+            workspace.include_paths,
+            vec!["relative/lib".to_string()],
+            "a list with at least one valid entry replaces the defaults"
+        );
+        assert!(!project.include_paths_defaults_retained(&rejected));
+        Ok(())
+    }
+
+    /// The fail-closed workspace-root failure clears the list rather than
+    /// retaining it, so it must never be reported as a defaults-retained
+    /// outcome (#16596).
+    #[test]
+    fn include_paths_defaults_retained_is_false_when_workspace_root_unavailable() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let missing_root = temp.path().join("missing");
+        let mut workspace = WorkspaceConfig::default();
+        let mut project = ProjectConfig::default();
+        project.perl.include_paths = vec!["lib".to_string()];
+
+        let rejected = project.apply_to_workspace_config(&mut workspace, &missing_root);
+
+        assert_eq!(rejected.len(), 1);
+        assert!(matches!(
+            rejected[0].reason,
+            RejectedIncludePathReason::WorkspaceRootUnavailable(_)
+        ));
+        assert!(workspace.include_paths.is_empty(), "fail-closed root failure clears the list");
+        assert!(!project.include_paths_defaults_retained(&rejected));
+        Ok(())
+    }
+
+    /// #16596: the retention helper must not fire when nothing was configured
+    /// (the lower layer was never going to be replaced).
+    #[test]
+    fn include_paths_defaults_retained_is_false_without_configured_entries() {
+        let project = ProjectConfig::default();
+        assert!(project.perl.include_paths.is_empty());
+        assert!(!project.include_paths_defaults_retained(&[]));
+    }
+
+    /// #16598: `apply_to_server_config` returns every rejected
+    /// `[critic]`/`[formatting]` value with its accepted values, so the
+    /// runtime can surface an actionable `window/showMessage`; the accepted
+    /// configuration itself is retained.
+    #[test]
+    fn apply_to_server_config_returns_rejected_critic_and_formatting_values() -> TestResult {
+        let mut config = ServerConfig::default();
+        let prior_engine = config.critic_engine;
+        let prior_formatting_engine = config.formatting_engine;
+        config.native_critic_profile = "strict".to_string();
+
+        let mut project = ProjectConfig::default();
+        project.critic.engine = Some("turbo".to_string());
+        project.critic.profile = Some("recomended".to_string());
+        project.formatting.engine = Some("perltide".to_string());
+
+        let rejected = project.apply_to_server_config(&mut config);
+
+        assert_eq!(
+            rejected.len(),
+            3,
+            "engine+profile reject the critic candidate whole; formatting rejects alone; got {rejected:?}"
+        );
+
+        let engine = rejected
+            .iter()
+            .find(|entry| entry.setting == "critic.engine")
+            .ok_or("critic.engine rejection must be returned")?;
+        assert_eq!(engine.value, "turbo");
+        assert!(
+            engine.valid_options.contains("native") && engine.valid_options.contains("legacy"),
+            "engine valid options must name the project-channel selections; got {:?}",
+            engine.valid_options
+        );
+
+        let profile = rejected
+            .iter()
+            .find(|entry| entry.setting == "critic.profile")
+            .ok_or("critic.profile rejection must be returned")?;
+        assert_eq!(profile.value, "recomended");
+        assert!(!profile.valid_options.is_empty());
+
+        let formatting = rejected
+            .iter()
+            .find(|entry| entry.setting == "formatting.engine")
+            .ok_or("formatting.engine rejection must be returned")?;
+        assert_eq!(formatting.value, "perltide");
+
+        // The accepted state is retained at its prior value.
+        assert_eq!(config.critic_engine, prior_engine);
+        assert_eq!(config.formatting_engine, prior_formatting_engine);
+        assert_eq!(config.native_critic_profile, "strict");
+        Ok(())
+    }
+
+    /// #16598: a fully valid project config returns no rejections, so the
+    /// runtime emitter stays silent.
+    #[test]
+    fn apply_to_server_config_returns_no_rejections_for_valid_values() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.critic.engine = Some("native".to_string());
+        project.critic.profile = Some("strict".to_string());
+        project.formatting.engine = Some("native".to_string());
+
+        let rejected = project.apply_to_server_config(&mut config);
+
+        assert!(rejected.is_empty(), "valid values produce no rejections");
+        assert_eq!(config.critic_engine, crate::config::CriticEngine::Native);
     }
 
     /// Rejected entries are workspace-controlled, so `render` must not emit raw
@@ -7172,7 +7433,12 @@ api_key_prefix = "Attacker "
             "native.variables.typo_rule".to_string(),
             "native.testing.require_use_strict".to_string(),
         ]);
-        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let captured = capture_warnings(|| {
+            // apply_to_server_config also returns the rejected values for the
+            // runtime's editor-visible surface (#16598); these tracing-level
+            // tests assert the logged disposition only.
+            let _ = project.apply_to_server_config(&mut config);
+        });
         assert_eq!(
             config.native_critic_include,
             vec![
@@ -7188,7 +7454,12 @@ api_key_prefix = "Attacker "
         let mut config = ServerConfig::default();
         let mut project = ProjectConfig::default();
         project.critic.exclude = Some(vec!["native.io.bad_rule_name".to_string()]);
-        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let captured = capture_warnings(|| {
+            // apply_to_server_config also returns the rejected values for the
+            // runtime's editor-visible surface (#16598); these tracing-level
+            // tests assert the logged disposition only.
+            let _ = project.apply_to_server_config(&mut config);
+        });
         assert_warned_contains(&captured, &["critic.exclude", "native.io.bad_rule_name"]);
         assert_eq!(config.native_critic_exclude, vec!["native.io.bad_rule_name".to_string()]);
     }
@@ -7205,7 +7476,12 @@ api_key_prefix = "Attacker "
             "native.variables.unused_lexical".to_string(),
         ]);
         project.critic.exclude = Some(vec!["native.common.assignment_in_condition".to_string()]);
-        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let captured = capture_warnings(|| {
+            // apply_to_server_config also returns the rejected values for the
+            // runtime's editor-visible surface (#16598); these tracing-level
+            // tests assert the logged disposition only.
+            let _ = project.apply_to_server_config(&mut config);
+        });
         assert!(
             captured.is_empty(),
             "expected no warnings for valid TOML rule IDs; got:\n{}",
@@ -7268,7 +7544,12 @@ api_key_prefix = "Attacker "
         let mut config = ServerConfig::default();
         let mut project = ProjectConfig::default();
         project.critic.include = Some(vec!["native.variables.typo_rule".to_string()]);
-        let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
+        let captured = capture_warnings(|| {
+            // apply_to_server_config also returns the rejected values for the
+            // runtime's editor-visible surface (#16598); these tracing-level
+            // tests assert the logged disposition only.
+            let _ = project.apply_to_server_config(&mut config);
+        });
         assert_warned_contains(&captured, &[".perl-lsp.toml"]);
         let combined = captured.join("\n");
         assert!(
