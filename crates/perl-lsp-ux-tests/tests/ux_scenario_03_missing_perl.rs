@@ -49,12 +49,15 @@ fn config_without_perl() -> ScenarioConfig {
     ScenarioConfig::with_empty_path()
 }
 
-/// Count not-found Errors and fallback logs among the captured events.
+/// Count not-found Errors and fallback Info logs among the captured events.
 ///
 /// The two phrases are deliberately mutually exclusive: `perl_not_found_message`
 /// says "Perl missing on PATH" while `perl_fallback_message` says "Perl not
 /// found on PATH; using the … installation", so one session can satisfy at most
-/// one arm.
+/// one arm. Each arm also pins the severity its contract names: the not-found
+/// popup is an Error (`window/showMessage` type 1) and the fallback log is Info
+/// (`window/logMessage` type 3), so a severity regression cannot pass as the
+/// sole valid resolution arm.
 fn interpreter_resolution_counts(events: &[LspEvent]) -> (usize, usize) {
     let mut not_found = 0;
     let mut fallback = 0;
@@ -65,7 +68,9 @@ fn interpreter_resolution_counts(events: &[LspEvent]) -> (usize, usize) {
             {
                 not_found += 1;
             }
-            LspEvent::LogMessage { message, .. } if message.contains(PERL_FALLBACK_IN_USE) => {
+            LspEvent::LogMessage { message_type: 3, message }
+                if message.contains(PERL_FALLBACK_IN_USE) =>
+            {
                 fallback += 1;
             }
             _ => {}

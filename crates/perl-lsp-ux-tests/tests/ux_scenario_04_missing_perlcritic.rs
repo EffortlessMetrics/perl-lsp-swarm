@@ -127,6 +127,11 @@ fn scenario_04_server_responsive_without_perlcritic() {
     );
 }
 
+/// Bound on the event-driven wait for the didOpen-triggered diagnostics
+/// publication that settles the debounced diagnostic pass. This only needs to
+/// cover transport latency plus the debounce, never product work.
+const DIAGNOSTICS_SETTLE: Duration = Duration::from_secs(15);
+
 fn config_without_perlcritic_strict() -> ScenarioConfig {
     // The only cross-platform way to make perlcritic un-invocable: an empty
     // child PATH. A directory-name filter cannot remove perltidy/perlcritic on
@@ -154,13 +159,27 @@ fn scenario_04_missing_perlcritic_is_explicitly_silent_and_session_stays_respons
 
             harness.open_file("critic_silent.pl", source).context("didOpen should succeed")?;
 
-            // Hover round-trip: proves the server processed the didOpen (so any
-            // perlcritic popup it would emit is already in the buffer) and that
-            // the session stays responsive without the tool.
+            // Hover round-trip: proves the server processed the didOpen and
+            // that the session stays responsive without the tool.
             harness
                 .hover("critic_silent.pl", 0, 3)
                 .context("Server became unresponsive without perlcritic — UX regression")?;
             recorder.check("hover round-trip completed without perlcritic", true)?;
+
+            // Settle the full diagnostic pass before asserting silence: the
+            // runtime publishes diagnostics on a debounced trailing edge, so a
+            // hover round-trip alone does not prove the pass ran. The
+            // didOpen-triggered publication (even an empty payload) is the
+            // explicit settlement signal; a regressed perlcritic popup emitted
+            // during that pass is therefore already in the event buffer.
+            harness
+                .wait_for_diagnostics_event("critic_silent.pl", DIAGNOSTICS_SETTLE)
+                .map_err(|end| {
+                    anyhow::anyhow!(
+                        "diagnostics publication for the opened file never arrived ({})",
+                        end.describe()
+                    )
+                })?;
 
             let tool_messages: Vec<String> = harness
                 .client
