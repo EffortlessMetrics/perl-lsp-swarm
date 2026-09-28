@@ -782,6 +782,18 @@ impl UxHarness {
             })
     }
 
+    /// Wait for the first diagnostics publication for a file, preserving a
+    /// matching empty payload as success and the typed reason for no event.
+    /// Use this for readiness gates where absence must fail closed.
+    pub fn wait_for_diagnostics_event(
+        &self,
+        relative_path: &str,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
+        let uri = self.workspace.uri(relative_path);
+        DiagnosticsTracker::wait_for_first_uri_event(&self.client, &uri, timeout)
+    }
+
     /// Wait up to `timeout` for a `textDocument/publishDiagnostics` notification
     /// for the given file, then return the most recently published diagnostics
     /// for the URI, ignoring earlier buffered publications.
