@@ -590,6 +590,7 @@ pub(crate) fn build_unavailable_packet(
     })
 }
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use perl_tdd_support::must_some;

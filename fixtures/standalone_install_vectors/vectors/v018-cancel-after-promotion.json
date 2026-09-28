@@ -1,0 +1,71 @@
+{
+  "vector_id": "v018-cancel-after-promotion",
+  "contract_generation": 1,
+  "family": "cancel_at_side_effect_ceiling",
+  "platform_classification": "platform_neutral",
+  "intent": {
+    "operation_id": "txn-v018",
+    "attempt_id": "attempt-a1",
+    "route": "first_party_posix",
+    "mode": "release_archive",
+    "selector": { "exact": { "tag": "synthetic-v3.5.0" } },
+    "target": { "platform": "synthetic-platform", "arch": "synthetic-arch", "libc": "synthetic-libc" },
+    "requested_product_unit": "server_only",
+    "fallback_policy": "forbidden",
+    "path_policy": "persist",
+    "config_digest": "cfg-digest-v018"
+  },
+  "resolved_subject": {
+    "subject_id": "subject-v018",
+    "mode": "release_archive",
+    "release_ref": { "repo": "synthetic/example", "tag": "synthetic-v3.5.0" },
+    "topology": { "topology_id": "topology-syn-v018", "digest": "sha256:topology-syn-v018", "row": "row-syn-v018", "maturity": "current" },
+    "archive": { "name": "perllsp-synthetic-v3.5.0.tar.gz", "format": "tar.gz", "integrity_policy_id": "integrity-syn-v018" },
+    "product_unit": "server_only",
+    "required_executables": ["perllsp"],
+    "destination_role": "install_root",
+    "provenance_required": false
+  },
+  "stage_graph": [
+    { "stage_id": "resolve_subject", "applicability": "required", "predecessors": [], "port_script": "resolve" },
+    { "stage_id": "transport", "applicability": "required", "predecessors": ["resolve_subject"], "port_script": "transport" },
+    { "stage_id": "checksum_integrity", "applicability": "required", "predecessors": ["transport"], "port_script": "checksum" },
+    { "stage_id": "provenance", "applicability": "not_applicable", "predecessors": ["checksum_integrity"], "port_script": "unused-provenance" },
+    { "stage_id": "archive_manifest_and_staging", "applicability": "required", "predecessors": ["checksum_integrity"], "port_script": "staging" },
+    { "stage_id": "executable_observation", "applicability": "required", "predecessors": ["archive_manifest_and_staging"], "port_script": "observe" },
+    { "stage_id": "source_build", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-source-build" },
+    { "stage_id": "promotion", "applicability": "required", "predecessors": ["executable_observation"], "port_script": "promote" },
+    { "stage_id": "path_persistence", "applicability": "required", "predecessors": ["promotion"], "port_script": "path" },
+    { "stage_id": "fresh_process_observation", "applicability": "required", "predecessors": ["path_persistence"], "port_script": "fresh" },
+    { "stage_id": "installed_transition", "applicability": "required", "predecessors": ["fresh_process_observation"], "port_script": "install" }
+  ],
+  "port_scripts": {
+    "resolve": { "calls": [{ "result": "success" }] },
+    "transport": {
+      "calls": [
+        { "result": "success", "artifacts": ["artifact-archive-v018"], "effects": [{ "level": "transport_artifacts", "kind": "transport_artifacts" }] }
+      ]
+    },
+    "checksum": { "calls": [{ "result": "success", "evidence": ["evidence-checksum-v018"] }] },
+    "unused-provenance": { "calls": [{ "result": "success" }] },
+    "staging": { "calls": [{ "result": "success", "effects": [{ "level": "staged", "kind": "staged_archive" }] }] },
+    "observe": { "calls": [{ "result": "success", "executables": { "perllsp": "ok" } }] },
+    "unused-source-build": { "calls": [{ "result": "success" }] },
+    "promote": { "calls": [{ "result": "success", "effects": [{ "level": "promotion_reached", "kind": "promoted" }] }] },
+    "path": { "calls": [{ "result": "cancelled" }] },
+    "fresh": { "calls": [{ "result": "success" }] },
+    "install": { "calls": [{ "result": "success" }] }
+  },
+  "expected": {
+    "terminal_result": "cancelled",
+    "terminal_stage": "path_persistence",
+    "reason_family": "cancelled",
+    "action_class": "abort_install",
+    "side_effect_ceiling": "promotion_reached",
+    "claim_ceiling": "current_state_promotion",
+    "pair_claims_satisfied": false,
+    "branch_count": 1,
+    "attempt_count": 1
+  },
+  "redaction": { "forbidden_tokens": [] }
+}
