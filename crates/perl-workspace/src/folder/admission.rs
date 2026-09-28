@@ -160,6 +160,16 @@ fn relative_rejection(origin: AsPath, input: &str) -> WorkspaceFolderRejection {
 }
 
 fn classify_file_uri(input: &str) -> WorkspaceFolderAdmission {
+    // `file:relative/rel2` is not a hierarchical file URI. The `url` crate
+    // still parses it with path `/relative/rel2`, which would reintroduce
+    // the manufacturing bug if we admitted it.
+    if input.get(5..).is_none_or(|suffix| !suffix.starts_with('/')) {
+        return WorkspaceFolderAdmission::Rejected(WorkspaceFolderRejection::new(
+            WorkspaceFolderRejectionKind::RelativeUri,
+            input,
+        ));
+    }
+
     if file_uri_has_remote_host(input) {
         return WorkspaceFolderAdmission::Rejected(WorkspaceFolderRejection::new(
             WorkspaceFolderRejectionKind::RemoteFileHost,
@@ -232,10 +242,11 @@ pub(super) fn try_absolute_path_to_file_uri(root_path: &str) -> Option<String> {
 
     if is_windows_drive_absolute(root_path) {
         let normalized = root_path.replace('\\', "/");
-        return url::Url::from_file_path(Path::new(&format!("/{normalized}")))
-            .ok()
-            .map(|uri| uri.to_string())
-            .or_else(|| Some(format!("file:///{normalized}")));
+        return Some(
+            url::Url::from_file_path(Path::new(&format!("/{normalized}")))
+                .map(|uri| uri.to_string())
+                .unwrap_or_else(|_| format!("file:///{normalized}")),
+        );
     }
 
     None

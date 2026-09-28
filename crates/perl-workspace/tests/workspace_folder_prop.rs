@@ -72,7 +72,6 @@ proptest! {
         let extracted = extract_workspace_folder_uris(&raw_entries);
 
         prop_assert_eq!(extracted, expected);
-        prop_assert!(extracted.iter().all(|uri| uri.starts_with("file:")));
     }
 
     #[test]
@@ -85,12 +84,12 @@ proptest! {
         let git = json!({"uri": format!("git:///{relative}"), "name": "git"});
 
         for entry in [relative_path, relative_uri, untitled, git] {
-            let extracted = extract_workspace_folder_uris(&[entry.clone()]);
+            let extracted = extract_workspace_folder_uris(std::slice::from_ref(&entry));
             prop_assert!(
                 extracted.is_empty(),
                 "rejected entry leaked into extract: {extracted:?} from {entry:?}"
             );
-            prop_assert!(admit_workspace_folder_uris(&[entry]).is_err());
+            prop_assert!(admit_workspace_folder_uris(std::slice::from_ref(&entry)).is_err());
         }
     }
 
