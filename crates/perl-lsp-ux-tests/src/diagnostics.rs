@@ -1,6 +1,7 @@
 //! Diagnostics-focused helpers for UX harness orchestration.
 
 use crate::LspEvent;
+use crate::WaitEnd;
 use crate::client::EventSource;
 use serde_json::Value;
 use std::time::Duration;
@@ -9,6 +10,23 @@ use std::time::Duration;
 pub struct DiagnosticsTracker;
 
 impl DiagnosticsTracker {
+    /// Wait for the first publication for `uri`, preserving empty payloads as
+    /// successful events and retaining the typed deadline or stream end.
+    pub fn wait_for_first_uri_event(
+        events: &impl EventSource,
+        uri: &str,
+        timeout: Duration,
+    ) -> Result<Vec<Value>, WaitEnd> {
+        events.wait_for_events(timeout, |observed| {
+            observed.iter().find_map(|event| match event {
+                LspEvent::Diagnostics { uri: event_uri, diagnostics, .. } if event_uri == uri => {
+                    Some(diagnostics.clone())
+                }
+                _ => None,
+            })
+        })
+    }
+
     /// Return the most recent diagnostics payload seen for `uri`.
     pub fn latest_for_uri(events: &[LspEvent], uri: &str) -> Option<Vec<Value>> {
         events.iter().rev().find_map(|event| match event {
@@ -103,7 +121,7 @@ mod tests {
     // hand-rolled provider, so they no longer need to unwrap shared test state.
     use super::DiagnosticsTracker;
     use crate::LspEvent;
-    use crate::observation::Inbox;
+    use crate::observation::{Inbox, StreamEnd, WaitEnd};
     use serde_json::{Value, json};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -161,6 +179,56 @@ mod tests {
         anyhow::ensure!(
             latest.is_none(),
             "no matching new diagnostic payload expected, got {latest:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn first_diagnostics_event_preserves_empty_publication() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(publish("file:///other.pl", vec![json!({"message": "other"})]));
+        inbox.push_event(publish("file:///wanted.pl", vec![]));
+
+        let result = DiagnosticsTracker::wait_for_first_uri_event(
+            &inbox,
+            "file:///wanted.pl",
+            Duration::from_secs(1),
+        );
+        anyhow::ensure!(result == Ok(vec![]), "empty publication must be a match: {result:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn first_diagnostics_event_retains_deadline_with_other_uri_traffic() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(publish("file:///other.pl", vec![]));
+        let timeout = Duration::from_millis(20);
+
+        let result =
+            DiagnosticsTracker::wait_for_first_uri_event(&inbox, "file:///wanted.pl", timeout);
+        anyhow::ensure!(
+            result == Err(WaitEnd::Deadline { timeout }),
+            "missing matching event must remain a typed deadline: {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn first_diagnostics_event_retains_stream_end() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.close(StreamEnd::TransportFailure { detail: "invalid frame".to_string() });
+
+        let result = DiagnosticsTracker::wait_for_first_uri_event(
+            &inbox,
+            "file:///wanted.pl",
+            Duration::from_secs(1),
+        );
+        anyhow::ensure!(
+            result
+                == Err(WaitEnd::Ended(StreamEnd::TransportFailure {
+                    detail: "invalid frame".to_string()
+                })),
+            "closed transport must remain distinct from deadline: {result:?}"
         );
         Ok(())
     }
