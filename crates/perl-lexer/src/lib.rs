@@ -1885,6 +1885,18 @@ impl<'a> PerlLexer<'a> {
             .is_some_and(is_perl_identifier_start)
     }
 
+    /// `{` opens a hash or slice subscript when it follows a subscript-capable
+    /// term: a sigiled variable (`$h{k}`), a just-closed array/hash subscript
+    /// (`$a[0]{k}`, `$h{a}{b}`), or an arrow (`$h->{k}`, `$h->{a}{y}`).
+    ///
+    /// The arrow arm is required so `->{outer}{y}` increments brace depth.
+    /// Closing that first `}` then sets `after_var_subscript` for the chained
+    /// `{y}` key instead of lexing `y}...}` as transliteration (#16641).
+    #[inline]
+    fn left_brace_opens_hash_subscript(&self) -> bool {
+        self.after_var_subscript || self.after_arrow
+    }
+
     #[inline]
     fn try_identifier_or_keyword(&mut self) -> Option<Token> {
         let start = self.position;
@@ -2709,16 +2721,17 @@ impl<'a> PerlLexer<'a> {
                 self.advance();
                 // Opening brace ends prototype window — no prototype follows
                 self.after_sub = false;
-                // `{` is a hash/slice subscript opener only when it immediately follows
-                // a variable token ($x, @x, %x) — tracked by `after_var_subscript`.
-                // This is narrower than the old `mode == ExpectOperator` check, which
-                // incorrectly incremented depth for block-opening braces after `sub foo`,
-                // `if (cond)`, `else`, `while (cond)`, etc., causing quote-op suppression
-                // inside those block bodies and breaking m//, s///, qr//, tr/// etc.
-                if self.after_var_subscript {
+                // Subscript `{` is narrower than `ExpectOperator`: block openers
+                // after `sub foo`, `if (cond)`, `else`, `while (cond)` must not
+                // increment depth or they suppress m// / s/// / y/// in the body.
+                if self.left_brace_opens_hash_subscript() {
                     self.hash_brace_depth = self.hash_brace_depth.saturating_add(1);
                 }
                 self.after_var_subscript = false;
+                // `{` consumed `->` as a hash-deref opener. Clear the flag so a
+                // nested constructor `{ ... }` inside the key does not inherit
+                // arrow context and increment depth a second time.
+                self.after_arrow = false;
                 self.mode = LexerMode::ExpectTerm;
                 Some(Token {
                     token_type: TokenType::LeftBrace,
