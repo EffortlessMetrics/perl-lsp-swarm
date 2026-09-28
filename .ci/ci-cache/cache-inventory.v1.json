@@ -1215,6 +1215,109 @@
       "notes": null
     },
     {
+      "id": "minimax-coding-agent.lock/activation/0",
+      "workflow": "minimax-coding-agent.lock.yml",
+      "job": "activation",
+      "step_name": "Restore daily AIC usage cache",
+      "action": "actions/cache/restore",
+      "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "capability": "restore_only",
+      "trigger_event_set": [
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "not_candidate_event",
+      "executed_subject": "fixed_trusted_ref",
+      "job_condition": null,
+      "step_condition": "${{ env.GH_AW_MAX_DAILY_AI_CREDITS != '' }}",
+      "save_condition": null,
+      "save_authority_source": "absent",
+      "payload_class": "other",
+      "cached_paths": [
+        "/tmp/gh-aw/agentic-workflow-usage-cache.jsonl"
+      ],
+      "key_dimensions": {
+        "key": "agentic-workflow-usage-minimaxcodingagent-${{ github.run_id }}",
+        "shared_key": null,
+        "restore_keys": [
+          "agentic-workflow-usage-minimaxcodingagent-"
+        ]
+      },
+      "key_authority": "trusted",
+      "cached_byte_provenance": "not_proven",
+      "artifact_provenance": null,
+      "writer_disposition": "restore_only",
+      "repair_owner": null,
+      "notes": null
+    },
+    {
+      "id": "minimax-coding-agent.lock/conclusion/0",
+      "workflow": "minimax-coding-agent.lock.yml",
+      "job": "conclusion",
+      "step_name": "Restore daily AIC usage cache",
+      "action": "actions/cache/restore",
+      "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "capability": "restore_only",
+      "trigger_event_set": [
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "not_candidate_event",
+      "executed_subject": "fixed_trusted_ref",
+      "job_condition": "always() && (needs.agent.result != 'skipped' || needs.activation.outputs.lockdown_check_failed == 'true' || needs.activation.outputs.oauth_token_check_failed == 'true' || needs.activation.outputs.stale_lock_file_failed == 'true' || needs.activation.outputs.secret_verification_result == 'failed' || needs.activation.outputs.daily_ai_credits_exceeded == 'true')\n",
+      "step_condition": "always()",
+      "save_condition": null,
+      "save_authority_source": "absent",
+      "payload_class": "other",
+      "cached_paths": [
+        "/tmp/gh-aw/agentic-workflow-usage-cache.jsonl"
+      ],
+      "key_dimensions": {
+        "key": "agentic-workflow-usage-minimaxcodingagent-${{ github.run_id }}",
+        "shared_key": null,
+        "restore_keys": [
+          "agentic-workflow-usage-minimaxcodingagent-"
+        ]
+      },
+      "key_authority": "trusted",
+      "cached_byte_provenance": "not_proven",
+      "artifact_provenance": null,
+      "writer_disposition": "restore_only",
+      "repair_owner": null,
+      "notes": null
+    },
+    {
+      "id": "minimax-coding-agent.lock/conclusion/1",
+      "workflow": "minimax-coding-agent.lock.yml",
+      "job": "conclusion",
+      "step_name": "Save daily AIC usage cache",
+      "action": "actions/cache/save",
+      "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+      "capability": "save_only",
+      "trigger_event_set": [
+        "workflow_dispatch"
+      ],
+      "candidate_event_reachability": "not_candidate_event",
+      "executed_subject": "fixed_trusted_ref",
+      "job_condition": "always() && (needs.agent.result != 'skipped' || needs.activation.outputs.lockdown_check_failed == 'true' || needs.activation.outputs.oauth_token_check_failed == 'true' || needs.activation.outputs.stale_lock_file_failed == 'true' || needs.activation.outputs.secret_verification_result == 'failed' || needs.activation.outputs.daily_ai_credits_exceeded == 'true')\n",
+      "step_condition": "always()",
+      "save_condition": "always()",
+      "save_authority_source": "content_success_only",
+      "payload_class": "other",
+      "cached_paths": [
+        "/tmp/gh-aw/agentic-workflow-usage-cache.jsonl"
+      ],
+      "key_dimensions": {
+        "key": "agentic-workflow-usage-minimaxcodingagent-${{ github.run_id }}",
+        "shared_key": null,
+        "restore_keys": null
+      },
+      "key_authority": "trusted",
+      "cached_byte_provenance": "trusted_tree",
+      "artifact_provenance": null,
+      "writer_disposition": "not_candidate_reachable",
+      "repair_owner": null,
+      "notes": null
+    },
+    {
       "id": "perl-version-matrix/perl-version-matrix/0",
       "workflow": "perl-version-matrix.yml",
       "job": "perl-version-matrix",

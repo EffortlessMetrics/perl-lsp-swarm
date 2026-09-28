@@ -32,6 +32,14 @@ CONTROL_SOURCE_PATHS = (
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 EXTERNAL_ACTION_RE = re.compile(r"^(?!\./)(?!docker://)([^/@\s]+/[^@\s]+)@([^\s#]+)$")
 SECRET_RE = re.compile(r"\$\{\{\s*secrets\.")
+GH_AW_PUSH_TOKEN = "${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}"
+GH_AW_CONFIGURE_GIT_COMMAND = r'bash "${RUNNER_TEMP}/gh-aw/actions/configure_git_credentials.sh"'
+# Normalized-LF digest of the complete reviewed strict compiler output.
+# The persisted-credential exception applies only while the entire lock file
+# remains byte-for-byte equivalent after splitlines() normalization.
+GH_AW_LOCK_FILE_DIGESTS = {
+    ".github/workflows/minimax-coding-agent.lock.yml": "e2a2042de450de733abd8b07853fceb5af0167920fde149042c146da185932f1",
+}
 CARGO_INSTALL_RE = re.compile(r"(?:^|[;&|]\s*|\s)cargo\s+install\s+([^\n]+)")
 PERMISSION_KEYS = {
     "actions",
@@ -229,6 +237,128 @@ def _checkout_persists(lines: Sequence[str], use_index: int, use_indent: int) ->
     return True
 
 
+def _gh_aw_headers(
+    lines: Sequence[str],
+) -> tuple[dict[str, object], dict[str, object]] | None:
+    metadata: dict[str, object] | None = None
+    manifest: dict[str, object] | None = None
+    for line in lines[:16]:
+        try:
+            if line.startswith("# gh-aw-metadata:"):
+                candidate = json.loads(line.split(":", 1)[1].strip())
+                if isinstance(candidate, dict):
+                    metadata = candidate
+            elif line.startswith("# gh-aw-manifest:"):
+                candidate = json.loads(line.split(":", 1)[1].strip())
+                if isinstance(candidate, dict):
+                    manifest = candidate
+        except json.JSONDecodeError:
+            return None
+    if metadata is None or manifest is None:
+        return None
+    return metadata, manifest
+
+
+def _containing_job(
+    lines: Sequence[str], index: int
+) -> tuple[str, int, int] | None:
+    jobs_start: int | None = None
+    for cursor in range(index, -1, -1):
+        parsed = _parse_key_line(lines[cursor])
+        if parsed and parsed.indent == 0:
+            if parsed.key == "jobs":
+                jobs_start = cursor
+            break
+    if jobs_start is None:
+        return None
+
+    job_name: str | None = None
+    job_start: int | None = None
+    for cursor in range(jobs_start + 1, index + 1):
+        parsed = _parse_key_line(lines[cursor])
+        if parsed and parsed.indent == 0:
+            return None
+        if parsed and parsed.indent == 2 and not parsed.list_item:
+            job_name = parsed.key
+            job_start = cursor
+    if job_name is None or job_start is None:
+        return None
+
+    job_end = len(lines)
+    for cursor in range(job_start + 1, len(lines)):
+        parsed = _parse_key_line(lines[cursor])
+        if parsed and (
+            parsed.indent == 0
+            or (parsed.indent == 2 and not parsed.list_item)
+        ):
+            job_end = cursor
+            break
+    if not (job_start <= index < job_end):
+        return None
+    return job_name, job_start, job_end
+
+
+def _normalized_lines_digest(lines: Sequence[str]) -> str:
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def _manifest_action_sha(
+    manifest: dict[str, object], repository: str
+) -> str | None:
+    actions = manifest.get("actions")
+    if not isinstance(actions, list):
+        return None
+    matches = [
+        item.get("sha")
+        for item in actions
+        if isinstance(item, dict) and item.get("repo") == repository
+    ]
+    if len(matches) != 1 or not isinstance(matches[0], str):
+        return None
+    return matches[0]
+
+
+def _is_gh_aw_safe_outputs_checkout(
+    lines: Sequence[str], relative: str, use_index: int, action: str
+) -> bool:
+    expected_digest = GH_AW_LOCK_FILE_DIGESTS.get(relative)
+    if expected_digest is None:
+        return False
+    if _normalized_lines_digest(lines) != expected_digest:
+        return False
+
+    headers = _gh_aw_headers(lines)
+    if headers is None:
+        return False
+    metadata, manifest = headers
+    if metadata != {
+        "schema_version": "v4",
+        "frontmatter_hash": "a9350cf6a6b596635b33a5199de7e5689bc44818394e69d72684e034d307ce08",
+        "body_hash": "cdc940a963151e984eebadb6fbb0b21430c045598de29328b00111d9d29bb577",
+        "compiler_version": "v0.88.7",
+        "strict": True,
+        "agent_id": "claude",
+        "agent_model": "MiniMax-M3",
+        "engine_versions": {"claude": "2.1.247"},
+    }:
+        return False
+    if manifest.get("version") != 1:
+        return False
+
+    external = EXTERNAL_ACTION_RE.fullmatch(action)
+    if external is None or external.group(1) != "actions/checkout":
+        return False
+    checkout_sha = _manifest_action_sha(manifest, "actions/checkout")
+    setup_sha = _manifest_action_sha(manifest, "github/gh-aw-actions/setup")
+    if checkout_sha != external.group(2):
+        return False
+    if setup_sha is None or FULL_SHA_RE.fullmatch(setup_sha) is None:
+        return False
+
+    bounds = _containing_job(lines, use_index)
+    return bounds is not None and bounds[0] == "safe_outputs"
+
+
 def _cargo_install_pin_surface(args: str) -> str:
     """Keep pin checks on the cargo install argv, not later shell or comments."""
     without_comment = args.split("#", 1)[0]
@@ -285,6 +415,8 @@ def _security_sensitive_indirection(line: str) -> bool:
     }:
         return False
     value = parsed.value.strip()
+    if parsed.key == "permissions" and value == "{}":
+        return False
     return value.startswith(("*", "&", "{"))
 
 
@@ -439,6 +571,9 @@ def scan(
                     and external
                     and external.group(1) == "actions/checkout"
                     and _checkout_persists(lines, index, parsed.indent)
+                    and not _is_gh_aw_safe_outputs_checkout(
+                        lines, relative, index, action
+                    )
                 ):
                     raw.append(
                         RawFinding(
