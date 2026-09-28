@@ -258,29 +258,15 @@ fn assert_symbol_shapes_with_seen(
         );
 
         if has_range {
-            let full = require_lsp_range(
-                symbol.get("range").expect("range present"),
-                &format!("DocumentSymbol `{name}` range"),
-            )
-            .unwrap_or_else(|err| panic!("{err}: {symbol:?}"));
-            let selection = require_lsp_range(
-                symbol.get("selectionRange").unwrap_or(&Value::Null),
-                &format!("DocumentSymbol `{name}` selectionRange"),
-            )
-            .unwrap_or_else(|err| panic!("{err}: {symbol:?}"));
-            assert!(
-                full.0 <= selection.0 && selection.1 <= full.1,
-                "DocumentSymbol `{name}` selectionRange must fit inside range: {symbol:?}"
-            );
-            assert!(
-                seen.insert((true, name.to_owned(), kind, None, full)),
-                "Duplicate DocumentSymbol identity `{name}`: {symbol:?}"
-            );
+            assert_document_symbol_row(symbol, &name, kind, seen);
             if let Some(children) = symbol.get("children") {
                 let children = children.as_array().unwrap_or_else(|| {
                     panic!("DocumentSymbol `{name}` children must be an array: {symbol:?}")
                 });
-                assert_symbol_shapes_with_seen(children, seen);
+                // DocumentSymbol.children is DocumentSymbol[], not a form
+                // union: every child must carry range/selectionRange and is
+                // validated in DocumentSymbol-only mode.
+                assert_document_symbol_children(children, seen);
             }
         } else {
             let location = symbol.get("location").and_then(Value::as_object).unwrap_or_else(|| {
@@ -304,6 +290,67 @@ fn assert_symbol_shapes_with_seen(
                 symbol.get("children").is_none(),
                 "SymbolInformation `{name}` must not carry DocumentSymbol children: {symbol:?}"
             );
+        }
+    }
+}
+
+/// Validate one DocumentSymbol row: range/selectionRange shape, containment,
+/// and duplicate identity. Shared by the top-level and children validators.
+fn assert_document_symbol_row(
+    symbol: &Value,
+    name: &str,
+    kind: u64,
+    seen: &mut HashSet<(bool, String, u64, Option<String>, SymbolRange)>,
+) {
+    let full = require_lsp_range(
+        symbol.get("range").expect("range present"),
+        &format!("DocumentSymbol `{name}` range"),
+    )
+    .unwrap_or_else(|err| panic!("{err}: {symbol:?}"));
+    let selection = require_lsp_range(
+        symbol.get("selectionRange").unwrap_or(&Value::Null),
+        &format!("DocumentSymbol `{name}` selectionRange"),
+    )
+    .unwrap_or_else(|err| panic!("{err}: {symbol:?}"));
+    assert!(
+        full.0 <= selection.0 && selection.1 <= full.1,
+        "DocumentSymbol `{name}` selectionRange must fit inside range: {symbol:?}"
+    );
+    assert!(
+        seen.insert((true, name.to_owned(), kind, None, full)),
+        "Duplicate DocumentSymbol identity `{name}`: {symbol:?}"
+    );
+}
+
+/// Validate `DocumentSymbol.children`: every row must be a DocumentSymbol;
+/// a `SymbolInformation` child (location-only) is rejected even though the
+/// per-row union validator would admit it at the result's top level.
+fn assert_document_symbol_children(
+    symbols: &[Value],
+    seen: &mut HashSet<(bool, String, u64, Option<String>, SymbolRange)>,
+) {
+    for symbol in symbols {
+        let name = symbol
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| panic!("Each symbol must have a non-empty name: {symbol:?}"));
+        let kind = symbol
+            .get("kind")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| panic!("Symbol `{name}` must include LSP SymbolKind: {symbol:?}"));
+        assert!((1..=26).contains(&kind), "Symbol `{name}` kind must be 1-26: {symbol:?}");
+        assert!(
+            symbol.get("range").is_some() && symbol.get("location").is_none(),
+            "DocumentSymbol child `{name}` must be a DocumentSymbol (range/selectionRange), \
+             not a SymbolInformation: {symbol:?}"
+        );
+        assert_document_symbol_row(symbol, &name, kind, seen);
+        if let Some(children) = symbol.get("children") {
+            let children = children.as_array().unwrap_or_else(|| {
+                panic!("DocumentSymbol `{name}` children must be an array: {symbol:?}")
+            });
+            assert_document_symbol_children(children, seen);
         }
     }
 }
@@ -570,6 +617,76 @@ mod shape_unit_tests {
             }]
         })];
         assert_symbol_shapes(&symbols);
+    }
+
+    #[test]
+    fn rejects_symbol_information_child_inside_document_symbol() {
+        let symbols = vec![json!({
+            "name": "Greeter",
+            "kind": 4,
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 7}
+            },
+            "selectionRange": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 7}
+            },
+            "children": [{
+                "name": "greet",
+                "kind": 12,
+                "location": {
+                    "uri": "file:///tmp/Greeter.pm",
+                    "range": {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 3, "character": 1}
+                    }
+                }
+            }]
+        })];
+        let result = std::panic::catch_unwind(|| assert_symbol_shapes(&symbols));
+        assert!(result.is_err(), "DocumentSymbol.children must be DocumentSymbol[] only");
+    }
+
+    #[test]
+    fn rejects_deeply_nested_symbol_information_child() {
+        let symbols = vec![json!({
+            "name": "Outer",
+            "kind": 4,
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 9, "character": 0}
+            },
+            "selectionRange": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 5}
+            },
+            "children": [{
+                "name": "Middle",
+                "kind": 4,
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 8, "character": 0}
+                },
+                "selectionRange": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 1, "character": 6}
+                },
+                "children": [{
+                    "name": "leaf",
+                    "kind": 12,
+                    "location": {
+                        "uri": "file:///tmp/Greeter.pm",
+                        "range": {
+                            "start": {"line": 2, "character": 0},
+                            "end": {"line": 2, "character": 1}
+                        }
+                    }
+                }]
+            }]
+        })];
+        let result = std::panic::catch_unwind(|| assert_symbol_shapes(&symbols));
+        assert!(result.is_err(), "a nested SymbolInformation child must fail at any depth");
     }
 
     fn valid_document_symbol() -> serde_json::Value {

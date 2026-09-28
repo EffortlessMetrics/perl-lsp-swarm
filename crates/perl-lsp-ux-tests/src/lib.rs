@@ -563,6 +563,9 @@ impl UxHarness {
     /// or an empty vec if the server returned null/empty. `DocumentSymbol`
     /// objects may include nested `children`; use [`document_symbol_names`] for
     /// recursive name assertions.
+    ///
+    /// The LSP result envelope is exactly one array variant or `null`; a bare
+    /// object is a malformed envelope and is rejected rather than normalized.
     pub fn document_symbols(&self, relative_path: &str) -> Result<Vec<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
@@ -575,16 +578,7 @@ impl UxHarness {
         if resp.get("error").is_some() {
             return Err(anyhow!("documentSymbol returned error: {}", resp["error"]));
         }
-        match resp["result"].as_array() {
-            Some(syms) => Ok(syms.clone()),
-            None => {
-                if resp["result"].is_null() {
-                    Ok(Vec::new())
-                } else {
-                    Ok(vec![resp["result"].clone()])
-                }
-            }
-        }
+        normalize_document_symbol_result(&resp["result"])
     }
 
     /// Request workspace symbols (`workspace/symbol`).
@@ -1441,6 +1435,19 @@ pub fn find_perlcritic() -> Option<String> {
     which::which("perlcritic").ok().map(|p| p.to_string_lossy().to_string())
 }
 
+/// Normalize a `textDocument/documentSymbol` result envelope. The LSP result is
+/// exactly one array variant or `null`; a bare object is a malformed envelope
+/// and is rejected instead of being silently wrapped into a one-element array.
+fn normalize_document_symbol_result(result: &Value) -> Result<Vec<Value>> {
+    match result.as_array() {
+        Some(syms) => Ok(syms.clone()),
+        None if result.is_null() => Ok(Vec::new()),
+        None => Err(anyhow!(
+            "documentSymbol result must be DocumentSymbol[] | SymbolInformation[] | null, got: {result}"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod normalize_tests {
     #![expect(
@@ -1449,13 +1456,29 @@ mod normalize_tests {
     )]
     use super::{
         document_symbol_names, find_binary_near_exe, is_active_document_ready_event,
-        is_index_ready_event, is_truthy_env_value, normalize_lsp_payload,
-        normalize_uri_for_expectations,
+        is_index_ready_event, is_truthy_env_value, normalize_document_symbol_result,
+        normalize_lsp_payload, normalize_uri_for_expectations,
     };
     use crate::LspEvent;
     use serde_json::{Value, json};
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn document_symbol_result_accepts_arrays_and_null_only() {
+        let array = json!([{ "name": "greet", "kind": 12 }]);
+        assert_eq!(
+            normalize_document_symbol_result(&array).unwrap(),
+            vec![json!({ "name": "greet", "kind": 12 })]
+        );
+        assert!(normalize_document_symbol_result(&Value::Null).unwrap().is_empty());
+        let bare = json!({ "name": "greet", "kind": 12 });
+        let error = normalize_document_symbol_result(&bare)
+            .expect_err("a bare object is a malformed result envelope");
+        assert!(
+            error.to_string().contains("must be DocumentSymbol[] | SymbolInformation[] | null")
+        );
+    }
 
     #[test]
     fn document_symbol_names_collects_top_level_and_nested_names() -> anyhow::Result<()> {
