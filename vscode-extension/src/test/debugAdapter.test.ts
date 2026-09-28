@@ -9,6 +9,7 @@ import type * as vscode from 'vscode';
 import {
   PerlDebugAdapterDescriptorFactory,
   PerlDebugConfigurationProvider,
+  activateDebugger,
   buildDapExecutableArgs as productionBuildDapExecutableArgs,
   buildLaunchJsonContent,
   canonicalizeWorkspaceRoot,
@@ -55,10 +56,15 @@ function asDebugConfiguration(value: Record<string, unknown>): vscode.DebugConfi
   return value as unknown as vscode.DebugConfiguration;
 }
 
-function buildDapExecutableArgs(value: unknown, hostWorkspaceRoot?: string): string[] {
+function buildDapExecutableArgs(
+  value: unknown,
+  hostWorkspaceRoot?: string,
+  trustedRoots?: readonly string[],
+): string[] {
   return productionBuildDapExecutableArgs(
     value as unknown as vscode.DebugConfiguration | undefined,
     hostWorkspaceRoot,
+    trustedRoots,
   );
 }
 
@@ -87,6 +93,16 @@ describe('PerlDebugConfigurationProvider', () => {
 
   beforeEach(() => {
     provider = new PerlDebugConfigurationProvider();
+    // Launch resolution refuses folder-less sessions (#16554); the default
+    // fixture below presents one open workspace folder. Folder-less behavior
+    // is covered by the dedicated #16554 tests, which clear this.
+    const vscodeGlobal = require('vscode');
+    vscodeGlobal.workspace.workspaceFolders = [{ uri: { fsPath: '/ws' }, name: 'ws' }];
+  });
+
+  afterEach(() => {
+    const vscodeGlobal = require('vscode');
+    vscodeGlobal.workspace.workspaceFolders = undefined;
   });
 
   describe('resolveDebugConfiguration', () => {
@@ -205,6 +221,128 @@ describe('PerlDebugConfigurationProvider', () => {
         const resolved = await result;
         expect(resolved).toBeUndefined();
       }
+    });
+
+    // #16554: a folder-less launch can never obtain startup authority —
+    // perl-dap refuses it over the wire with CLI flags the extension UI does
+    // not expose. The provider must refuse before the adapter is spawned.
+    test('refuses a folder-less launch with a warning instead of spawning the adapter (#16554)', async () => {
+      const vscode = require('vscode');
+      vscode.workspace.workspaceFolders = undefined;
+      vscode.window.showWarningMessage.mockClear();
+      const config = asDebugConfiguration({
+        type: 'perl',
+        request: 'launch',
+        name: 'Launch Perl',
+        program: '/test.pl',
+      });
+
+      const result = await provider.resolveDebugConfiguration(undefined, config);
+
+      expect(result).toBeUndefined();
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        'Perl debugging requires an open workspace folder.',
+      );
+    });
+
+    test('refuses the synthesized folder-less launch the same way (#16554)', async () => {
+      const vscode = require('vscode');
+      vscode.workspace.workspaceFolders = undefined;
+      vscode.window.showWarningMessage.mockClear();
+      vscode.window.activeTextEditor = {
+        document: { languageId: 'perl', uri: { fsPath: '/test.pl' } },
+      };
+      try {
+        const result = await provider.resolveDebugConfiguration(
+          undefined,
+          asDebugConfiguration({}),
+        );
+
+        expect(result).toBeUndefined();
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+          'Perl debugging requires an open workspace folder.',
+        );
+      } finally {
+        vscode.window.activeTextEditor = undefined;
+      }
+    });
+
+    test('does not refuse attach requests without a workspace folder (#16554)', () => {
+      const vscode = require('vscode');
+      vscode.workspace.workspaceFolders = undefined;
+      vscode.window.showWarningMessage.mockClear();
+      const config = asDebugConfiguration({ type: 'perl', request: 'attach', name: 'Attach' });
+
+      const result = provider.resolveDebugConfiguration(undefined, config);
+
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+      expect((result as vscode.DebugConfiguration).host).toBe('localhost');
+      expect((result as vscode.DebugConfiguration).port).toBe(13603);
+    });
+
+    test('allows a folder-less launch when perl-lsp.debug.trustedRoots supplies authority (#16554)', async () => {
+      const vscode = require('vscode') as {
+        workspace: { workspaceFolders: unknown; getConfiguration: jest.Mock };
+        window: { showWarningMessage: jest.Mock };
+      };
+      vscode.workspace.workspaceFolders = undefined;
+      vscode.window.showWarningMessage.mockClear();
+      const previousConfiguration = vscode.workspace.getConfiguration.getMockImplementation();
+      vscode.workspace.getConfiguration.mockImplementation(() => ({
+        get: (key: string, defaultValue?: unknown) =>
+          key === 'debug.trustedRoots' ? ['/trusted/root-a'] : defaultValue,
+      }));
+      try {
+        const config = asDebugConfiguration({
+          type: 'perl',
+          request: 'launch',
+          name: 'Launch Perl',
+          program: '/test.pl',
+        });
+
+        const result = await provider.resolveDebugConfiguration(undefined, config);
+
+        // The configured trusted root is the launch authority the server
+        // needs, so the launch must not be refused here.
+        expect(result).toBe(config);
+        expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+      } finally {
+        if (previousConfiguration) {
+          vscode.workspace.getConfiguration.mockImplementation(previousConfiguration);
+        } else {
+          vscode.workspace.getConfiguration.mockImplementation(
+            () =>
+              ({
+                get: (_key: string, defaultValue?: unknown) => defaultValue,
+                has: () => false,
+                inspect: () => undefined,
+                update: async () => undefined,
+              }) as unknown as ReturnType<typeof vscode.workspace.getConfiguration>,
+          );
+        }
+        vscode.workspace.workspaceFolders = undefined;
+      }
+    });
+
+    test('allows a folder-less launch that carries external-peer authority (#16554)', () => {
+      const vscode = require('vscode');
+      vscode.workspace.workspaceFolders = undefined;
+      vscode.window.showWarningMessage.mockClear();
+      const config = asDebugConfiguration({
+        type: 'perl',
+        request: 'launch',
+        name: 'Peer Launch',
+        program: '/test.pl',
+        externalPeer: '127.0.0.1:13604',
+      });
+
+      const result = provider.resolveDebugConfiguration(undefined, config);
+
+      // perl-dap starts an external-peer adapter before its launch-authority
+      // gate, so this folder-less launch works today and must stay allowed.
+      expect(result).toBe(config);
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -615,8 +753,12 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     const getConfiguration = vscodeApi.workspace.getConfiguration;
     const previousConfiguration = getConfiguration.getMockImplementation();
     // A conflicting managed-download override must not select a packaged ABI.
+    // `debug.trustedRoots` is the #16554 setting read by the descriptor
+    // factory on every spawn; it stays registered here so the strictness of
+    // this fixture (throw on anything else) keeps its force.
     getConfiguration.mockImplementation(() => ({
       get: (key: string) => {
+        if (key === 'debug.trustedRoots') return [];
         if (key !== 'linuxLibc') throw new Error(`Unexpected configuration key: ${key}`);
         return row.musl ? 'gnu' : 'musl';
       },
@@ -778,6 +920,48 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     }
   });
 
+  // #16554: the descriptor factory reads perl-lsp.debug.trustedRoots and
+  // forwards each entry, so the refusal advice is followable from settings
+  // even when the session carries no workspace folder.
+  test('descriptor forwards perl-lsp.debug.trustedRoots as --trusted-root arguments (#16554)', () => {
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
+    fs.mkdirSync(binDir, { recursive: true });
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    fs.writeFileSync(path.join(binDir, dapName), '#!/bin/sh\necho ok');
+
+    const vscodeApi = require('vscode') as { workspace: { getConfiguration: jest.Mock } };
+    const previousConfiguration = vscodeApi.workspace.getConfiguration.getMockImplementation();
+    vscodeApi.workspace.getConfiguration.mockImplementation(() => ({
+      get: (key: string, defaultValue?: unknown) =>
+        key === 'debug.trustedRoots' ? ['/trusted-a', '/trusted-b'] : defaultValue,
+    }));
+    try {
+      const ctx = makeContext(tmpDir);
+      const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+      const session = { configuration: { request: 'launch', program: '/tmp/x.pl' } };
+      const result = factory.createDebugAdapterDescriptor(
+        session as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+
+      expect(result.args).toEqual(['--trusted-root', '/trusted-a', '--trusted-root', '/trusted-b']);
+    } finally {
+      if (previousConfiguration) {
+        vscodeApi.workspace.getConfiguration.mockImplementation(previousConfiguration);
+      } else {
+        vscodeApi.workspace.getConfiguration.mockImplementation(
+          () =>
+            ({
+              get: (_key: string, defaultValue?: unknown) => defaultValue,
+              has: () => false,
+              inspect: () => undefined,
+              update: async () => undefined,
+            }) as unknown as ReturnType<typeof vscodeApi.workspace.getConfiguration>,
+        );
+      }
+    }
+  });
+
   // Mutation-think: if the guard at the top of createDebugAdapterDescriptor
   // were removed (or demoted to a warning that still spawns native), each case
   // below would return a DebugAdapterExecutable instead of undefined and fail
@@ -899,6 +1083,132 @@ describe('debug test command helpers', () => {
   test('returns undefined for an invalid debug target payload', () => {
     expect(parseDebugTestLaunchTarget(null)).toBeUndefined();
     expect(parseDebugTestLaunchTarget({ label: 'missing-uri' })).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// perl-lsp.debugTest command path (#16554)
+// ---------------------------------------------------------------------------
+describe('perl-lsp.debugTest command', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dap-debugtest-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    const vscode = require('vscode');
+    vscode.workspace.workspaceFolders = undefined;
+    (vscode.debug.startDebugging as jest.Mock).mockClear();
+    vscode.window.showWarningMessage.mockClear();
+  });
+
+  function registerCommandHandler(): void {
+    activateDebugger(makeContext(tmpDir));
+  }
+
+  test('refuses a folder-less debug test launch before startDebugging (#16554)', async () => {
+    const vscode = require('vscode');
+    vscode.workspace.workspaceFolders = undefined;
+    registerCommandHandler();
+
+    const result = await vscode.commands.executeCommand(
+      VSCODE_DEBUG_TEST_COMMAND,
+      'file:///tmp/basic.t::test_basic',
+    );
+
+    expect(result).toBeUndefined();
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      'Perl debugging requires an open workspace folder.',
+    );
+    expect(vscode.debug.startDebugging).not.toHaveBeenCalled();
+  });
+
+  test('launches with an open workspace folder and no refusal (#16554)', async () => {
+    const vscode = require('vscode');
+    vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/ws' }, name: 'ws' }];
+    registerCommandHandler();
+
+    const fileUri = process.platform === 'win32' ? 'file:///C:/tmp/basic.t' : 'file:///tmp/basic.t';
+    await vscode.commands.executeCommand(VSCODE_DEBUG_TEST_COMMAND, `${fileUri}::test_basic`);
+
+    expect(vscode.debug.startDebugging).toHaveBeenCalledTimes(1);
+    const [passedFolder, config] = (vscode.debug.startDebugging as jest.Mock).mock.calls[0] as [
+      unknown,
+      Record<string, unknown>,
+    ];
+    // The session folder stays host-resolved: passing `workspaceFolders[0]`
+    // here would pin a multiroot session to the first folder and mint a
+    // trusted root that can exclude the debugged program.
+    expect(passedFolder).toBeUndefined();
+    expect(config).toMatchObject({
+      type: 'perl',
+      request: 'launch',
+      name: 'Debug test_basic',
+      program: process.platform === 'win32' ? path.normalize('C:/tmp/basic.t') : '/tmp/basic.t',
+    });
+    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  test('an unresolvable test target still gets its specific error, not the folder warning (#16554)', async () => {
+    const vscode = require('vscode');
+    vscode.workspace.workspaceFolders = undefined;
+    registerCommandHandler();
+
+    const result = await vscode.commands.executeCommand(VSCODE_DEBUG_TEST_COMMAND, {
+      label: 'unresolvable',
+    });
+
+    expect(result).toBeUndefined();
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Cannot debug this test'),
+    );
+    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+    expect(vscode.debug.startDebugging).not.toHaveBeenCalled();
+  });
+
+  test('still launches folder-less when perl-lsp.debug.trustedRoots supplies authority (#16554)', async () => {
+    const vscode = require('vscode') as {
+      commands: { executeCommand: jest.Mock };
+      workspace: { workspaceFolders: unknown; getConfiguration: jest.Mock };
+      window: { showWarningMessage: jest.Mock };
+      debug: { startDebugging: jest.Mock };
+    };
+    vscode.workspace.workspaceFolders = undefined;
+    const previousConfiguration = vscode.workspace.getConfiguration.getMockImplementation();
+    vscode.workspace.getConfiguration.mockImplementation(() => ({
+      get: (key: string, defaultValue?: unknown) =>
+        key === 'debug.trustedRoots' ? ['/trusted/root-a'] : defaultValue,
+    }));
+    try {
+      registerCommandHandler();
+
+      await vscode.commands.executeCommand(
+        VSCODE_DEBUG_TEST_COMMAND,
+        'file:///tmp/basic.t::test_basic',
+      );
+
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+      expect(vscode.debug.startDebugging).toHaveBeenCalledWith(
+        undefined,
+        expect.objectContaining({ type: 'perl', request: 'launch' }),
+      );
+    } finally {
+      if (previousConfiguration) {
+        vscode.workspace.getConfiguration.mockImplementation(previousConfiguration);
+      } else {
+        vscode.workspace.getConfiguration.mockImplementation(
+          () =>
+            ({
+              get: (_key: string, defaultValue?: unknown) => defaultValue,
+              has: () => false,
+              inspect: () => undefined,
+              update: async () => undefined,
+            }) as unknown as ReturnType<typeof vscode.workspace.getConfiguration>,
+        );
+      }
+    }
   });
 });
 
@@ -1215,6 +1525,48 @@ describe('buildDapExecutableArgs', () => {
       fs.rmSync(link, { recursive: true, force: true });
       fs.rmSync(real, { recursive: true, force: true });
     }
+  });
+
+  // #16554: perl-dap declares --trusted-root repeatable (Vec<PathBuf>), so a
+  // configured perl-lsp.debug.trustedRoots entry must become one flag each.
+  test('forwards one --trusted-root per perl-lsp.debug.trustedRoots entry (#16554)', () => {
+    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'dap-trusted-a-'));
+    const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'dap-trusted-b-'));
+    try {
+      expect(buildDapExecutableArgs({ request: 'launch' }, undefined, [rootA, rootB])).toEqual([
+        '--trusted-root',
+        fs.realpathSync(rootA),
+        '--trusted-root',
+        fs.realpathSync(rootB),
+      ]);
+    } finally {
+      fs.rmSync(rootA, { recursive: true, force: true });
+      fs.rmSync(rootB, { recursive: true, force: true });
+    }
+  });
+
+  test('forwards the session workspace root together with configured roots (#16554)', () => {
+    expect(buildDapExecutableArgs({ request: 'launch' }, '/workspace', ['/trusted'])).toEqual([
+      '--trusted-root',
+      '/workspace',
+      '--trusted-root',
+      '/trusted',
+    ]);
+  });
+
+  test('ignores blank and non-string trusted root entries instead of emitting broken argv (#16554)', () => {
+    expect(
+      buildDapExecutableArgs({ request: 'launch' }, undefined, [
+        '',
+        '   ',
+        42 as unknown as string,
+        null as unknown as string,
+      ]),
+    ).toEqual([]);
+  });
+
+  test('an empty trustedRoots list still yields no flags without a workspace root', () => {
+    expect(buildDapExecutableArgs({ request: 'launch' }, undefined, [])).toEqual([]);
   });
 
   test('never emits an editor --socket or --port flag', () => {
