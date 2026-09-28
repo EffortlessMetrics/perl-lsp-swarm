@@ -128,7 +128,12 @@ fn run_external_peer_bridge_stdio(peer_addr: &str) -> anyhow::Result<()> {
     // address" that never names the expected format.
     let (peer_host, peer_port) = parse_peer_connect_spec(peer_addr).map_err(anyhow::Error::msg)?;
     tracing::info!(peer = peer_addr, peer_host = %peer_host, peer_port, "Starting external-peer DAP session on stdio");
-    let backend = ExternalDebuggerPeerBackend::connect(peer_addr, EXTERNAL_PEER_TIMEOUT)
+    // Dial the validated `HOST:PORT`, not the raw CLI string: the parser trims
+    // and accepts surrounding whitespace (`  host:5000  `), but the transport's
+    // `ToSocketAddrs` rejects that raw input, so an accepted spec would still
+    // fail with a raw socket error (#16556).
+    let dial_addr = format!("{peer_host}:{peer_port}");
+    let backend = ExternalDebuggerPeerBackend::connect(dial_addr.as_str(), EXTERNAL_PEER_TIMEOUT)
         .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
     let bridge = DapPeerBridge::new(Box::new(backend));
     run_external_peer_session_stdio(bridge, EXTERNAL_PEER_POLL)?;
@@ -186,6 +191,12 @@ fn parse_listen_bind(spec: &str) -> Result<(String, u16), String> {
     let spec = spec.trim();
     if spec.is_empty() {
         return Ok(("127.0.0.1".to_string(), 0));
+    }
+    // A bare bracketed IPv6 literal (`[::1]`) is a HOST form that binds an
+    // ephemeral port; splitting it at its last colon would misread `1]` as a
+    // port and fail startup on a documented bare-host form.
+    if spec.ends_with(']') {
+        return Ok((spec.to_string(), 0));
     }
     match spec.rsplit_once(':') {
         Some((host, port)) if !host.is_empty() => match port.trim().parse::<u16>() {
@@ -627,6 +638,7 @@ mod tests {
     fn listen_ephemeral_fallback_forms_survive_spec_validation() {
         assert_eq!(must(parse_listen_bind("")), ("127.0.0.1".to_owned(), 0));
         assert_eq!(must(parse_listen_bind("localhost")), ("localhost".to_owned(), 0));
+        assert_eq!(must(parse_listen_bind("[::1]")), ("[::1]".to_owned(), 0));
         assert_eq!(must(parse_listen_bind("127.0.0.1:5000")), ("127.0.0.1".to_owned(), 5000));
     }
 
@@ -674,5 +686,30 @@ mod tests {
             assert!(error.contains("HOST:PORT"), "{error}");
             assert!(error.contains(spec), "{error}");
         }
+    }
+
+    #[test]
+    fn peer_bridge_dials_the_normalized_spec_a_raw_padded_spec_would_reject() {
+        use std::net::{SocketAddr, SocketAddrV4, ToSocketAddrs};
+
+        // The raw padded spec is accepted by `parse_peer_connect_spec` but
+        // rejected by the transport's `ToSocketAddrs`; the bridge must dial the
+        // normalized host:port instead (#16556).
+        let raw = "  127.0.0.1:5000  ";
+        assert!(
+            raw.to_socket_addrs().is_err(),
+            "precondition: the raw padded spec must not resolve as a socket address"
+        );
+        let (host, port) = must(parse_peer_connect_spec(raw));
+        let dial_addr = format!("{host}:{port}");
+        let resolved: Vec<SocketAddr> =
+            must_with(dial_addr.to_socket_addrs(), "the normalized spec must resolve").collect();
+        assert_eq!(
+            resolved,
+            vec![SocketAddr::V4(SocketAddrV4::new(
+                std::net::Ipv4Addr::LOCALHOST,
+                5000
+            ))]
+        );
     }
 }
