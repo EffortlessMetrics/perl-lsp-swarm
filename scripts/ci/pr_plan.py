@@ -553,7 +553,9 @@ def load_learned_history(path: Path) -> tuple[dict[str, Any], str]:
     if not isinstance(payload, dict):
         return {}, "malformed"
     schema_version = payload.get("schema_version")
-    if schema_version != HISTORY_SCHEMA_VERSION:
+    # bool is an int subclass and 1.0 == 1, so bare equality would admit a
+    # JSON `true` or `1.0` version as v1; require an exact integer first.
+    if type(schema_version) is not int or schema_version != HISTORY_SCHEMA_VERSION:
         return {}, "unsupported_schema"
     if not isinstance(payload.get("lanes"), dict):
         return {}, "malformed"

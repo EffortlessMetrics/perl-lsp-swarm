@@ -48,8 +48,13 @@ reading any field:
 
 | Consumer | Behavior |
 |---|---|
-| `aggregate_lane_history.py` | `validate_history_payload()` requires `schema_version == 1` before emitting. |
-| `pr_plan.py` | `load_learned_history()` requires `schema_version == 1` and an object `lanes`, and reports how the read resolved in the plan receipt's `learned.history_disposition`. |
+| `aggregate_lane_history.py` | `validate_history_payload()` requires an exact integer `schema_version == 1` before emitting. |
+| `pr_plan.py` | `load_learned_history()` requires an exact integer `schema_version == 1` and an object `lanes`, and reports how the read resolved in the plan receipt's `learned.history_disposition`. |
+| `learned_estimate.py` | `main()` requires an exact integer `schema_version == 1` before reading lane fields, and reports `learned: false` with an `unsupported history schema_version` reason otherwise. |
+
+"Exact integer" means a JSON number with no fractional part and not `true`/`false`:
+Python's `bool` is an `int` subclass and `1.0 == 1`, so every consumer checks
+`type(schema_version) is int` before the value comparison.
 
 The read-side check exists because a payload from a different envelope version
 is not merely unreadable — it is *consumable*, and reading it as v1 writes

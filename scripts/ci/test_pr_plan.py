@@ -263,6 +263,40 @@ class PrPlanTests(unittest.TestCase):
         self.assertEqual(0.0, delta)
         self.assertEqual(10, lanes[0]["base_lem"], "static floor must survive")
 
+    def test_load_learned_history_rejects_non_integer_schema_versions(self) -> None:
+        """Python's bool is an int subclass and 1.0 == 1, so a JSON `true` or
+        `1.0` envelope version would slip past bare equality and let its lane
+        numbers rewrite the budget. Only an exact integer satisfies v1."""
+        for forged_version in (True, 1.0):
+            with self.subTest(forged_version=forged_version):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = self._write_history(
+                        Path(tmp),
+                        json.dumps(
+                            {
+                                "schema_version": forged_version,
+                                "lanes": {
+                                    "rust_small": {
+                                        "learned": True,
+                                        "p50": 868.0,
+                                        "static_floor": 999.0,
+                                    }
+                                },
+                            }
+                        ),
+                    )
+                    lanes = [{"id": "rust_small", "base_lem": 10}]
+                    payload, disposition = pr_plan.load_learned_history(path)
+                    delta, learned_count = pr_plan.apply_learned_estimates(
+                        lanes, payload
+                    )
+
+                self.assertEqual("unsupported_schema", disposition)
+                self.assertEqual({}, payload)
+                self.assertEqual(0, learned_count)
+                self.assertEqual(0.0, delta)
+                self.assertEqual(10, lanes[0]["base_lem"], "static floor must survive")
+
     def test_load_learned_history_rejects_a_renamed_lane_container(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write_history(

@@ -28,6 +28,10 @@ from typing import Any
 
 SCHEMA_VERSION = "learned_estimate.v1"
 
+# The history file's integer envelope version. bool is an int subclass and
+# 1.0 == 1, so the check requires an exact integer before comparing.
+HISTORY_SCHEMA_VERSION = 1
+
 
 def emit_stdout(payload: dict[str, Any]) -> None:
     """Print one stdout JSON object. Always stamps this producer's schema token.
@@ -135,6 +139,22 @@ def main() -> int:
                 "reason": (
                     "history payload is not a JSON object, "
                     f"got {type(history).__name__}"
+                ),
+            }
+        )
+        return 0
+
+    schema_version = history.get("schema_version")
+    if type(schema_version) is not int or schema_version != HISTORY_SCHEMA_VERSION:
+        emit_stdout(
+            {
+                "lane": args.lane,
+                "learned": False,
+                "estimate": None,
+                "samples": 0,
+                "reason": (
+                    "unsupported history schema_version "
+                    f"{schema_version!r}; refusing to read v1 lane fields"
                 ),
             }
         )
