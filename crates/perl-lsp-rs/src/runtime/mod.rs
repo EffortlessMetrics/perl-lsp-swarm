@@ -750,6 +750,40 @@ impl LspServer {
         }
     }
 
+    /// Notify the user once per session when the explicitly requested external
+    /// `perlcritic` analyzer is unavailable and the built-in fallback analyzer
+    /// ran instead.
+    ///
+    /// The built-in analyzer applies a different rule set from external
+    /// `perlcritic`; before #16550 that fallback was silent and the command
+    /// result even labeled it with the native engine's `analyzerUsed` value,
+    /// so a client could not tell which rule set produced the verdict. The
+    /// wording and install remediation stay here; suppression identity is the
+    /// subjectless critic code (the condition is environment-global for the
+    /// session), retained in the bounded session-warning dedup store (#9769).
+    pub(crate) fn notify_critic_external_unavailable(&self) {
+        let identity = session_warning_dedup::SessionWarningIdentity::subjectless(
+            session_warning_dedup::SessionWarningCode::CriticExternalUnavailable,
+        );
+        // Decide + send + rollback under one family-lock hold (#9769), the
+        // same guarded emission the AI auth failure path uses.
+        let decision = self.session_warning_dedup.emit_once_with(
+            session_warning_dedup::SessionWarningFamily::Critic,
+            identity,
+            || {
+                self.show_message(
+                    MessageType::Warning,
+                    "perlcritic not found on PATH; Perl LSP used its built-in fallback \
+                     analyzer. Install with `cpanm Perl::Critic`.",
+                )
+                .is_ok()
+            },
+        );
+        if !matches!(decision, session_warning_dedup::SessionWarningDecision::Suppress) {
+            tracing::debug!(?decision, "critic fallback warning emission decided");
+        }
+    }
+
     /// Runtime feature gate for the internal next-edit scaffold.
     ///
     /// Structurally default-off (#8311): the next-edit setting is no longer

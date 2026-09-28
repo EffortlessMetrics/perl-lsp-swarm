@@ -487,3 +487,59 @@ fn adversarial_distinct_client_values_still_warn_but_never_grow_retention()
     assert_eq!(texts.len(), rounds, "each distinct value must warn exactly once");
     Ok(())
 }
+
+#[test]
+fn critic_fallback_warning_fires_once_across_two_requests() -> Result<(), Box<dyn std::error::Error>>
+{
+    use perl_lsp_rs_core::config::CriticEngine;
+
+    let (server, output) = server_with_output_capture();
+    // The #16550 fallback shape: the legacy engine was requested but the
+    // external binary was unavailable, so the command reported the built-in
+    // analyzer. Two such requests in one session must warn once.
+    let fallback_result =
+        json!({ "status": "success", "violationCount": 0, "analyzerUsed": "builtin" });
+
+    server.note_critic_command_fallback(&fallback_result, CriticEngine::Legacy);
+    server.note_critic_command_fallback(&fallback_result, CriticEngine::Legacy);
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.critic.entries, 1, "exactly one identity is retained");
+    assert_eq!(snapshot.critic.inserted, 1);
+    assert_eq!(snapshot.critic.suppressed, 1);
+
+    drop(server);
+    let texts = warning_texts(&output.messages()?);
+    assert_eq!(texts.len(), 1, "the fallback warning must fire once per session: {texts:?}");
+    assert!(
+        texts[0].contains("perlcritic not found on PATH")
+            && texts[0].contains("cpanm Perl::Critic"),
+        "the warning must name the condition and the install remedy: {}",
+        texts[0]
+    );
+    Ok(())
+}
+
+#[test]
+fn critic_fallback_warning_stays_silent_without_a_legacy_builtin_result()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_lsp_rs_core::config::CriticEngine;
+
+    let (server, output) = server_with_output_capture();
+    let builtin_result = json!({ "analyzerUsed": "builtin" });
+    let external_result = json!({ "analyzerUsed": "external" });
+
+    // Native/default engine: `builtin` is not even reachable today, and any
+    // builtin-shaped result is the engine itself — no fallback happened.
+    server.note_critic_command_fallback(&builtin_result, CriticEngine::Native);
+    // Legacy engine that actually ran the external analyzer: no fallback.
+    server.note_critic_command_fallback(&external_result, CriticEngine::Legacy);
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.critic.entries, 0, "no fallback, no retained warning identity");
+
+    drop(server);
+    let texts = warning_texts(&output.messages()?);
+    assert!(texts.is_empty(), "no warning may fire without the fallback fact: {texts:?}");
+    Ok(())
+}

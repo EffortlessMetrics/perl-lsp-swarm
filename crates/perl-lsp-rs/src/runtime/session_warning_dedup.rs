@@ -84,6 +84,11 @@ pub(crate) enum SessionWarningCode {
     /// AI inline-completion backend authentication failed
     /// (no variable subject).
     AiBackendAuthFailure,
+    /// The explicitly configured external `perlcritic` engine could not run
+    /// because the binary is unavailable, so the built-in fallback analyzer
+    /// ran instead (#16550; no variable subject — the condition is
+    /// environment-global for the session).
+    CriticExternalUnavailable,
 }
 
 /// Closed set of static dimensions that distinguish identities inside one
