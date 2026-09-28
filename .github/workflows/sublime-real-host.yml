@@ -153,11 +153,21 @@ jobs:
               mkdir -p /c/st
               python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
                 "$staging/$artifact" /c/st
+              # The 4200 zip ships a Data/KEEPME stub; drop it so the
+              # preserved action-installed Data (the Packages tree) is
+              # restored in place, not nested inside the stub. First observed
+              # as PR #16682's run 36420315629: the Windows journey timed out
+              # with Packages missing the four installed packages.
+              rm -rf /c/st/Data
               if [ -n "$restore_data" ]; then
                 mv "$staging/Data" /c/st/Data
               fi
               test -f /c/st/sublime_text.exe
               test -f /c/st/plugin_host-3.8.exe
+              test -d /c/st/Data/Packages/LSP-perllsp
+              test -d /c/st/Data/Packages/UnitTesting
+              test -d /c/st/Data/Packages/LSP
+              test -d /c/st/Data/Packages/sublime_aio
               echo "Sublime Text build 4200 installed in C:\\st"
               ;;
             macOS)
