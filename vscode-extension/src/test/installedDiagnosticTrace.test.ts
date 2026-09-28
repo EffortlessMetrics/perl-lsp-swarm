@@ -2,6 +2,8 @@ import type * as vscode from 'vscode';
 import {
   diagnosticTraceCodes,
   installedDiagnosticTraceSnapshot,
+  nextOwnedRawDiagnosticOrdinal,
+  rawDiagnosticTraceSummary,
   recordInstalledDiagnosticTrace,
   startInstalledDiagnosticTrace,
   stopInstalledDiagnosticTrace,
@@ -37,5 +39,32 @@ describe('installed diagnostic trace', () => {
       { code: 'private-code', message: 'secret' },
     ] as unknown as vscode.Diagnostic[];
     expect(diagnosticTraceCodes(diagnostics)).toEqual(['PL100', 'other']);
+  });
+
+  test('summarizes raw reports without source text, paths, or arbitrary codes', () => {
+    expect(rawDiagnosticTraceSummary(null)).toEqual({ raw_kind: 'null' });
+    expect(rawDiagnosticTraceSummary({ kind: 'full', items: [] })).toEqual({
+      raw_kind: 'full',
+      count: 0,
+      codes: [],
+    });
+    const raw = {
+      kind: 'full',
+      items: [
+        { code: 'PL100', message: 'secret', data: { uri: 'file:///private/owned.pl' } },
+        { code: 'private-value', message: 'secret' },
+      ],
+    };
+    expect(rawDiagnosticTraceSummary(raw)).toEqual({
+      raw_kind: 'full',
+      count: 2,
+      codes: ['PL100', 'other'],
+    });
+    expect(JSON.stringify(rawDiagnosticTraceSummary(raw))).not.toContain('secret');
+    expect(JSON.stringify(rawDiagnosticTraceSummary(raw))).not.toContain('/private/');
+    startInstalledDiagnosticTrace('file:///private/owned.pl');
+    expect(nextOwnedRawDiagnosticOrdinal('file:///private/foreign.pl')).toBeUndefined();
+    expect(nextOwnedRawDiagnosticOrdinal('file:///private/owned.pl')).toBe(1);
+    expect(nextOwnedRawDiagnosticOrdinal('file:///private/owned.pl')).toBe(2);
   });
 });

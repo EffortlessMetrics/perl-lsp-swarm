@@ -6,6 +6,7 @@ import {
   CloseAction,
   DidChangeTextDocumentNotification,
   DidOpenTextDocumentNotification,
+  DocumentDiagnosticRequest,
   ErrorAction,
   State as LanguageClientState,
   TransportKind,
@@ -173,6 +174,8 @@ import { perlConfigurationMiddleware } from './configurationPull';
 import {
   diagnosticTraceCodes,
   installedDiagnosticTraceSnapshot,
+  nextOwnedRawDiagnosticOrdinal,
+  rawDiagnosticTraceSummary,
   recordInstalledDiagnosticTrace,
   startInstalledDiagnosticTrace,
   stopInstalledDiagnosticTrace,
@@ -2326,6 +2329,51 @@ export function createLanguageClient(serverPath: string): LanguageClient {
     outputChannel,
     traceOutputChannel: outputChannel,
     middleware: {
+      sendRequest: async (type, param, token, next) => {
+        const method = typeof type === 'string' ? type : type.method;
+        const request = param as
+          | { textDocument?: { uri?: unknown }; previousResultId?: unknown }
+          | undefined;
+        const uri = request?.textDocument?.uri;
+        const ordinal =
+          method === DocumentDiagnosticRequest.method && typeof uri === 'string'
+            ? nextOwnedRawDiagnosticOrdinal(uri)
+            : undefined;
+        if (ordinal === undefined || typeof uri !== 'string') {
+          return next(type, param, token);
+        }
+        const version = vscode.workspace.textDocuments.find(
+          (open) => open.uri.toString() === uri,
+        )?.version;
+        recordInstalledDiagnosticTrace(uri, {
+          step: 'raw_pull_request',
+          ordinal,
+          version,
+          previous_result_id_present: typeof request?.previousResultId === 'string',
+        });
+        try {
+          const result = await next(type, param, token);
+          recordInstalledDiagnosticTrace(uri, {
+            step: 'raw_pull_response',
+            ordinal,
+            version,
+            ...rawDiagnosticTraceSummary(result),
+          });
+          return result;
+        } catch (error: unknown) {
+          const code =
+            error && typeof error === 'object' && 'code' in error
+              ? (error as { code?: unknown }).code
+              : undefined;
+          recordInstalledDiagnosticTrace(uri, {
+            step: 'raw_pull_error',
+            ordinal,
+            version,
+            error_code: typeof code === 'number' ? code : undefined,
+          });
+          throw error;
+        }
+      },
       didOpen: async (document, next) => {
         const version = document.version;
         recordInstalledDiagnosticTrace(document.uri, {

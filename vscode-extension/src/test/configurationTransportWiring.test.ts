@@ -53,6 +53,7 @@ jest.mock('vscode-languageclient/node', () => ({
   TransportKind: { stdio: 0 },
   DidOpenTextDocumentNotification: { method: 'textDocument/didOpen' },
   DidChangeTextDocumentNotification: { method: 'textDocument/didChange' },
+  DocumentDiagnosticRequest: { method: 'textDocument/diagnostic' },
 }));
 
 import { createLanguageClient } from '../extension';
@@ -182,5 +183,82 @@ describe('configuration transport wiring (#14447)', () => {
       ['didOpen_notification_sent', 3],
       ['didChange_notification_sent', 3],
     ]);
+  });
+
+  test('raw diagnostic request tap preserves next and filters the owned URI', async () => {
+    createLanguageClient('/usr/local/bin/perllsp');
+    const owned = 'file:///workspace/diagnostic.pl';
+    startInstalledDiagnosticTrace(owned);
+    const open = { uri: { toString: () => owned }, version: 5 } as vscode.TextDocument;
+    (vscode.workspace.textDocuments as vscode.TextDocument[]).push(open);
+    try {
+      const send = (
+        captured.options?.middleware as
+          | {
+              sendRequest?: (
+                type: { method: string },
+                param: unknown,
+                token: unknown,
+                next: (
+                  type: { method: string },
+                  param: unknown,
+                  token: unknown,
+                ) => Promise<unknown>,
+              ) => Promise<unknown>;
+            }
+          | undefined
+      )?.sendRequest;
+      expect(send).toBeInstanceOf(Function);
+      const method = { method: 'textDocument/diagnostic' };
+      const param = { textDocument: { uri: owned }, previousResultId: 'private-result-id' };
+      const token = { isCancellationRequested: false };
+      const full = { kind: 'full', items: [{ code: 'PL100', message: 'secret text' }] };
+      const fullNext = jest.fn(async () => full);
+      expect(await send?.(method, param, token, fullNext)).toBe(full);
+      expect(fullNext).toHaveBeenCalledTimes(1);
+      expect(fullNext).toHaveBeenCalledWith(method, param, token);
+      expect(await send?.(method, param, token, async () => ({ kind: 'full', items: [] }))).toEqual(
+        {
+          kind: 'full',
+          items: [],
+        },
+      );
+      expect(await send?.(method, param, token, async () => null)).toBeNull();
+      const failure = { code: -32603, message: 'secret failure' };
+      const rejectNext = jest.fn(async () => {
+        throw failure;
+      });
+      await expect(send?.(method, param, token, rejectNext)).rejects.toBe(failure);
+      expect(rejectNext).toHaveBeenCalledTimes(1);
+      const foreignNext = jest.fn(async () => full);
+      await send?.(
+        method,
+        { textDocument: { uri: 'file:///workspace/foreign.pl' } },
+        token,
+        foreignNext,
+      );
+      await send?.({ method: 'workspace/diagnostic' }, param, token, foreignNext);
+      expect(foreignNext).toHaveBeenCalledTimes(2);
+      const trace = installedDiagnosticTraceSnapshot();
+      expect(trace.events.filter(({ step }) => step === 'raw_pull_request')).toHaveLength(4);
+      expect(
+        trace.events
+          .filter(({ step }) => step === 'raw_pull_response')
+          .map((event) => [event.ordinal, event.raw_kind, event.count, event.codes]),
+      ).toEqual([
+        [1, 'full', 1, ['PL100']],
+        [2, 'full', 0, []],
+        [3, 'null', undefined, undefined],
+      ]);
+      expect(trace.events.find(({ step }) => step === 'raw_pull_error')).toMatchObject({
+        ordinal: 4,
+        error_code: -32603,
+      });
+      expect(JSON.stringify(trace)).not.toContain('/workspace/');
+      expect(JSON.stringify(trace)).not.toContain('secret');
+      expect(JSON.stringify(trace)).not.toContain('private-result-id');
+    } finally {
+      (vscode.workspace.textDocuments as vscode.TextDocument[]).pop();
+    }
   });
 });
