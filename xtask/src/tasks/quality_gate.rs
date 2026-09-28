@@ -35,8 +35,8 @@ pub(crate) struct LifecycleDates {
     pub expires: String,
 }
 
-/// Caller-supplied policy adaptation injected by the [`super::quality_gate_facade`]
-/// adapter to keep candidate verdicts invariant under wall-clock progression.
+/// Policy adaptation applied by the quality-gate entry point to keep candidate
+/// verdicts invariant under wall-clock progression.
 ///
 /// When supplied:
 /// - The engine evaluates [`LifecycleOverlay::raw`] — the exact policy bytes
@@ -121,13 +121,14 @@ struct GateEvaluation {
     failed: bool,
 }
 
-/// Evaluate the gate and publish the rendered artifacts, then classify the
-/// exit. `overlay = None` is the plain engine path; the
-/// [`super::quality_gate_facade`] adapter is the only caller that supplies an
-/// overlay. Rendering, freshness comparison, output writes, and exit
-/// classification all live behind this seam — callers must not duplicate any
-/// of them.
-pub fn run_with_overlay(args: QualityGateArgs, overlay: Option<LifecycleOverlay>) -> Result<()> {
+/// Load the caller's policy once, evaluate the gate, publish its artifacts,
+/// and classify the exit. An unreadable policy follows the evaluation path
+/// that emits fail-closed JSON and Markdown artifacts.
+pub fn run(args: QualityGateArgs) -> Result<()> {
+    let overlay = match fs::read_to_string(&args.exception_policy) {
+        Ok(raw) => Some(compute_lifecycle_overlay(&raw)?),
+        Err(_) => None,
+    };
     let root = std::env::current_dir().context("resolving current directory")?;
     let evaluation = evaluate(&root, &args, overlay.as_ref())?;
     publish(&args, evaluation)
@@ -787,7 +788,7 @@ struct ExceptionRequirements {
 /// Returns an overlay with no rows and no validation error when the policy
 /// content already lines up with the engine's natural verdict; callers can
 /// always supply the result unconditionally.
-pub(crate) fn compute_lifecycle_overlay(raw: &str) -> Result<LifecycleOverlay> {
+fn compute_lifecycle_overlay(raw: &str) -> Result<LifecycleOverlay> {
     use toml::Value as TomlValue;
 
     let mut overlay = LifecycleOverlay { raw: raw.to_string(), ..Default::default() };

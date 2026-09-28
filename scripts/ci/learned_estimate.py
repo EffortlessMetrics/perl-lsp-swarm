@@ -13,7 +13,10 @@ Estimate model:
 If the history is missing or the lane has too few samples, fall back to the
 static floor and report `learned: false`.
 
-Output is JSON on stdout so the caller can pipe into jq.
+Output is JSON on stdout so the caller can pipe into jq. Every stdout object
+carries `schema_version` (`learned_estimate.v1`) so a later consumer can
+refuse an unfamiliar shape. That token is this producer's field; it is not
+the history file's integer `schema_version`.
 """
 from __future__ import annotations
 
@@ -22,6 +25,18 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+SCHEMA_VERSION = "learned_estimate.v1"
+
+
+def emit_stdout(payload: dict[str, Any]) -> None:
+    """Print one stdout JSON object. Always stamps this producer's schema token.
+
+    A payload key named `schema_version` cannot override the producer field:
+    that name is also used by the history file for a different integer contract.
+    """
+    body = {key: value for key, value in payload.items() if key != "schema_version"}
+    print(json.dumps({"schema_version": SCHEMA_VERSION, **body}))
 
 
 def estimate_for(lane_id: str, history: dict[str, Any]) -> dict[str, Any]:
@@ -93,26 +108,39 @@ def main() -> int:
     args = p.parse_args()
 
     if not args.history.exists():
-        print(
-            json.dumps(
-                {
-                    "lane": args.lane,
-                    "learned": False,
-                    "estimate": None,
-                    "samples": 0,
-                    "reason": f"history file {args.history} not present",
-                }
-            )
+        emit_stdout(
+            {
+                "lane": args.lane,
+                "learned": False,
+                "estimate": None,
+                "samples": 0,
+                "reason": f"history file {args.history} not present",
+            }
         )
         return 0
 
     try:
         history = json.loads(args.history.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
-        print(json.dumps({"lane": args.lane, "learned": False, "error": str(e)}))
+        emit_stdout({"lane": args.lane, "learned": False, "error": str(e)})
         return 0
 
-    print(json.dumps(estimate_for(args.lane, history)))
+    if not isinstance(history, dict):
+        emit_stdout(
+            {
+                "lane": args.lane,
+                "learned": False,
+                "estimate": None,
+                "samples": 0,
+                "reason": (
+                    "history payload is not a JSON object, "
+                    f"got {type(history).__name__}"
+                ),
+            }
+        )
+        return 0
+
+    emit_stdout(estimate_for(args.lane, history))
     return 0
 
 
