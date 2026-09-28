@@ -811,9 +811,13 @@ else
         "status=$unflushed_status first=$first_id now=$(current_id) output=$LAST_OUTPUT"
 fi
 
-# The commit must flush the members, the manifest, the candidate directory, and
-# the store directory. The oracle is the trace of flush attempts, and each line
-# carries the outcome so a host limitation is never counted as proven durability.
+# The commit must flush the members, the manifest, the candidate directory, the
+# candidates parent that received the rename, and the store directory. The
+# oracle is the trace of flush attempts and the accounting has to be sound:
+# every entry resolves to a known outcome, a host that CAN prove a flush must
+# also prove the selector moved to the traced candidate, and no passing run may
+# carry an entry (open_failed, sync_failed) the refuse-closed guard should have
+# turned into a refusal.
 setup_root
 stage_pair "$EXTRACT_DIR" "trace-a" "trace-a-dap"
 : > "$TMP/flush-trace.txt"
@@ -821,16 +825,27 @@ PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE="$TMP/flush-trace.txt" run_promote release
 trace_id="$(current_id)"
 trace_id="${trace_id##*/}"
 trace_body="$(cat "$TMP/flush-trace.txt")"
-if [ "$LAST_STATUS" -eq 0 ] \
-    && grep -q "^file ${trace_id}/${BIN_NAME} " "$TMP/flush-trace.txt" \
-    && grep -q "^file ${trace_id}/${DAP_BIN_NAME} " "$TMP/flush-trace.txt" \
-    && grep -q "^file ${trace_id}/product_unit.v1 " "$TMP/flush-trace.txt" \
-    && grep -q "^dir candidates/${trace_id} " "$TMP/flush-trace.txt" \
-    && grep -q "^dir store " "$TMP/flush-trace.txt"; then
+trace_ok=1
+[ "$LAST_STATUS" -eq 0 ] || trace_ok=0
+for _trace_pattern in \
+    "^file ${trace_id}/${BIN_NAME} " \
+    "^file ${trace_id}/${DAP_BIN_NAME} " \
+    "^file ${trace_id}/product_unit.v1 " \
+    "^dir candidates/${trace_id} " \
+    "^dir candidates-parent " \
+    "^dir store "; do
+    grep -q "$_trace_pattern" "$TMP/flush-trace.txt" || trace_ok=0
+done
+grep -qv -E "^(file|dir) .*(flushed|host_unsupported)$" "$TMP/flush-trace.txt" && trace_ok=0
+if grep -q " flushed$" "$TMP/flush-trace.txt" \
+    && [ "$(current_id)" != "candidates/${trace_id}" ]; then
+    trace_ok=0
+fi
+if [ "$trace_ok" -eq 1 ]; then
     pass "commit flushes staged members and directories before the pointer move"
 else
     fail_case "commit flushes staged members and directories before the pointer move" \
-        "status=$LAST_STATUS id=$trace_id trace=$trace_body"
+        "status=$LAST_STATUS id=$trace_id now=$(current_id) trace=$trace_body"
 fi
 
 # The receipt must name the durability outcome rather than implying it. A host

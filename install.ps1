@@ -654,8 +654,13 @@ function Write-StandalonePointerFile {
     Set-Content -LiteralPath $tmp -Value $RelativeTarget -Encoding ascii -NoNewline
     # MoveFileEx publishes the pointer but does not push the pointer file to
     # stable storage, so flush it here rather than after the replace: the
-    # pointer must never become durable ahead of the contents it names.
-    Invoke-StandaloneFlushFile -Path $tmp | Out-Null
+    # pointer must never become durable ahead of the contents it names. A
+    # failed flush is a refusal, not a footnote: publishing while recording
+    # durability=flushed would claim proof that never ran.
+    if (-not (Invoke-StandaloneFlushFile -Path $tmp)) {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        throw "pointer flush failed; refusing to publish an unflushed selector to $Path"
+    }
     try {
         Invoke-StandaloneMoveFileReplace -From $tmp -To $Path
     } catch {
@@ -672,12 +677,15 @@ $script:StandaloneProductUnitDurability = "unverified"
 
 # FlushFileBuffers is the Windows equivalent of fsync(2): it does not return
 # until the data reaches stable storage. A bare Dispose would not do it, and
-# .NET's default FileStream.Flush() only reaches the OS cache.
+# .NET's default FileStream.Flush() only reaches the OS cache. The handle must
+# be writable: FlushFileBuffers rejects a read-only handle with
+# ERROR_ACCESS_DENIED, and a read-access FileStream then reports success
+# without the disk flush having run at all.
 function Invoke-StandaloneFlushFile {
     param([Parameter(Mandatory = $true)][string]$Path)
     $stream = $null
     try {
-        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
         $stream.Flush($true)
         return $true
     } catch {

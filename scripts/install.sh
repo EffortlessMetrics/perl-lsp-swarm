@@ -1372,11 +1372,17 @@ product_unit_flush_trace() {
 #   flushed           the path is on stable storage
 #   host_unsupported  this host has no working fsync primitive at all
 #   open_failed       the path exists but could not be opened for flushing
+#   sync_failed       a real fsync ran and reported an I/O error
 #
 # host_unsupported is a host limitation, not a per-path failure, and the caller
 # records it rather than guessing. Perl ships POSIX::fsync unimplemented on some
-# builds (notably Windows), where the call croaks instead of returning a status,
-# so the two cases have to be distinguished to stay honest about what ran.
+# builds (notably Windows, and some Linux POSIX builds) where the call croaks
+# "Unimplemented" instead of returning a status, so a croaking POSIX::fsync
+# falls back to the IO::Handle::sync primitive that the croak itself names.
+# A fallback failure is still a host limitation — Windows proves the shape, its
+# IO::Handle::sync reports EACCES even on a valid read handle — while a
+# POSIX::fsync that actually ran and errored is a real I/O failure the caller
+# must refuse on, not an excuse to publish unflushed.
 fsync_path() {
     perl -e '
         use strict;
@@ -1392,18 +1398,22 @@ fsync_path() {
             sysopen($fh, $path, O_RDONLY) or do { print "open_failed\n"; exit 0 };
         }
         if ($native) {
-            my $r = eval { POSIX::fsync($fh) };
-            print(!$@ && defined $r && $r == 0 ? "flushed\n" : "host_unsupported\n");
-            exit 0;
+            my $r;
+            my $ran = eval { $r = POSIX::fsync($fh); 1 };
+            if ($ran && defined $r && $r == 0) { print "flushed\n"; exit 0; }
+            if ($ran) { print "sync_failed\n"; exit 0; }
+            # Croaked: the POSIX module in this build ships fsync as a stub.
+            # Try the primitive the croak names instead of blaming the host.
         }
         my $r = eval { $fh->sync() };
         print(!$@ && $r ? "flushed\n" : "host_unsupported\n");
     ' "$1" 2>/dev/null || printf 'host_unsupported\n'
 }
 
-# Flushes every staged member, the manifest, the candidate directory, and the
-# store directory. Runs before any pointer replace so `current` can never name
-# contents that a crash could still truncate. Records the outcome in
+# Flushes every staged member, the manifest, the candidate directory, the
+# candidates parent that received the rename, and the store directory. Runs
+# before any pointer replace so `current` can never name contents that a crash
+# could still truncate. Records the outcome in
 # product_unit_flush_status instead of only printing it, because the receipt
 # has to say whether durability was proven or merely attempted.
 flush_candidate_durability() {
@@ -1421,19 +1431,25 @@ flush_candidate_durability() {
         _result="$(fsync_path "${_cand}/${_member}")"
         product_unit_flush_trace "file ${_id}/${_member} ${_result}"
         case "$_result" in
-            open_failed) _worst="open_failed" ;;
+            open_failed|sync_failed) _worst="$_result" ;;
             host_unsupported) [ "$_worst" = "flushed" ] && _worst="host_unsupported" ;;
         esac
     done
-    for _dir in "${_cand}" "$_store"; do
+    for _dir in "${_cand}" "${_store}/candidates" "$_store"; do
         _result="$(fsync_path "$_dir")"
         if [ "$_dir" = "$_cand" ]; then
             product_unit_flush_trace "dir candidates/${_id} ${_result}"
+        elif [ "$_dir" = "${_store}/candidates" ]; then
+            # The rename created `${_id}` as a new entry of this directory.
+            # Neither flushing the candidate directory nor the store persists
+            # that entry, so the selector could survive a power loss while the
+            # name it points to did not.
+            product_unit_flush_trace "dir candidates-parent ${_result}"
         else
             product_unit_flush_trace "dir store ${_result}"
         fi
         case "$_result" in
-            open_failed) _worst="open_failed" ;;
+            open_failed|sync_failed) _worst="$_result" ;;
             host_unsupported) [ "$_worst" = "flushed" ] && _worst="host_unsupported" ;;
         esac
     done
