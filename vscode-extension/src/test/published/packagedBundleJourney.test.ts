@@ -771,6 +771,24 @@ suite('Packaged VSIX bundled-server journey', function () {
           'ready',
           `diagnostic document was not ready: ${JSON.stringify(diagnosticReadiness)}`,
         );
+        // A pull-diagnostic client may have observed this document before its
+        // first parse completed. A real edit after readiness requests a fresh
+        // report for the current document version.
+        const diagnosticVersionAtOpen = diagnosticDocument.version;
+        const probeEdit = new vscode.WorkspaceEdit();
+        probeEdit.insert(
+          diagnosticUri,
+          new vscode.Position(diagnosticDocument.lineCount, 0),
+          '# probe\n',
+        );
+        assert.ok(
+          await vscode.workspace.applyEdit(probeEdit),
+          'diagnostic probe edit was rejected',
+        );
+        assert.ok(
+          diagnosticDocument.version > diagnosticVersionAtOpen,
+          'diagnostic probe edit did not advance the document version',
+        );
         const strictBefore = await waitForDiagnostic(
           diagnosticUri,
           (items) => items.some(expectedStrictDiagnostic),

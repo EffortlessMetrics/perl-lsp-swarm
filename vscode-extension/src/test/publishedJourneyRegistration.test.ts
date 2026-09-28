@@ -94,6 +94,7 @@ function fakeVscode(
   const diagnosticDocument = {
     uri: { fsPath: '', toString: () => `file://${diagnosticDocument.uri.fsPath}` },
     version: 1,
+    lineCount: 3,
   };
   const strictDiagnostic = {
     code: 'PL100',
@@ -261,6 +262,16 @@ function fakeVscode(
           documentText = lines.join('\n');
         }
         for (const inserted of edit?.inserted ?? []) {
+          if (
+            diagnosticPath &&
+            inserted.uri.toString() === diagnosticDocument.uri.toString() &&
+            inserted.position.line === diagnosticDocument.lineCount &&
+            inserted.position.character === 0 &&
+            inserted.newText === '# probe\n'
+          ) {
+            diagnosticDocument.version += 1;
+            continue;
+          }
           if (
             diagnosticPath &&
             inserted.uri.toString() === diagnosticDocument.uri.toString() &&
