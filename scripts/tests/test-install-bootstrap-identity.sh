@@ -21,21 +21,41 @@ fail_case() {
     FAIL=$((FAIL + 1))
 }
 
-assert_status() {
-    local name="$1" expected="$2"
-    if [ "$LAST_STATUS" -eq "$expected" ]; then
+# #16542: every identity-bound piped-bootstrap abort must keep its typed first
+# line and then name both facts a stale curl|bash user needs: the ref+digest
+# packet is unpublished at release closeout, and the manual archive works today.
+# The original substring checks alone would pass a one-site append or a pointer
+# that omitted either fact.
+has_unpublished_packet_pointer() {
+    local text="$1"
+    [[ "$text" == *"release closeout"* ]] \
+        && [[ "$text" == *"manual archive"* ]] \
+        && [[ "$text" == *"docs/how-to/INSTALLATION.md"* ]] \
+        && {
+            [[ "$text" == *"not yet published"* ]] \
+                || [[ "$text" == *"has not been published"* ]]
+        }
+}
+
+assert_identity_dead_end_is_actionable() {
+    local name="$1" needle="$2"
+    if [ "$LAST_STATUS" -ne 0 ] \
+        && [[ "$LAST_OUTPUT" == *"$needle"* ]] \
+        && has_unpublished_packet_pointer "$LAST_OUTPUT"; then
         pass "$name"
     else
-        fail_case "$name" "expected status $expected, got $LAST_STATUS: $LAST_OUTPUT"
+        fail_case "$name" "expected failure containing '$needle' plus unpublished-packet/manual-archive pointer; status=$LAST_STATUS output=$LAST_OUTPUT"
     fi
 }
 
-assert_failure_contains() {
-    local name="$1" needle="$2"
-    if [ "$LAST_STATUS" -ne 0 ] && [[ "$LAST_OUTPUT" == *"$needle"* ]]; then
-        pass "$name"
+assert_lacks_unpublished_packet_pointer() {
+    local name="$1"
+    if [[ "$LAST_OUTPUT" == *"docs/how-to/INSTALLATION.md"* ]] \
+        || [[ "$LAST_OUTPUT" == *"release closeout"* ]] \
+        || [[ "$LAST_OUTPUT" == *"manual archive"* ]]; then
+        fail_case "$name" "local/success path must not print the unpublished-packet pointer: $LAST_OUTPUT"
     else
-        fail_case "$name" "expected failure containing '$needle'; status=$LAST_STATUS output=$LAST_OUTPUT"
+        pass "$name"
     fi
 }
 
@@ -116,7 +136,7 @@ run_remote() {
     set -e
 }
 
-printf '=== installer bootstrap identity contract (#6097) ===\n'
+printf '=== installer bootstrap identity contract (#6097, #16542) ===\n'
 
 # Clone-local execution must remain independent of the remote bootstrap inputs.
 LOCAL_ROOT="$TMP/local"
@@ -137,21 +157,25 @@ if [ "$LAST_STATUS" -eq 0 ] \
 else
     fail_case "clone-local wrapper executes the sibling installer" "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
+assert_lacks_unpublished_packet_pointer "clone-local success does not print the unpublished-packet pointer"
 
 run_remote "$FAKE_BIN:$PATH"
-assert_failure_contains "remote bootstrap requires an explicit ref" "requires PERL_LSP_INSTALLER_REF"
+assert_identity_dead_end_is_actionable "remote bootstrap requires an explicit ref" "requires PERL_LSP_INSTALLER_REF"
 if [ ! -e "$CURL_LOG" ] && [ ! -e "$SENTINEL" ]; then
     pass "missing ref fails before network or execution"
 else
     fail_case "missing ref fails before network or execution" "curl or installer was reached"
 fi
 
-for bad_ref in main master HEAD refs/heads/main 'feature/test' '$(touch boom)' $'v0.18.0\nnext' "$TAG_REF" v1.2.3; do
+SHORT_REF="${COMMIT_REF%?}"
+UPPER_REF="${COMMIT_REF^^}"
+for bad_ref in main master HEAD refs/heads/main 'feature/test' '$(touch boom)' $'v0.18.0\nnext' "$TAG_REF" v1.2.3 "$SHORT_REF" "$UPPER_REF"; do
     run_remote "$FAKE_BIN:$PATH" \
         "PERL_LSP_INSTALLER_REF=$bad_ref" \
         "PERL_LSP_INSTALLER_SHA256=$DIGEST"
     if [ "$LAST_STATUS" -ne 0 ] \
         && [[ "$LAST_OUTPUT" == *"must be a full lowercase commit SHA"* ]] \
+        && has_unpublished_packet_pointer "$LAST_OUTPUT" \
         && [ ! -e "$CURL_LOG" ] \
         && [ ! -e "$SENTINEL" ]; then
         pass "rejects mutable or shell-shaped ref: ${bad_ref//$'\n'/\\n}"
@@ -161,12 +185,12 @@ for bad_ref in main master HEAD refs/heads/main 'feature/test' '$(touch boom)' $
 done
 
 run_remote "$FAKE_BIN:$PATH" "PERL_LSP_INSTALLER_REF=$COMMIT_REF"
-assert_failure_contains "remote bootstrap requires an exact digest" "must be exactly 64 lowercase hexadecimal characters"
+assert_identity_dead_end_is_actionable "remote bootstrap requires an exact digest" "must be exactly 64 lowercase hexadecimal characters"
 
 run_remote "$FAKE_BIN:$PATH" \
     "PERL_LSP_INSTALLER_REF=$COMMIT_REF" \
     "PERL_LSP_INSTALLER_SHA256=${DIGEST^^}"
-assert_failure_contains "uppercase digest is rejected" "must be exactly 64 lowercase hexadecimal characters"
+assert_identity_dead_end_is_actionable "uppercase digest is rejected" "must be exactly 64 lowercase hexadecimal characters"
 
 run_remote "$FAKE_BIN:$PATH" \
     "PERL_LSP_INSTALLER_REF=$COMMIT_REF" \
@@ -180,6 +204,7 @@ if [ "$LAST_STATUS" -eq 0 ] \
 else
     fail_case "verified commit-bound installer executes with preserved arguments" "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
+assert_lacks_unpublished_packet_pointer "verified success does not print the unpublished-packet pointer"
 
 BAD_DIGEST="${DIGEST%?}0"
 if [ "$BAD_DIGEST" = "$DIGEST" ]; then
@@ -190,6 +215,7 @@ run_remote "$FAKE_BIN:$PATH" \
     "PERL_LSP_INSTALLER_SHA256=$BAD_DIGEST"
 if [ "$LAST_STATUS" -ne 0 ] \
     && [[ "$LAST_OUTPUT" == *"SHA-256 mismatch"* ]] \
+    && has_unpublished_packet_pointer "$LAST_OUTPUT" \
     && [ ! -e "$SENTINEL" ]; then
     pass "digest mismatch fails before installer execution"
 else
@@ -199,9 +225,23 @@ fi
 run_remote "$FAKE_BIN:$PATH" \
     "PERL_LSP_INSTALLER_REF=$COMMIT_REF" \
     "PERL_LSP_INSTALLER_SHA256=$DIGEST" \
+    "FAKE_CURL_STATUS=404"
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" == *"HTTP 404"* ]] \
+    && has_unpublished_packet_pointer "$LAST_OUTPUT" \
+    && [ ! -e "$SENTINEL" ]; then
+    pass "HTTP 404 is rejected with the unpublished-packet pointer"
+else
+    fail_case "HTTP 404 is rejected with the unpublished-packet pointer" "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
+run_remote "$FAKE_BIN:$PATH" \
+    "PERL_LSP_INSTALLER_REF=$COMMIT_REF" \
+    "PERL_LSP_INSTALLER_SHA256=$DIGEST" \
     "FAKE_CURL_STATUS=302"
 if [ "$LAST_STATUS" -ne 0 ] \
     && [[ "$LAST_OUTPUT" == *"HTTP 302"* ]] \
+    && has_unpublished_packet_pointer "$LAST_OUTPUT" \
     && [ ! -e "$SENTINEL" ]; then
     pass "redirect is rejected as a different installer source"
 else
@@ -235,10 +275,22 @@ run_remote "$NO_SHA_BIN" \
     "PERL_LSP_INSTALLER_SHA256=$DIGEST"
 if [ "$LAST_STATUS" -ne 0 ] \
     && [[ "$LAST_OUTPUT" == *"sha256sum or shasum is required"* ]] \
+    && has_unpublished_packet_pointer "$LAST_OUTPUT" \
     && [ ! -e "$SENTINEL" ]; then
     pass "absence of a SHA-256 tool fails closed"
 else
     fail_case "absence of a SHA-256 tool fails closed" "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
+# Pasting the INSTALLATION.md pointer at every fail() site would drift.
+# A one-function owner is the only shape that keeps the four issue-named
+# dead ends (missing ref, bad ref, HTTP 404, digest mismatch) on one text.
+DOC_POINTER_HITS="$(grep -c 'docs/how-to/INSTALLATION.md' "$WRAPPER" || true)"
+if [ "$DOC_POINTER_HITS" -eq 1 ]; then
+    pass "unpublished-packet pointer is single-sourced in install.sh"
+else
+    fail_case "unpublished-packet pointer is single-sourced in install.sh" \
+        "expected exactly one docs/how-to/INSTALLATION.md pointer, got $DOC_POINTER_HITS"
 fi
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS" "$FAIL"
