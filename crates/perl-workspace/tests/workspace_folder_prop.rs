@@ -1,6 +1,6 @@
 use perl_workspace::folder::{
-    extract_workspace_folder_change, extract_workspace_folder_uris, root_path_to_file_uri,
-    workspace_folder_to_path,
+    admit_workspace_folder_uris, extract_workspace_folder_change, extract_workspace_folder_uris,
+    root_path_to_file_uri, workspace_folder_to_path,
 };
 use proptest::prelude::*;
 use proptest::test_runner::Config as ProptestConfig;
@@ -72,6 +72,26 @@ proptest! {
         let extracted = extract_workspace_folder_uris(&raw_entries);
 
         prop_assert_eq!(extracted, expected);
+        prop_assert!(extracted.iter().all(|uri| uri.starts_with("file:")));
+    }
+
+    #[test]
+    fn prop_relative_and_non_fs_entries_are_never_manufactured(
+        relative in plain_path_strategy()
+    ) {
+        let relative_path = json!({"path": relative.clone(), "name": "rel"});
+        let relative_uri = json!({"uri": relative.clone(), "name": "rel"});
+        let untitled = json!({"uri": format!("untitled:{relative}"), "name": "untitled"});
+        let git = json!({"uri": format!("git:///{relative}"), "name": "git"});
+
+        for entry in [relative_path, relative_uri, untitled, git] {
+            let extracted = extract_workspace_folder_uris(&[entry.clone()]);
+            prop_assert!(
+                extracted.is_empty(),
+                "rejected entry leaked into extract: {extracted:?} from {entry:?}"
+            );
+            prop_assert!(admit_workspace_folder_uris(&[entry]).is_err());
+        }
     }
 
     #[test]
