@@ -349,6 +349,85 @@ pub(super) fn format_simple_line(line: &str, config: &FormatConfig) -> Option<St
         .or_else(|| format_simple_lexical_line(line, config))
 }
 
+/// Whether `line` is a block boundary that the native block renderers own,
+/// rather than a statement the formatter failed to understand.
+///
+/// The renderers (`render_simple_block_doc`, `render_simple_continue_doc`,
+/// `render_simple_else_doc`, `render_simple_elsif_doc`) emit headers and tails
+/// on their own lines, and neither can be re-derived from one line: under
+/// `BracePlacement::NextLine` the opening brace moves to its own line, and a
+/// tail carries no header at all. So such a line is never a `format_simple_line`
+/// candidate, which made an already-rendered block classify as
+/// `Refused/UnsupportedSyntax` on a second pass even though the formatter had
+/// produced those exact bytes itself.
+///
+/// Recognition is structural rather than a copied rendering template, and
+/// claims only the shapes the renderers emit, under either `BracePlacement`:
+///
+/// - a tail, opening with a closing brace, optionally carrying a rendered
+///   `else`/`elsif`/`continue` clause or a trailing comment;
+/// - a lone opening brace, the `BracePlacement::NextLine` header form;
+/// - a condition or declaration header, admitted only where it *stops* where
+///   the block opens: at its own closing brace (`SameLine`), or at its
+///   condition's closing paren / declared name (`NextLine`).
+///
+/// That last condition is what keeps a braceless statement modifier such as
+/// `while ($x) print $y;` out: it opens with the same keyword but carries a
+/// body on the same line, so it ends at neither brace nor paren. Malformed
+/// boundaries are unaffected, because `classify` consults this only after a
+/// clean parse with no diagnostics.
+pub(super) fn is_rendered_block_boundary_line(line: &str) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let (body, _trailing_comment) = split_trailing_comment(line);
+    let body = body.trim();
+    if body.is_empty() {
+        return false;
+    }
+    let Some(tokens) = lex_rendered_line(body) else {
+        return false;
+    };
+    let (Some(first), Some(last)) = (tokens.first(), tokens.last()) else {
+        return false;
+    };
+
+    // Rendered tail: `}`, `} else {`, `} elsif (...) {`, `} continue {`.
+    if first.kind() == TokenKind::RightBrace {
+        return true;
+    }
+    // `BracePlacement::NextLine` renders the opening brace on its own line.
+    if tokens.len() == 1 && first.kind() == TokenKind::LeftBrace {
+        return true;
+    }
+    // Rendered header: it must stop where the block opens, never carry a body.
+    let opens_the_block = matches!(last.kind(), TokenKind::LeftBrace | TokenKind::RightParen)
+        || (first.kind() == TokenKind::Sub && last.kind() == TokenKind::Identifier);
+    opens_the_block
+        && matches!(
+            first.kind(),
+            TokenKind::If
+                | TokenKind::Unless
+                | TokenKind::While
+                | TokenKind::Until
+                | TokenKind::For
+                | TokenKind::Foreach
+                | TokenKind::Sub
+        )
+}
+
+/// Collect one line's non-EOF tokens, or None when the line does not lex.
+fn lex_rendered_line(body: &str) -> Option<Vec<perl_parser_core::Token>> {
+    let mut stream = perl_parser_core::TokenStream::new(body);
+    let mut tokens = Vec::new();
+    loop {
+        let token = stream.next().ok()?;
+        if token.kind() == perl_parser_core::TokenKind::Eof {
+            return Some(tokens);
+        }
+        tokens.push(token);
+    }
+}
+
 fn format_simple_module_line(line: &str, config: &FormatConfig) -> Option<String> {
     let indent_len = line.len() - line.trim_start_matches([' ', '\t']).len();
     let (indent, body) = line.split_at(indent_len);

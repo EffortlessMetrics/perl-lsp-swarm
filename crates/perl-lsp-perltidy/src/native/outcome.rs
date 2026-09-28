@@ -4,7 +4,8 @@ use super::implementation::counters::{self, NativePipelineCounters, PipelineColl
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
-    TextRange, TrailingComma, format_simple_line, range_includes_line,
+    TextRange, TrailingComma, format_simple_line, is_rendered_block_boundary_line,
+    range_includes_line,
 };
 use serde::{Deserialize, Serialize};
 
@@ -536,6 +537,10 @@ fn target_has_only_supported_lines(
             || text.trim().is_empty()
             || text.trim_start().starts_with('#')
             || format_simple_line(text, config).is_some()
+            // Block boundaries the renderers own. Without this a block the
+            // formatter itself rendered refused on the second pass, because no
+            // header or tail line is a `format_simple_line` candidate.
+            || is_rendered_block_boundary_line(text)
     })
 }
 
