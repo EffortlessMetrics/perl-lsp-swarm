@@ -200,7 +200,7 @@ echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid
 
 # Profile workspace indexing
 cargo flamegraph --root \
-  -p perl-lsp-rs \
+  -p perllsp \
   -- --stdio < scripts/lsp-index-replay.json \
   > flamegraph.svg
 
@@ -235,7 +235,7 @@ most bytes" in a run.
 
 ```bash
 # Build with DHAT support (Valgrind must be installed)
-RUSTFLAGS="-g" cargo build --release -p perl-lsp-rs
+RUSTFLAGS="-g" cargo build --release -p perllsp
 
 # Run under DHAT — produces dhat.out.<pid>
 valgrind --tool=dhat --dhat-out-file=dhat.out \
@@ -285,7 +285,7 @@ For real-time async task inspection, connect `tokio-console`:
 ```bash
 # In one terminal — start the server with tokio-console support
 RUSTFLAGS="--cfg tokio_unstable" \
-  cargo run -p perl-lsp-rs --features tokio-console -- --stdio
+  cargo run -p perllsp --features tokio-console -- --stdio
 
 # In another terminal
 cargo install tokio-console
