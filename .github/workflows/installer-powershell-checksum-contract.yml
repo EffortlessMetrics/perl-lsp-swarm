@@ -71,6 +71,33 @@ jobs:
               }
           }
 
+      # Parse-only guard under Windows PowerShell 5.1 (shell: powershell on
+      # windows runners). pwsh defaults to UTF-8, so the pwsh parse step above
+      # cannot see encoding damage: a BOM-less file carrying non-ASCII glyphs
+      # parses there but fails under 5.1, which decodes BOM-less files as
+      # Windows-1252. This step never executes the installer.
+      - name: Parse PowerShell sources under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          foreach ($Path in @(
+              'install.ps1',
+              'scripts/tests/test-install-ps1-checksum-required.ps1',
+              'scripts/tests/test-install-ps1-archive-safety.ps1',
+              'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
+          )) {
+              $Tokens = $null
+              $Errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  (Resolve-Path $Path),
+                  [ref]$Tokens,
+                  [ref]$Errors
+              ) | Out-Null
+              if ($Errors.Count -ne 0) {
+                  $Errors | ForEach-Object { Write-Error $_ }
+                  throw "$Path contains PowerShell parse errors under Windows PowerShell 5.1"
+              }
+          }
+
       - name: Run checksum negative controls
         shell: pwsh
         run: ./scripts/tests/test-install-ps1-checksum-required.ps1

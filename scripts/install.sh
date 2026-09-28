@@ -261,18 +261,24 @@ detect_platform() {
             _libc=""
             ;;
         MINGW*|MSYS*|CYGWIN*)
-            # Do not send Windows users to the piped PowerShell installer: the
-            # copy published at $REPO/master still builds a perl-lsp-*.zip asset
-            # name while releases ship perllsp-*.zip, so it 404s (#5461, fix
-            # pending promotion in #4348). Point at the archive that works.
-            err "Windows is not supported by this script. Download
+            # Windows users can use the published PowerShell installer (#5461
+            # is closed and the published copy works). Keep the manual archive
+            # as the fallback for perl-dap and for unsupported architectures.
+            err "Windows is not supported by this script. Use the published
+PowerShell installer instead:
+
+  irm https://raw.githubusercontent.com/$REPO/master/install.ps1 -OutFile install.ps1
+  # Review install.ps1, then:
+  powershell -ExecutionPolicy Bypass -File .\\install.ps1
+
+That published copy is the older fail-open-checksum revision: it warns and
+continues when checksum verification is not possible (see
+docs/how-to/INSTALLATION.md).
+
+Alternatively, download
   perllsp-<version>-x86_64-pc-windows-msvc.zip
 from https://github.com/$REPO/releases, extract it, and put the folder
-containing perllsp.exe on your PATH.
-
-The PowerShell installer is not usable yet — the published copy builds a
-download URL that 404s. See
-https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461"
+containing perllsp.exe on your PATH."
             ;;
         *)
             err "unsupported operating system: $_os"

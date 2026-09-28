@@ -1,12 +1,15 @@
-# Perl LSP installer for Windows
+﻿# Perl LSP installer for Windows
 #
-# The piped one-liner is not usable yet. The copy published at
-# perl-lsp/master still derives a `perl-lsp-<version>-...zip` asset name while
-# releases ship `perllsp-<version>-...zip`, so piping that URL into iex 404s
-# (#5461). This file already carries the fix; promoting it to the publication
-# repo is #4348.
+# The installer is published at
+# https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1
+# and that published copy works (#5461 is closed). The published copy is an
+# older revision: it warns and continues when checksum verification is not
+# possible (the fail-open checksum boundary described in
+# docs/how-to/INSTALLATION.md). This file carries the current behavior, which
+# requires the release SHA256SUMS manifest and fails closed without it.
 #
-# Until that lands, run it from a clone or a downloaded copy:
+# Run it from a clone, a downloaded copy, or the published one-liner in the
+# README:
 #   .\install.ps1                                    # latest, default dir
 #   .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
 
