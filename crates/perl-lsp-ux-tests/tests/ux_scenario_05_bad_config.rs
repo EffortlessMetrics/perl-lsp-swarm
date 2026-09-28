@@ -212,9 +212,24 @@ fn scenario_05_malformed_project_config_warns_with_a_remedy() {
             // The three transport cases in this file all pass against a server
             // that says nothing at all, because they only assert that nothing
             // crashed. A user who mistypes their config needs to be told which
-            // file to fix and that a reload applies it (#16549).
-            let warned =
-                harness.client.wait_for_message(PROJECT_CONFIG_REMEDY, Duration::from_secs(15));
+            // file to fix and that a reload applies it (#16549). The remedy is
+            // delivered as `window/showMessage` — the assertion deliberately
+            // rejects `window/logMessage`, which a user never sees, so the
+            // acceptance cannot pass on a message only a log captured.
+            let warned = harness
+                .client
+                .wait_for_raw_events(Duration::from_secs(15), |events| {
+                    events
+                        .iter()
+                        .any(|msg| {
+                            msg["method"].as_str() == Some("window/showMessage")
+                                && msg["params"]["message"]
+                                    .as_str()
+                                    .is_some_and(|message| message.contains(PROJECT_CONFIG_REMEDY))
+                        })
+                        .then_some(())
+                })
+                .is_ok();
             recorder
                 .check("a malformed .perl-lsp.toml surfaces a warning naming the remedy", warned)?;
 

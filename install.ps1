@@ -6,10 +6,11 @@
 #
 # The piped one-liner is still NOT a supported install path, for a different
 # reason: first-party install-surface policy forbids publishing an
-# `install.ps1 | iex` invocation (see install_surface_check), and the
-# remote-bootstrap wrapper requires a full 40-character commit SHA plus a
-# reviewed SHA-256 digest, which a one-liner cannot supply. Fetch, review, then
-# run:
+# `install.ps1 | iex` invocation (see install_surface_check), and a bare piped
+# invocation omits the remote-bootstrap wrapper's identity pair — a full
+# 40-character commit SHA plus a reviewed SHA-256 digest. A one-liner could
+# carry both values, but no reviewed pair is published for this script.
+# Fetch, review, then run:
 #   irm "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/<commit-sha>/install.ps1" -OutFile install.ps1
 #   notepad .\install.ps1
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1

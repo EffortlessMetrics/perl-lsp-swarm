@@ -197,30 +197,35 @@ fn run_external_peer_listen(spec: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build a debug-session packet for `program`, deriving source facts from the
-/// program text when it is readable.
-fn build_session_packet(program: &Path) -> DebugSessionPacket {
+/// Build a debug-session packet for `program` from text that was already
+/// validated as readable, so the packet builder cannot silently retry the
+/// read and drop source facts.
+fn build_session_packet(program: &Path, text: &str) -> DebugSessionPacket {
     let mut builder = DebugSessionPlanBuilder::new(program);
-    if let Ok(text) = std::fs::read_to_string(program) {
-        let source = DebugSource::from_path(program);
-        builder = builder.source_facts_from_text(&source, &text);
-    }
+    let source = DebugSource::from_path(program);
+    builder = builder.source_facts_from_text(&source, text);
     builder.build()
 }
 
-/// Refuse a one-shot emit whose program cannot be read.
+/// Read a one-shot emit's program, refusing anything that cannot be fully
+/// read as text.
 ///
-/// [`build_session_packet`] tolerates an unreadable program: it emits a plan
-/// with empty `source_facts`. That tolerance is right for the live adapter,
-/// where the program may be produced later, and wrong for the two one-shot
-/// arms - their whole product *is* the derived plan, so an unreadable path
-/// yields a plausible-looking artifact that exits 0. A typo in a Makefile then
+/// [`build_session_packet`] derives the plan's source facts from program
+/// text. That tolerance is right for the live adapter, where the program may
+/// be produced later, and wrong for the two one-shot arms - their whole
+/// product *is* the derived plan, so an unreadable path yields a
+/// plausible-looking artifact that exits 0. A typo in a Makefile then
 /// produces a bootstrap rc with no program-specific setup and no signal why.
+///
+/// The metadata checks alone are not enough: a regular file whose contents
+/// cannot be read (permissions) or decoded (not UTF-8) passes `is_file()` and
+/// would still produce a fact-free artifact with exit status 0, so the read
+/// happens here and its error propagates (#16553).
 ///
 /// Failing rather than warning is deliberate: these outputs are read by
 /// scripts, and a warning on stderr is invisible to anything checking exit
-/// status. A missing program is a caller error, not a degraded mode (#16553).
-fn require_readable_program(program: &Path) -> anyhow::Result<()> {
+/// status. A missing program is a caller error, not a degraded mode.
+fn require_readable_program(program: &Path) -> anyhow::Result<String> {
     let displayed = program.display();
     let metadata = std::fs::metadata(program)
         .map_err(|error| anyhow::anyhow!("program '{displayed}' cannot be read: {error}"))?;
@@ -230,7 +235,8 @@ fn require_readable_program(program: &Path) -> anyhow::Result<()> {
     if !metadata.is_file() {
         return Err(anyhow::anyhow!("program '{displayed}' is not a regular file"));
     }
-    Ok(())
+    std::fs::read_to_string(program)
+        .map_err(|error| anyhow::anyhow!("program '{displayed}' cannot be read as text: {error}"))
 }
 
 fn resolve_socket_port(args: &perl_lsp_rs_core::runtime::launcher::TransportArgs) -> Option<u16> {
@@ -331,14 +337,14 @@ fn main() -> anyhow::Result<()> {
     // the stdout handle (rather than the print!/println! macros) so the shipped
     // binary stays clear of the `clippy::print_stdout` restriction lint.
     if let Some(program) = args.ptkdb_bootstrap_rc.as_deref() {
-        require_readable_program(Path::new(program))?;
-        let packet = build_session_packet(Path::new(program));
+        let text = require_readable_program(Path::new(program))?;
+        let packet = build_session_packet(Path::new(program), &text);
         write!(std::io::stdout(), "{}", render_ptkdbrc(&packet, true))?;
         return Ok(());
     }
     if let Some(program) = args.debug_session_plan.as_deref() {
-        require_readable_program(Path::new(program))?;
-        let packet = build_session_packet(Path::new(program));
+        let text = require_readable_program(Path::new(program))?;
+        let packet = build_session_packet(Path::new(program), &text);
         writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&packet)?)?;
         return Ok(());
     }
@@ -573,8 +579,30 @@ mod tests {
         std::fs::write(&program, "print 1;\n")?;
         let outcome = require_readable_program(&program);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(outcome.is_ok(), "a readable program must be accepted: {outcome:?}");
+        let text = outcome.expect("a readable program must be accepted");
+        assert_eq!(text, "print 1;\n", "the validated program text must be returned");
         Ok(())
+    }
+
+    #[test]
+    fn a_regular_file_with_undecodable_contents_is_refused() {
+        // `metadata().is_file()` passes for a regular file whose bytes are not
+        // valid UTF-8; only the read validates the contents. Letting it
+        // through would emit a fact-free artifact with exit status 0.
+        let dir =
+            std::env::temp_dir().join(format!("dap-undecodable-program-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("fixture directory must be creatable");
+        let program = dir.join("latin1.pl");
+        std::fs::write(&program, b"print \"caf\xe9\";\n").expect("fixture file must be writable");
+        let outcome = require_readable_program(&program);
+        let _ = std::fs::remove_dir_all(&dir);
+        let error =
+            outcome.expect_err("an undecodable regular file must be refused, not tolerated");
+        let message = error.to_string();
+        assert!(
+            message.contains("cannot be read as text"),
+            "the message must say the contents are unreadable as text, got: {message}"
+        );
     }
 
     #[test]
@@ -591,9 +619,9 @@ mod tests {
     #[test]
     fn a_directory_is_refused_because_it_is_not_a_readable_program() {
         // `fs::metadata` succeeds for a directory, so this is the case a naive
-        // `program.exists()` check would let through. `build_session_packet`
-        // would then silently drop it (read_to_string fails on a directory)
-        // and emit the very degenerate plan this guard exists to prevent.
+        // `program.exists()` check would let through. The read in this guard
+        // would then fail and the one-shot arm would emit the very degenerate
+        // plan this guard exists to prevent.
         let dir = std::env::temp_dir()
             .join(format!("dap-directory-not-a-program-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("fixture directory must be creatable");
