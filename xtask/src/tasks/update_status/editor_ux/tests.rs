@@ -6,7 +6,7 @@ fn test_editor_ux_receipt_shape() -> Result<()> {
     let root = crate::utils::project_root()?;
     let receipt_raw = generate_editor_ux_receipt(&root)?;
     let receipt: serde_json::Value = serde_json::from_str(&receipt_raw)?;
-    assert_eq!(receipt["schema_version"], 1);
+    assert_eq!(receipt["schema_version"], "editor_ux.v1");
     assert!(
         receipt["receipt_kind"] == "planning_scaffold"
             || receipt["receipt_kind"] == "measured_status"

@@ -111,6 +111,27 @@ describe('ExtensionLanguageClientLifecycle', () => {
     expect(lifecycle.hasPendingServerPathOverride).toBe(false);
   });
 
+  test('fires onServerPathOverrideConsumed only when an override bypasses the resolver', async () => {
+    const onServerPathOverrideConsumed = jest.fn();
+    const resolveServerPath = jest.fn(async () => 'configured-perllsp');
+    const lifecycle = new ExtensionLanguageClientLifecycle<FakeClient, TestEvent>({
+      resolveServerPath,
+      createClient: () => new FakeClient(),
+      onServerPathOverrideConsumed,
+    });
+
+    await lifecycle.start();
+    expect(onServerPathOverrideConsumed).not.toHaveBeenCalled();
+    await lifecycle.stop();
+
+    lifecycle.setServerPathOverride('reinstalled-perllsp');
+    await lifecycle.start();
+
+    expect(resolveServerPath).toHaveBeenCalledTimes(1);
+    expect(onServerPathOverrideConsumed).toHaveBeenCalledTimes(1);
+    expect(onServerPathOverrideConsumed).toHaveBeenCalledWith('reinstalled-perllsp');
+  });
+
   test('reports a failed generation separately from an unavailable client', async () => {
     const failure = new Error('start failed');
     const lifecycle = new ExtensionLanguageClientLifecycle<FakeClient, TestEvent>({
