@@ -3729,10 +3729,8 @@ my $obj = Foo->new();
 fn arrow_receiver_does_not_navigate_to_coincidental_sub() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
-    harness.open(
-        "file:///lib/Some.pm",
-        "package Some;\nsub Module { return 'unrelated'; }\n1;\n",
-    )?;
+    harness
+        .open("file:///lib/Some.pm", "package Some;\nsub Module { return 'unrelated'; }\n1;\n")?;
 
     // The receiver's package is defined inline, so there is no Module.pm path
     // for the earlier filesystem lookup to return. The workspace index also
@@ -3751,9 +3749,11 @@ fn arrow_receiver_does_not_navigate_to_coincidental_sub() -> TestResult {
         }),
     )?;
     let callable_location = first_location(&callable)?;
-    assert!(callable_location["uri"]
-        .as_str()
-        .is_some_and(|uri| uri.contains("Some.pm") || uri.contains("Some%2Epm")));
+    assert!(
+        callable_location["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.contains("Some.pm") || uri.contains("Some%2Epm"))
+    );
     assert_eq!(callable_location["range"]["start"]["line"], 1);
 
     let receiver = harness.request(
