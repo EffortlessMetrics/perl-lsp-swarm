@@ -191,16 +191,21 @@ async function waitForDiagnostic(
       subscription.dispose();
       reject(
         new Error(
-          `${label} for ${uri.toString()} timed out after ${timeoutMs}ms; observed ${JSON.stringify(vscode.languages.getDiagnostics(uri).map((diagnostic) => ({ code: diagnostic.code, message: diagnostic.message, range: diagnostic.range })))}`,
+          `${label} for ${uri.toString()} timed out after ${timeoutMs}ms; observed ${JSON.stringify(vscode.languages.getDiagnostics(uri).map((diagnostic) => ({ code: diagnosticCode(diagnostic), source: diagnostic.source ?? null, message: diagnostic.message, range: diagnostic.range })))}`,
         ),
       );
     }, timeoutMs);
   });
 }
 
+function diagnosticCode(diagnostic: vscode.Diagnostic): string | number | undefined {
+  const code = diagnostic.code;
+  return typeof code === 'object' && code !== null ? code.value : code;
+}
+
 function expectedStrictDiagnostic(diagnostic: vscode.Diagnostic): boolean {
   return (
-    diagnostic.code === 'PL100' &&
+    diagnosticCode(diagnostic) === 'PL100' &&
     diagnostic.source === 'perl-lsp' &&
     diagnostic.range.start.line === 0 &&
     diagnostic.range.start.character === 0 &&
@@ -745,10 +750,10 @@ suite('Packaged VSIX bundled-server journey', function () {
       const strictClear = waitForDiagnostic(
         diagnosticUri,
         (items) =>
-          !items.some((item) => item.code === 'PL100') &&
+          !items.some((item) => diagnosticCode(item) === 'PL100') &&
           items.some(
             (item) =>
-              item.code === 'PL102' &&
+              diagnosticCode(item) === 'PL102' &&
               item.source === 'perl-lsp' &&
               item.message.includes('$fresh_unused'),
           ),
@@ -777,14 +782,14 @@ suite('Packaged VSIX bundled-server journey', function () {
         after_version: diagnosticDocument.version,
         expected_code: 'PL100',
         before: strictBefore.filter(expectedStrictDiagnostic).map((item) => ({
-          code: item.code,
+          code: diagnosticCode(item),
           source: item.source,
           message: item.message,
           range: item.range,
         })),
-        after_code_count: strictAfter.filter((item) => item.code === 'PL100').length,
+        after_code_count: strictAfter.filter((item) => diagnosticCode(item) === 'PL100').length,
         after_fresh_code_count: strictAfter.filter(
-          (item) => item.code === 'PL102' && item.message.includes('$fresh_unused'),
+          (item) => diagnosticCode(item) === 'PL102' && item.message.includes('$fresh_unused'),
         ).length,
       };
 
