@@ -146,6 +146,21 @@ fn hash_slice_regex_op_keys_stay_barewords() {
 }
 
 #[test]
+fn named_sub_block_opener_is_not_a_hash_key_stream() {
+    // `sub NAME {` must stay Keyword/Identifier/LeftBrace. The chained-arrow
+    // depth flag must not reclassify the sub body as a subscript.
+    let toks = significant("sub broken {\n");
+    let kinds: Vec<_> = toks.iter().map(|t| &t.token_type).collect();
+    assert!(
+        matches!(
+            kinds.as_slice(),
+            [TokenType::Keyword(_), TokenType::Identifier(_), TokenType::LeftBrace,]
+        ),
+        "unclosed named sub must remain a block opener stream, got {toks:?}"
+    );
+}
+
+#[test]
 fn missing_closer_after_quote_op_key_is_not_transliteration() {
     // `$h->{a}{y;` must stay a key so parser recovery can insert `}`.
     // `;` is a legal y/// delimiter in other contexts, not inside this subscript.

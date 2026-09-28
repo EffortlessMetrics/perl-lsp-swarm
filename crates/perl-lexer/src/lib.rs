@@ -1916,8 +1916,14 @@ impl<'a> PerlLexer<'a> {
             return true;
         }
         matches!(op, "q" | "qq" | "qw" | "qr" | "qx")
-            || (op == "m"
-                && self.current_char().is_some_and(|ch| !self.hash_subscript_bare_key_boundary(ch)))
+            || (op == "m" && self.hash_subscript_allows_match_operator())
+    }
+
+    /// Inside a subscript, `m` is a match operator only when the following
+    /// character is a quote delimiter, not a bare-key terminator.
+    #[inline]
+    fn hash_subscript_allows_match_operator(&self) -> bool {
+        self.current_char().is_some_and(|ch| !self.hash_subscript_bare_key_boundary(ch))
     }
 
     #[inline]

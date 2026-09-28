@@ -260,6 +260,26 @@ fn missing_closer_on_quote_op_chained_key_still_recovers() {
     assert_hash_subscript_inserted_closer(r#"my $x = $h->{a}{y;"#);
 }
 
+#[test]
+fn unclosed_named_sub_block_still_blocks_clean_parse() {
+    // Retention for the `{` opener predicate: `sub NAME {` is a block, not a
+    // hash subscript. EOF must still leave a blocking diagnostic (the LSP
+    // `sub broken {\n` control).
+    let src = "sub broken {\n";
+    let (ast, errors) = parse_errors(src);
+    assert!(
+        errors.iter().any(ParseError::blocks_clean_parse),
+        "unclosed named sub body must remain blocking.\n\
+         errors: {errors:?}\n\
+         sexp: {}",
+        ast.to_sexp()
+    );
+    assert!(
+        hash_subscript_inserted_closers(&errors).is_empty(),
+        "sub-body `{{` must not recover as HashSubscript InsertedCloser: {errors:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Quote-op statements after a completed subscript must stay quote-ops
 // ---------------------------------------------------------------------------
@@ -295,4 +315,13 @@ fn computed_hash_key_substitution_does_not_infer_missing_closer() {
     assert_no_hash_subscript_inserted_closer(r#"my $v = $h{scalar s/foo/bar/r};"#);
     assert_no_hash_subscript_inserted_closer(r#"my $v = $h->{scalar s/foo/bar/r};"#);
     assert_clean_parse(r#"my $v = $h->{scalar s/foo/bar/r};"#);
+}
+
+#[test]
+fn computed_hash_key_match_does_not_infer_missing_closer() {
+    // Discriminator for the `m` arm of quote-op opening inside subscripts:
+    // a real delimiter keeps `m//`; a key boundary must not.
+    assert_no_hash_subscript_inserted_closer(r#"my $v = $h->{scalar m/foo/};"#);
+    assert_clean_parse(r#"my $v = $h->{scalar m/foo/};"#);
+    assert_clean_parse(r#"my $v = $h->{a}{m};"#);
 }
