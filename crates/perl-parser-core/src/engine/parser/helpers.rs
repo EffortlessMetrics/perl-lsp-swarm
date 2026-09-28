@@ -1220,6 +1220,13 @@ impl<'a> Parser<'a> {
     }
 
     /// Create an error node and record the error
+    ///
+    /// For callers whose originating error is *not* recorded elsewhere. The
+    /// statement-recovery loops (`parse_program`, `parse_block`,
+    /// `parse_given_block`) already record the original error before
+    /// recovering, so they call [`Self::recovery_error_node`] directly —
+    /// recording the synthetic `unexpected` here as well shipped a duplicate
+    /// error pair at the same position for every failed statement (#16605).
     fn recover_from_error(
         &mut self,
         message: String,
@@ -1231,12 +1238,17 @@ impl<'a> Parser<'a> {
         let error = ParseError::unexpected(expected, found, location);
         self.record_error(error);
 
-        // Create error node
+        self.recovery_error_node(message, location)
+    }
+
+    /// Build the ERROR recovery node without recording a diagnostic.
+    ///
+    /// #8786: not charged. Synthetic recovery node — recovery-node
+    /// accounting is #7074's dimension, not an admitted core dimension.
+    fn recovery_error_node(&mut self, message: String, location: usize) -> Node {
         let end = self.current_position();
         let found_token = self.tokens.peek().ok().cloned();
 
-        // #8786: not charged. Synthetic recovery node — recovery-node
-        // accounting is #7074's dimension, not an admitted core dimension.
         Node::new(
             NodeKind::Error { message, expected: vec![], found: found_token, partial: None },
             SourceLocation { start: location, end },

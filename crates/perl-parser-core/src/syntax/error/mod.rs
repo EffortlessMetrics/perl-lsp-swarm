@@ -1680,6 +1680,17 @@ impl ParseError {
                 if expected.contains('}') {
                     return Some("add a closing brace '}' to end the block".to_string());
                 }
+                // A literal value where the group's closing delimiter is
+                // expected almost always means the comma between list items is
+                // missing — the closer usually already exists further along, so
+                // closer advice would not be followable (perl's "Missing
+                // operator before …?" shape, #16606).
+                if expected.contains(')') && found_is_value_like(found) {
+                    return Some(format!(
+                        "a ',' or operator is missing before this {found}; \
+                         separate list items with ','"
+                    ));
+                }
                 if expected.contains(')') {
                     return Some("add a closing parenthesis ')' to end the group".to_string());
                 }
@@ -1778,6 +1789,29 @@ impl ParseError {
     pub fn resolved_diagnostic_anchor(&self, source: &str) -> ResolvedParseDiagnosticAnchor {
         self.diagnostic_anchor().resolve(source)
     }
+}
+
+/// Whether a `found` token display name denotes a value-like token (literal,
+/// identifier, or quote-like value) that can appear as a list item.
+///
+/// Shared discriminator for the `--check` suggestion table
+/// ([`ParseError::suggestion`]) and the LSP hint table
+/// (`build_parse_error_hint` in `perl-lsp-rs-core`) so both surfaces tell one
+/// story for the same input (#16606); message wording stays per-surface. The
+/// names are [`perl_token::TokenKind::display_name`] values.
+#[must_use]
+pub fn found_is_value_like(found: &str) -> bool {
+    matches!(
+        found,
+        "number"
+            | "string"
+            | "identifier"
+            | "q// string"
+            | "qq// string"
+            | "qw() word list"
+            | "qx// command"
+            | "version string"
+    )
 }
 
 /// Enrich a list of errors with source context

@@ -495,7 +495,25 @@ impl<'a> Parser<'a> {
         if self.operation.is_pre_cancelled() {
             return Err(ParseError::Cancelled);
         }
-        self.parse_program()
+        let result = self.parse_program();
+        self.sort_errors_for_reporting();
+        result
+    }
+
+    /// Order the retained diagnostics by source position for reporting.
+    ///
+    /// Recovery records diagnostics in discovery order, and a recovered
+    /// statement can anchor its error *after* higher-positioned errors were
+    /// already recorded inside the failed construct, so batched `--check` and
+    /// LSP output printed out of source order (issue #16605: fixture 18
+    /// printed its line-7 "Unclosed block" error after the line-8 errors).
+    /// Positional order is the honest reporting order for a diagnostics list.
+    /// Located errors sort by anchor; unanchored diagnostics
+    /// (`RecursionLimit`, `Cancelled`, …) keep last. The sort is stable, so
+    /// discovery order is preserved between errors sharing one anchor —
+    /// genuinely distinct diagnostics are reordered, never dropped.
+    fn sort_errors_for_reporting(&mut self) {
+        self.errors.sort_by_key(|error| (error.location().is_none(), error.location()));
     }
 
     fn begin_operation(&mut self) {
@@ -649,6 +667,11 @@ impl<'a> Parser<'a> {
                 )
             }
         };
+
+        // A terminal diagnostic pushed after `parse()` returned anchors at a
+        // source position (e.g. `DoWhileTrailingBlock`); re-sort so it lands
+        // in positional order too (#16605).
+        self.sort_errors_for_reporting();
 
         // Return the live tracker that governed this operation. Uncharged
         // dimensions (tokens/nodes/diagnostics) stay at zero until B02.
