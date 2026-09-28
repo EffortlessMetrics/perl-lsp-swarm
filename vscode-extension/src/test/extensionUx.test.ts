@@ -1538,8 +1538,10 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
 // ---------------------------------------------------------------------------
 describe('suggestAiCompletionIfSupported (#1634)', () => {
   function makeWorkspaceState(shown = false) {
+    // #16585 review: the receipt is versioned per corrected gate; the
+    // unversioned key belonged to the obsolete pre-gate prompt.
     const store = new Map<string, unknown>([
-      ['perl-lsp.aiCompletion.firstRunNotificationShown', shown],
+      ['perl-lsp.aiCompletion.firstRunNotificationShown.v2', shown],
     ]);
     return {
       get: jest.fn((key: string, defaultValue?: unknown) =>
@@ -1604,7 +1606,7 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
       vscode.ConfigurationTarget.Global,
     );
     expect(context.workspaceState.update).toHaveBeenCalledWith(
-      'perl-lsp.aiCompletion.firstRunNotificationShown',
+      'perl-lsp.aiCompletion.firstRunNotificationShown.v2',
       true,
     );
   });

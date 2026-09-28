@@ -1458,9 +1458,62 @@ test('offers AI completion when the server advertises AI activation (#16585)', a
     'AI-powered inline completions enabled.',
   );
   expect(workspaceState.update).toHaveBeenCalledWith(
-    'perl-lsp.aiCompletion.firstRunNotificationShown',
+    'perl-lsp.aiCompletion.firstRunNotificationShown.v2',
     true,
   );
+});
+
+test('no journey when the server cannot display inline completions (#16585 review)', async () => {
+  // The activation capability proves only that the server can arm the
+  // backend; the extension's inline completion owner is middleware on the
+  // client provider, which exists only when `inlineCompletionProvider` is
+  // advertised. Without that surface, accepting Enable would enable a feature
+  // the user cannot see.
+  for (const capabilities of [
+    { experimental: { perlAiCompletionActivation: true } },
+    { inlineCompletionProvider: false, experimental: { perlAiCompletionActivation: true } },
+  ]) {
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+      get: jest.fn(() => false),
+      update: jest.fn(),
+    });
+    const workspaceState = makeState();
+
+    await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+      initializeResult: { capabilities },
+    });
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(workspaceState.update).not.toHaveBeenCalled();
+  }
+});
+
+test('an old unversioned prompt receipt does not suppress the corrected journey (#16585 review)', async () => {
+  (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+    get: jest.fn(() => false),
+    update: jest.fn(),
+  });
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
+  const workspaceState = makeState();
+  // Seed the pre-gate receipt the obsolete prompt wrote.
+  await workspaceState.update('perl-lsp.aiCompletion.firstRunNotificationShown', true);
+
+  await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
+    initializeResult: {
+      capabilities: {
+        inlineCompletionProvider: {},
+        experimental: { perlAiCompletionActivation: true },
+      },
+    },
+  });
+
+  // The versioned receipt key is what suppresses; the pre-gate receipt is
+  // ignored so the corrected journey is offered once.
+  expect(workspaceState.get).toHaveBeenCalledWith(
+    'perl-lsp.aiCompletion.firstRunNotificationShown.v2',
+    false,
+  );
+  expect(vscode.window.showInformationMessage).toHaveBeenCalled();
 });
 
 test('a non-true activation capability does not open the journey (#16585)', async () => {

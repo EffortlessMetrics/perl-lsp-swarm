@@ -833,7 +833,15 @@ export async function runDiscoveredIncludePathGuidance(
  *
  * Gated on the activation capability instead, following the same experimental
  * capability convention as the streaming route
- * (`streamingCompletion.ts` `perlInlineCompletionStream`). Fails closed: an absent
+ * (`streamingCompletion.ts` `perlInlineCompletionStream`). The activation
+ * capability alone proves only that the server can *arm* the backend, not
+ * that the editor can display anything: the extension's inline completion
+ * owner is middleware on the language client's provider, which exists only
+ * when the server advertises `inlineCompletionProvider` (#16585 review). A
+ * server that arming-activates without that surface would let the user accept
+ * Enable and never see a suggestion, so the journey requires both — a
+ * present-and-not-`false` `inlineCompletionProvider` proves the display path,
+ * and every shipped profile advertises it statically. Fails closed: an absent
  * or not-yet-populated `initializeResult` stays silent, so the journey returns on
  * its own once a server advertises that it can honour the setting.
  *
@@ -846,11 +854,19 @@ function serverAdvertisesAiActivation(client: {
   if (!capabilities || typeof capabilities !== 'object') {
     return false;
   }
-  const experimental = (capabilities as Record<string, unknown>).experimental;
+  const record = capabilities as Record<string, unknown>;
+  const experimental = record.experimental;
   if (!experimental || typeof experimental !== 'object') {
     return false;
   }
-  return (experimental as Record<string, unknown>).perlAiCompletionActivation === true;
+  if ((experimental as Record<string, unknown>).perlAiCompletionActivation !== true) {
+    return false;
+  }
+  // The display surface: an explicit `false` (or an absent capability) means
+  // the client never registers an inline completion provider, so no Enable
+  // prompt.
+  const provider = record.inlineCompletionProvider;
+  return provider !== undefined && provider !== false;
 }
 
 export async function suggestAiCompletionIfSupported(
@@ -870,7 +886,12 @@ export async function suggestAiCompletionIfSupported(
     return;
   }
 
-  const stateKey = 'perl-lsp.aiCompletion.firstRunNotificationShown';
+  // #16585 review: versioned receipt. The unversioned key was written by the
+  // obsolete prompt, whose gate every shipped server satisfied before the user
+  // responded, so an old receipt suppresses this corrected journey exactly
+  // where it first becomes able to deliver. The version suffix re-offers the
+  // journey once under the corrected gate without disturbing the old receipt.
+  const stateKey = 'perl-lsp.aiCompletion.firstRunNotificationShown.v2';
   if (context.workspaceState.get<boolean>(stateKey, false)) {
     return;
   }
