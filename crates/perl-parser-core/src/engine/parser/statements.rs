@@ -33,6 +33,8 @@ impl<'a> Parser<'a> {
                     // real `perl` refuses to compile (#15649).
                     // `CStyleForContinueBlock` joins them for the same reason
                     // on C-style `for` (#16296).
+                    // `QualifiedLoopControlLabel` joins them for the same
+                    // reason on package-qualified loop labels (#16296).
                     if matches!(
                         e,
                         ParseError::RecursionLimit
@@ -42,6 +44,7 @@ impl<'a> Parser<'a> {
                             | ParseError::Cancelled
                             | ParseError::DoWhileTrailingBlock { .. }
                             | ParseError::CStyleForContinueBlock { .. }
+                            | ParseError::QualifiedLoopControlLabel { .. }
                     ) {
                         return Err(e);
                     }
@@ -1923,7 +1926,9 @@ impl<'a> Parser<'a> {
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
                         // compile (#15649). `CStyleForContinueBlock` joins them
-                        // for the same reason on C-style `for` (#16296).
+                        // for the same reason on C-style `for`, and
+                        // `QualifiedLoopControlLabel` on qualified labels
+                        // (#16296).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
@@ -1932,6 +1937,7 @@ impl<'a> Parser<'a> {
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }
                                 | ParseError::CStyleForContinueBlock { .. }
+                                | ParseError::QualifiedLoopControlLabel { .. }
                         ) {
                             return Err(e);
                         }
@@ -2115,6 +2121,13 @@ impl<'a> Parser<'a> {
         ) {
             let label_pos = self.current_position();
             let label_token = self.consume_token()?;
+            // Labels are plain identifiers: a package-qualified name is a
+            // syntax error in real Perl. Fail outright rather than
+            // attaching it — the name would otherwise re-parse as a
+            // package call and silently accept what `perl` refuses (#16296).
+            if label_token.text.contains("::") {
+                return Err(ParseError::QualifiedLoopControlLabel { location: label_pos });
+            }
             if op == "continue" {
                 return Err(ParseError::syntax("`continue` does not take a label", label_pos));
             }

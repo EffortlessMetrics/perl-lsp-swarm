@@ -891,7 +891,9 @@ impl<'a> Parser<'a> {
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
                         // compile (#15649). `CStyleForContinueBlock` joins them
-                        // for the same reason on C-style `for` (#16296).
+                        // for the same reason on C-style `for`, and
+                        // `QualifiedLoopControlLabel` on qualified labels
+                        // (#16296).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
@@ -901,6 +903,7 @@ impl<'a> Parser<'a> {
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }
                                 | ParseError::CStyleForContinueBlock { .. }
+                                | ParseError::QualifiedLoopControlLabel { .. }
                         ) {
                             return Err(e);
                         }

@@ -200,6 +200,35 @@ mod tests {
     }
 
     #[test]
+    fn test_qualified_loop_control_label_is_hard_error() {
+        // (#16296) Real Perl rejects package-qualified loop labels outright.
+        // Direct variant-plus-location assertion on the exact seam.
+        let mut parser = Parser::new("while (1) { last FOO::BAR; }");
+        match parser.parse() {
+            Err(crate::syntax::error::ParseError::QualifiedLoopControlLabel { location }) => {
+                assert_eq!(location, 17, "label starts at byte 17");
+            }
+            Err(other) => panic!("expected QualifiedLoopControlLabel, got {other:?}"),
+            Ok(ast) => panic!("qualified loop label must fail to parse, got {:?}", ast.kind),
+        }
+    }
+
+    #[test]
+    fn test_qualified_label_survives_brace_fallback() {
+        // (#16296) In `my $x = { ... }` the braces are hash-or-block
+        // ambiguous; the qualified-label error must propagate instead of
+        // being swallowed into a recovered block.
+        let mut parser = Parser::new("my $x = { last FOO::BAR; };");
+        match parser.parse() {
+            Err(crate::syntax::error::ParseError::QualifiedLoopControlLabel { location }) => {
+                assert_eq!(location, 15, "label starts at byte 15");
+            }
+            Err(other) => panic!("expected QualifiedLoopControlLabel, got {other:?}"),
+            Ok(ast) => panic!("qualified loop label must fail to parse, got {:?}", ast.kind),
+        }
+    }
+
+    #[test]
     fn test_post_loop_continue_block_unaffected() {
         // The post-loop `continue { BLOCK }` form must still parse as the
         // While/For/Foreach `continue_block`, not as a labeled LoopControl.
