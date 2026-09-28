@@ -30,11 +30,18 @@ ATOMIC_SCHEMA_VERSION = 1
 ATOMIC_ENVELOPE_FIELDS = frozenset({"test_results_schema", "test_results"})
 # Peer-context envelope versions emitted by the producers the converter recognises.
 # The atomic surface uses ``test_results_schema`` (int); the gate and UX envelopes
-# use ``schema_version`` (str for gate shards, int for ux regression). Validate
+# use ``schema_version`` (str for gate envelopes, int for ux regression). Validate
 # them at the read site so a v2 envelope that renames a key cannot silently
 # inherit this identity contract — the same fail-loud principle that gates the
 # atomic surface applies to gate/ux envelopes too (#15322).
+# Both real ``gates`` producers are pinned: the PR-fast aggregate receipt from
+# ``xtask gates --emit-receipt`` stamps ``gates.v1`` (GATES_RECEIPT_SCHEMA_VERSION,
+# xtask/src/tasks/gates.rs), while per-shard receipts stamp ``ci_gate_shard.v1``.
+GATES_AGGREGATE_SCHEMA_VERSION = "gates.v1"
 GATE_SHARD_SCHEMA_VERSION = "ci_gate_shard.v1"
+GATE_ENVELOPE_SCHEMA_VERSIONS = frozenset(
+    {GATES_AGGREGATE_SCHEMA_VERSION, GATE_SHARD_SCHEMA_VERSION}
+)
 # ux_regression_receipt v2 is additive over v1 (adds ``failing_tests``); every
 # field of v1 keeps its meaning for a reader that ignores the new array.
 UX_REGRESSION_SCHEMA_VERSIONS = frozenset({1, 2})
@@ -155,7 +162,7 @@ def parse_receipt(data: Any) -> Optional[ParsedReceipt]:
         return ParsedReceipt(ATOMIC_TEST_RESULTS, entries)
 
     if "gates" in data:
-        if data.get("schema_version") != GATE_SHARD_SCHEMA_VERSION:
+        if data.get("schema_version") not in GATE_ENVELOPE_SCHEMA_VERSIONS:
             return None
         entries = _mapping_entries(data["gates"], field="gates")
         if entries is None:

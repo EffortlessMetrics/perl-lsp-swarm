@@ -81,6 +81,28 @@ class ReceiptsToJunitTests(unittest.TestCase):
         self.assertEqual((0, 0, 0, 0), (total, failures, errors, skipped))
         self.assertEqual([], root.findall("./testsuite/testcase"))
 
+    def test_pr_fast_aggregate_gate_receipt_is_recognised(self) -> None:
+        """#15322/#15346 — the PR-fast leg of ci.yml converts the aggregate
+        receipt that ``xtask gates --emit-receipt`` writes with the
+        ``gates.v1`` token, so that producer envelope must stay on the
+        recognised-omitted path instead of surfacing as UnrecognizedFormat.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt = Path(tmp) / "receipt.json"
+            write(
+                receipt,
+                {
+                    "schema_version": receipts_to_junit.GATES_AGGREGATE_SCHEMA_VERSION,
+                    "gates": [
+                        {"gate_name": "fmt", "status": "pass"},
+                        {"gate_name": "clippy_full", "status": "timeout"},
+                    ],
+                },
+            )
+            root, total, failures, errors, skipped = convert(receipt, "pr-fast")
+        self.assertEqual((0, 0, 0, 0), (total, failures, errors, skipped))
+        self.assertEqual([], root.findall("./testsuite/testcase"))
+
     def test_gate_receipt_with_unrecognised_schema_version_is_unrecognized(self) -> None:
         """#15322 — a v2 envelope that renames a key must not silently misread.
 
@@ -94,6 +116,10 @@ class ReceiptsToJunitTests(unittest.TestCase):
                 "schema_version": "ci_gate_shard.v2",
                 "gates": [{"gate_name": "fmt", "status": "pass"}],
             },
+            "wrong-aggregate-version": {
+                "schema_version": "gates.v2",
+                "gates": [{"gate_name": "fmt", "status": "pass"}],
+            },
             "non-string-version": {
                 "schema_version": 1,
                 "gates": [{"gate_name": "fmt", "status": "pass"}],
@@ -104,7 +130,7 @@ class ReceiptsToJunitTests(unittest.TestCase):
             for filename, payload in cases.items():
                 write(directory / f"{filename}.json", payload)
             root, total, failures, errors, skipped = convert(directory)
-        self.assertEqual((0, 0, 3, 0), (total, failures, errors, skipped))
+        self.assertEqual((0, 0, 4, 0), (total, failures, errors, skipped))
         self.assertEqual([], root.findall("./testsuite/testcase"))
         diagnostics = root.findtext("./testsuite/system-err") or ""
         for filename in cases:
