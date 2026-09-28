@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 76666)
-Total output lines: 7983
-
 //! Xtask automation for perl-lsp
 //!
 //! This binary provides custom automation tasks for building, testing,
@@ -1551,7 +1548,4988 @@ enum Commands {
     /// a loud, non-zero-exit error, never a silently-empty "no seams
     /// changed" report).
     ///
-    /// Example: `carg…46666 tokens truncated…yclePolicy => ci_policy::check_memory_lifecycle(),
+    /// Example: `cargo xtask seam-diff --base <epochSHA> --head HEAD --format human`
+    SeamDiff {
+        /// Review-epoch marker base SHA to diff from.
+        #[arg(long)]
+        base: String,
+
+        /// Head git ref/SHA to diff to.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+
+        /// Output format: `human` (default, readable summary) or `json`
+        /// (machine-readable report). Any other value is a loud error,
+        /// never a silent fallback.
+        #[arg(long, default_value = "human")]
+        format: String,
+
+        /// Repository root to resolve the seam diff against. Defaults to
+        /// the perl-lsp workspace root. Override for testing against a
+        /// fixture repository.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
+    /// Emit a markdown PR gate summary (dry-run: stdout only, no GitHub posting).
+    ///
+    /// Computes what CI would run for the current branch diff against `--base`,
+    /// and formats it as markdown: changed crates, widened crates, gates run,
+    /// gates skipped, timing estimate, and receipt links.
+    ///
+    /// **Claim boundary**: dry-run only. GitHub sticky-comment posting is
+    /// a follow-up to issue #4825.
+    ///
+    /// Example: `cargo xtask ci pr-summary --base origin/main --dry-run`
+    CiPrSummary {
+        /// Base git reference to diff against (e.g. `origin/main`).
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Emit markdown to stdout only; do not post to GitHub.
+        /// Required in this version — GitHub posting is a future follow-up.
+        #[arg(long, default_value_t = true)]
+        dry_run: bool,
+    },
+
+    /// Lint required workflow triggers against policy.
+    WorkflowTriggerLint {
+        /// Policy TOML path listing conventional required checks.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+
+        /// Optional receipt output path (JSON).
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+
+        /// Validate a single workflow fixture file instead of policy workflows.
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "text")]
+        format: WorkflowTriggerLintFormat,
+    },
+
+    /// Run version-sync checks from `perl-ci-hygiene`.
+    CheckVersionSync,
+
+    /// Classify an exact-SHA publication-drift observation.
+    #[command(name = "publication-drift")]
+    PublicationDrift {
+        /// Comparison observation JSON.
+        #[arg(long)]
+        input: PathBuf,
+
+        /// Repository root used to resolve the authority manifest.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/publication-drift.json")]
+        out: PathBuf,
+    },
+
+    /// Enforce source-authority and instruction/data boundaries for the Zed
+    /// agent stage packets.
+    ZedTrain {
+        #[command(subcommand)]
+        command: ZedTrainCommand,
+    },
+
+    /// Read-only upstream refresh and drift classification for the pinned
+    /// vim-lsp subject (#11411). Advisory only: never a CI gate, never a pin
+    /// update; live observation is gated behind --allow-network.
+    #[command(name = "vim-lsp-subject")]
+    VimLspSubject {
+        #[command(subcommand)]
+        command: VimLspSubjectCommand,
+    },
+
+    /// Sync active release narrative docs from workspace version and publish count.
+    SyncReleaseDocs {
+        /// Write synced files (omit to run a dry check).
+        #[arg(long)]
+        write: bool,
+    },
+
+    /// Check for disallowed direct `ExitStatus::from_raw()` usage.
+    CheckFromRaw,
+
+    /// Reject provably tautological Rust assertions in governed source.
+    CheckTautology {
+        /// Fail when findings exist (CI mode). Instrument failures always fail.
+        #[arg(long)]
+        check: bool,
+        /// Repository root to scan (defaults to the workspace root).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Optional disposition ledger. Defaults to `policy/tautology-dispositions.toml` when present.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// Optional JSON receipt path.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+    },
+
+    /// Enforce retained-state lifecycle and memory receipt invariants.
+    CheckMemoryLifecyclePolicy,
+
+    /// Warn when a diff adds retained-state owner patterns without inventory updates.
+    CheckMemoryRetainedOwnerDrift {
+        /// Git base ref used for diffing changed files.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Warn instead of fail when drift appears in existing retained-owner paths.
+        #[arg(long)]
+        report_only: bool,
+    },
+
+    /// Render memory plateau receipt trends.
+    MemoryTrends {
+        #[command(subcommand)]
+        command: MemoryTrendsCommand,
+    },
+
+    /// Check native formatter fixtures and emit receipts.
+    NativeFormat {
+        #[command(subcommand)]
+        command: NativeFormatCommand,
+    },
+
+    /// Run native critic checks and emit receipts.
+    NativeCritic {
+        #[command(subcommand)]
+        command: NativeCriticCommand,
+    },
+
+    /// Report native formatter and critic replacement status.
+    NativeTooling {
+        #[command(subcommand)]
+        command: NativeToolingCommand,
+    },
+
+    /// Evaluate Perl distribution Kwalitee indicators (measurable
+    /// distribution quality) and emit a scored receipt.
+    PerlKwalitee {
+        #[command(subcommand)]
+        command: PerlKwaliteeCommand,
+    },
+
+    /// Run production security hardening checks.
+    SecurityHardening,
+
+    /// Run production performance hardening checks.
+    PerformanceHardening,
+
+    /// Validate production hardening gate posture and SLOs.
+    ProductionGatesValidation,
+
+    /// Harvest forensics data for a merged PR.
+    ForensicsHarvest {
+        /// PR number or identifier.
+        pr: String,
+    },
+
+    /// Analyze temporal behavior for a merged PR.
+    ForensicsTemporal {
+        /// PR number or identifier.
+        pr: String,
+    },
+
+    /// Run quick static telemetry for a merged PR.
+    ForensicsTelemetryQuick {
+        /// PR number or identifier.
+        pr: String,
+    },
+
+    /// Run full static telemetry for a merged PR.
+    ForensicsTelemetryFull {
+        /// PR number or identifier.
+        pr: String,
+    },
+
+    /// Generate a full forensics dossier for a merged PR.
+    ForensicsDossier {
+        /// PR number or identifier.
+        pr: String,
+    },
+
+    /// Render a forensics dossier for a merged PR.
+    ForensicsRender {
+        /// PR number or identifier.
+        pr: String,
+
+        /// Output format for the rendered dossier (`full` or `summary`).
+        #[arg(default_value = "full")]
+        format: String,
+    },
+
+    /// Verify publication claims from `docs/project/PUBLICATION_FACTS_LEDGER.md`.
+    VerifyPublicationFacts {
+        /// Forward extra args to the checker (`--strict`, `--json`).
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+
+    /// Ensure issue labels are present and correctly configured in GitHub.
+    GhLabels,
+
+    /// Show open issues missing required taxonomy labels from GitHub.
+    GhTriage {
+        /// Maximum number of issues to list.
+        #[arg(default_value = "500")]
+        limit: usize,
+    },
+
+    /// Backfill prefixed labels on GitHub issues (dry run by default).
+    GhBackfillPrefixedLabels {
+        /// Apply label updates instead of dry run.
+        #[arg(long)]
+        apply: bool,
+    },
+
+    /// Read focused, provider-neutral facts for one GitHub pull request.
+    #[command(name = "github")]
+    GhCandidate {
+        #[command(subcommand)]
+        command: GhGithubCommand,
+    },
+
+    /// Capture paginated review and thread facts for one GitHub pull request.
+    GhReviewConvergence {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Compose candidate, review, required-check, and protected-merge facts.
+    #[command(name = "gh-preflight")]
+    GhPreflight {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Generate bindings
+    #[cfg(feature = "parser-tasks")]
+    Bindings {
+        /// Header file to generate bindings from
+        #[arg(long, default_value = "archive/crates/tree-sitter-perl-rs/src/tree_sitter/parser.h")]
+        header: PathBuf,
+
+        /// Output file for bindings
+        #[arg(long, default_value = "archive/crates/tree-sitter-perl-rs/src/bindings.rs")]
+        output: PathBuf,
+    },
+
+    /// Run development server
+    Dev {
+        /// Watch for changes
+        #[arg(long)]
+        watch: bool,
+
+        /// Port for development server
+        #[arg(long, default_value = "8080")]
+        port: u16,
+    },
+
+    /// Run pure Rust parser
+    ParseRust {
+        /// Source file to parse
+        source: PathBuf,
+
+        /// Output S-expression
+        #[arg(long)]
+        sexp: bool,
+
+        /// Output AST debug format
+        #[arg(long)]
+        ast: bool,
+
+        /// Benchmark parsing time
+        #[arg(long)]
+        bench: bool,
+    },
+
+    /// Release automation commands.
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommand,
+    },
+
+    /// Extract the curated release body from `docs/releases/<tag>.md`.
+    ///
+    /// Reads the file, strips its YAML frontmatter, and emits the body to
+    /// stdout (or to `--output` if provided). Used by the `release.yml`
+    /// workflow to drive GitHub Release bodies from the curated per-release
+    /// notes that ship in the repo.
+    ReleaseNotes {
+        /// Release tag (e.g. `v0.12.4`). A bare version like `0.12.4` is
+        /// accepted and normalized to `v0.12.4`.
+        #[arg(long)]
+        tag: String,
+
+        /// Optional output file. When omitted, the body is written to stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Override the repository root used to resolve `docs/releases/`.
+        /// Intended as a testing seam; the release workflow never passes this.
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+
+    /// Trigger PR-driven release orchestration workflow
+    ReleaseTurnkey {
+        /// Release version (preferred: use `--version`; positional is also accepted).
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Release version as positional argument.
+        #[arg(value_name = "VERSION")]
+        positional_version: Option<String>,
+
+        /// Trigger prerelease mode for workflows.
+        #[arg(long)]
+        prerelease: bool,
+
+        /// Validate commands only; do not trigger workflows.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip crates.io publish workflow.
+        #[arg(long)]
+        skip_crates: bool,
+
+        /// Skip VSCode extension publish workflow.
+        #[arg(long)]
+        skip_extension: bool,
+
+        /// Skip Docker image publish workflow.
+        #[arg(long)]
+        skip_docker: bool,
+
+        /// Base branch for release orchestration.
+        #[arg(long)]
+        base_branch: Option<String>,
+
+        /// Do not auto-merge the version bump PR.
+        #[arg(long)]
+        no_auto_merge: bool,
+
+        /// Do not wait for the version bump PR merge.
+        #[arg(long)]
+        no_wait_pr_merge: bool,
+
+        /// Do not wait for release workflows to finish.
+        #[arg(long)]
+        no_wait_release: bool,
+
+        /// Workflow wait timeout in seconds.
+        #[arg(long)]
+        workflow_timeout: Option<u64>,
+    },
+
+    /// Run crates.io launch-preparation checks.
+    PrepCratesIoLaunch {
+        /// Launch mode: `core` for launch-critical crates, `all` for all publishable crates.
+        #[arg(long, value_enum, default_value = "core")]
+        mode: PrepCratesMode,
+    },
+
+    /// Run heredoc-specific tests
+    TestHeredoc {
+        /// Run tests in release mode
+        #[arg(long)]
+        release: bool,
+
+        /// Run tests with verbose output
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// Test edge case handling functionality
+    TestEdgeCases {
+        /// Run benchmarks
+        #[arg(long)]
+        bench: bool,
+
+        /// Generate coverage report
+        #[arg(long)]
+        coverage: bool,
+
+        /// Run specific edge case test
+        #[arg(long)]
+        test: Option<String>,
+    },
+
+    /// Run corpus audit for coverage analysis
+    CorpusAudit {
+        /// Path to corpus directory
+        #[arg(long, default_value = ".")]
+        corpus_path: PathBuf,
+
+        /// Output path for audit report
+        #[arg(long, default_value = "corpus_audit_report.json")]
+        output: PathBuf,
+
+        /// Check mode for CI (fails if issues found)
+        #[arg(long)]
+        check: bool,
+
+        /// Fresh mode (regenerate report even if it exists)
+        #[arg(long)]
+        fresh: bool,
+    },
+
+    /// Parse one corpus file in an isolated child process for corpus-audit timeout guards.
+    #[command(hide = true)]
+    CorpusAuditParseOne {
+        /// Path to the corpus file to parse.
+        #[arg(long)]
+        path: PathBuf,
+    },
+
+    /// Generate parser feature matrix from a parser-audit report.
+    ParserMatrix {
+        /// Path to parser audit report JSON.
+        #[arg(long, default_value = "corpus_audit_report.json")]
+        report: PathBuf,
+
+        /// Output path for generated matrix documentation.
+        #[arg(long, default_value = "docs/project/status/parser_feature_matrix.generated.md")]
+        output: PathBuf,
+    },
+
+    /// Run three-way parser comparison
+    #[cfg(feature = "parser-tasks")]
+    CompareThree {
+        /// Show detailed output
+        #[arg(long)]
+        verbose: bool,
+
+        /// Output format (table, json, markdown)
+        #[arg(long, default_value = "table")]
+        format: String,
+    },
+
+    /// Test LSP features with demo scripts
+    TestLsp {
+        /// Create test files only (don't run tests)
+        #[arg(long)]
+        create_only: bool,
+
+        /// Run specific test
+        #[arg(long)]
+        test: Option<String>,
+
+        /// Clean up test files after running
+        #[arg(long)]
+        cleanup: bool,
+    },
+
+    /// Bump the workspace version across every tracked site.
+    ///
+    /// Non-interactive and idempotent. Delegates to `perl-ci-hygiene
+    /// bump-version`, which owns the canonical site list shared with the
+    /// `check-version-sync` CI gate.
+    BumpVersion {
+        /// New version to set (X.Y.Z format).
+        version: String,
+    },
+
+    /// Publish crates to crates.io
+    PublishCrates {
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+
+        /// Dry run (don't actually publish)
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Dispatch the "Publish to crates.io" workflow for a release
+    PublishRelease {
+        /// Release version (for example 0.x.y)
+        version: String,
+
+        /// Dry run (don't actually publish)
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Target git ref (defaults to v<version>)
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
+    },
+
+    /// Run a full release smoke test via installed binaries
+    SmokeTestRelease {
+        /// Release version to smoke-test (for example 0.x.y)
+        version: String,
+    },
+
+    /// Run forbidden-fatal construct checks from `perl-ci-hygiene`.
+    ForbidFatalConstructs {
+        /// Forwarded arguments for `forbid-fatal-constructs`.
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+
+    /// Run arbitrary `perl-ci-hygiene` subcommands.
+    CiHygiene {
+        /// Subcommand name for `perl-ci-hygiene`.
+        command: String,
+
+        /// Arguments to pass to the subcommand.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Publish a review receipt bundle in `review/receipts/YYYY-MM-DD/`.
+    PublishReceipts {
+        /// Optional date override in `YYYY-MM-DD` format.
+        date: Option<String>,
+    },
+
+    /// Publish VSCode extension to marketplace
+    PublishVscode {
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+
+        /// PAT token for authentication
+        #[arg(long)]
+        token: Option<String>,
+    },
+
+    /// Verify transitive normal-dep closure of published crates contains only publishable deps
+    PublishClosure {
+        /// Check only this crate (default: all allowlisted crates)
+        #[arg(long)]
+        crate_name: Option<String>,
+    },
+
+    /// Ratchet gate: published-crate count must not increase above baseline.
+    ///
+    /// Reads the current entry count from `[workspace.metadata.publish.allow]`
+    /// (via `cargo metadata --no-deps`), compares against the baseline stored in
+    /// `xtask/published-crate-baseline.txt`, and fails if the count increased.
+    /// When the count has decreased, the baseline is auto-tightened.
+    PublishedCrateCount,
+
+    /// Offline manifest validation: allowlist drift + LICENSE present.
+    ///
+    /// Checks that every entry in `[workspace.metadata.publish.allow]` is a
+    /// publishable workspace member and vice versa (allowlist drift), and that
+    /// every allowlisted crate has a `license` or `license-file` field set.
+    /// Uses `cargo metadata --no-deps` — no network contact.
+    ///
+    /// Replaces the Python `--check-drift` step in `publish-dry-run.yml` and
+    /// is wired into `just pr-fast` and `just ci-gate`.
+    PublishManifestCheck,
+
+    /// Sweep system Perl corpus for parser error rates
+    ParserCorpusSweep {
+        /// Comma-separated corpus root directories
+        #[arg(long, value_delimiter = ',', conflicts_with = "manifest")]
+        roots: Option<Vec<PathBuf>>,
+
+        /// Manifest file listing module names to resolve via perl
+        #[arg(long, conflicts_with = "roots")]
+        manifest: Option<PathBuf>,
+
+        /// Write JSON report to file
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Compare against baseline JSON file
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        /// Return nonzero if regression detected
+        #[arg(long)]
+        enforce: bool,
+
+        /// Include per-file details in output
+        #[arg(long)]
+        verbose: bool,
+
+        /// Write receipt JSON to target/receipts/corpus-sweep.json
+        #[arg(long)]
+        receipt: bool,
+
+        /// Prefix for the generated receipt file target/receipts/<profile>-corpus-sweep.json
+        /// (must be a relative slug — no `/`, `\`, `..`, or other path
+        /// characters; see `profile_slug_parser`).
+        #[arg(long, value_parser = profile_slug_parser)]
+        profile: Option<String>,
+    },
+
+    /// Run deterministic fresh-vs-token-replay proof and write a machine-readable receipt.
+    #[command(name = "tree-sitter-incremental-proof")]
+    TreeSitterIncrementalProof {
+        /// Measurement profile controlling fixture breadth and iteration count.
+        #[arg(long, value_enum, default_value_t = incremental_proof::Profile::Pr)]
+        profile: incremental_proof::Profile,
+
+        /// Receipt JSON path. Defaults to target/receipts/tree-sitter-incremental-proof-<profile>.json.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Run upstream Perl core test harness against perl-lsp compiler modes.
+    #[command(name = "perl-core-harness")]
+    PerlCoreHarness {
+        #[command(subcommand)]
+        command: PerlCoreHarnessCommand,
+    },
+
+    /// Emit parser-ratchet scaffold receipts.
+    ParserRatchet {
+        #[command(subcommand)]
+        command: ParserRatchetCommand,
+    },
+
+    /// Manage CPAN top-1000 corpus acquisition, sweep, and ratchet
+    CpanCorpus {
+        #[command(subcommand)]
+        command: CpanCorpusCommand,
+    },
+
+    /// Generate canonical receipts (test summary, doc metrics, consolidated state)
+    ///
+    /// Runs workspace tests and doc builds, parses output, and produces
+    /// JSON artifacts in the artifacts/ directory. Replaces scripts/generate-receipts.sh.
+    Receipts {
+        /// Only generate test receipts (skip doc build)
+        #[arg(long)]
+        tests_only: bool,
+
+        /// Only generate doc receipts (skip test run)
+        #[arg(long)]
+        docs_only: bool,
+
+        /// Output directory for artifacts (default: artifacts/)
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+
+        /// Number of test threads (default: 2)
+        #[arg(long, default_value = "2")]
+        test_threads: u32,
+    },
+
+    /// Aggregate CI subreceipt fragments into one stable final receipt.
+    AggregateReceipts {
+        /// Stable final check name.
+        #[arg(long)]
+        check: String,
+        /// Input directory containing subreceipt JSON files.
+        #[arg(long)]
+        inputs: PathBuf,
+        /// Output path for aggregate receipt JSON.
+        #[arg(long)]
+        output: PathBuf,
+        /// Allow required lanes to no-op without failing the final check.
+        #[arg(long, default_value_t = true)]
+        allow_noop: bool,
+    },
+
+    /// Compute final pass/fail outcome from an aggregate receipt.
+    FinalizeCheck {
+        /// Path to aggregate receipt JSON.
+        #[arg(long)]
+        receipt: PathBuf,
+        /// Allow required lanes to no-op without failing the final check.
+        #[arg(long, default_value_t = true)]
+        allow_noop: bool,
+        /// Treat advisory warnings/failures as fatal.
+        #[arg(long, default_value_t = false)]
+        fail_on_advisory: bool,
+    },
+
+    /// Emit, verify, and reconcile SHA-bound merge-readiness receipts.
+    MergeReady {
+        #[command(subcommand)]
+        command: MergeReadyCommand,
+    },
+
+    /// Track ignored tests and enforce gate policy
+    IgnoredTests {
+        /// Write current counts back to baseline
+        #[arg(long)]
+        update: bool,
+        /// CI gate mode: fail when ignored count increases
+        #[arg(long)]
+        check: bool,
+        /// Fail when an ignored test lacks a numeric issue reference
+        #[arg(long)]
+        check_issue_refs: bool,
+        /// Print detailed per-category breakdown
+        #[arg(long, short)]
+        verbose: bool,
+    },
+
+    /// Manage gate receipt schema registry and validate receipt payloads.
+    GateReceipts {
+        #[command(subcommand)]
+        command: GateReceiptsCommand,
+    },
+
+    /// Show technical debt report from debt ledger
+    ///
+    /// Reads `.ci/debt-ledger.yaml` and reports on quarantined tests,
+    /// known issues, and technical debt items with budget tracking.
+    DebtReport {
+        /// CI gate mode: exit 1 if over budget or expired quarantines
+        #[arg(long)]
+        check: bool,
+
+        /// Output JSON format for receipt integration
+        #[arg(long)]
+        json: bool,
+
+        /// Output a compact markdown summary table.
+        #[arg(long)]
+        summary: bool,
+
+        /// Show only expired quarantines
+        #[arg(long)]
+        expired: bool,
+
+        /// Path to debt ledger (default: .ci/debt-ledger.yaml)
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+    },
+
+    /// Check invariants in features.toml
+    DocClaims,
+
+    /// Check active install docs and release notes for stale install command drift.
+    InstallSurfaceCheck,
+
+    /// Validate PR intent/title/body against changed paths and closeout evidence.
+    IntentDiffGate {
+        /// Pull request number to inspect via `gh pr view`.
+        #[arg(long)]
+        pr: Option<u64>,
+
+        /// Load PR metadata from a local JSON fixture file.
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+
+        /// Output receipt path (default: target/receipts/intent-diff-gate.json).
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+    },
+
+    /// Manage feature catalog and LSP compliance
+    Features {
+        #[command(subcommand)]
+        command: FeaturesCommand,
+    },
+
+    /// Agent lease + receipt primitives for disconnected orchestration.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
+
+    /// Classify failed CI receipts into typed fix-forward playbooks.
+    FixForward {
+        #[command(subcommand)]
+        command: FixForwardCommand,
+    },
+
+    /// Update derived metrics in docs/project/status/ subsystem files.
+    ///
+    /// Computes workspace test counts, ignored test counts, feature catalog
+    /// metrics from features.toml, corpus statistics, and missing-docs
+    /// warnings, then patches the markdown files between fenced markers.
+    ///
+    /// Subsystem files: docs/project/status/{lsp,tests,parser,quality}.md
+    UpdateStatus {
+        /// Write updates back to docs/project/status/
+        #[arg(long)]
+        write: bool,
+
+        /// Check whether docs are up-to-date (CI gate); exit non-zero if stale
+        #[arg(long)]
+        check: bool,
+
+        /// Only regenerate one subsystem (lsp, tests, parser, quality).
+        /// When omitted, all four subsystems are regenerated.
+        #[arg(long, value_enum)]
+        only: Option<update_status::StatusSubsystem>,
+    },
+
+    /// SRP-oriented crate topology and wiring checks.
+    Srp {
+        #[command(subcommand)]
+        command: SrpCommand,
+    },
+
+    /// Generate SRP microcrate inventory and split-candidate report.
+    SrpMicrocrates {
+        #[command(flatten)]
+        args: SrpMicrocratesArgs,
+    },
+
+    /// Enforce crate layer-dependency constraints.
+    LayerCheck,
+
+    /// Scan for built-but-not-wired crates.
+    UnwiredScan {
+        #[command(flatten)]
+        args: UnwiredScanArgs,
+    },
+
+    /// Check that test-bearing Rust files are reachable from their module tree.
+    CheckTestWiring,
+
+    /// Emit per-subsystem engineering-health metrics.
+    Metrics {
+        #[command(subcommand)]
+        command: MetricsCommand,
+    },
+
+    /// Validate and identify versioned compiler capability profiles.
+    #[command(name = "compiler-profile")]
+    CompilerProfile {
+        #[command(subcommand)]
+        command: CompilerProfileCommand,
+    },
+
+    /// Upstream-derived semantic conformance surfaces (#12532).
+    #[command(name = "compiler")]
+    Compiler {
+        #[command(subcommand)]
+        command: CompilerUpstreamCommand,
+    },
+
+    /// Publish structured editor UX scorecard artifact/status from harness fixtures.
+    UxScorecard {
+        /// Output format for stdout.
+        #[arg(long, value_enum, default_value = "human")]
+        format: UxScorecardOutputFormat,
+        /// Optional path to scenario measurements JSON.
+        #[arg(long)]
+        input: Option<PathBuf>,
+        /// Optional path to emitted scorecard JSON artifact.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Optional path to generated status markdown.
+        #[arg(long)]
+        status_md: Option<PathBuf>,
+        /// Enforce regression-only ratchet against committed baseline.
+        #[arg(long)]
+        ratchet_check: bool,
+    },
+
+    /// Run the canonical Rust Small proof lane in one repository command (#8407).
+    ///
+    /// Executes locked fetch, workspace check, parser smokes, LSP smoke,
+    /// references scorecard census + replay, and diff hygiene with pinned argv,
+    /// failing closed on any omitted or failing step. Every routed Rust Small
+    /// job in `.github/workflows/em-ci-routed-rust.yml` invokes this single
+    /// definition, so the aggregate required check means one proof on all
+    /// routes; the yml keeps only runner instrumentation and the #12320
+    /// pinned `cargo fmt` literal. Emits one versioned receipt binding the
+    /// candidate SHA, toolchain, and scorecard profile/features to every
+    /// selected step's typed outcome (#8407); route adoption of that receipt
+    /// as status evidence is issue #8408.
+    #[command(name = "rust-small-proof")]
+    RustSmallProof {
+        /// Receipt destination (default: `target/receipts/rust-small-proof.json`).
+        #[arg(long, conflicts_with = "verify_receipt")]
+        receipt: Option<PathBuf>,
+
+        /// Validate an existing receipt against this checkout and exit without
+        /// running the proof. Fails closed on a malformed, stale, or
+        /// wrong-subject receipt, or one missing any canonical step.
+        #[arg(long)]
+        verify_receipt: Option<PathBuf>,
+    },
+
+    /// Publish/check 0.13.2 semantic scorecard artifacts from deterministic fixtures.
+    SemanticScorecard {
+        /// Optional path to semantic fixture manifest JSON.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+        /// Optional path to emitted scorecard JSON artifact.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Optional path to generated status markdown.
+        #[arg(long)]
+        status_md: Option<PathBuf>,
+        /// Verify committed artifacts are current.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Publish/check deterministic semantic shadow-compare proof artifacts.
+    SemanticShadowCompare {
+        /// Optional path to emitted shadow-compare JSON artifact.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Optional path to generated status markdown.
+        #[arg(long)]
+        status_md: Option<PathBuf>,
+        /// Verify committed artifacts are current.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Emit structured UX regression receipt from test output
+    UxRegressionReceipt {
+        /// Path to test output file (e.g., /tmp/ux-test-output.txt)
+        #[arg(long)]
+        input: PathBuf,
+        /// Optional path to write receipt JSON
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+        /// Git SHA for receipt metadata
+        #[arg(long)]
+        sha: Option<String>,
+        /// File containing the exit status of the UX test command
+        #[arg(long)]
+        exit_status_file: Option<PathBuf>,
+    },
+
+    /// Validate memory profiling functionality
+    ValidateMemoryProfiler,
+
+    /// Run end-to-end validation sweep
+    ///
+    /// Tests core crates in release mode, runs a large workspace smoke
+    /// test against the LSP server, checks benchmark compilation, and
+    /// produces an optional JSON report.
+    E2eValidate {
+        /// Number of Perl files to generate for the workspace smoke test
+        #[arg(long, default_value = "200")]
+        workspace_size: usize,
+
+        /// Write a JSON report to this path
+        #[arg(long)]
+        report: Option<PathBuf>,
+
+        /// Skip the large-workspace smoke test
+        #[arg(long)]
+        skip_workspace: bool,
+
+        /// Skip the benchmark compilation check
+        #[arg(long)]
+        skip_bench: bool,
+
+        /// Show verbose output from test runs
+        #[arg(long, short)]
+        verbose: bool,
+    },
+
+    /// Run CI gates with receipt generation
+    ///
+    /// Executes gates defined in .ci/gate-policy.yaml and generates
+    /// machine-readable receipts for tracking and comparison.
+    Gates {
+        /// Gate tier to run (default: merge-gate)
+        #[arg(long, short, value_enum, default_value = "merge-gate")]
+        tier: GateTier,
+
+        /// Gate policy file used for this invocation
+        #[arg(long, default_value = ".ci/gate-policy.yaml")]
+        gate_policy: PathBuf,
+
+        /// Run a specific gate by name
+        #[arg(long, short)]
+        gate: Option<String>,
+
+        /// Base git ref used for scope-aware PR-fast planning
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Immutable CI subject receipt used for scope-aware planning.
+        #[arg(long)]
+        subject: Option<PathBuf>,
+
+        /// List available gates without running them
+        #[arg(long, short)]
+        list: bool,
+
+        /// Explain the typed profile expansion and governed gate denominator
+        /// (ci_route_profile.v1) without running anything
+        #[arg(long)]
+        explain_denominator: bool,
+
+        /// Explain the typed gate lifecycle disposition authority
+        /// (gate_disposition.v1) without running anything
+        #[arg(long)]
+        explain_disposition: bool,
+
+        /// Output format (default: human)
+        #[arg(long, short, value_enum, default_value = "human")]
+        format: GatesOutputFormat,
+
+        /// Emit receipt JSON (also writes to target/receipts/receipt.json)
+        #[arg(long, short)]
+        receipt: bool,
+
+        /// Path to write receipt (default: target/receipts/receipt.json)
+        #[arg(long)]
+        receipt_path: Option<PathBuf>,
+
+        /// Compare against a baseline receipt JSON
+        #[arg(long, short)]
+        diff: Option<PathBuf>,
+
+        /// Stop on first failure (fail-fast mode)
+        #[arg(long)]
+        fail_fast: bool,
+
+        /// Run gates in parallel where safe (experimental)
+        #[arg(long)]
+        parallel: bool,
+
+        /// Verbose output (include quarantined gates)
+        #[arg(long, short)]
+        verbose: bool,
+
+        /// Explicit opt-in that this run inspects the staged tree (`git
+        /// write-tree`), never the working tree. Required for `--tier
+        /// commit` (issue #3786).
+        #[arg(long)]
+        staged: bool,
+
+        /// Published `ci_route_plan.v1` (#10179) to consume and validate
+        /// before execution; when set, one normalized `routed_gate_result.v1`
+        /// (#9156) is emitted per executed planned `run` row under
+        /// target/receipts/routed-results/.
+        #[arg(long, requires = "subject")]
+        route_plan: Option<PathBuf>,
+    },
+
+    /// Ergonomic alias for `gates --tier commit --staged` (issue #3786).
+    ///
+    /// Commit-tier checks always inspect the staged tree — this subcommand
+    /// exists so the feedback-ladder command an agent types before `git
+    /// commit` is short and self-explanatory. There is no `--staged` flag
+    /// here (unlike `gates`): "precommit" already means staged by
+    /// definition, and a presence-only clap bool flag can't express "the
+    /// user explicitly opted out" anyway. Calls the exact same
+    /// implementation as `gates --tier commit --staged`; there is one
+    /// policy authority.
+    Precommit {
+        /// Output format (default: human)
+        #[arg(long, short, value_enum, default_value = "human")]
+        format: GatesOutputFormat,
+
+        /// Emit receipt JSON (also writes to target/receipts/receipt.json)
+        #[arg(long, short)]
+        receipt: bool,
+    },
+
+    /// Run the `lsp_smoke` gate as atomic, bounded, independently terminal
+    /// children with typed per-child receipts (#8063).
+    LspSmokeAtomic {
+        /// Path for the incremental child receipt JSON (gate telemetry; not
+        /// a `test_results` envelope, so it never feeds Test Analytics).
+        #[arg(long)]
+        receipt: PathBuf,
+    },
+
+    /// Inspect and validate effective gate policy profiles.
+    GatePolicy {
+        #[command(subcommand)]
+        command: GatePolicyCommand,
+    },
+
+    /// Advisory Changie release-note ledger checks (issue #3768).
+    ///
+    /// FOUNDATION / ADVISORY: prints findings and always exits 0; never blocks
+    /// a PR. Changes no release execution.
+    Changelog {
+        #[command(subcommand)]
+        command: ChangelogCommand,
+    },
+
+    /// Workflow Contracts checks — actionlint + zizmor + native contract
+    /// checks (issue #3788, parent #3785).
+    ///
+    /// FOUNDATION / ADVISORY-UNARMED: prints findings and always exits 0 in
+    /// this PR (the advisory boundary itself is not yet armed); never blocks
+    /// a PR. Does not prove repo-specific merge semantics — see
+    /// `xtask/src/tasks/workflows.rs` module docs for the boundary.
+    Workflows {
+        #[command(subcommand)]
+        command: WorkflowsCommand,
+    },
+
+    /// Detect contradictory PR label states and emit a methodology receipt.
+    MethodologyGate {
+        /// Fixture JSON file (local snapshot or GitHub event payload).
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+
+        /// Pull request number to inspect via gh CLI.
+        #[arg(long)]
+        pr: Option<u64>,
+
+        /// Path to output receipt JSON.
+        #[arg(long, default_value = "target/receipts/methodology-gate.json")]
+        receipt: PathBuf,
+
+        /// Do not write receipt to disk.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Enforce mode: contradictory states fail the command.
+        #[arg(long)]
+        enforce: bool,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "human")]
+        format: MethodologyOutputFormat,
+    },
+
+    /// Verify hook scripts are executable.
+    HookCheck,
+
+    /// Verify hook registry references are present and executable.
+    HookRegistryCheck,
+
+    /// Run hook behavior tests and output summaries.
+    HookTests,
+
+    /// Run targeted clippy/test checks for crates changed since a base ref
+    ///
+    /// Detects which crates have changed since the given base git ref
+    /// and runs clippy and/or tests only for those crates. This gives
+    /// fast feedback during active development.
+    TargetedChecks {
+        /// Base git reference for diff (default: auto-detect)
+        #[arg(long, default_value = "auto")]
+        base: String,
+
+        /// Check mode: clippy, test, or all (default: all)
+        #[arg(long, value_enum, default_value = "all")]
+        mode: CheckMode,
+    },
+
+    /// Resolve the Cargo package name for a crate directory.
+    ///
+    /// Prints the package name from Cargo.toml to stdout (one line, no trailing noise).
+    /// Used by the pre-push hook to convert a directory basename into the correct -p argument.
+    ///
+    /// Example: `cargo xtask resolve-package-name crates/perl-lsp-rs` outputs `perl-lsp-rs`
+    ResolvePackageName {
+        /// Crate directory path, relative to workspace root (e.g., "crates/perl-lsp-rs")
+        crate_dir: String,
+    },
+
+    /// Verify that every `crates/<dir>/` directory has a Cargo package name
+    /// that exactly equals `<dir>` (issue #2933 AC#3).
+    ///
+    /// Directories without a `Cargo.toml` (e.g. `crates/tree-sitter-perl`,
+    /// which is a JavaScript project) are skipped with a notice.
+    ///
+    /// Exit 0 if all checked directories pass; non-zero if any mismatch is found.
+    #[command(name = "check-naming-consistency")]
+    CheckNamingConsistency {
+        /// Workspace root to check. Defaults to the auto-detected workspace root.
+        /// Override for testing against a fixture workspace.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
+    /// Report (and, with `--force`, remove) stale `.claude/worktrees` entries.
+    ///
+    /// Defaults to a dry-run report: every agent worktree is classified
+    /// KEEP or REMOVE with a reason, but nothing is deleted. A worktree is
+    /// always classified KEEP — never force-removed — when it is dirty
+    /// (uncommitted changes), locked, on a branch with an open PR (or PR
+    /// status could not be determined), or is the root checkout. Pass
+    /// `--force` to actually remove the REMOVE-classified worktrees. See
+    /// issue #4097.
+    WorktreeCleanup {
+        /// Repository root whose `.claude/worktrees/` entries should be
+        /// evaluated. Defaults to the perl-lsp workspace root. Override for
+        /// testing against a fixture repository.
+        #[arg(long)]
+        root: Option<PathBuf>,
+
+        /// Actually remove worktrees classified REMOVE. Default is a
+        /// dry-run report only — nothing is deleted without this flag.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Collect read-only evidence for one explicitly selected damaged worktree.
+    ///
+    /// This route never discovers candidates or performs backup, recovery, repair,
+    /// prune, reset, checkout, stash, clean, or other filesystem mutations.
+    #[command(name = "worktree-recovery")]
+    WorktreeRecovery {
+        #[command(subcommand)]
+        command: WorktreeRecoveryCommand,
+    },
+
+    /// Validate the committed Claude swarm agent roster contract.
+    ValidateSwarmAgentRoster {
+        /// Repository root containing `.claude/agents/agent-roster.json`.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
+    /// Enforce the M4b capability boundary: review/audit agents are
+    /// mechanically read-only (no Edit/Write/NotebookEdit/Agent in their
+    /// tools: allowlist). See issue #3763.
+    CheckAgentCapabilities {
+        /// Repository root containing `.claude/agents`.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
+    /// Show summary statistics from swarm-metrics.jsonl.
+    SwarmSummary {
+        /// Path to operations directory (defaults to `.ops-perl-lsp`).
+        #[arg(default_value = ".ops-perl-lsp")]
+        ops_dir: PathBuf,
+
+        /// Summarize only entries at or after the given window, e.g. `24h`, `7d`, `30m`, or `all`.
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Maximum number of rows to show in each summary section.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+
+        /// Output format for the swarm summary.
+        #[arg(long, value_enum, default_value = "human")]
+        format: swarm_summary::SwarmSummaryOutputFormat,
+    },
+
+    /// Populate mdBook source directory from `docs/`.
+    PopulateBook,
+
+    /// Validate workspace exclusion strategy and dependency invariants.
+    ValidateWorkspaceExclusions,
+
+    /// Generate a build-timing receipt JSON with workspace duration metrics.
+    BuildTimingReceipt {
+        /// Measure clean build with `cargo build --workspace --locked`.
+        #[arg(long)]
+        clean: bool,
+
+        /// Measure incremental rebuild using incremental crate touch.
+        #[arg(long)]
+        incremental: bool,
+
+        /// Measure test build with `cargo test --workspace --lib --locked`.
+        #[arg(long)]
+        tests: bool,
+
+        /// Output file for the generated receipt.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Write the baseline artifact (`artifacts/build-timing-baseline.json`).
+        #[arg(long)]
+        baseline: bool,
+    },
+
+    /// Compare two build-timing receipts and print a markdown report.
+    CompareBuildTiming {
+        /// Baseline receipt JSON path.
+        baseline: PathBuf,
+        /// Current receipt JSON path.
+        current: PathBuf,
+    },
+
+    /// Validate generated-file ownership and associated receipts.
+    GeneratedFiles {
+        #[command(subcommand)]
+        command: GeneratedFilesCommand,
+    },
+
+    /// Non-Rust file policy commands.
+    NonRust {
+        #[command(subcommand)]
+        command: NonRustCommand,
+    },
+
+    /// Exact-tree test panic-family debt denominator (#13397).
+    NoPanic {
+        #[command(subcommand)]
+        command: NoPanicCommand,
+    },
+
+    /// Read-only policy obligation tooling.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
+
+    /// Check non-Rust files against the policy allowlist and report violations.
+    ///
+    /// Equivalent to `non-rust check`. Default mode is `advisory` (always
+    /// exits 0). Use `--mode blocking-allowlist` or `--mode blocking-strict`
+    /// for enforcement. See #8566.
+    ///
+    /// Examples:
+    ///   `cargo xtask check-file-policy`
+    ///   `cargo xtask check-file-policy --mode advisory`
+    ///   `cargo xtask check-file-policy --mode blocking-allowlist`
+    ///   `cargo xtask check-file-policy --json target/policy/file-policy-report.json`
+    CheckFilePolicy {
+        /// Enforcement mode.
+        #[arg(long, value_enum, default_value = "advisory")]
+        mode: CheckFilePolicyCliMode,
+
+        /// Override the default JSON receipt path
+        /// (`target/policy/file-policy-report.json`).
+        #[arg(long)]
+        json: Option<PathBuf>,
+
+        /// Override the default allowlist path (`policy/non-rust-allowlist.toml`).
+        #[arg(long)]
+        allowlist: Option<PathBuf>,
+
+        /// Override the workspace root used for `git ls-files`. Test seam only.
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+
+    /// Check whether the current checkout is behind origin/main.
+    ///
+    /// Emits a JSON receipt (schema_version 1) with staleness metadata.
+    /// Use --mode block to fail when stale; default is warn (exit 0 always).
+    ///
+    /// Example: `cargo xtask freshness-check --base origin/main --mode block`
+    FreshnessCheck {
+        /// Base git reference to compare HEAD against.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Operating mode: warn (default, exit 0) or block (exit 1 when stale).
+        #[arg(long, value_enum, default_value = "warn")]
+        mode: FreshnessCheckMode,
+
+        /// Write the JSON receipt to this file path instead of stdout.
+        #[arg(long)]
+        json: Option<PathBuf>,
+
+        /// Skip the `git fetch` step.
+        #[arg(long)]
+        no_fetch: bool,
+
+        /// Accept a stale checkout for historical/archaeology work. Requires --reason.
+        #[arg(long, requires = "reason")]
+        allow_historical: bool,
+
+        /// Reason text for the historical override (required with --allow-historical).
+        #[arg(long)]
+        reason: Option<String>,
+
+        /// Also check binary freshness: verify that target/debug/perllsp and
+        /// target/release/perllsp are newer than the HEAD commit timestamp.
+        /// Exits non-zero when a binary exists and is stale. Missing binaries
+        /// are reported but do not cause a non-zero exit.
+        #[arg(long)]
+        binaries: bool,
+    },
+
+    /// Generate or check deterministic HIR semantic snapshots over a corpus slice.
+    ///
+    /// This command is a SNAPSHOT rail — it proves that lower_ast() is
+    /// deterministic and stable across commits. It does NOT prove correctness.
+    /// Curated-gold assertions (independent human labeling) are a separate,
+    /// future schema and are NOT built here.
+    ///
+    /// KPI: semantic_snapshot_stability_rate (NOT semantic_gold_pass_rate).
+    ///
+    /// Examples:
+    ///   # Generate snapshot manifest
+    ///   cargo xtask generate-semantic-snapshot
+    ///   # Check for HIR drift
+    ///   cargo xtask generate-semantic-snapshot --check
+    #[command(name = "generate-semantic-snapshot")]
+    GenerateSemanticSnapshot {
+        /// Directory containing the corpus fixture `.pl` files.
+        #[arg(long, default_value = "crates/perl-corpus/fixtures/snapshot-slice")]
+        fixture_dir: PathBuf,
+
+        /// Path to write (generate) or read (check) the snapshot manifest JSON.
+        #[arg(long, default_value = "target/receipts/semantic-snapshot.json")]
+        output: PathBuf,
+
+        /// Check mode: compare against the recorded manifest and fail on drift.
+        /// When omitted, generates/overwrites the manifest.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Check tracked generated artifacts against policy/generated-allowlist.toml.
+    #[command(name = "check-generated")]
+    CheckGenerated {
+        /// Enforcement mode.
+        #[arg(long, value_enum, default_value = "advisory")]
+        mode: tasks::generated_policy::GeneratedPolicyMode,
+
+        /// Override the default JSON receipt path.
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+enum CheckFilePolicyCliMode {
+    Advisory,
+    BlockingAllowlist,
+    BlockingStrict,
+}
+
+#[derive(Subcommand)]
+enum EditorCompatCommand {
+    /// Run one exact Vim + vim-lsp actual-host subject through the hermetic
+    /// Rust host runner (#10944). The pinned vim-lsp checkout is verified
+    /// against the #11369 subject manifest (commit, clean worktree, tree and
+    /// entry-file digests) before launch; the registration shape is consumed
+    /// from the #11369 configuration manifest; the root markers are consumed
+    /// from the #7762 activation-root manifest.
+    Vim {
+        #[command(subcommand)]
+        command: VimEditorCompatCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum VimHostToolchainCommand {
+    /// Acquire (or revalidate) the pinned toolchain under --output and write
+    /// the deterministic identity manifest. Network is used only for
+    /// immutable subjects missing from the cache; an existing valid entry is
+    /// a pure offline revalidation, and any drift deletes and rebuilds.
+    Provision {
+        /// Output/cache root directory for the provisioned toolchain.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Offline vim-lsp acquisition: clone the pinned commit from this
+        /// local checkout instead of the governed upstream URL. The subject
+        /// identity law is identical in both modes.
+        #[arg(long)]
+        vim_lsp_source: Option<PathBuf>,
+
+        /// Execution-environment label recorded in identity.
+        #[arg(long, default_value = "local_runner")]
+        environment: String,
+    },
+    /// Offline revalidation of one provisioned identity manifest against its
+    /// sibling subjects: recomputes every digest and refuses any drift as a
+    /// typed instrument failure. Never touches the network.
+    Verify {
+        /// Path to a provisioned vim_vim_lsp_host_toolchain.v1.json.
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum VimEditorCompatCommand {
+    /// Execute a hermetic host journey: start exact Vim headless, load the
+    /// pinned vim-lsp, register the canonical perllsp --stdio server, attach
+    /// to the fixture through native activation, capture the initialize
+    /// capabilities, stop the server, and prove client/host cleanup. Writes
+    /// the canonical editor-client receipt plus the retained
+    /// client/server/process artifacts.
+    ///
+    /// `host-lifecycle` (#10944) runs the minimal substrate journey.
+    /// `bootstrap-diagnostics` (#10946) runs the four-cell journey —
+    /// bootstrap, native root selection with wrong-root discrimination, the
+    /// diagnostics lifecycle through the client's own state, and baseline
+    /// cleanup — against the governed diagnostics fixture.
+    /// `freshness-generations` (#11390) runs the six-cell freshness journey —
+    /// route classification, external source generations through the explicit
+    /// reload route, project config through the restart route, client
+    /// settings through the live push channel, stale generation rejection,
+    /// and provider ownership — against the governed freshness fixture.
+    /// `recovery-generations` (#11398) runs the eight-cell server-generation
+    /// recovery journey — explicit restart through the public stop+reopen
+    /// route, the unexpected-exit disposition (honest manual_restart_required;
+    /// the adverse-exit cell never passes), new-generation
+    /// initialize/readiness, document replay, the current post-recovery
+    /// result, old-generation rejection, the retry/manual disposition, and
+    /// shutdown-during-recovery cleanup — against the governed recovery
+    /// fixture. The canonical variant must reach its honest partial top-line.
+    /// `save-format` (#11396) runs the seven-cell format-on-save journey —
+    /// the documented BufWritePre autocmd owner over the canonical sync
+    /// format action, one-save-one-invocation cardinality, exact applied and
+    /// legitimate no-change bytes, distinct disabled/refused/failure
+    /// dispositions, and stale-result rejection — against the governed save
+    /// fixture.
+    /// `host-reopen-lifecycle` (#11401) runs the eight-cell host-reopen
+    /// journey — buffer close/reopen, full host exit and replacement launch,
+    /// the workspace not-exposed disposition, identity-bound cancellation,
+    /// late-result rejection, finite repeated sessions, normal terminal
+    /// cleanup, and forced-failure cleanup — as a finite sequence of hermetic
+    /// host sessions over one shared fixture.
+    Run {
+        /// Exact client subject id (see
+        /// `xtask::vim_host_run::VimClientSubject::known_ids`).
+        #[arg(long)]
+        subject: String,
+
+        /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
+        /// freshness-generations, recovery-generations, save-format, or host-reopen-lifecycle.
+        #[arg(long, default_value = "host-lifecycle")]
+        journey: String,
+
+        /// Fixture variant for the bootstrap-diagnostics,
+        /// freshness-generations, recovery-generations, save-format, and host-reopen-lifecycle
+        /// journeys. The canonical variant must reach its journey's honest
+        /// top-line — `pass`, except `recovery-generations`, whose
+        /// adverse-exit cell is never a passing observation, so its honest
+        /// canonical top-line is `partial`. The negative controls must fail
+        /// with their typed reason.
+        #[arg(long, default_value = "canonical")]
+        fixture_variant: String,
+
+        /// Absolute path of the exact Vim executable to run.
+        #[arg(long)]
+        vim: PathBuf,
+
+        /// Absolute path of the pinned vim-lsp git checkout (verified against
+        /// the #11369 subject manifest before launch).
+        #[arg(long)]
+        vim_lsp_dir: PathBuf,
+
+        /// Absolute path of the exact perllsp candidate executable.
+        #[arg(long)]
+        candidate: PathBuf,
+
+        /// Fresh output directory for the hermetic layout, artifacts, and
+        /// receipt (an existing directory refuses the run).
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Host run timeout in milliseconds (default 240000).
+        #[arg(long, default_value_t = 240_000)]
+        timeout_ms: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum NoPanicCommand {
+    /// Exact-tree test panic-family debt projection and checks.
+    Debt {
+        #[command(subcommand)]
+        command: NoPanicDebtCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum NoPanicDebtCommand {
+    /// Generate `test_panic_family_debt.v1` from current source.
+    Inventory {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Machine JSON path. Defaults to `target/policy/test_panic_family_debt.v1.json`.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Human Markdown path. Defaults to `target/policy/test_panic_family_debt.v1.md`.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
+    /// Re-derive the denominator and fail on missing population, stale joins, or identity drift.
+    Check {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Previously generated artifact that must match current source.
+        #[arg(long)]
+        artifact: Option<PathBuf>,
+        /// Accepted artifact compared by identity, not by counts.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// Optional Clippy observation JSON. Aborted/missing targets are `not_proven`.
+        #[arg(long)]
+        clippy_observation: Option<PathBuf>,
+        /// Optional owner-state JSON. Ordinary checks do not call GitHub.
+        #[arg(long)]
+        owner_state: Option<PathBuf>,
+    },
+    /// Print the human projection for the current tree.
+    Report {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Optional machine JSON path.
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum NonRustCommand {
+    /// Compare immutable Git trees and enforce only newly introduced policy debt.
+    ExactTree {
+        /// Base commit object to compare against.
+        #[arg(long)]
+        base_sha: String,
+        /// Candidate or merge-group commit object to evaluate.
+        #[arg(long)]
+        subject_sha: String,
+        /// Optional pull-request head which must be contained by the subject.
+        #[arg(long)]
+        pr_head_sha: Option<String>,
+        /// Exact-tree JSON receipt path.
+        #[arg(long, default_value = "target/policy/non-rust-policy-exact-tree.json")]
+        receipt: PathBuf,
+        /// Event name recorded in the receipt.
+        #[arg(long)]
+        event_name: Option<String>,
+        /// Repository recorded in the receipt.
+        #[arg(long)]
+        repository: Option<String>,
+    },
+    /// Walk `git ls-files`, classify tracked files against the allowlist,
+    /// and emit `target/policy/non-rust-inventory.{md,json}`.
+    ///
+    /// This is always a read-only scan: no tracked file is modified.
+    /// `docs/policy/NON_RUST_INVENTORY.md` is a frozen pointer, never
+    /// generated content; the evidence is the ignored `target/policy/` pair
+    /// and the `non-rust-inventory-<sha>` CI artifact.
+    Inventory {
+        /// Validate the current tracked tree against the allowlist, emit
+        /// Markdown/JSON evidence under `target/policy/`, require the frozen
+        /// pointer document, and reject newly added unclassified paths
+        /// against merge-base.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Check non-Rust files against the allowlist and report violations.
+    ///
+    /// Default mode is `advisory` — always exits 0, reports findings only.
+    /// Use `--mode blocking-allowlist` or `--mode blocking-strict` to enable
+    /// enforcement. Strict mode is NOT promoted to CI in this PR (see #8566).
+    Check {
+        /// Enforcement mode.
+        #[arg(long, value_enum, default_value = "advisory")]
+        mode: CheckFilePolicyCliMode,
+
+        /// Override the default JSON receipt path
+        /// (`target/policy/file-policy-report.json`).
+        ///
+        /// Example: `--json target/policy/file-policy-report.json`
+        #[arg(long)]
+        json: Option<PathBuf>,
+
+        /// Override the default allowlist path (`policy/non-rust-allowlist.toml`).
+        #[arg(long)]
+        allowlist: Option<PathBuf>,
+
+        /// Override the workspace root used for `git ls-files`. Test seam only.
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+
+    /// Generate draft allowlist proposals for unclassified non-Rust files.
+    ///
+    /// Writes:
+    ///   - `<output-dir>/non-rust-proposed-allowlist.toml` — draft entries ready for review.
+    ///   - `<output-dir>/non-rust-proposal.md` — human-readable summary.
+    ///
+    /// NEVER modifies `policy/non-rust-allowlist.toml`. The canonical ledger is
+    /// human-curated; this command only generates proposals for review.
+    Propose {
+        /// Output directory (default: `target/policy`).
+        #[arg(long, default_value = "target/policy")]
+        output_dir: PathBuf,
+
+        /// Grouping strategy: `directory` (default) groups by top-level dir;
+        /// `extension` groups by file extension.
+        #[arg(long, value_enum, default_value = "directory")]
+        group_by: ProposeGroupByArg,
+
+        /// Override the workspace root used for `git ls-files`. Test seam only.
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+
+    /// Validate the non-Rust allowlist/debt TOML schema without walking git.
+    ValidatePolicy {
+        /// Override the default allowlist path (`policy/non-rust-allowlist.toml`).
+        #[arg(long, default_value = "policy/non-rust-allowlist.toml")]
+        allowlist: PathBuf,
+
+        /// Override the default debt path (`policy/non-rust-debt.toml`).
+        #[arg(long, default_value = "policy/non-rust-debt.toml")]
+        debt: PathBuf,
+    },
+
+    /// Find non-Rust tooling that should be migrated into Rust-owned surfaces.
+    MigrationCandidates {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: MigrationCandidateFormatArg,
+
+        /// Optional output path (prints to stdout if omitted).
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Limit the number of candidates in the report.
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Override the workspace root used for `git ls-files`. Test seam only.
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Inventory registered review and expiry obligations at an explicit date.
+    Cadence {
+        /// Evaluation date. Defaults to the current UTC date in production;
+        /// tests and evidence runs should always pass it explicitly.
+        #[arg(long)]
+        as_of: Option<String>,
+
+        /// Deterministic JSON receipt path.
+        #[arg(long, default_value = "target/receipts/policy-cadence.json")]
+        json: PathBuf,
+
+        /// Deterministic Markdown summary path.
+        #[arg(long, default_value = "target/receipts/policy-cadence.md")]
+        markdown: PathBuf,
+    },
+
+    /// Check that registered time-bound records did not move a governing date
+    /// later without a supported disposition and refreshed subject-bound
+    /// evidence. Read-only; mutates no ledger.
+    Transition {
+        /// Accepted base revision the candidate is compared against.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Deterministic JSON receipt path.
+        #[arg(long, default_value = "target/receipts/policy-transition.json")]
+        json: PathBuf,
+
+        /// Optional deterministic Markdown summary path.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
+}
+
+/// CLI-facing output format for non-Rust migration candidate reports.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum MigrationCandidateFormatArg {
+    /// Human-readable Markdown.
+    Markdown,
+    /// Machine-readable JSON.
+    Json,
+}
+
+/// CLI-facing grouping argument (mirrors `file_policy::ProposeGroupBy`).
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ProposeGroupByArg {
+    /// Group by top-level directory (default).
+    Directory,
+    /// Group by file extension.
+    Extension,
+}
+
+#[derive(Subcommand)]
+enum GeneratedFilesCommand {
+    /// List generated-file ownership rules.
+    List {
+        /// Optional fixture JSON for deterministic tests.
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+    },
+    /// Check changed generated files for matching generator receipts.
+    Check {
+        /// Path where generated-file receipt JSON is written.
+        #[arg(long, default_value = "target/receipts/generated-files.json")]
+        receipt: PathBuf,
+        /// Optional fixture JSON for deterministic tests.
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+        /// Path(s) to generator receipt JSON artifacts.
+        #[arg(long = "generator-receipt")]
+        generator_receipt: Vec<PathBuf>,
+        /// Explicit override for manual edits in this run.
+        #[arg(long)]
+        allow_manual_edits: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CpanCorpusCommand {
+    /// Fetch top N distributions from MetaCPAN by reverse dependency count
+    FetchList {
+        /// Number of distributions to fetch (default: 1000)
+        #[arg(long, default_value = "1000")]
+        top_n: usize,
+
+        /// Output path for distribution list
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Install distributions from the list via cpanm
+    Install {
+        /// Path to distribution list file
+        #[arg(long)]
+        dist_list: Option<PathBuf>,
+
+        /// Local install directory
+        #[arg(long)]
+        install_dir: Option<PathBuf>,
+
+        /// Verbose output
+        #[arg(long)]
+        verbose: bool,
+
+        /// Force a full wipe of the install directory before installing.
+        /// Default is an incremental install that keeps `lib/perl5` between
+        /// runs and lets cpanm skip already-installed modules.
+        #[arg(long)]
+        reset: bool,
+
+        /// Stop cleanly once this many minutes have elapsed, keeping completed
+        /// batches installed and emitting CPAN_CORPUS_INSTALL_COMPLETE=false.
+        /// Lets a scheduled warm lane end below runner preemption while
+        /// checkpointing forward progress (#12823).
+        #[arg(long)]
+        time_budget_minutes: Option<u64>,
+    },
+
+    /// Run parser corpus sweep against installed CPAN modules
+    Sweep {
+        /// Write JSON report to file
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Return nonzero if regression detected
+        #[arg(long)]
+        enforce: bool,
+
+        /// Verbose output
+        #[arg(long)]
+        verbose: bool,
+
+        /// Local install directory containing CPAN modules
+        #[arg(long)]
+        install_dir: Option<PathBuf>,
+    },
+
+    /// Auto-append newly-clean modules to the CPAN manifest
+    Ratchet {
+        /// Verbose output
+        #[arg(long)]
+        verbose: bool,
+
+        /// Local install directory containing CPAN modules
+        #[arg(long)]
+        install_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PerlCoreHarnessCommand {
+    /// Prepare a disposable upstream Perl test tree (future slice).
+    Prepare {
+        /// Upstream Perl tag or commit to prepare.
+        #[arg(long = "ref")]
+        perl_ref: String,
+
+        /// Output directory for source clone and prepared tree.
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+    },
+
+    /// Discover upstream Perl core tests through t/TEST or t/harness --dumptests.
+    Discover {
+        /// Prepared upstream Perl source/build tree.
+        #[arg(long)]
+        perl_tree: PathBuf,
+
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
+
+        /// Upstream scheduler to query.
+        #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
+        runner: perl_core_harness::HarnessRunner,
+
+        /// Staged upstream Perl core profile.
+        #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessProfile::Base)]
+        profile: perl_core_harness::HarnessProfile,
+
+        /// Discovery JSON output path.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Generate or check the immutable identity manifest for a core series.
+    SeriesManifest {
+        /// Discovery receipt produced for the same pinned Perl tree.
+        #[arg(long)]
+        discovery: PathBuf,
+
+        /// Series manifest JSON to write or check.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Stable comparison-series identifier.
+        #[arg(long)]
+        series_id: String,
+
+        /// Profile covered by the comparison series.
+        #[arg(long, value_enum)]
+        profile: perl_core_harness::HarnessProfile,
+
+        /// Requested Perl tag or commit.
+        #[arg(long)]
+        perl_requested_ref: String,
+
+        /// Resolved Perl commit recorded by the discovery receipt.
+        #[arg(long)]
+        perl_resolved_ref: String,
+
+        /// Identity of the retained preparation receipt.
+        #[arg(long)]
+        preparation_receipt_id: String,
+
+        /// Digest of the retained preparation receipt.
+        #[arg(long)]
+        preparation_receipt_digest: String,
+
+        /// Compiler and harness subject identity measured by the receipt.
+        #[arg(long)]
+        compiler_subject_identity: String,
+
+        /// Invocation identity for the measured harness command.
+        #[arg(long)]
+        invocation_identity: String,
+
+        /// Capability identity for the measured environment.
+        #[arg(long)]
+        capability_identity: String,
+
+        /// Environment identity for the measured run.
+        #[arg(long)]
+        environment_identity: String,
+
+        /// Prior series identifier when this intentionally replaces a series.
+        #[arg(long)]
+        replaces_series_id: Option<String>,
+
+        /// Reason for creating this series.
+        #[arg(long)]
+        change_reason: Option<String>,
+
+        /// Check the existing manifest instead of writing it.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Validate the semantic-boundary registry against v2 baselines and evidence bundles.
+    Boundaries {
+        /// Machine-readable semantic-boundary registry JSON.
+        #[arg(long)]
+        registry: PathBuf,
+
+        /// Accepted v2 baseline JSON to validate; may be supplied more than once.
+        #[arg(long = "baseline")]
+        baselines: Vec<PathBuf>,
+
+        /// Durable #5171 evidence-bundle index JSON to validate; may be supplied more than once.
+        #[arg(long = "bundle")]
+        bundles: Vec<PathBuf>,
+
+        /// Write the deterministic report to this path.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Validate the registry and inputs. This is the default mode.
+        #[arg(long)]
+        check: bool,
+
+        /// Emit the deterministic report to stdout.
+        #[arg(long)]
+        report: bool,
+
+        /// Inspect historical evidence without using absence to satisfy current active entries.
+        #[arg(long)]
+        historical: bool,
+    },
+
+    /// Produce deterministic root-cause clusters from one validated evidence bundle.
+    Triage {
+        /// Durable #5171 evidence-bundle index JSON.
+        #[arg(long)]
+        bundle: PathBuf,
+
+        /// Output directory for failure-clusters.json and failure-clusters.md.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Persistent cluster-history JSON to write or check.
+        #[arg(long)]
+        history: Option<PathBuf>,
+
+        /// Merge the current report into persistent history without resolving absent clusters.
+        #[arg(long, conflicts_with = "check_history", requires = "history")]
+        write_history: bool,
+
+        /// Check that persistent history contains the current report without mutation.
+        #[arg(long, conflicts_with = "write_history", requires = "history")]
+        check_history: bool,
+    },
+
+    /// Validate landed evidence lineage and the deterministic current-authority index.
+    CurrentAuthority {
+        /// Current-authority index JSON.
+        #[arg(long)]
+        index: PathBuf,
+
+        /// Landed-lineage JSON; may be supplied more than once.
+        #[arg(long = "lineage")]
+        lineages: Vec<PathBuf>,
+
+        /// Repository root containing the published evidence artifacts.
+        #[arg(long)]
+        repository_root: PathBuf,
+
+        /// Exact Git commit containing the current-authority records.
+        #[arg(long)]
+        landed_sha: String,
+    },
+
+    /// Run discovered tests in parse, compile, or execute mode (future slice).
+    Run {
+        /// Harness mode to run.
+        #[arg(long, value_enum)]
+        mode: perl_core_harness::HarnessMode,
+
+        /// Prepared upstream Perl source/build tree.
+        #[arg(long)]
+        perl_tree: PathBuf,
+
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
+
+        /// Upstream scheduler to run.
+        #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
+        runner: perl_core_harness::HarnessRunner,
+
+        /// Staged upstream Perl core profile.
+        #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessProfile::Base)]
+        profile: perl_core_harness::HarnessProfile,
+
+        /// Explicit Perl core test path to run. Execute mode currently requires selected base tests.
+        #[arg(long = "test")]
+        tests: Vec<String>,
+
+        /// Run report JSON output path.
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Prebuilt perl-core-test-runner binary. Defaults to target/agent/perl-core-test-runner.
+        #[arg(long)]
+        runner_binary: Option<PathBuf>,
+
+        /// Disable bounded direct diagnostic probes for missing upstream rows.
+        #[arg(long)]
+        no_diagnostic_probes: bool,
+    },
+
+    /// Render the latest Perl core harness report (future slice).
+    Report,
+
+    /// Manage checked-in Perl core harness baselines (future slice).
+    Baseline {
+        /// Harness mode covered by the baseline.
+        #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessMode::Compile)]
+        mode: perl_core_harness::HarnessMode,
+
+        /// Staged upstream Perl core profile covered by the baseline.
+        #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessProfile::Base)]
+        profile: perl_core_harness::HarnessProfile,
+
+        /// Run report JSON to check or accept.
+        #[arg(long)]
+        report: Option<PathBuf>,
+
+        /// Checked-in baseline JSON to read or update.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        /// Immutable comparison-series manifest. When present, use baseline v2.
+        #[arg(long)]
+        series: Option<PathBuf>,
+
+        /// Prior v2 baseline used to validate an accepted transition.
+        #[arg(long, requires = "series")]
+        previous_baseline: Option<PathBuf>,
+
+        /// JSON receipt describing reviewed semantic-boundary retirements.
+        #[arg(long, requires = "series")]
+        boundary_retirements: Option<PathBuf>,
+
+        /// Measured compiler and harness subject identity for baseline v2.
+        #[arg(long, requires = "series")]
+        compiler_subject_identity: Option<String>,
+
+        /// Measured invocation identity for baseline v2.
+        #[arg(long, requires = "series")]
+        invocation_identity: Option<String>,
+
+        /// Measured capability identity for baseline v2.
+        #[arg(long, requires = "series")]
+        capability_identity: Option<String>,
+
+        /// Measured environment identity for baseline v2.
+        #[arg(long, requires = "series")]
+        environment_identity: Option<String>,
+
+        /// Reviewed transition identity for baseline v2.
+        #[arg(long, requires = "series")]
+        accepted_transition_id: Option<String>,
+
+        /// Durable evidence bundle reference for baseline v2.
+        #[arg(long, requires = "series")]
+        evidence_bundle: Option<String>,
+
+        /// Check the report against the baseline. This is the default when --accept is absent.
+        #[arg(long, alias = "enforce")]
+        check: bool,
+
+        /// Accept the latest report as the baseline.
+        #[arg(long, conflicts_with = "check")]
+        accept: bool,
+    },
+
+    /// Run manual/advisory real-tree discovery + parse/compile smoke receipts.
+    Smoke {
+        /// Prepared upstream Perl source/build tree.
+        #[arg(long)]
+        perl_tree: PathBuf,
+
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
+
+        /// Upstream scheduler to run.
+        #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
+        runner: perl_core_harness::HarnessRunner,
+
+        /// Staged upstream Perl core profile.
+        #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessProfile::Base)]
+        profile: perl_core_harness::HarnessProfile,
+
+        /// Smoke modes to run, comma-separated. Defaults to parse,compile.
+        #[arg(long, value_enum, value_delimiter = ',', default_values_t = [
+            perl_core_harness::HarnessMode::Parse,
+            perl_core_harness::HarnessMode::Compile,
+        ])]
+        modes: Vec<perl_core_harness::HarnessMode>,
+
+        /// Directory for discovery, parse, compile, and smoke JSON receipts.
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+
+        /// Prebuilt perl-core-test-runner binary. Defaults to target/agent/perl-core-test-runner.
+        #[arg(long)]
+        runner_binary: Option<PathBuf>,
+
+        /// Requested upstream Perl ref recorded in the smoke receipt.
+        #[arg(long = "perl-ref")]
+        perl_ref: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ParserRatchetCommand {
+    /// Produce an initial parser-ratchet scaffold receipt.
+    Run {
+        /// Ratchet execution profile.
+        #[arg(long, value_enum)]
+        profile: parser_ratchet::RatchetProfile,
+
+        /// Explicit git revision for the base side.
+        #[arg(long)]
+        base: String,
+
+        /// Explicit git revision for the head side.
+        #[arg(long)]
+        head: String,
+
+        /// Output path for the receipt JSON.
+        #[arg(long)]
+        receipt: PathBuf,
+
+        /// Force selection in scaffold mode.
+        #[arg(long)]
+        force_selected: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GateReceiptsCommand {
+    /// List registered receipt schemas.
+    List {
+        /// Output format (default: human).
+        #[arg(long, value_enum, default_value = "human")]
+        format: GateReceiptsFormat,
+    },
+    /// Validate a single receipt JSON file.
+    Validate {
+        /// Path to receipt JSON file.
+        path: PathBuf,
+        /// Output format (default: human).
+        #[arg(long, value_enum, default_value = "human")]
+        format: GateReceiptsFormat,
+    },
+    /// Validate all receipt JSON files under a directory.
+    ValidateAll {
+        /// Root directory containing receipt JSON files.
+        dir: PathBuf,
+        /// Output format (default: human).
+        #[arg(long, value_enum, default_value = "human")]
+        format: GateReceiptsFormat,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GatePolicyCommand {
+    /// Validate policy/registry invariants for PR safety.
+    Check,
+    /// Show effective required/advisory gates for a profile.
+    Effective {
+        /// Profile to evaluate (pr/nightly/release).
+        #[arg(long, value_enum, default_value = "pr")]
+        profile: GatePolicyProfile,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ChangelogCommand {
+    /// Advisory check that a PR carries a changelog disposition (fragment or
+    /// exemption) and that any added fragment is schema-valid and renders.
+    Check {
+        /// Base ref to diff `HEAD` against (default: `origin/main`).
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Read the changed-file list from this file (one path per line)
+        /// instead of running `git diff`. CI passes the PR's changed files.
+        #[arg(long)]
+        changed_files: Option<PathBuf>,
+
+        /// Path to a file containing the PR body (for exemption-marker
+        /// detection). Falls back to the `CHANGELOG_PR_BODY` env var.
+        #[arg(long)]
+        pr_body_file: Option<PathBuf>,
+
+        /// Validate and render the sample fragments (`.changes/samples/`)
+        /// instead of checking a PR's changed files.
+        #[arg(long)]
+        self_test: bool,
+
+        /// Override the repository root. Testing seam; unused in CI.
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkflowsCommand {
+    /// Advisory check of `.github/workflows/*.yml` against the Workflow
+    /// Contracts policy: actionlint + zizmor + native local-ref/permissions/
+    /// pinning checks.
+    Check {
+        /// Base ref to resolve the policy boundary against (default:
+        /// `origin/main`).
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Skip actionlint/zizmor if not installed locally (degrades to an
+        /// INFO skip instead of an instrument failure); still runs all
+        /// native checks against the real tree. For local dev; CI always
+        /// installs both tools first and omits this flag.
+        #[arg(long)]
+        self_test: bool,
+
+        /// Write a JSON findings receipt to this path.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+
+        /// Override the repository root. Testing seam; unused in CI.
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum GateReceiptsFormat {
+    Human,
+    Json,
+}
+
+/// CLI-facing mode enum for freshness-check (maps to `tasks::freshness_check::FreshnessMode`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum FreshnessCheckMode {
+    Warn,
+    Block,
+}
+
+#[derive(Subcommand)]
+enum ZedTrainCommand {
+    /// Verify every stage-packet input is authority-classified, current, and
+    /// data-only, and that every packet generator is declared.
+    #[command(name = "source-check")]
+    SourceCheck {
+        /// Source-authority manifest JSON.
+        fixture: PathBuf,
+
+        /// Repository root used to resolve the packet-relative subjects.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/zed-source-authority.json")]
+        out: PathBuf,
+    },
+}
+
+/// Subcommands of `cargo xtask vim-lsp-subject` (#11411).
+#[derive(Debug, Subcommand)]
+enum VimLspSubjectCommand {
+    /// Read-only drift classification for the pinned vim-lsp subject.
+    Refresh {
+        /// Print the drift report (explicit positive findings when no drift).
+        #[arg(long)]
+        check: bool,
+
+        /// Write the bounded review artifact/proposal to this path (refuses .ci/).
+        #[arg(long)]
+        proposal: Option<PathBuf>,
+
+        /// Offline: classify a retained observation packet instead of probing the network.
+        #[arg(long)]
+        observation: Option<PathBuf>,
+
+        /// Explicit opt-in gate for live network observation (git ls-remote + depth-1 fetch).
+        #[arg(long)]
+        allow_network: bool,
+
+        /// Repository root used to resolve the landed authorities.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum GhGithubCommand {
+    /// Capture candidate identity and required contexts for one pull request.
+    Candidate {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Optional head SHA to compare with the live candidate.
+        #[arg(long)]
+        expected_head: Option<String>,
+        /// Normalized fixture JSON for deterministic offline tests.
+        #[arg(long, hide = true)]
+        fixture: Option<PathBuf>,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommandEvidenceCommand {
+    /// Run one command with explicit argv, cwd, candidate identity, and timeout.
+    Run {
+        /// Executable to spawn.
+        #[arg(long)]
+        program: String,
+        /// Working directory for the child process.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Candidate identity supplied by the caller (for example a head SHA).
+        #[arg(long)]
+        candidate: Option<String>,
+        /// Timeout bound in seconds. Omit for no timeout.
+        #[arg(long)]
+        timeout_secs: Option<u64>,
+        /// Directory for full stdout/stderr evidence.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+        /// Arguments passed verbatim after --.
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+    /// Run a small serial set of direct commands and retain one receipt per command.
+    ProofSet {
+        /// JSON proof-set specification.
+        #[arg(long)]
+        spec: PathBuf,
+        /// Emit JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum MergeReadyCommand {
+    /// Evaluate a live current-head fan-in snapshot without mutating GitHub state.
+    Evaluate {
+        /// JSON snapshot produced by the live GitHub collector.
+        #[arg(long)]
+        snapshot: PathBuf,
+        /// Optional output path for the deterministic evaluation JSON.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Emit a merge-readiness receipt for a PR.
+    ///
+    /// Without `--snapshot` the receipt is stamped `not_proven` because no
+    /// fan-in evidence (CI, review, changelog, protection) is evaluated — this
+    /// is the honest default and `verify` will not collapse it to `valid`.
+    /// Pass `--snapshot <path>` to derive the verdict from a live fan-in
+    /// snapshot so the receipt can be stamped `valid`.
+    Emit {
+        /// Pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Output path for receipt JSON.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+        /// Optional live current-head fan-in snapshot to derive the verdict
+        /// from. When omitted the receipt is stamped `not_proven`.
+        #[arg(long)]
+        snapshot: Option<PathBuf>,
+    },
+    /// Verify receipt freshness and verdict.
+    Verify {
+        /// Pull request number (advisory context).
+        #[arg(long)]
+        pr: Option<u64>,
+        /// Verify a fixture file instead of the default receipt path.
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum FeaturesCommand {
+    /// Sync documentation from features.toml
+    SyncDocs,
+
+    /// Verify features match capabilities
+    Verify,
+
+    /// Run feature catalog invariant checks
+    Invariants,
+
+    /// Generate compliance report
+    Report,
+
+    /// Regenerate crate-local features_sot.toml projections from the root
+    /// authority (#7029)
+    RegenVendored,
+}
+
+#[derive(Subcommand)]
+enum ReleaseCommand {
+    /// Retired front door (#15392): parsed preparation requests refuse non-zero
+    /// and route to `release-turnkey --version <VERSION>`.
+    Prepare {
+        /// Version to release
+        version: String,
+
+        /// Skip confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Create release evidence scaffold receipt list.
+    Evidence {
+        /// Release version without `v` prefix (for example: 0.13.0)
+        #[arg(long)]
+        version: String,
+        /// Output bundle directory.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Verify release evidence bundle and emit summary receipt.
+    VerifyEvidence {
+        /// Release version without `v` prefix (for example: 0.13.0)
+        #[arg(long)]
+        version: String,
+        /// Output summary receipt path.
+        #[arg(long)]
+        receipt: PathBuf,
+        /// Bundle directory to validate.
+        #[arg(long)]
+        bundle_dir: Option<PathBuf>,
+    },
+    /// Verify produced release archives ship the binaries downstream DAP
+    /// consumers depend on (`perl-dap` alongside `perllsp`), per
+    /// `docs/reference/downstream-dap-integrations.json`.
+    ArtifactCheck {
+        /// Directory holding the release archives and consolidated `SHA256SUMS`.
+        #[arg(long)]
+        dist: PathBuf,
+        /// Override the contract JSON (defaults to the in-repo file).
+        #[arg(long)]
+        contract: Option<PathBuf>,
+        /// Require every archive name to contain this release version.
+        #[arg(long)]
+        version: Option<String>,
+        /// Permit a dist that does not cover every contract target triple.
+        #[arg(long)]
+        allow_partial: bool,
+    },
+    /// Freeze one content-addressed no-publish candidate artifact packet
+    /// (`release_candidate_artifacts.v1`, #9092). Hashes already-packaged
+    /// files; does not rebuild or publish.
+    FreezeCandidateArtifacts {
+        /// Directory of packaged candidate files (archives, VSIX, checksums, SBOM).
+        #[arg(long)]
+        staging: PathBuf,
+        /// Topology document declaring archive/VSIX membership.
+        #[arg(long)]
+        topology: PathBuf,
+        /// Output path for the frozen packet JSON.
+        #[arg(long)]
+        output: PathBuf,
+        /// Candidate identity (for example `rc1`).
+        #[arg(long)]
+        candidate_id: String,
+        /// Producer workflow identity.
+        #[arg(long)]
+        producer_workflow: String,
+        /// Producer run identity.
+        #[arg(long)]
+        producer_run_id: String,
+        /// Producer attempt number (1-based).
+        #[arg(long, default_value_t = 1)]
+        producer_attempt: u32,
+        /// Transport artifact-set identity. Distinct from packet_digest.
+        #[arg(long)]
+        artifact_set_id: String,
+        /// Cargo.lock file hashed into packet inputs.
+        #[arg(long)]
+        cargo_lock: PathBuf,
+        /// npm lockfile hashed into packet inputs.
+        #[arg(long)]
+        npm_lock: PathBuf,
+        /// Toolchain identities as `name=version`. Repeatable.
+        #[arg(long = "toolchain", required = true)]
+        toolchains: Vec<String>,
+        /// Transport kind: `staging_directory` or `github_actions_artifact`.
+        #[arg(long, default_value = "staging_directory")]
+        transport_kind: String,
+        /// Optional RFC3339 transport expiry. Expiry forces regeneration.
+        #[arg(long)]
+        available_until: Option<String>,
+    },
+    /// Retrieve and verify a frozen candidate artifact packet without rebuilding.
+    VerifyCandidateArtifacts {
+        /// Frozen `release_candidate_artifacts.v1` packet.
+        #[arg(long)]
+        packet: PathBuf,
+        /// Retrieved frozen file set. Missing/expired transport fails closed.
+        #[arg(long)]
+        staging: PathBuf,
+        /// Optional verification receipt output.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+        /// Expected transport artifact-set identity.
+        #[arg(long)]
+        artifact_set_id: String,
+        /// Expected producer run identity.
+        #[arg(long)]
+        producer_run_id: Option<String>,
+        /// Optional RFC3339 clock override for expiry tests.
+        #[arg(long, hide = true)]
+        now: Option<String>,
+        /// Fail closed if a publisher attempts to rebuild instead of retrieving.
+        #[arg(long)]
+        rebuild_attempt: bool,
+        /// Topology document whose bytes must match the frozen digest.
+        #[arg(long)]
+        topology: PathBuf,
+    },
+    /// Validate schema, freeze/verify happy path, and every #9092 negative control.
+    CheckCandidateArtifacts,
+}
+
+#[derive(Subcommand)]
+enum PerlKwaliteeCommand {
+    /// Evaluate the indicators and fail on a non-clean verdict.
+    Check {
+        /// Evaluation profile.
+        #[arg(long, value_enum, default_value = "pr")]
+        profile: perl_kwalitee::PerlKwaliteeProfile,
+        /// Release `dist` directory (required to satisfy release indicators).
+        #[arg(long)]
+        dist: Option<PathBuf>,
+        /// Treat unverified mandatory indicators as failures.
+        #[arg(long)]
+        strict: bool,
+        /// Evaluate this distribution tree instead of the live workspace. In
+        /// this mode the crate reads only native + receipt-backed indicators
+        /// under the given root and does not run the live-repo gates
+        /// (`update-status`); use it to evaluate an arbitrary tree.
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
+    },
+    /// Evaluate the indicators and write JSON + Markdown receipts.
+    Report {
+        /// Evaluation profile.
+        #[arg(long, value_enum, default_value = "pr")]
+        profile: perl_kwalitee::PerlKwaliteeProfile,
+        /// Release `dist` directory (required to satisfy release indicators).
+        #[arg(long)]
+        dist: Option<PathBuf>,
+        /// JSON receipt output path.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Markdown receipt output path.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+        /// Evaluate this distribution tree instead of the live workspace
+        /// (see `check --repo-root`).
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
+    },
+    /// Explain a single indicator by id.
+    Explain {
+        /// The indicator id, e.g. `release.no_external_tooling`.
+        indicator: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum FixForwardCommand {
+    /// Classify a failing receipt into a typed fix-forward playbook.
+    Classify {
+        /// Path to a CI receipt JSON.
+        #[arg(long)]
+        receipt: PathBuf,
+
+        /// Output path for fix-forward receipt JSON.
+        #[arg(long)]
+        output: PathBuf,
+    },
+
+    /// List configured fix-forward playbooks.
+    ListPlaybooks,
+}
+
+#[derive(Subcommand)]
+enum MetricsCommand {
+    /// Emit parser phase timings and benchmark summary.
+    ParserStats {
+        /// Path to benchmark JSON (default: most recent in benchmarks/results/)
+        #[arg(long)]
+        input: Option<PathBuf>,
+        /// Write output to .ci/metrics/parser.json
+        #[arg(long)]
+        json: bool,
+    },
+    /// Parser accuracy scorecard — denominator inventory and placeholder scoring rows.
+    ParserAccuracy {
+        /// Write output to target/metrics/parser_accuracy.json.
+        #[arg(long)]
+        json: bool,
+        /// Validate the generated artifact contract without writing target output.
+        #[arg(long)]
+        check: bool,
+        /// Export committed parser status receipts under docs/project/status/.
+        #[arg(long)]
+        export_status_receipts: bool,
+        /// Fixture manifest path.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+        /// Output path for --json.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Metric cadence: pr, merge_gate, nightly, or release.
+        #[arg(long, default_value = "pr")]
+        cadence: String,
+    },
+    /// HIR lowering coverage inventory and status proof.
+    HirCoverage {
+        /// Write JSON receipt to target/metrics/hir_coverage.json or --output.
+        #[arg(long)]
+        json: bool,
+        /// Output path for --json.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Regenerate docs/project/status/hir_lowering.md.
+        #[arg(long)]
+        write_status: bool,
+        /// Validate docs/project/status/hir_lowering.md is current.
+        #[arg(long)]
+        check: bool,
+    },
+    /// LSP editor-intelligence scorecard — fixture inventory and pass rates.
+    LspStats {
+        /// Write output to .ci/metrics/editor_intelligence.json
+        #[arg(long)]
+        json: bool,
+        /// Directory containing ux_scenario_run receipt JSON files.
+        #[arg(long)]
+        receipt_dir: Option<PathBuf>,
+        /// Output path for --json (defaults to .ci/metrics/editor_ux.json).
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// [stub] Workspace index memory and timing statistics.
+    WorkspaceStats,
+    /// [stub] Diagnostics accuracy and latency statistics.
+    DiagnosticsStats,
+    /// Render memory plateau summaries and optional receipt JSON.
+    Memory {
+        /// Workload JSON emitted by scripts/repro_lsp_storm.py.
+        #[arg(long)]
+        workload_json: PathBuf,
+        /// Plateau summary JSON emitted by scripts/assert_rss_plateau.py.
+        #[arg(long)]
+        plateau_json: PathBuf,
+        /// Scenario id for the memory receipt.
+        #[arg(long)]
+        scenario: Option<String>,
+        /// Optional output path for the generated receipt JSON.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+        /// Git commit SHA attached to the receipt.
+        #[arg(long)]
+        commit: Option<String>,
+        /// Receipt event: pull_request, merge_group, push, or local.
+        #[arg(long, default_value = "local")]
+        event: String,
+        /// Render a markdown table instead of JSON to stdout.
+        #[arg(long)]
+        markdown: bool,
+    },
+    /// Release-health dashboard — debt ledger + merge-gate baseline summary.
+    ReleaseHealth {
+        /// Number of days of history reported in the receipt window field.
+        #[arg(long, default_value_t = 30)]
+        days: u64,
+        /// Write output to .ci/metrics/release-health.json
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check scorecard floor metrics against the committed baseline.
+    ///
+    /// Loads `.ci/metrics/baselines/<subsystem>.json` and compares against the
+    /// current metric receipt.  Exits nonzero on any floor breach.
+    RatchetCheck {
+        /// Subsystem name (e.g. "parser", "engineering_health").
+        subsystem: String,
+        /// Path to current-metrics JSON (default: target/receipts/metrics/<subsystem>.json).
+        #[arg(long)]
+        current: Option<PathBuf>,
+        /// Record this run in target/metrics/stable_wins/<subsystem>.json.
+        #[arg(long)]
+        record: bool,
+    },
+    /// Show which improvement metrics are stable enough to raise the floor baseline.
+    PromoteBaseline {
+        /// Subsystem name.
+        subsystem: String,
+        /// Minimum fractional improvement required (default: 1%).
+        #[arg(long, default_value_t = 0.01)]
+        delta_pct: f64,
+    },
+    /// Summarize a parser corpus sweep receipt (phase timings, slowest files,
+    /// median error density, first-error buckets).
+    ///
+    /// Reads the JSON written by `cargo xtask parser-corpus-sweep --receipt`
+    /// (or any other path via `--input`) and emits the same human-readable
+    /// report that the sweep prints at end-of-run — useful for analyzing
+    /// historical receipts without re-running the sweep.
+    SweepStats {
+        /// Path to a sweep receipt JSON. Defaults to
+        /// `target/receipts/system-corpus-sweep.json`.
+        #[arg(long)]
+        input: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompilerProfileCommand {
+    /// Validate the committed selected-upstream and LSP exactness profiles.
+    List,
+    /// Validate one profile document and print its stable identity.
+    Check { path: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum CompilerUpstreamCommand {
+    /// Upstream-derived conformance operations (#12532).
+    #[command(name = "upstream")]
+    Upstream {
+        #[command(subcommand)]
+        command: CompilerUpstreamStatusGroup,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompilerUpstreamStatusGroup {
+    /// Exact upstream-derived conformance status packets (#12532).
+    #[command(name = "status")]
+    Status {
+        #[command(subcommand)]
+        command: tasks::compiler_upstream_status::CompilerUpstreamStatusSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemoryTrendsCommand {
+    /// Render memory plateau trends from receipts and baseline files.
+    Render {
+        /// Directory containing current memory receipts or plateau JSON files.
+        #[arg(long, default_value = "target/memory")]
+        input_dir: PathBuf,
+        /// Additional historical receipt directories.
+        #[arg(long = "history-dir")]
+        history_dirs: Vec<PathBuf>,
+        /// Committed baseline file to include when present.
+        #[arg(long, default_value = ".ci/metrics/baselines/memory_plateau.json")]
+        baseline: PathBuf,
+        /// Output markdown path.
+        #[arg(long, default_value = "docs/project/status/memory_plateau_trends.md")]
+        output: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum NativeFormatCommand {
+    /// Run native formatter fixture checks and write JSON receipts.
+    Check {
+        /// Directory containing native formatter fixtures.
+        #[arg(long, default_value = "crates/perl-lsp-perltidy/tests/fixtures/native_formatter")]
+        fixtures: PathBuf,
+
+        /// Directory for native formatter receipts.
+        #[arg(long, default_value = "target/receipts/format")]
+        receipt_dir: PathBuf,
+    },
+    /// Run native formatter corpus checks and write JSON/markdown receipts.
+    Corpus {
+        /// Files or directories containing corpus Perl sources. Defaults to examples/perl,
+        /// tests/perl-corpus, and crates/perl-corpus/fixtures/parser_accuracy.
+        #[arg(long = "root")]
+        roots: Vec<PathBuf>,
+
+        /// Output JSON receipt path.
+        #[arg(long, default_value = "target/receipts/format/native-format-corpus.json")]
+        receipt: PathBuf,
+
+        /// Output markdown summary path.
+        #[arg(long, default_value = "target/receipts/format/native-format-corpus-summary.md")]
+        summary: PathBuf,
+    },
+    /// Classify a .perltidyrc-style profile against native formatter compatibility.
+    PerltidyCompat {
+        /// Path to the `.perltidyrc` profile to classify.
+        #[arg(long)]
+        profile: PathBuf,
+
+        /// Output JSON receipt path.
+        #[arg(long, default_value = "target/receipts/format/native-format-perltidy-compat.json")]
+        receipt: PathBuf,
+
+        /// Output markdown summary path.
+        #[arg(long, default_value = "target/receipts/format/native-format-perltidy-compat.md")]
+        summary: PathBuf,
+    },
+    /// Report the effective native formatter configuration surface.
+    Config {
+        /// Workspace root used to discover `.perl-lsp.toml`.
+        #[arg(long, default_value = ".")]
+        workspace_root: PathBuf,
+
+        /// Output JSON receipt path.
+        #[arg(long, default_value = "target/receipts/format/native-format-config.json")]
+        receipt: PathBuf,
+
+        /// Output markdown summary path.
+        #[arg(long, default_value = "target/receipts/format/native-format-config.md")]
+        summary: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum NativeCriticCommand {
+    /// Run native critic rules over Perl source files and write receipts.
+    Check {
+        /// Files or directories containing Perl sources. Defaults to examples/perl,
+        /// tests/perl-corpus, and crates/perl-corpus/fixtures/parser_accuracy.
+        #[arg(long = "root")]
+        roots: Vec<PathBuf>,
+
+        /// Minimum native critic severity to report.
+        #[arg(long, default_value_t = 3)]
+        severity: u8,
+
+        /// Native critic profile to run: recommended or strict.
+        #[arg(long, default_value = "recommended")]
+        profile: String,
+
+        /// Native rule IDs to include. Empty means all selected-profile rules.
+        #[arg(long = "include")]
+        include: Vec<String>,
+
+        /// Native rule IDs to exclude.
+        #[arg(long = "exclude")]
+        exclude: Vec<String>,
+
+        /// Output JSON receipt path.
+        #[arg(long, default_value = "target/receipts/native-tooling/native-critic-check.json")]
+        receipt: PathBuf,
+
+        /// Output markdown summary path.
+        #[arg(long, default_value = "target/receipts/native-tooling/native-critic-check.md")]
+        summary: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+// Native tooling status intentionally exposes many receipt path flags; boxing
+// clap fields would trade a diagnostic-only enum size for noisier CLI plumbing.
+#[allow(clippy::large_enum_variant)]
+enum NativeToolingCommand {
+    /// Write native formatter and critic status receipts.
+    Status {
+        /// Directory containing native formatter fixtures.
+        #[arg(long, default_value = "crates/perl-lsp-perltidy/tests/fixtures/native_formatter")]
+        format_fixtures: PathBuf,
+
+        /// Native-format fixture receipt to summarize.
+        #[arg(long, default_value = "target/receipts/format/native-format-fixtures.json")]
+        format_receipt: PathBuf,
+
+        /// Native-format corpus receipt to summarize.
+        #[arg(long, default_value = "target/receipts/format/native-format-corpus.json")]
+        format_corpus_receipt: PathBuf,
+
+        /// Native-format perltidy compatibility receipt to summarize.
+        #[arg(long, default_value = "target/receipts/format/native-format-perltidy-compat.json")]
+        format_perltidy_compat_receipt: PathBuf,
+
+        /// Native-format config receipt to summarize.
+        #[arg(long, default_value = "target/receipts/format/native-format-config.json")]
+        format_config_receipt: PathBuf,
+
+        /// Native critic perlcritic compatibility receipt to summarize.
+        #[arg(long, default_value = "target/receipts/native-tooling/perlcritic-compat.json")]
+        critic_perlcritic_compat_receipt: PathBuf,
+
+        /// Native critic check receipt to summarize.
+        #[arg(long, default_value = "target/receipts/native-tooling/native-critic-check.json")]
+        critic_check_receipt: PathBuf,
+
+        /// Native critic false-positive fixture receipt to summarize.
+        #[arg(
+            long,
+            default_value = "target/receipts/native-tooling/native-critic-false-positive.json"
+        )]
+        critic_false_positive_receipt: PathBuf,
+
+        /// Output path for native-tooling status JSON.
+        #[arg(long, default_value = "target/receipts/native-tooling/status.json")]
+        receipt: PathBuf,
+
+        /// Optional markdown status output.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
+
+    /// Classify a .perlcriticrc-style profile against native critic compatibility.
+    PerlcriticCompat {
+        /// Path to the `.perlcriticrc` profile to classify.
+        #[arg(long)]
+        profile: PathBuf,
+
+        /// Output JSON receipt path.
+        #[arg(long, default_value = "target/receipts/native-tooling/perlcritic-compat.json")]
+        receipt: PathBuf,
+
+        /// Output markdown summary path.
+        #[arg(long, default_value = "target/receipts/native-tooling/perlcritic-compat.md")]
+        summary: PathBuf,
+    },
+
+    /// Verify native tooling defaults do not silently shell out.
+    CheckDefaults {
+        /// Repository root used for policy source checks.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+
+    /// Render native tooling default-cutover readiness from status receipts.
+    Readiness {
+        /// Native-tooling status receipt to evaluate.
+        #[arg(long, default_value = "target/receipts/native-tooling/status.json")]
+        status_receipt: PathBuf,
+
+        /// Output path for native-tooling readiness JSON.
+        #[arg(long, default_value = "target/receipts/native-tooling/readiness.json")]
+        receipt: PathBuf,
+
+        /// Optional markdown readiness output.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CiSubcommand {
+    /// Run local/CI parity diagnostic: toolchain pin, components, git state, fmt drift, Perl, binary.
+    Doctor,
+
+    /// Emit an advisory changed-file proof-pack route receipt.
+    Route {
+        /// Git base ref used for changed-file detection.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Git head ref used for changed-file detection.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+
+        /// Output path for the route receipt.
+        #[arg(long, default_value = "target/receipts/ci-route.json")]
+        receipt: PathBuf,
+
+        /// Output path for the Markdown route summary.
+        #[arg(long, default_value = "target/receipts/ci-route.md")]
+        summary: PathBuf,
+
+        /// Explicit changed file path. Repeat for tests or disconnected runs; when omitted, git diff is used.
+        #[arg(long = "changed-file")]
+        changed_file: Vec<String>,
+
+        /// Schema version for the route receipt envelope. Must match a supported value
+        /// (currently `ci-route.v1`); an unknown version fails closed with an error so
+        /// the consumer never silently coerces a mismatched envelope.
+        #[arg(long, default_value = "ci-route.v1")]
+        envelope_version: String,
+    },
+
+    /// Explain the blocking CI check failure with a local reproduction path.
+    ///
+    /// Reads gate receipts under `target/receipts/` and emits a compact summary:
+    /// blocking check name, failure class, source file:line, and the exact
+    /// reproduce command.
+    ///
+    /// Degrades gracefully when no receipts exist — prints an inconclusive message
+    /// and hints to run `cargo xtask gates` first.
+    ///
+    /// Use `--run-id <id>` to download and explain a CI run's gate receipt (#2652).
+    /// Use `--base <path>` to compare against a base-branch receipt (#2653).
+    #[command(name = "explain")]
+    Explain {
+        /// Receipt JSON path to parse (default: target/receipts/receipt.json).
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+        /// Download and explain a CI run's gate receipt via `gh run download`.
+        #[arg(long, value_name = "RUN_ID")]
+        run_id: Option<String>,
+        /// Base-branch receipt JSON path for exists_on_base comparison.
+        #[arg(long, value_name = "BASE_RECEIPT")]
+        base: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PrSubcommand {
+    /// Validate a PR title matches the required format and references an open issue.
+    ///
+    /// Mirrors the `validate-title` GitHub Actions check for local pre-push use.
+    /// Pass a title string directly or omit to read from `git log -1 --pretty=%s`.
+    #[command(name = "title-check")]
+    TitleCheck {
+        /// PR title to validate. If omitted, reads the HEAD commit subject.
+        title: Option<String>,
+
+        /// Emit a JSON receipt instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+
+        /// Exit 1 on warnings (e.g. closed issue) in addition to hard failures.
+        #[arg(long)]
+        strict: bool,
+
+        /// Skip the GitHub issue-existence API call.
+        #[arg(long)]
+        no_gh: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PrLedgerCommand {
+    /// Generate skeleton reconciliation ledger rows from open GitHub PRs.
+    ///
+    /// Shells to `gh pr list --json ...` for each repo, emits skeleton rows
+    /// with classification:"unclassified" and evidence:[] for scout fill-in,
+    /// and writes a combined pr-ledger.md summary table.
+    Generate {
+        /// One or more repositories (owner/name). Repeatable.
+        #[arg(long = "repo", required = true)]
+        repos: Vec<String>,
+        /// Output directory for generated artifacts.
+        #[arg(long, default_value = "target/reconciliation")]
+        out: PathBuf,
+        /// Optional fixture JSON (for testing without live gh).
+        #[arg(long, conflicts_with = "paginated_fixture")]
+        fixture: Option<PathBuf>,
+        /// Optional paginated fixture JSON: array of pages, each page an
+        /// array of PR objects. Used to drive the multi-page code path in
+        /// tests without shelling to gh.
+        #[arg(long, conflicts_with = "fixture")]
+        paginated_fixture: Option<PathBuf>,
+        /// Pin `observed_at` to a deterministic anchor. Receipts are then
+        /// byte-identical across runs over the same canonical input. Test-only.
+        #[arg(long)]
+        deterministic_clock: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SyncDivergenceCommand {
+    /// Validate the target-only commit reconciliation ledger and write a receipt.
+    Check {
+        /// Exact swarm source ref; resolved as the patch-equivalence upstream.
+        #[arg(long)]
+        source: String,
+        /// Completed reconciliation boundary ref; resolved as the exclusive history floor.
+        #[arg(long)]
+        boundary: String,
+        /// Release-repo target ref (normally the release repository head).
+        #[arg(long)]
+        target: String,
+        /// Machine-readable reconciliation ledger.
+        #[arg(long)]
+        ledger: PathBuf,
+        /// Output source-sync receipt JSON.
+        #[arg(long)]
+        receipt: PathBuf,
+    },
+    /// Scaffold a v2 reconciliation ledger with one unresolved row per
+    /// target-unique non-merge commit; it invents no terminal disposition.
+    Scaffold {
+        /// Exact swarm source ref; resolved as the patch-equivalence upstream.
+        #[arg(long)]
+        source: String,
+        /// Completed reconciliation boundary ref; resolved as the exclusive history floor.
+        #[arg(long)]
+        boundary: String,
+        /// Release-repo target ref (normally the release repository head).
+        #[arg(long)]
+        target: String,
+        /// Output reconciliation ledger JSON (schema v2).
+        #[arg(long)]
+        ledger: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum IntegrationCommand {
+    /// Emacs support train tooling: the exact-tree context engine (CTXENG
+    /// #11756) over the stable emacs_train.v1 graph, the E01R revision
+    /// ledger and the checked population mappings. Offline only.
+    Emacs {
+        #[command(subcommand)]
+        command: EmacsIntegrationCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EmacsIntegrationCommand {
+    /// Operate on the Emacs support train's checked contracts.
+    Train {
+        #[command(subcommand)]
+        command: EmacsTrainSubcommand,
+    },
+    /// Execute one exact-client-subject actual-host run through the shared
+    /// hermetic Emacs runner (#7778). Every exact input is digest-verified
+    /// before launch; an unavailable host is a typed error, never a skip.
+    HostRun {
+        /// Exact client subject id (see
+        /// `xtask::emacs_host_run::EmacsClientSubject::known_ids`).
+        #[arg(long)]
+        subject: String,
+
+        /// Absolute path of the exact Emacs executable to run.
+        #[arg(long)]
+        emacs: PathBuf,
+
+        /// Absolute path of the exact perllsp candidate executable.
+        #[arg(long)]
+        candidate: PathBuf,
+
+        /// Absolute path of the exact client library file. For bundled
+        /// subjects it may be omitted and is resolved inside the Emacs
+        /// installation (ambiguity fails closed); released subjects require
+        /// it and never search the installation.
+        #[arg(long)]
+        client_source: Option<PathBuf>,
+
+        /// Absolute path of the exact released client package file. Required
+        /// for released subjects (package identity is part of the subject);
+        /// rejected for bundled subjects.
+        #[arg(long)]
+        client_package: Option<PathBuf>,
+
+        /// Output directory for the hermetic layout, artifacts, and receipt.
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Host run timeout in milliseconds (default 180000).
+        #[arg(long, default_value_t = 180_000)]
+        timeout_ms: u64,
+    },
+    /// Governed Emacs host-journey and fixture/cell manifest operations
+    /// (#11768). Offline, deterministic, and second-run clean; validating or
+    /// explaining cells proves no host behavior.
+    Journeys {
+        #[command(subcommand)]
+        command: EmacsJourneysCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EmacsJourneysCommand {
+    /// Validate the compiled journey manifest against its fail-closed laws
+    /// and print a deterministic summary receipt.
+    Check,
+    /// Explain one governed identity: `summary`, a stable cell id
+    /// (`emacs.<class>.<name>`), or a registered journey-class token.
+    Explain {
+        /// Journey class, stable cell id, or `summary`.
+        subject: String,
+    },
+}
+
+/// Union of the Emacs train command families over the stable
+/// `emacs_train.v1` graph: the exact-tree context engine (CTXENG #11756)
+/// and the checked leaf-spec disposition compiler (#11751).
+#[derive(Subcommand)]
+enum EmacsTrainSubcommand {
+    /// Exact-tree context engine operations (#11756).
+    #[command(flatten)]
+    Context(emacs_train_context::EmacsTrainCommand),
+    /// Checked leaf-spec disposition compiler (#11751): plan, compile,
+    /// check and explain per-node spec dispositions.
+    Specs {
+        #[command(subcommand)]
+        command: EmacsTrainSpecsCommand,
+    },
+    /// E06 actor-packet adapter (#11719): project the joined train state
+    /// into the shared #10872/#10881 packets. Fail-closed and offline.
+    #[command(flatten)]
+    Packet(emacs_train_packet::EmacsTrainPacketCommand),
+}
+
+#[derive(Subcommand)]
+enum IssuePlanSubcommand {
+    /// Report-only audit of explicit issue work packets and `#0000` references.
+    /// Always exits 0; lifecycle labels are not audit authority.
+    Audit {
+        /// JSON fixture: an array of issues (offline / testing).
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+
+        /// Repository (owner/name) for live `gh issue list`.
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// Scope the live query to a label (repeatable).
+        #[arg(long = "label")]
+        labels: Vec<String>,
+
+        /// Receipt JSON output path.
+        #[arg(long, default_value = "target/receipts/issue-plan-audit.json")]
+        receipt: PathBuf,
+
+        /// Do not write the receipt to disk.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "human")]
+        format: IssuePlanOutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum EmacsTrainSpecsCommand {
+    /// Print the deterministic disposition plan for every stable node
+    /// (report-only; a partial ledger is the normal pre-population state).
+    Plan {
+        /// Stable train manifest path (default: the E01 emacs_train.v1 graph).
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path (default: .spec/11717-emacs-train-specs/).
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "human")]
+        format: SpecsOutputFormat,
+    },
+
+    /// Compile one node (or `--all`) into a checked disposition record.
+    /// Fails closed on any law violation; a disposition change of an
+    /// existing record requires `--readjudicate`.
+    Compile {
+        /// Node id, alias or issue number (omit with `--all`).
+        subject: Option<String>,
+
+        /// Compile the whole denominator from manifest-embedded
+        /// dispositions (all-or-nothing; skips already-compiled nodes).
+        #[arg(long)]
+        all: bool,
+
+        /// Stable train manifest path.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path to write.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+
+        /// Reviewed disposition override (records provenance `adjudicated`).
+        #[arg(long, value_enum)]
+        disposition: Option<LeafSpecDisposition>,
+
+        /// Existing checked bundle path for a `SPEC_COMPILED` adjudication.
+        #[arg(long)]
+        compiled_spec: Option<PathBuf>,
+
+        /// Reviewed reason (required for RETURN_TO_ISSUE / NOT_PROVEN).
+        #[arg(long)]
+        reviewed_reason: Option<String>,
+
+        /// Allow replacing an existing record's disposition.
+        #[arg(long)]
+        readjudicate: bool,
+    },
+
+    /// Fail-closed validation of the whole disposition denominator.
+    Check {
+        /// Stable train manifest path.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "human")]
+        format: SpecsOutputFormat,
+    },
+
+    /// Print the disposition and full leaf-contract trace for one node.
+    Explain {
+        /// Node id, alias or issue number.
+        subject: String,
+
+        /// Stable train manifest path.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Disposition ledger path.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DevexCommand {
+    /// Plan the cheapest correct local proof commands for the current diff.
+    Plan {
+        /// Git base ref used for changed-file detection.
+        #[arg(long, default_value = "auto")]
+        base: String,
+    },
+
+    /// Emit a JSON receipt for the current local proof plan.
+    Receipt {
+        /// Git base ref used for changed-file detection.
+        #[arg(long, default_value = "auto")]
+        base: String,
+
+        /// Output path for the JSON receipt.
+        #[arg(long, default_value = "target/devex/local-proof.json")]
+        output: PathBuf,
+    },
+
+    /// Show a local PR cockpit summary for the current diff.
+    Cockpit {
+        /// Git base ref used for changed-file detection.
+        #[arg(long, default_value = "auto")]
+        base: String,
+
+        /// Output path for the JSON receipt refreshed by the cockpit.
+        #[arg(long, default_value = "target/devex/local-proof.json")]
+        receipt: PathBuf,
+    },
+
+    /// Print a paste-ready PR proof packet for the current diff.
+    PrBody {
+        /// Git base ref used for changed-file detection.
+        #[arg(long, default_value = "auto")]
+        base: String,
+
+        /// Receipt path referenced by the generated PR body.
+        #[arg(long, default_value = "target/devex/local-proof.json")]
+        receipt: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum PerlCorpusTrainCommand {
+    /// Validate the closed schema, every named graph law, the shuffled
+    /// determinism control, every discriminating invalid fixture, and the
+    /// freshness of the generated projections.
+    Check,
+
+    /// Regenerate the deterministic Markdown/JSON/DOT/Mermaid projections
+    /// under the bundle's `projections/` directory, or verify them.
+    Graph {
+        /// Fail if the committed projections differ from a fresh render.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Render one bounded static node packet. Makes no readiness claim.
+    #[command(name = "explain-static")]
+    ExplainStatic {
+        /// Node identifier, e.g. `pc_opened_asset_7693`.
+        node: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleTrainCommand {
+    /// Project every stable node into its typed exact current-tree state.
+    ///
+    /// Implementation presence stays independent from dependency readiness,
+    /// evidence profiles, and support stages. Nodes without a semantic probe
+    /// in this slice are reported `not_proven`, never guessed.
+    Status {
+        /// Exact tree to bind. This slice accepts `HEAD` only (the current
+        /// checkout); arbitrary-tree checkout is a recorded residual.
+        #[arg(long, default_value = "HEAD")]
+        tree: String,
+    },
+
+    /// Print the safe offline parallel frontier: all and only hard-ready,
+    /// role-valid, conflict-recorded leaves with visible limitations.
+    Next {
+        /// Exact tree to bind. This slice accepts `HEAD` only (the current
+        /// checkout); arbitrary-tree checkout is a recorded residual.
+        #[arg(long, default_value = "HEAD")]
+        tree: String,
+    },
+
+    /// Read-only live frontier over the checked train (#11627 C03): join
+    /// candidate/stack/worktree/check/review observation to the offline
+    /// projection and recommend one safe action per writer/conflict surface.
+    /// Only `refresh` (without `--from-fixture`) touches the network, strictly
+    /// through read-only observation commands; nothing mutates anything.
+    Live {
+        #[command(subcommand)]
+        command: ModuleTrainLiveCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleTrainLiveCommand {
+    /// Observe live Git/GitHub state and write the immutable
+    /// `module_train_live.v1` snapshot. The only networked subcommand;
+    /// `--from-fixture` normalizes a stored raw observation instead (offline,
+    /// deterministic, test path).
+    Refresh {
+        /// Snapshot output path.
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Normalize this raw-observation fixture instead of observing live
+        /// state (offline; never touches the network).
+        #[arg(long)]
+        from_fixture: Option<PathBuf>,
+    },
+
+    /// Validate a snapshot offline: schema, semantic digest, vocabularies,
+    /// one-action-per-conflict-surface, and stored-action consistency.
+    Check {
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
+
+    /// Project the safe live frontier from a validated snapshot.
+    Next {
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
+
+    /// Compose one node's static packet with its live addendum: why this
+    /// action now, unavailable facts and their consequence, next bounded
+    /// action, closeout route.
+    Explain {
+        /// Node id (for example `C03`).
+        node: String,
+
+        /// Snapshot path.
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum GoalsCommand {
+    /// RETIRED: selects no work and emits a retirement receipt.
+    /// The tracked goal portfolio is gone; live GitHub issues, PRs, reviews,
+    /// and checks are the authority. Always exits 0 with `selected_work = none`.
+    Next {
+        /// Accepted for compatibility and ignored. The tracked program files
+        /// this once referenced no longer exist.
+        #[arg(long)]
+        program: Option<String>,
+
+        /// Accepted for compatibility and ignored. The retirement receipt is
+        /// generated from no input; no fixture or live `gh` data is read.
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+
+        /// Emit machine-readable JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// RETIRED: reports no findings and emits a retirement receipt.
+    /// The tracked milestone ledgers this diagnosed no longer exist; live
+    /// GitHub is the authority. Always exits 0 with `finding_count = 0`.
+    Reconcile {
+        /// Accepted for compatibility and ignored. The tracked program files
+        /// this once referenced no longer exist.
+        #[arg(long)]
+        program: Option<String>,
+
+        /// Accepted for compatibility and ignored. The retirement receipt is
+        /// generated from no input; no fixture or live `gh` data is read.
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+
+        /// Emit machine-readable JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum QueueCommand {
+    /// Capture the open PR queue into a stable JSON snapshot document.
+    Snapshot {
+        /// Output file for the generated snapshot JSON.
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Optional fixture JSON to parse instead of live GitHub data.
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+    },
+
+    /// Classify master queue health into GREEN/PENDING/RED modes.
+    Health {
+        /// Output path for queue-health receipt JSON.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+
+        /// Fixture JSON input for deterministic health classification.
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SmokeCommand {
+    /// Verify textDocument/inlineCompletion over stdio against a built binary.
+    #[command(name = "inline-completion")]
+    InlineCompletion {
+        /// Path to the perl-lsp binary to execute.
+        #[arg(long)]
+        binary: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentFlowCommand {
+    /// Check provider-local skill metadata, routes, and shared operating contracts.
+    Check {
+        /// Restrict skill-local route and guidance checks to one skill;
+        /// shared metadata, contracts, and scenario checks remain global.
+        #[arg(long)]
+        skill: Option<String>,
+        /// Output format: human or json.
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
+    /// Check deterministic shared route, continuation, and guidance controls.
+    Scenarios {
+        /// Output format: human or json.
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// Lease lifecycle commands.
+    Lease {
+        #[command(subcommand)]
+        command: AgentLeaseCommand,
+    },
+    /// Orchestration ledger commands.
+    Ledgers {
+        #[command(subcommand)]
+        command: AgentLedgersCommand,
+    },
+    /// Receipt commands.
+    Receipt {
+        #[command(subcommand)]
+        command: AgentReceiptCommand,
+    },
+    /// Manage leased local worktrees for agent orchestration.
+    Worktree {
+        #[command(subcommand)]
+        command: AgentWorktreeCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorktreeRecoveryCommand {
+    /// Produce the evidence-only plan for explicit repository and candidate paths.
+    Plan {
+        /// Repository whose common Git directory owns the candidate evidence.
+        #[arg(long, value_name = "PATH")]
+        repository: PathBuf,
+
+        /// One candidate directory to inspect; candidates are never auto-discovered.
+        #[arg(long, value_name = "PATH")]
+        candidate: PathBuf,
+
+        /// Render typed evidence as JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentLedgersCommand {
+    /// Validate docs/agents/ledgers/*.jsonl against orchestration role contracts.
+    Validate {
+        /// Override ledger directory (default: docs/agents/ledgers/).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Output format: `human` (default) or `json`.
+        #[arg(long, default_value = "human")]
+        format: String,
+        /// Require every ledger file to declare this schema id (e.g.
+        /// `workflow-outcome.v1`). Without it, each file is validated against the
+        /// schema it declares.
+        #[arg(long, value_name = "ID")]
+        expected_schema: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentLeaseCommand {
+    /// Acquire a lease from a typed task JSON.
+    Acquire {
+        /// Path to task JSON.
+        #[arg(long)]
+        task: PathBuf,
+        /// Path to write lease JSON.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Verify lease against current snapshot state.
+    Verify {
+        /// Path to lease JSON.
+        #[arg(long)]
+        lease: PathBuf,
+        /// Path to current snapshot JSON.
+        #[arg(long)]
+        current: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentReceiptCommand {
+    /// Validate a receipt against its lease and mutation rules.
+    Validate {
+        /// Path to receipt JSON.
+        #[arg(long)]
+        receipt: PathBuf,
+    },
+}
+
+#[derive(ValueEnum, Clone)]
+enum PrepCratesMode {
+    Core,
+    All,
+}
+
+#[derive(ValueEnum, Clone)]
+enum UxScorecardOutputFormat {
+    Human,
+    Json,
+}
+
+fn main() -> Result<()> {
+    color_eyre::install()?;
+    // The 236-variant `Commands` derive makes clap's parse matcher overflow the
+    // 1 MB Windows main-thread stack in debug builds (STATUS_STACK_OVERFLOW,
+    // #15918); Linux's 8 MB default hides it. Run the CLI on a worker thread
+    // with an explicit 64 MiB stack — cross-platform, no CLI surface change.
+    const CLI_STACK_SIZE: usize = 64 * 1024 * 1024;
+    let worker = std::thread::Builder::new()
+        .name("xtask-cli".to_owned())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(run_cli_main);
+    match worker {
+        Ok(handle) => match handle.join() {
+            Ok(result) => result,
+            // Propagate a panic from the CLI thread with its original payload.
+            Err(payload) => std::panic::resume_unwind(payload),
+        },
+        Err(error) => Err(eyre!("failed to spawn xtask CLI thread: {error}")),
+    }
+}
+
+fn run_cli_main() -> Result<()> {
+    run_cli(Cli::parse())
+}
+
+fn run_cli(cli: Cli) -> Result<()> {
+    match cli.command {
+        Commands::List => {
+            print_top_level_commands();
+            Ok(())
+        }
+        Commands::Ci { command } => match command {
+            None => ci::run(),
+            Some(CiSubcommand::Doctor) => ci_doctor::run(),
+            Some(CiSubcommand::Route {
+                base,
+                head,
+                receipt,
+                summary,
+                changed_file,
+                envelope_version,
+            }) => ci_route::run(ci_route::CiRouteArgs {
+                base,
+                head,
+                receipt,
+                summary,
+                changed_files: changed_file,
+                envelope_version,
+            }),
+            Some(CiSubcommand::Explain { receipt, run_id, base }) => {
+                ci_explain::run(receipt, run_id, base)
+            }
+        },
+        Commands::StackIncrement { command } => tasks::ci_stack_increment::run(command),
+        Commands::CheckOnly => ci::check_only(),
+        Commands::CheckAgentContext => check_agent_context::run(),
+        Commands::CheckLintPolicy => check_lint_policy::run(),
+        Commands::CheckToolchain { doctor } => check_toolchain::run(doctor),
+        Commands::CheckDevexDocs => devex_docs::run(),
+        Commands::CheckNativeProductSurface { strict } => native_product_surface::run_with(strict),
+        Commands::CheckProviderConfidenceMatrix => provider_confidence_matrix::run(),
+        Commands::CheckSupportClaims => provider_confidence_matrix::run_support_claims(),
+        Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
+        Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
+        Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
+        Commands::CheckDeadCodeApiLedger { write } => dead_code_api_ledger::run(write),
+        Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
+        Commands::Activation { command } => activation::run(command),
+        Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
+        Commands::StandaloneDiagnostics { command } => standalone_diagnostics::run(command),
+        Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
+        Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
+        Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
+        Commands::CheckCompilerPerformanceReceipt => compiler_performance_receipt::run(),
+        Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::CandidateSecurityContract { contract } => {
+            tasks::candidate_security_contract::run(&contract)
+        }
+        Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
+        Commands::PerlCorpusTrain { command } => match command {
+            PerlCorpusTrainCommand::Check => perl_corpus_train::run_check(),
+            PerlCorpusTrainCommand::Graph { check } => perl_corpus_train::run_graph(check),
+            PerlCorpusTrainCommand::ExplainStatic { node } => {
+                perl_corpus_train::run_explain_static(&node)
+            }
+        },
+        Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
+        Commands::ProductHealth { command } => product_health_status::run(command),
+        Commands::CheckAgentImplementationPacket { update_golden } => {
+            agent_implementation_packet::run(update_golden)
+        }
+        Commands::RenderAgentImplementationPacket { format, input } => {
+            let text = std::fs::read_to_string(&input).map_err(|error| {
+                eyre!("failed to read packet document {}: {error}", input.display())
+            })?;
+            let doc: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                eyre!("failed to parse packet document {}: {error}", input.display())
+            })?;
+            let rendered = agent_implementation_packet::render_to_string(&doc, format)?;
+            println!("{rendered}");
+            Ok(())
+        }
+        Commands::CheckVimLspSpecializedObservations { file } => {
+            let validated = xtask::vim_lsp_specialized_driver::validate_observation_file(&file)
+                .map_err(|error| eyre!("{error:#}"))?;
+            println!("validated {validated} specialized vim/vim-lsp observations");
+            Ok(())
+        }
+        Commands::VimHostToolchain { command } => match command {
+            VimHostToolchainCommand::Provision { output, vim_lsp_source, environment } => {
+                let repo_root = utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                let inputs = xtask::vim_host_toolchain::ProvisionInputs {
+                    output_root: output,
+                    repo_root: repo_root.clone(),
+                    authority: xtask::vim_host_toolchain::SubjectAuthoritySource::RepoRoot(
+                        repo_root,
+                    ),
+                    vim_lsp_source,
+                    vim_archive_source: None,
+                    vim_archive_expected_sha256: None,
+                    vim_executable_expected_sha256: None,
+                    execution_environment: environment,
+                };
+                let outcome = xtask::vim_host_toolchain::provision(
+                    &inputs,
+                    &xtask::vim_host_toolchain::probe_vim_version,
+                )
+                .map_err(|error| eyre!("{error}"))?;
+                println!("{}", xtask::vim_host_toolchain::render_handoff(&outcome));
+                Ok(())
+            }
+            VimHostToolchainCommand::Verify { manifest } => {
+                xtask::vim_host_toolchain::verify_layout(
+                    &manifest,
+                    &xtask::vim_host_toolchain::probe_vim_version,
+                )
+                .map_err(|error| eyre!("{error}"))?;
+                println!(
+                    "verified: {} identity holds for {}",
+                    xtask::vim_host_toolchain::SCHEMA_VERSION,
+                    manifest.display()
+                );
+                Ok(())
+            }
+        },
+        Commands::EditorCompat { command } => match command {
+            EditorCompatCommand::Vim { command } => match command {
+                VimEditorCompatCommand::Run {
+                    subject,
+                    journey,
+                    fixture_variant,
+                    vim,
+                    vim_lsp_dir,
+                    candidate,
+                    out,
+                    timeout_ms,
+                } => {
+                    let repo_root =
+                        utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                    if journey == "save-format" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_save_format_run::SaveFormatFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_save_format_run::host_save_format_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim save-format run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim save-format run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if journey == "recovery-generations" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_recovery_run::RecoveryFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_recovery_run::host_recovery_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim recovery-generations run complete (variant {}): \
+                             result={:?} cleanup={:?} driver_complete={} \
+                             driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with \
+                                         the typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                // The canonical recovery journey's honest
+                                // top-line is partial by #11386 law: the
+                                // adverse-exit cell never passes, so anything
+                                // else (a forced pass, a fail, or missing
+                                // evidence) is an oracle fault.
+                                if *result
+                                    != xtask::editor_client_compat::ObservationResult::Partial
+                                {
+                                    return Err(eyre!(
+                                        "vim recovery-generations run did not reach its \
+                                         honest partial disposition: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if journey == "host-reopen-lifecycle" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_lifecycle_run::LifecycleFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_lifecycle_run::host_lifecycle_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim host-reopen-lifecycle run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} failure_reason={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         failure_reason={:?}",
+                                        outcome.failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim host-reopen-lifecycle run did not pass: {result:?} \
+                                         failure_reason={:?}",
+                                        outcome.failure_reason
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if journey == "freshness-generations" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_freshness_run::FreshnessFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_freshness_run::host_freshness_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim freshness-generations run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim freshness-generations run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if journey == "bootstrap-diagnostics" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_diagnostics_run::DiagnosticsFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_diagnostics_run::host_diagnostics_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim bootstrap-diagnostics run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim bootstrap-diagnostics run did not pass: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if journey != "host-lifecycle" {
+                        return Err(eyre!(
+                            "unknown journey {journey}: known journeys are host-lifecycle, \
+                             bootstrap-diagnostics, freshness-generations, recovery-generations, \
+                             save-format, host-reopen-lifecycle"
+                        ));
+                    }
+                    let outcome = xtask::vim_host_run::host_run_from_cli(
+                        &repo_root,
+                        &subject,
+                        vim,
+                        vim_lsp_dir,
+                        candidate,
+                        out,
+                        timeout_ms,
+                    )
+                    .map_err(|error| eyre!("{error:#}"))?;
+                    println!(
+                        "vim host run complete: result={:?} cleanup={:?} driver_complete={} \
+                         receipt={}",
+                        outcome.result,
+                        outcome.process_cleanup,
+                        outcome.driver_complete,
+                        outcome.receipt_path.display()
+                    );
+                    if outcome.result != xtask::editor_client_compat::ObservationResult::Pass {
+                        return Err(eyre!("vim host run did not pass: {:?}", outcome.result));
+                    }
+                    Ok(())
+                }
+            },
+        },
+        Commands::CheckAgentReviewPacket { update_golden } => {
+            agent_review_packet::run(update_golden)
+        }
+        Commands::RenderAgentReviewPacket { format, input } => {
+            let text = std::fs::read_to_string(&input).map_err(|error| {
+                eyre!("failed to read review document {}: {error}", input.display())
+            })?;
+            let doc: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                eyre!("failed to parse review document {}: {error}", input.display())
+            })?;
+            let rendered = agent_review_packet::render_to_string(&doc, format)?;
+            println!("{rendered}");
+
+            Ok(())
+        }
+        Commands::CheckOracleCompare => oracle_runner::run(),
+        Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
+        Commands::CheckLsp318Claims => lsp_318_claims::run(),
+        Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
+        Commands::GenerateQuickormApiMatrix { check } => quickorm_api_matrix::run(check),
+        Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
+        Commands::RepoTopology { check } => repository_topology::run(check),
+        Commands::CompatInventory { check } => compat_inventory::run(check),
+        Commands::KwaliteeInventory { check, scaffold, root } => {
+            kwalitee_namespace_inventory::run(check, scaffold, root)
+        }
+        Commands::CompletionCandidates { command } => completion_candidates::run(command),
+        Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
+            protocol_type_substrate_matrix::run(check)
+        }
+        Commands::CheckWorkspaceSymbolClasses => workspace_symbol_classes::run(),
+        Commands::ModuleTrain { command } => match command {
+            ModuleTrainCommand::Status { tree } => module_train::run_status(&tree),
+            ModuleTrainCommand::Next { tree } => module_train::run_next(&tree),
+            ModuleTrainCommand::Live { command } => match command {
+                ModuleTrainLiveCommand::Refresh { output, from_fixture } => {
+                    module_train_live::run_refresh(&output, from_fixture.as_deref())
+                }
+                ModuleTrainLiveCommand::Check { snapshot } => {
+                    module_train_live::run_check(&snapshot)
+                }
+                ModuleTrainLiveCommand::Next { snapshot } => module_train_live::run_next(&snapshot),
+                ModuleTrainLiveCommand::Explain { node, snapshot } => {
+                    module_train_live::run_explain(&node, &snapshot)
+                }
+            },
+        },
+
+        Commands::Goals { command } => match command {
+            GoalsCommand::Next { program, fixture, json } => goals::next(program, fixture, json),
+            GoalsCommand::Reconcile { program, fixture, json } => {
+                goals::reconcile(program, fixture, json)
+            }
+        },
+        Commands::SessionReceipt { json, program, lane, out, warn_threshold } => {
+            session_receipt::run(json, program, lane, out, warn_threshold)
+        }
+        Commands::Queue { command } => match command {
+            QueueCommand::Snapshot { out, fixture } => queue_snapshot::run_snapshot(out, fixture),
+            QueueCommand::Health { receipt, fixture } => {
+                queue_health::run(queue_health::QueueHealthArgs { receipt, fixture })
+            }
+        },
+        Commands::Pr { command } => match command {
+            PrSubcommand::TitleCheck { title, json, strict, no_gh } => {
+                tasks::pr::title_check::run(tasks::pr::title_check::TitleCheckConfig {
+                    title,
+                    json,
+                    strict,
+                    no_gh,
+                })
+            }
+        },
+        Commands::PrCloseProof { commit, canonical_main, substance_grep, format } => {
+            let fmt = if format == "json" {
+                tasks::pr_close_proof::CloseProofFormat::Json
+            } else {
+                tasks::pr_close_proof::CloseProofFormat::Human
+            };
+            let reachable = tasks::pr_close_proof::run(tasks::pr_close_proof::CloseProofConfig {
+                commit,
+                canonical_main,
+                substance_grep,
+                format: fmt,
+            })?;
+            if !reachable {
+                // Exit 2: not ancestor — distinct from 1 (error).
+                // CLOSE_PROOF_POLICY.md: landing proof failed; this result
+                // carries no issue-close authority in either direction.
+                std::process::exit(2);
+            }
+            Ok(())
+        }
+        Commands::PrLedger { command } => match command {
+            PrLedgerCommand::Generate {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            } => tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            }),
+        },
+        Commands::SyncDivergence { command } => match command {
+            SyncDivergenceCommand::Check { source, boundary, target, ledger, receipt } => {
+                tasks::sync_divergence::check(tasks::sync_divergence::CheckConfig {
+                    source,
+                    boundary,
+                    target,
+                    ledger,
+                    receipt,
+                    working_directory: None,
+                })
+            }
+            SyncDivergenceCommand::Scaffold { source, boundary, target, ledger } => {
+                tasks::sync_divergence::scaffold(tasks::sync_divergence::ScaffoldConfig {
+                    source,
+                    boundary,
+                    target,
+                    ledger,
+                    working_directory: None,
+                })
+            }
+        },
+        Commands::Build { release, features, c_scanner, rust_scanner } => {
+            build::run(release, features, c_scanner, rust_scanner)
+        }
+        Commands::Test { release, suite, features, verbose, coverage } => {
+            test::run(release, suite, features, verbose, coverage)
+        }
+        Commands::Smoke { command } => match command {
+            SmokeCommand::InlineCompletion { binary } => inline_completion_smoke::run(binary),
+        },
+        Commands::InlineCompletionSmoke { binary } => inline_completion_smoke::run(binary),
+        Commands::InlineCompletionQuality { receipt } => inline_completion_quality::run(receipt),
+        Commands::SemanticInlineReceipts { receipt, quality_receipt, next_edit_receipt } => {
+            semantic_inline_receipts::run(receipt, quality_receipt, next_edit_receipt)
+        }
+        Commands::SemanticInlineNextEdit { receipt } => semantic_inline_next_edit::run(receipt),
+        Commands::SupportedEditorInlineSmoke { receipt } => {
+            supported_editor_inline_smoke::run(receipt)
+        }
+        Commands::LspUxSmoke { fixture, receipt, binary, no_build } => {
+            lsp_ux_smoke::run(lsp_ux_smoke::LspUxSmokeConfig {
+                fixture_root: fixture,
+                emit_receipt: receipt,
+                binary,
+                no_build,
+            })
+        }
+        Commands::Badges { check } => badges::run(check),
+        Commands::CoverageBaseline {
+            lcov,
+            receipt,
+            codecov,
+            patch_coverage,
+            patch_base,
+            scope,
+            check,
+        } => quality_baseline::run(quality_baseline::CoverageBaselineArgs {
+            lcov,
+            receipt,
+            codecov,
+            patch_coverage,
+            patch_base,
+            scope,
+            check,
+        }),
+        Commands::QualityGate {
+            mode,
+            exception_policy,
+            ripr_receipt,
+            ripr_pr_receipt,
+            review_receipt,
+            coverage_receipt,
+            codecov,
+            patch_coverage,
+            ripr_base,
+            ripr_head,
+            receipt,
+            summary,
+            check,
+        } => quality_gate::run(quality_gate::QualityGateArgs {
+            mode,
+            exception_policy,
+            ripr_receipt,
+            ripr_pr_receipt,
+            review_receipt,
+            coverage_receipt,
+            codecov,
+            patch_coverage,
+            ripr_base,
+            ripr_head,
+            receipt,
+            summary,
+            check,
+            quiet: false,
+        }),
+        Commands::RiprPr { root, base, head, pr_head, check } => {
+            ripr_evidence::ripr_pr(&root, &base, &head, pr_head.as_deref(), check)
+        }
+        Commands::RiprPlus { root, receipt, suppressions, check } => {
+            ripr_evidence::ripr_plus(&root, &receipt, &suppressions, check)
+        }
+        Commands::RiprReviewComments { root, base, head, pr_head, timeout_seconds, check } => {
+            ripr_evidence::ripr_review_comments(
+                &root,
+                &base,
+                &head,
+                pr_head.as_deref(),
+                timeout_seconds,
+                check,
+            )
+        }
+        Commands::RiprPrSummary { check } => ripr_evidence::ripr_pr_summary(check),
+        Commands::RiprAnnotations { comments, out, check } => {
+            ripr_evidence::ripr_annotations(&comments, &out, check)
+        }
+        Commands::ImpactedEvidence { pr_evidence, labels, labels_csv, check } => {
+            ripr_evidence::impacted_evidence(&pr_evidence, &labels, labels_csv.as_deref(), check)
+        }
+        Commands::Bench { name, save, output } => bench::run(name, save, output),
+        Commands::BenchRun { output, quick, category } => {
+            benchmarks::run_benchmarks(output, quick, category)
+        }
+        Commands::BenchCompare { fail_on_regression } => {
+            benchmarks::compare_benchmarks(fail_on_regression)
+        }
+        Commands::BenchFormat { receipt, markdown } => {
+            benchmarks::format_benchmarks(receipt, markdown)
+        }
+        Commands::BenchExtract { base_path, output } => {
+            benchmarks::extract_criterion(base_path, output)
+        }
+        Commands::BenchAlert { format, check } => benchmarks::alert_benchmarks(format, check),
+        Commands::BenchAlertTest => benchmarks::test_alert_system(),
+        Commands::InjectShaAssets {
+            version,
+            owner,
+            repo,
+            prefix,
+            checksums,
+            brew_out,
+            asset_map_out,
+        } => inject_sha_assets::run(inject_sha_assets::InjectShaAssetsConfig {
+            version,
+            owner,
+            repo,
+            prefix,
+            checksums,
+            brew_out,
+            asset_map_out,
+        }),
+        Commands::UpdateHomebrew { version, owner, repo, prefix, output } => {
+            update_homebrew::run(update_homebrew::UpdateHomebrewConfig {
+                version,
+                owner,
+                repo,
+                prefix,
+                output,
+            })
+        }
+        Commands::Compare {
+            c_only,
+            rust_only,
+            scanner_only,
+            validate_only,
+            output_dir,
+            check_gates,
+            report,
+        } => compare::run(
+            c_only,
+            rust_only,
+            scanner_only,
+            validate_only,
+            output_dir,
+            check_gates,
+            report,
+        ),
+        Commands::Doc { open, all_features } => doc::run(open, all_features),
+        Commands::Check { clippy, fmt, all } => check::run(clippy, fmt, all),
+        Commands::Fmt { check, package, staged } => {
+            if staged {
+                fmt::run_staged()
+            } else {
+                fmt::run(check, package)
+            }
+        }
+        #[cfg(feature = "legacy")]
+        Commands::Corpus { path, scanner, diagnose, test } => {
+            corpus::run(path, scanner, diagnose, test)
+        }
+        #[cfg(feature = "parser-tasks")]
+        Commands::Highlight { path, scanner } => highlight::run(path, scanner),
+        Commands::Clean { all } => clean::run(all),
+        Commands::DeadCode { mode, strict } => dead_code::run(DeadCodeConfig { mode, strict }),
+        Commands::DependencyHygiene { mode } => {
+            dependency_hygiene::run(DependencyHygieneConfig { mode })
+        }
+        #[cfg(feature = "parser-tasks")]
+        Commands::Bindings { header, output } => bindings::run(header, output),
+        Commands::Dev { watch, port } => dev::run(watch, port),
+        Commands::DevexDoctor => devex_doctor::run(),
+        Commands::Devex { command } => match command {
+            DevexCommand::Plan { base } => devex_plan::run(devex_plan::DevexPlanConfig { base }),
+            DevexCommand::Receipt { base, output } => {
+                devex_plan::write_receipt(devex_plan::DevexReceiptConfig { base, output })
+            }
+            DevexCommand::Cockpit { base, receipt } => {
+                devex_plan::cockpit(devex_plan::DevexCockpitConfig { base, receipt })
+            }
+            DevexCommand::PrBody { base, receipt } => {
+                devex_plan::pr_body(devex_plan::DevexPrBodyConfig { base, receipt })
+            }
+        },
+        Commands::AgentFlow { command } => match command {
+            AgentFlowCommand::Check { skill, format } => {
+                agent_flow::run(agent_flow::CheckConfig { skill, format })
+            }
+            AgentFlowCommand::Scenarios { format } => {
+                agent_flow::run_scenarios(agent_flow::ScenarioConfig { format })
+            }
+        },
+        Commands::PrePushPlan { base, head, format } => pre_push_plan::run(base, head, format),
+        Commands::ParseRust { source, sexp, ast, bench } => {
+            parse_rust::run(source, sexp, ast, bench)
+        }
+        Commands::Release { command } => match command {
+            ReleaseCommand::Prepare { version, yes } => release::run(version, yes),
+            ReleaseCommand::Evidence { version, out } => release_evidence::scaffold(&version, &out),
+            ReleaseCommand::VerifyEvidence { version, receipt, bundle_dir } => {
+                let effective_bundle_dir = bundle_dir.unwrap_or_else(|| {
+                    PathBuf::from(format!("target/release-evidence/v{version}"))
+                });
+                release_evidence::verify(&version, &effective_bundle_dir, &receipt)
+            }
+            ReleaseCommand::ArtifactCheck { dist, contract, version, allow_partial } => {
+                release_artifact_check::run(release_artifact_check::Config {
+                    dist,
+                    contract,
+                    version,
+                    allow_partial,
+                })
+            }
+            ReleaseCommand::FreezeCandidateArtifacts {
+                staging,
+                topology,
+                output,
+                candidate_id,
+                producer_workflow,
+                producer_run_id,
+                producer_attempt,
+                artifact_set_id,
+                cargo_lock,
+                npm_lock,
+                toolchains,
+                transport_kind,
+                available_until,
+            } => release_candidate_artifacts::freeze(release_candidate_artifacts::FreezeConfig {
+                staging,
+                topology,
+                output,
+                candidate_id,
+                producer_workflow,
+                producer_run_id,
+                producer_attempt,
+                artifact_set_id,
+                cargo_lock,
+                npm_lock,
+                toolchains: parse_toolchain_map(&toolchains)?,
+                transport_kind: transport_kind.parse()?,
+                available_until,
+            }),
+            ReleaseCommand::VerifyCandidateArtifacts {
+                packet,
+                staging,
+                receipt,
+                artifact_set_id,
+                producer_run_id,
+                now,
+                rebuild_attempt,
+                topology,
+            } => release_candidate_artifacts::verify(release_candidate_artifacts::VerifyConfig {
+                packet,
+                staging,
+                receipt,
+                artifact_set_id,
+                producer_run_id,
+                now: parse_optional_rfc3339(now)?,
+                rebuild_attempt,
+                topology,
+            }),
+            ReleaseCommand::CheckCandidateArtifacts => release_candidate_artifacts::check(),
+        },
+        Commands::ReleaseNotes { tag, output, root } => release_notes::run(tag, output, root),
+        Commands::ReleaseTurnkey {
+            version,
+            positional_version,
+            prerelease,
+            dry_run,
+            skip_crates,
+            skip_extension,
+            skip_docker,
+            base_branch,
+            no_auto_merge,
+            no_wait_pr_merge,
+            no_wait_release,
+            workflow_timeout,
+        } => release_turnkey::run(release_turnkey::ReleaseTurnkeyConfig {
+            version,
+            positional_version,
+            prerelease,
+            dry_run,
+            skip_crates,
+            skip_extension,
+            skip_docker,
+            base_branch,
+            no_auto_merge,
+            no_wait_pr_merge,
+            no_wait_release,
+            workflow_timeout,
+        }),
+        Commands::PrepCratesIoLaunch { mode } => {
+            prep_crates_io_launch::run(matches!(mode, PrepCratesMode::All))
+        }
+        Commands::TestHeredoc { release, verbose } => {
+            // Run heredoc tests using the test module with heredoc suite
+            test::run(
+                release,
+                Some(TestSuite::Heredoc),
+                Some(vec!["pure-rust".to_string()]),
+                verbose,
+                false,
+            )
+        }
+        Commands::TestEdgeCases { bench, coverage, test } => edge_cases::run(bench, coverage, test),
+        Commands::CiAuditWorkflows => ci_audit_workflows::run(),
+        Commands::CiCacheInventory { check, receipt, manifest, api_version } => {
+            ci_cache_inventory::run(check, receipt, manifest, &api_version)
+        }
+        Commands::WorkflowAuthorityInventory { receipt } => {
+            workflow_authority_inventory::run(receipt)
+        }
+        Commands::WorkflowPolicyLint { root, receipt, fixture, check_lane_whitelist } => {
+            workflow_policy_lint::run(workflow_policy_lint::WorkflowPolicyLintConfig {
+                root,
+                receipt,
+                fixture,
+                check_lane_whitelist,
+            })
+        }
+        Commands::CiMeasure => ci_measure::run(),
+        Commands::ClippyCostMeasure { receipt, scopes, states, timeout_secs } => {
+            clippy_cost_measure::run(clippy_cost_measure::ClippyCostMeasureArgs {
+                receipt,
+                scopes,
+                states,
+                timeout_secs,
+            })
+        }
+        Commands::CiCostMonitor { days, json } => ci_metrics::run_cost_monitor(days, json),
+        Commands::CiBaseline { branch, days, limit, output } => {
+            ci_metrics::run_ci_baseline(branch, days, limit, output)
+        }
+        Commands::CiScope { base, subject, root, format } => {
+            ci_scope::run(ci_scope::CiScopeConfig { base, subject, root, format })
+        }
+        Commands::CiSubject {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            root,
+        } => tasks::ci_subject::run(tasks::ci_subject::CiSubjectConfig {
+            event_name,
+            event_path,
+            repository,
+            github_sha,
+            base_sha,
+            head_sha,
+            receipt,
+            root,
+        }),
+        Commands::CiContract { base, head, subject, receipt, summary } => {
+            ci_contract::run(ci_contract::CiContractConfig {
+                base,
+                head,
+                subject,
+                receipt,
+                summary,
+            })
+        }
+        Commands::CommandEvidence { command } => match command {
+            CommandEvidenceCommand::Run {
+                program,
+                cwd,
+                candidate,
+                timeout_secs,
+                out_dir,
+                json,
+                args,
+            } => command_evidence::run(command_evidence::CommandEvidenceConfig {
+                program,
+                args,
+                cwd,
+                candidate,
+                timeout: timeout_secs.map(std::time::Duration::from_secs),
+                out_dir,
+                json_only: json,
+            }),
+            CommandEvidenceCommand::ProofSet { spec, json } => {
+                command_evidence::run_proof_set(&spec, json)
+            }
+        },
+        Commands::IntegrationProof { spec, receipt } => {
+            integration_proof::run_from_file(&spec, &receipt)
+        }
+        Commands::Integration { command } => match command {
+            IntegrationCommand::Emacs { command } => match command {
+                EmacsIntegrationCommand::Train { command } => match command {
+                    EmacsTrainSubcommand::Context(inner) => emacs_train_context::run(inner),
+                    EmacsTrainSubcommand::Packet(inner) => emacs_train_packet::run(inner),
+                    EmacsTrainSubcommand::Specs { command } => match command {
+                        EmacsTrainSpecsCommand::Plan { manifest, ledger, format } => {
+                            emacs_train_specs::plan(manifest, ledger, format)
+                        }
+                        EmacsTrainSpecsCommand::Compile {
+                            subject,
+                            all,
+                            manifest,
+                            ledger,
+                            disposition,
+                            compiled_spec,
+                            reviewed_reason,
+                            readjudicate,
+                        } => emacs_train_specs::compile(emacs_train_specs::CompileConfig {
+                            subject,
+                            all,
+                            manifest_path: manifest,
+                            ledger_path: ledger,
+                            disposition,
+                            compiled_spec,
+                            reviewed_reason,
+                            readjudicate,
+                        }),
+                        EmacsTrainSpecsCommand::Check { manifest, ledger, format } => {
+                            emacs_train_specs::check(manifest, ledger, format)
+                        }
+                        EmacsTrainSpecsCommand::Explain { subject, manifest, ledger } => {
+                            emacs_train_specs::explain(&subject, manifest, ledger)
+                        }
+                    },
+                },
+                EmacsIntegrationCommand::HostRun {
+                    subject,
+                    emacs,
+                    candidate,
+                    client_source,
+                    client_package,
+                    out,
+                    timeout_ms,
+                } => {
+                    let root =
+                        crate::utils::project_root().map_err(|error| eyre!(error.to_string()))?;
+                    let outcome = xtask::emacs_host_run::host_run_from_cli(
+                        &root,
+                        &subject,
+                        emacs,
+                        candidate,
+                        client_source,
+                        client_package,
+                        out,
+                        timeout_ms,
+                    )
+                    .map_err(|error| eyre!(error.to_string()))?;
+                    println!(
+                        "host run result {:?} (process_cleanup {:?}, driver_complete {}); receipt: {}",
+                        outcome.result,
+                        outcome.process_cleanup,
+                        outcome.driver_complete,
+                        outcome.receipt_path.display()
+                    );
+                    if outcome.result == xtask::editor_client_compat::ObservationResult::Pass {
+                        Ok(())
+                    } else {
+                        Err(eyre!("host run did not pass: {:?}", outcome.result))
+                    }
+                }
+                EmacsIntegrationCommand::Journeys { command } => match command {
+                    EmacsJourneysCommand::Check => {
+                        let summary = xtask::emacs_host_journeys::validate_compiled_registry()
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&summary)
+                                .map_err(|error| eyre!("{error:#}"))?
+                        );
+                        Ok(())
+                    }
+                    EmacsJourneysCommand::Explain { subject } => {
+                        // Explain validates registry laws only; on-disk subject authority remains
+                        // the responsibility of Check.
+                        let cells = xtask::emacs_host_journeys::registry()
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        xtask::emacs_host_journeys::validate_registry(&cells)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let (class, matched) = xtask::emacs_host_journeys::lookup(&cells, &subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let mut explained = serde_json::json!({
+                            "schema_version": xtask::emacs_host_journeys::MANIFEST_SCHEMA_VERSION,
+                            "subject": subject,
+                        });
+                        if let Some(class) = class {
+                            explained["journey_class"] = serde_json::Value::String(class);
+                        }
+                        let mut rows = Vec::new();
+                        for cell in matched {
+                            let digest = xtask::emacs_host_journeys::cell_digest(cell)
+                                .map_err(|error| eyre!("{error:#}"))?;
+                            rows.push(serde_json::json!({
+                                "cell": cell,
+                                "digest": digest,
+                            }));
+                        }
+                        explained["cells"] = serde_json::Value::Array(rows);
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&explained)
+                                .map_err(|error| eyre!("{error:#}"))?
+                        );
+                        Ok(())
+                    }
+                },
+            },
+        },
+        Commands::RepoHygiene { base, head, receipt, summary } => {
+            repo_hygiene::run(repo_hygiene::RepoHygieneConfig { base, head, receipt, summary })
+        }
+        Commands::ChangeSet { base, head, format, root } => {
+            change_set::run(change_set::ChangeSetConfig { base, head, format, root })
+        }
+        Commands::ChangeSetParity { format } => {
+            shadow_parity::run(shadow_parity::ShadowParityConfig { format })
+        }
+        Commands::SeamDiff { base, head, format, root } => {
+            seam_diff::run(seam_diff::SeamDiffConfig { base, head, format, root })
+        }
+        Commands::CiPrSummary { base, dry_run } => {
+            ci_pr_summary::run(ci_pr_summary::CiPrSummaryConfig { base, dry_run })
+        }
+
+        Commands::WorkflowTriggerLint { policy, receipt, fixture, format } => {
+            match workflow_trigger_lint::run(policy, receipt, fixture, format) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    eprintln!("workflow-trigger-lint: instrument failure: {error}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Commands::CheckVersionSync => check_version_sync::run(),
+        Commands::PublicationDrift { input, repo_root, out } => {
+            xtask::publication_drift::run_with_paths(input, repo_root, out)
+        }
+        Commands::ZedTrain { command } => match command {
+            ZedTrainCommand::SourceCheck { fixture, repo_root, out } => {
+                xtask::source_authority::run_with_paths(fixture, repo_root, out)
+            }
+        },
+        Commands::VimLspSubject {
+            command:
+                VimLspSubjectCommand::Refresh { check, proposal, observation, allow_network, repo_root },
+        } => {
+            let root = if repo_root.as_path() == std::path::Path::new(".") {
+                crate::utils::project_root().map_err(|error| eyre!(error.to_string()))?
+            } else {
+                repo_root
+            };
+            match xtask::vim_lsp_subject_refresh::run(
+                xtask::vim_lsp_subject_refresh::RefreshOptions {
+                    check,
+                    proposal,
+                    observation,
+                    allow_network,
+                    repo_root: root,
+                },
+            ) {
+                Ok(outcome) if outcome.instrument_failed => {
+                    eprintln!("vim-lsp-subject refresh: instrument failure — not no-drift");
+                    std::process::exit(2);
+                }
+                Ok(_) => Ok(()),
+                Err(error) => Err(eyre!(error.to_string())),
+            }
+        }
+        Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
+        Commands::CheckFromRaw => ci_policy::check_from_raw(),
+        Commands::CheckTautology { check, root, policy, receipt } => {
+            check_tautology::run(check_tautology::CheckTautologyArgs {
+                check,
+                root,
+                policy,
+                receipt,
+            })
+        }
+        Commands::CheckMemoryLifecyclePolicy => ci_policy::check_memory_lifecycle(),
         Commands::CheckMemoryRetainedOwnerDrift { base, report_only } => {
             ci_policy::check_memory_retained_owner_drift(ci_policy::RetainedOwnerDriftConfig {
                 base,
