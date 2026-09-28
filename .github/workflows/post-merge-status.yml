@@ -40,7 +40,10 @@ jobs:
     name: Generate bounded status payload
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Slow-mode step 5 reaches 19m39s against the 20m job budget; 6 of the last
+    # 8 runs were killed at exactly job_start+20m (check-run annotation "The job
+    # has exceeded the maximum execution time of 20m0s"). Evidence: #16568.
+    timeout-minutes: 30
     permissions:
       contents: read
     outputs:
