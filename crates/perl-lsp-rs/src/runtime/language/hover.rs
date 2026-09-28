@@ -689,6 +689,20 @@ impl LspServer {
                         }
                     }
                 }
+                // The analyzer may return the containing sub when a special variable
+                // has no declaration. Let the existing special-variable card answer
+                // instead of presenting that unrelated sub as the hovered entity.
+                if matches!(
+                    sym.kind,
+                    crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                ) && token != sym.name
+                {
+                    let special = Self::extract_special_variable(text, offset)
+                        .unwrap_or_else(|| token.clone());
+                    if Self::get_special_variable_hover(&special).is_some() {
+                        return false;
+                    }
+                }
                 // If the token matches the symbol name this IS a direct hover on that
                 // symbol (e.g. hovering on `sub run` where cursor is on `run`).
                 if token == sym.name || token.is_empty() {
