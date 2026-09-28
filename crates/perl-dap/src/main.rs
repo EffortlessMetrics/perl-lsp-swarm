@@ -221,16 +221,14 @@ fn build_session_packet(program: &Path) -> DebugSessionPacket {
 /// scripts, and a warning on stderr is invisible to anything checking exit
 /// status. A missing program is a caller error, not a degraded mode (#16553).
 fn require_readable_program(program: &Path) -> anyhow::Result<()> {
+    let displayed = program.display();
     let metadata = std::fs::metadata(program)
-        .map_err(|error| anyhow::anyhow!("program '{}' cannot be read: {error}", program.display()))?;
+        .map_err(|error| anyhow::anyhow!("program '{displayed}' cannot be read: {error}"))?;
     // `metadata` succeeds for a directory, and `read_to_string` does not - so a
     // bare existence check would let a directory through and land exactly in
     // the silent-degenerate-plan case this guard exists to prevent.
     if !metadata.is_file() {
-        return Err(anyhow::anyhow!(
-            "program '{}' is not a regular file",
-            program.display()
-        ));
+        return Err(anyhow::anyhow!("program '{displayed}' is not a regular file"));
     }
     Ok(())
 }
@@ -569,10 +567,7 @@ mod tests {
 
     #[test]
     fn a_readable_program_is_accepted() -> anyhow::Result<()> {
-        let dir = std::env::temp_dir().join(format!(
-            "dap-readable-program-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("dap-readable-program-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         let program = dir.join("real.pl");
         std::fs::write(&program, "print 1;\n")?;
@@ -599,16 +594,11 @@ mod tests {
         // `program.exists()` check would let through. `build_session_packet`
         // would then silently drop it (read_to_string fails on a directory)
         // and emit the very degenerate plan this guard exists to prevent.
-        let dir = std::env::temp_dir().join(format!(
-            "dap-directory-not-a-program-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir()
+            .join(format!("dap-directory-not-a-program-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("fixture directory must be creatable");
         let outcome = require_readable_program(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(
-            outcome.is_err(),
-            "a directory is not a readable program and must be refused"
-        );
+        assert!(outcome.is_err(), "a directory is not a readable program and must be refused");
     }
 }
