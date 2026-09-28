@@ -4,9 +4,10 @@ use super::reader::{ReaderRetirement, TcpOutputDropAccounting, spawn_reader};
 use anyhow::{Context, Result};
 use perl_lsp_rs_core::transport::framing::frame;
 use std::io::Write;
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// TCP attach session
 ///
@@ -31,6 +32,40 @@ pub struct TcpAttachSession {
     /// later delivering stale events or clobbering a replacement connection's
     /// state (#9521).
     reader_retirement: Arc<ReaderRetirement>,
+}
+
+/// Wait budget for the post-timeout refusal probe (#16555).
+///
+/// The probe is a blocking [`TcpStream::connect`], which reports
+/// `ConnectionRefused` as soon as the OS delivers the refusal. Loopback
+/// refusals conclude within a few seconds on Windows; if the probe has not
+/// concluded within this budget the caller keeps the honest (but unrefined)
+/// timeout wording instead of guessing.
+const REFUSAL_PROBE_WAIT: Duration = Duration::from_secs(3);
+
+/// Blocking follow-up connect that decides whether a timed-out attach target
+/// is actively refusing connections (#16555).
+///
+/// Returns `true` only when the connect completes with `ConnectionRefused` —
+/// proof that nothing is listening at the address. Any other outcome (an
+/// established connection, an unrelated error, or no verdict within
+/// [`REFUSAL_PROBE_WAIT`]) returns `false` so the caller keeps the timeout
+/// wording. When the budget expires the probe thread detaches: a connect to a
+/// dead address concludes on its own when the OS gives up, so the thread never
+/// outlives the attempt by more than the platform's own connect deadline.
+fn connection_refused_probe(addr: SocketAddr) -> bool {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("tcp-attach-refusal-probe".to_string())
+        .spawn(move || {
+            let refused = match TcpStream::connect(addr) {
+                Ok(_) => false,
+                Err(error) => error.kind() == std::io::ErrorKind::ConnectionRefused,
+            };
+            let _ = sender.send(refused);
+        })
+        .is_ok();
+    spawned && receiver.recv_timeout(REFUSAL_PROBE_WAIT).unwrap_or(false)
 }
 
 impl TcpAttachSession {
@@ -95,6 +130,27 @@ impl TcpAttachSession {
         let err = last_err.unwrap_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no addresses to connect")
         });
+        // #16555: under a short deadline, `connect_timeout` can report a dead
+        // port as `TimedOut` even though the peer actively refused the
+        // connection — on Windows the refusal signal can arrive after the
+        // deadline (measured ~2s for loopback), so any timeout shorter than
+        // that misreports "nothing is listening" as "the peer was slow" and
+        // sends users tuning timeouts instead of starting the debuggee.
+        // Before giving up with the timeout wording, spend one bounded
+        // blocking probe on the first resolved address for the definitive
+        // refusal verdict.
+        if err.kind() == std::io::ErrorKind::TimedOut
+            && let Some(addr) = config.resolved_addrs.first()
+            && connection_refused_probe(*addr)
+        {
+            anyhow::bail!(
+                "Nothing is listening at {}:{} (connection refused), or the peer \
+                 did not accept within {}ms.",
+                config.host,
+                config.port,
+                timeout.as_millis()
+            );
+        }
         anyhow::bail!("Failed to connect to any resolved address for '{}': {}", config.host, err);
     }
 
@@ -280,6 +336,52 @@ mod tests {
 
         let _ = session.disconnect();
         server.join().map_err(|e| format!("server thread failed: {e:?}"))??;
+        Ok(())
+    }
+
+    /// #16555: the refusal probe is negative for a live listener — a working
+    /// target must never be classified as refused.
+    #[test]
+    fn connection_refused_probe_is_negative_for_a_live_listener()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let addr = listener.local_addr()?;
+        assert!(
+            !connection_refused_probe(addr),
+            "a live listener must not be classified as refusing connections"
+        );
+        Ok(())
+    }
+
+    /// #16555: with a short timeout, a port that actively refuses connections
+    /// must be reported as refused — not misreported as "connection timed
+    /// out". The listener only reserves a port and is dropped before the
+    /// attach, so nothing is listening when the connect runs.
+    #[test]
+    fn connect_to_a_refused_port_reports_refusal_under_a_short_timeout()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+
+        let mut session = TcpAttachSession::new();
+        let mut config = TcpAttachConfig::new("127.0.0.1".to_string(), port).with_timeout(500);
+        let err = match session.connect(&mut config) {
+            Ok(()) => {
+                return Err("nothing is listening at the port, but the attach connected".into());
+            }
+            Err(err) => err,
+        };
+        let message = format!("{err:#}");
+
+        assert!(
+            message.to_lowercase().contains("refused"),
+            "a refused port must be reported as refused, got: {message}"
+        );
+        assert!(
+            !message.to_lowercase().contains("timed out"),
+            "a refused port must not be misreported as a timeout, got: {message}"
+        );
         Ok(())
     }
 }

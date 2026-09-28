@@ -38,8 +38,33 @@ pub(super) fn is_valid_perl_interpreter(perl_interpreter: &str) -> bool {
     }
 }
 
+/// Whether an interpreter spelling names an explicit filesystem location
+/// instead of a bare executable name to look up on `PATH` (#16552).
+///
+/// Any embedded `/` or `\` separator is an explicit path for this purpose; a
+/// bare name (`perl`, `perl5.38`) is the only shape the OS resolves through
+/// `PATH`. Windows drive-relative spellings without a separator (`C:perl`) are
+/// not classified as explicit paths — they are rare and the PATH wording stays
+/// the conservative default for them.
+fn is_explicit_interpreter_path(interpreter: &str) -> bool {
+    interpreter.contains('/') || interpreter.contains('\\')
+}
+
 pub(super) fn format_perl_spawn_error(perl_interpreter: &str, error: &std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::NotFound {
+        // #16552: an interpreter spelling that contains a path separator was
+        // never looked up on PATH — the user named an explicit location and the
+        // spawn misspelled or misplaced it. Saying "not available on PATH"
+        // there is false and sets the reader on the wrong repair, so explicit
+        // paths get their own wording first; only a bare executable name is a
+        // genuine PATH lookup and keeps the install guidance below.
+        if is_explicit_interpreter_path(perl_interpreter) {
+            return format!(
+                "Perl executable not found at '{perl_interpreter}'. Check the `perlPath` \
+                    in your launch.json for a typo, or remove `perlPath` to use the \
+                    detected Perl."
+            );
+        }
         #[cfg(windows)]
         {
             return format!(

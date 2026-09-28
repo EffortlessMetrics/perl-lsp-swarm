@@ -415,11 +415,16 @@ pub(crate) fn secondary_capability_floor_message(command: &str) -> Option<String
         "cancel" => ("supportsCancelRequest", "#9074 + #8712 + #7568"),
         _ => return None,
     };
+    // #16557: the re-enable gate expression is receipt material, not editor
+    // copy — a six-issue sum in a refusal popup is unreadable to an editor
+    // user. The user-facing message keeps the capability name, the #9581
+    // provenance, and the no-state-changed assurance; the full gate goes to
+    // the log, where the receipts belong.
+    tracing::debug!(command, gate, "secondary-capability floor refusal (#9581)");
     Some(format!(
         "`{command}` is unsupported: `{capability}` is false for this adapter \
-         (#9581 secondary-capability floor; exact semantics unproven, \
-         re-enable gate: {gate}). The request was rejected before any debugger \
-         interaction, so no state was read or changed."
+         (#9581). The request was rejected before any debugger interaction, \
+         so no state was read or changed."
     ))
 }
 
@@ -465,13 +470,18 @@ fn value_format_invalid_message(command: &str, field: &str) -> String {
 
 /// The explicit unsupported disposition for a floored `format` option (#9581).
 pub(crate) fn value_format_unsupported_message(command: &str) -> String {
+    // #16557: same copy-tiering as the secondary floor — the re-enable gate
+    // sum stays out of the user-facing refusal and lives in the log.
+    tracing::debug!(
+        command,
+        gate = "#9050 + #8364 + #9070 + #7342/#7345 + #9588 + #9590",
+        "value-format floor refusal (#9581)"
+    );
     format!(
         "`{command}` is unsupported: a non-default `format` option was sent while \
-         `supportsValueFormattingOptions` is false for this adapter (#9581 \
-         secondary-capability floor; re-enable gate: #9050 + #8364 + #9070 + \
-         #7342/#7345 + #9588 + #9590). The request was rejected before any \
-         debugger interaction; resend without `format` for the default \
-         presentation."
+         `supportsValueFormattingOptions` is false for this adapter (#9581). The request \
+         was rejected before any debugger interaction; resend without `format` for the \
+         default presentation."
     )
 }
 
@@ -1237,6 +1247,57 @@ mod tests {
                 "`{open}` must not be floored by the secondary-capability floor"
             );
         }
+    }
+
+    /// #16557: the refusal is editor-facing copy — the re-enable gate
+    /// arithmetic stays out of the message and lives in logs/receipts only,
+    /// while the capability name, the #9581 provenance, and the
+    /// no-state-changed assurance remain.
+    #[test]
+    fn secondary_floor_copy_keeps_gate_arithmetic_out_of_the_user_message() {
+        let gates = [
+            ("completions", "#9021 + #9046 + #9050 + #8581 + #9582 + #9584"),
+            ("modules", "#8581 + #7667/#8668 + #9585 + #9586"),
+            ("loadedSources", "#8581 + #7667/#8668 + #9585 + #9586"),
+            ("restart", "#9051 + #8691/#8703 + #8974 + #9587 + #8726 + #7568"),
+            ("breakpointLocations", "#10524 + #2300 + #9021 + #7566"),
+            ("cancel", "#9074 + #8712 + #7568"),
+        ];
+        for (command, gate) in gates {
+            let message = secondary_capability_floor_message(command)
+                .unwrap_or_else(|| format!("`{command}` must be floored (#9581)"));
+            assert!(
+                !message.contains("re-enable gate") && !message.contains(gate),
+                "`{command}` refusal must not expose gate arithmetic to editor users: {message}"
+            );
+            assert!(
+                message.contains("no state was read or changed"),
+                "`{command}` refusal must keep the no-state-changed assurance: {message}"
+            );
+            assert!(
+                message.contains('#'),
+                "`{command}` refusal must keep its #9581 provenance: {message}"
+            );
+        }
+    }
+
+    /// #16557: the ValueFormat floor refusal keeps its capability row and the
+    /// resend guidance but drops the gate sum from user copy.
+    #[test]
+    fn value_format_floor_copy_keeps_gate_arithmetic_out_of_the_user_message() {
+        let message = value_format_unsupported_message("variables");
+        assert!(
+            message.contains("supportsValueFormattingOptions") && message.contains("#9581"),
+            "the refusal must keep its capability row and provenance: {message}"
+        );
+        assert!(
+            message.contains("resend without `format`"),
+            "the refusal must keep the resend guidance: {message}"
+        );
+        assert!(
+            !message.contains("re-enable gate") && !message.contains("#9050 + #8364"),
+            "the refusal must not expose gate arithmetic to editor users: {message}"
+        );
     }
 
     /// #9581: only a non-default `format` on the two authority-less ValueFormat

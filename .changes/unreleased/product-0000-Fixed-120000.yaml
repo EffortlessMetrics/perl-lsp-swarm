@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Debug adapter failure messages now name the real cause. A failed launch adds interpreter guidance and Perl discovery info only when the interpreter is the failing component, an explicit `perlPath` that does not exist is reported as `Perl executable not found at '<path>'` instead of a false \"not available on PATH\" claim, and error sentences no longer double their punctuation (#16552). A short-timeout TCP attach against an actively refused port reports that nothing is listening instead of misreporting a connection timeout (#16555). Capability-floor refusals keep the capability name and the no-state-changed assurance while the re-enable gate arithmetic moves to logs (#16557)."
+time: 2026-09-28T00:00:00Z
+custom:
+  PR: "0000"
+  Slug: dap-honest-launch-and-refusal-messages
+  Breaking: "no"
