@@ -39,16 +39,36 @@ fn executes_a_supported_fragment_from_the_upstream_highlights_query() -> TestRes
 #[test]
 fn parses_and_exercises_upstream_injections_compatibility_probe() -> TestResult {
     let upstream = include_str!("../../../tree-sitter-perl/queries/injections.scm");
-    let query = Query::new(upstream)?;
-    assert_eq!(query.pattern_count(), 5);
 
-    // QueryCursor execution is part of the compatibility probe. The native AST
-    // does not expose the fixture's comment, pod, substitution_regexp, or
-    // heredoc_token/heredoc_content node vocabulary, so this test intentionally
-    // does not claim semantic matches for those patterns.
-    let tree = parse("my $value = 42;\n");
-    let mut cursor = QueryCursor::new();
-    let _matches = cursor.matches(&query, tree.root_node()).count();
+    // Since #12789 the upstream injections query uses adjacency anchors (`.`)
+    // plus a quantified `(comment)*` child so a trailing Perl comment after
+    // `use Inline ...` cannot make a later plain heredoc inherit the Inline
+    // C/CPP injection. Those constructs are outside the Phase 2a structural
+    // subset, so compiling the whole file must fail with a typed
+    // UnsupportedSyntax error rather than silently ignoring the anchors.
+    // When the native engine implements anchors and quantifiers, restore the
+    // positive pattern-count probe in the `Ok` arm below.
+    match Query::new(upstream) {
+        Ok(query) => {
+            assert_eq!(query.pattern_count(), 5);
+
+            // QueryCursor execution is part of the compatibility probe. The
+            // native AST does not expose the fixture's comment, pod,
+            // substitution_regexp, or heredoc_token/heredoc_content node
+            // vocabulary, so this test intentionally does not claim semantic
+            // matches for those patterns.
+            let tree = parse("my $value = 42;\n");
+            let mut cursor = QueryCursor::new();
+            let _matches = cursor.matches(&query, tree.root_node()).count();
+        }
+        Err(QueryError::UnsupportedSyntax { syntax }) => {
+            assert_eq!(
+                syntax, ".",
+                "upstream injections query crossed an unexpected Phase 2a boundary"
+            );
+        }
+        Err(error) => return Err(error.into()),
+    }
     Ok(())
 }
 

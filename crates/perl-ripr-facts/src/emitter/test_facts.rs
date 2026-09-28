@@ -297,6 +297,7 @@ fn find_framework_use(node: &Node, best: &mut Option<(usize, &'static str, (usiz
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use perl_tdd_support::{must, must_some};

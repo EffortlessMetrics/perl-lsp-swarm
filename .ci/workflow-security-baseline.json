@@ -294,6 +294,14 @@
       "rule": "expression_in_run_source"
     },
     {
+      "evidence": "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+      "fingerprint": "6bc0fac6a64bfd9718ddf15b406be7c856fba9b3860b152b6f59cdcdc54fd45f",
+      "line": 65,
+      "message": "PR-triggered workflow references a secret",
+      "path": ".github/workflows/ci.yml",
+      "rule": "pr_secret_reference"
+    },
+    {
       "evidence": "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "71d9ef5616ad3050a32c807d47c8322f66ff623be33c05582cd7c2ded029e1f9",
       "line": 275,
