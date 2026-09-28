@@ -11,7 +11,16 @@
 # This helper therefore never reports REVIEWED. Subject-bound semantic
 # currentness is owned by check-pr-semantic-review-currentness.py, and callers
 # must consult it separately before treating a candidate as reviewed.
+#
+# ── Schema-version check ──────────────────────────────────────────────────
+# check-pr-review-convergence-core publishes its JSON output under
+# `schema_version: "convergence_core.v1"`. A missing field is a deprecation
+# warning (older callers before #15278). A greater value is a refusal — the
+# output shape may have changed in a way this projection does not understand.
+# See issue #15278.
 set -euo pipefail
+
+SUPPORTED_SCHEMA_VERSIONS=("convergence_core.v1")
 
 if [[ $# -lt 1 ]]; then
     echo "usage: $0 <pr-number> [owner/repo]" >&2
@@ -46,6 +55,25 @@ if [[ -z "$JSON" ]] || ! jq -e . >/dev/null 2>&1 <<<"$JSON"; then
       pr: ($pr | tonumber? // $pr),
       state: "NOT_PROVEN",
       reason: "invalid_closeout_output",
+      review_currentness: "NOT_PROVEN",
+      semantic_currentness_required: true,
+      exact_head_review_required: false
+    }'
+    exit 2
+fi
+
+# Schema-version gate. A missing field is a deprecation (warn to stderr and
+# continue); an unknown / greater value is a refusal (loud error + exit 2).
+SCHEMA_VERSION="$(jq -r '.schema_version // ""' <<<"$JSON")"
+if [[ -z "$SCHEMA_VERSION" ]]; then
+    echo "WARN: check-pr-review-convergence output is missing schema_version; this projection predates #15278 and should be refreshed" >&2
+elif [[ ! " ${SUPPORTED_SCHEMA_VERSIONS[*]} " == *" $SCHEMA_VERSION "* ]]; then
+    echo "ERROR: unsupported convergence-core schema_version '$SCHEMA_VERSION' (this projection supports: ${SUPPORTED_SCHEMA_VERSIONS[*]})" >&2
+    jq -n --arg pr "$PR" --arg version "$SCHEMA_VERSION" '{
+      pr: ($pr | tonumber? // $pr),
+      state: "NOT_PROVEN",
+      reason: "unsupported_closeout_schema_version",
+      observed_schema_version: $version,
       review_currentness: "NOT_PROVEN",
       semantic_currentness_required: true,
       exact_head_review_required: false
