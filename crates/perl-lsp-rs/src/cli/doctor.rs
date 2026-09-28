@@ -380,6 +380,32 @@ fn probe_tool_with_resolver(
     version_arg: &str,
     resolve: impl FnOnce(&str) -> Option<PathBuf>,
 ) -> ToolReport {
+    let ambient_path = std::env::var_os("PATH");
+    probe_tool_with_resolver_and_path(
+        name,
+        version_arg,
+        resolve,
+        ambient_path.as_deref(),
+        DOCTOR_TOOL_TIMEOUT_SECS,
+    )
+}
+
+/// [`probe_tool_with_resolver`] with the inherited `PATH` and the probe timeout
+/// supplied explicitly, so a test can pin the ambient interpreter-resolution
+/// order that a shim depends on instead of depending on the host's real `PATH`.
+///
+/// `timeout_secs` is a parameter because a `cmd.exe` shim costs several
+/// process spawns and, on Windows, a freshly written `.bat` can also be held
+/// up by antivirus scanning. The production budget is a user-facing ceiling for
+/// a foreground report; a test that spawns a shim needs headroom that the
+/// reported value does not require.
+fn probe_tool_with_resolver_and_path(
+    name: &'static str,
+    version_arg: &str,
+    resolve: impl FnOnce(&str) -> Option<PathBuf>,
+    inherited: Option<&std::ffi::OsStr>,
+    timeout_secs: u64,
+) -> ToolReport {
     let binary = match resolve(name) {
         Some(path) => path,
         None => {
@@ -394,7 +420,10 @@ fn probe_tool_with_resolver(
 
     let mut command = Command::new(&binary);
     command.arg(version_arg);
-    match run_command_with_timeout(command, DOCTOR_TOOL_TIMEOUT_SECS) {
+    if let Some(path) = shim_aware_child_path(&binary, inherited) {
+        command.env("PATH", path);
+    }
+    match run_command_with_timeout(command, timeout_secs) {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout)
                 .lines()
@@ -418,6 +447,49 @@ fn probe_tool_with_resolver(
 
 fn tool_version_probe_error(name: &str, output: &std::process::Output) -> String {
     format!("{name} {}", version_probe_error(output))
+}
+
+/// Build the `PATH` a probed shim should run with, or `None` to inherit the
+/// caller's `PATH` unchanged.
+///
+/// A Perl distribution installs `pl2bat` shims (`perltidy.bat`, `perlcritic.cmd`)
+/// that are `cmd.exe` wrappers whose interpreter line is a **bare** `perl`
+/// (`@perl -x -S %0 %*`). That bare name is resolved from the `PATH` the shim
+/// inherits, not from the distribution that installed it. When an MSYS-flavored
+/// `perl` (Git for Windows) precedes the owning distribution, it receives the
+/// shim's backslash script path, its `-S` search treats that path as a `PATH`
+/// entry to search for rather than a file to open, and the probe surfaces that
+/// *interpreter's* failure as the *tool's* version-probe error (`exit code: 29`,
+/// `Can't find ... on PATH`) even though the tool is installed and healthy.
+///
+/// Prepending the shim's own directory makes the bare `perl` resolve to the
+/// distribution that owns the shim, which is the interpreter the shim was
+/// written for. `None` means "no shim to correct": non-`cmd` shims
+/// (`.exe`/`.com`) carry no bare-interpreter indirection, and a shim with no
+/// resolvable parent directory has nowhere to point.
+///
+/// The upstream `PATH` entries are preserved in order; only the owning
+/// directory gains precedence.
+fn shim_aware_child_path(
+    binary: &Path,
+    inherited: Option<&std::ffi::OsStr>,
+) -> Option<std::ffi::OsString> {
+    if !is_cmd_shim(binary) {
+        return None;
+    }
+    let shim_dir = binary.parent()?;
+    let inherited = inherited?;
+    let mut entries = vec![shim_dir.as_os_str().to_os_string()];
+    entries.extend(std::env::split_paths(inherited).map(PathBuf::into_os_string));
+    std::env::join_paths(entries).ok()
+}
+
+/// Whether `binary` is a `cmd.exe` batch shim, which is what
+/// [`shim_aware_child_path`] knows how to correct.
+fn is_cmd_shim(binary: &Path) -> bool {
+    binary.extension().and_then(std::ffi::OsStr::to_str).is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("bat") || extension.eq_ignore_ascii_case("cmd")
+    })
 }
 
 fn version_probe_error_from_parts(status: &str, stderr: &[u8]) -> String {
@@ -3305,6 +3377,129 @@ mod tests {
         let error = report.error.ok_or("non-perltidy binary should fail version probe")?;
         assert!(error.contains("perltidy version probe exited with status"));
         Ok(())
+    }
+
+    /// The whole point of #16616: a `pl2bat` shim runs a **bare** `perl`, so
+    /// its version answer depends on which `perl` the inherited `PATH` picks.
+    /// This builds the real Windows topology from the field report — a shim
+    /// whose own directory holds the distribution's `perl`, plus a hostile
+    /// MSYS-style `perl` that must appear *first* on the inherited `PATH`.
+    ///
+    /// A `cmd.exe` shim costs several process spawns and a freshly written
+    /// `.bat` can be delayed by antivirus scanning, so these spawn tests get
+    /// headroom over [`DOCTOR_TOOL_TIMEOUT_SECS`], which is a user-facing
+    /// ceiling for the foreground report rather than a test budget.
+    #[cfg(windows)]
+    const SHIM_TEST_TIMEOUT_SECS: u64 = 60;
+
+    #[cfg(windows)]
+    fn shim_probe_fixture() -> std::io::Result<(tempfile::TempDir, PathBuf)> {
+        let temp = tempfile::tempdir()?;
+        let distribution = temp.path().join("strawberry").join("bin");
+        let hostile = temp.path().join("git").join("usr").join("bin");
+        std::fs::create_dir_all(&distribution)?;
+        std::fs::create_dir_all(&hostile)?;
+
+        // The distribution's own perl: healthy, reports the tool version.
+        std::fs::write(
+            distribution.join("perl.bat"),
+            "@echo off\r\necho This is perltidy, v20250711\r\nexit /b 0\r\n",
+        )?;
+        // Git for Windows' MSYS perl first on PATH: `-S` cannot open the
+        // backslash path, prints the exact field-report message, and exits 29.
+        std::fs::write(
+            hostile.join("perl.bat"),
+            "@echo off\r\necho Can't find %~nx0 on PATH, '.' not in PATH. 1>&2\r\nexit /b 29\r\n",
+        )?;
+        // The pl2bat shim under test: bare `perl`, exactly as pl2bat emits it.
+        let shim = distribution.join("perltidy.bat");
+        std::fs::write(&shim, "@echo off\r\n@perl -x -S %0 %*\r\nexit /b %ERRORLEVEL%\r\n")?;
+        Ok((temp, shim))
+    }
+
+    /// Hostile `perl` wins the inherited `PATH`: the shim fails on its own, so
+    /// the probe must still capture the version by running the shim against the
+    /// `perl` that owns it.
+    ///
+    /// The uncorrected spawn is asserted in the same test on purpose. It is
+    /// both the negative control that keeps this test from being vacuous and
+    /// the reason the two halves live together: a `pl2bat` fixture costs a
+    /// fresh `.bat` per file, and Windows antivirus can stall the first spawn
+    /// of a newly written one. Splitting the control into a second test
+    /// doubled that spawn load in the same parallel test binary and was enough
+    /// to push an unrelated 5s-budgeted probe test over its timeout.
+    #[cfg(windows)]
+    #[test]
+    fn probe_tool_runs_bat_shim_with_its_own_distributions_perl() -> TestResult {
+        let (temp, shim) = shim_probe_fixture()?;
+        let hostile = temp.path().join("git").join("usr").join("bin");
+        let inherited = std::env::join_paths(std::iter::once(hostile.as_os_str()))?;
+
+        // Negative control: with the hostile `perl` winning, the shim really
+        // does fail exactly as the field report describes.
+        let mut uncorrected = Command::new(&shim);
+        uncorrected.arg("--version").env("PATH", &inherited);
+        let uncorrected = run_command_with_timeout(uncorrected, SHIM_TEST_TIMEOUT_SECS)?;
+        assert!(!uncorrected.status.success(), "hostile perl should fail the shim");
+        assert!(String::from_utf8_lossy(&uncorrected.stderr).contains("not in PATH"));
+
+        // The fix: the probe runs the shim against the distribution that owns
+        // it, so the version is captured.
+        let report = probe_tool_with_resolver_and_path(
+            "perltidy",
+            "--version",
+            |_| Some(shim.clone()),
+            Some(inherited.as_os_str()),
+            SHIM_TEST_TIMEOUT_SECS,
+        );
+
+        assert_eq!(report.source, "PATH");
+        let version =
+            report.version.ok_or("shim probe should capture the version its own perl reports")?;
+        assert_eq!(version, "This is perltidy, v20250711");
+        assert!(report.error.is_none(), "expected no probe error, got {:?}", report.error);
+        Ok(())
+    }
+
+    #[test]
+    fn shim_aware_child_path_leaves_native_binaries_alone() {
+        assert!(
+            shim_aware_child_path(
+                Path::new("/usr/bin/perltidy"),
+                Some(std::ffi::OsStr::new("/usr/bin"))
+            )
+            .is_none()
+        );
+        assert!(
+            shim_aware_child_path(
+                Path::new("C:/perl/bin/perltidy.exe"),
+                Some(std::ffi::OsStr::new("C:/x"))
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn shim_aware_child_path_prepends_the_owning_distribution() -> TestResult {
+        let path = shim_aware_child_path(
+            Path::new("C:/strawberry/perl/bin/perltidy.bat"),
+            Some(std::ffi::OsStr::new("C:/git/usr/bin;C:/windows/system32")),
+        )
+        .ok_or("a .bat shim should get a corrected PATH")?;
+
+        let entries: Vec<_> = std::env::split_paths(&path).collect();
+        assert_eq!(entries[0], Path::new("C:/strawberry/perl/bin"));
+        assert!(entries.len() == 3, "inherited entries must be preserved, got {entries:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn is_cmd_shim_is_case_insensitive() {
+        assert!(is_cmd_shim(Path::new("C:/perl/bin/perltidy.bat")));
+        assert!(is_cmd_shim(Path::new("C:/perl/bin/perltidy.BAT")));
+        assert!(is_cmd_shim(Path::new("C:/perl/bin/perlcritic.cmd")));
+        assert!(!is_cmd_shim(Path::new("C:/perl/bin/perltidy.exe")));
+        assert!(!is_cmd_shim(Path::new("C:/perl/bin/perltidy")));
     }
 
     #[test]
