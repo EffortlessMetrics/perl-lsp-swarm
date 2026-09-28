@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "The Extract to subroutine refactoring no longer emits invalid Perl. Detected parameters and return values now carry their sigil through to the generated signature (`my ($base) = @_;` instead of `my (base) = @_;`) and call site (`process_data($base);`, `my $x = process_data($base);`), parameters are emitted in first-use source order instead of unordered set iteration, and an extraction whose applied edit does not parse is no longer offered at all. Brace stripping removes only the extracted block's own outer braces, so a leading inner block survives extraction unchanged. #16642"
+time: 2026-09-28T00:00:00Z
+custom:
+  PR: "16705"
+  Slug: extract-subroutine-sigils-16642
+  Breaking: "no"
