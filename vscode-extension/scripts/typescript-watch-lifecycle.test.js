@@ -46,6 +46,51 @@ void test('initial clean, distinct error and later repair carry ordered generati
   );
 });
 
+void test('an intermediate generation defers a phase to the matching one', async () => {
+  const watch = new WatchGenerations();
+  const exits = new Set();
+  output(
+    watch,
+    'Starting compilation in watch mode...\nFound 0 errors. Watching for file changes.\n',
+  );
+  const first = await watch.waitAfter(0, () => true, 100, exits);
+  assert.equal(first.generation, 1);
+  // An atomic rename can surface a clean completion before the diagnostic
+  // lands; the error phase must wait for the defining state instead of
+  // failing on the first generation after its watermark.
+  output(
+    watch,
+    'File change detected. Starting incremental compilation...\nFound 0 errors. Watching for file changes.\n',
+  );
+  output(
+    watch,
+    'File change detected. Starting incremental compilation...\nwatch-fixture.ts(1,14): error TS2322: Type string is not assignable.\nFound 1 error. Watching for file changes.\n',
+  );
+  const broken = await watch.waitAfter(
+    first.generation,
+    (event) => event.errors > 0 && event.diagnostic,
+    100,
+    exits,
+  );
+  assert.deepEqual([broken.generation, broken.errors, broken.diagnostic], [3, 1, true]);
+  // The repair phase skips a replayed error generation the same way.
+  output(
+    watch,
+    'File change detected. Starting incremental compilation...\nwatch-fixture.ts(1,14): error TS2322: Type string is not assignable.\nFound 1 error. Watching for file changes.\n',
+  );
+  output(
+    watch,
+    'File change detected. Starting incremental compilation...\nFound 0 errors. Watching for file changes.\n',
+  );
+  const repaired = await watch.waitAfter(
+    broken.generation,
+    (event) => event.errors === 0,
+    100,
+    exits,
+  );
+  assert.deepEqual([repaired.generation, repaired.errors, repaired.diagnostic], [5, 0, false]);
+});
+
 void test('wrong initial, missed error, failed repair, and stale generation are red', () => {
   assert.throws(
     () => assertPhase({ generation: 1, errors: 1 }, 'initial', 0),

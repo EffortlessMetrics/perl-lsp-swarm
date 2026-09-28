@@ -261,9 +261,12 @@ async function runWatchLifecycle(extensionRoot = path.resolve(__dirname, '..'), 
     assertPhase(first, 'initial', 0);
     receipt.phases.initial = first;
     atomicReplace(source, bad);
+    // An atomic rename can surface an intermediate completion before the
+    // diagnostic lands, so wait for the defining state within the phase
+    // budget instead of failing on the first generation after the watermark.
     const broken = await generations.waitAfter(
       first.generation,
-      () => true,
+      (event) => event.errors > 0 && event.diagnostic,
       PHASE_TIMEOUT_MS,
       exits,
     );
@@ -272,7 +275,7 @@ async function runWatchLifecycle(extensionRoot = path.resolve(__dirname, '..'), 
     atomicReplace(source, good);
     const repaired = await generations.waitAfter(
       broken.generation,
-      () => true,
+      (event) => event.errors === 0,
       PHASE_TIMEOUT_MS,
       exits,
     );
