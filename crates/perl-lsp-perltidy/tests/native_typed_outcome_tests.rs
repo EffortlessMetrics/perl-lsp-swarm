@@ -1,7 +1,7 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_lsp_perltidy::PerlFormatter;
 use perl_lsp_perltidy::native::{
-    BracePlacement, FormatConfig, FormatContext, FormatDisposition, FormatEngine,
+    BracePlacement, ElsePlacement, FormatConfig, FormatContext, FormatDisposition, FormatEngine,
     FormatEvidenceState, FormatReasonCode, FormatRequestTarget, FormatterMode, KeywordSpacing,
     NativeFormatter, TextPosition, TextRange,
 };
@@ -191,6 +191,95 @@ fn typed_document_result_admits_next_line_braces_on_a_second_pass() {
     assert!(second.result.edits.is_empty());
     assert!(second.result.diagnostics.is_empty());
     assert_eq!(second.result.formatted, rendered.formatted);
+}
+
+#[test]
+fn typed_document_result_admits_separate_line_clauses_on_a_second_pass() {
+    // #16708: under `ElsePlacement::SeparateLine` the else/elsif renderers put
+    // the clause header on its own line, and under `BracePlacement::NextLine`
+    // that header loses its brace. Neither shape was admitted by the
+    // already-formatted check, so the formatter refused its own output on a
+    // second pass. Both placements must classify NoChange.
+    let formatter = NativeFormatter::new();
+    for brace_placement in [BracePlacement::SameLine, BracePlacement::NextLine] {
+        let config = FormatConfig {
+            else_placement: ElsePlacement::SeparateLine,
+            brace_placement,
+            ..FormatConfig::default()
+        };
+        for source in [
+            "if($ok){return 1;}else{return 2;}
+",
+            "if($ok){return 1;}elsif($z){return 2;}else{return 3;}
+",
+        ] {
+            let rendered = formatter.format_document(source, &config);
+            assert!(
+                rendered.changed,
+                "source {source:?} under {brace_placement:?} was expected to render"
+            );
+            let second = formatter.format_document_typed(
+                &rendered.formatted,
+                &config,
+                &FormatContext::default(),
+            );
+            assert_eq!(
+                second.outcome.disposition,
+                FormatDisposition::NoChange,
+                "second pass over the SeparateLine render under {brace_placement:?} ({:?}) must be NoChange",
+                rendered.formatted
+            );
+            assert_eq!(second.outcome.reason, FormatReasonCode::AlreadyFormatted);
+            assert_eq!(second.result.formatted, rendered.formatted);
+        }
+    }
+}
+
+#[test]
+fn typed_document_result_refuses_a_tail_with_an_inline_body() {
+    // #16708: a `}`-prefixed tail used to be admitted unconditionally, so an
+    // inline unsupported body riding the tail line reached `NoChange` even
+    // though no renderer emits that shape. The tail must end at the clause's
+    // opening brace.
+    let formatter = NativeFormatter::new();
+    let source = "if ($ok) {
+    my $x = 1;
+} else { my %h = (a => 1, b => 2); }
+";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+    assert!(!typed.result.changed);
+}
+
+#[test]
+fn typed_document_result_refuses_a_header_condition_the_renderer_cannot_format() {
+    // #16708: header admission checked only the line's endpoints, so a
+    // multi-operator condition (which `format_simple_condition_tokens`
+    // refuses) endpoint-admitted as `NoChange` despite never passing a
+    // renderer. The interior must be validated with the renderer's own
+    // condition formatter.
+    let formatter = NativeFormatter::new();
+    let source = "if ($a && $b && $c) {
+    my $x = 1;
+}
+";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+    assert!(!typed.result.changed);
 }
 
 #[test]

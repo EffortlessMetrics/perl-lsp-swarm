@@ -376,7 +376,7 @@ pub(super) fn format_simple_line(line: &str, config: &FormatConfig) -> Option<St
 /// body on the same line, so it ends at neither brace nor paren. Malformed
 /// boundaries are unaffected, because `classify` consults this only after a
 /// clean parse with no diagnostics.
-pub(super) fn is_rendered_block_boundary_line(line: &str) -> bool {
+pub(super) fn is_rendered_block_boundary_line(line: &str, config: &FormatConfig) -> bool {
     use perl_parser_core::TokenKind;
 
     let (body, _trailing_comment) = split_trailing_comment(line);
@@ -391,28 +391,181 @@ pub(super) fn is_rendered_block_boundary_line(line: &str) -> bool {
         return false;
     };
 
-    // Rendered tail: `}`, `} else {`, `} elsif (...) {`, `} continue {`.
+    // Rendered tails: `}`, `} else {`, `} elsif (...) {`, `} continue {`, and
+    // their `BracePlacement::NextLine` forms, where the clause header loses
+    // its brace (`} else`, `} elsif (...)`, `} continue`) and the opening
+    // brace becomes its own line — and nothing else. A tail carrying tokens
+    // past the clause's opening brace (`} else { stmt; }`) is a shape no
+    // renderer emits, so it stays refused.
     if first.kind() == TokenKind::RightBrace {
-        return true;
+        return match tokens.get(1).map(|token| token.kind()) {
+            // A bare closing brace; any trailing comment is already split off.
+            None => true,
+            Some(TokenKind::Else) | Some(TokenKind::Continue) => match tokens.len() {
+                // NextLine braces: the clause header ends the line.
+                2 => true,
+                // SameLine braces: the header carries its opening brace.
+                3 => last.kind() == TokenKind::LeftBrace,
+                _ => false,
+            },
+            Some(TokenKind::Elsif) => {
+                let header_end = match last.kind() {
+                    TokenKind::LeftBrace => tokens.len() - 1,
+                    TokenKind::RightParen => tokens.len(),
+                    _ => return false,
+                };
+                rendered_condition_header_is_supported(&tokens[2..header_end], config)
+            }
+            _ => false,
+        };
     }
     // `BracePlacement::NextLine` renders the opening brace on its own line.
     if tokens.len() == 1 && first.kind() == TokenKind::LeftBrace {
         return true;
     }
     // Rendered header: it must stop where the block opens, never carry a body.
+    // A bare `else` is the `ElsePlacement::SeparateLine` + `BracePlacement::
+    // NextLine` clause header and stops at itself.
     let opens_the_block = matches!(last.kind(), TokenKind::LeftBrace | TokenKind::RightParen)
-        || (first.kind() == TokenKind::Sub && last.kind() == TokenKind::Identifier);
-    opens_the_block
-        && matches!(
-            first.kind(),
-            TokenKind::If
-                | TokenKind::Unless
-                | TokenKind::While
-                | TokenKind::Until
-                | TokenKind::For
-                | TokenKind::Foreach
-                | TokenKind::Sub
-        )
+        || (first.kind() == TokenKind::Sub && last.kind() == TokenKind::Identifier)
+        || (first.kind() == TokenKind::Else && tokens.len() == 1);
+    if !opens_the_block {
+        return false;
+    }
+    match first.kind() {
+        // A separately rendered clause header under `ElsePlacement::SeparateLine`:
+        // `else {` (SameLine braces) or `else` alone (NextLine braces).
+        TokenKind::Else => {
+            tokens.len() == 1 || (tokens.len() == 2 && last.kind() == TokenKind::LeftBrace)
+        }
+        TokenKind::Elsif => rendered_condition_header_is_supported(&tokens[1..], config),
+        // A declaration header claims nothing about an interior.
+        TokenKind::Sub => true,
+        // A condition header must carry a condition the renderer itself could
+        // have accepted: endpoint lexability alone would also admit
+        // multi-operator conditions `format_simple_condition_tokens` refuses.
+        TokenKind::If | TokenKind::Unless | TokenKind::While | TokenKind::Until => {
+            rendered_condition_header_is_supported(&tokens[1..], config)
+        }
+        // `for` is renderer-owned in two shapes, each with its own interior
+        // validator: the C-style three-clause header and the foreach-style
+        // iterator/list header (`foreach` only ever takes the latter).
+        TokenKind::For | TokenKind::Foreach => {
+            rendered_c_style_for_header_is_supported(&tokens, config)
+                || rendered_foreach_header_is_supported(&tokens, config)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `tokens` is one rendered condition header (`if (...) {`,
+/// `elsif (...) {`, or their `BracePlacement::NextLine` form without the
+/// brace), with a condition the simple-condition formatter accepts.
+fn rendered_condition_header_is_supported(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let Some(TokenKind::LeftParen) = tokens.first().map(|token| token.kind()) else {
+        return false;
+    };
+    let Some((_, condition_end)) = format_simple_condition_tokens(tokens, 1, config) else {
+        return false;
+    };
+    match tokens.get(condition_end + 1) {
+        // `NextLine`: the header ends at the condition's closing paren.
+        None => true,
+        // `SameLine`: the closing paren is immediately followed by the brace.
+        Some(brace) => brace.kind() == TokenKind::LeftBrace && condition_end + 2 == tokens.len(),
+    }
+}
+
+/// Whether `tokens` is a rendered C-style `for` header (`for (init; cond;
+/// update) {`, or the `BracePlacement::NextLine` form without the brace),
+/// validated with the same clause formatters the renderer used.
+fn rendered_c_style_for_header_is_supported(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let Some(TokenKind::For) = tokens.first().map(|token| token.kind()) else {
+        return false;
+    };
+    let Some(TokenKind::LeftParen) = tokens.get(1).map(|token| token.kind()) else {
+        return false;
+    };
+    let Some((first_semicolon, second_semicolon, header_end)) =
+        find_for_header_boundaries(tokens, 1)
+    else {
+        return false;
+    };
+    if format_simple_for_init_clause(tokens, 2, first_semicolon, config).is_none()
+        || format_simple_for_condition_clause(tokens, first_semicolon + 1, second_semicolon, config)
+            .is_none()
+        || format_simple_for_update_clause(tokens, second_semicolon + 1, header_end, config)
+            .is_none()
+    {
+        return false;
+    }
+    match tokens.get(header_end + 1) {
+        // `NextLine`: the header ends at the closing paren.
+        None => true,
+        // `SameLine`: the closing paren is immediately followed by the brace.
+        Some(brace) => brace.kind() == TokenKind::LeftBrace && header_end + 2 == tokens.len(),
+    }
+}
+
+/// Whether `tokens` is a rendered foreach-style header (`for my $x (@list) {`,
+/// `for (@list) {`, `foreach ...`, or the `BracePlacement::NextLine` form
+/// without the brace), validated with the same iterator and list formatters
+/// the renderer used.
+fn rendered_foreach_header_is_supported(
+    tokens: &[perl_parser_core::Token],
+    config: &FormatConfig,
+) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let Some(first_kind) = tokens.first().map(|token| token.kind()) else {
+        return false;
+    };
+    if !matches!(first_kind, TokenKind::For | TokenKind::Foreach) {
+        return false;
+    }
+    let Some(second_kind) = tokens.get(1).map(|token| token.kind()) else {
+        return false;
+    };
+    let variable_index = if matches!(second_kind, TokenKind::My | TokenKind::Our | TokenKind::State)
+    {
+        2
+    } else {
+        1
+    };
+    // The renderer always names an iterator variable, lexically declared or not.
+    let Some((_, after_variable)) = format_variable_tokens(tokens, variable_index) else {
+        return false;
+    };
+    let Some(TokenKind::LeftParen) = tokens.get(after_variable).map(|token| token.kind()) else {
+        return false;
+    };
+    let list_start = after_variable + 1;
+    let Some(list_close) = tokens[list_start..]
+        .iter()
+        .position(|token| token.kind() == TokenKind::RightParen)
+        .map(|offset| list_start + offset)
+    else {
+        return false;
+    };
+    if format_simple_expression_tokens(tokens, list_start, list_close, config, 0).is_none() {
+        return false;
+    }
+    match tokens.get(list_close + 1) {
+        // `NextLine`: the header ends at the list's closing paren.
+        None => true,
+        // `SameLine`: the closing paren is immediately followed by the brace.
+        Some(brace) => brace.kind() == TokenKind::LeftBrace && list_close + 2 == tokens.len(),
+    }
 }
 
 /// Collect one line's non-EOF tokens, or None when the line does not lex.

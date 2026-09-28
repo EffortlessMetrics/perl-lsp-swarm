@@ -540,7 +540,7 @@ fn target_has_only_supported_lines(
             // Block boundaries the renderers own. Without this a block the
             // formatter itself rendered refused on the second pass, because no
             // header or tail line is a `format_simple_line` candidate.
-            || is_rendered_block_boundary_line(text)
+            || is_rendered_block_boundary_line(text, config)
     })
 }
 
