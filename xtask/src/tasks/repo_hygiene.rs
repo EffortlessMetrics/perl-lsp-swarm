@@ -13,7 +13,11 @@ use serde::{Deserialize, Serialize};
 use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::utils::project_root;
 
-const SCHEMA_VERSION: &str = "repo-hygiene.v1";
+// v2 adds the `TOOL_UNAVAILABLE` per-tool result class. The aggregate `status`
+// vocabulary is unchanged, but a strict v1 reader validating the per-tool
+// `result` field would reject the new value, so the version moves with the
+// serialized vocabulary rather than staying pinned to the old one (#15235).
+const SCHEMA_VERSION: &str = "repo-hygiene.v2";
 const CLAIM_BOUNDARY: &str = "Changed-file Taplo formatting/syntax checks and typos checks for the exact resolved range; not whole-repository historical cleanliness, semantic policy validation, or release readiness";
 const TOOL_CONFIG_FILES: &[&str] = &["aqua.yaml", "taplo.toml", ".typos.toml"];
 const AQUA_VERIFICATION_ENV: &[&str] = &[
@@ -584,6 +588,10 @@ mod tests {
 
     #[test]
     fn unavailable_tool_survives_the_receipt_as_its_own_class() -> Result<()> {
+        // The vocabulary and the published version move together: a strict v1
+        // reader would reject `TOOL_UNAVAILABLE`, so the receipt must not claim
+        // to still be v1 (#15235).
+        ensure!(SCHEMA_VERSION == "repo-hygiene.v2", "unexpected schema version: {SCHEMA_VERSION}");
         // The discrimination has to reach the published receipt
         // (target/receipts/repo-hygiene.json), not just the in-memory enum, or
         // a reader of the artifact still cannot tell the two causes apart.
