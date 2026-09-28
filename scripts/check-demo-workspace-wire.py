@@ -72,7 +72,9 @@ class Client:
                 raise AssertionError(message)
             if "method" in message and "id" in message:
                 # Default client settings: the demo must be clean without configuration.
-                self.send({"id": message["id"], "result": [{}]})
+                # workspace/configuration results are positional: one entry per item.
+                items = (message.get("params") or {}).get("items") or [None]
+                self.send({"id": message["id"], "result": [{} for _ in items]})
             elif predicate(message):
                 return message
             else:
@@ -119,7 +121,9 @@ class Client:
             if "reader_error" in message:
                 raise AssertionError(message)
             if "method" in message and "id" in message:
-                self.send({"id": message["id"], "result": [{}]})
+                # One positional result per workspace/configuration item.
+                items = (message.get("params") or {}).get("items") or [None]
+                self.send({"id": message["id"], "result": [{} for _ in items]})
             elif message.get("method") == "textDocument/publishDiagnostics" and (
                 message.get("params", {}).get("uri") in uris
                 and message.get("params", {}).get("version") == 1
