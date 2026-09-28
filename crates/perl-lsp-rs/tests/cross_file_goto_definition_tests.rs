@@ -3273,6 +3273,45 @@ my $result = helper_a();
         .into());
     }
 
+    // A continued use statement owns the quoted member on a later physical line.
+    let multiline = "use My::Utils (\n  'helper_a',\n);\n";
+    let multiline_uri = workspace.uri("multiline.pl");
+    harness.open(&multiline_uri, multiline)?;
+    harness.barrier();
+    let continued = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": multiline_uri},
+            "position": {"line": 1, "character": 4}
+        }),
+    )?;
+    if !continued
+        .pointer("/0/uri")
+        .and_then(|uri| uri.as_str())
+        .is_some_and(|uri| uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"))
+        || continued.pointer("/0/range/start/line").and_then(|line| line.as_u64()) != Some(4)
+    {
+        return Err(format!("continued quoted import should reach helper_a: {continued}").into());
+    }
+
+    // The same physical shape inside a single-quoted string has no Use owner.
+    let inert = "my $literal = 'prefix\nuse My::Utils (\n  \"helper_a\",\n);\nsuffix';\n";
+    let inert_uri = workspace.uri("inert.pl");
+    harness.open(&inert_uri, inert)?;
+    harness.barrier();
+    let quoted_prose = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": inert_uri},
+            "position": {"line": 2, "character": 4}
+        }),
+    )?;
+    if !quoted_prose.is_null()
+        && !quoted_prose.as_array().is_some_and(|locations| locations.is_empty())
+    {
+        return Err(format!("inert continued import navigated: {quoted_prose}").into());
+    }
+
     Ok(())
 }
 

@@ -55,6 +55,48 @@ fn statement_keyword_is_code(
     })
 }
 
+/// Find the parsed `use` statement that owns a cursor, including a member on
+/// a later physical line of its import list.
+fn use_statement_at_offset(node: &crate::ast::Node, offset: usize) -> Option<&crate::ast::Node> {
+    if offset < node.location.start || offset > node.location.end {
+        return None;
+    }
+    for child in crate::declaration::get_node_children(node) {
+        if let Some(owner) = use_statement_at_offset(child, offset) {
+            return Some(owner);
+        }
+    }
+    matches!(node.kind, crate::ast::NodeKind::Use { .. }).then_some(node)
+}
+
+/// A quoted member of a parsed `use` import list has a semantic Sub key from
+/// that same Use node. Require the statement keyword to be code so a quoted
+/// imitation cannot borrow a module target from a containing declaration.
+fn quoted_import_list_symbol(
+    ast: &crate::ast::Node,
+    snapshot: &crate::state::ParsedSnapshot,
+    source: &str,
+    offset: usize,
+) -> bool {
+    let Some(owner) = use_statement_at_offset(ast, offset) else { return false };
+    let crate::ast::NodeKind::Use { module, .. } = &owner.kind else { return false };
+    if snapshot.source_region_index().classify_offset(owner.location.start).proven_kind()
+        != Some(perl_parser_core::SourceRegionKind::Code)
+    {
+        return false;
+    }
+    crate::declaration::symbol_at_cursor_with_source(
+        ast,
+        offset,
+        crate::declaration::current_package_at(ast, offset),
+        source,
+    )
+    .is_some_and(|key| {
+        key.kind == perl_semantic_analyzer::workspace_index::SymKind::Sub
+            && key.pkg.as_ref() == module
+    })
+}
+
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::navigation::definition_shadow::{
     DefinitionCutoverResult, goto_definition_live_exact_or_imported,
@@ -2110,34 +2152,10 @@ impl LspServer {
                     // AST-aware DeclarationProvider below for method modifiers.
                     // A quoted import-list member is an intentional exception:
                     // the semantic Use node supplies a Sub key for that member.
-                    let quoted_import_list_symbol = if cursor_in_single_quoted_literal {
-                        let (line_start, line_end) =
-                            perl_parser_core::text_line::line_bounds_at(&doc.text, offset);
-                        statement_keyword_is_code(parsed.as_deref(), &doc.text, line_start)
-                            && doc.text.get(line_start..line_end).is_some_and(|line| {
-                                perl_module::parse_module_import_head(line).is_some_and(|head| {
-                                    head.kind == perl_module::ModuleImportKind::Use
-                                        && offset.saturating_sub(line_start) > head.token_end
-                                        && line
-                                            .get(head.token_end..offset.saturating_sub(line_start))
-                                            .is_some_and(|prefix| !prefix.contains(';'))
-                                        && crate::declaration::symbol_at_cursor_with_source(
-                                            ast,
-                                            offset,
-                                            crate::declaration::current_package_at(ast, offset),
-                                            &doc.text,
-                                        )
-                                        .is_some_and(
-                                            |key| {
-                                            key.kind == perl_semantic_analyzer::workspace_index::SymKind::Sub
-                                                    && key.pkg.as_ref() == head.token
-                                            },
-                                        )
-                                })
-                            })
-                    } else {
-                        false
-                    };
+                    let quoted_import_list_symbol = cursor_in_single_quoted_literal
+                        && parsed.as_ref().is_some_and(|snapshot| {
+                            quoted_import_list_symbol(ast, snapshot, &doc.text, offset)
+                        });
 
                     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                     if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
