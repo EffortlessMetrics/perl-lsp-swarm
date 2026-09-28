@@ -46,6 +46,45 @@ fn config_with_malformed_project_toml() -> ScenarioConfig {
     ScenarioConfig::default().with_file(".perl-lsp.toml", MALFORMED_PROJECT_CONFIG)
 }
 
+fn config_message_events(events: &[LspEvent]) -> Vec<&LspEvent> {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(event, LspEvent::WindowMessage { message, .. }
+                | LspEvent::LogMessage { message, .. }
+                if message.contains(".perl-lsp.toml"))
+        })
+        .collect()
+}
+
+#[test]
+fn scenario_05_wrong_severity_config_duplicate_still_counts_twice() -> Result<()> {
+    let message = format!("{FIX_THE_FILE_GUIDANCE}: invalid table");
+    let events = [
+        LspEvent::WindowMessage { message_type: 2, message: message.clone() },
+        LspEvent::WindowMessage { message_type: 1, message },
+    ];
+    anyhow::ensure!(
+        config_message_events(&events).len() == 2,
+        "a wrong-severity config duplicate evaded the count"
+    );
+    Ok(())
+}
+
+#[test]
+fn scenario_05_wrong_channel_config_duplicate_still_counts_twice() -> Result<()> {
+    let message = format!("{FIX_THE_FILE_GUIDANCE}: invalid table");
+    let events = [
+        LspEvent::WindowMessage { message_type: 2, message: message.clone() },
+        LspEvent::LogMessage { message_type: 2, message },
+    ];
+    anyhow::ensure!(
+        config_message_events(&events).len() == 2,
+        "a wrong-channel config duplicate evaded the count"
+    );
+    Ok(())
+}
+
 fn ensure_no_panic_trace(message: &str) -> Result<()> {
     anyhow::ensure!(
         !message.contains("panicked at") && !message.contains("SIGABRT"),
@@ -222,26 +261,20 @@ fn scenario_05_malformed_project_config_emits_one_bounded_warning_naming_the_fil
             recorder.check("hover round-trip completed after config warning", true)?;
 
             let events = harness.client.peek_events();
-            let warnings: Vec<&str> = events
-                .iter()
-                .filter_map(|event| match event {
-                    LspEvent::WindowMessage { message_type: 2, message }
-                        if message.contains(".perl-lsp.toml") =>
-                    {
-                        Some(message.as_str())
-                    }
-                    _ => None,
-                })
-                .collect();
+            let warnings = config_message_events(&events);
 
             recorder
                 .check("exactly one config warning naming .perl-lsp.toml", warnings.len() == 1)?;
             anyhow::ensure!(
                 warnings.len() == 1,
-                "expected exactly one .perl-lsp.toml Warning, got {}: {warnings:?}",
+                "expected exactly one .perl-lsp.toml message, got {}: {warnings:?}",
                 warnings.len()
             );
-            let message = warnings[0];
+            let Some(LspEvent::WindowMessage { message_type: 2, message }) =
+                warnings.first().copied()
+            else {
+                anyhow::bail!("the sole .perl-lsp.toml message must be a Warning popup");
+            };
             anyhow::ensure!(
                 message.contains(FIX_THE_FILE_GUIDANCE),
                 "config warning must tell the user to fix .perl-lsp.toml \

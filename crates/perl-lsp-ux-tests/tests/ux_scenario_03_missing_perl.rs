@@ -49,34 +49,61 @@ fn config_without_perl() -> ScenarioConfig {
     ScenarioConfig::with_empty_path()
 }
 
-/// Count not-found Errors and fallback Info logs among the captured events.
+/// Count resolution messages on either channel at any severity.
 ///
 /// The two phrases are deliberately mutually exclusive: `perl_not_found_message`
 /// says "Perl missing on PATH" while `perl_fallback_message` says "Perl not
 /// found on PATH; using the … installation", so one session can satisfy at most
-/// one arm. Each arm also pins the severity its contract names: the not-found
-/// popup is an Error (`window/showMessage` type 1) and the fallback log is Info
-/// (`window/logMessage` type 3), so a severity regression cannot pass as the
-/// sole valid resolution arm.
+/// one arm. Channel and severity are checked after counting, so a malformed
+/// duplicate cannot evade the once-per-session assertion.
 fn interpreter_resolution_counts(events: &[LspEvent]) -> (usize, usize) {
     let mut not_found = 0;
     let mut fallback = 0;
     for event in events {
-        match event {
-            LspEvent::WindowMessage { message_type: 1, message }
-                if message.contains(PERL_MISSING_ON_PATH) =>
-            {
-                not_found += 1;
-            }
-            LspEvent::LogMessage { message_type: 3, message }
-                if message.contains(PERL_FALLBACK_IN_USE) =>
-            {
-                fallback += 1;
-            }
-            _ => {}
+        if let LspEvent::WindowMessage { message, .. } | LspEvent::LogMessage { message, .. } =
+            event
+        {
+            not_found += usize::from(message.contains(PERL_MISSING_ON_PATH));
+            fallback += usize::from(message.contains(PERL_FALLBACK_IN_USE));
         }
     }
     (not_found, fallback)
+}
+
+#[test]
+fn scenario_03_duplicate_fallback_at_wrong_severity_still_counts_twice() -> anyhow::Result<()> {
+    let message = format!("Perl {PERL_FALLBACK_IN_USE} fallback installation");
+    let events = [
+        LspEvent::LogMessage { message_type: 3, message: message.clone() },
+        LspEvent::LogMessage { message_type: 2, message },
+    ];
+    let (_, fallback) = interpreter_resolution_counts(&events);
+    anyhow::ensure!(fallback == 2, "a wrong-severity duplicate evaded the once-per-session count");
+    Ok(())
+}
+
+#[test]
+fn scenario_03_duplicate_not_found_at_wrong_severity_still_counts_twice() -> anyhow::Result<()> {
+    let message = format!("{PERL_MISSING_ON_PATH}; see {STRAWBERRY_PERL}");
+    let events = [
+        LspEvent::WindowMessage { message_type: 1, message: message.clone() },
+        LspEvent::WindowMessage { message_type: 2, message },
+    ];
+    let (not_found, _) = interpreter_resolution_counts(&events);
+    anyhow::ensure!(not_found == 2, "a wrong-severity not-found duplicate evaded the count");
+    Ok(())
+}
+
+#[test]
+fn scenario_03_duplicate_fallback_on_wrong_channel_still_counts_twice() -> anyhow::Result<()> {
+    let message = format!("Perl {PERL_FALLBACK_IN_USE} fallback installation");
+    let events = [
+        LspEvent::LogMessage { message_type: 3, message: message.clone() },
+        LspEvent::WindowMessage { message_type: 3, message },
+    ];
+    let (_, fallback) = interpreter_resolution_counts(&events);
+    anyhow::ensure!(fallback == 2, "a wrong-channel fallback duplicate evaded the count");
+    Ok(())
 }
 
 #[test]
@@ -198,21 +225,56 @@ fn scenario_03_interpreter_resolution_message_is_once_per_session_with_remediati
                 not_found + fallback > 0,
             )?;
             recorder
-                .check("not-found warning fired at most once across two opens", not_found <= 1)?;
-            recorder.check("fallback log fired at most once across two opens", fallback <= 1)?;
+                .check("not-found message fired at most once across two opens", not_found <= 1)?;
+            recorder
+                .check("fallback message fired at most once across two opens", fallback <= 1)?;
             recorder.check(
                 "exactly one resolution arm fired, exactly once",
                 not_found + fallback == 1,
             )?;
 
+            recorder.check(
+                "every fallback resolution message is an Info log",
+                events.iter().all(|event| match event {
+                    LspEvent::LogMessage { message_type, message }
+                        if message.contains(PERL_FALLBACK_IN_USE) =>
+                    {
+                        *message_type == 3
+                    }
+                    LspEvent::WindowMessage { message, .. }
+                        if message.contains(PERL_FALLBACK_IN_USE) =>
+                    {
+                        false
+                    }
+                    _ => true,
+                }),
+            )?;
+
             let mut remediation_present = true;
             for event in &events {
-                if let LspEvent::WindowMessage { message_type: 1, message } = event
+                if let LspEvent::WindowMessage { message, .. }
+                | LspEvent::LogMessage { message, .. } = event
                     && message.contains(PERL_MISSING_ON_PATH)
                 {
                     remediation_present &= message.contains(STRAWBERRY_PERL);
                 }
             }
+            recorder.check(
+                "every not-found resolution message is an Error popup",
+                events.iter().all(|event| match event {
+                    LspEvent::WindowMessage { message_type, message }
+                        if message.contains(PERL_MISSING_ON_PATH) =>
+                    {
+                        *message_type == 1
+                    }
+                    LspEvent::LogMessage { message, .. }
+                        if message.contains(PERL_MISSING_ON_PATH) =>
+                    {
+                        false
+                    }
+                    _ => true,
+                }),
+            )?;
             recorder.check(
                 "every not-found warning carries the canonical remediation substring",
                 remediation_present,

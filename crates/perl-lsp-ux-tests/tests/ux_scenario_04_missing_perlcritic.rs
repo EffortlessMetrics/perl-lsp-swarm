@@ -172,14 +172,14 @@ fn scenario_04_missing_perlcritic_is_explicitly_silent_and_session_stays_respons
             // didOpen-triggered publication (even an empty payload) is the
             // explicit settlement signal; a regressed perlcritic popup emitted
             // during that pass is therefore already in the event buffer.
-            harness
-                .wait_for_diagnostics_event("critic_silent.pl", DIAGNOSTICS_SETTLE)
-                .map_err(|end| {
+            harness.wait_for_diagnostics_event("critic_silent.pl", DIAGNOSTICS_SETTLE).map_err(
+                |end| {
                     anyhow::anyhow!(
                         "diagnostics publication for the opened file never arrived ({})",
                         end.describe()
                     )
-                })?;
+                },
+            )?;
 
             let tool_messages: Vec<String> = harness
                 .client
