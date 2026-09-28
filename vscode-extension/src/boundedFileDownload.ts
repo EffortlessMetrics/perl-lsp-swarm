@@ -79,8 +79,10 @@ export async function cleanupPartialDownloadDest(
   try {
     ensurePartialDownloadDestGone(dest);
   } catch (error) {
-    const reason = error instanceof Error ? error.message : 'destination remains';
-    throw new Error(reason);
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('destination remains');
   }
 }
 
