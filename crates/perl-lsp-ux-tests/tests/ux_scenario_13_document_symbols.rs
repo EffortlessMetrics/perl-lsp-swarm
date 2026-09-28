@@ -413,7 +413,7 @@ fn scenario_13_empty_file_returns_empty() -> Result<()> {
 #[test]
 fn scenario_13_close_reopen_requires_new_generation_and_open_buffer_authority() -> Result<()> {
     if !binary_available() {
-        eprintln!("SKIP scenario_13 close/reopen: perl-lsp binary not found");
+        eprintln!("SKIP scenario_13: perl-lsp binary not found");
         return Ok(());
     }
 
@@ -467,12 +467,12 @@ fn scenario_13_close_reopen_requires_new_generation_and_open_buffer_authority() 
     let symbols = harness.document_symbols(LIFECYCLE_FILE)?;
     let names = document_symbol_names(&symbols);
     assert!(
-        names.iter().any(|name| *name == REOPENED_SYMBOL),
+        names.contains(&REOPENED_SYMBOL),
         "document symbols after the reopen barrier must come from the reopened buffer; got {names:?}"
     );
     for stale_symbol in [DISK_SYMBOL, INITIAL_SYMBOL, PRE_CLOSE_SYMBOL] {
         assert!(
-            !names.iter().any(|name| *name == stale_symbol),
+            !names.contains(&stale_symbol),
             "document symbols after reopen must not expose stale/backing `{stale_symbol}`; got {names:?}"
         );
     }
