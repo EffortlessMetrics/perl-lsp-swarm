@@ -41,7 +41,11 @@ perllsp --doctor
 The repository maintains the installer logic at
 [`scripts/install.sh`](../../scripts/install.sh). The root
 [`install.sh`](../../install.sh) is only a bootstrap and argument-compatibility
-wrapper.
+wrapper: as a convenience it also accepts the two most common settings as
+positionals — `bash install.sh <version> <install-dir>` is equivalent to
+`VERSION=<version> INSTALL_DIR=<install-dir> bash install.sh` (explicit
+environment variables win when both are given). The canonical script itself
+takes flags only and rejects any other positional.
 
 From a clone, the wrapper executes the sibling `scripts/install.sh` directly:
 

@@ -271,37 +271,9 @@ impl<'a> Parser<'a> {
                 }
                 // Handle 'not' keyword as a unary prefix at expression level.
                 // This lets `$a && not $b` parse correctly.
+                // Canonical boundary lives in parse_word_not_expr (#13932).
                 TokenKind::WordNot => {
-                    let op_token = self.advance_token()?;
-                    let start = op_token.start();
-
-                    if self.tokens.is_eof() || self.is_at_statement_end() {
-                        let end = op_token.end();
-                        // Charged before the enclosing node so the charge order matches
-                        // the original construction order.
-                        let charged_operand_3 = self.charge_node(
-                            NodeKind::Undef,
-                            SourceLocation { start: end, end },
-                        )?;
-                        return self.charge_node(
-                            NodeKind::Unary {
-                                op: op_token.text.to_string(),
-                                operand: Box::new(charged_operand_3),
-                            },
-                            SourceLocation { start, end },
-                        );
-                    }
-
-                    let operand = self.parse_unary()?;
-                    let end = operand.location.end;
-
-                    return self.charge_node(
-                        NodeKind::Unary {
-                            op: op_token.text.to_string(),
-                            operand: Box::new(operand),
-                        },
-                        SourceLocation { start, end },
-                    );
+                    return self.parse_word_not_expr();
                 }
                 TokenKind::Not | TokenKind::Backslash | TokenKind::BitwiseNot | TokenKind::Star => {
                     let op_token = self.advance_token()?;

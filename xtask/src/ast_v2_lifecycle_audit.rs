@@ -123,7 +123,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "7EF12A5C709A0F56B6042A168237CC22B1327FC970E0EF48D12A80D936E79F6D";
+    "BB195340DAE67123EC6E9CD7CD1B970CC576A95FA7A27B72F66804069BC453FE";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -310,6 +310,7 @@ struct ReexportRow {
     reexport_id: String,
     path: String,
     site: String,
+    anchor: Vec<String>,
     exposes: String,
     consumer_id: String,
     compatibility_obligation: String,
@@ -331,6 +332,7 @@ struct PackageSurfaceRow {
     surface_id: String,
     surface: String,
     site: String,
+    anchor: Vec<String>,
     current_status: String,
     owner: String,
 }
@@ -3347,20 +3349,17 @@ fn reconcile_consumers(m: &Manifest, repo_root: &Path, scanned: &BTreeSet<String
 
 fn reconcile_reexport_sites(m: &Manifest, repo_root: &Path) -> Result<()> {
     for row in &m.reexport_paths {
-        let (file, line) = split_site(&row.site, &row.reexport_id)?;
-        let text = std::fs::read_to_string(repo_root.join(&file)).with_context(|| {
+        let file = &row.site;
+        let text = std::fs::read_to_string(repo_root.join(file)).with_context(|| {
             format!("re-export {} names site {} which cannot be read", row.reexport_id, row.site)
         })?;
-        let Some(actual) = text.lines().nth(line - 1) else {
-            bail!("re-export {} names {}:{line}, past the end of that file", row.reexport_id, file);
-        };
-        if !mentions_audited_package(actual) {
+        let line = resolve_anchor(&text, &row.anchor, &row.reexport_id, file)?;
+        if !row.anchor.iter().any(|element| mentions_audited_package(element)) {
             bail!(
-                "re-export {} names {}:{line}, but that line no longer mentions the audited \
-                 package:\n  {}",
+                "re-export {} anchors on {file}:{line}, but no line of its anchor mentions the \
+                 audited package:\n  {}",
                 row.reexport_id,
-                file,
-                actual.trim()
+                row.anchor.join("\n  ")
             );
         }
     }
@@ -3524,8 +3523,7 @@ fn reconcile_reexport_inventory(
 
     let mut claimed_by_file: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for row in rows {
-        let (file, _) = split_site(&row.site, &row.reexport_id)?;
-        claimed_by_file.entry(file).or_default().extend(row_reexport_paths(row)?);
+        claimed_by_file.entry(row.site.clone()).or_default().extend(row_reexport_paths(row)?);
     }
 
     // Whether one claimed row path is the public path of one derived binding in
@@ -3607,7 +3605,7 @@ fn reconcile_reexport_inventory(
     // leaves `reconcile_reexport_sites` green whenever the line it names merely
     // still mentions the package, so the inventory could outlive the path.
     for row in rows {
-        let (file, _) = split_site(&row.site, &row.reexport_id)?;
+        let file = row.site.clone();
         let Some(derived) = derived_by_file.get(file.as_str()) else {
             bail!(
                 "re-export {} names site {}, whose source is not available to the re-export \
@@ -3677,7 +3675,7 @@ fn reconcile_derived_reexports(
     // A row's file that no longer reaches the package at all is not in the scan,
     // and it is exactly the case direction two has to report.
     for row in &m.reexport_paths {
-        let (file, _) = split_site(&row.site, &row.reexport_id)?;
+        let file = row.site.clone();
         if sources.contains_key(&file) {
             continue;
         }
@@ -3691,44 +3689,104 @@ fn reconcile_derived_reexports(
 
 fn reconcile_package_surface_sites(m: &Manifest, repo_root: &Path) -> Result<()> {
     for row in &m.package_surfaces {
-        let (file, line) = split_site(&row.site, &row.surface_id)?;
-        let text = std::fs::read_to_string(repo_root.join(&file)).with_context(|| {
+        let file = &row.site;
+        let text = std::fs::read_to_string(repo_root.join(file)).with_context(|| {
             format!(
                 "package surface {} names site {} which cannot be read",
                 row.surface_id, row.site
             )
         })?;
-        let Some(actual) = text.lines().nth(line - 1) else {
+        let line = resolve_anchor(&text, &row.anchor, &row.surface_id, file)?;
+        if !row.anchor.iter().any(|element| mentions_audited_package(element)) {
             bail!(
-                "package surface {} names {}:{line}, past the end of that file",
+                "package surface {} anchors on {file}:{line}, but no line of its anchor mentions \
+                 the audited package:\n  {}",
                 row.surface_id,
-                file
-            );
-        };
-        if !mentions_audited_package(actual) {
-            bail!(
-                "package surface {} names {}:{line}, but that line no longer mentions the audited \
-                 package:\n  {}",
-                row.surface_id,
-                file,
-                actual.trim()
+                row.anchor.join("\n  ")
             );
         }
     }
     Ok(())
 }
 
-/// Split a `path/to/file.rs:123` site reference.
-fn split_site(site: &str, row_id: &str) -> Result<(String, usize)> {
-    let Some((file, line)) = site.rsplit_once(':') else {
-        bail!("{row_id}: site `{site}` is not in `path:line` form");
-    };
-    let line: usize =
-        line.parse().with_context(|| format!("{row_id}: site `{site}` has no numeric line"))?;
-    if line == 0 {
-        bail!("{row_id}: site `{site}` uses line 0; lines are 1-based");
+/// Locate a row's surface in `text` by the content it anchors on, returning the
+/// one-based line of the anchor's first element.
+///
+/// These rows used to carry the coordinate itself — `policy/allow.toml:1642` —
+/// and the check was only that the named line still mentioned the audited
+/// package. That made every row a tripwire for edits elsewhere in the same
+/// file. It misfired twice in two days: a three-line growth in
+/// `perl-parser-core/src/lib.rs`, and a commit that deleted seventeen unrelated
+/// lines above a `policy/allow.toml` anchor. In both cases the audited surface
+/// was untouched and the audit failed anyway, on pull requests that had nothing
+/// to do with it. A coordinate is not the thing; the text is.
+///
+/// An `anchor` is an ordered list of trimmed line texts. Every element must
+/// appear, in order, inside one run of consecutive non-blank lines, and exactly
+/// one run in the file may match. Most rows need a single element because their
+/// line is already unique in its file. The multi-element form exists for rows
+/// whose own line is not: `glob = "crates/perl-ast-v2/src/**/*.rs"` appears
+/// twice in `policy/allow.toml`, once in the `[[allow]]` entry the row audits
+/// and once in the `[allow.selector]` block below it, so that row leads with
+/// the entry's own `id` line to say which one it means.
+///
+/// The package-mention check reads the anchor's own lines rather than the file's,
+/// because with a content anchor those are the same text — and for a
+/// multi-element anchor the leading element is a distinguisher (`id =
+/// "allow-b0214"`) that need not mention the package itself.
+///
+/// Requiring one matching run is what keeps the locator honest. A duplicated
+/// anchor is reported rather than silently resolved to whichever copy comes
+/// first, and deleting the audited surface cannot be masked by a lookalike
+/// elsewhere in the file, because a match may not cross a blank line.
+fn resolve_anchor(text: &str, anchor: &[String], row_id: &str, file: &str) -> Result<usize> {
+    if anchor.is_empty() {
+        bail!("{row_id}: anchor is empty; a row must say what it points at in {file}");
     }
-    Ok((file.to_string(), line))
+    if anchor.iter().any(|element| element.trim().is_empty()) {
+        bail!("{row_id}: anchor carries a blank element, which no source line can match");
+    }
+
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let mut matches: Vec<usize> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if *line != anchor[0].trim() {
+            continue;
+        }
+        let mut cursor = index + 1;
+        let mut remaining = anchor[1..].iter();
+        let mut next = remaining.next();
+        while let Some(wanted) = next {
+            // A run of consecutive non-blank lines is the block. Stopping at the
+            // blank line is what stops a later lookalike from standing in for a
+            // surface that was deleted out of this one.
+            let Some(candidate) = lines.get(cursor).filter(|candidate| !candidate.is_empty())
+            else {
+                break;
+            };
+            if *candidate == wanted.trim() {
+                next = remaining.next();
+            }
+            cursor += 1;
+        }
+        if next.is_none() {
+            matches.push(index + 1);
+        }
+    }
+
+    match matches.as_slice() {
+        [line] => Ok(*line),
+        [] => bail!(
+            "{row_id}: no block in {file} matches the anchor {anchor:?}. The audited surface was \
+             renamed, moved to another file, or removed; move the row rather than the coordinate."
+        ),
+        several => bail!(
+            "{row_id}: the anchor {anchor:?} matches {} blocks in {file} (lines {several:?}), so \
+             it does not identify one surface. Extend the anchor with a preceding line that \
+             distinguishes them.",
+            several.len()
+        ),
+    }
 }
 
 #[cfg(test)]

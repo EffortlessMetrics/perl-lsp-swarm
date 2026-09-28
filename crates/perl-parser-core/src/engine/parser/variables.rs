@@ -1445,62 +1445,58 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    /// Validate ordering rules for a collected list of signature parameters.
-    ///
-    /// Emits diagnostics (without aborting the parse) for:
-    /// - A slurpy (`@` or `%`) parameter that is not the last parameter.
-    /// - Both an `@` and a `%` slurpy parameter present in the same signature.
-    /// - A mandatory parameter appearing after an optional parameter.
+    /// Validate classified parameters without discarding or reordering the signature.
+    /// Error parameters contribute no inferred state; earlier known state survives them.
     fn validate_signature_ordering(&mut self, params: &[Node]) {
-        let mut seen_slurpy_at = false; // saw @array slurpy
-        let mut seen_slurpy_pct = false; // saw %hash slurpy
-        let mut seen_optional = false;
+        use crate::InvalidSignatureOrderingKind as Ordering;
+        let mut seen_optional_positional = false;
+        let mut seen_named = false;
+        let mut seen_slurpy = false;
 
-        for (idx, param) in params.iter().enumerate() {
-            let is_last = idx == params.len() - 1;
-
-            match &param.kind {
-                NodeKind::SlurpyParameter { variable } => {
-                    let sigil = match &variable.kind {
-                        NodeKind::Variable { sigil, .. } => sigil.as_str(),
-                        _ => "",
-                    };
-
-                    if sigil == "@" {
-                        if seen_slurpy_pct {
-                            self.record_error(ParseError::syntax(
-                                "Signature cannot have both @ and % slurpy parameters",
-                                param.location.start,
-                            ));
+        for param in params {
+            if !matches!(
+                param.kind,
+                NodeKind::MandatoryParameter { .. }
+                    | NodeKind::OptionalParameter { .. }
+                    | NodeKind::NamedParameter { .. }
+                    | NodeKind::SlurpyParameter { .. }
+            ) {
+                continue;
+            }
+            let kind = if seen_slurpy {
+                Some(Ordering::ParameterAfterSlurpy)
+            } else {
+                match &param.kind {
+                    NodeKind::MandatoryParameter { .. } => {
+                        if seen_named {
+                            Some(Ordering::PositionalAfterNamed)
+                        } else if seen_optional_positional {
+                            Some(Ordering::MandatoryAfterOptional)
+                        } else {
+                            None
                         }
-                        seen_slurpy_at = true;
-                    } else if sigil == "%" {
-                        if seen_slurpy_at {
-                            self.record_error(ParseError::syntax(
-                                "Signature cannot have both @ and % slurpy parameters",
-                                param.location.start,
-                            ));
-                        }
-                        seen_slurpy_pct = true;
                     }
-
-                    if !is_last {
-                        self.record_error(ParseError::syntax(
-                            "Slurpy parameter must be the last parameter in the signature",
-                            param.location.start,
-                        ));
+                    NodeKind::OptionalParameter { .. } => {
+                        seen_optional_positional = true;
+                        seen_named.then_some(Ordering::PositionalAfterNamed)
                     }
+                    NodeKind::NamedParameter { required, .. } => {
+                        seen_named = true;
+                        (*required && seen_optional_positional)
+                            .then_some(Ordering::RequiredNamedAfterOptional)
+                    }
+                    NodeKind::SlurpyParameter { .. } => {
+                        seen_slurpy = true;
+                        None
+                    }
+                    _ => None,
                 }
-                NodeKind::OptionalParameter { .. } => {
-                    seen_optional = true;
-                }
-                NodeKind::MandatoryParameter { .. } if seen_optional => {
-                    self.record_error(ParseError::syntax(
-                        "Mandatory parameter cannot follow an optional parameter in signature",
-                        param.location.start,
-                    ));
-                }
-                _ => {}
+            };
+            if let Some(kind) = kind {
+                self.record_error(ParseError::InvalidSignatureOrdering {
+                    kind,
+                    range: param.location,
+                });
             }
         }
     }
@@ -1588,7 +1584,15 @@ impl<'a> Parser<'a> {
         let default_value =
             if default_token.is_some() { Some(Box::new(self.parse_ternary()?)) } else { None };
         if let Some(default) = &default_value {
-            end = default.location.end;
+            // #16242: a grouped default such as `$a = (1+2)` consumes its closing
+            // parentheses while the parenthesized primary returns the *inner*
+            // expression node, so the child's `location.end` can stop short of the
+            // consumed grouping delimiters. Keep the consumed extent honest for both
+            // the parameter node and the InvalidSignatureParameter ranges below by
+            // also taking the parser's consumed-token endpoint; the max with the
+            // child's own end covers expression paths that take tokens straight off
+            // the stream, where `last_end_position` lags behind (see #5503).
+            end = default.location.end.max(self.previous_position());
         }
         if let Some(kind) = invalid_kind {
             let range = SourceLocation { start, end };
@@ -2089,6 +2093,15 @@ fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
                 },
             }
         }
+        ParseError::InvalidSignatureOrdering { kind, range } => {
+            ParseError::InvalidSignatureOrdering {
+                kind,
+                range: SourceLocation {
+                    start: range.start.saturating_add(offset),
+                    end: range.end.saturating_add(offset),
+                },
+            }
+        }
         other => other,
     }
 }
@@ -2171,6 +2184,34 @@ mod inline_expression_tests {
             || !error.blocks_clean_parse()
         {
             return Err("diagnostic compatibility changed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn signature_ordering_offsets_both_endpoints() -> Result<(), String> {
+        let error = offset_parse_error(
+            ParseError::InvalidSignatureOrdering {
+                kind: crate::InvalidSignatureOrderingKind::PositionalAfterNamed,
+                range: SourceLocation { start: 3, end: 11 },
+            },
+            17,
+        );
+        if !matches!(
+            error,
+            ParseError::InvalidSignatureOrdering {
+                kind: crate::InvalidSignatureOrderingKind::PositionalAfterNamed,
+                range: SourceLocation { start: 20, end: 28 },
+            }
+        ) {
+            return Err("ordering diagnostic kind/endpoints not mapped".into());
+        }
+        if crate::ErrorClass::error_class(&error) != crate::ErrorCategory::UserError
+            || error.location() != Some(20)
+            || error.diagnostic_anchor() != crate::syntax::error::ParseDiagnosticAnchor::Exact(20)
+            || !error.blocks_clean_parse()
+        {
+            return Err("ordering diagnostic compatibility changed".into());
         }
         Ok(())
     }
