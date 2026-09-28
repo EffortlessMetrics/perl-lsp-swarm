@@ -1813,13 +1813,38 @@ mod tests {
     #[test]
     fn negative_port_is_reported_as_out_of_range() {
         let error = must_err(parse_args(["perl-lsp", "--port", "-1"]));
-        let LaunchParseError::InvalidPort { raw_port, reason } = &error else {
+        let LaunchParseError::InvalidPort { raw_port, .. } = &error else {
             panic!("expected InvalidPort, got {error:?}");
         };
 
         assert_eq!(raw_port, "-1");
-        assert_eq!(reason, super::PORT_OUT_OF_RANGE);
         assert_eq!(error.to_string(), "Invalid port value: -1. Expected a port in 0-65535.");
+    }
+
+    /// A signed digit token is a number outside the range, not a malformed
+    /// number. `--port +5` never reaches here because it parses, but a
+    /// signed token that *is* out of range must still read as a range problem.
+    #[test]
+    fn signed_out_of_range_port_is_reported_as_out_of_range() {
+        for raw in ["+99999", "-1"] {
+            let error = must_err(parse_args(["perl-lsp", "--port", raw]));
+            let reason = format!("{raw}. Expected a port in 0-65535.");
+
+            assert_eq!(error.to_string(), format!("Invalid port value: {reason}"));
+        }
+    }
+
+    /// A digit run longer than any built-in integer type is still a number, so
+    /// it must read as a range problem rather than a malformed token.
+    #[test]
+    fn arbitrarily_long_digit_run_is_reported_as_out_of_range() {
+        let raw = "99999999999999999999999999";
+        let error = must_err(parse_args(["perl-lsp", "--port", raw]));
+
+        assert_eq!(
+            error.to_string(),
+            format!("Invalid port value: {raw}. Expected a port in 0-65535.")
+        );
     }
 
     /// Range endpoints are accepted, so tightening the diagnostic must not
