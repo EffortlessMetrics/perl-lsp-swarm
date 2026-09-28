@@ -34,6 +34,7 @@ Result vocabulary (issue #11795, closed):
   FAIL_PREDECESSOR_REVIEW_INCOMPLETE predecessor exit undispositioned
   FAIL_CLAIM_CEILING_EXCEEDED        evidence claims a different repository subject
   FAIL_CONTROLLER_RELATION           contradictory ownership / duplicate authority
+  FAIL_CHANGED_INPUT                 changed-file list unreadable, undecodable, or truncated
   NOT_PROVEN_GITHUB                  input identity/bounds could not be established
   NOT_PROVEN_SUBJECT                 supplied artifact cannot bind a review subject
   INSTRUMENT_FAILURE                 the evaluator itself is broken
@@ -47,7 +48,11 @@ Exit codes mirror .github/workflows/semantic-close-containment.yml:
       information and trains readers to ignore red. The typed verdict stays
       in the receipt and step summary. Promotion to required enforcement
       (#11796) must revisit this mapping.
-  1 - typed review failure (FAIL_*): a real review finding about the change.
+  1 - typed review failure (FAIL_*): a real review finding about the change or
+      a per-run input failure (FAIL_CHANGED_INPUT). A neutral NOT_PROVEN_*
+      verdict never masks an independent FAIL_* row: every FAIL_* ranks above
+      both NOT_PROVEN_* values in SEVERITY_ORDER, so a mixed run surfaces the
+      failure and exits 1 (#16150 review).
   3 - instrument failure (INSTRUMENT_FAILURE): a broken evaluator is a
       finding about the instrument itself, not the change, and stays loud
       even in advisory context.
@@ -133,16 +138,22 @@ FAIL_ARTIFACT_REVIEW_INCOMPLETE = "FAIL_ARTIFACT_REVIEW_INCOMPLETE"
 FAIL_PREDECESSOR_REVIEW_INCOMPLETE = "FAIL_PREDECESSOR_REVIEW_INCOMPLETE"
 FAIL_CLAIM_CEILING_EXCEEDED = "FAIL_CLAIM_CEILING_EXCEEDED"
 FAIL_CONTROLLER_RELATION = "FAIL_CONTROLLER_RELATION"
+FAIL_CHANGED_INPUT = "FAIL_CHANGED_INPUT"
 NOT_PROVEN_GITHUB = "NOT_PROVEN_GITHUB"
 NOT_PROVEN_SUBJECT = "NOT_PROVEN_SUBJECT"
 INSTRUMENT_FAILURE = "INSTRUMENT_FAILURE"
 
 # Worst-first severity order used to aggregate one terminal result.
+#
+# Every FAIL_* ranks above both NOT_PROVEN_* values (#16150 review): a neutral
+# evidence boundary on one row must never mask an independent typed failure on
+# another, and it never did under the pre-#16150 mapping because any NOT_PROVEN
+# aggregate still exited non-zero. Only the advisory-neutral exit introduced
+# that masking, so the ordering carries the invariant instead.
 SEVERITY_ORDER = (
     INSTRUMENT_FAILURE,
     FAIL_DENOMINATOR_INCOMPLETE,
-    NOT_PROVEN_GITHUB,
-    NOT_PROVEN_SUBJECT,
+    FAIL_CHANGED_INPUT,
     FAIL_CLAIM_CEILING_EXCEEDED,
     FAIL_CONTROLLER_RELATION,
     FAIL_PREDECESSOR_REVIEW_INCOMPLETE,
@@ -151,6 +162,8 @@ SEVERITY_ORDER = (
     FAIL_REVIEW_PROFILE_MISMATCH,
     FAIL_REVIEW_STALE_HEAD,
     FAIL_REVIEW_MISSING,
+    NOT_PROVEN_GITHUB,
+    NOT_PROVEN_SUBJECT,
     PASS_CURRENT_REVIEW,
     PASS_NOT_APPLICABLE,
 )
@@ -167,6 +180,7 @@ TYPED_FAILURE_RESULTS = (
     FAIL_REVIEW_STALE_HEAD,
     FAIL_REVIEW_PROFILE_MISMATCH,
     FAIL_DENOMINATOR_INCOMPLETE,
+    FAIL_CHANGED_INPUT,
     FAIL_FIRST_FALSIFIER_MISSING,
     FAIL_ARTIFACT_REVIEW_INCOMPLETE,
     FAIL_PREDECESSOR_REVIEW_INCOMPLETE,
@@ -1048,7 +1062,11 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
             changed_files, truncated = read_changed_files(inputs)
         except ValueError as error:
             changed_list_error = str(error)
-            global_results.append(NOT_PROVEN_GITHUB)
+            # Unreadable or undecodable changed-file input is a per-run input
+            # failure (#16150 review), not the advisory packet-channel absence
+            # that NOT_PROVEN_GITHUB records: the evaluator has no complete
+            # applicability denominator, so it must stay a loud typed failure.
+            global_results.append(FAIL_CHANGED_INPUT)
             changed_files = []
             truncated = True
         if changed_files or not truncated:
@@ -1075,7 +1093,11 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
                     governed = merge_governed_rows(governed, candidate_rows)
                     overlap_detected = overlap_detected or candidate_overlap
         if truncated:
-            global_results.append(NOT_PROVEN_GITHUB)
+            # Same per-run input-failure boundary: a bounded-list truncation
+            # means governed paths after the retained prefix were never
+            # evaluated, so it stays a typed failure even though the receipt
+            # records the truncation (#16150 review).
+            global_results.append(FAIL_CHANGED_INPUT)
         if overlap_detected:
             global_results.append(FAIL_CONTROLLER_RELATION)
 
@@ -1923,7 +1945,9 @@ def self_test() -> int:
         projection_path.write_text(saved_projection, encoding="utf-8", newline="\n")
         expect("projection_drift", drifted["result"], FAIL_DENOMINATOR_INCOMPLETE)
 
-        # 14. Bounded-input overflow is NOT_PROVEN_GITHUB, never a pass.
+        # 14. Bounded-input overflow is a typed per-run input failure, never a
+        # pass (#16150 review): governed paths after the retained prefix were
+        # never evaluated.
         overflow = evaluate(
             make_inputs(
                 ["src/authority/catalog.rs"] + [f"filler/{i}.txt" for i in range(120)],
@@ -1931,7 +1955,7 @@ def self_test() -> int:
                 max_changed_files=100,
             )
         )
-        expect("bounded_overflow", overflow["result"], NOT_PROVEN_GITHUB)
+        expect("bounded_overflow", overflow["result"], FAIL_CHANGED_INPUT)
 
         # 15. checked_projection row is satisfiable today when the denominator holds.
         receipt = evaluate(make_inputs(["docs/policy/REVIEW_SURFACES.md"], []))
@@ -2094,7 +2118,22 @@ def self_test() -> int:
         expect("exit_loud_instrument_failure", exit_code_for_result(INSTRUMENT_FAILURE), EXIT_NOT_PROVEN)
         expect("exit_typed_review_missing", exit_code_for_result(FAIL_REVIEW_MISSING), EXIT_TYPED_FAILURE)
         expect("exit_typed_stale_head", exit_code_for_result(FAIL_REVIEW_STALE_HEAD), EXIT_TYPED_FAILURE)
+        expect("exit_typed_changed_input", exit_code_for_result(FAIL_CHANGED_INPUT), EXIT_TYPED_FAILURE)
         expect("exit_unknown_fails_closed", exit_code_for_result("SOMETHING_ELSE"), EXIT_NOT_PROVEN)
+
+        # 24. NEUTRAL-NEVER-MASKS-FAIL (#16150 review): every FAIL_* ranks
+        # above both NOT_PROVEN_* values, so a mixed run aggregates to the
+        # typed failure and exits 1 instead of a green not-proven boundary.
+        for fail_result in TYPED_FAILURE_RESULTS:
+            mixed = aggregate([NOT_PROVEN_GITHUB, fail_result])
+            expect(f"severity_neutral_never_masks_{fail_result.lower()}", mixed, fail_result)
+            expect(
+                f"exit_mixed_{fail_result.lower()}",
+                exit_code_for_result(aggregate([NOT_PROVEN_SUBJECT, fail_result])),
+                EXIT_TYPED_FAILURE,
+            )
+        unmixed_neutral = aggregate([NOT_PROVEN_GITHUB, NOT_PROVEN_SUBJECT])
+        expect("severity_unmixed_neutral_stays_neutral", unmixed_neutral, NOT_PROVEN_GITHUB)
 
     if failures:
         print(f"Authority Transfer Review self-test FAILED ({len(failures)}):")

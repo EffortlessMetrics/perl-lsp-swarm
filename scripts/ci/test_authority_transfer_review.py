@@ -503,18 +503,23 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             self.assertTrue(receipt["denominator"]["candidate_tree_checked"])
             self.assertFalse(receipt["denominator"]["candidate_tree_strict_pass"])
 
-    def test_bounded_changed_file_overflow_is_not_proven_github(self) -> None:
-        # Falsifier 10 guard rail: bounds exceeded can never look like a clean pass.
+    def test_bounded_changed_file_overflow_is_typed_input_failure(self) -> None:
+        # Falsifier 10 guard rail: bounds exceeded can never look like a clean
+        # pass. #16150 review: truncation means governed paths after the
+        # retained prefix were never evaluated, so it is a per-run input
+        # failure (exit 1), not the advisory NOT_PROVEN_GITHUB boundary.
         receipt = self.evaluate(
             GOVERNED_CHANGED + [f"filler/{i}.txt" for i in range(120)], []
         )
-        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+        self.assertEqual(atr.FAIL_CHANGED_INPUT, receipt["result"])
+        self.assertEqual(atr.EXIT_TYPED_FAILURE, atr.exit_code_for_result(receipt["result"]))
+        self.assertTrue(receipt["inputs"]["changed_files_truncated"])
 
     # ------------------------------------------------------------------
     # Determinism and CLI contract
     # ------------------------------------------------------------------
 
-    def test_non_utf8_changed_list_is_not_proven_never_ungoverned(self) -> None:
+    def test_non_utf8_changed_list_is_typed_input_failure_never_ungoverned(self) -> None:
         listed = self.base / "changed.txt"
         listed.write_bytes(b"src/authority/catalog\xff.rs\n")
         inputs = {
@@ -530,9 +535,30 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             "max_changed_files": 100,
         }
         receipt = atr.evaluate(inputs)
-        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+        self.assertEqual(atr.FAIL_CHANGED_INPUT, receipt["result"])
+        self.assertEqual(atr.EXIT_TYPED_FAILURE, atr.exit_code_for_result(receipt["result"]))
         self.assertNotEqual(atr.PASS_NOT_APPLICABLE, receipt["result"])
         self.assertTrue(receipt["inputs"]["changed_list_error"].startswith("changed_list_not_utf8"))
+
+    def test_neutral_row_verdict_never_masks_typed_failure(self) -> None:
+        """#16150 review — a NOT_PROVEN_GITHUB boundary on one row must not
+        silence an independent FAIL_* on another: every FAIL_* ranks above the
+        neutral verdicts in SEVERITY_ORDER, so the mixed aggregate is the
+        typed failure and the CLI exits 1."""
+        for fail_result in atr.TYPED_FAILURE_RESULTS:
+            self.assertEqual(fail_result, atr.aggregate([atr.NOT_PROVEN_GITHUB, fail_result]))
+            self.assertEqual(fail_result, atr.aggregate([atr.NOT_PROVEN_SUBJECT, fail_result]))
+            self.assertEqual(
+                atr.EXIT_TYPED_FAILURE,
+                atr.exit_code_for_result(atr.aggregate([atr.NOT_PROVEN_GITHUB, fail_result])),
+            )
+        # Unmixed neutral evidence stays advisory-neutral (exit 0).
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, atr.aggregate([atr.NOT_PROVEN_GITHUB]))
+        self.assertEqual(
+            atr.EXIT_PASS,
+            atr.exit_code_for_result(atr.aggregate([atr.NOT_PROVEN_GITHUB, atr.NOT_PROVEN_SUBJECT])),
+        )
+        self.assertEqual(atr.EXIT_PASS, atr.exit_code_for_result(atr.NOT_PROVEN_GITHUB))
 
     def test_consecutive_computations_over_unchanged_inputs_are_byte_identical(self) -> None:
         good = self.write_packet("good.json", packet_body("semantic_close_authority", HEAD))
@@ -661,7 +687,8 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             "max_changed_files": 100,
         }
         receipt = atr.evaluate(inputs)
-        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+        self.assertEqual(atr.FAIL_CHANGED_INPUT, receipt["result"])
+        self.assertEqual(atr.EXIT_TYPED_FAILURE, atr.exit_code_for_result(receipt["result"]))
         self.assertIn("changed_list_not_utf8", receipt["inputs"]["changed_list_error"])
 
     # ------------------------------------------------------------------
