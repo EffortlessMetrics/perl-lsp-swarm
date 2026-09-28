@@ -378,6 +378,16 @@ note = "Generated, byte-pinned migration reference; historical readability, not 
 reference_hashes = ["457ada90dd06721b3eeb833f565014b81aba41ff74fd18c93bccbb49868b1dfe", "46f226a347a15fb8cf284da1f25f44e7a1e154371574fdaf72e797a4b385ef86", "d3707339592253c2f753070598cd389e38cfc8f97d20fd9305140bb7ba6ec41f", "dc294355c6a2b6034b980276756b0cae18f5f93e032fa8db6d70eb140b2a7f46"]
 
 [[entry]]
+path = "docs/releases/domain6-windows-editor-distribution-first-mile.v1.json"
+classification = "historical_prose"
+migration_target = "none"
+owner_issue = 8752
+removal_condition = "None; frozen release-evidence history stays readable."
+allowed_to_remain = true
+note = "Version-pinned disposition ledger naming the legacy parity test as touched-path history; carries no authority and no execution."
+reference_hashes = ["8282e66f966c9d8f0cfb0e007395beb0c993ec16ca9fb584787f24691b8a23e8"]
+
+[[entry]]
 path = "docs/reviews/3313-deep-review.md"
 classification = "historical_prose"
 migration_target = "none"
