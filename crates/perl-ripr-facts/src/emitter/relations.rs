@@ -425,6 +425,7 @@ fn collect_is_args(node: &Node, content: &str, output: &mut Vec<(String, String)
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::emitter::owners::emit_files_and_owners;

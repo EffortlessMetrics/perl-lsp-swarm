@@ -10,6 +10,20 @@ pub use crate::client_compat_fixture::{
 
 pub const SCHEMA_VERSION: &str = "editor_client_compat.v1";
 
+/// Fail-closed CLI pin (#15340): refuse any envelope version other than the
+/// current [`SCHEMA_VERSION`] before a host entry point performs any work, so
+/// a future version bump cannot silently flip every consumer at once and an
+/// unknown per-invocation request fails loudly instead of emitting a shape
+/// the caller does not parse.
+pub fn ensure_api_version(api_version: &str) -> Result<()> {
+    ensure!(
+        api_version == SCHEMA_VERSION,
+        "unsupported editor_client_compat envelope version {api_version:?}: this build emits \
+         and validates only {SCHEMA_VERSION:?}"
+    );
+    Ok(())
+}
+
 /// Schema version of the protocol state-machine contract this one composes with.
 ///
 /// `actual_host_receipt.v1` (`contracts/actual_host_receipt.v1.schema.json`,

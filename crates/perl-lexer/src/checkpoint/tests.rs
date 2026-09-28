@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Checkpointable, LexerConfig, LexerMode, PerlLexer, TokenType};
+use crate::{Checkpointable, LexerConfig, LexerMode, LocalSymbolTable, PerlLexer, TokenType};
 
 fn live_checkpoints(source: &str) -> Vec<LexerCheckpoint> {
     let mut lexer = PerlLexer::new(source);
@@ -237,6 +237,29 @@ fn qw_recovery_enabled_is_part_of_policy_identity() {
         recovered, no_recovery,
         "qw_recovery_enabled must participate in construction-time policy identity"
     );
+}
+
+#[test]
+fn nullary_membership_is_part_of_policy_identity() {
+    // Nullary membership changes how a later `foo <<MARK` tokenizes (#16165),
+    // so two tables with identical callable names but different prototypes
+    // must not share one policy identity.
+    let nullary_config = LexerConfig {
+        symbol_table: Some(LocalSymbolTable::scan_subs("sub foo () { 1 }")),
+        ..LexerConfig::default()
+    };
+    let plain_config = LexerConfig {
+        symbol_table: Some(LocalSymbolTable::scan_subs("sub foo { 1 }")),
+        ..LexerConfig::default()
+    };
+    let nullary = LexerPolicyIdentity::from_construction(&nullary_config, false, false);
+    let plain = LexerPolicyIdentity::from_construction(&plain_config, false, false);
+    assert_ne!(
+        nullary, plain,
+        "same names with different nullary membership must differ in policy identity"
+    );
+    let same_again = LexerPolicyIdentity::from_construction(&nullary_config, false, false);
+    assert_eq!(nullary, same_again, "identical tables must keep one policy identity");
 }
 
 #[test]

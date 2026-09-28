@@ -110,7 +110,7 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         // `checkout_pins_share_one_full_commit_sha` below; naming the SHA here
         // broke this contract on every upstream pin bump (issue #11695).
         "uses: actions/checkout@",
-        "uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772",
+        "uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de",
     ] {
         ensure!(content.contains(required), "workflow contract missing `{required}`");
     }

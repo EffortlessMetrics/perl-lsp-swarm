@@ -790,19 +790,114 @@ fn a_value_outside_a_closed_vocabulary_is_rejected() -> Result<()> {
 }
 
 #[test]
-fn a_stale_reexport_site_line_is_rejected() -> Result<()> {
+fn a_reexport_anchor_that_matches_nothing_is_rejected() -> Result<()> {
     let mut value = real_value()?;
-    row_mut(&mut value, "reexport_paths", "reexport_id", "rx:perl-ast-v2")?["site"] =
-        Value::String("crates/perl-ast/src/lib.rs:1".to_string());
-    assert_rejected(&value, "no longer mentions the audited")
+    row_mut(&mut value, "reexport_paths", "reexport_id", "rx:perl-ast-v2")?["anchor"] =
+        Value::Array(vec![Value::String("pub use perl_ast_v2 as gone;".to_string())]);
+    assert_rejected(&value, "matches the anchor")
 }
 
 #[test]
-fn a_stale_package_surface_site_line_is_rejected() -> Result<()> {
+fn a_package_surface_anchor_that_matches_nothing_is_rejected() -> Result<()> {
     let mut value = real_value()?;
-    row_mut(&mut value, "package_surfaces", "surface_id", "ps:workspace-member")?["site"] =
-        Value::String("Cargo.toml:1".to_string());
-    assert_rejected(&value, "no longer mentions the audited")
+    row_mut(&mut value, "package_surfaces", "surface_id", "ps:workspace-member")?["anchor"] =
+        Value::Array(vec![Value::String("\"crates/perl-ast-v3\",".to_string())]);
+    assert_rejected(&value, "matches the anchor")
+}
+
+/// The row that made the multi-element form necessary. `policy/allow.toml`
+/// carries the same `glob` line twice — once in the `[[allow]]` entry the audit
+/// tracks and once in the `[allow.selector]` block under it — so the bare line
+/// identifies no single surface and the audit must say so rather than pick one.
+#[test]
+fn a_package_surface_anchor_matching_two_blocks_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    row_mut(&mut value, "package_surfaces", "surface_id", "ps:panic-baseline")?["anchor"] =
+        Value::Array(vec![Value::String("glob = \"crates/perl-ast-v2/src/**/*.rs\"".to_string())]);
+    assert_rejected(&value, "does not identify one surface")
+}
+
+/// A row must still be about the audited package. An anchor that resolves but
+/// names something else is a row pointing at the wrong surface.
+#[test]
+fn an_anchor_that_never_mentions_the_audited_package_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    row_mut(&mut value, "package_surfaces", "surface_id", "ps:workspace-member")?["anchor"] =
+        Value::Array(vec![Value::String("\"crates/perl-ast\",".to_string())]);
+    assert_rejected(&value, "mentions the audited package")
+}
+
+/// The defect this anchor form exists to end. Every row is resolved against a
+/// copy of its own file with a hundred unrelated lines inserted at the top:
+/// every line number a coordinate pin would have recorded is now wrong, and the
+/// audit must resolve the same surface anyway.
+#[test]
+fn shifting_every_line_in_an_anchored_file_changes_nothing() -> Result<()> {
+    let value = real_value()?;
+    let repo_root = repo_root_for_tests()?;
+    let padding = "// unrelated\n".repeat(100);
+
+    for (key, id_field) in [("reexport_paths", "reexport_id"), ("package_surfaces", "surface_id")] {
+        let Some(rows) = value[key].as_array() else {
+            bail!("{key} is not an array");
+        };
+        for row in rows {
+            let Some(file) = row["site"].as_str() else {
+                bail!("a {key} row has a non-string site");
+            };
+            let Some(id) = row[id_field].as_str() else {
+                bail!("a {key} row has a non-string {id_field}");
+            };
+            let Some(elements) = row["anchor"].as_array() else {
+                bail!("{id}: anchor is not an array");
+            };
+            let anchor: Vec<String> = elements
+                .iter()
+                .map(|element| element.as_str().unwrap_or_default().to_string())
+                .collect();
+
+            let text = std::fs::read_to_string(repo_root.join(file))
+                .with_context(|| format!("{id}: cannot read {file}"))?;
+            let here = resolve_anchor(&text, &anchor, id, file)?;
+            let shifted = resolve_anchor(&format!("{padding}{text}"), &anchor, id, file)?;
+
+            if shifted != here + 100 {
+                bail!(
+                    "{id}: anchor resolved to line {here} before the shift and {shifted} after, \
+                     which is not the same surface moved by 100 lines"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The control for the test above: a blank line stops a match, so a lookalike
+/// further down the file cannot stand in for a surface deleted out of the
+/// block the row names.
+#[test]
+fn a_multi_element_anchor_does_not_match_across_a_blank_line() -> Result<()> {
+    let anchor = ["id = \"allow-b0214\"".to_string(), "glob = \"x\"".to_string()];
+    let together = "id = \"allow-b0214\"\nkind = \"panic\"\nglob = \"x\"\n";
+    let split = "id = \"allow-b0214\"\nkind = \"panic\"\n\nglob = \"x\"\n";
+
+    if resolve_anchor(together, &anchor, "row", "f.toml")? != 1 {
+        bail!("an anchor inside one block must resolve to its first line");
+    }
+    if resolve_anchor(split, &anchor, "row", "f.toml").is_ok() {
+        bail!("an anchor must not match across a blank line");
+    }
+    Ok(())
+}
+
+/// An empty anchor would resolve to nothing and prove nothing, so the row is
+/// invalid rather than vacuously satisfied.
+#[test]
+fn an_empty_anchor_is_rejected() -> Result<()> {
+    let mut value = real_value()?;
+    row_mut(&mut value, "package_surfaces", "surface_id", "ps:workspace-member")?["anchor"] =
+        Value::Array(vec![]);
+    assert_rejected(&value, "anchor is empty")
 }
 
 #[test]
@@ -2327,6 +2422,10 @@ fn a_new_public_reexport_alias_must_move_the_inventory() -> Result<()> {
 
 /// Build re-export rows from `(id, path, site)` triples, so the two directions
 /// of the inventory law can be falsified without a fixture repository.
+///
+/// These rows exercise the inventory direction, which reads only the site file,
+/// so they carry a placeholder anchor. Anchor resolution itself is falsified
+/// directly against `resolve_anchor`.
 fn reexport_rows(rows: &[(&str, &str, &str)]) -> Result<Vec<ReexportRow>> {
     rows.iter()
         .map(|(id, path, site)| {
@@ -2334,6 +2433,7 @@ fn reexport_rows(rows: &[(&str, &str, &str)]) -> Result<Vec<ReexportRow>> {
                 "reexport_id": id,
                 "path": path,
                 "site": site,
+                "anchor": ["pub use perl_ast_v2 as ast_v2;"],
                 "exposes": "whole package",
                 "consumer_id": "c:test",
                 "compatibility_obligation": "a test row",
@@ -2354,7 +2454,7 @@ fn a_public_reexport_in_an_uninventoried_file_moves_the_inventory() -> Result<()
     // recorded one, but a first public path in any other file — a new crate
     // forwarding the package, or a compatibility shim added during absorption —
     // changed no checked set. The scan set is now the candidate set.
-    let rows = reexport_rows(&[("rx:known", "perl_ast::v2", "crates/perl-ast/src/lib.rs:93")])?;
+    let rows = reexport_rows(&[("rx:known", "perl_ast::v2", "crates/perl-ast/src/lib.rs")])?;
     let live = sources(&[
         ("crates/perl-ast/src/lib.rs", "pub use perl_ast_v2 as v2;"),
         ("crates/other/src/lib.rs", "// nothing public here\nuse perl_ast_v2 as internal;"),
@@ -2383,7 +2483,7 @@ fn a_reexport_that_stops_being_public_cannot_stay_inventoried() -> Result<()> {
     // `pub use perl_ast_v2 as v2;` becoming `pub(crate)` — or being renamed —
     // leaves the row green while the compatibility obligation attached to it
     // describes a path consumers can no longer write.
-    let rows = reexport_rows(&[("rx:known", "perl_ast::v2", "crates/perl-ast/src/lib.rs:93")])?;
+    let rows = reexport_rows(&[("rx:known", "perl_ast::v2", "crates/perl-ast/src/lib.rs")])?;
 
     for (label, text, needle) in [
         ("demoted to crate-private", "pub(crate) use perl_ast_v2 as v2;", "binds that path"),
@@ -2418,12 +2518,12 @@ fn a_reexport_row_must_name_the_crate_that_owns_its_site() -> Result<()> {
     let live = sources(&[("crates/perl-ast/src/lib.rs", "pub use perl_ast_v2 as v2;")]);
 
     // The honest row still reconciles.
-    let correct = reexport_rows(&[("rx:known", "perl_ast::v2", "crates/perl-ast/src/lib.rs:93")])?;
+    let correct = reexport_rows(&[("rx:known", "perl_ast::v2", "crates/perl-ast/src/lib.rs")])?;
     reconcile_reexport_inventory(&correct, &live)?;
 
     // The same binding suffix under a crate that does not own the site must not.
     for wrong in ["perl_parser::v2", "perl_ast_v2::v2", "not_a_crate::v2"] {
-        let rows = reexport_rows(&[("rx:wrong", wrong, "crates/perl-ast/src/lib.rs:93")])?;
+        let rows = reexport_rows(&[("rx:wrong", wrong, "crates/perl-ast/src/lib.rs")])?;
         let Err(err) = reconcile_reexport_inventory(&rows, &live) else {
             bail!("a row claiming `{wrong}` at a `perl-ast` site must not reconcile");
         };
@@ -2441,7 +2541,7 @@ fn a_reexport_row_must_name_the_crate_that_owns_its_site() -> Result<()> {
     let engine_row = reexport_rows(&[(
         "rx:engine",
         "perl_parser_core::engine::perl_ast_v2",
-        "crates/perl-parser-core/src/engine/mod.rs:12",
+        "crates/perl-parser-core/src/engine/mod.rs",
     )])?;
     reconcile_reexport_inventory(&engine_row, &nested)?;
     Ok(())
@@ -2457,11 +2557,11 @@ fn a_reexport_row_must_name_the_module_that_actually_publishes_it() -> Result<()
     // module path.
     let live = sources(&[("crates/c/src/a.rs", "pub use perl_ast_v2 as ast_v2;")]);
 
-    let correct = reexport_rows(&[("rx:a", "c::a::ast_v2", "crates/c/src/a.rs:1")])?;
+    let correct = reexport_rows(&[("rx:a", "c::a::ast_v2", "crates/c/src/a.rs")])?;
     reconcile_reexport_inventory(&correct, &live)?;
 
     // Right crate, right alias, wrong module.
-    let wrong = reexport_rows(&[("rx:b", "c::b::ast_v2", "crates/c/src/a.rs:1")])?;
+    let wrong = reexport_rows(&[("rx:b", "c::b::ast_v2", "crates/c/src/a.rs")])?;
     let Err(err) = reconcile_reexport_inventory(&wrong, &live) else {
         bail!("a row naming a module that does not publish the alias must not reconcile");
     };
@@ -2503,7 +2603,7 @@ fn a_reexport_row_must_name_the_module_that_actually_publishes_it() -> Result<()
     let nested = reexport_rows(&[(
         "rx:compat",
         "perl_parser::compat::ast_v2",
-        "crates/perl-parser/src/lib.rs:1",
+        "crates/perl-parser/src/lib.rs",
     )])?;
     reconcile_reexport_inventory(&nested, &inline)?;
     Ok(())
@@ -2600,8 +2700,8 @@ fn a_forwarding_reexport_must_terminate_in_the_inventory() -> Result<()> {
     // terminate in the inventory, so swapping one for an unrelated module names
     // a path no row describes.
     let rows = reexport_rows(&[
-        ("rx:direct", "c::engine::ast_v2", "crates/c/src/engine/mod.rs:1"),
-        ("rx:forward", "c::ast_v2", "crates/c/src/lib.rs:1"),
+        ("rx:direct", "c::engine::ast_v2", "crates/c/src/engine/mod.rs"),
+        ("rx:forward", "c::ast_v2", "crates/c/src/lib.rs"),
     ])?;
 
     let chained = sources(&[
@@ -2645,10 +2745,10 @@ fn each_forwarding_hop_resolves_in_its_own_crate() -> Result<()> {
     // carries a same-named `shim` path, so a second hop that retained the
     // origin context would resolve into A and terminate on the wrong chain.
     let rows = reexport_rows(&[
-        ("rx:a", "crate_a::ast_v2", "crates/crate-a/src/lib.rs:1"),
-        ("rx:a-shim", "crate_a::shim::ast_v2", "crates/crate-a/src/shim.rs:1"),
-        ("rx:b", "crate_b::ast_v2", "crates/crate-b/src/lib.rs:1"),
-        ("rx:b-shim", "crate_b::shim::ast_v2", "crates/crate-b/src/shim.rs:1"),
+        ("rx:a", "crate_a::ast_v2", "crates/crate-a/src/lib.rs"),
+        ("rx:a-shim", "crate_a::shim::ast_v2", "crates/crate-a/src/shim.rs"),
+        ("rx:b", "crate_b::ast_v2", "crates/crate-b/src/lib.rs"),
+        ("rx:b-shim", "crate_b::shim::ast_v2", "crates/crate-b/src/shim.rs"),
     ])?;
     let chain = sources(&[
         // A forwards into B.
@@ -2689,11 +2789,11 @@ fn a_forwarding_target_does_not_resolve_through_another_crate() -> Result<()> {
         (
             "rx:core-engine",
             "perl_parser_core::engine::ast_v2",
-            "crates/perl-parser-core/src/engine/mod.rs:1",
+            "crates/perl-parser-core/src/engine/mod.rs",
         ),
         // An unrelated local `ast_v2` in a different crate, forwarding to
         // nothing of its own.
-        ("rx:other", "other_crate::ast_v2", "crates/other-crate/src/lib.rs:1"),
+        ("rx:other", "other_crate::ast_v2", "crates/other-crate/src/lib.rs"),
     ])?;
     let across = sources(&[
         ("crates/perl-parser-core/src/engine/mod.rs", "pub use perl_ast_v2 as ast_v2;"),
@@ -2714,9 +2814,9 @@ fn a_forwarding_target_does_not_resolve_through_another_crate() -> Result<()> {
         (
             "rx:core-engine",
             "perl_parser_core::engine::ast_v2",
-            "crates/perl-parser-core/src/engine/mod.rs:1",
+            "crates/perl-parser-core/src/engine/mod.rs",
         ),
-        ("rx:core-root", "perl_parser_core::ast_v2", "crates/perl-parser-core/src/lib.rs:1"),
+        ("rx:core-root", "perl_parser_core::ast_v2", "crates/perl-parser-core/src/lib.rs"),
     ])?;
     let within = sources(&[
         ("crates/perl-parser-core/src/engine/mod.rs", "pub use perl_ast_v2 as ast_v2;"),
@@ -2780,7 +2880,7 @@ fn a_public_extern_crate_alias_is_a_public_path() -> Result<()> {
     assert!(derive_public_reexports("pub extern crate serde as ast_v2;").is_empty());
 
     // It reconciles like any other public path: no row, no pass.
-    let rows = reexport_rows(&[("rx:one", "c::other", "crates/c/src/lib.rs:1")])?;
+    let rows = reexport_rows(&[("rx:one", "c::other", "crates/c/src/lib.rs")])?;
     let sources = sources(&[(
         "crates/c/src/lib.rs",
         "pub use perl_ast_v2 as other;\npub extern crate perl_ast_v2 as ast_v2;",
@@ -2802,8 +2902,8 @@ fn a_forwarding_chain_that_never_reaches_the_package_is_rejected() -> Result<()>
     // pointing at each other passed with no direct export anywhere — the
     // inventory vouching for itself.
     let rows = reexport_rows(&[
-        ("rx:a", "c::a::ast_v2", "crates/c/src/a.rs:1"),
-        ("rx:b", "c::b::ast_v2", "crates/c/src/b.rs:1"),
+        ("rx:a", "c::a::ast_v2", "crates/c/src/a.rs"),
+        ("rx:b", "c::b::ast_v2", "crates/c/src/b.rs"),
     ])?;
 
     // The cycle: a forwards to b, b forwards to a, neither names the package.
@@ -2849,7 +2949,7 @@ fn a_nested_module_sharing_the_package_name_is_not_the_package() -> Result<()> {
     assert!(!names_package_directly("perl_parser_core::Parser"));
 
     // End to end: the lookalike must now be forced to chain, and fail.
-    let rows = reexport_rows(&[("rx:one", "c::ast_v2", "crates/c/src/lib.rs:1")])?;
+    let rows = reexport_rows(&[("rx:one", "c::ast_v2", "crates/c/src/lib.rs")])?;
     let lookalike = sources(&[("crates/c/src/lib.rs", "pub use other::perl_ast_v2 as ast_v2;")]);
     let Err(err) = reconcile_reexport_inventory(&rows, &lookalike) else {
         bail!("a nested lookalike must not satisfy a compatibility row");
@@ -2878,7 +2978,7 @@ fn two_modules_exporting_one_alias_are_two_compatibility_paths() -> Result<()> {
     );
 
     // One row cannot cover both, and the row that exists covers only its own.
-    let rows = reexport_rows(&[("rx:a", "c::a::ast_v2", "crates/c/src/lib.rs:1")])?;
+    let rows = reexport_rows(&[("rx:a", "c::a::ast_v2", "crates/c/src/lib.rs")])?;
     let both = sources(&[("crates/c/src/lib.rs", source)]);
     let Err(err) = reconcile_reexport_inventory(&rows, &both) else {
         bail!("the second module's public path must demand its own row");
@@ -2912,9 +3012,9 @@ fn a_grouped_reexport_row_claims_each_name_it_lists() -> Result<()> {
         (
             "rx:types",
             "perl_parser_core::{DiagnosticId, MissingKind}",
-            "crates/perl-parser-core/src/lib.rs:97",
+            "crates/perl-parser-core/src/lib.rs",
         ),
-        ("rx:module", "perl_parser_core::ast_v2", "crates/perl-parser-core/src/lib.rs:101"),
+        ("rx:module", "perl_parser_core::ast_v2", "crates/perl-parser-core/src/lib.rs"),
     ])?;
     let module = "pub use perl_ast_v2 as ast_v2;\n";
     let both = sources(&[(

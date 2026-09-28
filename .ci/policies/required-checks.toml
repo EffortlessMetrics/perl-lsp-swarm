@@ -17,18 +17,12 @@ workflow = ".github/workflows/em-ci-routed-rust.yml"
 required = true
 contract_role = "required-workflow-shape"
 
-  # This gate has no `push` trigger, so it produces no verdict on `main`. A
-  # lane that is red at merge stays red silently, because nothing re-measures
-  # it on the branch it was merged into. Measured on #16168: this context is
-  # carried by 0 of the last 60 landed commits. That is a real gap, not a
-  # shape this workflow needs; closing it is a separate decision about CI cost
-  # on every main push, so it is recorded here as a remainder rather than
-  # fixed in passing.
-  [[check.exemption]]
-  clause = "push-targets-master"
-  status = "remainder"
-  reason = "No push trigger, so the routed Rust aggregate never runs on main and has no baseline there."
-  tracking = "16168"
+  # #16168 closed the `push-targets-master` remainder this row previously
+  # carried: the workflow now defines `push: branches: [main, master]`, so a
+  # landed main commit carries its own `Perl LSP Rust Small Result` baseline
+  # run instead of leaving a red-at-merge lane silently red on main. The push
+  # concurrency group is per commit SHA, so main pushes neither cancel each
+  # other nor inherit ci.yml's 76% pre-scheduling cancellation class.
 
 [[check]]
 name = "ripr+ New Gap Gate"
@@ -135,13 +129,13 @@ producer = "repository-job"
 workflow = ".github/workflows/em-ci-routed-rust.yml"
 job = "rust-small-result"
 workflow_result = "propagate"
-events = ["pull_request", "merge_group", "workflow_dispatch"]
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge, bound to the GitHub Actions integration."
+reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge, bound to the GitHub Actions integration. #16168 added the push trigger so landed main commits carry the required baseline."
 
 [[checks]]
 name = "ripr+ New Gap Gate"

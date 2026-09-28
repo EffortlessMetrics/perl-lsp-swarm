@@ -103,7 +103,7 @@ regex.workspace = true
 serial_test = "4.0.1"
 tempfile.workspace = true
 proptest.workspace = true
-rstest = "0.26.1"
+rstest = "0.27.0"
 perl-corpus = { workspace = true }
 perl-lsp-rs-core = { workspace = true }
 perl-test-generators = { workspace = true }
