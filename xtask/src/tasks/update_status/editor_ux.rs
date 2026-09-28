@@ -19,6 +19,13 @@ use crate::tasks::metrics::lsp_stats::{
 /// must never silently drive the quality.md surface with stale assumptions.
 const SUPPORTED_EDITOR_UX_SCHEMA_VERSION: u32 = 1;
 
+/// `schema_version` written into the editor UX receipt
+/// (`docs/project/status/editor_ux.json`). The token is a self-describing
+/// `String` so consumers can perform a string-equality check and a v2
+/// evolution can be expressed as a different value rather than a magic
+/// integer (#15329).
+const EDITOR_UX_RECEIPT_SCHEMA_VERSION: &str = "editor_ux.v1";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -118,7 +125,7 @@ pub(super) fn generate_editor_ux_receipt(root: &Path) -> Result<String> {
     let known_blockers = load_active_known_blockers(root)?;
 
     let receipt = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": EDITOR_UX_RECEIPT_SCHEMA_VERSION,
         "receipt_kind": if measured_scorecard.is_some() { "measured_status" } else { "planning_scaffold" },
         "scorecard": "editor_ux",
         "harness": {

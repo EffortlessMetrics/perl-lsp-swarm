@@ -8,7 +8,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 **Purpose**: Development task runner — benchmarks, corpus management, CI gates, code generation, and release utilities.
 
-**Version**: 0.8.3
+**Version**: tracks the workspace version.
 
 ## Commands
 
