@@ -101,10 +101,7 @@ where
                 // Single-sourced from the launcher's InvalidShell wording, so
                 // this fallback can never drift from the parse-time gate's
                 // supported list again (#16603).
-                eprintln!(
-                    "{}",
-                    LaunchParseError::InvalidShell { raw_shell: shell.clone() }
-                );
+                eprintln!("{}", LaunchParseError::InvalidShell { raw_shell: shell.clone() });
                 1
             }
         }
