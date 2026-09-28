@@ -29,13 +29,13 @@ $ProgressPreference = "SilentlyContinue"
 
 $Repo = "EffortlessMetrics/perl-lsp"
 # The release workflow packages the binary as `perllsp` on every platform
-# (see .github/workflows/release.yml — NAME="perllsp"), and every editor doc
+# (see .github/workflows/release.yml - NAME="perllsp"), and every editor doc
 # / README / POSIX installer (scripts/install.sh) uses `perllsp`. Install the
 # Windows candidate stores `perllsp.exe`; PATH-visible names are `perllsp.cmd`
 # / `perl-dap.cmd` shims that follow `.perl-lsp\current` so unelevated hosts
 # never publish independent copies.
 $Name = "perllsp"
-# The release archive also carries the debug adapter (`perl-dap.exe`) — see
+# The release archive also carries the debug adapter (`perl-dap.exe`) - see
 # .github/workflows/release.yml, which builds `-p perl-dap` for every target.
 # Install it alongside the server so Windows matches every sibling channel:
 # scripts/install.sh (optional perl-dap copy), Formula/perllsp.rb,
@@ -44,7 +44,7 @@ $DapName = "perl-dap"
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "→ " -ForegroundColor Green -NoNewline
+    Write-Host "-> " -ForegroundColor Green -NoNewline
     Write-Host $Message
 }
 
@@ -57,13 +57,13 @@ function Write-Error {
 
 function Write-Warn {
     param([string]$Message)
-    Write-Host "⚠ " -ForegroundColor Yellow -NoNewline
+    Write-Host "[!] " -ForegroundColor Yellow -NoNewline
     Write-Host $Message
 }
 
 function Write-Success {
     param([string]$Message)
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "[ok] " -ForegroundColor Green -NoNewline
     Write-Host $Message
 }
 
@@ -1229,15 +1229,15 @@ try {
     Write-Info "PATH status: $PathDisposition"
     
     Write-Host ""
-    Write-Host "Installation complete! 🎉" -ForegroundColor Green
+    Write-Host "Installation complete!" -ForegroundColor Green
     Write-Host ""
     Write-Host "To get started with Perl LSP:"
-    Write-Host "  • VS Code: Install the Perl LSP extension from the marketplace"
-    Write-Host "  • Other editors: Configure to use '$DestPath --stdio'"
+    Write-Host "  - VS Code: Install the Perl LSP extension from the marketplace"
+    Write-Host "  - Other editors: Configure to use '$DestPath --stdio'"
     if ($DapInstalled) {
-        Write-Host "  • Debugging: Configure your DAP client to use '$DapDestPath'"
+        Write-Host "  - Debugging: Configure your DAP client to use '$DapDestPath'"
     } else {
-        Write-Host "  • Debugging: unavailable - $DapName.exe was not in this release archive"
+        Write-Host "  - Debugging: unavailable - $DapName.exe was not in this release archive"
     }
     Write-Host ""
     Write-Host "For more information: https://github.com/$Repo"
