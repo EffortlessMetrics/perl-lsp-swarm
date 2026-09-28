@@ -854,7 +854,10 @@ fn heredoc_allowed_before(
     // argument (`print <<END`, unprototyped `foo <<END`). A nullary authority
     // instead completes a bare call: `sub foo ()` and `time` leave `<<` as the
     // left-shift operator (local Perl oracle, #16165). An explicit `&foo` call
-    // bypasses prototypes and still accepts a heredoc argument (#16445).
+    // completes the same way on the pinned 5.38.2 oracle — it takes `@_` and
+    // leaves `<<` a shift, and binary `1 & foo` never names a call at all —
+    // so the ampersand never reopens a heredoc slot here (#16445 records the
+    // 5.42 divergence; the garbage-body oracle receipts pin this reading).
     // Variable sigils name completed terms: `$print <<'END'` is left shift.
     previous_word_and_sigil_before(line, offset).is_some_and(|(sigil, word)| {
         // A sigiled word is a completed term first: `$print <<'END'` and the
@@ -872,9 +875,6 @@ fn heredoc_allowed_before(
         // helper, so spaced forms (`$object-> return`) are recognized as
         // method invocations as well (#16336).
         let before_word = prefix[..prefix.len() - word.len()].trim_end_matches([' ', '\t']);
-        if before_word.ends_with('&') {
-            return true;
-        }
         let is_return_keyword = word == "return" && !before_word.ends_with("->");
         is_return_keyword
             || (is_callable_word(word, known_subs, &hints.callables)
@@ -1095,18 +1095,22 @@ mod tests {
     }
 
     #[test]
-    fn ampersand_call_bypasses_nullary_prototype_for_heredoc() {
-        // Perl accepts &foo <<END as a heredoc argument even when the local
-        // declaration has an empty prototype. The body is not live code.
+    fn ampersand_calls_keep_the_shift_reading_on_the_pinned_oracle() {
+        // perl 5.38.2 (this crate's pinned oracle) reads `<<` as a left shift
+        // after an explicit `&foo` call: the call completes by taking `@_`, so
+        // the following line is live code. Oracle receipts: a garbage body
+        // line is a syntax error under `&foo <<END` (heredoc denied) while
+        // `&foo(<<END)` consumes one (parenthesized form is the heredoc).
+        // The 5.42 divergence recorded in #16445 stays tracked there.
         assert_membership_and_slash(
-            "sub foo () { 1 }\nmy $x = &foo <<END;\nsub phantom { }\nEND\nsub real { }\n",
-            &["real"],
-            &["phantom"],
+            "sub foo () { 1 }\nmy $x = &foo <<END;\nsub visible { }\nEND\n",
+            &["visible"],
+            &[],
         );
-        // Without the ampersand, the empty prototype completes the call and
-        // leaves << as shift; the following declaration must remain visible.
+        // A binary `&` before a nullary call never names a call: `1 & foo`
+        // completes a term and `<<END` is a shift there too.
         assert_membership_and_slash(
-            "sub foo () { 1 }\nmy $x = foo <<END;\nsub visible { }\nEND\n",
+            "sub foo () { 2 }\nmy $x = 1 & foo <<END;\nsub visible { }\nEND\n",
             &["visible"],
             &[],
         );
