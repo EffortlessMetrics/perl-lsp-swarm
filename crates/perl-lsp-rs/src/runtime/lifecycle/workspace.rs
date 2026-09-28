@@ -15,6 +15,15 @@ use std::sync::Once;
 /// Fires at most once per LSP session, when Perl is not found anywhere.
 static PERL_NOT_FOUND_WARNED: Once = Once::new();
 
+/// Dedup subject for a broken workspace `.perl-lsp.toml`.
+///
+/// Single-file mode has no workspace path to key on - the config sits beside
+/// the opened file - so every broken single-file config shares one suppression
+/// subject, and folder-scoped configs key on their own path instead. The
+/// subject is a label, never a filesystem path: only its fingerprint is
+/// retained, so no path is stored in the dedup state (#16548).
+const PROJECT_CONFIG_SUBJECT: &str = "project-config";
+
 use crate::perl_remediation::PERL_REMEDIATION;
 
 /// Message for "Perl was found, but only via an OS fallback path".
@@ -205,15 +214,22 @@ impl LspServer {
                 Err(msg) => {
                     complete = false;
                     tracing::warn!(message = %msg, "Single-file project config warning");
-                    if let Err(error) = self.show_message(
-                        MessageType::Warning,
-                        &format!(
-                            "Perl LSP: {msg} Fix the error in .perl-lsp.toml and reload the window."
-                        ),
+                    if matches!(
+                        self.session_warning_dedup.note_project_config(PROJECT_CONFIG_SUBJECT),
+                        super::super::session_warning_dedup::SessionWarningDecision::Suppress
                     ) {
-                        tracing::warn!(%error, "Failed to send single-file config warning");
+                        None
+                    } else {
+                        if let Err(error) = self.show_message(
+                            MessageType::Warning,
+                            &format!(
+                                "Perl LSP: {msg} Fix the error in .perl-lsp.toml and reload the window."
+                            ),
+                        ) {
+                            tracing::warn!(%error, "Failed to send single-file config warning");
+                        }
+                        None
                     }
-                    None
                 }
             };
             self.set_single_file_project_config(single_file_config.clone());
@@ -334,6 +350,17 @@ impl LspServer {
                              (Ctrl+Shift+P \u{2192} Developer: Reload Window) to apply your settings.",
                         );
                         tracing::warn!(message = %user_msg, "Project config warning");
+                        // Emit user-visible warning so devs can fix a broken .perl-lsp.toml.
+                        // Deduped per config path: the folder is re-read on every
+                        // `didOpen`, and repeating an identical popup trains the
+                        // user to dismiss the one message that matters (#16548).
+                        let subject = folder.display_name().to_string();
+                        if matches!(
+                            self.session_warning_dedup.note_project_config(&subject),
+                            super::super::session_warning_dedup::SessionWarningDecision::Suppress
+                        ) {
+                            continue;
+                        }
                         // Emit user-visible warning so devs can fix a broken .perl-lsp.toml
                         if let Err(e) = self.notify(
                             "window/showMessage",
@@ -464,6 +491,15 @@ impl LspServer {
             "Perl LSP: invalid [perl].version {raw_version:?} in {authority}; expected a major.minor target such as 5.20 or v5.20. The project fallback is disabled until it is corrected."
         );
         tracing::warn!(message = %user_msg, "Invalid project Perl version");
+        // Same persistent condition as a broken config: re-reading the folder on
+        // every `didOpen` would repeat an identical popup. Keyed on the
+        // authority that named the offending version (#16548).
+        if matches!(
+            self.session_warning_dedup.note_project_config(authority),
+            super::super::session_warning_dedup::SessionWarningDecision::Suppress
+        ) {
+            return;
+        }
         if let Err(error) = self.show_message(MessageType::Warning, &user_msg) {
             tracing::warn!(%error, "Failed to send invalid project version warning");
         }

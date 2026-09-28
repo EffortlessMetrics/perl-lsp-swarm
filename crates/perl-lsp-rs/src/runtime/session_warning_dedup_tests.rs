@@ -487,3 +487,89 @@ fn adversarial_distinct_client_values_still_warn_but_never_grow_retention()
     assert_eq!(texts.len(), rounds, "each distinct value must warn exactly once");
     Ok(())
 }
+
+// -------------------------------------------------------------------------
+// Project-config family (#16548)
+//
+// A broken `.perl-lsp.toml` is a persistent condition for the whole session:
+// the folder is re-read on every `didOpen`, so an undeduped emitter repeats
+// the same popup. The property under test is the module's existing contract -
+// "repeated subjects warn once, genuinely different subjects still warn" -
+// applied to the family that was missing it.
+// -------------------------------------------------------------------------
+
+fn note_project_config(server: &LspServer, subject: &str) -> SessionWarningDecision {
+    server.session_warning_dedup.note_project_config(subject)
+}
+
+#[test]
+fn a_repeated_broken_config_warns_once_per_session() {
+    let server = LspServer::new();
+
+    // Simulates the single-file emitter firing on every didOpen. The literal
+    // matches the private `PROJECT_CONFIG_SUBJECT` in `lifecycle::workspace`.
+    const SINGLE_FILE_SUBJECT: &str = "project-config";
+    let first = note_project_config(&server, SINGLE_FILE_SUBJECT);
+    let mut suppressed = 0;
+    for _ in 0..5 {
+        if note_project_config(&server, SINGLE_FILE_SUBJECT) == SessionWarningDecision::Suppress {
+            suppressed += 1;
+        }
+    }
+    assert_eq!(first, SessionWarningDecision::EmitFirst);
+    assert_eq!(suppressed, 5, "every repeat after the first must be suppressed");
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 1);
+    assert_eq!(snapshot.project_config.suppressed, 5);
+}
+
+#[test]
+fn two_different_broken_folders_never_cross_suppress() {
+    let server = LspServer::new();
+
+    // The control that keeps suppression from hiding a second real problem.
+    assert_eq!(note_project_config(&server, "folder-a"), SessionWarningDecision::EmitFirst);
+    assert_eq!(note_project_config(&server, "folder-b"), SessionWarningDecision::EmitFirst);
+    assert_eq!(note_project_config(&server, "folder-a"), SessionWarningDecision::Suppress);
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 2, "each distinct folder is retained once");
+    assert_eq!(snapshot.project_config.suppressed, 1);
+}
+
+#[test]
+fn a_different_parse_error_in_the_same_file_stays_suppressed() {
+    let server = LspServer::new();
+
+    // The error body is deliberately not part of the identity: the remedy is
+    // "fix the file and reload the window" either way, so a second parse error
+    // in an already-reported file is the same condition for the user.
+    assert_eq!(note_project_config(&server, "folder-a"), SessionWarningDecision::EmitFirst);
+    assert_eq!(note_project_config(&server, "folder-a"), SessionWarningDecision::Suppress);
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.inserted, 1);
+    assert_eq!(snapshot.project_config.suppressed, 1);
+}
+
+#[test]
+fn project_config_saturation_still_emits() {
+    let server = LspServer::new();
+    for index in 0..PER_FAMILY_ENTRY_CAP {
+        assert_eq!(
+            note_project_config(&server, &format!("folder-{index}")),
+            SessionWarningDecision::EmitFirst
+        );
+    }
+    // One past the cap: still emitted, simply not retained.
+    assert_eq!(
+        note_project_config(&server, "one-past-the-cap"),
+        SessionWarningDecision::EmitWithoutRetaining
+    );
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, PER_FAMILY_ENTRY_CAP);
+    assert_eq!(snapshot.project_config.high_water_entries, PER_FAMILY_ENTRY_CAP);
+    assert_eq!(snapshot.project_config.emitted_without_retaining, 1);
+}

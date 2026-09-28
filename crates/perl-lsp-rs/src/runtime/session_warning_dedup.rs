@@ -70,6 +70,15 @@ pub(crate) enum SessionWarningFamily {
     ClientSetting,
     /// AI backend warnings (authentication failures).
     AiBackend,
+    /// A workspace `.perl-lsp.toml` could not be loaded or applied
+    /// (subject: the offending config path, fingerprinted).
+    ///
+    /// The remedy is "fix the file and reload the window", so a broken profile
+    /// is a persistent condition for the whole session: re-emitting the same
+    /// warning on every `didOpen` trains the user to dismiss the one message
+    /// that matters (#16548).
+    #[cfg(not(target_arch = "wasm32"))]
+    ProjectConfig,
 }
 
 /// Stable internal reason/category for a session warning.
@@ -84,6 +93,15 @@ pub(crate) enum SessionWarningCode {
     /// AI inline-completion backend authentication failed
     /// (no variable subject).
     AiBackendAuthFailure,
+    /// A workspace `.perl-lsp.toml` failed to load or apply
+    /// (subject: the offending config path fingerprint).
+    ///
+    /// The message body is deliberately **not** part of the identity: the
+    /// warning wording stays owned by the domain call site, and two different
+    /// parse errors in the same file are the same condition for suppression
+    /// purposes - the user fixes the file, not the sentence.
+    #[cfg(not(target_arch = "wasm32"))]
+    ProjectConfigInvalid,
 }
 
 /// Closed set of static dimensions that distinguish identities inside one
@@ -243,6 +261,8 @@ pub(crate) struct SessionWarningDedupStore {
     critic: FamilyStore,
     client_setting: FamilyStore,
     ai_backend: FamilyStore,
+    #[cfg(not(target_arch = "wasm32"))]
+    project_config: FamilyStore,
 }
 
 impl SessionWarningDedupStore {
@@ -252,6 +272,8 @@ impl SessionWarningDedupStore {
             SessionWarningFamily::Critic => &self.critic,
             SessionWarningFamily::ClientSetting => &self.client_setting,
             SessionWarningFamily::AiBackend => &self.ai_backend,
+            #[cfg(not(target_arch = "wasm32"))]
+            SessionWarningFamily::ProjectConfig => &self.project_config,
         }
     }
 
@@ -332,6 +354,26 @@ impl SessionWarningDedupStore {
             ),
         )
     }
+
+    /// Decide whether a broken `.perl-lsp.toml` warning should be emitted.
+    ///
+    /// Suppression is keyed on the **config path** alone, fingerprinted: the
+    /// same file warns once per session however many times it is re-read, and
+    /// a second broken file still warns because its path differs. The error
+    /// body is not part of the identity, so a user who fixes one error and
+    /// trips another in the same file is not spammed a second time — the
+    /// remedy (fix the file, reload the window) is identical either way.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn note_project_config(&self, config_path: &str) -> SessionWarningDecision {
+        self.note(
+            SessionWarningFamily::ProjectConfig,
+            SessionWarningIdentity::fingerprinted(
+                SessionWarningCode::ProjectConfigInvalid,
+                SessionWarningSubjectTag::None,
+                config_path,
+            ),
+        )
+    }
 }
 
 /// Pressure/bound counters for one warning family (#9183 pressure row).
@@ -368,6 +410,10 @@ pub struct SessionWarningDedupSnapshot {
     pub client_setting: SessionWarningFamilyCounters,
     /// AI-backend family counters.
     pub ai_backend: SessionWarningFamilyCounters,
+    /// Project-config family counters (absent on WASM targets, where the
+    /// project-config loaders do not exist).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub project_config: SessionWarningFamilyCounters,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -379,6 +425,8 @@ impl SessionWarningDedupStore {
             critic: self.critic.counters(),
             client_setting: self.client_setting.counters(),
             ai_backend: self.ai_backend.counters(),
+            #[cfg(not(target_arch = "wasm32"))]
+            project_config: self.project_config.counters(),
         }
     }
 }
