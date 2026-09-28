@@ -197,15 +197,18 @@ fn run_external_peer_listen(spec: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build a debug-session packet for `program`, deriving source facts from the
-/// program text when it is readable.
-fn build_session_packet(program: &Path) -> DebugSessionPacket {
-    let mut builder = DebugSessionPlanBuilder::new(program);
-    if let Ok(text) = std::fs::read_to_string(program) {
-        let source = DebugSource::from_path(program);
-        builder = builder.source_facts_from_text(&source, &text);
-    }
-    builder.build()
+/// Load a session packet for a one-shot emit flag.
+///
+/// An unreadable program is a hard error, not a degenerate emit (#16553): both
+/// `--ptkdb-bootstrap-rc` and `--debug-session-plan` render from this packet, so
+/// a silently emitted `source_facts: {}` plan would look complete while missing
+/// every program-specific fact, and exit 0 would hide the typo from scripts.
+fn load_one_shot_packet(flag: &str, program: &Path) -> anyhow::Result<DebugSessionPacket> {
+    let text = std::fs::read_to_string(program).map_err(|error| {
+        anyhow::anyhow!("{flag}: program '{}' could not be read: {error}", program.display())
+    })?;
+    let source = DebugSource::from_path(program);
+    Ok(DebugSessionPlanBuilder::new(program).source_facts_from_text(&source, &text).build())
 }
 
 fn resolve_socket_port(args: &perl_lsp_rs_core::runtime::launcher::TransportArgs) -> Option<u16> {
@@ -306,12 +309,12 @@ fn main() -> anyhow::Result<()> {
     // the stdout handle (rather than the print!/println! macros) so the shipped
     // binary stays clear of the `clippy::print_stdout` restriction lint.
     if let Some(program) = args.ptkdb_bootstrap_rc.as_deref() {
-        let packet = build_session_packet(program);
+        let packet = load_one_shot_packet("--ptkdb-bootstrap-rc", program)?;
         write!(std::io::stdout(), "{}", render_ptkdbrc(&packet, true))?;
         return Ok(());
     }
     if let Some(program) = args.debug_session_plan.as_deref() {
-        let packet = build_session_packet(program);
+        let packet = load_one_shot_packet("--debug-session-plan", program)?;
         writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&packet)?)?;
         return Ok(());
     }
@@ -395,13 +398,15 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, DEFAULT_DAP_PORT, editor_socket_retired, native_editor_socket_retired,
-        resolve_socket_port, windows_shell_quote,
+        Args, DEFAULT_DAP_PORT, editor_socket_retired, load_one_shot_packet,
+        native_editor_socket_retired, resolve_socket_port, windows_shell_quote,
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
         BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, requested_identity_output,
     };
+    use perl_test_must::{must_err_with, must_with};
+    use std::path::Path;
 
     #[test]
     fn native_socket_flags_fail_with_stdio_migration_before_any_bind() {
@@ -529,5 +534,73 @@ mod tests {
     fn windows_remediation_uses_cmd_quoting() {
         assert_eq!(windows_shell_quote("[::1]:13604"), "\"[::1]:13604\"");
         assert_eq!(windows_shell_quote("100% ready\"now"), "\"100% ready\"\"now\"");
+    }
+
+    #[test]
+    fn one_shot_packet_refuses_a_missing_program_and_names_the_flag() {
+        let missing = Path::new("./no-such-dir/no-such-16553.pl");
+        let error = must_err_with(
+            load_one_shot_packet("--debug-session-plan", missing),
+            "a missing program must fail the one-shot emit instead of exiting 0 (#16553)",
+        );
+        let message = error.to_string();
+        assert!(message.contains("--debug-session-plan"), "{message}");
+        assert!(message.contains("could not be read"), "{message}");
+        assert!(message.contains("no-such-16553.pl"), "{message}");
+    }
+
+    #[test]
+    fn one_shot_packet_refuses_a_directory() {
+        let dir = must_with(tempfile::tempdir(), "test fixture tempdir must be created");
+        let error = must_err_with(
+            load_one_shot_packet("--ptkdb-bootstrap-rc", dir.path()),
+            "a directory must fail closed; Path::exists is true for directories (#16553)",
+        );
+        let message = error.to_string();
+        assert!(message.contains("--ptkdb-bootstrap-rc"), "{message}");
+        assert!(message.contains("could not be read"), "{message}");
+    }
+
+    #[test]
+    fn one_shot_packet_refuses_invalid_utf8() {
+        let dir = must_with(tempfile::tempdir(), "test fixture tempdir must be created");
+        let program = dir.path().join("invalid-utf8.pl");
+        must_with(
+            std::fs::write(&program, [0xff, 0xfe, 0x00]),
+            "invalid utf-8 fixture must be written",
+        );
+        let error = must_err_with(
+            load_one_shot_packet("--debug-session-plan", &program),
+            "invalid UTF-8 must fail closed rather than emit empty source_facts (#16553)",
+        );
+        let message = error.to_string();
+        assert!(message.contains("could not be read"), "{message}");
+    }
+
+    #[test]
+    fn one_shot_packet_attaches_source_facts_for_a_parseable_program() {
+        let dir = must_with(tempfile::tempdir(), "test fixture tempdir must be created");
+        let program = dir.path().join("prog.pl");
+        must_with(
+            std::fs::write(&program, "sub run {\n    my $x = 1;\n    return $x;\n}\n"),
+            "parseable fixture must be written",
+        );
+        let packet = must_with(
+            load_one_shot_packet("--debug-session-plan", &program),
+            "a readable parseable program must build a packet",
+        );
+        assert!(!packet.source_facts.is_empty(), "a parseable program must keep its source facts");
+    }
+
+    #[test]
+    fn one_shot_packet_succeeds_for_an_empty_readable_file() {
+        let dir = must_with(tempfile::tempdir(), "test fixture tempdir must be created");
+        let program = dir.path().join("empty.pl");
+        must_with(std::fs::write(&program, ""), "empty fixture must be written");
+        let packet = must_with(
+            load_one_shot_packet("--debug-session-plan", &program),
+            "an empty readable file is a successful read, not an unreadable program",
+        );
+        assert_eq!(packet.program, program);
     }
 }
