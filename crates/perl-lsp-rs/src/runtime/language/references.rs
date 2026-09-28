@@ -3714,7 +3714,7 @@ mod tests {
             .find(|(doc_uri, _)| *doc_uri == uri)
             .map(|(_, text)| *text)
             .ok_or("missing document for location")?;
-        text.lines().nth(line).ok_or("missing line text")
+        text.lines().nth(line).ok_or("missing line text")?
     }
 
     /// Production-path contract for #16638: `textDocument/references` on `sub name`
