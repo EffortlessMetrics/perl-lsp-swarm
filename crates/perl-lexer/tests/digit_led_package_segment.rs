@@ -177,3 +177,21 @@ fn sigil_qualified_digit_segment_stays_one_variable() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn combining_mark_or_unicode_digit_does_not_start_a_package_segment() -> TestResult {
+    // perl -Mutf8 -ce rejects both: Unrecognized character after `::`.
+    let combining = "Foo::\u{0301}Bar";
+    let texts = identifier_texts(combining);
+    assert!(
+        texts.iter().all(|text| !text.contains('\u{0301}')),
+        "combining mark after :: must not fold into the identifier, got {texts:?}"
+    );
+
+    let arabic = "Foo::١";
+    assert!(
+        !identifier_texts(arabic).iter().any(|text| text.contains('١')),
+        "non-ASCII digit after :: must not start a package segment"
+    );
+    Ok(())
+}

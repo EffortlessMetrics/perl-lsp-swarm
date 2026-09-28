@@ -78,6 +78,17 @@ fn digit_led_first_segment_is_not_a_package_name() {
 }
 
 #[test]
+fn combining_mark_after_colon_colon_is_not_a_package_name() {
+    // perl -Mutf8 -ce 'package Foo::́Bar;' → Unrecognized character.
+    let source = "package Foo::\u{0301}Bar;";
+    let name = package_name(source);
+    assert!(
+        name.as_deref().is_none_or(|name| !name.contains('\u{0301}')),
+        "combining mark after :: must not become a package name, got {name:?}"
+    );
+}
+
+#[test]
 fn dotted_versionish_tail_is_not_folded_into_the_package_name() {
     // perl -ce 'package Foo::1.2;' → Invalid version format (0 before decimal
     // required). The name stops at Foo::1; `.2` must not join the name.

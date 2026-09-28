@@ -1188,7 +1188,7 @@ impl<'a> PerlLexer<'a> {
 
     /// Fold trailing `::segment` pairs into the identifier already in progress.
     ///
-    /// After `::`, a segment may start with a digit (`Encode::KR::2022_KR`).
+    /// After `::`, a segment may start with an ASCII digit (`Encode::KR::2022_KR`).
     /// A trailing `::` with no following segment is kept on the identifier
     /// (existing `Foo::` spelling).
     fn consume_trailing_package_segments(&mut self) {
