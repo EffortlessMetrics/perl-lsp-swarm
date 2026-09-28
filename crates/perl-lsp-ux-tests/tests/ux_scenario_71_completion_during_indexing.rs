@@ -18,16 +18,18 @@
 //!
 //! Acceptance criteria (all on ONE server run, per the #16668 UX contract):
 //! - a completion sent mid-scan answers within a bounded window;
-//! - indexing still reaches a terminal `perl-lsp/index-ready` state;
-//! - hover, a second completion, and a later didOpen stay responsive;
+//! - indexing ends its progress token and reaches a terminal
+//!   `perl-lsp/index-ready` state;
+//! - later hover, definition, references, completion, didOpen, and didChange
+//!   stay responsive;
 //! - shutdown/exit completes cleanly.
 //!
-//! The test fails as vacuous if indexing already reached its terminal state
-//! before the mid-scan completion was sent, so a fast machine cannot pass
-//! without exercising the race window.
+//! The test requires progress begin and a partial indexing report before
+//! completion. It fails as vacuous if indexing already ended.
 
 use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
+use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
 /// Workspace size matches the wire reproduction scale (~2,000 Perl files) so
@@ -80,6 +82,7 @@ fn big_script() -> String {
 
 fn fixture_config() -> ScenarioConfig {
     let mut config = ScenarioConfig::default().with_file("main.pl", main_script());
+    config.client_capability_overrides = json!({ "window": { "workDoneProgress": true } });
     for index in 0..INDEXED_MODULE_COUNT {
         config = config.with_file(module_path(index), module_source(index));
     }
@@ -87,22 +90,49 @@ fn fixture_config() -> ScenarioConfig {
     config
 }
 
-/// True when a terminal `perl-lsp/index-ready` state is already buffered.
-fn saw_terminal_index_ready(events: &[serde_json::Value]) -> bool {
+fn is_terminal_index_ready(message: &Value) -> bool {
+    if message.get("method").and_then(Value::as_str) != Some("perl-lsp/index-ready") {
+        return false;
+    }
+    matches!(
+        message.pointer("/params/state").and_then(Value::as_str),
+        Some("ready" | "ready_limited")
+    )
+}
+
+fn is_index_progress(message: &Value, kind: &str) -> bool {
+    message.get("method").and_then(Value::as_str) == Some("$/progress")
+        && message.pointer("/params/token").and_then(Value::as_str) == Some("workspace-index")
+        && message.pointer("/params/value/kind").and_then(Value::as_str) == Some(kind)
+}
+
+fn saw_index_progress(events: &[Value], kind: &str) -> bool {
+    events.iter().any(|message| is_index_progress(message, kind))
+}
+
+fn saw_partial_index_progress(events: &[Value]) -> bool {
     events.iter().any(|message| {
-        message.get("method").and_then(|method| method.as_str()) == Some("perl-lsp/index-ready")
-            && {
-                let params = message.get("params");
-                params.and_then(|params| params.get("ready")).and_then(|ready| ready.as_bool())
-                    == Some(true)
-                    || matches!(
-                        params
-                            .and_then(|params| params.get("state"))
-                            .and_then(|state| state.as_str()),
-                        Some("failed") | Some("degraded")
-                    )
-            }
+        if !is_index_progress(message, "report") {
+            return false;
+        }
+        let Some(report) = message.pointer("/params/value/message").and_then(Value::as_str) else {
+            return false;
+        };
+        let parts: Vec<_> = report.split_whitespace().collect();
+        if let ["Indexed", indexed, "of", total, "files"] = parts.as_slice() {
+            return matches!((indexed.parse::<usize>(), total.parse::<usize>()), (Ok(n), Ok(m)) if n > 0 && n < m);
+        }
+        false
     })
+}
+
+fn terminal_index_ready_after_progress_end(events: &[Value]) -> Option<Value> {
+    let end = events.iter().position(|message| is_index_progress(message, "end"))?;
+    events.iter().skip(end + 1).find(|message| is_terminal_index_ready(message)).cloned()
+}
+
+fn contains_completion(items: &[Value], label: &str) -> bool {
+    items.iter().any(|item| item.get("label").and_then(Value::as_str) == Some(label))
 }
 
 #[test]
@@ -130,15 +160,24 @@ fn scenario_71_completion_mid_indexing_answers_and_indexing_reaches_terminal() -
             .map_err(|error| format!("didOpen {index} should succeed: {error}"))?;
     }
 
-    // Vacuous-failure guard: if the startup scan already reached its terminal
-    // state, this run proves nothing about the mid-scan window (#16668 proof
-    // plan requires observing the Building phase before the completion).
-    if saw_terminal_index_ready(&harness.client.peek_raw_events()) {
-        return Err(
-            "vacuous: indexing already reached a terminal state before the mid-scan completion \
-             was sent; the #16651 race window was not exercised"
-                .to_string(),
-        );
+    // Positive witness: progress begin and a partial scan report must arrive
+    // before the request. The progress end event wins even when both earlier
+    // witnesses remain in the client's buffered history. An initial ready
+    // notification can precede the actual scan end and is not this boundary.
+    let indexing_active = harness
+        .client
+        .wait_for_raw_events(Duration::from_secs(20), |events| {
+            if saw_index_progress(events, "end") {
+                return Some(false);
+            }
+            (saw_index_progress(events, "begin") && saw_partial_index_progress(events))
+                .then_some(true)
+        })
+        .map_err(|end| format!("no observable active partial-progress window: {end:?}"))?;
+    if !indexing_active || saw_index_progress(&harness.client.peek_raw_events(), "end") {
+        return Err("vacuous: indexing reached a terminal state before the mid-scan completion; \
+             the #16651 race window was not exercised"
+            .to_string());
     }
 
     // The mid-scan completion. Bounded window: pre-fix, this request never
@@ -155,29 +194,19 @@ fn scenario_71_completion_mid_indexing_answers_and_indexing_reaches_terminal() -
     let completion_elapsed = completion_started.elapsed();
     let _ = completions;
 
-    // Indexing must still reach a terminal state on the same server run. The
-    // pre-fix wedge froze the scan mid-progress with no terminal message ever.
-    let terminal = harness
+    // Both terminal signals must arrive on the same server run. A completion
+    // answer with a frozen progress token is still the #16651 failure.
+    harness
         .client
         .wait_for_raw_events(Duration::from_mins(2), |events| {
-            if !saw_terminal_index_ready(events) {
-                return None;
-            }
-            events
-                .iter()
-                .find(|message| {
-                    message.get("method").and_then(|method| method.as_str())
-                        == Some("perl-lsp/index-ready")
-                })
-                .cloned()
+            terminal_index_ready_after_progress_end(events)
         })
         .map_err(|end| {
             format!(
-                "indexing never reached a terminal state after the mid-scan completion \
+                "indexing never ended progress and reached a terminal state after completion \
                  (answered in {completion_elapsed:?}) — #16651 wedge regression: {end:?}"
             )
         })?;
-    let _ = terminal;
 
     // Later requests stay responsive on the same process.
     harness
@@ -187,8 +216,34 @@ fn scenario_71_completion_mid_indexing_answers_and_indexing_reaches_terminal() -
         .completion_with_timeout("main.pl", 8, 10, Duration::from_secs(20))
         .map_err(|error| format!("completion after indexing should answer: {error}"))?;
     harness
-        .open_file("lib/App0/Unit00/Mod0001.pm", &module_source(1))
+        .definition("main.pl", 10, 40)
+        .map_err(|error| format!("definition after indexing should answer: {error}"))?;
+    harness
+        .references("main.pl", 10, 40, true)
+        .map_err(|error| format!("references after indexing should answer: {error}"))?;
+
+    // A new buffer must be admitted by the mutation worker, and a later full
+    // change must replace its completion prefix rather than answer from stale
+    // text. The requested labels distinguish both accepted document versions.
+    let after_open = "pri\n";
+    harness
+        .open_file("post_index.pl", after_open)
         .map_err(|error| format!("later didOpen should succeed: {error}"))?;
+    let opened_items = harness
+        .completion_with_timeout("post_index.pl", 0, 3, Duration::from_secs(20))
+        .map_err(|error| format!("completion after didOpen should answer: {error}"))?;
+    if !contains_completion(&opened_items, "print") {
+        return Err("didOpen content did not produce the expected print completion".to_string());
+    }
+    harness
+        .change_file_full("post_index.pl", "whi\n")
+        .map_err(|error| format!("later didChange should succeed: {error}"))?;
+    let changed_items = harness
+        .completion_with_timeout("post_index.pl", 0, 3, Duration::from_secs(20))
+        .map_err(|error| format!("completion after didChange should answer: {error}"))?;
+    if !contains_completion(&changed_items, "while") {
+        return Err("didChange content did not produce the expected while completion".to_string());
+    }
 
     harness.assert_no_crash();
     harness
