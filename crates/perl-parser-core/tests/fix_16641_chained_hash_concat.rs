@@ -273,3 +273,11 @@ fn real_transliteration_after_chained_subscript_still_parses() {
 fn real_match_after_chained_subscript_still_parses() {
     assert_clean_parse("$h->{a}{b}; m/foo/;");
 }
+
+#[test]
+fn regex_in_block_after_chained_arrow_condition_still_parses() {
+    // Retention: `)->{a}{y}` must not leak brace depth into the following
+    // `if`/`while` block and suppress `m//` / `s///` (#2844 shape).
+    assert_clean_parse("if ($h->{a}{y}) { m/foo/; }");
+    assert_clean_parse("while ($h->{a}{s}) { s/a/b/; }");
+}
