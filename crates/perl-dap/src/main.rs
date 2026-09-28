@@ -252,7 +252,11 @@ fn write_runtime_identity(format: IdentityOutputFormat) -> anyhow::Result<()> {
 with `--external-peer` / `--external-peer-listen` — fails before bind. Use \
 `perl-dap --stdio`, `perl-dap --stdio --external-peer HOST:PORT`, or \
 `perl-dap --stdio --external-peer-listen HOST[:PORT]`. Authenticated debugger-peer \
-TCP remains a backend transport, not an editor listener."
+TCP remains a backend transport, not an editor listener.\n\nIdentity one-shot (each \
+must be the only argument): `perl-dap --identity` prints the installed-binary \
+identity packet; `perl-dap --identity-json` prints the same packet as \
+perl_lsp.binary_identity.v1 JSON; `perl-dap --info --json` prints that packet \
+through the composed form."
 )]
 struct Args {
     #[command(flatten)]
@@ -473,6 +477,26 @@ mod tests {
         assert!(
             !help.contains("add `--socket`"),
             "perl-dap --help must not advertise a peer editor socket wrapper: {help}"
+        );
+    }
+
+    #[test]
+    fn cli_help_documents_the_identity_one_shot_forms() {
+        // The mixed-identity rejection points at `perl-dap --help`, so the help
+        // must name every form the rejection can defend: the rejection fires on
+        // `--identity`, `--identity-json`, and the composed `--info --json`.
+        let help = Args::command().render_long_help().to_string();
+        assert!(
+            help.contains("perl-dap --identity"),
+            "help must name the identity packet form: {help}"
+        );
+        assert!(
+            help.contains("`perl-dap --identity-json`"),
+            "help must name the JSON identity form: {help}"
+        );
+        assert!(
+            help.contains("`perl-dap --info --json`"),
+            "help must name the composed identity form: {help}"
         );
     }
 
