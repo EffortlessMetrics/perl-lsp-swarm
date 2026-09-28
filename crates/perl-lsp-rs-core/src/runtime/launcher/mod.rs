@@ -616,7 +616,7 @@ pub enum LaunchParseError {
     InvalidPort {
         /// Raw port token from CLI.
         raw_port: String,
-        /// Parse failure details.
+        /// Actionable reason the value was rejected.
         reason: String,
     },
     /// Invalid shell name for completions.
@@ -846,6 +846,38 @@ fn context_string(err: &clap::Error, kind: ContextKind) -> Option<String> {
     (!value.trim().is_empty()).then_some(value)
 }
 
+/// Rejection reason for a `--port` token that is a number outside the range.
+const PORT_OUT_OF_RANGE: &str = "Expected a port in 0-65535.";
+
+/// Rejection reason for a `--port` token that is not a number at all.
+const PORT_NOT_A_NUMBER: &str = "Expected a whole number in 0-65535.";
+
+/// Reject one `--port` value by naming the accepted range instead of forwarding
+/// `ParseIntError`'s wording ("number too large to fit in target type"), which
+/// named an internal implementation detail rather than the actionable fact
+/// (#16526).
+fn validate_port_token(raw_port: &str) -> Result<(), LaunchParseError> {
+    if raw_port.parse::<u16>().is_ok() {
+        return Ok(());
+    }
+
+    // Classify by shape rather than by re-parsing into a wider integer: an
+    // ASCII-digit token (optionally signed) is a number that fell outside the
+    // range, and anything else is not a number at all. This also keeps an
+    // arbitrarily long digit run on the range side, where it belongs.
+    let digits = raw_port.strip_prefix(['+', '-']).unwrap_or(raw_port);
+    let reason = if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        PORT_OUT_OF_RANGE
+    } else {
+        PORT_NOT_A_NUMBER
+    };
+
+    Err(LaunchParseError::InvalidPort {
+        raw_port: raw_port.to_string(),
+        reason: reason.to_string(),
+    })
+}
+
 fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParseError> {
     let mut index = 1usize;
 
@@ -866,10 +898,7 @@ fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParse
                 return Err(LaunchParseError::MissingValue { option: "--port".to_string() });
             }
 
-            raw_port.parse::<u16>().map_err(|reason| LaunchParseError::InvalidPort {
-                raw_port: raw_port.clone(),
-                reason: reason.to_string(),
-            })?;
+            validate_port_token(&raw_port)?;
 
             index += 2;
             continue;
@@ -880,10 +909,7 @@ fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParse
                 return Err(LaunchParseError::MissingValue { option: "--port".to_string() });
             }
 
-            raw_port.parse::<u16>().map_err(|reason| LaunchParseError::InvalidPort {
-                raw_port: raw_port.to_string(),
-                reason: reason.to_string(),
-            })?;
+            validate_port_token(raw_port)?;
         }
 
         if token == "--completion" {
@@ -1741,6 +1767,88 @@ mod tests {
     fn parse_port_implies_socket() {
         let plan = must(parse_args(["perl-lsp", "--port", "8080"]));
         assert_eq!(plan.config.transport, TransportMode::Socket { port: 8080 });
+    }
+
+    /// The rendered rejection for `--port <bad>` must name the accepted range
+    /// instead of forwarding `ParseIntError`'s internal wording. This is the
+    /// first diagnostic a new user hits in socket mode (#16526).
+    #[test]
+    fn out_of_range_port_states_the_accepted_range() {
+        // Both spellings reach the same validator, and both must be covered:
+        // asserting only one leaves the other able to regress silently.
+        let cases: &[&[&str]] =
+            &[&["perl-lsp", "--port", "99999", "--health"], &["perl-lsp", "--port=99999"]];
+
+        for argv in cases {
+            let error = must_err(parse_args(*argv));
+            let rendered = error.to_string();
+
+            assert_eq!(rendered, "Invalid port value: 99999. Expected a port in 0-65535.");
+            assert!(
+                !rendered.contains("fit in target type"),
+                "leaked ParseIntError wording: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_numeric_port_states_the_accepted_range() {
+        let cases: &[&[&str]] =
+            &[&["perl-lsp", "--port", "abc", "--health"], &["perl-lsp", "--port=abc"]];
+
+        for argv in cases {
+            let error = must_err(parse_args(*argv));
+            let rendered = error.to_string();
+
+            assert_eq!(rendered, "Invalid port value: abc. Expected a whole number in 0-65535.");
+            assert!(
+                !rendered.contains("invalid digit found in string"),
+                "leaked ParseIntError wording: {rendered}"
+            );
+        }
+    }
+
+    /// A negative value is a number outside the range, not a malformed number,
+    /// so it must not be told to supply a whole number it already supplied.
+    #[test]
+    fn negative_port_is_reported_as_out_of_range() {
+        let error = must_err(parse_args(["perl-lsp", "--port", "-1"]));
+        let LaunchParseError::InvalidPort { raw_port, reason } = &error else {
+            panic!("expected InvalidPort, got {error:?}");
+        };
+
+        assert_eq!(raw_port, "-1");
+        assert_eq!(reason, super::PORT_OUT_OF_RANGE);
+        assert_eq!(error.to_string(), "Invalid port value: -1. Expected a port in 0-65535.");
+    }
+
+    /// Range endpoints are accepted, so tightening the diagnostic must not
+    /// narrow the accepted set.
+    #[test]
+    fn boundary_ports_are_still_accepted() {
+        for port in [0u16, 65535] {
+            let plan = must(parse_args(["perl-lsp", "--port", &port.to_string()]));
+            assert_eq!(plan.config.transport, TransportMode::Socket { port });
+        }
+    }
+
+    /// Negative control: a missing value is still reported as missing, not
+    /// reclassified as an invalid port.
+    #[test]
+    fn missing_port_value_is_still_reported_as_missing() {
+        let cases: &[&[&str]] = &[
+            &["perl-lsp", "--port"],
+            &["perl-lsp", "--port="],
+            &["perl-lsp", "--port", "--stdio"],
+        ];
+
+        for argv in cases {
+            let error = must_err(parse_args(*argv));
+            assert!(
+                matches!(error, LaunchParseError::MissingValue { .. }),
+                "expected MissingValue, got {error:?}"
+            );
+        }
     }
 
     #[test]
