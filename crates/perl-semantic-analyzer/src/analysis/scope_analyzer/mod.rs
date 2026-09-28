@@ -1653,22 +1653,29 @@ impl ScopeAnalyzer {
         let Some(parent) = ancestors.last() else {
             return false;
         };
-        match &parent.kind {
-            NodeKind::FunctionCall { name, args } if name == "require" => {
-                args.first().is_some_and(|first| std::ptr::eq(first, node))
-                    && !Self::require_call_parenthesizes_operand(parent, node, source)
-            }
-            _ => false,
+        let NodeKind::FunctionCall { name, args } = &parent.kind else {
+            return false;
+        };
+        if name != "require" {
+            return false;
         }
+        let Some(first) = args.first() else {
+            return false;
+        };
+        if !std::ptr::eq(first, node) {
+            return false;
+        }
+        !Self::require_call_parenthesizes_operand(parent, node, source)
     }
 
     /// Perl treats `require DBI` as a module name, but `require(DBI)` as an
     /// expression. Under `use strict 'subs'` the parenthesized form is a
     /// compile error (`Bareword "DBI.pm" not allowed`).
     fn require_call_parenthesizes_operand(call: &Node, operand: &Node, source: &str) -> bool {
-        source
-            .get(call.location.start..operand.location.start)
-            .is_some_and(|between| between.contains('('))
+        let Some(between) = source.get(call.location.start..operand.location.start) else {
+            return false;
+        };
+        between.contains('(')
     }
 
     /// Determines if a node is in a hash key context, where barewords are legitimate.
