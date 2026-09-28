@@ -56,6 +56,8 @@ use std::path::{Path, PathBuf};
 /// and appears legitimately throughout the config module. The `[perl]`
 /// table-qualified form is matched instead, because that is the spelling a
 /// document uses when instructing a user, and no such table field exists.
+/// A fenced TOML example may separate `[perl]` and `perl_path` with comments
+/// or other keys; `toml_perl_path_offenders` catches that section-scoped form.
 const LSP_SETTING_TOKENS: &[&str] =
     &["perl.workspace.perlPath", "perl.workspace.perlArgs", "perl.path", "[perl] perl_path"];
 
@@ -138,6 +140,59 @@ fn unexpected_tokens(relative: &Path, text: &str) -> Vec<String> {
             }
         }
     }
+    offenders.extend(toml_perl_path_offenders(relative, &screened));
+    offenders
+}
+
+fn toml_perl_path_offenders(relative: &Path, text: &str) -> Vec<String> {
+    if !relative.extension().is_some_and(|extension| extension == "md" || extension == "toml") {
+        return Vec::new();
+    }
+    let toml_file = relative.extension().is_some_and(|extension| extension == "toml");
+    let mut fence: Option<&str> = None;
+    let mut in_perl_section = false;
+    let mut offenders = Vec::new();
+
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if !toml_file {
+            if let Some(marker) = fence {
+                if trimmed == marker {
+                    fence = None;
+                    in_perl_section = false;
+                    continue;
+                }
+            } else if let Some(marker) =
+                ["```", "~~~"].into_iter().find(|marker| trimmed.starts_with(marker))
+            {
+                if trimmed[marker.len()..].trim().eq_ignore_ascii_case("toml") {
+                    fence = Some(marker);
+                    in_perl_section = false;
+                }
+                continue;
+            }
+            if fence.is_none() {
+                continue;
+            }
+        }
+
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+        if let Some(section) = trimmed.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+            in_perl_section = section.0 == "perl";
+            continue;
+        }
+        if in_perl_section
+            && trimmed.split_once('=').is_some_and(|(key, _)| key.trim() == "perl_path")
+        {
+            offenders.push(format!(
+                "{}:{} ([perl] perl_path in TOML)",
+                relative.display(),
+                index + 1
+            ));
+        }
+    }
     offenders
 }
 
@@ -191,6 +246,7 @@ fn only_the_remediation_owner_and_its_guards_name_the_unsettable_setting()
             files_with_extension(&dir, "rs", &mut sources)?;
         } else {
             files_with_extension(&dir, "md", &mut sources)?;
+            files_with_extension(&dir, "toml", &mut sources)?;
         }
         if sources.len() == before {
             return Err(format!("scan root {root} matched no files").into());
@@ -228,6 +284,30 @@ fn only_the_remediation_owner_and_its_guards_name_the_unsettable_setting()
         offenders.join(", ")
     );
 
+    Ok(())
+}
+
+#[test]
+fn toml_perl_path_containment_respects_section_and_fence_boundaries()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../../docs/example.md");
+    let bad = "```toml\n[perl]\n# choose an interpreter\ninclude_paths = [\"lib\"]\nperl_path = \"/tmp/perl\"\n```";
+    if toml_perl_path_offenders(path, bad).len() != 1 {
+        return Err("intervening TOML comments and keys hid [perl] perl_path advice".into());
+    }
+    let other_section =
+        "```toml\n[perl]\ninclude_paths = [\"lib\"]\n[other]\nperl_path = \"/tmp/perl\"\n```";
+    if !toml_perl_path_offenders(path, other_section).is_empty() {
+        return Err("perl_path in another TOML section was treated as [perl] advice".into());
+    }
+    let other_fence = "```toml\n[perl]\n```\n```toml\nperl_path = \"/tmp/perl\"\n```";
+    if !toml_perl_path_offenders(path, other_fence).is_empty() {
+        return Err("[perl] state leaked across TOML fences".into());
+    }
+    let raw_toml = "[perl]\n# explanatory comment\nperl_path = \"/tmp/perl\"\n[other]\nperl_path = \"ignored\"";
+    if toml_perl_path_offenders(Path::new("../../docs/example.toml"), raw_toml).len() != 1 {
+        return Err("raw TOML section boundary failed to isolate [perl] perl_path".into());
+    }
     Ok(())
 }
 
