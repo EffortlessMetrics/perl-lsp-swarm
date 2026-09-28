@@ -39,10 +39,7 @@ struct LocationId<'a> {
 /// Strip a leading sigil from the needle so word-boundary search can run on the
 /// identifier. `$`/`@`/`%` become variable queries; `&`/`*` stay subroutine
 /// queries because they name callables, not storage.
-pub(super) fn normalized_text_query<'a>(
-    needle: &'a str,
-    sigil: Option<char>,
-) -> (&'a str, Option<char>) {
+pub(super) fn normalized_text_query(needle: &str, sigil: Option<char>) -> (&str, Option<char>) {
     if let Some(sigil) = sigil {
         if let Some(stripped) = needle.strip_prefix(sigil) {
             return (stripped, Some(sigil));
