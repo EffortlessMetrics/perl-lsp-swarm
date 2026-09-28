@@ -90,7 +90,7 @@ HEAD="$(jq -r '.headRefOid // ""' <<<"$JSON")"
 # it claims "all submitted human reviews", but the value is a
 # non-dismissed, non-bot count over GitHub's latest-per-user `latestReviews`
 # projection. See check-pr-review-convergence for the full derivation.
-SUBMITTED_HUMAN_REVIEW_COUNT="$(jq -r \
+NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT="$(jq -r \
     '.non_dismissed_latest_nonbot_review_count // .submitted_human_review_count // 0' \
     <<<"$JSON")"
 
@@ -116,7 +116,7 @@ jq -n \
     --arg state "$STATE" \
     --arg classification "$CLASSIFICATION" \
     --argjson converged "$CONVERGED" \
-    --argjson submittedReviews "$SUBMITTED_HUMAN_REVIEW_COUNT" \
+    --argjson submittedReviews "$NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT" \
     '{
       pr: ($pr | tonumber? // $pr),
       observed_head: $head,

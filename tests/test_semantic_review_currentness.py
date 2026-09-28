@@ -221,7 +221,14 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
         )
         assert '[[ "$value" =~ ^[0-9]+$ ]]' in text
         assert 'not_proven "invalid_numeric_review_fact"' in text
-        assert "SUBMITTED_HUMAN_REVIEW_COUNT=$(" in text
+        # The count is derived by subtraction and then clamped, so a provider
+        # that reports more dismissals than human reviews cannot drive the
+        # published value negative. Pinned by the honest name since #15035;
+        # the clamp is asserted alongside it so renaming the variable cannot
+        # quietly drop the guard this test exists to hold.
+        assert "NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT=$(" in text
+        assert 'if [[ "$NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT" -lt 0 ]]' in text
+        assert "NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT=0" in text
 
     def test_state_projection_has_no_exact_head_lifecycle(self) -> None:
         text = (ROOT / "scripts/reviews/state").read_text(encoding="utf-8")
