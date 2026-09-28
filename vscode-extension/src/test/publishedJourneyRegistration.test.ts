@@ -12,6 +12,7 @@ interface Harness {
   readinessEntered: Promise<void>;
   readinessArguments: Array<{ uri: string; timeoutMs?: number }>;
   activeDiagnosticListeners: () => number;
+  stopCalls: () => number;
   receiptDirectory: string;
   cleanup: () => void;
 }
@@ -71,6 +72,7 @@ function fakeVscode(
   rejectDiagnosticEdit: boolean,
 ): Record<string, unknown> {
   let generation = initialGeneration;
+  let stopCallCount = 0;
   let diagnosticPath: string | undefined;
   let diagnosticEdited = false;
   const diagnosticHandlers = new Set<(event: { uris: readonly unknown[] }) => void>();
@@ -136,7 +138,9 @@ function fakeVscode(
       }
       return await readiness;
     },
-    stop: async () => undefined,
+    stop: async () => {
+      stopCallCount += 1;
+    },
   };
   if (!exposeReadiness) {
     delete (extensionApi as { waitForActiveDocumentReady?: unknown }).waitForActiveDocumentReady;
@@ -202,6 +206,7 @@ function fakeVscode(
   }
   return {
     activeDiagnosticListeners: () => diagnosticHandlers.size,
+    stopCalls: () => stopCallCount,
     ConfigurationTarget: { Global: 1 },
     WorkspaceEdit,
     Position,
@@ -511,6 +516,7 @@ async function makeHarness(
     readinessEntered,
     readinessArguments,
     activeDiagnosticListeners: vscode.activeDiagnosticListeners as () => number,
+    stopCalls: vscode.stopCalls as () => number,
     receiptDirectory,
     cleanup: () => {
       fs.rmSync(receiptDirectory, { recursive: true, force: true });
@@ -651,6 +657,7 @@ describe('registered packaged journey readiness contract', () => {
           'diagnostic edit rejected',
         );
         expect(harness.activeDiagnosticListeners()).toBe(0);
+        expect(harness.stopCalls()).toBe(1);
       } finally {
         harness.cleanup();
       }

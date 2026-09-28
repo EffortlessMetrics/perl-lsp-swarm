@@ -562,6 +562,8 @@ suite('Packaged VSIX bundled-server journey', function () {
       }));
     const criticSettingRegistered = registeredConfigurationKeys.has('perl-lsp.critic.enabled');
     let primaryFailure: unknown;
+    let activationStop: (() => Promise<void>) | undefined;
+    let activationStopped = false;
 
     try {
       fs.writeFileSync(workspaceFile, fixtureText, { flag: 'wx' });
@@ -594,6 +596,7 @@ suite('Packaged VSIX bundled-server journey', function () {
             stop?: () => Promise<void>;
           }
         | undefined;
+      activationStop = activation?.stop?.bind(activation);
       const activationCompleted = performance.now();
       const bundledVersion = await bundledServerVersion(bundledServerPath);
       const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
@@ -925,9 +928,10 @@ suite('Packaged VSIX bundled-server journey', function () {
         (receipt.artifact_hashes as Record<string, unknown>).bundled_server_sha256 as string,
       );
 
-      if (activation?.stop) {
+      if (activationStop) {
         try {
-          await withTimeout('packaged extension shutdown', activation.stop(), 30_000);
+          await withTimeout('packaged extension shutdown', activationStop(), 30_000);
+          activationStopped = true;
           receipt.shutdown = 'stopped';
         } catch (error: unknown) {
           receipt.shutdown = 'timeout';
@@ -1073,6 +1077,13 @@ suite('Packaged VSIX bundled-server journey', function () {
       throw error;
     } finally {
       const cleanupErrors: unknown[] = [];
+      if (activationStop && !activationStopped) {
+        try {
+          await withTimeout('packaged extension shutdown after failure', activationStop(), 30_000);
+        } catch (error: unknown) {
+          cleanupErrors.push(error);
+        }
+      }
       for (const ownedDocument of [diagnosticDocument, fixtureDocument]) {
         if (ownedDocument && !ownedDocument.isClosed) {
           try {
