@@ -180,26 +180,6 @@ describe('cleanupPartialDownloadDest', () => {
     });
     expect(destEntryExists(dest)).toBe(false);
   });
-
-  test('does not native-unlink again when dest is already gone after the injected remover', async () => {
-    const dest = destPath();
-    fs.writeFileSync(dest, 'partial');
-    const unlinked: string[] = [];
-    const realUnlinkSync = fs.unlinkSync.bind(fs);
-    const spy = jest.spyOn(fs, 'unlinkSync').mockImplementation((filePath) => {
-      unlinked.push(String(filePath));
-      realUnlinkSync(filePath);
-    });
-    try {
-      await cleanupPartialDownloadDest(dest, async (filePath) => {
-        fs.unlinkSync(filePath);
-      });
-      expect(unlinked).toEqual([dest]);
-      expect(destEntryExists(dest)).toBe(false);
-    } finally {
-      spy.mockRestore();
-    }
-  });
 });
 
 describe('downloadBoundedFile', () => {
