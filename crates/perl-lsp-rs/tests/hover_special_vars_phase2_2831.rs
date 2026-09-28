@@ -331,7 +331,7 @@ fn test_concatenated_parent_base_argument_does_not_open_partial_module() -> Test
     let foo = "package Foo;\n1;\n";
     let foo_bar = "package FooBar;\n1;\n";
     let bar = "package Bar;\n1;\n";
-    let doc = "use lib 'lib';\nuse parent ('Foo' . 'Bar');\nuse base ('Foo' . 'Bar');\nuse parent 'Foo';\nuse base 'Foo';\nuse parent ('Foo');\nuse base ('Foo');\nuse parent -norequire => 'Foo';\nuse parent uc('Foo');\nuse base uc('Foo');\nuse parent 'Foo' => 'Bar';\nuse base 'Foo' => 'Bar';\n";
+    let doc = "use lib 'lib';\nuse parent ('Foo' . 'Bar');\nuse base ('Foo' . 'Bar');\nuse parent 'Foo';\nuse base 'Foo';\nuse parent ('Foo');\nuse base ('Foo');\nuse parent -norequire => 'Foo';\nuse parent uc('Foo');\nuse base uc('Foo');\nuse parent 'Foo' => 'Bar';\nuse base 'Foo' => 'Bar';\nuse parent (-norequire => 'Foo');\nuse parent 'Foo', 'Bar';\nuse base ('Foo', 'Bar');\nuse parent (-norequire => 'Foo', 'Bar');\n";
     workspace.write("lib/Foo.pm", foo)?;
     workspace.write("lib/FooBar.pm", foo_bar)?;
     workspace.write("lib/Bar.pm", bar)?;
@@ -365,7 +365,7 @@ fn test_concatenated_parent_base_argument_does_not_open_partial_module() -> Test
         }
     }
 
-    for line in [3, 4, 5, 6, 7] {
+    for line in [3, 4, 5, 6, 7, 12] {
         let character = doc
             .lines()
             .nth(line)
@@ -387,12 +387,23 @@ fn test_concatenated_parent_base_argument_does_not_open_partial_module() -> Test
             .into());
         }
     }
-    for (line, module) in [(10, "Foo"), (10, "Bar"), (11, "Foo"), (11, "Bar")] {
+    for (line, module) in [
+        (10, "Foo"),
+        (10, "Bar"),
+        (11, "Foo"),
+        (11, "Bar"),
+        (13, "Foo"),
+        (13, "Bar"),
+        (14, "Foo"),
+        (14, "Bar"),
+        (15, "Foo"),
+        (15, "Bar"),
+    ] {
         let character = doc
             .lines()
             .nth(line)
             .and_then(|source| source.find(module))
-            .ok_or("Expected fat-arrow module in test source")?
+            .ok_or("Expected parent/base list module in test source")?
             + 1;
         let definition = harness.request(
             "textDocument/definition",
@@ -404,7 +415,7 @@ fn test_concatenated_parent_base_argument_does_not_open_partial_module() -> Test
             .is_some_and(|uri| uri.ends_with(&format!("{module}.pm")))
         {
             return Err(format!(
-                "fat-arrow parent/base member {module} at line {line} should navigate: {definition}"
+                "parent/base list member {module} at line {line} should navigate: {definition}"
             )
             .into());
         }

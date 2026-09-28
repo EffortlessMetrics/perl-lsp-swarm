@@ -55,11 +55,15 @@ fn statement_keyword_is_code(
     })
 }
 
-/// Accept only a standalone argument prefix before a quoted parent/base name.
-/// `Use` stores expression tokens without argument spans, so a function call
-/// opener must not be treated like the import list's grouping parenthesis.
+/// Accept plain, grouped, and `-norequire` parent/base lists with comma or
+/// fat-arrow separators before a quoted module name. `Use` stores expression
+/// tokens without argument spans, so a function-call opener must not be treated
+/// like the list's grouping parenthesis.
 fn standalone_parent_base_prefix(mut prefix: &str) -> bool {
     prefix = prefix.trim_start();
+    if let Some(rest) = prefix.strip_prefix('(') {
+        prefix = rest.trim_start();
+    }
     if let Some(after_flag) = prefix.strip_prefix("-norequire") {
         let after_flag = after_flag.trim_start();
         prefix = if let Some(rest) = after_flag.strip_prefix("=>") {
