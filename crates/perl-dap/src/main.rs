@@ -316,7 +316,9 @@ fn main() -> anyhow::Result<()> {
     // rejected with a message naming the flag rather than falling through to
     // clap, which would deny `--identity` as unknown.
     let identity = requested_identity(&raw_args);
-    if let Some(message) = identity.rejection_message() {
+    // The rejecting binary owns the help pointer: `perl-dap --help`, not the
+    // server binary's help.
+    if let Some(message) = identity.rejection_message_for("perl-dap") {
         anyhow::bail!("{message}");
     }
     if let IdentityRequest::Output(format) = identity {

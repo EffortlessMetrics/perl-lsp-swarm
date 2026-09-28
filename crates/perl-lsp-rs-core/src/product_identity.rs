@@ -213,10 +213,17 @@ impl IdentityRequest {
     /// can reject a mix before falling through to the ordinary parser.
     #[must_use]
     pub fn rejection_message(&self) -> Option<String> {
+        self.rejection_message_for("perllsp")
+    }
+
+    /// The same message naming the rejecting binary, so `perl-dap` and other
+    /// consumers point at their own help instead of `perllsp --help`.
+    #[must_use]
+    pub fn rejection_message_for(&self, binary: &str) -> Option<String> {
         match self {
             Self::MixedOperands { flag } => Some(format!(
                 "`{flag}` is a one-shot identity query and must be the only argument.\n\
-                 Drop the other flags, or run `perllsp --help` for the supported identity forms."
+                 Drop the other flags, or run `{binary} --help` for the supported identity forms."
             )),
             Self::None | Self::Output(_) => None,
         }
@@ -967,6 +974,33 @@ mod tests {
                 assert!(request.rejection_message().is_some());
             }
         }
+    }
+
+    /// A binary that is not `perllsp` must point operators at its own help,
+    /// not at the server binary's help surface.
+    #[test]
+    fn rejection_message_names_the_rejecting_binary_for_other_consumers() {
+        let request = IdentityRequest::MixedOperands { flag: IDENTITY_FLAG.to_owned() };
+
+        let perllsp_message =
+            must_some_with(request.rejection_message(), "a rejected mix must explain");
+        assert!(
+            perllsp_message.contains("perllsp --help"),
+            "default pointer must stay perllsp: {perllsp_message}"
+        );
+
+        let dap_message = must_some_with(
+            request.rejection_message_for("perl-dap"),
+            "a rejected mix must explain",
+        );
+        assert!(
+            dap_message.contains("perl-dap --help"),
+            "DAP pointer must name perl-dap: {dap_message}"
+        );
+        assert!(
+            !dap_message.contains("perllsp"),
+            "DAP pointer must not send operators to the server help: {dap_message}"
+        );
     }
 
     /// Controls for the two rejection arms: neither may fire on a command line

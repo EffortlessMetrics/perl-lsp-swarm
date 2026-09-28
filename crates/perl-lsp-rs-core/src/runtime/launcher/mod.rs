@@ -1183,6 +1183,7 @@ _perl-lsp() {
         '--dev-environment[With --doctor: development-environment prerequisites]' \
         '--version[Show version information]' \
         '--features-json[Output features catalog as JSON]' \
+        '--json[With --info: same JSON identity packet (composed one-shot form)]' \
         '--identity[Print the installed-binary identity packet and exit]' \
         '--identity-json[Print that packet as perl_lsp.binary_identity.v1 JSON]' \
         '--perltidy-compat-report[Report native formatter compatibility for .perltidyrc]:profile:_files' \
@@ -1220,6 +1221,7 @@ complete -c perl-lsp -l doctor -d 'Explain Perl path, config, and effective @INC
 complete -c perl-lsp -l dev-environment -d 'With --doctor: development-environment prerequisites'
 complete -c perl-lsp -l version -d 'Show version information'
 complete -c perl-lsp -l features-json -d 'Output features catalog as JSON'
+complete -c perl-lsp -l json -d 'With --info: same JSON identity packet (composed one-shot form)'
 complete -c perl-lsp -l identity -d 'Print the installed-binary identity packet and exit (one-shot)'
 complete -c perl-lsp -l identity-json -d 'Print that packet as perl_lsp.binary_identity.v1 JSON (one-shot)'
 complete -c perl-lsp -l perltidy-compat-report -F -d 'Report native formatter compatibility for .perltidyrc'
@@ -1259,6 +1261,7 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
         [CompletionResult]::new('--dev-environment', '--dev-environment', 'ParameterName', 'With --doctor: development-environment prerequisites')
         [CompletionResult]::new('--version', '--version', 'ParameterName', 'Show version information')
         [CompletionResult]::new('--features-json', '--features-json', 'ParameterName', 'Output features catalog as JSON')
+        [CompletionResult]::new('--json', '--json', 'ParameterName', 'With --info: same JSON identity packet (composed one-shot form)')
         [CompletionResult]::new('--identity', '--identity', 'ParameterName', 'Print the installed-binary identity packet and exit (one-shot)')
         [CompletionResult]::new('--identity-json', '--identity-json', 'ParameterName', 'Print that packet as perl_lsp.binary_identity.v1 JSON (one-shot)')
         [CompletionResult]::new('--perltidy-compat-report', '--perltidy-compat-report', 'ParameterName', 'Report native formatter compatibility for .perltidyrc')
@@ -1755,19 +1758,23 @@ mod tests {
 
         // Each script spells a long option in its own shell's convention, and
         // fish names long options without their leading dashes.
-        let spellings: [(&str, &str, &str); 4] = [
-            ("bash", " --identity ", " --identity-json "),
-            ("zsh", "'--identity[", "'--identity-json["),
-            ("fish", "-l identity ", "-l identity-json "),
-            ("powershell", "'--identity',", "'--identity-json',"),
+        let spellings: [(&str, &str, &str, &str); 4] = [
+            ("bash", " --identity ", " --identity-json ", " --json "),
+            ("zsh", "'--identity[", "'--identity-json[", "'--json["),
+            ("fish", "-l identity ", "-l identity-json ", "-l json "),
+            ("powershell", "'--identity',", "'--identity-json',", "'--json',"),
         ];
 
-        for (shell, human, json) in spellings {
+        for (shell, human, json_flag, composed_json) in spellings {
             let script = must_some(super::shell_completion(shell));
             assert!(script.contains(human), "{shell} completion omits {IDENTITY_FLAG}: {script}");
             assert!(
-                script.contains(json),
+                script.contains(json_flag),
                 "{shell} completion omits {IDENTITY_JSON_FLAG}: {script}"
+            );
+            assert!(
+                script.contains(composed_json),
+                "{shell} completion omits the composed --json form: {script}"
             );
         }
     }
