@@ -35,6 +35,7 @@ REQUIRED_PATHS = {
     "xtask/tests/agent_merge_review_backstop.rs",
     "xtask/tests/agent_shift_left_entry_contract.rs",
     "xtask/tests/agent_remote_wait_attention.rs",
+    "xtask/tests/agent_shift_left_mutation_admission_contract.rs",
     "xtask/tests/pr_convergence_contract.rs",
     "xtask/tests/shift_left_publication_contract.rs",
     "scripts/tests/test-agent-flow-control-plane-trigger.sh",

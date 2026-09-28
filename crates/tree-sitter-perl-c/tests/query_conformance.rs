@@ -194,6 +194,66 @@ END_CPP
 }
 
 #[test]
+fn query_conformance_injections_preserves_inline_trailing_comments() -> Result<(), Box<dyn Error>> {
+    for query in [
+        include_str!("../../../tree-sitter-perl/queries/injections.scm"),
+        tree_sitter_perl_c::INJECTIONS_QUERY,
+    ] {
+        for (language, payload) in [("C", "int inline_c;"), ("CPP", "class InlineCpp {}; ")] {
+            for trailing in ["", " # trailing Perl comment"] {
+                let source = format!(
+                    "use Inline {language} => <<'END_INLINE';{trailing}\n{payload}\nEND_INLINE\n\
+                     my $plain = <<'END_PLAIN'; # another comment\nplain heredoc stays plain\nEND_PLAIN\n"
+                );
+                let captures = collect_captures(query, &source)?;
+                let contents =
+                    captures.get("injection.content").ok_or("missing content captures")?;
+                if !contents.iter().any(|content| content.contains(payload)) {
+                    return Err(
+                        format!("missing Inline {language} body with suffix {trailing:?}").into()
+                    );
+                }
+                if contents.iter().any(|content| content.contains("plain heredoc stays plain")) {
+                    return Err(format!("later plain heredoc inherited Inline {language}").into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn query_conformance_injections_does_not_capture_later_plain_heredoc() -> Result<(), Box<dyn Error>>
+{
+    let query = include_str!("../../../tree-sitter-perl/queries/injections.scm");
+    for (language, payload, delimiter) in
+        [("C", "#include <math.h>", "END_C"), ("CPP", "#include <string>", "END_CPP")]
+    {
+        let source = format!(
+            "use Inline {language} => <<'{delimiter}';\n{payload}\n{delimiter}\n\
+             my $plain = <<'END_PLAIN';\nthis remains Perl text\nEND_PLAIN\n"
+        );
+        let captures = collect_captures(query, &source)?;
+        let contents = captures
+            .get("injection.content")
+            .ok_or_else(|| format!("expected {language} injection.content captures"))?;
+
+        if !contents.iter().any(|value| value.contains(payload)) {
+            return Err(
+                format!("expected the adjacent Inline {language} heredoc to be captured").into()
+            );
+        }
+        if contents.iter().any(|value| value.contains("this remains Perl text")) {
+            return Err(format!(
+                "a later plain heredoc must not inherit the Inline {language} injection"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn query_conformance_injections_covers_comment_and_eval_substitution() -> Result<(), Box<dyn Error>>
 {
     let query = include_str!("../../../tree-sitter-perl/queries/injections.scm");
@@ -208,4 +268,46 @@ $value =~ s/x/uc($value)/e;
     assert_capture_contains(&captures, "injection.content", "uc($value)");
 
     Ok(())
+}
+
+// ── Vendored-copy drift oracle (joint-refresh contract) ─────────────────
+//
+// bdd_workflows.rs exercises only the vendored constants while this suite
+// exercises only the upstream root files, so both suites can stay green
+// while the published loader silently ships stale query rules. Assert the
+// UPSTREAM_SNAPSHOT.md joint-refresh contract directly: each vendored copy
+// must equal its upstream source modulo the documented whitespace
+// normalization (trailing whitespace per line, trailing blank lines at EOF)
+// that the repository's binary-diff gate requires.
+
+fn normalized_query_lines(source: &str) -> String {
+    let mut lines: Vec<&str> = source.lines().map(str::trim_end).collect();
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+#[test]
+fn query_conformance_vendored_queries_match_upstream_modulo_documented_normalization() {
+    for (query_name, upstream, vendored) in [
+        (
+            "injections.scm",
+            include_str!("../../../tree-sitter-perl/queries/injections.scm"),
+            tree_sitter_perl_c::INJECTIONS_QUERY,
+        ),
+        (
+            "highlights.scm",
+            include_str!("../../../tree-sitter-perl/queries/highlights.scm"),
+            tree_sitter_perl_c::HIGHLIGHTS_QUERY,
+        ),
+    ] {
+        assert_eq!(
+            normalized_query_lines(upstream),
+            normalized_query_lines(vendored),
+            "vendored {query_name} drifted from the upstream snapshot; refresh both \
+             copies together per UPSTREAM_SNAPSHOT.md (the published loader must not \
+             ship stale query rules)"
+        );
+    }
 }
