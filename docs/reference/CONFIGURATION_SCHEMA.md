@@ -343,42 +343,12 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
           "maximum": 2000,
           "default": 500
         },
-          "type": "integer",
-          "description": "Maximum number of AST cache entries (LRU eviction)",
-          "minimum": 10,
-          "maximum": 500,
-          "default": 100
-        },
-          "type": "integer",
-          "description": "AST cache TTL in seconds",
-          "minimum": 10,
-          "maximum": 3600,
-          "default": 300
-        },
-          "type": "integer",
-          "description": "Maximum symbol cache entries",
-          "minimum": 10,
-          "maximum": 10000,
-          "default": 1000
-        },
-          "type": "integer",
-          "description": "Maximum number of files to index in workspace",
-          "minimum": 100,
-          "maximum": 100000,
-          "default": 10000
-        },
         "maxSymbolsPerFile": {
           "type": "integer",
           "description": "Maximum symbols indexed per file",
           "minimum": 100,
           "maximum": 50000,
           "default": 5000
-        },
-          "type": "integer",
-          "description": "Maximum total symbols across all indexed files",
-          "minimum": 10000,
-          "maximum": 1000000,
-          "default": 500000
         },
         "parseStormThreshold": {
           "type": "integer",
@@ -392,12 +362,6 @@ Debug Adapter Protocol configuration is *not* part of this `perl.*` namespace â€
           "description": "Skip files larger than this in bytes (default: 1 MB)",
           "minimum": 1024,
           "default": 1048576
-        },
-          "type": "integer",
-          "description": "Deadline (ms) for initial workspace folder scan",
-          "minimum": 5000,
-          "maximum": 120000,
-          "default": 30000
         },
         "fileIndexDeadlineMs": {
           "type": "integer",

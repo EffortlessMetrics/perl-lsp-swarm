@@ -10051,8 +10051,6 @@ pub fn perl_lsp_rs_core::runtime::MemoryPressure::eq(&self, other: &perl_lsp_rs_
 pub fn perl_lsp_rs_core::runtime::MemoryPressure::partial_cmp(&self, other: &perl_lsp_rs_core::runtime::MemoryPressure) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_lsp_rs_core::runtime::MemoryPressure::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::runtime::limits::LspLimits
-pub perl_lsp_rs_core::runtime::limits::LspLimits::ast_cache_max_entries: usize
-pub perl_lsp_rs_core::runtime::limits::LspLimits::ast_cache_ttl_secs: u64
 pub perl_lsp_rs_core::runtime::limits::LspLimits::code_lens_cap: usize
 pub perl_lsp_rs_core::runtime::limits::LspLimits::code_lens_resolve_deadline: core::time::Duration
 pub perl_lsp_rs_core::runtime::limits::LspLimits::completion_cap: usize
@@ -10064,9 +10062,7 @@ pub perl_lsp_rs_core::runtime::limits::LspLimits::fs_operation_deadline: core::t
 pub perl_lsp_rs_core::runtime::limits::LspLimits::include_open_docs_when_degraded: bool
 pub perl_lsp_rs_core::runtime::limits::LspLimits::inlay_hints_cap: usize
 pub perl_lsp_rs_core::runtime::limits::LspLimits::max_file_size_bytes: usize
-pub perl_lsp_rs_core::runtime::limits::LspLimits::max_indexed_files: usize
 pub perl_lsp_rs_core::runtime::limits::LspLimits::max_symbols_per_file: usize
-pub perl_lsp_rs_core::runtime::limits::LspLimits::max_total_symbols: usize
 pub perl_lsp_rs_core::runtime::limits::LspLimits::memory_budget: perl_lsp_rs_core::runtime::MemoryBudget
 pub perl_lsp_rs_core::runtime::limits::LspLimits::parse_storm_threshold: usize
 pub perl_lsp_rs_core::runtime::limits::LspLimits::reference_search_deadline: core::time::Duration
@@ -10074,8 +10070,6 @@ pub perl_lsp_rs_core::runtime::limits::LspLimits::references_cap: usize
 pub perl_lsp_rs_core::runtime::limits::LspLimits::regex_scan_deadline: core::time::Duration
 pub perl_lsp_rs_core::runtime::limits::LspLimits::return_partial_on_timeout: bool
 pub perl_lsp_rs_core::runtime::limits::LspLimits::semantic_tokens_deadline: core::time::Duration
-pub perl_lsp_rs_core::runtime::limits::LspLimits::symbol_cache_max_entries: usize
-pub perl_lsp_rs_core::runtime::limits::LspLimits::workspace_scan_deadline: core::time::Duration
 pub perl_lsp_rs_core::runtime::limits::LspLimits::workspace_symbol_cap: usize
 pub fn perl_lsp_rs_core::runtime::LspLimits::constrained() -> perl_lsp_rs_core::runtime::LspLimits
 pub fn perl_lsp_rs_core::runtime::LspLimits::large_workspace() -> perl_lsp_rs_core::runtime::LspLimits
@@ -10385,8 +10379,6 @@ pub fn perl_lsp_rs_core::runtime::LspArgs::update_from_arg_matches_mut(&mut self
 pub fn perl_lsp_rs_core::runtime::LspArgs::clone(&self) -> perl_lsp_rs_core::runtime::LspArgs
 pub fn perl_lsp_rs_core::runtime::LspArgs::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::runtime::LspLimits
-pub perl_lsp_rs_core::runtime::LspLimits::ast_cache_max_entries: usize
-pub perl_lsp_rs_core::runtime::LspLimits::ast_cache_ttl_secs: u64
 pub perl_lsp_rs_core::runtime::LspLimits::code_lens_cap: usize
 pub perl_lsp_rs_core::runtime::LspLimits::code_lens_resolve_deadline: core::time::Duration
 pub perl_lsp_rs_core::runtime::LspLimits::completion_cap: usize
@@ -10398,9 +10390,7 @@ pub perl_lsp_rs_core::runtime::LspLimits::fs_operation_deadline: core::time::Dur
 pub perl_lsp_rs_core::runtime::LspLimits::include_open_docs_when_degraded: bool
 pub perl_lsp_rs_core::runtime::LspLimits::inlay_hints_cap: usize
 pub perl_lsp_rs_core::runtime::LspLimits::max_file_size_bytes: usize
-pub perl_lsp_rs_core::runtime::LspLimits::max_indexed_files: usize
 pub perl_lsp_rs_core::runtime::LspLimits::max_symbols_per_file: usize
-pub perl_lsp_rs_core::runtime::LspLimits::max_total_symbols: usize
 pub perl_lsp_rs_core::runtime::LspLimits::memory_budget: perl_lsp_rs_core::runtime::MemoryBudget
 pub perl_lsp_rs_core::runtime::LspLimits::parse_storm_threshold: usize
 pub perl_lsp_rs_core::runtime::LspLimits::reference_search_deadline: core::time::Duration
@@ -10408,8 +10398,6 @@ pub perl_lsp_rs_core::runtime::LspLimits::references_cap: usize
 pub perl_lsp_rs_core::runtime::LspLimits::regex_scan_deadline: core::time::Duration
 pub perl_lsp_rs_core::runtime::LspLimits::return_partial_on_timeout: bool
 pub perl_lsp_rs_core::runtime::LspLimits::semantic_tokens_deadline: core::time::Duration
-pub perl_lsp_rs_core::runtime::LspLimits::symbol_cache_max_entries: usize
-pub perl_lsp_rs_core::runtime::LspLimits::workspace_scan_deadline: core::time::Duration
 pub perl_lsp_rs_core::runtime::LspLimits::workspace_symbol_cap: usize
 pub fn perl_lsp_rs_core::runtime::LspLimits::constrained() -> perl_lsp_rs_core::runtime::LspLimits
 pub fn perl_lsp_rs_core::runtime::LspLimits::large_workspace() -> perl_lsp_rs_core::runtime::LspLimits
