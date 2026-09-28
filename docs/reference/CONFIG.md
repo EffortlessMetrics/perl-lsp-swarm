@@ -263,8 +263,6 @@ Only keys **explicitly set** in `.perl-lsp.toml` override the built-in defaults.
 
 **Exception for `include_paths`**: an empty `include_paths = []` in the TOML file is treated as "not set" and leaves the built-in defaults (`lib`, `.`, `local/lib/perl5`) unchanged. This prevents an empty list from accidentally wiping your module paths. Set at least one path to override the defaults.
 
-An **all-rejected** list is treated the same way: if every entry is rejected (absolute, or resolving outside the workspace root), the previously effective roots — the built-in defaults when nothing else sets them — remain in effect, and the server names each rejected entry in a `window/showMessage` warning (`perl-lsp doctor` reports them too). Add at least one valid relative entry, or remove the key to restore the defaults.
-
 ---
 
 ## Workspace Settings (LSP)
