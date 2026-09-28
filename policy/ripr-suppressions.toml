@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-17"
+updated = "2026-09-28"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -4981,3 +4981,34 @@ created = "2026-09-17"
 review_after = "2026-10-17"
 expires = "2026-12-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in semantic/mod.rs or semantic/quickorm.rs outside the five identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+
+# -----------------------------------------------------------------------------
+# #16670 require-module PL109 skip: hosted RIPR 0.10 call_presence on
+# args.first() / std::ptr::eq / require_call_parenthesizes_operand.
+#
+# Run 36448026496 at head cefd882a7 (merge tree b3933077d) reported 3 new
+# gaps on the explicit-branch skip in scope_analyzer/mod.rs. Review guidance
+# classed them weakly_gripped; the PR receipt counted no_static_path: 3.
+# Discriminators already existed (unparenthesized vs parenthesized vs
+# pointer-inequality vs empty ancestors) and still do after extraction into
+# require_operand.rs, plus empty-args / first-arg identity helpers.
+# RIPR cannot statically propagate those oracles to a side_effect sink
+# (why_not_actionable: "Static propagation to `side_effect` sink is unknown")
+# — ripr#1428/1429 let-else and pointer-identity class, same as CI_GATE_PLAYBOOK
+# Option 3. Path-scoped to the extracted module so other scope_analyzer seams
+# stay visible. Probe ids will rotate on the new file; do not pin the old
+# mod.rs identities.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-16670-require-operand-call-presence"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-semantic-analyzer/src/analysis/scope_analyzer/require_operand.rs"]
+classification = ["weakly_gripped", "reachable_unrevealed", "no_static_path"]
+owner = "proof-lane"
+issue = "#16670"
+reason = "PR #16681 (#16670): hosted RIPR run 36448026496 (head cefd882a7, merge tree b3933077d) reports 3 new call_presence gaps on the require-module operand skip — args.first() let-else, std::ptr::eq first-arg identity, and require_call_parenthesizes_operand. Explicit early returns already replaced the prior is_some_and/match-guard (which was no_static_path); --lib tests already observe both sides of each branch, including parenthesized require(DBI)/require (DBI), pointer inequality of a foreign Identifier under the require parent, empty ancestors, computed first-arg Foo, and now empty args plus first-arg identity helpers. RIPR still cannot connect those oracles to a side_effect sink (review why_not_actionable: Static propagation to side_effect sink is unknown). Same ripr#1428/1429 class as CI_GATE_PLAYBOOK Option 3 and the OO signature-help weakly_gripped paren-scan suppression. Behavioral proof remains the analyze()/DiagnosticsProvider/pull tests in require_module_bareword_pl109.rs. Suppression is one new production file that exists only for this skip. Remove when RIPR traces call_presence through let-else and pointer identity, or at expiry."
+created = "2026-09-28"
+review_after = "2026-10-28"
+expires = "2026-12-28"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1428 or #1429 connects args.first()/ptr::eq/paren-helper call_presence in require_operand.rs to the named --lib and integration tests, or at expiry. Narrow immediately if a receipt reports a seam in this file whose owner is not is_require_module_operand / require_first_arg_is / require_call_parenthesizes_operand."
+

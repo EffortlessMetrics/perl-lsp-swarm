@@ -83,3 +83,13 @@ fn pull_demo_database_pm_does_not_emit_pl109_for_dbi() -> Result<(), Box<dyn std
     );
     Ok(())
 }
+
+#[test]
+fn pull_parenthesized_require_dbi_emits_pl109() -> Result<(), Box<dyn std::error::Error>> {
+    let items = pull("file:///require_paren_dbi.pl", "use strict;\nrequire(DBI);\n")?;
+    assert!(
+        has_pl109_for(&items, "DBI"),
+        "pull diagnostics must report require(DBI) as PL109: {items:#?}"
+    );
+    Ok(())
+}
