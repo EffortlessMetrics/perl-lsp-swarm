@@ -1031,14 +1031,21 @@ test result: FAILED. 0 passed; 1 failed";
 
     #[test]
     fn panic_re_classify_extracts_panic_location_from_absolute_path() {
-        // End-to-end: a whole log carrying a panic in a dependency frame must
-        // surface the absolute path through `panic_location` on the receipt.
-        // This is the discriminating proof #16147 requires at the call-site
-        // boundary, not just at the regex level.
+        // End-to-end: a failing test's own stdout block carrying a panic in a
+        // dependency frame must surface the absolute path on the receipt.
+        // The block binds the location to the first failing test (#16148).
         let log = "running 1 test\n\
 test ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix stdout ----\n\
 thread 'x' panicked at /home/runner/work/perl-lsp-swarm/xtask/src/a.rs:7:1:\n\
 boom\n\
+\n\
+failures:\n\
+    ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix\n\
+\n\
 test result: FAILED. 0 passed; 1 failed";
         let receipt = classify(log, Some("abs-sha".to_string()));
         assert_eq!(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 import unittest
 from pathlib import Path
@@ -190,16 +191,64 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
         #15284 — the marker envelope (`semantic-review:v1`) and the stdout
         JSON payload are two distinct wire surfaces and must be version-skew
         free at the producer side.
+
+        Counting string occurrences of the field is not enough: a fourth
+        `print(json.dumps(...))` or a `setdefault` that keeps a foreign
+        version would still satisfy a source-text count. Pin the helper.
         """
-        text = (
+        source = (
             ROOT / "scripts/ci/check-pr-semantic-review-currentness.py"
         ).read_text(encoding="utf-8")
-        assert 'SCHEMA_VERSION = "semantic_review_currentness.v1"' in text
-        # Three stdout surfaces (success path, MARKER_REFUSED, NOT_PROVEN).
-        # MARKER_REFUSED and NOT_PROVEN attach via dict literal; the success
-        # path attaches via setdefault. All three must reference SCHEMA_VERSION.
-        assert text.count('"schema_version": SCHEMA_VERSION') >= 2
-        assert 'setdefault("schema_version", SCHEMA_VERSION)' in text
+        assert 'SCHEMA_VERSION = "semantic_review_currentness.v1"' in source
+        assert 'setdefault("schema_version"' not in source
+        assert "setdefault('schema_version'" not in source
+
+        tree = ast.parse(source)
+        helpers: set[str] = set()
+        dumps_in: list[str | None] = []
+        print_dumps_in: list[str | None] = []
+        emit_calls_in_main = 0
+        func_stack: list[str] = []
+
+        def is_json_dumps(node: ast.AST) -> bool:
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "json"
+                and node.func.attr == "dumps"
+            )
+
+        class Visitor(ast.NodeVisitor):
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                func_stack.append(node.name)
+                if node.name in {"stdout_payload", "emit_stdout_json"}:
+                    helpers.add(node.name)
+                self.generic_visit(node)
+                func_stack.pop()
+
+            def visit_Call(self, node: ast.Call) -> None:
+                nonlocal emit_calls_in_main
+                if is_json_dumps(node):
+                    dumps_in.append(func_stack[-1] if func_stack else None)
+                if isinstance(node.func, ast.Name) and node.func.id == "print":
+                    for arg in node.args:
+                        if is_json_dumps(arg):
+                            print_dumps_in.append(func_stack[-1] if func_stack else None)
+                if (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "emit_stdout_json"
+                    and func_stack
+                    and func_stack[-1] == "main"
+                ):
+                    emit_calls_in_main += 1
+                self.generic_visit(node)
+
+        Visitor().visit(tree)
+        assert helpers == {"stdout_payload", "emit_stdout_json"}
+        assert dumps_in == ["emit_marker", "emit_stdout_json"]
+        assert print_dumps_in == ["emit_stdout_json"]
+        assert emit_calls_in_main == 3
 
     def test_semantic_carry_forward_is_narrow_and_not_code_whitespace(self) -> None:
         text = (
