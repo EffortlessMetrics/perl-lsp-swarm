@@ -399,7 +399,16 @@ struct IndexingResources {
 fn client_max_indexed_files() -> usize {
     perl_lsp_rs_core::runtime::limits::LSP_LIMITS
         .read()
-        .map_or(usize::MAX, |limits| limits.max_indexed_files)
+        .map_or(usize::MAX, |limits| client_cap_from(&limits))
+}
+
+/// The single field the scan reads out of the global limits. Split out so a
+/// test can prove the scan consumes the documented `maxIndexedFiles` field
+/// rather than a sibling cap or a constant, without mutating the
+/// process-global that sibling scan tests share (#16652).
+#[cfg(feature = "workspace")]
+fn client_cap_from(limits: &perl_lsp_rs_core::runtime::limits::LspLimits) -> usize {
+    limits.max_indexed_files
 }
 
 /// Effective cap for one discovery scan: the client setting bounded by the
@@ -5384,6 +5393,27 @@ mod tests {
         Ok(())
     }
 
+    /// #16652: the scan must consume the documented `maxIndexedFiles` field.
+    /// Without this, an implementation that returned a constant, or read a
+    /// sibling cap, would still pass every other test in this change.
+    #[test]
+    #[cfg(feature = "workspace")]
+    fn client_max_indexed_files_reads_the_documented_field() {
+        let default = perl_lsp_rs_core::runtime::limits::LspLimits::default();
+        assert_eq!(super::client_cap_from(&default), 10_000);
+
+        let mut lowered = default.clone();
+        lowered.max_indexed_files = 2;
+        assert_eq!(super::client_cap_from(&lowered), 2);
+        // It is the indexed-file cap, not the file-size cap next to it.
+        assert_ne!(super::client_cap_from(&lowered), lowered.max_file_size_bytes);
+
+        // A profile preset moves the cap, so the read is not hard-coded to the
+        // default either.
+        let constrained = perl_lsp_rs_core::runtime::limits::LspLimits::constrained();
+        assert_eq!(super::client_cap_from(&constrained), 5_000);
+    }
+
     /// #16652: the cap composition is what makes the documented client knob
     /// real without letting a client raise a bound past the resource backstop.
     #[test]
@@ -5443,6 +5473,17 @@ mod tests {
                 .into());
             }
         }
+        // Pin the count, not only the degradation kind: the scan stops the
+        // discovery walk at the cap and then indexes what it collected, so a
+        // `>` vs `>=` slip that admitted one extra file would pass otherwise.
+        assert_eq!(
+            server
+                .coordinator()
+                .map(|c| c.index().file_count())
+                .ok_or("server has no index coordinator")?,
+            2,
+            "discovery must stop at the client cap, not one file past it"
+        );
         Ok(())
     }
 
