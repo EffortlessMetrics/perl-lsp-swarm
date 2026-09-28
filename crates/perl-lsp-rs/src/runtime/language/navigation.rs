@@ -101,6 +101,9 @@ static ARROW_METHOD_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock:
 static PACKAGE_ARROW_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
 #[cfg(feature = "workspace")]
+static PACKAGE_METHOD_RECEIVER_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
+
+#[cfg(feature = "workspace")]
 static VAR_METHOD_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
 #[cfg(feature = "workspace")]
@@ -458,6 +461,25 @@ fn get_package_arrow_regex() -> Result<&'static regex::Regex, JsonRpcError> {
         .map_err(|err| {
             crate::protocol::internal_error(&format!(
                 "Failed to initialize package navigation regex: {err}"
+            ))
+        })
+}
+
+/// Package receiver followed by a method selector: an arrow-dereference that
+/// is not a method call (`Some::Module->()` invokes the bareword as a sub;
+/// `->[`, `->{`, `->$` dereference) must not classify as a receiver.
+#[cfg(feature = "workspace")]
+fn get_package_method_receiver_regex() -> Result<&'static regex::Regex, JsonRpcError> {
+    PACKAGE_METHOD_RECEIVER_RE
+        .get_or_init(|| {
+            regex::Regex::new(
+                r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*->\s*[A-Za-z_]",
+            )
+        })
+        .as_ref()
+        .map_err(|err| {
+            crate::protocol::internal_error(&format!(
+                "Failed to initialize package method receiver regex: {err}"
             ))
         })
 }
@@ -1881,15 +1903,16 @@ impl LspServer {
                                 // The earlier module-path lookup has already had
                                 // its chance to resolve this receiver.
                                 let qualified_name = format!("{package}::{name}");
-                                if get_package_arrow_regex()?.captures_iter(&text_around).any(
-                                    |cap| {
+                                if get_package_method_receiver_regex()?
+                                    .captures_iter(&text_around)
+                                    .any(|cap| {
                                         cap.get(1).is_some_and(|receiver| {
                                             receiver.as_str() == qualified_name
                                                 && cursor_in_text >= receiver.start()
                                                 && cursor_in_text <= receiver.end()
                                         })
-                                    },
-                                ) {
+                                    })
+                                {
                                     return Ok(Some(Value::Null));
                                 }
                                 if workspace_index_is_fresh()
