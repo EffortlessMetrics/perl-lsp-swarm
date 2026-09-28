@@ -86,24 +86,50 @@ impl LspServer {
         let marked = {
             let mut documents = self.documents.lock();
             match self.get_document_mut(&mut documents, uri) {
-                // Already desynchronized: the marking (and generation bump) is
-                // idempotent, and the episode's message was already sent.
-                Some(doc) if doc.full_sync_required() => false,
+                None => false,
                 Some(doc) => {
-                    if let Some(version) =
-                        params.pointer("/textDocument/version").and_then(Value::as_i64)
-                    {
-                        // Record the dropped notification's version watermark
-                        // exactly as the in-dispatcher violation path does, so
-                        // delayed older replacements cannot land afterwards.
-                        if let Ok(version) = i32::try_from(version) {
+                    let incoming_version_i64 =
+                        params.pointer("/textDocument/version").and_then(Value::as_i64);
+                    let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
+                    // Mirror the admitted handlers' stale gate: a didChange
+                    // notification at or below the stored version is ignored
+                    // there because it cannot have changed the buffer, so
+                    // rejecting that frame at admission must not mark the
+                    // document either — both sides already hold the same text,
+                    // and marking would disable current answers for nothing.
+                    // didSave accepts a same-version save, didOpen has no
+                    // admitted stale gate (it replaces the buffer), and a
+                    // frame with no usable version carries no ordering
+                    // evidence at all: those keep the conservative marking.
+                    let allow_same_version = method != "textDocument/didChange";
+                    let admitted_handler_would_ignore = match incoming_version {
+                        Some(version) => {
+                            version < doc.version || (!allow_same_version && version == doc.version)
+                        }
+                        None => false,
+                    };
+                    if admitted_handler_would_ignore {
+                        false
+                    } else {
+                        // Record the dropped frame's version watermark exactly
+                        // as the in-dispatcher violation path does — also while
+                        // the document is already desynchronized, where a newer
+                        // dropped version must still raise it so a delayed
+                        // intermediate replacement cannot land afterwards.
+                        if let Some(version) = incoming_version {
                             doc.observe_change_version(version);
                         }
+                        if doc.full_sync_required() {
+                            // Already desynchronized: the generation bump and
+                            // the episode's client message already happened;
+                            // only the watermark above still matters.
+                            false
+                        } else {
+                            doc.mark_full_sync_required();
+                            true
+                        }
                     }
-                    doc.mark_full_sync_required();
-                    true
                 }
-                None => false,
             }
         };
         // Drop the document lock before any outbound notification work.
@@ -218,6 +244,121 @@ mod tests {
             .and_then(|value| value.as_array().map(ToOwned::to_owned))
             .ok_or("expected formatting edits after recovery")?;
         assert!(!edits.is_empty(), "admitted replacement must restore formatting");
+        Ok(())
+    }
+
+    /// A rejected didChange the admitted handler would have ignored (explicit
+    /// version at or below the stored one) must not mark the document: both
+    /// sides already hold the same text, and marking would disable current
+    /// answers for nothing (#16709 review).
+    #[test]
+    fn stale_rejected_change_does_not_mark_the_document() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = LspServer::new();
+        let uri = "file:///admission_desync_stale.pl";
+        server.test_apply_did_open(uri, "sub hello{my $x=1;return $x;}\n", 1)?;
+        // Advance the stored version so the rejected frames below are stale.
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 5 },
+            "contentChanges": [{ "text": "sub newer{my $y=2;return $y;}\n" }],
+        })))?;
+
+        let big_text = "x".repeat(3_000_000);
+        for stale_version in [4, 5] {
+            let params = json!({
+                "textDocument": { "uri": uri, "version": stale_version },
+                "contentChanges": [{ "text": big_text }],
+            });
+            server.mark_text_sync_admission_rejected("textDocument/didChange", &params, false);
+        }
+
+        let documents = server.documents.lock();
+        let doc = server.get_document(&documents, uri).ok_or("document must remain stored")?;
+        assert!(
+            !doc.full_sync_required(),
+            "an oversized frame the handler would ignore must not desynchronize the document"
+        );
+        assert_eq!(doc.version, 5, "stale rejections must not move the watermark");
+        drop(documents);
+
+        // Current answers must still work: nothing about this run went stale.
+        let formatted = server.handle_formatting(Some(json!({
+            "textDocument": { "uri": uri, "version": 5 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })))?;
+        assert!(formatted.is_some(), "formatting must stay available after only stale rejections");
+        Ok(())
+    }
+
+    /// A newer rejection while already desynchronized must still raise the
+    /// version watermark: otherwise a delayed admitted replacement at an
+    /// intermediate version passes the stale gate, clears the desync flag,
+    /// and formats text older than the client's buffer (#16709 review).
+    #[test]
+    fn newer_rejection_while_desynchronized_raises_the_watermark()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///admission_desync_watermark.pl";
+        server.test_apply_did_open(uri, "sub hello{my $x=1;return $x;}\n", 1)?;
+
+        let big_text = "x".repeat(3_000_000);
+        for dropped_version in [7, 9] {
+            let params = json!({
+                "textDocument": { "uri": uri, "version": dropped_version },
+                "contentChanges": [{ "text": big_text }],
+            });
+            server.mark_text_sync_admission_rejected("textDocument/didChange", &params, false);
+        }
+
+        {
+            let documents = server.documents.lock();
+            let doc = server.get_document(&documents, uri).ok_or("document must remain stored")?;
+            assert_eq!(
+                doc.version, 9,
+                "the newest rejected version must be the watermark even while desynchronized"
+            );
+            assert!(doc.full_sync_required(), "the desync latch must hold");
+        }
+
+        // An admitted replacement at the intermediate version must NOT land
+        // after the version-9 rejection: the stale gate refuses it.
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 8 },
+            "contentChanges": [{ "text": "sub intermediate{my $y=2;return $y;}\n" }],
+        })))?;
+        let still_desynced = {
+            let documents = server.documents.lock();
+            server
+                .get_document(&documents, uri)
+                .map(|doc| doc.full_sync_required())
+                .unwrap_or(false)
+        };
+        assert!(
+            still_desynced,
+            "an intermediate replacement below the dropped watermark must not clear the desync"
+        );
+        let error = server
+            .handle_formatting(Some(json!({
+                "textDocument": { "uri": uri, "version": 8 },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })))
+            .err()
+            .ok_or("formatting against the intermediate replacement must fail closed")?;
+        assert_eq!(error.code, crate::protocol::CONTENT_MODIFIED);
+
+        // The declared recovery path still works at a genuinely newer version.
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 10 },
+            "contentChanges": [{ "text": "sub recovered{my $y=2;return $y;}\n" }],
+        })))?;
+        let recovered = server.handle_formatting(Some(json!({
+            "textDocument": { "uri": uri, "version": 10 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })))?;
+        assert!(
+            recovered.is_some(),
+            "an admitted replacement above the watermark must restore current answers"
+        );
         Ok(())
     }
 
