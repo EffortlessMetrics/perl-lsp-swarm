@@ -1,4 +1,4 @@
-//! Versioned schema only: no interpreter, timeline, catalog or provider authority.
+//! Versioned schemas and supplied warning catalogs: no interpreter, timeline or provider.
 //!
 //! SourceIdentityEnvelope identifies a logical file; SemanticSubjectGeneration
 //! identifies an accepted document instance and parser/profile configuration.
@@ -541,3 +541,5 @@ mod boundary;
 pub use boundary::*;
 
 mod boundary_validation;
+/// Versioned warning catalog and immutable supplied policy queries.
+pub mod warnings;

@@ -183,3 +183,9 @@ and `perl-semantic-facts` vocabulary plus serde for the canonical schema.
 ## License
 
 MIT OR Apache-2.0
+
+## Supplied warning catalogs
+
+Four exact builtin catalogs and immutable supplied-policy queries are documented in
+[the warning catalog contract](../../docs/reference/WARNING_CATALOG_POLICY.md).
+This adds no source directive interpreter or legacy consumer migration.
