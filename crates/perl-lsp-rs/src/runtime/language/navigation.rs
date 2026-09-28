@@ -26,6 +26,20 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
 }
 
+/// Identify inert single-quoted text from the current parsed generation.
+fn in_single_quoted_literal(
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+    offset: usize,
+) -> bool {
+    snapshot.is_some_and(|snapshot| {
+        snapshot.source_region_index().regions().iter().any(|region| {
+            region.kind == perl_parser_core::SourceRegionKind::StringLiteral
+                && region.contains_offset(offset)
+                && snapshot.source().as_bytes().get(region.start) == Some(&b'\'')
+        })
+    })
+}
+
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::navigation::definition_shadow::{
     DefinitionCutoverResult, goto_definition_live_exact_or_imported,
@@ -533,11 +547,15 @@ fn get_quoted_framework_module_regex() -> Result<&'static regex::Regex, JsonRpcE
 fn quoted_framework_module_at_cursor(
     text: &str,
     cursor: usize,
+    keyword_is_code: impl Fn(usize) -> bool,
 ) -> Result<Option<FrameworkModuleReference>, JsonRpcError> {
     for cap in get_quoted_framework_module_regex()?.captures_iter(text) {
         let Some(keyword) = cap.get(1) else {
             continue;
         };
+        if !keyword_is_code(keyword.start()) {
+            continue;
+        }
         let Some(module_match) = cap.get(2).or_else(|| cap.get(3)) else {
             continue;
         };
@@ -1448,6 +1466,26 @@ impl LspServer {
                     if is_in_comment_naive(offset, text) {
                         return Ok(Some(Value::Null));
                     }
+                    let current_parsed = doc.current_parsed();
+                    let cursor_in_single_quoted_literal =
+                        in_single_quoted_literal(current_parsed.as_deref(), offset);
+                    let quoted_parent_base_argument = if cursor_in_single_quoted_literal {
+                        let (line_start, line_end) =
+                            perl_parser_core::text_line::line_bounds_at(text, offset);
+                        text.get(line_start..line_end).is_some_and(|line| {
+                            perl_module::parse_module_import_head(line).is_some_and(|head| {
+                                matches!(
+                                    head.kind,
+                                    perl_module::ModuleImportKind::UseParent
+                                        | perl_module::ModuleImportKind::UseBase
+                                ) && line
+                                    .get(head.token_end..offset.saturating_sub(line_start))
+                                    .is_some_and(|prefix| !prefix.contains(';'))
+                            })
+                        })
+                    } else {
+                        false
+                    };
 
                     let radius = 50;
                     let (text_start, text_around) =
@@ -1459,16 +1497,28 @@ impl LspServer {
                             |ast| crate::declaration::current_package_at(&ast, offset).to_string(),
                         );
 
-                    if let Some(module_name) =
-                        extract_xs_bootstrap_target(&text_around, cursor_in_text, &current_package)
-                    {
+                    if let Some(module_name) = extract_xs_bootstrap_target(
+                        &text_around,
+                        cursor_in_text,
+                        &current_package,
+                        |marker| {
+                            !cursor_in_single_quoted_literal
+                                || current_parsed.as_ref().is_some_and(|snapshot| {
+                                    snapshot
+                                        .source_region_index()
+                                        .kind_at_offset(text_start + marker)
+                                        == perl_parser_core::SourceRegionKind::Code
+                                })
+                        },
+                    ) {
                         Some((
                             EarlyDefinitionTarget::XsBootstrap(module_name),
                             doc.text_arc.to_string(),
                             offset,
                         ))
-                    } else if let Some(module_name) =
-                        self.extract_module_reference_extended(&text_around, cursor_in_text)
+                    } else if (!cursor_in_single_quoted_literal || quoted_parent_base_argument)
+                        && let Some(module_name) =
+                            self.extract_module_reference_extended(&text_around, cursor_in_text)
                     {
                         Some((
                             EarlyDefinitionTarget::UseModule(module_name),
@@ -1486,9 +1536,19 @@ impl LspServer {
                             doc.text_arc.to_string(),
                             offset,
                         ))
-                    } else if let Some(module_name) =
-                        quoted_framework_module_at_cursor(&text_around, cursor_in_text)?
-                    {
+                    } else if let Some(module_name) = quoted_framework_module_at_cursor(
+                        &text_around,
+                        cursor_in_text,
+                        |keyword| {
+                            !cursor_in_single_quoted_literal
+                                || current_parsed.as_ref().is_some_and(|snapshot| {
+                                    snapshot
+                                        .source_region_index()
+                                        .kind_at_offset(text_start + keyword)
+                                        == perl_parser_core::SourceRegionKind::Code
+                                })
+                        },
+                    )? {
                         Some((
                             EarlyDefinitionTarget::FrameworkModule(module_name),
                             doc.text_arc.to_string(),
@@ -1499,7 +1559,9 @@ impl LspServer {
                         let mut package_name_result = None;
                         let package_pattern = get_package_arrow_regex()?;
                         for cap in package_pattern.captures_iter(&text_around) {
-                            if let Some(package_match) = cap.get(1) {
+                            if !cursor_in_single_quoted_literal
+                                && let Some(package_match) = cap.get(1)
+                            {
                                 let match_start = package_match.start();
                                 let match_end = package_match.end();
                                 if cursor_in_text >= match_start && cursor_in_text <= match_end {
@@ -1721,6 +1783,12 @@ impl LspServer {
                 let _analyze_span =
                     crate::runtime::timing::ScopedSpan::start("provider.navigation.analyze", uri);
                 let offset = self.pos16_to_offset(doc, line, character);
+                // Use the current parse generation to identify inert quoted
+                // text. Explicit quoted targets (module paths and framework
+                // references) have already had their own routing above.
+                let parsed = doc.current_parsed();
+                let cursor_in_single_quoted_literal =
+                    in_single_quoted_literal(parsed.as_deref(), offset);
                 let radius = 50;
                 let (text_start, text_around) =
                     self.get_text_window_around_offset(&doc.text, offset, radius);
@@ -1728,7 +1796,8 @@ impl LspServer {
 
                 let goto_label_re = get_goto_label_regex()?;
                 for cap in goto_label_re.captures_iter(&text_around) {
-                    if let Some(label_match) = cap.get(1)
+                    if !cursor_in_single_quoted_literal
+                        && let Some(label_match) = cap.get(1)
                         && cursor_in_text >= label_match.start()
                         && cursor_in_text <= label_match.end()
                         && let Some((target_start, target_end)) =
@@ -1752,7 +1821,9 @@ impl LspServer {
                     }
                 }
 
-                if let Some(mason_location) = self.resolve_mason_definition(uri, &doc.text, offset)
+                if !cursor_in_single_quoted_literal
+                    && let Some(mason_location) =
+                        self.resolve_mason_definition(uri, &doc.text, offset)
                     && let Some(lsp_location) =
                         crate::workspace_index::lsp_adapter::to_lsp_location(&mason_location)
                 {
@@ -1760,8 +1831,7 @@ impl LspServer {
                 }
 
                 #[cfg(feature = "workspace")]
-                if workspace_index_is_fresh() {
-                    let parsed = doc.current_parsed();
+                if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
                         && let Some(coordinator) = self.coordinator()
                     {
@@ -1868,8 +1938,9 @@ impl LspServer {
                 #[cfg(feature = "workspace")]
                 {
                     let fqn_regex = get_fqn_regex()?;
-                    if let Some(component) =
-                        fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text)
+                    if !cursor_in_single_quoted_literal
+                        && let Some(component) =
+                            fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text)
                     {
                         match component {
                             FqnCursorComponent::Final { package, name } => {
@@ -1891,7 +1962,7 @@ impl LspServer {
                 }
 
                 #[cfg(feature = "workspace")]
-                if workspace_index_is_fresh() {
+                if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
                     // Attempt to resolve Package->method calls
                     let arrow_re = get_arrow_method_regex()?;
                     for cap in arrow_re.captures_iter(&text_around) {
@@ -2008,12 +2079,13 @@ impl LspServer {
                     }
                 }
 
-                let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let offset = self.pos16_to_offset(doc, line, character);
+                    // A literal has no generic symbol of its own. Keep the
+                    // AST-aware DeclarationProvider below for method modifiers.
 
                     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                    if workspace_index_is_fresh() {
+                    if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
                         let cursor_on_arrow_method = cursor_in_regex_capture(
                             get_arrow_method_regex()?,
                             &text_around,
@@ -2098,6 +2170,10 @@ impl LspServer {
                         if !result.is_empty() {
                             return Ok(Some(json!(result)));
                         }
+                    }
+
+                    if cursor_in_single_quoted_literal {
+                        return Ok(Some(json!([])));
                     }
 
                     // Try workspace index for cross-file definitions using routing policy
