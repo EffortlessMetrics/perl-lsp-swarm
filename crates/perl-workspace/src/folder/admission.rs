@@ -134,8 +134,21 @@ fn classify_raw(input: &str, origin: AsPath) -> WorkspaceFolderAdmission {
         return classify_file_uri(input);
     }
 
+    // UNC-style paths (`\\server\share` or `//server/share`) convert to
+    // `file://server/share` on some platforms. That is a remote-host file
+    // URI, not a local filesystem root, so reject before conversion.
+    if is_unc_style_path(input) {
+        return WorkspaceFolderAdmission::Rejected(WorkspaceFolderRejection::new(
+            WorkspaceFolderRejectionKind::RemoteFileHost,
+            input,
+        ));
+    }
+
     if is_absolute_workspace_path(input) {
         return match try_absolute_path_to_file_uri(input) {
+            Some(uri) if file_uri_has_remote_host(&uri) => WorkspaceFolderAdmission::Rejected(
+                WorkspaceFolderRejection::new(WorkspaceFolderRejectionKind::RemoteFileHost, input),
+            ),
             Some(uri) => WorkspaceFolderAdmission::Admitted(uri),
             None => WorkspaceFolderAdmission::Rejected(relative_rejection(origin, input)),
         };
@@ -250,6 +263,12 @@ pub(super) fn try_absolute_path_to_file_uri(root_path: &str) -> Option<String> {
     }
 
     None
+}
+
+fn is_unc_style_path(value: &str) -> bool {
+    // Windows UNC `\\server\share`, or POSIX-looking `//server/share`.
+    // Do not treat extra-slash POSIX paths (`///tmp`) as UNC.
+    value.starts_with(r"\\") || (value.starts_with("//") && !value.starts_with("///"))
 }
 
 fn is_absolute_workspace_path(value: &str) -> bool {

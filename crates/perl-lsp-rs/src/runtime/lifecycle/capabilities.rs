@@ -1676,6 +1676,38 @@ mod tests {
     }
 
     #[test]
+    fn initialize_rejects_unc_style_workspace_folder_path() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {},
+            "workspaceFolders": [{
+                "path": "//evil.example.com/share/project",
+                "name": "unc"
+            }]
+        });
+        let err = match server.handle_initialize(Some(params)) {
+            Err(err) => err,
+            Ok(value) => {
+                return Err(format!("UNC folder must be InvalidParams, got {value:?}").into());
+            }
+        };
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert!(
+            err.message.contains("//evil.example.com/share/project"),
+            "message must name the rejected input: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("file://evil.example.com"),
+            "message must not advertise a manufactured URI: {}",
+            err.message
+        );
+        assert_eq!(server.active_workspace_folder_count(), 0);
+        Ok(())
+    }
+
+    #[test]
     fn initialize_still_admits_absolute_file_workspace_folders()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();

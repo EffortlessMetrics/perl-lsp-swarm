@@ -153,17 +153,22 @@ pub fn extract_workspace_folder_change(event: &Value) -> WorkspaceFolderChange {
 
 /// Convert a legacy LSP `rootPath` string to a `file://` URI.
 ///
-/// Absolute POSIX and Windows-style paths convert honestly. Relative inputs
-/// are not rewritten into pseudo-absolute `file:///` URIs; callers that still
-/// need a string on a relative `rootPath` receive the original value.
-/// `workspaceFolders` admission never uses this function for relative paths.
+/// Absolute POSIX and Windows-style paths convert honestly. Relative
+/// `rootPath` values keep the historical conversion used by deprecated
+/// initialize `rootPath` callers. `workspaceFolders` admission never uses
+/// this function for relative paths.
 #[must_use]
 pub fn root_path_to_file_uri(root_path: &str) -> String {
     if has_file_uri_scheme(root_path) {
         return root_path.to_string();
     }
 
-    admission::try_absolute_path_to_file_uri(root_path).unwrap_or_else(|| root_path.to_string())
+    admission::try_absolute_path_to_file_uri(root_path).unwrap_or_else(|| {
+        let normalized = root_path.replace('\\', "/");
+        let pseudo_absolute = format!("/{normalized}");
+        url::Url::from_file_path(std::path::Path::new(&pseudo_absolute))
+            .map_or_else(|_| format!("file:///{normalized}"), |uri| uri.to_string())
+    })
 }
 
 #[cfg(test)]
@@ -273,6 +278,16 @@ mod tests {
             "rejection must not advertise a manufactured URI: {}",
             rejection.message()
         );
+
+        // The deprecated rootPath helper may still convert relative strings;
+        // workspaceFolders admission must not consult that branch.
+        let legacy = root_path_to_file_uri("relative/rel2");
+        assert!(
+            legacy.starts_with("file:"),
+            "legacy rootPath helper remains available for initialize.rootPath, got {legacy}"
+        );
+        assert!(extract_workspace_folder_uris(&entries).is_empty());
+        assert!(admit_workspace_folder_uris(&entries).is_err());
     }
 
     #[test]
@@ -366,10 +381,36 @@ mod tests {
     }
 
     #[test]
-    fn relative_root_path_helper_does_not_manufacture_a_file_uri() {
+    fn relative_root_path_helper_still_manufactures_for_legacy_initialize() {
         let uri = root_path_to_file_uri("relative/rel2");
-        assert_eq!(uri, "relative/rel2");
-        assert!(!uri.starts_with("file:"));
+        assert!(uri.starts_with("file:"), "legacy rootPath conversion, got {uri}");
+        assert_ne!(uri, "relative/rel2");
+    }
+
+    #[test]
+    fn unc_style_path_is_rejected_as_a_remote_file_host() {
+        // `Url::from_file_path` can rewrite `//host/share` into
+        // `file://host/share`. Admission must reject that as remote, not
+        // manufacture a filesystem root.
+        for path in ["//evil.example.com/share/project", r"\\evil.example.com\share\project"] {
+            let entries = vec![json!({"path": path, "name": "unc"})];
+            assert!(
+                extract_workspace_folder_uris(&entries).is_empty(),
+                "{path} must not become a workspace root"
+            );
+            let rejection = admit_workspace_folder_uris(&entries).expect_err("UNC path");
+            assert_eq!(
+                rejection.kind,
+                WorkspaceFolderRejectionKind::RemoteFileHost,
+                "UNC-style path {path} must be classified as a remote host"
+            );
+            assert_eq!(rejection.input, path);
+            assert!(
+                !rejection.message().contains("file://evil.example.com"),
+                "rejection must not advertise a manufactured URI: {}",
+                rejection.message()
+            );
+        }
     }
 
     #[test]
