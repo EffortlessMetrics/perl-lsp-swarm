@@ -1,12 +1,20 @@
 # Perl LSP installer for Windows
 #
-# The piped one-liner is not usable yet. The copy published at
-# perl-lsp/master still derives a `perl-lsp-<version>-...zip` asset name while
-# releases ship `perllsp-<version>-...zip`, so piping that URL into iex 404s
-# (#5461). This file already carries the fix; promoting it to the publication
-# repo is #4348.
+# The asset-name defect that made the published copy build a 404 URL is fixed
+# (#5461, closed): this file resolves the `perllsp-<version>-...zip` asset name
+# that releases actually ship.
 #
-# Until that lands, run it from a clone or a downloaded copy:
+# The piped one-liner is still NOT a supported install path, for a different
+# reason: first-party install-surface policy forbids publishing an
+# `install.ps1 | iex` invocation (see install_surface_check), and the
+# remote-bootstrap wrapper requires a full 40-character commit SHA plus a
+# reviewed SHA-256 digest, which a one-liner cannot supply. Fetch, review, then
+# run:
+#   irm "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/<commit-sha>/install.ps1" -OutFile install.ps1
+#   notepad .\install.ps1
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1
+#
+# Run it from a clone or a downloaded copy:
 #   .\install.ps1                                    # latest, default dir
 #   .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
 
