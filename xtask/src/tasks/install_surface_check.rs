@@ -5,10 +5,11 @@ use color_eyre::eyre::{Context, Result, bail};
 use std::{
     collections::HashSet,
     ffi::OsStr,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
+use xtask::schema_apply::validate_payload_against_schema;
 
 const REQUIRED_HOMEBREW_COMMAND: &str = "brew install effortlessmetrics/tap/perllsp";
 const REQUIRED_TAP_COMMAND: &str = "brew tap effortlessmetrics/tap";
@@ -200,8 +201,16 @@ fn is_historical_release_runbook(rel_path: &Path) -> bool {
 }
 
 /// Schema string a typed release-reconciliation ledger self-declares in its top-level
-/// `schema` field (pinned as a `const` by `docs/releases/*.v1.schema.json`).
+/// `schema` field.
 const RECONCILIATION_LEDGER_SCHEMA: &str = "post_sync_release_reconciliation.v1";
+
+/// The checked-in JSON Schema of that ledger family -- the only in-repo schema
+/// declaring `post_sync_release_reconciliation.v1` (the Domain-6 fragment contract,
+/// independently applied by `scripts/tests/test_domain6_fragment.py`). Declaring the
+/// schema string alone never grants the exemption: the document must validate against
+/// this schema, so only a real typed ledger qualifies.
+const RECONCILIATION_LEDGER_SCHEMA_PATH: &str =
+    "docs/releases/domain6-windows-editor-distribution-first-mile.v1.schema.json";
 
 /// String-valued narration fields of the reconciliation-ledger schema whose values are
 /// historical evidence rather than install guidance.
@@ -220,15 +229,22 @@ const RECONCILIATION_LEDGER_SCHEMA: &str = "post_sync_release_reconciliation.v1"
 /// violation:
 ///
 /// 1. the file must sit under `docs/releases/` with a version-pinned `.v1.json` name;
-/// 2. the document must parse as JSON and self-declare the reconciliation schema --
-///    every other `.json` ledger in that directory (exposed-surface, scope, semver)
-///    stays fully in scope;
-/// 3. a line is exempt only when it decodes to a string value of one of the narration
-///    fields AND the same decoded string appears under no other field of the document;
-/// 4. only `check_forbidden_patterns` honors the exemption -- command-position rules
+/// 2. the document must parse as JSON with no repeated object keys and self-declare
+///    the reconciliation schema -- every other `.json` ledger in that directory
+///    (exposed-surface, scope, semver) stays fully in scope;
+/// 3. the document must validate against the checked-in ledger schema
+///    (`RECONCILIATION_LEDGER_SCHEMA_PATH`) -- a file that merely declares the schema
+///    string is not typed historical evidence;
+/// 4. a string counts as narration only when its schema path names a narration field
+///    beneath work-unit containers -- same-named fields under free-form objects such
+///    as `consumers` stay live;
+/// 5. a line is exempt only when it decodes to a string value of one of the narration
+///    fields (a bare array element or a `"field": "value"` member) AND the same decoded
+///    string appears under no other field of the document;
+/// 6. only `check_forbidden_patterns` honors the exemption -- command-position rules
 ///    and the required-pattern floor stay unconditional;
-/// 5. any line that fails to decode as a JSON string stays scanned, so formatter or
-///    schema drift fails toward the live rule instead of silently widening the hole.
+/// 7. any decode, parse, or schema failure stays scanned, so formatter or schema
+///    drift fails toward the live rule instead of silently widening the hole.
 const LEDGER_NARRATION_FIELDS: &[&str] = &[
     "corrections",
     "grouping_evidence",
@@ -250,16 +266,149 @@ struct LedgerNarration {
 }
 
 impl LedgerNarration {
-    /// True when `line` is the JSON encoding of a string that appears only under a
-    /// narration field of a declared ledger. A bare fragment, a `"key": "value"`
-    /// member, or an undecodable line never qualifies.
+    /// True when `line` carries a string that appears only under a narration field
+    /// of a declared, schema-valid ledger. A bare fragment, an array or object
+    /// literal, or an undecodable line never qualifies.
     fn exempts(&self, line: &str) -> bool {
-        let trimmed = line.trim();
-        let candidate = trimmed.strip_suffix(',').unwrap_or(trimmed);
-        let Ok(decoded) = serde_json::from_str::<String>(candidate) else {
+        let Some(decoded) = decode_string_line(line) else {
             return false;
         };
         self.quoted.contains(&decoded) && !self.live.contains(&decoded)
+    }
+}
+
+/// Decode the JSON string one ledger line carries, if any: either a bare string
+/// (a pretty-printed array element) or a `"field": "value"` member whose value is
+/// a string (a scalar narration field such as `grouping_evidence`). Anything else
+/// -- array literals, nested objects, multi-member lines, fragments -- fails
+/// toward the live rule.
+fn decode_string_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let candidate = trimmed.strip_suffix(',').unwrap_or(trimmed);
+    if let Ok(decoded) = serde_json::from_str::<String>(candidate) {
+        return Some(decoded);
+    }
+    // A pretty-printed scalar member (`"field": "value"`) is not itself a JSON
+    // document, so wrap it as a one-member object to decode it with its key.
+    let wrapped = format!("{{{candidate}}}");
+    match serde_json::from_str::<serde_json::Value>(&wrapped) {
+        Ok(serde_json::Value::Object(members)) if members.len() == 1 => {
+            match members.values().next()? {
+                serde_json::Value::String(decoded) => Some(decoded.clone()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A decoded JSON document that rejects repeated object keys.
+///
+/// `serde_json::Value` keeps the last value of a repeated key, so a ledger could
+/// quote a guard pattern under a non-narration field and then repeat that field
+/// with a safe value: the discarded occurrence never reaches the narration sets
+/// and the raw non-narration line would pass `exempts`. Strict decoding turns any
+/// repeated key into a parse failure, which the boundary treats as fully live.
+#[derive(Debug)]
+enum StrictJson {
+    Null,
+    Bool(bool),
+    Number(serde_json::Number),
+    String(String),
+    Array(Vec<StrictJson>),
+    Object(Vec<(String, StrictJson)>),
+}
+
+impl<'de> serde::Deserialize<'de> for StrictJson {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct StrictVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for StrictVisitor {
+            type Value = StrictJson;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a JSON document without repeated object keys")
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(StrictJson::Null)
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(StrictJson::Bool(value))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(StrictJson::Number(value.into()))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(StrictJson::Number(value.into()))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                serde_json::Number::from_f64(value)
+                    .map(StrictJson::Number)
+                    .ok_or_else(|| serde::de::Error::custom("non-finite JSON number"))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(StrictJson::String(value.to_owned()))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+                Ok(StrictJson::String(value))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut items = Vec::new();
+                while let Some(item) = seq.next_element::<StrictJson>()? {
+                    items.push(item);
+                }
+                Ok(StrictJson::Array(items))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut seen = HashSet::new();
+                let mut entries = Vec::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if !seen.insert(key.clone()) {
+                        return Err(serde::de::Error::custom(format!(
+                            "repeated object key `{key}`"
+                        )));
+                    }
+                    entries.push((key, map.next_value::<StrictJson>()?));
+                }
+                Ok(StrictJson::Object(entries))
+            }
+        }
+
+        deserializer.deserialize_any(StrictVisitor)
+    }
+}
+
+fn strict_member<'a>(document: &'a StrictJson, key: &str) -> Option<&'a StrictJson> {
+    match document {
+        StrictJson::Object(entries) => {
+            entries.iter().find(|(name, _)| name == key).map(|(_, value)| value)
+        }
+        _ => None,
+    }
+}
+
+fn strict_string(value: &StrictJson) -> Option<&str> {
+    match value {
+        StrictJson::String(string) => Some(string),
+        _ => None,
     }
 }
 
@@ -274,44 +423,74 @@ fn ledger_narration(rel_path: &Path, text: &str) -> Option<LedgerNarration> {
         return None;
     }
 
-    let document = serde_json::from_str::<serde_json::Value>(text).ok()?;
-    if document.get("schema").and_then(serde_json::Value::as_str)
+    let document = serde_json::from_str::<StrictJson>(text).ok()?;
+    if strict_member(&document, "schema").and_then(strict_string)
         != Some(RECONCILIATION_LEDGER_SCHEMA)
     {
         return None;
     }
 
+    let root = project_root().ok()?;
+    let schema_text = fs::read_to_string(root.join(RECONCILIATION_LEDGER_SCHEMA_PATH)).ok()?;
+    let schema = serde_json::from_str::<serde_json::Value>(&schema_text).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let schema_violations = validate_payload_against_schema(
+        &schema,
+        RECONCILIATION_LEDGER_SCHEMA_PATH,
+        &value,
+        &rel_path.display().to_string(),
+    )
+    .ok()?;
+    if !schema_violations.is_empty() {
+        return None;
+    }
+
     let mut narration = LedgerNarration::default();
-    collect_narration_strings(&document, None, &mut narration);
+    collect_narration_strings(&document, &mut Vec::new(), &mut narration);
     Some(narration)
 }
 
-fn collect_narration_strings(
-    value: &serde_json::Value,
-    field: Option<&str>,
+/// Object keys whose schema items are work-unit objects (`$defs.work_unit`), the
+/// only containers beneath which the narration fields exist.
+const WORK_UNIT_CONTAINERS: &[&str] = &["merge_units", "work_units"];
+
+fn collect_narration_strings<'a>(
+    value: &'a StrictJson,
+    path: &mut Vec<&'a str>,
     narration: &mut LedgerNarration,
 ) {
     match value {
-        serde_json::Value::Object(map) => {
-            for (key, member) in map {
-                collect_narration_strings(member, Some(key.as_str()), narration);
+        StrictJson::Object(entries) => {
+            for (key, member) in entries {
+                path.push(key);
+                collect_narration_strings(member, path, narration);
+                path.pop();
             }
         }
-        serde_json::Value::Array(items) => {
+        StrictJson::Array(items) => {
             for item in items {
-                collect_narration_strings(item, field, narration);
+                collect_narration_strings(item, path, narration);
             }
         }
-        serde_json::Value::String(string) => {
-            let target = if field.is_some_and(|field| LEDGER_NARRATION_FIELDS.contains(&field)) {
-                &mut narration.quoted
-            } else {
-                &mut narration.live
-            };
+        StrictJson::String(string) => {
+            let target =
+                if is_narration_path(path) { &mut narration.quoted } else { &mut narration.live };
             target.insert(string.clone());
         }
         _ => {}
     }
+}
+
+/// True when `path` names a narration field of the ledger schema: the immediate key
+/// must be a narration field and every ancestor key must be a work-unit container.
+/// The schema's `consumers` object is free-form, so a same-named field below it is
+/// unrestricted metadata, not narration.
+fn is_narration_path(path: &[&str]) -> bool {
+    let Some((field, ancestors)) = path.split_last() else {
+        return false;
+    };
+    LEDGER_NARRATION_FIELDS.contains(field)
+        && ancestors.iter().all(|key| WORK_UNIT_CONTAINERS.contains(key))
 }
 
 fn check_forbidden_patterns(files: &[SourceFile], violations: &mut Vec<Violation>) {
@@ -639,37 +818,18 @@ mod tests {
         assert!(piped[0].location.ends_with(":1"));
     }
 
-    /// The accepted half of the typed boundary: a declared reconciliation ledger
-    /// quoting the #5461/#4348 decision in its narration fields is historical
-    /// evidence, not install guidance. Mirrors the real quote at
+    /// The accepted half of the typed boundary: the pinned reconciliation ledger --
+    /// which passes the strict parse, the schema declaration, and the checked-in
+    /// schema validation -- quoting the #5461/#4348 decision in its narration fields
+    /// is historical evidence, not install guidance. Mirrors the real quote at
     /// `docs/releases/domain6-windows-editor-distribution-first-mile.v1.json`
     /// `artifact_or_route_effects` that failed run 36298260616.
     #[test]
-    fn quoted_narration_in_declared_reconciliation_ledger_is_not_live_guidance() {
-        let file = SourceFile {
-            rel_path: PathBuf::from(
-                "docs/releases/domain6-windows-editor-distribution-first-mile.v1.json",
-            ),
-            text: r#"{
-  "schema": "post_sync_release_reconciliation.v1",
-  "corrections": [
-    "the retired tap brew tap effortlesssteven/tap is quoted here as history"
-  ],
-  "work_units": [
-    {
-      "work_unit_id": "PR#5477",
-      "grouping_evidence": "trailing (#5477) of subject pair",
-      "artifact_or_route_effects": [
-        "new FORBIDDEN_PATTERNS entry 'install.ps1 | iex' carrying the #5461/#4348 reason"
-      ],
-      "paths_or_components": [
-        "install.ps1"
-      ]
-    }
-  ]
-}"#
-            .to_string(),
-        };
+    fn quoted_narration_in_declared_reconciliation_ledger_is_not_live_guidance() -> Result<()> {
+        let rel_path =
+            Path::new("docs/releases/domain6-windows-editor-distribution-first-mile.v1.json");
+        let text = fs::read_to_string(project_root()?.join(rel_path))?;
+        let file = SourceFile { rel_path: rel_path.to_path_buf(), text };
 
         let mut violations = Vec::new();
         check_forbidden_patterns(&[file], &mut violations);
@@ -678,6 +838,7 @@ mod tests {
             violations.is_empty(),
             "quoted ledger narration must be accepted, got: {violations:?}"
         );
+        Ok(())
     }
 
     /// The rejected half of the typed boundary: the same piped command on a live
@@ -698,11 +859,12 @@ mod tests {
         }
     }
 
-    /// The exemption is scoped to declared narration fields only: an undeclared
-    /// schema, a non-narration field of a declared ledger, a path outside the ledger
+    /// The exemption is scoped to declared narration fields of a conforming ledger:
+    /// an undeclared schema, a non-narration field of a declared ledger, a document
+    /// that declares the schema without conforming to it, a path outside the ledger
     /// family, and malformed JSON all stay fully in scope.
     #[test]
-    fn ledger_exemption_stays_scoped_to_declared_narration_fields() {
+    fn ledger_exemption_stays_scoped_to_declared_narration_fields() -> Result<()> {
         let narration_sentence =
             "new FORBIDDEN_PATTERNS entry 'install.ps1 | iex' carrying the #5461/#4348 reason";
         let ledger_path = "docs/releases/domain6-windows-editor-distribution-first-mile.v1.json";
@@ -729,8 +891,21 @@ mod tests {
 }}"#
             ),
         };
+        // Declares the schema string but omits nearly every required field: the
+        // declaration alone must not buy the exemption.
+        let declared_but_nonconforming = SourceFile {
+            rel_path: PathBuf::from(ledger_path),
+            text: format!(
+                r#"{{
+  "schema": "post_sync_release_reconciliation.v1",
+  "corrections": [
+    "{narration_sentence}"
+  ]
+}}"#
+            ),
+        };
 
-        for file in [undeclared_schema, non_narration_field] {
+        for file in [undeclared_schema, non_narration_field, declared_but_nonconforming] {
             let mut violations = Vec::new();
             check_forbidden_patterns(std::slice::from_ref(&file), &mut violations);
             let piped =
@@ -738,18 +913,17 @@ mod tests {
             assert_eq!(piped, 1, "{} must stay live, got: {violations:?}", file.rel_path.display());
         }
 
-        let body = format!(
-            r#"{{"schema": "post_sync_release_reconciliation.v1", "corrections": ["{narration_sentence}"]}}"#
-        );
+        // The pinned artifact itself is recognized as typed evidence.
+        let pinned = fs::read_to_string(project_root()?.join(ledger_path))?;
         assert!(
-            ledger_narration(Path::new(ledger_path), &body).is_some(),
-            "the declared ledger itself is recognized"
+            ledger_narration(Path::new(ledger_path), &pinned).is_some(),
+            "the schema-valid pinned ledger is recognized"
         );
         // Family gate: the same content outside docs/releases stays live.
-        assert!(ledger_narration(Path::new("notes/domain6.v1.json"), &body).is_none());
+        assert!(ledger_narration(Path::new("notes/domain6.v1.json"), &pinned).is_none());
         // Version-pinned name required: schema files never qualify.
         assert!(
-            ledger_narration(Path::new("docs/releases/domain6-test.v1.schema.json"), &body)
+            ledger_narration(Path::new("docs/releases/domain6-test.v1.schema.json"), &pinned)
                 .is_none()
         );
         // Undeclared or malformed documents stay live.
@@ -758,6 +932,146 @@ mod tests {
                 .is_none()
         );
         assert!(ledger_narration(Path::new(ledger_path), "{not json").is_none());
+        Ok(())
+    }
+
+    /// `serde_json::Value` keeps the last value of a repeated key, so a ledger that
+    /// quotes a guard pattern under a non-narration field and then repeats that
+    /// field with a safe value would hide the first occurrence from the narration
+    /// sets. Repeated keys must fail the decode, which the boundary treats as fully
+    /// live.
+    #[test]
+    fn repeated_object_keys_fail_toward_the_live_rule() -> Result<()> {
+        let smuggled = r#"{
+  "schema": "post_sync_release_reconciliation.v1",
+  "corrections": ["install.ps1 | iex"],
+  "paths_or_components": ["install.ps1 | iex"],
+  "paths_or_components": ["safe"]
+}"#;
+        assert!(
+            serde_json::from_str::<StrictJson>(smuggled).is_err(),
+            "repeated keys must fail strict decoding"
+        );
+        assert!(
+            ledger_narration(
+                Path::new("docs/releases/domain6-windows-editor-distribution-first-mile.v1.json"),
+                smuggled
+            )
+            .is_none(),
+            "a repeated-key ledger must not be treated as typed evidence"
+        );
+        Ok(())
+    }
+
+    /// Narration status follows the schema path, not the immediate property name:
+    /// the free-form `consumers` object accepts arbitrary keys, so a nested
+    /// `corrections` below it is unrestricted metadata and stays live.
+    #[test]
+    fn narration_classification_follows_the_schema_path() -> Result<()> {
+        let document = serde_json::from_str::<StrictJson>(
+            r#"{
+  "corrections": ["root correction"],
+  "consumers": {
+    "corrections": ["consumer correction"],
+    "work_units": ["nested container"]
+  },
+  "work_units": [
+    {
+      "grouping_evidence": "unit grouping",
+      "paths_or_components": ["unit path"],
+      "artifact_or_route_effects": ["unit effect"]
+    }
+  ],
+  "merge_units": [
+    {"grouping_evidence": "merge grouping"}
+  ]
+}"#,
+        )?;
+
+        let mut narration = LedgerNarration::default();
+        collect_narration_strings(&document, &mut Vec::new(), &mut narration);
+
+        for quoted in ["root correction", "unit grouping", "unit effect", "merge grouping"] {
+            assert!(narration.quoted.contains(quoted), "`{quoted}` must be narration");
+        }
+        for live in ["consumer correction", "nested container", "unit path"] {
+            assert!(
+                narration.live.contains(live) && !narration.quoted.contains(live),
+                "`{live}` must stay live"
+            );
+        }
+        Ok(())
+    }
+
+    /// The schema defines `grouping_evidence` as a scalar string, so its source line
+    /// carries the key and the value together; the line decode must accept that
+    /// member form while array literals, non-string members, and multi-member lines
+    /// fail toward the live rule.
+    #[test]
+    fn scalar_narration_member_lines_are_exempt_like_bare_elements() -> Result<()> {
+        let document = serde_json::from_str::<StrictJson>(
+            r#"{
+  "work_units": [
+    {
+      "grouping_evidence": "install.ps1 | iex quoted as recorded history",
+      "paths_or_components": ["install.ps1"]
+    }
+  ]
+}"#,
+        )?;
+        let mut narration = LedgerNarration::default();
+        collect_narration_strings(&document, &mut Vec::new(), &mut narration);
+
+        assert!(
+            narration.exempts(
+                r#"  "grouping_evidence": "install.ps1 | iex quoted as recorded history","#,
+            ),
+            "a scalar narration member line must be exempt"
+        );
+        assert!(
+            narration.exempts(r#""install.ps1 | iex quoted as recorded history""#),
+            "a bare narration element line must be exempt"
+        );
+        assert!(
+            !narration.exempts(r#""paths_or_components": "install.ps1""#),
+            "a non-narration member line must stay live"
+        );
+        assert!(
+            !narration.exempts(
+                r#""paths_or_components": ["install.ps1 | iex quoted as recorded history"]"#
+            ),
+            "an array-literal member line must stay live"
+        );
+        assert!(
+            !narration.exempts(
+                r#""grouping_evidence": "install.ps1 | iex quoted as recorded history", "work_unit_id": "x""#,
+            ),
+            "a multi-member line must stay live"
+        );
+        Ok(())
+    }
+
+    /// The exemption binds to the checked-in schema: the same pinned bytes stop
+    /// being typed historical evidence the moment the document no longer validates,
+    /// and the quoted decision line is reported again.
+    #[test]
+    fn the_pinned_artifact_loses_the_exemption_when_it_stops_conforming() -> Result<()> {
+        let rel_path =
+            Path::new("docs/releases/domain6-windows-editor-distribution-first-mile.v1.json");
+        let text = fs::read_to_string(project_root()?.join(rel_path))?;
+        let tampered = text.replace(
+            r#""schema": "post_sync_release_reconciliation.v1""#,
+            r#""schema": "some_other_schema.v1""#,
+        );
+        assert_ne!(tampered, text, "the schema declaration must be present");
+
+        let file = SourceFile { rel_path: rel_path.to_path_buf(), text: tampered };
+        let mut violations = Vec::new();
+        check_forbidden_patterns(&[file], &mut violations);
+
+        let piped = violations.iter().filter(|v| v.message.contains("install.ps1 | iex")).count();
+        assert_eq!(piped, 1, "the nonconforming ledger must stay live, got: {violations:?}");
+        Ok(())
     }
 
     #[test]
