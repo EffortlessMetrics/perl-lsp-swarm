@@ -1634,7 +1634,12 @@ mod tests {
     #[test]
     fn initialize_rejects_non_filesystem_workspace_folder_schemes()
     -> Result<(), Box<dyn std::error::Error>> {
-        for uri in ["untitled:Untitled-1", "git:///repo"] {
+        for uri in [
+            "untitled:Untitled-1",
+            "git:///repo",
+            "file://evil.example.com/share/project",
+            "file:relative/rel2",
+        ] {
             let server = LspServer::new();
             let params = json!({
                 "capabilities": {},
@@ -1651,6 +1656,11 @@ mod tests {
             };
             assert_eq!(err.code, INVALID_PARAMS, "uri={uri}");
             assert!(err.message.contains(uri), "message must name {uri}: {}", err.message);
+            assert!(
+                !err.message.contains("file:///relative/rel2"),
+                "message must not advertise a manufactured URI for {uri}: {}",
+                err.message
+            );
             assert_eq!(server.active_workspace_folder_count(), 0, "uri={uri}");
         }
         Ok(())
