@@ -7,9 +7,9 @@
 //! transactional receipt. The authoritative release-preparation route is the
 //! `cargo xtask release-turnkey` orchestration (#13768 transaction).
 //!
-//! This surface is fail-closed: every invocation returns a typed refusal with
-//! a non-zero exit and performs zero filesystem, git, tool, or network
-//! mutation. No input — including `--yes` or a well-formed version — can make
+//! After successful CLI parsing, this surface refuses with a non-zero exit
+//! and performs zero filesystem, git, tool, or network mutation. Clap handles
+//! help and malformed arguments before dispatch. No input — including `--yes` — can make
 //! the legacy pipeline eligible again; a supported adapter would have to be a
 //! thin typed façade over the same exact release-candidate pipeline, not a
 //! second implementation that can drift.
@@ -34,12 +34,25 @@ pub struct PrepareRefusal {
 
 impl PrepareRefusal {
     /// Operator-facing rendering of the refusal.
-    pub fn render(&self) -> String {
+    pub fn render(&self, version: &str) -> String {
+        let route = if plausible_version(version) {
+            format!("{} --version {version}", self.canonical_route)
+        } else {
+            format!("{} --version <VERSION> (supply a reviewed release version)", self.canonical_route)
+        };
         format!(
             "REFUSED: {} is retired and fail-closed.\nReason: {}.\nUse {} instead (ruling: #{})",
-            self.retired_command, self.reason, self.canonical_route, self.ruling_issue
+            self.retired_command, self.reason, route, self.ruling_issue
         )
     }
+}
+
+fn plausible_version(version: &str) -> bool {
+    let parts: Vec<_> = version.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.len() <= 9 && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 /// The one refusal this surface can produce.
@@ -60,45 +73,55 @@ pub fn refusal() -> PrepareRefusal {
 
 /// Entry point for `cargo xtask release prepare`.
 ///
-/// Both arguments are intentionally unused: `--yes` cannot bypass the refusal
-/// and no version string can make the legacy pipeline eligible. The function
+/// `--yes` cannot bypass the refusal and no version string can make the legacy pipeline eligible. The function
 /// performs no mutation and always returns an error so the process exits
 /// non-zero.
 pub fn run(version: String, yes: bool) -> Result<()> {
-    let _ = (version, yes);
+    let _ = yes;
     let refusal = refusal();
     // The rendered refusal travels as the error message so the top-level
     // handler surfaces it on stderr with a non-zero exit; this module prints
     // nothing and mutates nothing.
-    bail!("{}", refusal.render());
+    bail!("{}", refusal.render(&version));
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)] // scoped test-only reads of refusal errors
-
     use super::*;
+    use color_eyre::eyre::{Result, bail};
 
     #[test]
-    fn refusal_is_stable_and_names_the_canonical_route() {
+    fn refusal_is_stable_and_names_the_canonical_route() -> Result<()> {
         let refusal = refusal();
-        assert_eq!(refusal.canonical_route, "cargo xtask release-turnkey");
-        assert_eq!(refusal.ruling_issue, 15392);
-        assert!(refusal.retired_command.contains("release prepare"));
-        assert!(!refusal.reason.is_empty());
+        if refusal.canonical_route != CANONICAL_ROUTE || refusal.ruling_issue != 15392
+            || !refusal.retired_command.contains("release prepare") || refusal.reason.is_empty() {
+            bail!("retirement refusal identity changed: {refusal:?}");
+        }
+        Ok(())
     }
 
     #[test]
-    fn render_names_command_reason_route_and_ruling() {
-        let rendered = refusal().render();
-        assert!(rendered.contains("REFUSED"));
-        assert!(rendered.contains("cargo xtask release prepare"));
-        assert!(rendered.contains("cargo xtask release-turnkey"));
-        assert!(rendered.contains("#15392"));
+    fn render_names_command_reason_route_and_ruling() -> Result<()> {
+        let rendered = refusal().render("0.18.0");
+        if !rendered.contains("REFUSED") || !rendered.contains("cargo xtask release prepare")
+            || !rendered.contains("cargo xtask release-turnkey --version 0.18.0")
+            || !rendered.contains("#15392") {
+            bail!("incomplete refusal: {rendered}");
+        }
+        for unsafe_version in ["../../escape", "", "v1.2.3 with spaces", "1.2.3;echo"] {
+            let rendered = refusal().render(unsafe_version);
+            if rendered.contains(unsafe_version) && !unsafe_version.is_empty() {
+                bail!("untrusted version forwarded: {rendered}");
+            }
+            if !rendered.contains("--version <VERSION>") {
+                bail!("missing safe replacement guidance: {rendered}");
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn no_input_makes_the_legacy_pipeline_eligible() {
+    fn no_input_makes_the_legacy_pipeline_eligible() -> Result<()> {
         // Mutation check on the eligibility boundary: the refusal must be
         // total across confirmation flags and version shapes, including a
         // plausible release version, a path-like injection attempt, and an
@@ -113,10 +136,14 @@ mod tests {
         ];
         for (version, yes) in cases {
             let outcome = run(version.to_string(), yes);
-            let error = outcome.expect_err("refusal must be total: no input is eligible");
+            let Err(error) = outcome else {
+                bail!("legacy preparation became eligible for {version:?}");
+            };
             let message = format!("{error:#}");
-            assert!(message.contains("fail-closed"), "unexpected error: {message}");
-            assert!(message.contains(CANONICAL_ROUTE), "unexpected error: {message}");
+            if !message.contains("fail-closed") || !message.contains(CANONICAL_ROUTE) {
+                bail!("unexpected error: {message}");
+            }
         }
+        Ok(())
     }
 }
