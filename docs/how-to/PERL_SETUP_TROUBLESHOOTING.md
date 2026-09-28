@@ -51,10 +51,10 @@ If you manage the server binary yourself, set the VS Code extension setting
 `perl-lsp.serverPath` to the `perllsp` binary. The language server accepts no
 interpreter-path setting: `perl.workspace.perlPath` (and the project-config
 equivalent) is refused on every channel and silently ignored, so the only way to
-choose which Perl the server probes with is resolution order — put the intended
-`perl` first on `PATH` (`where perl` on Windows, `which -a perl` elsewhere).
-perlbrew and plenv interpreters are preferred over `PATH` when present. The
-debugger is a separate channel: it takes a per-launch `perlPath` in
+choose which Perl the server probes with is resolution order. Change the active
+perlbrew or plenv version when one is present; when neither is active, put the
+intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl`
+elsewhere). The debugger is a separate channel: it takes a per-launch `perlPath` in
 `launch.json`, and that one is honored.
 
 Do not assume the Perl used by your terminal, the LSP server, and the debugger

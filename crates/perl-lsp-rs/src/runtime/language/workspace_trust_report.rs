@@ -55,17 +55,17 @@ fn setup_hints_summary(config: &WorkspaceConfig) -> Value {
         // No channel can set an interpreter path for the language server:
         // `ProjectPerlConfig` has no such field, and `WorkspaceConfig::update_from_value`
         // refuses `perlPath`/`perlArgs` from every client-settings payload so a hostile
-        // workspace cannot choose the interpreter or its argv (#3729). This hint
+        // workspace cannot choose the interpreter or its argv. This hint
         // therefore fires on every clean report, and naming the setting here told
         // every user to configure something that is silently discarded (#16612).
         //
-        // The truthful action is the one that works: put the intended `perl` first on
-        // PATH. The debugger has a real per-launch `perlPath` in `launch.json`; that is
+        // The action follows the resolver's perlbrew, plenv, then PATH order.
+        // The debugger has a real per-launch `perlPath` in `launch.json`; that is
         // a different field on a different channel and is deliberately not named here.
         hints.push(setup_hint(
-            "perl_path_uses_path",
+            "perl_path_uses_toolchain_resolution",
             "info",
-            "No explicit Perl binary is configured; perl-lsp will resolve `perl` from PATH when a subprocess needs it.",
+            "No explicit Perl binary is configured; when needed, perl-lsp selects an active perlbrew interpreter, then an active plenv interpreter, then `perl` on `PATH`.",
             "Select the Perl to use by changing the active perlbrew or plenv version, which the server prefers over `PATH`; when neither is active, put the intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl` elsewhere). The language server accepts no interpreter-path setting.",
         ));
     }
@@ -123,7 +123,7 @@ fn setup_hints_summary(config: &WorkspaceConfig) -> Value {
             "resolution_status": if configured_perl_path(config).is_some() {
                 "configured_not_probed_by_report"
             } else {
-                "uses_path_when_needed_not_probed_by_report"
+                "uses_toolchain_resolution_when_needed_not_probed_by_report"
             },
             "version_status": "not_probed_by_report",
             "args_count": config.perl_args.len(),

@@ -50,7 +50,7 @@ use std::path::{Path, PathBuf};
 /// setting. Every one of them is refused: `ProjectPerlConfig` has no such
 /// field, and `WorkspaceConfig::update_from_value` drops the keys from every
 /// client-settings payload so a hostile workspace cannot choose the program the
-/// server spawns or its arguments (#3729).
+/// server spawns or its arguments.
 ///
 /// Bare `perl_path` is deliberately absent: it is the internal Rust field name
 /// and appears legitimately throughout the config module. The `[perl]`
@@ -78,16 +78,46 @@ const ALLOWED: &[(&str, &str)] = &[
         "src/runtime/language/missing_module_lookup.rs",
         "asserts the startup-INC remediation names no unsettable route",
     ),
-    ("../../docs/reference/CONFIG.md", "documents that the keys are refused and why (#16612)"),
-    (
-        "../../docs/how-to/PERL_SETUP_TROUBLESHOOTING.md",
-        "documents that the server accepts no interpreter-path setting (#16612)",
-    ),
     (
         "../../docs/project/discovery/cross-session-triage-2026-05-30.md",
-        "historical triage record describing the unreachability (#3729)",
+        "historical triage record describing the unreachability",
     ),
 ];
+
+/// Exact lines that explain refused settings to users. The rest of each page
+/// remains scanned, including any second occurrence of the same token.
+const DOC_ALLOWED_LINES: &[(&str, &str)] = &[
+    (
+        "../../docs/reference/CONFIG.md",
+        "#### `perl.workspace.perlPath` — refused, not configurable",
+    ),
+    (
+        "../../docs/reference/CONFIG.md",
+        "#### `perl.workspace.perlArgs` — refused, not configurable",
+    ),
+    (
+        "../../docs/how-to/PERL_SETUP_TROUBLESHOOTING.md",
+        "interpreter-path setting: `perl.workspace.perlPath` (and the project-config",
+    ),
+];
+
+fn unexpected_tokens(relative: &Path, text: &str) -> Vec<String> {
+    let mut offenders = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        if DOC_ALLOWED_LINES
+            .iter()
+            .any(|(path, allowed)| relative == Path::new(path) && line == *allowed)
+        {
+            continue;
+        }
+        for token in LSP_SETTING_TOKENS {
+            if line.contains(token) {
+                offenders.push(format!("{}:{} ({token})", relative.display(), index + 1));
+            }
+        }
+    }
+    offenders
+}
 
 /// Directories scanned recursively, relative to the crate, and what each is.
 ///
@@ -156,14 +186,8 @@ fn only_the_remediation_owner_and_its_guards_name_the_unsettable_setting()
             continue;
         }
         let text = std::fs::read_to_string(&path)?;
-        for token in LSP_SETTING_TOKENS {
-            if text.contains(token) {
-                offenders.push(format!(
-                    "{} ({token})",
-                    path.strip_prefix(crate_root).unwrap_or(&path).display()
-                ));
-            }
-        }
+        let relative = path.strip_prefix(crate_root).unwrap_or(&path);
+        offenders.extend(unexpected_tokens(relative, &text));
     }
 
     assert!(
@@ -178,6 +202,34 @@ fn only_the_remediation_owner_and_its_guards_name_the_unsettable_setting()
         offenders.join(", ")
     );
 
+    Ok(())
+}
+
+#[test]
+fn refused_setting_explanation_does_not_exempt_bad_advice_on_the_same_page() {
+    for (relative, allowed_line) in DOC_ALLOWED_LINES {
+        assert!(unexpected_tokens(Path::new(relative), allowed_line).is_empty());
+        let with_bad_advice = format!(
+            "{allowed_line}\nIf Perl is missing, configure `perl.workspace.perlPath` in your editor."
+        );
+        assert!(
+            !unexpected_tokens(Path::new(relative), &with_bad_advice).is_empty(),
+            "a second setting reference in {relative} must not be hidden by its refusal line"
+        );
+    }
+}
+
+#[test]
+fn every_allowed_doc_line_exists_exactly_once() -> Result<(), Box<dyn std::error::Error>> {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (relative, allowed_line) in DOC_ALLOWED_LINES {
+        let text = std::fs::read_to_string(crate_root.join(relative))?;
+        assert_eq!(
+            text.lines().filter(|line| line == allowed_line).count(),
+            1,
+            "documented refusal in {relative} changed; review its exception"
+        );
+    }
     Ok(())
 }
 

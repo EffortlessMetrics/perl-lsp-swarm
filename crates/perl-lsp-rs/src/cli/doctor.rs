@@ -695,7 +695,7 @@ const FIX_BASH_INSTALL_UNIX: &str = "fix: install bash with your distribution's 
 // `ProjectPerlConfig` has no interpreter-path field, and
 // `WorkspaceConfig::update_from_value` refuses the interpreter-path and argv
 // keys from every client-settings payload so a hostile workspace cannot choose
-// the program or its arguments (#3729). The second half of the previous string
+// the program or its arguments. The second half of the previous string
 // pointed at a project-config key that does not exist, so following it changed
 // nothing and said nothing (#16612). The debugger's `launch.json` interpreter
 // path is a different field on a different channel and is unaffected.

@@ -307,13 +307,12 @@ effect, produces no warning, and the value is discarded.
 That is deliberate. Honouring an interpreter path or argv from workspace or
 editor settings would let a hostile cloned repository choose which program the
 server executes and with which arguments, so the keys are refused on every
-client-settings channel and `.perl-lsp.toml` has no field for them at all
-(#3729).
+client-settings channel and `.perl-lsp.toml` has no field for them at all.
 
 To make the server probe with a specific Perl, control resolution order instead:
-put the intended `perl` first on `PATH` (`where perl` on Windows, `which -a
-perl` elsewhere). perlbrew and plenv interpreters are preferred over `PATH` when
-present.
+change the active perlbrew or plenv version when one is present. When neither is
+active, put the intended `perl` first on `PATH` (`where perl` on Windows,
+`which -a perl` elsewhere).
 
 The debugger is a separate channel: `launch.json` accepts a per-launch
 `perlPath`, and that one is honored.
