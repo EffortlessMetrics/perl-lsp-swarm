@@ -7326,6 +7326,25 @@ mod tests {
     fn framed_reader_exhaustion_clears_session_instead_of_interpreting_payload()
     -> Result<(), String> {
         let adapter = reader_stack_fixture("overflow")?;
+        // Serve the stack trace once to drive the exhausted reader through
+        // its reap path, then wait deterministically for the session to be
+        // cleared (#15749). Asserting on this first response raced the
+        // reader thread under load and misread the pre-reap sentinel frame
+        // as retained authority.
+        let _ = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if lock_or_recover(&adapter.session, "test.reader_exhausted").is_none() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("exhausted reader did not reap and clear the session".to_string());
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        // Once the session is cleared, stack authority must be gone: the
+        // response serves empty frames instead of interpreting the exhausted
+        // payload.
         let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         let DapMessage::Response { success: true, body: Some(body), .. } = response else {
             return Err(format!("unexpected exhausted-frame response: {response:?}"));
@@ -7336,16 +7355,7 @@ mod tests {
                 body.get("stackFrames").and_then(Value::as_array).map_or(0, Vec::len),
             ));
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if lock_or_recover(&adapter.session, "test.reader_exhausted").is_none() {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err("exhausted reader did not reap and clear the session".to_string());
-            }
-            thread::sleep(Duration::from_millis(2));
-        }
+        Ok(())
     }
 
     #[test]

@@ -1896,6 +1896,16 @@ mod tests {
                 true,
                 42,
             ),
+            // Saturated ceiling claiming an advance: `next()` of
+            // `u64::MAX` is itself, so the witness names a transition
+            // the clock did not make. Refused with the same code as
+            // every other non-contiguous witness (#14643).
+            GenerationAdvance::forged(
+                RuntimeModuleGeneration::new(u64::MAX),
+                RuntimeModuleGeneration::new(u64::MAX),
+                true,
+                42,
+            ),
         ];
         for advance in malformed {
             assert!(!advance.is_contiguous(), "the fixture must be malformed to be discriminating");
@@ -1908,16 +1918,84 @@ mod tests {
             );
         }
 
-        // The saturating ceiling is contiguous, not malformed: `next()` of
-        // `u64::MAX` is itself, so an exhausted advance keeps publishing.
-        let exhausted = GenerationAdvance::forged(
-            RuntimeModuleGeneration::new(u64::MAX),
+        // A genuine pre-ceiling advance (`MAX - 1 → MAX`) is still
+        // contiguous and publishes: the saturation guard fires only
+        // when the previous and current endpoints collapse.
+        let pre_ceiling = GenerationAdvance::forged(
+            RuntimeModuleGeneration::new(u64::MAX - 1),
             RuntimeModuleGeneration::new(u64::MAX),
             true,
             42,
         );
-        assert!(exhausted.is_contiguous());
-        project_outcome(&outcome, 42, exhausted, &[], None)?;
+        assert!(pre_ceiling.is_contiguous());
+        project_outcome(&outcome, 42, pre_ceiling, &[], None)?;
+        Ok(())
+    }
+
+    /// Driving the clock to the ceiling through the public test seam and
+    /// asking the wire projector to publish a mutating outcome there must
+    /// refuse with `GenerationAdvanceMismatch`: a saturated advance does
+    /// not actually move the generation, so `apply` reports
+    /// `advanced = false` and the projector's direction guard catches
+    /// the inconsistency (#14643). The pre-ceiling `MAX - 1 → MAX`
+    /// boundary still publishes correctly as the negative control.
+    #[test]
+    fn a_mutating_outcome_at_an_exhausted_clock_is_refused_at_the_wire() -> TestResult {
+        let outcome = LoadedModuleReloadOutcome::Reloaded;
+        let mut clock = RuntimeModuleGenerationClock::at_generation_for_test(
+            RuntimeModuleGeneration::new(u64::MAX - 1),
+        );
+        assert!(!clock.current().is_exhausted());
+
+        // Pre-ceiling: the clock genuinely advances, the witness is
+        // contiguous, the projector publishes.
+        let pre_ceiling = clock.apply(&outcome, 42);
+        assert!(pre_ceiling.advanced());
+        assert!(pre_ceiling.is_contiguous());
+        project_outcome(&outcome, 42, pre_ceiling, &[], None)?;
+
+        // Now exhausted. The clock's own `apply` produces
+        // `{advanced: false}` so the projector's direction check refuses
+        // it (the witness says "no advance" but the outcome's
+        // generation effect is `Advance`). The witness itself is still
+        // contiguous — the unchanged branch — so the failure is on the
+        // direction check, not on contiguity.
+        let indeterminate = LoadedModuleReloadOutcome::IndeterminatePossiblyApplied {
+            phase: ReloadTransactionPhase::RuntimeAcknowledgementReadBack,
+            cause: crate::reload::IndeterminateCause::TimeoutAfterMutationBegan,
+        };
+        let saturated_reloaded = clock.apply(&outcome, 43);
+        assert!(!saturated_reloaded.advanced(), "apply at the ceiling must not claim an advance");
+        assert!(
+            saturated_reloaded.is_contiguous(),
+            "the unchanged branch keeps ceiling-without-advance contiguous"
+        );
+        assert_eq!(
+            project_outcome(&outcome, 43, saturated_reloaded, &[], None),
+            Err(WireProjectionRefusal::GenerationAdvanceMismatch)
+        );
+
+        let saturated_indeterminate = clock.apply(&indeterminate, 44);
+        assert!(
+            !saturated_indeterminate.advanced(),
+            "apply at the ceiling must not claim an advance for indeterminate either"
+        );
+        assert_eq!(
+            project_outcome(&indeterminate, 44, saturated_indeterminate, &[], None),
+            Err(WireProjectionRefusal::GenerationAdvanceMismatch)
+        );
+
+        // The unchanged branch at the ceiling is contiguous and
+        // publishes: a refusal pair with `advanced = false` is the
+        // same shape the wire sees for every ordinary non-mutating
+        // outcome.
+        let refused = LoadedModuleReloadOutcome::Refused {
+            disposition: crate::reload::LoadedModuleReloadEligibility::NotLoaded,
+        };
+        let refused_at_ceiling = clock.apply(&refused, 45);
+        assert!(!refused_at_ceiling.advanced());
+        assert!(refused_at_ceiling.is_contiguous());
+        project_outcome(&refused, 45, refused_at_ceiling, &[], None)?;
         Ok(())
     }
 

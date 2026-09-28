@@ -1,0 +1,2 @@
+#!ledger-schema: pr-triage.v1
+{"pr":"15554","title":"fix(xtask): dispatch ledger validation per declared schema (#15378)","classification":"merge-ready","confidence":"high","evidence":["gh pr view 15554 --json state,mergedAt: MERGED 2026-09-16T14:14:36Z; squashed commit in origin/main ancestry"],"cleanup_done":true,"known_gaps":[],"author":"EffortlessSteven"}

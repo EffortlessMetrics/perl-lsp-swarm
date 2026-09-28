@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use crate::{
-    display_path, first_cfg_test_line_number, read_lines, read_usize_file,
-    walk_rust_source_files_for_ci_checks,
+    display_path, first_cfg_test_line_number, production_source_files_for_ci_checks, read_lines,
+    read_usize_file,
 };
 
 use self::allow_scopes::{
@@ -40,7 +40,7 @@ fn scan_offenders(repo_root: &Path) -> Result<Vec<String>> {
     let debug_attr_re = regex_from_static(&DEBUG_ASSERTIONS_ATTR_RE, "debug assertions attribute")?;
     let mut offenders = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
+    for path in production_source_files_for_ci_checks(repo_root)? {
         if is_excluded_for_print_check(&path) {
             continue;
         }
@@ -364,7 +364,14 @@ mod tests {
             .first()
             .ok_or_else(|| eyre!("the scan reported nothing; offenders were {offenders:?}"))?;
         ensure!(offenders.len() == 1, "expected one offender, got {offenders:?}");
-        ensure!(entry.contains("probe/src/lib.rs:2:"), "entry was {entry}");
+        // The offender embeds a platform-native display path, so compare
+        // structurally: a Unix-shaped literal fails on Windows for the wrong
+        // reason. Production output is intentionally untouched.
+        let expected_prefix = format!(
+            "{}:2:",
+            std::path::Path::new("crates").join("probe").join("src").join("lib.rs").display()
+        );
+        ensure!(entry.starts_with(&expected_prefix), "entry was {entry}");
         Ok(())
     }
 }

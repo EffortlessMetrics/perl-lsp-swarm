@@ -27,6 +27,7 @@ mod cli;
 mod commands;
 mod git_hooks;
 mod process;
+mod test_scope;
 
 use crate::cli::{Cli, CliCommand};
 use crate::commands::panic_test::{check_panic_test, check_panic_test_with_registry};
@@ -189,223 +190,17 @@ fn is_excluded_test_path(path: &Path) -> bool {
 
     false
 }
-/// How deep a module chain this walk will follow before giving up.
+
+/// The 1-based line where the file's test scope begins, or [`usize::MAX`].
 ///
-/// The chain is finite and each step moves one directory up, so this only
-/// bounds a pathological tree on disk. Nothing in this repository is close.
-const MAX_MODULE_DEPTH: usize = 64;
-
-/// Whether this whole file is test-only because some ancestor module says so.
-///
-/// [`first_cfg_test_line_number`] reads one file and finds an *inline*
-/// boundary. A module whose entire file is test code carries no inline
-/// attribute — the guard sits on the parent's `mod` declaration, as at
-/// `crates/perl-lsp-rs-core/src/protocol/mod.rs:35`. Without this the
-/// production scanners read "no boundary in this file" as "no test code in this
-/// file" and count every line as production (#16248).
-///
-/// The walk is up the whole chain, not one step, because a Rust module inherits
-/// every ancestor's configuration. `protocol/final_surface_inventory.rs`
-/// declares `mod rows;` with no guard of its own, but the module it belongs to
-/// is guarded, so `final_surface_inventory/rows.rs` is test-only too.
-///
-/// Both module layouts resolve the same way: `dir/foo.rs` and `dir/foo/mod.rs`
-/// are each declared by `mod foo;` in `dir/mod.rs`, in the `dir.rs` beside it,
-/// or — for a module at the crate root — in `lib.rs` or `main.rs`.
-///
-/// Not resolved: `#[path = "…"]`, which can point a declaration at a file this
-/// layout inference will not find. Every live instance in this repository
-/// redirects into `bin/`, into a `tests/` directory, or to a `_tests.rs` name,
-/// all of which `is_excluded_test_path` already drops, so following the
-/// attribute would change no verdict today.
-///
-/// This reads text rather than an AST, so it exempts a file only on a shape it
-/// can establish: an exact `mod <stem>;` whose own attribute list carries the
-/// guard. Anything it cannot establish stays in the production scans, which is
-/// the safe direction — a missed exemption is a false positive a human reads,
-/// while a wrong exemption silently stops measuring real code.
-fn is_cfg_test_module_file(path: &Path) -> bool {
-    let mut current = path.to_path_buf();
-
-    for _ in 0..MAX_MODULE_DEPTH {
-        let Some((parent_dir, stem)) = declaring_scope(&current) else { return false };
-
-        // Every candidate is read before anything is decided. A crate root can
-        // hold both `lib.rs` and `main.rs`, and the same file can be owned by
-        // both, so one root's test-only declaration does not remove the other
-        // root's production declaration. Exempting on "some root guards it" is
-        // the same quantifier error as "some evidence for, none against" — the
-        // question is whether every owner agrees.
-        let mut guarded = false;
-        let mut declared_unguarded = None;
-        for candidate in [
-            parent_dir.join("mod.rs"),
-            parent_dir.with_extension("rs"),
-            parent_dir.join("lib.rs"),
-            parent_dir.join("main.rs"),
-        ] {
-            if candidate == current {
-                continue;
-            }
-            match module_declaration_is_test_only(&candidate, &stem) {
-                Some(true) => guarded = true,
-                Some(false) => declared_unguarded = Some(candidate),
-                None => {}
-            }
-        }
-
-        if guarded && declared_unguarded.is_none() {
-            return true;
-        }
-
-        // Either nothing declares this file, or the declarations disagree. A
-        // mixed ownership keeps walking the production owner's chain rather
-        // than exempting here: only if that chain is itself test-only is the
-        // file test-only under every root that loads it.
-        let Some(next) = declared_unguarded else { return false };
-        current = next;
-    }
-
-    false
-}
-
-/// The directory a file's declaration lives in, and the module name it declares.
-fn declaring_scope(path: &Path) -> Option<(PathBuf, String)> {
-    if path.file_name() == Some(OsStr::new("mod.rs")) {
-        let module_dir = path.parent()?;
-        let stem = module_dir.file_name()?.to_str()?.to_owned();
-        Some((module_dir.parent()?.to_path_buf(), stem))
-    } else {
-        let parent_dir = path.parent()?.to_path_buf();
-        let stem = path.file_stem()?.to_str()?.to_owned();
-        Some((parent_dir, stem))
-    }
-}
-
-/// Whether `parent_file`'s `mod <stem>;` declaration is test-only.
-///
-/// `None` distinguishes "this file does not declare that module" from
-/// "it declares it, unguarded" — the caller needs the difference to know
-/// whether there is a chain to keep walking.
-///
-/// The guard need not be the line immediately above. Rust allows other
-/// attributes and blank lines between an item's attributes and the item —
-/// `#[path = "…"]` between the two is a live shape in this repository — so the
-/// walk back accepts those and stops at the first line that is neither, which
-/// is the previous item.
-fn module_declaration_is_test_only(parent_file: &Path, stem: &str) -> Option<bool> {
-    let lines = read_lines(parent_file).ok()?;
-    let mut declared = None;
-
-    for (index, line) in lines.iter().enumerate() {
-        if !is_module_declaration(line, stem) {
-            continue;
-        }
-        declared = Some(false);
-        for previous in lines[..index].iter().rev() {
-            if is_test_only_cfg_attribute(previous) {
-                return Some(true);
-            }
-            let trimmed = previous.trim_start();
-            if trimmed.starts_with("#[") || trimmed.is_empty() {
-                continue;
-            }
-            break;
-        }
-    }
-
-    declared
-}
-
-/// Whether `line` is a `cfg` attribute that makes the item below it test-only.
-///
-/// Plain `#[cfg(test)]`, and `#[cfg(all(test, …))]` because `test` is a required
-/// conjunct there and is false in a production build —
-/// `crates/perl-lsp-rs/src/runtime/mod.rs:46` declares a module that way.
-/// Deliberately not `#[cfg(any(test, feature = "…"))]`, which *is* compiled into
-/// a production build when the feature is on. These are the same three rulings
-/// [`first_cfg_test_line_number`] applies to an inline boundary, so the two
-/// paths cannot classify the same Rust construct differently.
-fn is_test_only_cfg_attribute(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("#[cfg(test)]")
-        || trimmed.starts_with("#[cfg(all(test,")
-        || trimmed.starts_with("#[cfg(all(test)")
-}
-
-/// Whether `line` is exactly the declaration `mod <stem>;`, with any visibility.
-///
-/// Deliberately not a regex: the stem is interpolated, and a per-file compiled
-/// pattern buys nothing over these string splits.
-fn is_module_declaration(line: &str, stem: &str) -> bool {
-    let mut rest = line.trim_start();
-
-    if let Some(after_pub) = rest.strip_prefix("pub") {
-        // `pub` must be its own token, so that `public_mod` is not read as a
-        // visibility marker followed by junk.
-        if let Some(scope) = after_pub.strip_prefix('(') {
-            let Some(close) = scope.find(')') else { return false };
-            rest = scope[close + 1..].trim_start();
-        } else if after_pub.starts_with(char::is_whitespace) {
-            rest = after_pub.trim_start();
-        }
-    }
-
-    let Some(after_mod) = rest.strip_prefix("mod") else { return false };
-    if !after_mod.starts_with(char::is_whitespace) {
-        return false;
-    }
-    let Some(after_name) = after_mod.trim_start().strip_prefix(stem) else { return false };
-    after_name.trim_start().starts_with(';')
-}
-
+/// Delegates to [`test_scope::first_cfg_test_boundary`], the within-file half
+/// of the one attribute reader for production scope. The two-regex reader this
+/// used to be needed `test` on the same physical line as `#[cfg(all(`, so a
+/// gate spelled across several lines — the live shape in
+/// `crates/perl-corpus/src/loading/` — read as no boundary at all (#16281).
 pub(crate) fn first_cfg_test_line_number(path: &Path) -> Result<usize> {
     let contents = read_lines(path)?;
-    // Plain #[cfg(test)] is an unconditional test-scope boundary: any item guarded
-    // this way is test-only regardless of what follows, so treat the first occurrence
-    // as the boundary immediately (matches the original heuristic).
-    //
-    // #[cfg(all(test, ...))] requires a lookahead: it must be followed (possibly after
-    // blank lines or other attributes) by a `mod` declaration to count as a boundary.
-    // This prevents a lone `#[cfg(all(test, not(target_arch = "wasm32")))] use …` near
-    // the top of a file (e.g. config/mod.rs:9) from falsely excluding the rest of the
-    // file from production CI checks.
-    //
-    // #[cfg(any(test, feature = "…"))] is intentionally NOT matched because such items
-    // are compiled into production builds when the feature is active.
-    let cfg_test_plain_re = Regex::new(r"^\s*#\[cfg\(test\)\]")?;
-    let cfg_all_test_re = Regex::new(r"^\s*#\[cfg\(all\(test[,\)]")?;
-    let attr_re = Regex::new(r"^\s*#\[")?;
-    let mod_re = Regex::new(r"^\s*(?:pub\s+)?mod\s+")?;
-    for (idx, line) in contents.iter().enumerate() {
-        if cfg_test_plain_re.is_match(line) {
-            return Ok(idx + 1);
-        }
-        if cfg_all_test_re.is_match(line) {
-            // Only treat #[cfg(all(test, ...))] as a boundary when the next
-            // non-blank, non-attribute line is a `mod` declaration.
-            let mut j = idx + 1;
-            loop {
-                if j >= contents.len() {
-                    break;
-                }
-                let next = &contents[j];
-                if next.trim().is_empty() {
-                    j += 1;
-                    continue;
-                }
-                if attr_re.is_match(next) {
-                    j += 1;
-                    continue;
-                }
-                if mod_re.is_match(next) {
-                    return Ok(idx + 1);
-                }
-                break;
-            }
-        }
-    }
-    Ok(usize::MAX)
+    Ok(test_scope::first_cfg_test_boundary(&contents))
 }
 
 /// Return true when a `// SAFETY:` comment directly documents `lines[unsafe_idx]`.
@@ -1489,10 +1284,15 @@ fn cmd_simple_lsp_test(repo_root: &Path) -> Result<i32> {
     }
     #[cfg(not(windows))]
     {
+        // Content-Length must equal the frame body exactly; the previous 205
+        // over-declared the 180-byte body, so the reader waited on bytes that
+        // never arrived. `workspaceFolders` is omitted rather than null so the
+        // declared `rootUri` is actually adopted (#8161: a present null is an
+        // explicit no-active-folder declaration).
         let shell_script = r#"cat <<'EOF' | cargo run -p perl-parser --bin perl-lsp 2>&1 | head -20
-Content-Length: 205
+Content-Length: 156
 
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":123,"rootUri":"file:///tmp","capabilities":{},"initializationOptions":{},"trace":"off","workspaceFolders":null}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":123,"rootUri":"file:///tmp","capabilities":{},"initializationOptions":{},"trace":"off"}}
 EOF
 "#;
         let output = command_with_output(repo_root, "sh", &["-c", shell_script], &[])?;
@@ -1677,7 +1477,11 @@ fn cmd_quick_receipts(repo_root: &Path) -> Result<i32> {
         "total_all_tests": 0,
         "pass_rate_active": 0.0,
         "pass_rate_total": 0.0,
-        "note": "Run generate-receipts.sh for actual test metrics"
+        // #15350: zeroes from a no-test quick run are explicitly not_run_by_mode,
+        // never a measured zero. Bundle publishers refuse this status, so a
+        // fresh timestamp cannot pass synthetic state off as current evidence.
+        "status": "not_run_by_mode",
+        "note": "Synthetic quick receipt: tests not run. Use the canonical typed producer `cargo xtask receipts` for subject-bound test metrics."
     });
     fs::write(artifacts_dir.join("test-summary.json"), serde_json::to_string(&test_summary)?)
         .with_context(|| "writing test-summary.json")?;
@@ -2583,10 +2387,12 @@ fn cmd_check_unsafe_prod(repo_root: &Path) -> Result<i32> {
     let mut all_matches: Vec<String> = Vec::new();
     let mut bare_unsafe: Vec<String> = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
-        let rel = display_path(repo_root, &path);
-        let lines = read_lines(&path)?;
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+    let sources = production_source_files_for_ci_checks(repo_root)?;
+
+    for path in sources.iter() {
+        let rel = display_path(repo_root, path);
+        let lines = read_lines(path)?;
+        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
         for (idx, line) in lines.iter().enumerate() {
             let line_no = idx + 1;
             if line_no >= test_start {
@@ -2734,22 +2540,113 @@ pub(crate) fn walk_rust_source_files_for_ci_checks(repo_root: &Path) -> Result<V
     let files = walk_rs_files(&repo_root.join("crates"))
         .into_iter()
         .filter(|path| !is_excluded_test_path(path))
-        .filter(|path| !is_cfg_test_module_file(path))
         .collect();
     Ok(files)
 }
 
-fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
+/// Every walked file the compiler builds outside a test profile.
+///
+/// A file whose `#[cfg(test)]` sits on the parent's `mod` declaration carries no
+/// such line itself, so a per-file scan reads every line of it as production.
+/// That is where the 14 phantom `expect` sites in `final_surface_census.rs` came
+/// from, and what kept #13838 open for three weeks over a module that has never
+/// been in a non-test build.
+///
+/// Every production check goes through here, so this is the only place that
+/// answer is computed. Two of them used to compute it inline and two did not
+/// compute it at all; one seam means a new check inherits the right scope
+/// instead of choosing it.
+///
+/// The exclusion belongs here and not inside
+/// [`walk_rust_source_files_for_ci_checks`], although folding it in would be
+/// shorter. `test_only_source_files` decides a contested file by letting any
+/// production declaration reaching it win the tie, and a file dropped from the
+/// walk never reaches that rule — the walk feeds
+/// [`test_scope::test_only_source_files`] itself, so pre-filtering there would
+/// hand it a population it had already judged.
+pub(crate) fn production_source_files_for_ci_checks(repo_root: &Path) -> Result<Vec<PathBuf>> {
+    let walked = walk_rust_source_files_for_ci_checks(repo_root)?;
+    let test_only = crate::test_scope::test_only_source_files(&walked)?;
+    Ok(walked.into_iter().filter(|path| !test_only.contains(path)).collect())
+}
+
+pub(crate) fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
+    let report = scan_prod_unwraps_and_panics(repo_root)?;
+    report.print_and_exit()
+}
+
+/// The two production-line checks share a single walk so neither scanner
+/// reads ahead of the other. Splitting them apart used to mean an early
+/// return on the first failure hid the second; keeping them in one struct
+/// forces the printing layer to see both lists before deciding an exit
+/// code. #16253.
+pub(crate) struct ProdUnwrapsAndPanicsReport {
+    pub unwrap_offenders: Vec<String>,
+    pub panic_offenders: Vec<String>,
+    pub unwrap_baseline: usize,
+    pub panic_baseline: usize,
+}
+
+impl ProdUnwrapsAndPanicsReport {
+    fn print_and_exit(&self) -> Result<i32> {
+        let mut failed = false;
+        println!(
+            "unwrap/expect: {} (baseline: {})",
+            self.unwrap_offenders.len(),
+            self.unwrap_baseline
+        );
+        if self.unwrap_offenders.len() > self.unwrap_baseline {
+            failed = true;
+            println!(
+                "FAIL: unwrap/expect count ({}) exceeds baseline ({})",
+                self.unwrap_offenders.len(),
+                self.unwrap_baseline
+            );
+            println!();
+            println!("Offenders:");
+            for line in self.unwrap_offenders.iter().take(10) {
+                println!("{line}");
+            }
+        }
+
+        println!(
+            "panic-family macros: {} (baseline: {})",
+            self.panic_offenders.len(),
+            self.panic_baseline
+        );
+        if self.panic_offenders.len() > self.panic_baseline {
+            failed = true;
+            println!(
+                "FAIL: panic-family count ({}) exceeds baseline ({})",
+                self.panic_offenders.len(),
+                self.panic_baseline
+            );
+            println!();
+            println!("Offenders:");
+            for line in self.panic_offenders.iter().take(10) {
+                println!("{line}");
+            }
+            println!(
+                "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count."
+            );
+        }
+        Ok(if failed { 1 } else { 0 })
+    }
+}
+
+pub(crate) fn scan_prod_unwraps_and_panics(repo_root: &Path) -> Result<ProdUnwrapsAndPanicsReport> {
     let unwrap_re = Regex::new(r"\.unwrap\(|\.expect\(")?;
     let panic_re = Regex::new(r"(panic!\(|todo!\(|unimplemented!\(|unreachable!\()")?;
     let comment_re = Regex::new(r"^\s*//")?;
     let mut unwrap_offenders = Vec::new();
     let mut panic_offenders = Vec::new();
 
-    for path in walk_rust_source_files_for_ci_checks(repo_root)? {
-        let rel = display_path(repo_root, &path);
-        let lines = read_lines(&path)?;
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+    let sources = production_source_files_for_ci_checks(repo_root)?;
+
+    for path in sources.iter() {
+        let rel = display_path(repo_root, path);
+        let lines = read_lines(path)?;
+        let test_start = first_cfg_test_line_number(path).unwrap_or(usize::MAX);
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
             if line_no >= test_start {
@@ -2774,39 +2671,12 @@ fn cmd_check_unwraps_prod(repo_root: &Path) -> Result<i32> {
 
     let unwrap_baseline = read_usize_file(&repo_root.join("ci/unwrap_prod_baseline.txt"), 0)?;
     let panic_baseline = read_usize_file(&repo_root.join("ci/panic_prod_baseline.txt"), 0)?;
-    println!("unwrap/expect: {} (baseline: {})", unwrap_offenders.len(), unwrap_baseline);
-    if unwrap_offenders.len() > unwrap_baseline {
-        println!(
-            "FAIL: unwrap/expect count ({}) exceeds baseline ({})",
-            unwrap_offenders.len(),
-            unwrap_baseline
-        );
-        println!();
-        println!("Offenders:");
-        for line in unwrap_offenders.iter().take(10) {
-            println!("{line}");
-        }
-        return Ok(1);
-    }
-
-    println!("panic-family macros: {} (baseline: {})", panic_offenders.len(), panic_baseline);
-    if panic_offenders.len() > panic_baseline {
-        println!(
-            "FAIL: panic-family count ({}) exceeds baseline ({})",
-            panic_offenders.len(),
-            panic_baseline
-        );
-        println!();
-        println!("Offenders:");
-        for line in panic_offenders.iter().take(10) {
-            println!("{line}");
-        }
-        println!(
-            "If you removed panic-family macros, update ci/panic_prod_baseline.txt with the new lower count."
-        );
-        return Ok(1);
-    }
-    Ok(0)
+    Ok(ProdUnwrapsAndPanicsReport {
+        unwrap_offenders,
+        panic_offenders,
+        unwrap_baseline,
+        panic_baseline,
+    })
 }
 
 fn is_allowlisted_prod_panic_hit(_rel_path: &str, line: &str) -> bool {
@@ -3244,6 +3114,7 @@ fn collect_ignored_matches(crates_root: &Path, repo_root: &Path) -> Result<Vec<I
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
 
     #[test]
     fn cargo_wrapper_keeps_cargo_args_before_test_harness_separator() {
@@ -4150,276 +4021,28 @@ mod tests {
         );
     }
 
-    // ── parent-declared #[cfg(test)] module tests (#16248) ─────────────────────
+    // ── the production seam, after #16251's resolver was removed (#13838) ──────
 
     /// Builds a throwaway tree and returns its root. Named per test so parallel
     /// runs cannot collide, and removed first so a previous run's leftovers
     /// cannot decide the result.
+    ///
+    /// These two are #16251's walk-level controls, kept and repointed. They
+    /// asserted on `walk_rust_source_files_for_ci_checks` while that walk did
+    /// its own filtering; the filtering now lives in `test_scope`, so they
+    /// assert on the pair the scanners actually consume. The property under
+    /// test is unchanged.
     fn cfg_test_fixture(name: &str) -> Result<PathBuf> {
-        let root = std::env::temp_dir().join(format!("pch_cfg_test_module_{name}"));
+        let root = std::env::temp_dir().join(format!("pch_production_seam_{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root)?;
         Ok(root)
     }
 
+    /// The files the scanners treat as production: walked, then minus the
+    /// set `test_scope` resolves as test-only.
     #[test]
-    fn a_module_its_parent_guards_is_not_production() -> Result<()> {
-        // The #16248 case, in miniature: the child file carries no attribute of
-        // its own, so reading it alone says "no test code here".
-        let root = cfg_test_fixture("guarded")?;
-        let module_dir = root.join("lifecycle");
-        std::fs::create_dir_all(&module_dir)?;
-        std::fs::write(
-            module_dir.join("mod.rs"),
-            "mod capabilities;\n#[cfg(test)]\nmod census;\n",
-        )?;
-        let child = module_dir.join("census.rs");
-        std::fs::write(&child, "fn f() { let _ = x.expect(\"boom\"); }\n")?;
-
-        assert_eq!(first_cfg_test_line_number(&child)?, usize::MAX, "no inline boundary");
-        assert!(is_cfg_test_module_file(&child), "the parent's guard must be found");
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn an_unguarded_sibling_declaration_stays_production() -> Result<()> {
-        // The load-bearing negative. `mod census;` sits directly under another
-        // module's #[cfg(test)]; the walk back must stop at that declaration and
-        // not inherit its guard, or this fix becomes a way to hide production code.
-        let root = cfg_test_fixture("unguarded_sibling")?;
-        let module_dir = root.join("lifecycle");
-        std::fs::create_dir_all(&module_dir)?;
-        std::fs::write(
-            module_dir.join("mod.rs"),
-            "#[cfg(test)]\nmod parity_tests;\nmod census;\n",
-        )?;
-        let child = module_dir.join("census.rs");
-        std::fs::write(&child, "fn f() {}\n")?;
-
-        assert!(!is_cfg_test_module_file(&child), "an unguarded module is production");
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn a_feature_gated_module_stays_production() -> Result<()> {
-        // #[cfg(any(test, feature = "…"))] compiles into production builds when
-        // the feature is on, so it is not a test boundary. Same rule
-        // first_cfg_test_line_number applies inside a file.
-        let root = cfg_test_fixture("feature_gated")?;
-        let module_dir = root.join("lifecycle");
-        std::fs::create_dir_all(&module_dir)?;
-        std::fs::write(
-            module_dir.join("mod.rs"),
-            "#[cfg(any(test, feature = \"probe\"))]\nmod census;\n",
-        )?;
-        let child = module_dir.join("census.rs");
-        std::fs::write(&child, "fn f() {}\n")?;
-
-        assert!(!is_cfg_test_module_file(&child), "a feature-gated module is production");
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn a_guard_separated_by_another_attribute_is_still_found() -> Result<()> {
-        let root = cfg_test_fixture("attrs_between")?;
-        let module_dir = root.join("lifecycle");
-        std::fs::create_dir_all(&module_dir)?;
-        std::fs::write(
-            module_dir.join("mod.rs"),
-            "#[cfg(test)]\n#[allow(clippy::too_many_lines)]\n\npub(crate) mod census;\n",
-        )?;
-        let child = module_dir.join("census.rs");
-        std::fs::write(&child, "fn f() {}\n")?;
-
-        assert!(is_cfg_test_module_file(&child), "attributes and blanks may sit between");
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn the_declaration_is_resolved_through_all_three_parent_layouts() -> Result<()> {
-        let root = cfg_test_fixture("layouts")?;
-
-        // dir.rs beside dir/, declaring dir/census.rs
-        let sibling_dir = root.join("runtime");
-        std::fs::create_dir_all(&sibling_dir)?;
-        std::fs::write(root.join("runtime.rs"), "#[cfg(test)]\nmod census;\n")?;
-        let via_sibling = sibling_dir.join("census.rs");
-        std::fs::write(&via_sibling, "fn f() {}\n")?;
-        assert!(is_cfg_test_module_file(&via_sibling), "dir.rs beside dir/");
-
-        // dir/mod.rs declaring dir/census/mod.rs
-        let nested = root.join("engine").join("census");
-        std::fs::create_dir_all(&nested)?;
-        std::fs::write(root.join("engine").join("mod.rs"), "#[cfg(test)]\nmod census;\n")?;
-        let via_nested = nested.join("mod.rs");
-        std::fs::write(&via_nested, "fn f() {}\n")?;
-        assert!(is_cfg_test_module_file(&via_nested), "a directory module's own mod.rs");
-
-        // src/lib.rs declaring src/census.rs
-        let crate_src = root.join("src");
-        std::fs::create_dir_all(&crate_src)?;
-        std::fs::write(crate_src.join("lib.rs"), "#[cfg(test)]\nmod census;\n")?;
-        let via_lib = crate_src.join("census.rs");
-        std::fs::write(&via_lib, "fn f() {}\n")?;
-        assert!(is_cfg_test_module_file(&via_lib), "a module at the crate root");
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn a_longer_module_name_does_not_match_a_shorter_declaration() -> Result<()> {
-        // `mod census_tests;` must not answer for `census.rs`, and `mod census;`
-        // must not answer for `census_tests.rs`.
-        let root = cfg_test_fixture("prefix")?;
-        let module_dir = root.join("lifecycle");
-        std::fs::create_dir_all(&module_dir)?;
-        std::fs::write(
-            module_dir.join("mod.rs"),
-            "#[cfg(test)]\nmod census_extra;\nmod census;\n",
-        )?;
-        let child = module_dir.join("census.rs");
-        std::fs::write(&child, "fn f() {}\n")?;
-
-        assert!(!is_cfg_test_module_file(&child), "a prefix match is not a declaration");
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn a_module_two_roots_disagree_about_stays_production() -> Result<()> {
-        // EffortlessSteven's P2 on #16251. A crate can hold both `lib.rs` and
-        // `main.rs`, and the same file can be owned by both. A test-only
-        // declaration in one root does not remove a production declaration in
-        // the other, so "some root guards it" is the wrong quantifier — the
-        // file is only test-only when every owner agrees.
-        let root = cfg_test_fixture("mixed_roots")?;
-        let src = root.join("src");
-        std::fs::create_dir_all(&src)?;
-        std::fs::write(src.join("lib.rs"), "#[cfg(test)]\nmod census;\n")?;
-        std::fs::write(src.join("main.rs"), "mod census;\n")?;
-        let child = src.join("census.rs");
-        std::fs::write(&child, "fn f() { let _ = x.expect(\"boom\"); }\n")?;
-
-        assert!(
-            !is_cfg_test_module_file(&child),
-            "the binary root still loads this as production code"
-        );
-
-        // The control: with the disagreement removed, the exemption returns.
-        std::fs::write(src.join("main.rs"), "#[cfg(test)]\nmod census;\n")?;
-        assert!(is_cfg_test_module_file(&child), "both roots guard it");
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn a_guard_on_the_preceding_item_is_not_this_declarations() -> Result<()> {
-        // Item-boundary control. `#[cfg(test)]` attaches forward to the next
-        // item, so on this shape it belongs to the `use`, not to `mod census;`
-        // two lines below. The walk back has to stop at the `use`. This is the
-        // parent-file mirror of first_cfg_test_line_number's own
-        // cfg_test_line_number_cfg_all_test_on_use_is_not_boundary.
-        let root = cfg_test_fixture("use_boundary")?;
-        let module_dir = root.join("lifecycle");
-        std::fs::create_dir_all(&module_dir)?;
-        std::fs::write(module_dir.join("mod.rs"), "#[cfg(test)]\nuse std::env;\n\nmod census;\n")?;
-        let child = module_dir.join("census.rs");
-        std::fs::write(&child, "fn f() {}\n")?;
-
-        assert!(
-            !is_cfg_test_module_file(&child),
-            "the guard belongs to the use statement, not to this declaration"
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn a_guard_on_a_grandparent_reaches_the_nested_module() -> Result<()> {
-        // Devin Review on #16251. A Rust module inherits every ancestor's
-        // configuration, so one step up is not enough. This is the live shape:
-        // protocol/mod.rs guards final_surface_inventory, which declares
-        // `mod rows;` with no guard of its own, so rows.rs is test-only too.
-        let root = cfg_test_fixture("grandparent")?;
-        let protocol = root.join("protocol");
-        let inventory = protocol.join("final_surface_inventory");
-        std::fs::create_dir_all(&inventory)?;
-        std::fs::write(
-            protocol.join("mod.rs"),
-            "#[cfg(test)]\npub(crate) mod final_surface_inventory;\n",
-        )?;
-        std::fs::write(protocol.join("final_surface_inventory.rs"), "mod rows;\n")?;
-        let grandchild = inventory.join("rows.rs");
-        std::fs::write(&grandchild, "fn f() { let _ = x.expect(\"boom\"); }\n")?;
-
-        assert!(
-            is_cfg_test_module_file(&protocol.join("final_surface_inventory.rs")),
-            "the directly guarded module"
-        );
-        assert!(is_cfg_test_module_file(&grandchild), "and everything below it");
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn an_unguarded_chain_stays_production_all_the_way_down() -> Result<()> {
-        // The converse of the walk: without a guard anywhere up the chain, the
-        // recursion must terminate at false rather than find one by accident.
-        let root = cfg_test_fixture("unguarded_chain")?;
-        let outer = root.join("protocol");
-        let inner = outer.join("inventory");
-        std::fs::create_dir_all(&inner)?;
-        std::fs::write(outer.join("mod.rs"), "pub mod inventory;\n")?;
-        std::fs::write(outer.join("inventory.rs"), "mod rows;\n")?;
-        let grandchild = inner.join("rows.rs");
-        std::fs::write(&grandchild, "fn f() {}\n")?;
-
-        assert!(!is_cfg_test_module_file(&grandchild), "no guard anywhere up the chain");
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn a_conditional_test_module_is_not_production() -> Result<()> {
-        // Devin Review on #16251. `all(test, …)` has `test` as a required
-        // conjunct, so it cannot be true in a production build, and
-        // first_cfg_test_line_number already treats it as an inline boundary.
-        // The parent path must not classify the same construct differently:
-        // crates/perl-lsp-rs/src/runtime/mod.rs:46 declares a module this way.
-        let root = cfg_test_fixture("conditional")?;
-        let module_dir = root.join("runtime");
-        std::fs::create_dir_all(&module_dir)?;
-        std::fs::write(
-            module_dir.join("mod.rs"),
-            "#[cfg(all(test, feature = \"workspace\"))]\nmod scan_gate_observation;\n",
-        )?;
-        let child = module_dir.join("scan_gate_observation.rs");
-        std::fs::write(&child, "fn f() {}\n")?;
-
-        assert!(is_cfg_test_module_file(&child), "all(test, …) is a test-only guard");
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn the_production_walk_skips_a_nested_guarded_module() -> Result<()> {
-        // The walk-level control Devin asked for: the seam the four scanners
-        // consume, exercised through a grandparent guard.
+    fn the_production_seam_skips_a_nested_guarded_module() -> Result<()> {
         let root = cfg_test_fixture("walk_nested")?;
         let src = root.join("crates").join("demo").join("src");
         let inventory = src.join("inventory");
@@ -4429,14 +4052,14 @@ mod tests {
         std::fs::write(inventory.join("rows.rs"), "fn f() {}\n")?;
         std::fs::write(src.join("real.rs"), "fn f() {}\n")?;
 
-        let walked = walk_rust_source_files_for_ci_checks(&root)?;
-        assert!(
-            !walked.iter().any(|path| path.ends_with("rows.rs")),
-            "a nested test-only module must not be scanned as production"
+        let production = production_source_files_for_ci_checks(&root)?;
+        ensure!(
+            !production.iter().any(|path| path.ends_with("rows.rs")),
+            "a nested test-only module must not be scanned as production; got {production:?}"
         );
-        assert!(
-            walked.iter().any(|path| path.ends_with("real.rs")),
-            "its unguarded sibling must still be scanned"
+        ensure!(
+            production.iter().any(|path| path.ends_with("real.rs")),
+            "its unguarded sibling must still be scanned; got {production:?}"
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -4444,24 +4067,85 @@ mod tests {
     }
 
     #[test]
-    fn the_production_walk_skips_a_parent_guarded_module() -> Result<()> {
-        // The seam the four scanners actually consume.
-        let root = cfg_test_fixture("walk")?;
-        let module_dir = root.join("crates").join("demo").join("src").join("lifecycle");
-        std::fs::create_dir_all(&module_dir)?;
-        std::fs::write(module_dir.join("mod.rs"), "#[cfg(test)]\nmod census;\nmod real;\n")?;
-        std::fs::write(module_dir.join("census.rs"), "fn f() {}\n")?;
-        std::fs::write(module_dir.join("real.rs"), "fn f() {}\n")?;
+    fn the_production_seam_skips_a_parent_guarded_module() -> Result<()> {
+        let root = cfg_test_fixture("walk_parent")?;
+        let src = root.join("crates").join("demo").join("src");
+        std::fs::create_dir_all(&src)?;
+        std::fs::write(src.join("lib.rs"), "#[cfg(test)]\nmod census;\nmod real;\n")?;
+        std::fs::write(src.join("census.rs"), "fn f() { let _ = x.expect(\"boom\"); }\n")?;
+        std::fs::write(src.join("real.rs"), "fn f() {}\n")?;
 
-        let walked = walk_rust_source_files_for_ci_checks(&root)?;
-        assert!(
-            !walked.iter().any(|path| path.ends_with("census.rs")),
-            "the guarded module must not be scanned as production"
+        let production = production_source_files_for_ci_checks(&root)?;
+        ensure!(
+            !production.iter().any(|path| path.ends_with("census.rs")),
+            "a module the parent guards must not be scanned as production; got {production:?}"
         );
-        assert!(
-            walked.iter().any(|path| path.ends_with("real.rs")),
-            "its unguarded sibling must still be scanned"
+        ensure!(
+            production.iter().any(|path| path.ends_with("real.rs")),
+            "its unguarded sibling must still be scanned; got {production:?}"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    // ── cmd_check_unwraps_prod tests (#16253) ─────────────────────────────────
+    //
+    // The two scanners (unwrap/expect and panic-family) used to early-return on
+    // the first failure so the second count was hidden. A regression that
+    // lands both kinds simultaneously must surface both — a single `Ok(1)` is
+    // indistinguishable from "only unwrap failed" once the second count is
+    // never printed.
+
+    /// Build a fixture with one crate whose production code carries both an
+    /// unwrap and a panic-family macro, with both baselines set to zero so
+    /// both checks fail. The function must report both failures (exit 1, both
+    /// FAIL lines printed) rather than hiding the second behind an early
+    /// return on the first.
+    fn unwraps_prod_dual_failure_fixture(name: &str) -> Result<PathBuf> {
+        let root = std::env::temp_dir().join(format!("pch_unwraps_prod_{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let crate_root = root.join("crates/demo");
+        std::fs::create_dir_all(crate_root.join("src"))?;
+        std::fs::create_dir_all(root.join("ci"))?;
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/demo\"]\n")?;
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )?;
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn unwrap_call() { let _ = \"x\".parse::<i32>().unwrap(); }\n\
+             pub fn panic_call() { unreachable!(\"dual\"); }\n",
+        )?;
+        std::fs::write(root.join("ci/unwrap_prod_baseline.txt"), "0\n")?;
+        std::fs::write(root.join("ci/panic_prod_baseline.txt"), "0\n")?;
+        Ok(root)
+    }
+
+    #[test]
+    fn check_unwraps_prod_reports_both_failures_when_both_exceed_baseline() -> Result<()> {
+        // Regression for the early-return defect called out in #16253: when
+        // both unwrap and panic-family counts exceed their baselines, the
+        // scanner must populate both lists before the printing layer decides
+        // the exit code, so a regression that re-introduces an early return
+        // visibly empties one of the two lists.
+        let root = unwraps_prod_dual_failure_fixture("both_fail")?;
+        let report = scan_prod_unwraps_and_panics(&root)?;
+        assert_eq!(
+            report.unwrap_offenders.len(),
+            1,
+            "expected exactly one unwrap offender; got {:?}",
+            report.unwrap_offenders
+        );
+        assert_eq!(
+            report.panic_offenders.len(),
+            1,
+            "expected exactly one panic-family offender; got {:?}",
+            report.panic_offenders
+        );
+        let exit = report.print_and_exit()?;
+        assert_eq!(exit, 1, "expected exit 1 when both checks fail");
 
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
@@ -4525,11 +4209,12 @@ mod tests {
     }
 
     #[test]
-    fn cfg_test_line_number_plain_cfg_test_is_immediate_boundary() -> Result<()> {
-        // Plain #[cfg(test)] is an unconditional boundary: the lookahead-for-mod
-        // check applies only to #[cfg(all(test, ...))].  Verify that intermediate
-        // attributes between the cfg line and the `mod` block do not change the
-        // reported boundary line.
+    fn cfg_test_line_number_plain_cfg_test_with_attrs_then_mmod_is_boundary() -> Result<()> {
+        // The plain `#[cfg(test)]` boundary now goes through the same
+        // mod-lookahead as `#[cfg(all(test, …))]`. Intermediate attributes
+        // (`#[allow(…)]`, etc.) between the cfg line and the `mod` block are
+        // skipped, so the boundary is still the `#[cfg(test)]` line — not the
+        // `mod` line. Regression guard for the unified lookahead (#16389).
         let tmp = std::env::temp_dir().join("pch_test_attrs_between.rs");
         std::fs::write(
             &tmp,
@@ -4540,6 +4225,152 @@ mod tests {
         )?;
         // #[cfg(test)] is at line 3; that is the boundary, not the `mod` line.
         assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_on_use_is_not_boundary() -> Result<()> {
+        // A `#[cfg(test)]` on a non-mod item must NOT trigger the boundary
+        // heuristic — the next non-blank line is `use`, not `mod`. Without
+        // this guard the production scan would be truncated at the early
+        // test-only import and miss any later per-call `Regex::new(...)` the
+        // ratchet is supposed to gate (#16389).
+        let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test_use.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\nuse std::cell::Cell;\n\npub fn prod() {}\n")?;
+        // No `mod` follows the cfg attr → no boundary → usize::MAX.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_with_blank_lines_then_mmod_is_boundary() -> Result<()> {
+        // Blank lines between the `#[cfg(test)]` and the `mod` declaration
+        // must not break the lookahead (#16389 follow-up).
+        let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test_blanks.rs");
+        std::fs::write(&tmp, "fn prod() {}\n\n#[cfg(test)]\n\n\nmod tests { \n}\n")?;
+        // #[cfg(test)] is at line 3; the `mod` on line 6 confirms it.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_use_then_outer_cfg_test_mmod_is_boundary_at_the_mmod()
+    -> Result<()> {
+        // The first `#[cfg(test)] use …;` is not a boundary; the second
+        // `#[cfg(test)] mod tests { … }` *is*. The boundary is the line of
+        // the opening cfg attribute (#16389 follow-up: the unified lookahead
+        // must not skip a real test-module opener behind a non-mod
+        // predecessor).
+        let tmp = std::env::temp_dir().join("pch_test_use_then_mod.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(test)]\n\
+             use std::cell::Cell;\n\n\
+             #[cfg(test)]\n\
+             mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
+        // Second `#[cfg(test)]` is at line 6; the `mod` opener is at line 7.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 6);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_plain_cfg_test_on_const_is_not_boundary() -> Result<()> {
+        // The non-mod item need not be a `use`; a `const`, `static`,
+        // `thread_local!`, etc. must not trigger truncation either
+        // (#16389 generalisation).
+        let tmp = std::env::temp_dir().join("pch_test_plain_cfg_test_const.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\nconst SEED: u32 = 42;\n\npub fn prod() {}\n")?;
+        // No `mod` follows the cfg attr → no boundary → usize::MAX.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_pub_crate_mod_is_boundary() -> Result<()> {
+        // A visibility-qualified test module is still a test module: the
+        // lookahead must recognise `pub(crate) mod` (and `pub(super)` /
+        // `pub(in …)`) as the opener, not only a bare `mod`.
+        let tmp = std::env::temp_dir().join("pch_test_pub_crate_mod.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(test)]\n\
+             pub(crate) mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
+        // #[cfg(test)] is at line 3; the `pub(crate) mod` on line 4 confirms it.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_multiline_all_test_is_boundary() -> Result<()> {
+        // #16281: the two-regex reader this function used to wrap needed
+        // `test` on the `#[cfg(all(` line, so a gate spelled across several
+        // physical lines — the live shape at
+        // crates/perl-corpus/src/loading/sectioned_identity.rs:65 — returned
+        // usize::MAX and read the guarded test module as production.
+        let tmp = std::env::temp_dir().join("pch_test_multiline_all_test.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(all(\n    test,\n    not(target_arch = \"wasm32\"),\n))]\n\
+             mod tests {\n    #[test]\n    fn it() {}\n}\n",
+        )?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_pub_super_and_pub_in_mod_are_boundaries() -> Result<()> {
+        let tmp = std::env::temp_dir().join("pch_test_pub_super_mod.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\npub(super) mod tests {\n}\n")?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 1);
+        let _ = std::fs::remove_file(&tmp);
+
+        let tmp = std::env::temp_dir().join("pch_test_pub_in_mod.rs");
+        std::fs::write(&tmp, "#[cfg(test)]\npub(in crate::sniff) mod tests {\n}\n")?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 1);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_comment_between_cfg_test_and_mod_is_skipped() -> Result<()> {
+        // A `//` comment between the attribute and the `mod` must not break
+        // the lookahead.
+        let tmp = std::env::temp_dir().join("pch_test_comment_then_mod.rs");
+        std::fs::write(
+            &tmp,
+            "fn prod() {}\n\n\
+             #[cfg(test)]\n\
+             // Unit tests for the scanner live here.\n\
+             mod tests {\n}\n",
+        )?;
+        // #[cfg(test)] is at line 3; the comment does not hide the `mod`.
+        assert_eq!(first_cfg_test_line_number(&tmp)?, 3);
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_test_line_number_commented_out_mod_is_not_boundary() -> Result<()> {
+        // A commented-out `mod` line must not satisfy the lookahead: the next
+        // real code item decides, and a `use` is not a boundary.
+        let tmp = std::env::temp_dir().join("pch_test_commented_mod_not_boundary.rs");
+        std::fs::write(
+            &tmp,
+            "#[cfg(test)]\n// mod tests {}\nuse std::cell::Cell;\n\npub fn prod() {}\n",
+        )?;
+        assert_eq!(first_cfg_test_line_number(&tmp)?, usize::MAX);
         let _ = std::fs::remove_file(&tmp);
         Ok(())
     }

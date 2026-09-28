@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -188,12 +189,50 @@ def trusted_historical_commit() -> str:
     return TRUSTED_HISTORICAL_COMMIT
 
 
-def current_main_contains_trusted_history(trusted_commit: str) -> bool:
+def current_main_trusted_history_state(
+    trusted_commit: str, repo: Path = ROOT
+) -> tuple[str, str]:
+    """Classify whether the checked-out main line retains the pinned commit.
+
+    Returns ``(state, detail)`` where ``state`` is one of:
+
+    - ``"present"``: the commit is an ancestor of ``origin/main``;
+    - ``"absent"``: the full-history graph genuinely excludes the commit — a
+      real finding;
+    - ``"shallow"``: this clone is shallow/grafted, the one named condition
+      under which the check cannot run and a skip is legitimate;
+    - ``"error"``: the ancestry command itself failed unexpectedly. This
+      proves nothing about ``main`` — and it is not the named shallow
+      condition, so it must fail the suite rather than read as a skip
+      (#15480).
+    """
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if shallow.stdout.strip() == "true":
+        return (
+            "shallow",
+            "clone is shallow, so its grafted history cannot speak for main",
+        )
     result = subprocess.run(
         ["git", "merge-base", "--is-ancestor", trusted_commit, "origin/main"],
-        cwd=ROOT,
+        cwd=repo,
+        capture_output=True,
+        text=True,
     )
-    return result.returncode == 0
+    if result.returncode == 0:
+        return "present", ""
+    if result.returncode == 1:
+        return "absent", ""
+    return (
+        "error",
+        "git merge-base --is-ancestor exited "
+        f"{result.returncode}: {result.stderr.strip()}",
+    )
 
 
 def historical_identity_findings(
@@ -452,8 +491,21 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
     def test_rollout_redirects_bind_exact_historical_subject(self) -> None:
         rows = registry_rows()
         trusted_commit = trusted_historical_commit()
-        self.assertTrue(
-            current_main_contains_trusted_history(trusted_commit),
+        state, detail = current_main_trusted_history_state(trusted_commit)
+        if state == "shallow":
+            self.skipTest(
+                "cannot evaluate the pinned historical authority commit from "
+                f"this clone (truncated instrument): {detail}"
+            )
+        if state == "error":
+            self.fail(
+                "the ancestry instrument failed unexpectedly, so the pinned "
+                f"historical authority commit cannot be evaluated; this is "
+                f"NOT_PROVEN, not a skip: {detail}"
+            )
+        self.assertEqual(
+            state,
+            "present",
             "current main must retain the pinned historical authority commit",
         )
         for path, expected in ROLLOUT_REDIRECTS.items():
@@ -551,6 +603,114 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
         self.assertNotIn("write_text", source)
         self.assertNotIn("def migrate", source)
         self.assertIn("raise SystemExit(2)", source)
+
+
+class CurrentMainTrustedHistoryStateTests(unittest.TestCase):
+    """The ancestry check must separate real findings from instrument failures.
+
+    ``git merge-base --is-ancestor`` distinguishes three outcomes and the
+    pinned-commit check must preserve that distinction: exit 0 is presence,
+    exit 1 is a genuine finding, and anything a truncated clone produces
+    (exit 128, or a shallow/grafted graph) proves nothing about main.
+    """
+
+    def setUp(self) -> None:
+        # Git marks objects read-only, which Windows cannot delete while open;
+        # leaked temp dirs are acceptable, wrong classifications are not.
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self._tmp.cleanup)
+        self.remote = Path(self._tmp.name) / "remote"
+        self._init_repo(self.remote)
+        self.root_commit = self._commit(self.remote, "root")
+        self._commit(self.remote, "tip")
+        self._git(self.remote, "branch", "origin/main", "main")
+
+    @staticmethod
+    def _init_repo(repo: Path) -> None:
+        subprocess.run(
+            ["git", "init", "-b", "main", str(repo)],
+            check=True,
+            capture_output=True,
+        )
+        CurrentMainTrustedHistoryStateTests._git(
+            repo,
+            "config",
+            "user.email",
+            "authority-test@example.com",
+        )
+        CurrentMainTrustedHistoryStateTests._git(
+            repo, "config", "user.name", "Authority Test"
+        )
+
+    @staticmethod
+    def _git(repo: Path, *args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    def _commit(self, repo: Path, message: str) -> str:
+        # Command-local override: a host with inherited commit.gpgsign=true
+        # and no usable signing agent would fail fixture commits in setUp.
+        self._git(repo, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", message)
+        return self._git(repo, "rev-parse", "HEAD")
+
+    def _shallow_clone(self) -> Path:
+        shallow = Path(self._tmp.name) / "shallow"
+        subprocess.run(
+            ["git", "clone", "--depth", "1", self.remote.as_uri(), str(shallow)],
+            check=True,
+            capture_output=True,
+        )
+        return shallow
+
+    def test_pinned_commit_on_main_is_present(self) -> None:
+        state, detail = current_main_trusted_history_state(
+            self.root_commit, self.remote
+        )
+        self.assertEqual((state, detail), ("present", ""))
+
+    def test_full_graph_excluding_the_commit_is_a_real_finding(self) -> None:
+        self._git(self.remote, "checkout", "--orphan", "stray")
+        stray_commit = self._commit(self.remote, "unrelated root")
+        state, detail = current_main_trusted_history_state(stray_commit, self.remote)
+        self.assertEqual((state, detail), ("absent", ""))
+
+    def test_missing_object_in_a_full_clone_is_an_instrument_failure(self) -> None:
+        other = Path(self._tmp.name) / "other"
+        self._init_repo(other)
+        stranded_commit = self._commit(other, "history this clone never fetched")
+
+        state, detail = current_main_trusted_history_state(stranded_commit, self.remote)
+
+        self.assertEqual(state, "error")
+        self.assertIn("exited 128", detail)
+
+    def test_shallow_clone_without_the_object_is_an_instrument_failure(self) -> None:
+        shallow = self._shallow_clone()
+
+        state, detail = current_main_trusted_history_state(
+            self.root_commit, shallow
+        )
+
+        self.assertEqual(state, "shallow")
+        self.assertIn("shallow", detail)
+
+    def test_shallow_clone_with_the_object_fetched_still_cannot_answer(self) -> None:
+        shallow = self._shallow_clone()
+        # The issue's second trap: after a depth-1 fetch the object exists but
+        # the graph stays grafted, so the exit code alone still proves nothing.
+        self._git(shallow, "fetch", "--deepen=1", "origin", "main")
+
+        state, detail = current_main_trusted_history_state(
+            self.root_commit, shallow
+        )
+
+        self.assertEqual(state, "shallow")
+        self.assertIn("shallow", detail)
 
 
 if __name__ == "__main__":
