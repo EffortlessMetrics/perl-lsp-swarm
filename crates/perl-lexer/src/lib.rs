@@ -2634,6 +2634,10 @@ impl<'a> PerlLexer<'a> {
                 }
                 self.paren_depth += 1;
                 self.after_var_subscript = false;
+                // `->(` is a coderef call, not `->{`. Consume arrow state so a
+                // following hash constructor (`$cb->({ s/foo/bar/r })`) does not
+                // inherit subscript brace depth (#16641 review).
+                self.after_arrow = false;
                 self.mode = LexerMode::ExpectTerm;
                 Some(Token {
                     token_type: TokenType::LeftParen,
@@ -2694,6 +2698,8 @@ impl<'a> PerlLexer<'a> {
             '[' => {
                 self.advance();
                 self.after_var_subscript = false;
+                // `->[` is array deref, not `->{`.
+                self.after_arrow = false;
                 self.mode = LexerMode::ExpectTerm;
                 Some(Token {
                     token_type: TokenType::LeftBracket,

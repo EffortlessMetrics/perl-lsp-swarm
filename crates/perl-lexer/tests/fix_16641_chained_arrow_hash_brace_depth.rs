@@ -96,3 +96,51 @@ fn corpus_plus_line_chained_y_is_not_transliteration() {
         "corpus line 80 chained {{y}} must be a hash key, got {toks:?}"
     );
 }
+
+#[test]
+fn arrow_call_hashref_arg_still_lexes_substitution() {
+    // `$cb->({ value => s/foo/bar/r })` is a hash constructor argument, not
+    // `->{`. `(` must consume arrow state so `{` does not open subscript depth.
+    let toks = significant("$cb->({ value => s/foo/bar/r })");
+    assert!(
+        has_substitution(&toks),
+        "coderef hashref arg must keep s/// as substitution, got {toks:?}"
+    );
+}
+
+#[test]
+fn chained_hash_after_arrow_array_deref_is_not_transliteration() {
+    // `->[` consumes arrow state; `]` still arms `after_var_subscript` so
+    // `$h->[0]{y}` remains a chained hash key.
+    let toks = significant("$h->[0]{y}");
+    assert!(
+        !has_transliteration(&toks),
+        "chained {{y}} after ->[0] must stay a hash key, got {toks:?}"
+    );
+}
+
+#[test]
+fn computed_arrow_key_substitution_matches_direct_subscript() {
+    // Direct `$h{scalar s/foo/bar/r}` already uses hash_brace_depth. Arrow
+    // `->{...}` now uses the same opener; both should agree.
+    let direct = significant("$h{scalar s/foo/bar/r}");
+    let arrow = significant("$h->{scalar s/foo/bar/r}");
+    assert_eq!(
+        has_substitution(&direct),
+        has_substitution(&arrow),
+        "arrow computed key must match direct `$h{{...}}` quote-op policy; direct={direct:?} arrow={arrow:?}"
+    );
+}
+
+#[test]
+fn nested_do_block_key_then_chained_y_direct_and_arrow() {
+    // Nested uncounted block closers stealing hash_brace_depth is a pre-existing
+    // `$h{{do {{1}}}}{{y}}` limitation, not unique to `->`.
+    let direct = significant("$h{do { 1 }}{y}");
+    let arrow = significant("$h->{do { 1 }}{y}");
+    assert_eq!(
+        has_transliteration(&direct),
+        has_transliteration(&arrow),
+        "nested do-block key chaining must not be worse for arrow than for `$h`; direct={direct:?} arrow={arrow:?}"
+    );
+}

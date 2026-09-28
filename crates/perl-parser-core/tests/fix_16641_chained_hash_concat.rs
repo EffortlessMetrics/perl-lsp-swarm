@@ -281,3 +281,19 @@ fn regex_in_block_after_chained_arrow_condition_still_parses() {
     assert_clean_parse("if ($h->{a}{y}) { m/foo/; }");
     assert_clean_parse("while ($h->{a}{s}) { s/a/b/; }");
 }
+
+#[test]
+fn arrow_call_hashref_arg_keeps_substitution() {
+    // `$cb->({ ... })` is a call with a hash constructor, not `->{`.
+    // Treating after_arrow `{` as a subscript would lex `s` as a key.
+    assert_clean_parse(r#"$cb->({ value => s/foo/bar/r });"#);
+}
+
+#[test]
+fn computed_hash_key_substitution_does_not_infer_missing_closer() {
+    // Direct and arrow computed keys share hash_brace_depth. This claim
+    // does not invent a new quote-op-in-key policy; it only requires that
+    // `->{...}` not fabricate HashSubscript InsertedCloser.
+    assert_no_hash_subscript_inserted_closer(r#"my $v = $h{scalar s/foo/bar/r};"#);
+    assert_no_hash_subscript_inserted_closer(r#"my $v = $h->{scalar s/foo/bar/r};"#);
+}
