@@ -38,7 +38,6 @@ fn call_args(node: &Node) -> Option<(&str, &[Node])> {
 fn autoquoted_key(arg: &Node) -> Option<&str> {
     match &arg.kind {
         NodeKind::String { value, interpolated: false } => Some(value.as_str()),
-        NodeKind::Identifier { name } => Some(name.as_str()),
         _ => None,
     }
 }
@@ -146,11 +145,20 @@ has commands => 1;
 fn admission_is_not_an_allowlist_of_the_reported_keywords() {
     assert_has_keyword_slot("has if => 1;", "if");
     assert_has_keyword_slot("has unless => 1;", "unless");
+    assert_has_keyword_slot("has when => 1;", "when");
     assert_has_keyword_slot("has sub => 1;", "sub");
     assert_has_keyword_slot("has package => 1;", "package");
     assert_has_keyword_slot("has return => 1;", "return");
     assert_has_keyword_slot("has and => 1;", "and");
     assert_has_keyword_slot("has or => 1;", "or");
+    assert_has_keyword_slot("has not => 1;", "not");
+    assert_has_keyword_slot("has xor => 1;", "xor");
+}
+
+#[test]
+fn fat_arrow_admission_does_not_depend_on_surrounding_whitespace() {
+    assert_has_keyword_slot("has class=>1;", "class");
+    assert_has_keyword_slot("has class\n=> 1;", "class");
 }
 
 #[test]
@@ -171,15 +179,16 @@ fn parenthesized_has_class_already_binds_in_expression_context() {
 
 #[test]
 fn quoted_has_class_already_binds_as_a_string_argument() {
-    assert_clean_parse("has 'class' => 1;");
-    assert_no_blocking_diagnostics("has 'class' => 1;");
-    let ast = parse_source("has 'class' => 1;");
-    let (_, args) = require_call_args(&ast, "has", "has 'class' => 1;");
+    let source = "has 'class' => 1;";
+    assert_clean_parse(source);
+    assert_no_blocking_diagnostics(source);
+    let ast = parse_source(source);
+    let (_, args) = require_call_args(&ast, "has", source);
     let first = must_some_with(args.first(), "quoted has 'class' must have a first argument");
-    let key = must_some_with(autoquoted_key(first), "quoted name");
-    assert!(
-        key == "class" || key.contains("class"),
-        "quoted has 'class' must keep class as the first argument, got {key:?}:\n{}",
+    assert_eq!(
+        autoquoted_key(first),
+        Some("'class'"),
+        "quoted has 'class' keeps the quoted spelling as the first argument:\n{}",
         ast.to_sexp()
     );
 }
@@ -226,29 +235,40 @@ fn format_declaration_is_not_eaten_as_a_has_argument() {
 fn keyword_without_fat_arrow_is_not_admitted_as_the_attribute_slot() {
     let source = "has class Foo { method x () { 1 } }";
     let ast = parse_source(source);
-    if let Some(call) = find_named_call(&ast, "has") {
-        let (_, args) = must_some_with(call_args(call), "FunctionCall shape");
-        assert_ne!(
-            args.first().and_then(autoquoted_key),
-            Some("class"),
-            "has class Foo must not bind `class` as the attribute name without =>:\n{}",
-            ast.to_sexp()
-        );
-    }
+    assert!(
+        find_named_call(&ast, "has").is_none(),
+        "has class Foo must not parse `has` as a list-operator call:\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        find_kind(&ast, |kind| matches!(kind, NodeKind::Identifier { name } if name == "has")),
+        "has class Foo must leave `has` as an identifier:\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        find_kind(&ast, |kind| matches!(kind, NodeKind::Class { .. })),
+        "has class Foo must still parse `class Foo` as a class declaration:\n{}",
+        ast.to_sexp()
+    );
 }
 
 #[test]
 fn has_if_paren_is_not_an_attribute_slot() {
-    let ast = parse_source("has if (1) { 1 }");
-    if let Some(call) = find_named_call(&ast, "has") {
-        let (_, args) = must_some_with(call_args(call), "FunctionCall shape");
-        assert_ne!(
-            args.first().and_then(autoquoted_key),
-            Some("if"),
-            "has if (1) must not bind `if` as the attribute name without =>:\n{}",
-            ast.to_sexp()
-        );
-    }
+    let source = "has if (1) { 1 }";
+    let ast = parse_source(source);
+    assert!(
+        find_named_call(&ast, "has").is_none(),
+        "has if (1) must not parse `has` as a list-operator call:\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        find_kind(
+            &ast,
+            |kind| matches!(kind, NodeKind::StatementModifier { modifier, .. } if modifier == "if")
+        ),
+        "has if (1) must keep `if` as a statement modifier:\n{}",
+        ast.to_sexp()
+    );
 }
 
 #[test]
@@ -257,13 +277,19 @@ fn has_or_die_is_not_an_attribute_slot() {
     assert_clean_parse(source);
     assert_no_blocking_diagnostics(source);
     let ast = parse_source(source);
-    if let Some(call) = find_named_call(&ast, "has") {
-        let (_, args) = must_some_with(call_args(call), "FunctionCall shape");
-        assert_ne!(
-            args.first().and_then(autoquoted_key),
-            Some("or"),
-            "has or die must keep `or` as a word operator, not an attribute name:\n{}",
-            ast.to_sexp()
-        );
-    }
+    assert!(
+        find_named_call(&ast, "has").is_none(),
+        "has or die must not parse `has` as a list-operator call:\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        find_kind(&ast, |kind| matches!(kind, NodeKind::Binary { op, .. } if op == "or")),
+        "has or die must keep `or` as a word operator:\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        find_kind(&ast, |kind| matches!(kind, NodeKind::Identifier { name } if name == "has")),
+        "has or die must leave `has` as the left operand:\n{}",
+        ast.to_sexp()
+    );
 }
