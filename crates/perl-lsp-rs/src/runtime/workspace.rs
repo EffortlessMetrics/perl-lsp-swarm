@@ -390,6 +390,30 @@ struct WorkspaceIndexCancellationGuard {
     request_id: JsonRpcId,
 }
 
+/// Test-feature-only barrier for a real stdio client to hold discovery while
+/// exercising references against an empty, still-building workspace index.
+#[cfg(feature = "expose_lsp_test_api")]
+fn hold_index_discovery_for_stdio_proof() {
+    let Some(directory) = std::env::var_os("PERL_LSP_TEST_INDEX_GATE_DIR") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    if let Err(error) = std::fs::write(directory.join("indexing-entered"), b"") {
+        tracing::warn!(%error, "stdio proof index gate could not signal entry");
+        return;
+    }
+
+    let release = directory.join("release");
+    let deadline = Instant::now() + Duration::from_secs(9);
+    while !release.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    if !release.exists() {
+        let _ = std::fs::write(directory.join("indexing-gate-timed-out"), b"");
+        tracing::warn!("stdio proof index gate timed out");
+    }
+}
+
 #[cfg(feature = "workspace")]
 impl Drop for WorkspaceIndexCancellationGuard {
     fn drop(&mut self) {
@@ -2875,6 +2899,8 @@ impl LspServer {
             coordinator.transition_to_scanning();
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             crate::runtime::readiness::notify_workspace_indexing_started(&readiness_start_gate);
+            #[cfg(feature = "expose_lsp_test_api")]
+            hold_index_discovery_for_stdio_proof();
 
             // Send progress begin if client supports work done progress.
             if work_done_progress {

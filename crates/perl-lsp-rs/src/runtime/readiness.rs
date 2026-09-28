@@ -517,6 +517,16 @@ fn check_wait_until_index_leaves_building(
                     };
                 }
 
+                #[cfg(feature = "expose_lsp_test_api")]
+                if !waited && wait_budget > Duration::from_millis(INDEX_READY_WAIT_MS) {
+                    if let Some(directory) = std::env::var_os("PERL_LSP_TEST_INDEX_GATE_DIR") {
+                        let marker =
+                            std::path::Path::new(&directory).join("references-wait-entered");
+                        if let Err(error) = std::fs::write(marker, b"") {
+                            tracing::warn!(%error, "stdio proof references wait could not signal entry");
+                        }
+                    }
+                }
                 waited = true;
                 notify_index_ready_wait_entered();
                 if Instant::now() >= deadline {
