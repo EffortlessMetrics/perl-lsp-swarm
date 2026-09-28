@@ -456,6 +456,13 @@ pub enum PayloadContradiction {
     /// A merely *unavailable* static fragment is different: the value may have been
     /// proven by other means, so that combination is left alone.
     ProvenValueOverDynamicSegments,
+    /// A proven payload value over a recovery run whose source was not classified.
+    ///
+    /// An unavailable fragment on an ordinary literal may coexist with proof
+    /// obtained elsewhere, but recovery cannot establish what the source means.
+    /// This applies even when the recovery fragment is only unavailable rather
+    /// than explicitly dynamic.
+    ProvenValueOverRecoverySegment,
     /// A written form and a delimiter pair that cannot occur together.
     ///
     /// `'...'`, `"..."`, and `` `...` `` each fix their own delimiter; only the
@@ -677,6 +684,9 @@ fn payload_contradictions(
         })
     {
         found.push(PayloadContradiction::ProvenValueOverDynamicSegments);
+    }
+    if cooked.is_proven() && segments.iter().any(SourceSegment::is_recovery) {
+        found.push(PayloadContradiction::ProvenValueOverRecoverySegment);
     }
 
     if let Some(payload_text) = cooked.proven_text()
@@ -3094,6 +3104,46 @@ mod tests {
                 .contains(&PayloadContradiction::ProvenValueOverDynamicSegments)
         );
         assert_eq!(unavailable_fragment.compat_value(), Some("abc"));
+    }
+
+    #[test]
+    fn a_recovery_segment_cannot_back_a_proven_payload_value() {
+        for exact in [true, false] {
+            let mut string = plain_double_quoted_string();
+            let mut doc = heredoc(HeredocForm::Bare, PayloadTerminal::Complete);
+            let recovery = |raw_range| SourceSegment {
+                raw_range,
+                cooked_fragment: CookedValue::Unavailable,
+                payload: SourceSegmentPayload::Recovery {
+                    cause: SegmentRecoveryCause::UnparsedInterpolation,
+                },
+            };
+            string.segmentation = if exact {
+                SourceSegmentation::Exact(vec![recovery(span(1, 4))])
+            } else {
+                SourceSegmentation::Partial(vec![recovery(span(1, 2))])
+            };
+            doc.segmentation = if exact {
+                SourceSegmentation::Exact(vec![recovery(span(8, 14))])
+            } else {
+                SourceSegmentation::Partial(vec![recovery(span(8, 10))])
+            };
+
+            for contradictions in [string.contradictions(), doc.contradictions()] {
+                assert!(
+                    contradictions.contains(&PayloadContradiction::ProvenValueOverRecoverySegment),
+                    "recovery allowed a proven whole value: exact={exact}: {contradictions:?}"
+                );
+            }
+            assert!(!string.is_coherent());
+            assert!(!doc.is_coherent());
+            assert_eq!(string.compat_value(), None);
+            assert_eq!(string.proven_literal_value(), None);
+            assert!(string.proven_segments().is_none());
+            assert_eq!(doc.compat_content(), None);
+            assert_eq!(doc.proven_literal_value(), None);
+            assert!(doc.proven_segments().is_none());
+        }
     }
 
     #[test]

@@ -40,6 +40,9 @@ from pathlib import Path
 from typing import Any
 
 
+GIT_DIFF_TIMEOUT_SECONDS = 30
+
+
 def read_toml(path: Path) -> dict[str, Any]:
     with path.open("rb") as f:
         return tomllib.load(f)
@@ -64,7 +67,16 @@ def discover_changed_files(base: str, head: str) -> dict[str, Any]:
     """
     command = ["git", "diff", "--name-only", f"{base}...{head}"]
     try:
-        proc = subprocess.run(command, text=True, capture_output=True)
+        proc = subprocess.run(
+            command, text=True, capture_output=True, timeout=GIT_DIFF_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "unavailable",
+            "code": "git-diff-timeout",
+            "detail": f"git diff timed out after {GIT_DIFF_TIMEOUT_SECONDS} seconds",
+            "command": command,
+        }
     except OSError as exc:
         return {
             "status": "unavailable",
@@ -564,6 +576,11 @@ EXIT_OVER_CEILING = 2
 EXIT_DISCOVERY_UNAVAILABLE = 3
 
 
+def escape_workflow_command_data(value: str) -> str:
+    """Keep untrusted Git output inside one GitHub workflow command."""
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def not_proven_plan(
     *,
     base: str,
@@ -581,11 +598,12 @@ def not_proven_plan(
     code = str(changeset.get("code", "unknown"))
     detail = str(changeset.get("detail", "changed-file discovery failed"))
     reproduce = " ".join(changeset.get("command", []))
-    warning = (
-        f"::error::Changed-file discovery failed ({code}): {detail}. Plan is "
+    warning_text = (
+        f"Changed-file discovery failed ({code}): {detail}. Plan is "
         "NOT_PROVEN; no lanes are selected because the changed set is "
         f"unknown. Reproduce: `{reproduce}`"
     )
+    warning = f"::error::{escape_workflow_command_data(warning_text)}"
     return {
         "schema_version": 1,
         "repo": "perl-lsp",
