@@ -346,6 +346,16 @@ do {
         should_parse: true, // real Perl permits continue in expression position
     },
     ContinueRedoCase {
+        id: "last.qualified.label",
+        description: "Package-qualified loop label (invalid).",
+        tags: &["last", "label", "edge-case", "invalid"],
+        source: r#"OUTER: while (1) {
+    last FOO::BAR;
+}
+"#,
+        should_parse: false, // perl rejects qualified labels: labels are plain identifiers
+    },
+    ContinueRedoCase {
         id: "continue.lexical.scope",
         description: "Continue block with lexical variable declarations.",
         tags: &["continue", "loop", "scope", "lexical"],

@@ -746,6 +746,19 @@ pub enum ParseError {
         location: usize,
     },
 
+    /// A package-qualified name used as a loop-control label:
+    /// `last FOO::BAR`.
+    ///
+    /// Real Perl rejects qualified labels outright: labels are plain
+    /// identifiers. Like [`Self::DoWhileTrailingBlock`] it has no sensible
+    /// recovery — leaving the name in place would re-parse as a package
+    /// call — so the parse fails outright (#16296).
+    #[error("Unexpected qualified name as loop-control label at position {location}")]
+    QualifiedLoopControlLabel {
+        /// Byte position of the label
+        location: usize,
+    },
+
     /// A valid construct that warrants an editor warning but does not invalidate the AST.
     #[error("{message}")]
     Advisory {
@@ -914,6 +927,7 @@ impl ErrorClass for ParseError {
             | Self::InvalidSignatureOrdering { .. }
             | Self::DoWhileTrailingBlock { .. }
             | Self::CStyleForContinueBlock { .. }
+            | Self::QualifiedLoopControlLabel { .. }
             | Self::LexerError { .. }
             | Self::InvalidNumber { .. }
             | Self::InvalidString
@@ -1649,7 +1663,8 @@ impl ParseError {
             // to EOF. Must stay consistent with `diagnostic_anchor`.
             ParseError::HeredocBudgetExhausted { location, .. }
             | ParseError::DoWhileTrailingBlock { location }
-            | ParseError::CStyleForContinueBlock { location } => Some(*location),
+            | ParseError::CStyleForContinueBlock { location }
+            | ParseError::QualifiedLoopControlLabel { location } => Some(*location),
             _ => None,
         }
     }
@@ -1737,6 +1752,7 @@ impl ParseError {
             | Self::SyntaxError { location, .. }
             | Self::DoWhileTrailingBlock { location }
             | Self::CStyleForContinueBlock { location }
+            | Self::QualifiedLoopControlLabel { location }
             | Self::Advisory { location, .. }
             | Self::HeredocBudgetExhausted { location, .. }
             | Self::Recovered { location, .. } => ParseDiagnosticAnchor::Exact(*location),
