@@ -2863,7 +2863,22 @@ function main() {
     return concludeRun(receipt);
   }
 
-  const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  let packageJson;
+  try {
+    packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+    if (
+      !packageJson ||
+      typeof packageJson.name !== 'string' ||
+      !packageJson.name.trim() ||
+      typeof packageJson.version !== 'string' ||
+      !packageJson.version.trim()
+    ) {
+      throw new Error('Extension package.json must contain a non-empty name and version.');
+    }
+  } catch (error) {
+    failInstrument(error);
+    return concludeRun(receipt);
+  }
   const vsixPath = path.join(root, `${packageJson.name}-${packageJson.version}.vsix`);
   let restoreStagedServer = () => {};
 
