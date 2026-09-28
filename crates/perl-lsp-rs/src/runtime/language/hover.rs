@@ -17,6 +17,7 @@ use perl_parser_core::syntax::source_context::{
     RangeClassification, SourceRegionIndex, SourceRegionKind,
 };
 use std::sync::Arc;
+mod closed_file_hover;
 mod hover_cards;
 mod hover_extracted;
 #[cfg(test)]
@@ -30,6 +31,25 @@ use hover_extracted::HoverExtracted;
 #[cfg(feature = "workspace")]
 use qualified_token::indexed_member_matches_qualified_callable;
 use qualified_token::{QualifiedHoverKind, classify_qualified_hover_token};
+
+/// How a computed hover answer may be published.
+///
+/// The open-document publication gates on the captured document generation so
+/// a Full-sync invalidation that lands while the provider is off-lock cannot
+/// present superseded source as current. The disk-snapshot publication
+/// (#16647) has no open generation to gate on: the answer was computed from a
+/// file that was not open, and is published only if it is still not open — a
+/// `didOpen` racing the request supersedes disk text and fails closed to null.
+#[derive(Debug, Clone, Copy)]
+// The disk-snapshot arm only exists when the workspace index does; without the
+// workspace feature every hover still flows through the open-document arm.
+#[cfg_attr(not(feature = "workspace"), allow(dead_code))]
+enum HoverPublication {
+    /// Open document: publish only while this generation is still current.
+    OpenGeneration(u32),
+    /// Disk-index snapshot of a not-open workspace file (#16647).
+    DiskSnapshot,
+}
 
 thread_local! {
     /// Trace-only source-region kind for the hover request running on *this*
@@ -223,9 +243,8 @@ impl LspServer {
             }
 
             let t_analyze_start = std::time::Instant::now();
-            let (extracted, live_compiler_context, hover_range, captured_generation) = match locked
-            {
-                Some((_, _, _, _, true, _)) | None => {
+            let (extracted, live_compiler_context, hover_range, publication) = match locked {
+                Some((_, _, _, _, true, _)) => {
                     if timing_on {
                         crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
                             "provider.hover.analyze",
@@ -233,8 +252,35 @@ impl LspServer {
                             crate::runtime::timing::uri_tail(uri),
                         ));
                     }
+                    // Full-sync-required: the predecessor text is evidence only
+                    // and must not answer the user.
                     return Ok(Some(json!(null)));
                 }
+                // Not open (#16647): the open-documents gate was the only
+                // reason hover declined for a file the disk index already
+                // holds while references, definition, and workspace/symbol
+                // answered from it. Fall back to that indexed file; URIs the
+                // index does not hold still fail closed to null.
+                None => match self.closed_file_hover_parts(uri, line, character) {
+                    Some(parts) => (
+                        parts.extracted,
+                        parts.live_compiler_context,
+                        parts.hover_range,
+                        HoverPublication::DiskSnapshot,
+                    ),
+                    None => {
+                        if timing_on {
+                            crate::runtime::timing::emit(
+                                crate::runtime::timing::TimingSpan::labeled(
+                                    "provider.hover.analyze",
+                                    crate::runtime::timing::elapsed_ms(t_analyze_start),
+                                    crate::runtime::timing::uri_tail(uri),
+                                ),
+                            );
+                        }
+                        return Ok(Some(json!(null)));
+                    }
+                },
                 Some((offset, parsed, text, range, false, generation)) => {
                     // Generation-bound source-region evidence (#5003). Beyond the
                     // dispatcher trace, it now routes the generic fallback paths:
@@ -341,13 +387,18 @@ impl LspServer {
                         } else {
                             self.extract_symbol_hover(uri, ast, &text, offset, &parsed)
                         };
-                        (extracted, live_compiler_context, range, generation)
+                        (
+                            extracted,
+                            live_compiler_context,
+                            range,
+                            HoverPublication::OpenGeneration(generation),
+                        )
                     } else {
                         (
                             Self::extract_token_hover(uri, &text, offset, source_region.as_deref()),
                             live_compiler_context,
                             range,
-                            generation,
+                            HoverPublication::OpenGeneration(generation),
                         )
                     }
                 }
@@ -368,13 +419,13 @@ impl LspServer {
                     {
                         return self.publish_hover_answer(
                             uri,
-                            captured_generation,
+                            publication,
                             Self::inject_hover_range_opt(compiler_hover, &hover_range),
                         );
                     }
                     return self.publish_hover_answer(
                         uri,
-                        captured_generation,
+                        publication,
                         Self::inject_hover_range_opt(value, &hover_range),
                     );
                 }
@@ -387,7 +438,7 @@ impl LspServer {
                     );
                     return self.publish_hover_answer(
                         uri,
-                        captured_generation,
+                        publication,
                         Self::inject_hover_range_opt(hv, &hover_range),
                     );
                 }
@@ -396,7 +447,7 @@ impl LspServer {
                         self.build_module_hover(&pkg_name, &doc_text, &doc_uri, Some(doc_offset));
                     return self.publish_hover_answer(
                         uri,
-                        captured_generation,
+                        publication,
                         Self::inject_hover_range_opt(hv, &hover_range),
                     );
                 }
@@ -418,13 +469,13 @@ impl LspServer {
                                 ) {
                                     return self.publish_hover_answer(
                                         uri,
-                                        captured_generation,
+                                        publication,
                                         Self::inject_hover_range_opt(compiler_hover, &hover_range),
                                     );
                                 }
                                 return self.publish_hover_answer(
                                     uri,
-                                    captured_generation,
+                                    publication,
                                     Self::inject_hover_range_opt(hover_value, &hover_range),
                                 );
                             }
@@ -442,13 +493,13 @@ impl LspServer {
                     {
                         return self.publish_hover_answer(
                             uri,
-                            captured_generation,
+                            publication,
                             Self::inject_hover_range_opt(compiler_hover, &hover_range),
                         );
                     }
                     return self.publish_hover_answer(
                         uri,
-                        captured_generation,
+                        publication,
                         Self::inject_hover_range_opt(generic, &hover_range),
                     );
                 }
@@ -466,7 +517,7 @@ impl LspServer {
                         {
                             return self.publish_hover_answer(
                                 uri,
-                                captured_generation,
+                                publication,
                                 Self::inject_hover_range_opt(hover_value, &hover_range),
                             );
                         }
@@ -487,13 +538,13 @@ impl LspServer {
                         ) {
                             return self.publish_hover_answer(
                                 uri,
-                                captured_generation,
+                                publication,
                                 Self::inject_hover_range_opt(compiler_hover, &hover_range),
                             );
                         }
                         return self.publish_hover_answer(
                             uri,
-                            captured_generation,
+                            publication,
                             Self::inject_hover_range_opt(hover_value, &hover_range),
                         );
                     }
@@ -506,13 +557,13 @@ impl LspServer {
                     {
                         return self.publish_hover_answer(
                             uri,
-                            captured_generation,
+                            publication,
                             Self::inject_hover_range_opt(compiler_hover, &hover_range),
                         );
                     }
                 }
             }
-            self.publish_hover_answer(uri, captured_generation, Some(json!(null)))
+            self.publish_hover_answer(uri, publication, Some(json!(null)))
         } else {
             Ok(Some(json!(null)))
         }
@@ -521,15 +572,28 @@ impl LspServer {
     fn publish_hover_answer(
         &self,
         uri: &str,
-        generation: u32,
+        publication: HoverPublication,
         value: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        Ok(Some(self.publish_user_answer_value(
-            uri,
-            generation,
-            value.unwrap_or(json!(null)),
-            json!(null),
-        )))
+        let value = match publication {
+            HoverPublication::OpenGeneration(generation) => self.publish_user_answer_value(
+                uri,
+                generation,
+                value.unwrap_or(json!(null)),
+                json!(null),
+            ),
+            HoverPublication::DiskSnapshot => {
+                if self.document_generation(uri).is_some() {
+                    // The file was opened while the disk answer was being
+                    // computed; the open buffer supersedes disk text, so fail
+                    // closed instead of answering over a live document (#16647).
+                    json!(null)
+                } else {
+                    value.unwrap_or(json!(null))
+                }
+            }
+        };
+        Ok(Some(value))
     }
 
     fn inject_hover_range_opt(mut value: Value, range: &Option<Value>) -> Option<Value> {
