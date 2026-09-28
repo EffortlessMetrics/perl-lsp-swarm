@@ -202,6 +202,11 @@ struct ProjectConfigReport {
     /// when nothing was rejected. See
     /// `perl_lsp_rs_core::config::RejectedIncludePath::render`.
     rejected_include_paths: Vec<String>,
+    /// Every configured `include_paths` entry was rejected, so the
+    /// previously-effective roots (the built-in defaults when nothing else
+    /// sets them) were retained rather than wiped (#16596). Reported so the
+    /// rejection section states the consequence, not just the entries.
+    include_paths_defaults_retained: bool,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -282,16 +287,19 @@ fn load_workspace_config(
                 ".perl-lsp.toml include_paths"
             };
             let rejected = project_config.apply_to_workspace_config(workspace_config, workspace);
+            let defaults_retained = project_config.include_paths_defaults_retained(&rejected);
             Ok(ProjectConfigReport {
                 status: ProjectConfigStatus::Loaded,
                 include_source,
                 rejected_include_paths: rejected.iter().map(RejectedIncludePath::render).collect(),
+                include_paths_defaults_retained: defaults_retained,
             })
         }
         Ok(None) => Ok(ProjectConfigReport {
             status: ProjectConfigStatus::Missing,
             include_source: "default includePaths",
             rejected_include_paths: Vec::new(),
+            include_paths_defaults_retained: false,
         }),
         Err(error) => Err(format!("{}: {error}", workspace.join(".perl-lsp.toml").display())),
     }
@@ -2381,6 +2389,17 @@ fn render_report(report: DoctorReport) -> String {
         for rejected in &report.config.rejected_include_paths {
             out.push_str(&format!("  - {rejected}\n"));
         }
+        if report.config.include_paths_defaults_retained {
+            out.push_str(
+                "  Every configured entry was rejected, so the previously effective roots\n",
+            );
+            out.push_str(
+                "  (the built-in defaults unless configured elsewhere) remain in effect.\n",
+            );
+            out.push_str(
+                "  Add at least one valid relative entry, or remove the key to restore defaults.\n",
+            );
+        }
     }
     out.push_str(&format!("Perl: {}\n", render_perl_binary(&report.perl)));
     out.push_str(&format!("Perl version: {}\n", render_perl_version(&report.perl)));
@@ -3141,6 +3160,47 @@ mod tests {
         Ok(())
     }
 
+    /// #16596 repro: doctor on an all-rejected `include_paths` config must
+    /// show the retained default roots — not `(none)` — and state the
+    /// consequence plus the fix in the rejection section.
+    #[test]
+    fn doctor_all_rejected_include_paths_shows_retained_default_roots() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let absolute = if cfg!(windows) { r"C:\Windows" } else { "/etc" };
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            format!("[perl]\ninclude_paths = [\"{}\"]\n", absolute.escape_default()),
+        )?;
+        let dir = temp.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+        let rendered = render_report(build_doctor_report_struct(dir)?);
+
+        let configured = rendered
+            .split("Configured includePaths:")
+            .nth(1)
+            .ok_or("missing Configured includePaths section")?;
+        let configured = configured
+            .split("Effective @INC roots:")
+            .next()
+            .ok_or("missing Effective @INC roots section")?;
+        assert!(
+            !configured.contains("(none)"),
+            "an all-rejected list must not wipe the configured roots; got: {rendered}"
+        );
+        assert!(
+            configured.contains("lib"),
+            "the built-in default roots must remain configured; got: {rendered}"
+        );
+        assert!(
+            rendered.contains("remain in effect")
+                && rendered.contains(
+                    "Add at least one valid relative entry, or remove the key to restore defaults"
+                ),
+            "the rejection section must state the consequence and the fix; got: {rendered}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn doctor_report_rejects_invalid_project_config() -> TestResult {
         let temp = tempfile::tempdir()?;
@@ -3388,6 +3448,7 @@ mod tests {
                 status: ProjectConfigStatus::Missing,
                 include_source: "default includePaths",
                 rejected_include_paths: Vec::new(),
+                include_paths_defaults_retained: false,
             },
             perl: PerlReport {
                 binary: None,
@@ -3471,11 +3532,13 @@ mod tests {
             status: ProjectConfigStatus::Loaded,
             include_source: ".perl-lsp.toml include_paths",
             rejected_include_paths: Vec::new(),
+            include_paths_defaults_retained: false,
         };
         let missing = ProjectConfigReport {
             status: ProjectConfigStatus::Missing,
             include_source: "default includePaths",
             rejected_include_paths: Vec::new(),
+            include_paths_defaults_retained: false,
         };
         assert_eq!(render_project_config_status(&loaded), "loaded .perl-lsp.toml");
         assert_eq!(render_project_config_status(&missing), "not found, using defaults");
