@@ -514,6 +514,11 @@ async function main(): Promise<void> {
     process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ||
     path.join(repoRoot, 'target', 'receipts', 'vscode-smoke');
   fs.mkdirSync(receiptsRoot, { recursive: true });
+  if (process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE === '1') {
+    fs.rmSync(path.join(receiptsRoot, 'update-closure-stage.json'), { force: true });
+    fs.rmSync(path.join(receiptsRoot, 'update-closure-result.json'), { force: true });
+    fs.rmSync(path.join(receiptsRoot, 'update-closure-reload-dispatched'), { force: true });
+  }
 
   if (!configuredWorkspace) {
     fs.writeFileSync(
@@ -523,10 +528,13 @@ async function main(): Promise<void> {
   }
 
   try {
+    const hostCachePath = envValue('PERL_LSP_VSCODE_CACHE_PATH');
     const { executablePath: vscodeExecutablePath } = await downloadVsCodeHostOrWriteFailureReceipt(
       receiptsRoot,
       vscodeVersion,
-      downloadAndUnzipVSCode,
+      hostCachePath
+        ? (options) => downloadAndUnzipVSCode({ ...options, cachePath: hostCachePath })
+        : downloadAndUnzipVSCode,
     );
     const installTarget = await resolveInstallTarget(source, downloadDir);
     configureCurrentSourceSmoke(userDataDir, extensionsDir, workspaceTrustMode);
@@ -543,8 +551,12 @@ async function main(): Promise<void> {
       PERL_LSP_TOOLCHAIN_NODE_VERSION: toolchainNodeVersion,
       PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
       PERL_LSP_VSCODE_VERSION: vscodeVersion,
+      PERL_LSP_UPDATE_CLOSURE_STAGE_FILE: path.join(receiptsRoot, 'update-closure-stage.json'),
     };
-    if (process.env.PERL_LSP_TEST_EXPLORER_SMOKE !== '1') {
+    if (
+      process.env.PERL_LSP_TEST_EXPLORER_SMOKE !== '1' &&
+      process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE !== '1'
+    ) {
       extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
     } else {
       delete extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP;
@@ -567,10 +579,37 @@ async function main(): Promise<void> {
         `--extensions-dir=${extensionsDir}`,
       ],
     };
-    if (workspaceTrustMode === 'untrusted') {
-      await runWithoutForcedWorkspaceTrust(testOptions);
+    const runHost = () =>
+      workspaceTrustMode === 'untrusted'
+        ? runWithoutForcedWorkspaceTrust(testOptions)
+        : runTests(testOptions);
+    if (process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE === '1') {
+      // Reload Window terminates the first extension test host. Re-enter with
+      // the same installed VSIX and profile, then require the second-host
+      // process receipt; the first host's exit alone is never success.
+      let firstHostInterrupted = false;
+      try {
+        await runHost();
+      } catch (error: unknown) {
+        if (
+          !fs.existsSync(path.join(receiptsRoot, 'update-closure-stage.json')) ||
+          !fs.existsSync(path.join(receiptsRoot, 'update-closure-reload-dispatched'))
+        ) {
+          throw error;
+        }
+        firstHostInterrupted = true;
+      }
+      if (!firstHostInterrupted) {
+        throw new Error('Reload Window did not interrupt the first installed Extension Host.');
+      }
+      if (!fs.existsSync(path.join(receiptsRoot, 'update-closure-result.json'))) {
+        await runHost();
+      }
+      if (!fs.existsSync(path.join(receiptsRoot, 'update-closure-result.json'))) {
+        throw new Error('Installed update reload did not produce a post-reload server receipt.');
+      }
     } else {
-      await runTests(testOptions);
+      await runHost();
     }
   } finally {
     // Shared profile directories belong to the orchestrator that created

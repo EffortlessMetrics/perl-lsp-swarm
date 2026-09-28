@@ -15,10 +15,12 @@ import {
 } from './managedArchiveSafetyPolicy';
 import type { ManagedCandidateManifest } from './managedCacheProtocol';
 import {
+  MANAGED_CURRENT_SELECTION_FILE,
   collectStaleManagedCandidates,
   commitManagedCandidateSelection,
   enumerateManagedCandidateCatalog,
   readManagedCurrentSelection,
+  readInstalledManagedCandidateManifest,
   readSessionManagedHostReference,
   writeInstalledManagedCandidateManifest,
 } from './managedCandidateRuntime';
@@ -937,7 +939,7 @@ export class BinaryDownloader {
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.lastErrorMessage = errorMsg;
-      this.outputChannel.appendLine(`Failed to download binary: ${errorMsg}`);
+      this.outputChannel.appendLine(`Managed binary install failed: ${errorMsg}`);
 
       const manualInstallUrl = 'https://github.com/EffortlessMetrics/perl-lsp#install';
       const manualInstallNote =
@@ -946,7 +948,12 @@ export class BinaryDownloader {
       let message: string;
       let buttons: string[];
 
-      if (errorMsg.includes('Windows ARM64 x64 emulation')) {
+      if (
+        errorMsg.includes('Managed binary was downloaded and verified, but selecting it failed')
+      ) {
+        message = `perl-lsp: ${errorMsg} Check the Perl Language Server output and retry the update.`;
+        buttons = ['View Logs'];
+      } else if (errorMsg.includes('Windows ARM64 x64 emulation')) {
         message = `perl-lsp: ${errorMsg} ${manualInstallNote}`;
         buttons = ['Install Manually', 'View Logs'];
       } else if (
@@ -1286,7 +1293,11 @@ export class BinaryDownloader {
           // the versioned selection record alongside it gives collectors and
           // host selection the policy-governed view. Stale generations are
           // then pruned only through the landed retention policy.
-          this.commitVersionedInstall(installDirName, compatibilityKey, manifest);
+          if (!this.commitVersionedInstall(installDirName, compatibilityKey, manifest)) {
+            throw new Error(
+              'Managed binary was downloaded and verified, but selecting it failed; the current selection was not changed.',
+            );
+          }
           this.collectStaleManagedCandidates(baseDir);
 
           progress.report({ increment: 5, message: 'Complete!' });
@@ -1982,7 +1993,7 @@ export class BinaryDownloader {
 
   /**
    * Commits a freshly populated install dir: the versioned
-   * `managed_current_selection.v1` record first, then the legacy `current`
+   * `managed_current_selection.v1` record, then the legacy `current`
    * dir pointer. Ordering is the consistency contract (#10083): when the
    * selection record cannot be written (transient lock, full disk), the
    * pointer is left unmoved so the previous selection stays authoritative
@@ -1996,7 +2007,7 @@ export class BinaryDownloader {
     installDirName: string,
     compatibilityKey?: string,
     manifest?: ManagedCandidateManifest | null,
-  ): void {
+  ): boolean {
     const baseDir =
       compatibilityKey === undefined
         ? this.getManagedBaseDir()
@@ -2011,8 +2022,15 @@ export class BinaryDownloader {
         `Note: managed candidate manifest is absent for ${installDirName}; ` +
           'activation refused, the previous selection stays authoritative.',
       );
-      return;
+      return false;
     }
+    const tmpPath = `${pointerPath}.tmp`;
+    // A failed pointer-temp write must not advance the policy selection.
+    fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
+    const previousSelection = readManagedCurrentSelection(baseDir);
+    const previousPointer = fs.existsSync(pointerPath)
+      ? fs.readFileSync(pointerPath, 'utf8').trim()
+      : null;
     if (manifest !== undefined) {
       const selection = commitManagedCandidateSelection(baseDir, manifest, (message) =>
         this.outputChannel.appendLine(`Note: ${message}`),
@@ -2024,16 +2042,50 @@ export class BinaryDownloader {
         this.outputChannel.appendLine(
           `Note: managed selection commit refused; activation pointer left unchanged (${installDirName} remains inactive).`,
         );
-        return;
+        fs.rmSync(tmpPath, { force: true });
+        return false;
       }
       this.outputChannel.appendLine(
         `Managed current selection: generation ${selection.selection_generation} -> ${selection.candidate_id}`,
       );
     }
-    const tmpPath = `${pointerPath}.tmp`;
-    fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
-    fs.renameSync(tmpPath, pointerPath);
+    try {
+      fs.renameSync(tmpPath, pointerPath);
+    } catch (error: unknown) {
+      // A failed rename follows the selection write. Restore the old
+      // candidate as a new generation; if that cannot be proven, surface
+      // uncertainty rather than claiming the previous selection survived.
+      let restored = manifest === undefined;
+      if (manifest !== undefined && previousSelection !== null && previousPointer !== null) {
+        const oldManifest = readInstalledManagedCandidateManifest(
+          path.join(baseDir, previousPointer),
+        );
+        if (oldManifest?.candidate_id === previousSelection.candidate_id) {
+          restored =
+            commitManagedCandidateSelection(baseDir, oldManifest, (message) =>
+              this.outputChannel.appendLine(`Note: ${message}`),
+            ) !== null;
+        }
+      } else if (manifest !== undefined && previousSelection === null && previousPointer === null) {
+        try {
+          fs.rmSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE));
+          restored = true;
+        } catch {
+          // Report uncertain state below.
+        }
+      }
+      if (!restored) {
+        throw new Error(
+          `Managed activation pointer failed and selection state is uncertain: ${String(error)}`,
+        );
+      }
+      this.outputChannel.appendLine(
+        `Note: managed activation pointer failed; previous selection restored: ${String(error)}`,
+      );
+      return false;
+    }
     this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
+    return true;
   }
 
   /**
@@ -2182,7 +2234,7 @@ export class BinaryDownloader {
         this.outputChannel.appendLine(`[update-check] Auto-updating to ${remoteVersion}`);
         const installed = await this.ensureBinary(true, UPDATE_PROGRESS_TITLE);
         if (installed) {
-          this.offerReloadToSwitch(remoteVersion);
+          await this.confirmStagedUpdate(installed);
         }
         return;
       }
@@ -2197,7 +2249,7 @@ export class BinaryDownloader {
       if (choice === 'Update') {
         const installed = await this.ensureBinary(true, UPDATE_PROGRESS_TITLE);
         if (installed) {
-          this.offerReloadToSwitch(remoteVersion);
+          await this.confirmStagedUpdate(installed);
         }
       } else if (choice === "Don't ask again") {
         await config.update('updateCheckInterval', 0, vscode.ConfigurationTarget.Global);
@@ -2219,7 +2271,24 @@ export class BinaryDownloader {
    * affordance keeps that handoff honest without duplicating the Reinstall
    * command's stop/restart flow.
    */
-  private offerReloadToSwitch(version: string): void {
+  private async confirmStagedUpdate(installedPath: string): Promise<void> {
+    const version = await this.getLocalVersion(installedPath);
+    if (!version) {
+      this.outputChannel.appendLine(
+        `[update-check] Installed binary at ${installedPath} has no readable version; reload confirmation withheld.`,
+      );
+      void vscode.window
+        .showWarningMessage(
+          'perllsp update was downloaded, but its installed version could not be verified. The running server is unchanged; check the Perl Language Server output before reloading.',
+          'View Logs',
+        )
+        .then((choice) => {
+          if (choice === 'View Logs') {
+            this.outputChannel.show();
+          }
+        });
+      return;
+    }
     void vscode.window
       .showInformationMessage(
         `perllsp ${version} downloaded. Reload the window to switch to it.`,

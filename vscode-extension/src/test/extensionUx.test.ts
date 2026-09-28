@@ -229,7 +229,7 @@ describe('warnConfiguredServerPathMissing (perl-lsp.serverPath fallback, #16535)
   });
 
   test('warns once per session, naming the broken path and the settings remedy', () => {
-    warnConfiguredServerPathMissing('/mnt/share/perllsp');
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
 
     expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
@@ -240,14 +240,14 @@ describe('warnConfiguredServerPathMissing (perl-lsp.serverPath fallback, #16535)
 
     // A restart or configuration change inside the same session must not
     // repeat the warning.
-    warnConfiguredServerPathMissing('/mnt/share/perllsp');
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
     expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
   });
 
   test('choosing the settings button opens perl-lsp.serverPath', async () => {
     (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Check serverPath Setting');
 
-    warnConfiguredServerPathMissing('/mnt/share/perllsp');
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
@@ -259,12 +259,25 @@ describe('warnConfiguredServerPathMissing (perl-lsp.serverPath fallback, #16535)
   test('dismissing the warning does not open settings', async () => {
     (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
 
-    warnConfiguredServerPathMissing('/mnt/share/perllsp');
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', 'downloaded');
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
       'workbench.action.openSettings',
       'perl-lsp.serverPath',
+    );
+  });
+
+  test.each([
+    ['bundled', 'using the bundled binary instead.'],
+    ['path', 'using a binary from PATH instead.'],
+    ['unavailable', 'no fallback binary is available.'],
+  ] as const)('names the resolved %s fallback without claiming a download', (source, ending) => {
+    warnConfiguredServerPathMissing('/mnt/share/perllsp', source);
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      `perl-lsp.serverPath "/mnt/share/perllsp" does not exist; ${ending}`,
+      'Check serverPath Setting',
     );
   });
 });

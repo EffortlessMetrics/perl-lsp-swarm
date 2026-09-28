@@ -55,6 +55,7 @@ export async function run(): Promise<void> {
     );
   }
   const testExplorerSmoke = process.env.PERL_LSP_TEST_EXPLORER_SMOKE === '1';
+  const updateClosureSmoke = process.env.PERL_LSP_UPDATE_CLOSURE_SMOKE === '1';
   const selectedSmokeCount = [
     currentSourceSmoke,
     packagedBundleSmoke,
@@ -62,23 +63,26 @@ export async function run(): Promise<void> {
     activationFailureSmoke,
     crashRecoverySmoke,
     testExplorerSmoke,
+    updateClosureSmoke,
   ].filter(Boolean).length;
   if (testExplorerSmoke && selectedSmokeCount > 1) {
     throw new Error('Published smoke selectors are mutually exclusive.');
   }
-  const smokeTestPaths = crashRecoverySmoke
-    ? [path.resolve(__dirname, '../crashRecoveryJourney.test.js')]
-    : activationFailureSmoke
-      ? [path.resolve(__dirname, '../activationFailureJourney.test.js')]
-      : packagedBundleSmoke
-        ? [path.resolve(__dirname, '../packagedBundleJourney.test.js')]
-        : healthCheckFailureSmoke
-          ? [path.resolve(__dirname, '../healthCheckFailureJourney.test.js')]
-          : testExplorerSmoke
-            ? [path.resolve(__dirname, '../testExplorerJourney.test.js')]
-            : currentSourceSmoke
-              ? [path.resolve(__dirname, '../../integration/firstHourReceipt.test.js')]
-              : [path.resolve(__dirname, '../managedBinaryPublishedSmoke.test.js')];
+  const smokeTestPaths = updateClosureSmoke
+    ? [path.resolve(__dirname, '../updateClosureJourney.test.js')]
+    : crashRecoverySmoke
+      ? [path.resolve(__dirname, '../crashRecoveryJourney.test.js')]
+      : activationFailureSmoke
+        ? [path.resolve(__dirname, '../activationFailureJourney.test.js')]
+        : packagedBundleSmoke
+          ? [path.resolve(__dirname, '../packagedBundleJourney.test.js')]
+          : healthCheckFailureSmoke
+            ? [path.resolve(__dirname, '../healthCheckFailureJourney.test.js')]
+            : testExplorerSmoke
+              ? [path.resolve(__dirname, '../testExplorerJourney.test.js')]
+              : currentSourceSmoke
+                ? [path.resolve(__dirname, '../../integration/firstHourReceipt.test.js')]
+                : [path.resolve(__dirname, '../managedBinaryPublishedSmoke.test.js')];
   for (const smokeTestPath of smokeTestPaths) {
     mocha.addFile(smokeTestPath);
   }

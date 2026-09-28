@@ -73,7 +73,7 @@ interface DownloaderPrivateSurface {
     installDirName: string,
     compatibilityKey?: string,
     manifest?: ManagedCandidateManifest | null,
-  ): void;
+  ): boolean;
   collectStaleManagedCandidates(baseDir: string): void;
   runEnsureBinary(forceDownload: boolean): Promise<string | null>;
   calculateSHA256(filePath: string): Promise<string>;
@@ -905,6 +905,52 @@ describe('Versioned managed install layout', () => {
     expect(fs.existsSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE))).toBe(false);
   });
 
+  test('pointer rename failure restores the prior managed candidate', () => {
+    const oldName = 'v0.13.3-old';
+    const newName = 'v0.13.4-new';
+    const oldManifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '5'.repeat(64),
+      perllsp_digest: '6'.repeat(64),
+      perl_dap_digest: null,
+    });
+    const newManifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '7'.repeat(64),
+      perllsp_digest: '8'.repeat(64),
+      perl_dap_digest: null,
+    });
+    for (const [name, manifest] of [
+      [oldName, oldManifest],
+      [newName, newManifest],
+    ] as const) {
+      const dir = path.join(baseDir, name);
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+    }
+    expect(downloader.commitVersionedInstall(oldName, undefined, oldManifest)).toBe(true);
+    const rawFs = require('fs') as typeof fs;
+    const actualRename = rawFs.renameSync;
+    const rename = jest.spyOn(rawFs, 'renameSync').mockImplementation((source, destination) => {
+      if (source === path.join(baseDir, 'current.tmp')) {
+        throw new Error('simulated pointer lock');
+      }
+      return actualRename(source, destination);
+    });
+    try {
+      expect(downloader.commitVersionedInstall(newName, undefined, newManifest)).toBe(false);
+    } finally {
+      rename.mockRestore();
+    }
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(oldManifest.candidate_id);
+    expect(readManagedCurrentSelection(baseDir)?.selection_generation).toBe(3);
+  });
+
   test('getLocalBinaryPath resolves the policy-governed current candidate', () => {
     const currentName = 'v0.13.4-stamp';
     const currentDir = path.join(baseDir, currentName);
@@ -1114,7 +1160,7 @@ describe('Versioned managed install layout', () => {
       JSON.stringify(newManifest),
     );
 
-    downloader.commitVersionedInstall(newName, undefined, newManifest);
+    expect(downloader.commitVersionedInstall(newName, undefined, newManifest)).toBe(false);
 
     // The pointer must not claim an activation the policy record refutes,
     // and the unreadable evidence is left exactly as it was found.
@@ -3067,7 +3113,10 @@ describe('checkForUpdateSilent', () => {
 
   test('autoUpdate=true installs, then confirms the staged update with a reload prompt (#16531)', async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
-    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest
+      .spyOn(downloader, 'getLocalVersion')
+      .mockResolvedValueOnce('0.12.0')
+      .mockResolvedValue('0.13.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
       tag_name: 'v0.13.0',
       assets: [],
@@ -3105,7 +3154,10 @@ describe('checkForUpdateSilent', () => {
 
   test('choosing "Reload Window" reloads the window to switch to the staged binary (#16531)', async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
-    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest
+      .spyOn(downloader, 'getLocalVersion')
+      .mockResolvedValueOnce('0.12.0')
+      .mockResolvedValue('0.13.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
       tag_name: 'v0.13.0',
       assets: [],
@@ -3123,7 +3175,10 @@ describe('checkForUpdateSilent', () => {
 
   test('"Update" button click installs, then confirms the staged update with a reload prompt (#16531)', async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
-    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest
+      .spyOn(downloader, 'getLocalVersion')
+      .mockResolvedValueOnce('0.12.0')
+      .mockResolvedValue('0.13.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
       tag_name: 'v0.13.0',
       assets: [],
@@ -3138,6 +3193,76 @@ describe('checkForUpdateSilent', () => {
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       'perllsp 0.13.0 downloaded. Reload the window to switch to it.',
       'Reload Window',
+    );
+  });
+
+  test('dismissing an available update leaves selection and reload untouched', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    const ensureSpy = jest.spyOn(downloader, 'ensureBinary');
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue('Dismiss');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(ensureSpy).not.toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+      'workbench.action.reloadWindow',
+    );
+  });
+
+  test('confirmation names the installed binary when release metadata changes after the offer', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+    jest
+      .spyOn(downloader, 'getLocalVersion')
+      .mockResolvedValueOnce('0.12.0')
+      .mockResolvedValue('0.14.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    jest.spyOn(downloader, 'ensureBinary').mockResolvedValue('/managed/v0.14.0/perllsp');
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValueOnce('Update');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'perllsp 0.13.0 is available (installed: 0.12.0)',
+      'Update',
+      'Dismiss',
+      "Don't ask again",
+    );
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'perllsp 0.14.0 downloaded. Reload the window to switch to it.',
+      'Reload Window',
+    );
+  });
+
+  test('an unreadable installed version cannot produce a versioned reload promise', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
+    jest
+      .spyOn(downloader, 'getLocalVersion')
+      .mockResolvedValueOnce('0.12.0')
+      .mockResolvedValue(null);
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    jest.spyOn(downloader, 'ensureBinary').mockResolvedValue('/managed/v0.13.0/perllsp');
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('installed version could not be verified'),
+      'View Logs',
     );
   });
 });

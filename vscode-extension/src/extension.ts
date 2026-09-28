@@ -1837,14 +1837,25 @@ export function diagnoseConfiguredServerPath(
  * binary. The warning names the path and opens the owning setting; the
  * session guard keeps restarts and configuration changes from repeating it.
  */
-export function warnConfiguredServerPathMissing(userPath: string): void {
+export function warnConfiguredServerPathMissing(
+  userPath: string,
+  source: BinaryResolutionSource,
+): void {
   if (serverPathMissingWarningShown) {
     return;
   }
   serverPathMissingWarningShown = true;
+  const fallback =
+    source === 'downloaded'
+      ? 'using the auto-downloaded binary instead.'
+      : source === 'bundled'
+        ? 'using the bundled binary instead.'
+        : source === 'path'
+          ? 'using a binary from PATH instead.'
+          : 'no fallback binary is available.';
   void vscode.window
     .showWarningMessage(
-      `perl-lsp.serverPath "${userPath}" does not exist; using the auto-downloaded binary instead.`,
+      `perl-lsp.serverPath "${userPath}" does not exist; ${fallback}`,
       'Check serverPath Setting',
     )
     .then((choice) => {
@@ -1878,9 +1889,6 @@ async function getServerPath(
     userPathExists,
     outputChannel,
   );
-  if (configuredServerPathMissing) {
-    warnConfiguredServerPathMissing(configuredServerPathMissing);
-  }
 
   const platform = process.platform;
   const arch = process.arch;
@@ -1990,6 +1998,9 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.beginBinaryResolution();
       try {
         const resolution = await getServerPath(context);
+        if (configuredServerPathMissing) {
+          warnConfiguredServerPathMissing(configuredServerPathMissing, resolution.source);
+        }
         languageClientStartupMetrics.finishBinaryResolution(
           resolution.path ? 'ok' : 'unavailable',
           resolution.source,
