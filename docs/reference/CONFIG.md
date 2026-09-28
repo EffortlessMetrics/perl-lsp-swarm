@@ -291,26 +291,42 @@ When `perlPath` is unset, the server will try perlbrew/plenv-managed
 interpreters before falling back to `perl` on `PATH` for the system `@INC`
 probe. Use `useSystemInc` to opt in to that system `@INC` lookup.
 
-#### `perl.workspace.perlPath`
+#### `perl.workspace.perlPath` — refused, not configurable
 
 | Property | Value |
 |---|---|
 | Type | `string` |
-| Default | auto-detected |
+| Status | **ignored if set** |
 | Key | `perlPath` |
 
-Path to the Perl interpreter used for system `@INC` probing. When set, this
-value overrides auto-detection and `PATH` lookup.
+The language server accepts no interpreter path. Setting this key has no
+effect, produces no warning, and the value is discarded.
 
-#### `perl.workspace.perlArgs`
+That is deliberate. Honouring an interpreter path or argv from workspace or
+editor settings would let a hostile cloned repository choose which program the
+server executes and with which arguments, so the keys are refused on every
+client-settings channel and `.perl-lsp.toml` has no field for them at all
+(#3729).
+
+To make the server probe with a specific Perl, control resolution order instead:
+put the intended `perl` first on `PATH` (`where perl` on Windows, `which -a
+perl` elsewhere). perlbrew and plenv interpreters are preferred over `PATH` when
+present.
+
+The debugger is a separate channel: `launch.json` accepts a per-launch
+`perlPath`, and that one is honored.
+
+#### `perl.workspace.perlArgs` — refused, not configurable
 
 | Property | Value |
 |---|---|
 | Type | `string[]` |
-| Default | `[]` |
+| Status | **ignored if set** |
 | Key | `perlArgs` |
 
-Extra arguments passed to the Perl interpreter when probing startup `@INC`.
+Extra arguments for the Perl interpreter used to probe startup `@INC`. Refused
+for the same reason as `perlPath` above: argv chosen by a workspace must not
+reach a process the server spawns.
 
 ```json
 {

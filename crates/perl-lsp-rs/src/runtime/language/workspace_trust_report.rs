@@ -52,11 +52,21 @@ fn setup_hints_summary(config: &WorkspaceConfig) -> Value {
     let mut hints = Vec::new();
 
     if configured_perl_path(config).is_none() {
+        // No channel can set an interpreter path for the language server:
+        // `ProjectPerlConfig` has no such field, and `WorkspaceConfig::update_from_value`
+        // refuses `perlPath`/`perlArgs` from every client-settings payload so a hostile
+        // workspace cannot choose the interpreter or its argv (#3729). This hint
+        // therefore fires on every clean report, and naming the setting here told
+        // every user to configure something that is silently discarded (#16612).
+        //
+        // The truthful action is the one that works: put the intended `perl` first on
+        // PATH. The debugger has a real per-launch `perlPath` in `launch.json`; that is
+        // a different field on a different channel and is deliberately not named here.
         hints.push(setup_hint(
             "perl_path_uses_path",
             "info",
             "No explicit Perl binary is configured; perl-lsp will resolve `perl` from PATH when a subprocess needs it.",
-            "Set `perl.workspace.perlPath` when the editor should use a specific Perl.",
+            "Put the intended `perl` first on PATH so resolution order picks it (`where perl` on Windows, `which -a perl` elsewhere). The language server deliberately accepts no interpreter-path setting.",
         ));
     }
 

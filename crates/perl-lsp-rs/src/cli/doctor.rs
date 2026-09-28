@@ -692,7 +692,15 @@ const FIX_BASH_INSTALL_GIT_WINDOWS: &str =
     "fix: install Git for Windows so a POSIX bash is available: winget install --id Git.Git -e";
 const FIX_BASH_INSTALL_UNIX: &str = "fix: install bash with your distribution's package manager so repository .sh entrypoints can run";
 
-const FIX_PERL_IDENTITY_DIVERGENCE: &str = "fix: reorder PATH so your intended perl resolves first ('where perl' lists resolution order on Windows, 'which -a perl' elsewhere), or pin [perl] perl_path in .perl-lsp.toml";
+// The PATH half is the only action that works. `ProjectPerlConfig` has no
+// interpreter-path field, and `WorkspaceConfig::update_from_value` refuses the
+// interpreter-path and argv keys from every client-settings payload so a
+// hostile workspace cannot choose the program or its arguments (#3729). The
+// second half of this string used to point at a project-config key that does
+// not exist, so following it changed nothing and said nothing (#16612). The
+// debugger's `launch.json` interpreter path is a different field on a different
+// channel and is unaffected.
+const FIX_PERL_IDENTITY_DIVERGENCE: &str = "fix: reorder PATH so your intended perl resolves first ('where perl' lists resolution order on Windows, 'which -a perl' elsewhere)";
 const FIX_PERL_MISSING_WINDOWS: &str =
     "fix: install a native perl (for example Strawberry Perl) ahead of MSYS entries on PATH";
 const FIX_PERL_MISSING_UNIX: &str =
