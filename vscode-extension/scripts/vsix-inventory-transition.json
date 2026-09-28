@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "owner_issue": 16532,
-  "reason": "PR #16573 repairs update-check and download messaging across the real reinstall consumer: checksum retry uses the registered reinstall command, cancellation stays distinct from failure, and manual checks report failures. Exact Windows VSIX inventory has 29 files and 1885404 bytes. Against the accepted main baseline from #16725, out/extension.js grows from 1698756 to 1704201 bytes (+5445); package.json and all other members are unchanged, yielding a size_only transition. Hosted installed smoke validates the candidate package.",
+  "reason": "PR #16573 repairs update-check and download messaging across the real reinstall consumer: checksum retry uses the registered reinstall command, cancellation stays distinct from failure, and manual checks report failures. Exact Windows VSIX inventory has 29 files and 1885404 bytes. Against the accepted main baseline from #16725, out/extension.js grows from 1698756 to 1704201 bytes (+5445); package.json and all other members are unchanged, yielding a size_only transition. Installed behavior remains an independent hosted smoke gate.",
   "base_baseline_file_sha256": "e43553142ff285227c0de61b076a3a5bc3c6a13dd037cbf9496012d5ff7130a1",
   "candidate_baseline_file_sha256": "dee29a3954eae8a0a8f3d7591190077b0ff0d31539c13801c53c4d4e5551c2ef",
   "base_inventory_sha256": "55f4af7b401b0bb1691c53350a5618e665432eb360aa548d0e7a1c0e858536c3",
