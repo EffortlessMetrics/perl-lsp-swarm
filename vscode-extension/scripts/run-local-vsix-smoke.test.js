@@ -3263,3 +3263,75 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
   assert.equal(child.PERL_LSP_CURRENT_SOURCE_SMOKE, undefined);
   assert.equal(environment.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST, undefined);
 });
+
+void test('main records manifest failures before packaging and exits not proven', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, 'run-local-vsix-smoke.js'), 'utf8');
+  const revision = 'a'.repeat(40);
+  const cases = [
+    {
+      label: 'missing',
+      read: () => { throw new Error('ENOENT: package.json missing'); },
+      reason: /ENOENT/,
+    },
+    { label: 'malformed', read: () => '{', reason: /JSON/ },
+    { label: 'missing name', read: () => '{"version":"1.0.0"}', reason: /name and version/ },
+    {
+      label: 'empty version',
+      read: () => '{"name":"fixture","version":"  "}',
+      reason: /name and version/,
+    },
+  ];
+  for (const scenario of cases) {
+    const persisted = [];
+    const sandbox = {
+      __dirname,
+      module: { exports: {} },
+      process: {
+        env: {
+          PERL_LSP_FIRST_HOUR_SERVER_PATH: '/fixture/perllsp',
+          PERL_LSP_SERVER_SOURCE_SHA: revision,
+        },
+        platform: 'linux',
+        arch: 'x64',
+        stderr: { write() {} },
+      },
+      require(name) {
+        if (name === 'fs') {
+          return {
+            existsSync: () => true,
+            readFileSync: scenario.read,
+          };
+        }
+        return require(name);
+      },
+      captureReceipt: (destination, receipt) =>
+        persisted.push({ destination, receipt: JSON.parse(JSON.stringify(receipt)) }),
+    };
+    const code = vm.runInNewContext(
+      source + `
+        gitRevision = () => '${revision}';
+        ensureCleanWorkingTree = () => {};
+        sha256File = () => 'b'.repeat(64);
+        persistReceipt = (_destination, receipt) => {
+          receipt.overall = computeOverallStatus(receipt.stages, receipt.instrument_failure);
+          captureReceipt(_destination, receipt);
+        };
+        publishCheckSummary = () => {};
+        runNpm = () => { throw new Error('packaging must not run'); };
+        main();
+      `,
+      sandbox,
+      { filename: 'run-local-vsix-smoke-manifest-fixture.js' },
+    );
+    assert.equal(code, 2, scenario.label);
+    assert.equal(persisted.length, 2, scenario.label);
+    assert.match(persisted.at(-1).destination, /current-source-orchestration-.*\.json$/);
+    const receipt = persisted.at(-1).receipt;
+    assert.match(receipt.instrument_failure, scenario.reason, scenario.label);
+    assert.equal(receipt.overall, 'not_proven', scenario.label);
+    assert.equal(receipt.stages.package_creation.status, 'not_proven', scenario.label);
+    assert.equal(receipt.stages.package_inventory.status, 'not_proven', scenario.label);
+    assert.equal(receipt.stages.behavioral_smoke.status, 'not_run', scenario.label);
+  }
+});
