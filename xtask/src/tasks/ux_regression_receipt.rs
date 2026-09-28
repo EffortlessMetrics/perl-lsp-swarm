@@ -578,6 +578,28 @@ fn run_failure_class(failing_tests: &[UxFailingTest], raw: &str) -> UxFailureCla
         return UxFailureClass::Unknown;
     }
 
+    // #16609. `scanned` may have found its word in prose that belongs to no failing
+    // test — a cache step, a crate being compiled, an unrelated line — while every
+    // failing test did print a block that never mentions a baseline. Then nothing
+    // about this run is a comparison to accept, and `update_baseline` is the unsafe
+    // remedy: it tells a reader to widen a budget or move a number that was never
+    // the thing that changed.
+    //
+    // The fallback is re-read from the failing tests' own evidence rather than
+    // simply withdrawn, because these blocks usually do name the failure.
+    //
+    // Scoping the scan to the blocks outright was tried and rejected (#16358): a
+    // failure cargo printed no block for leaves the run with nothing to read, and
+    // the real baseline comparison it hid would lose its remedy. So the whole-log
+    // scan keeps the last word whenever ANY failing test is unattributed, and only
+    // steps aside when every one of them is accounted for.
+    if scanned == UxFailureClass::BaselineDrift && every_failing_test_is_attributed(failing_tests) {
+        let own = failing_test_own_input(raw, failing_tests);
+        if !mentions_drift(&own.to_ascii_lowercase()) {
+            return infer_failure_class(&own);
+        }
+    }
+
     scanned
 }
 
@@ -606,6 +628,64 @@ fn no_failing_test_compared_anything(failing_tests: &[UxFailingTest]) -> bool {
     !failing_tests.is_empty() && failing_tests.iter().all(|test| test.mode == UxFailureMode::Panic)
 }
 
+/// The two words that name a baseline or snapshot comparison.
+///
+/// Shared with `infer_failure_class`'s own `BaselineDrift` arm so that deciding
+/// whether a run's evidence contains drift and deciding that the same evidence
+/// produces the class cannot drift apart from one another.
+fn mentions_drift(lower: &str) -> bool {
+    lower.contains("baseline") || lower.contains("snapshot")
+}
+
+/// True when every failing test is attributed to evidence of its own.
+///
+/// `discriminate_failing_tests` records `Unknown` both for a failure cargo printed
+/// no stdout block for and for a block carrying no marker this classifier reads.
+/// Either way the log said nothing about that test, so the whole-run scan is the
+/// only remaining thing that can speak for it — and one such failure is enough to
+/// leave the scan in charge, because the others' blocks are then not the whole
+/// story. This is the reason a run-class guard cannot simply re-read the blocks.
+fn every_failing_test_is_attributed(failing_tests: &[UxFailingTest]) -> bool {
+    !failing_tests.is_empty()
+        && failing_tests.iter().all(|test| test.mode != UxFailureMode::Unknown)
+}
+
+/// The text the failing tests account for themselves: each one's own `... FAILED`
+/// result line and its own stdout block, run-level trailer trimmed.
+///
+/// This is the failing-test-local counterpart of `classification_input`, which
+/// still admits every line belonging to no test at all — a cache step, a crate
+/// name being compiled, a path. Those lines are how a stray `baseline` reached a
+/// run whose failing test had no baseline to move. The test's own result line is
+/// kept because the line that reports a failing test is its own evidence, exactly
+/// as `classify_keeps_the_failing_test_own_result_line_as_evidence` requires.
+fn failing_test_own_input<'a>(raw: &'a str, failing_tests: &[UxFailingTest]) -> String {
+    let mut owned: Vec<&'a str> = Vec::new();
+
+    for line in raw.lines() {
+        let Some(capture) = FAILED_TEST_RE.captures(line) else {
+            continue;
+        };
+        let Some(name) = capture.get(1).map(|name| name.as_str()) else {
+            continue;
+        };
+        if failing_tests.iter().any(|test| test.name == name) {
+            owned.push(line);
+        }
+    }
+
+    for (name, start, end) in failure_block_spans(raw) {
+        if !failing_tests.iter().any(|test| test.name == name) {
+            continue;
+        }
+        if let Some(block) = raw.get(start..end) {
+            owned.push(block_body(block));
+        }
+    }
+
+    owned.join("\n")
+}
+
 fn infer_failure_class(raw: &str) -> UxFailureClass {
     let lower = raw.to_ascii_lowercase();
     if looks_like_scenario_19_race(&lower) {
@@ -614,7 +694,7 @@ fn infer_failure_class(raw: &str) -> UxFailureClass {
         UxFailureClass::ProviderRegression
     } else if lower.contains("fixture matrix") || lower.contains("matrix drift") {
         UxFailureClass::MatrixDrift
-    } else if lower.contains("baseline") || lower.contains("snapshot") {
+    } else if mentions_drift(&lower) {
         UxFailureClass::BaselineDrift
     } else if lower.contains("timed out") || lower.contains("timeout") {
         UxFailureClass::Timeout
@@ -1830,6 +1910,91 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored";
             "the guard needs affirmative crash evidence from every failing test"
         );
         assert_eq!(receipt.merge_action, "update_baseline");
+    }
+
+    /// #16609. The run's only `baseline` sits in a cache step that belongs to no
+    /// failing test, and the failing test's own block rejects a real value without
+    /// ever naming a baseline. There is nothing here to accept as a new expectation.
+    const STRAY_BASELINE_PROSE_BESIDE_AN_ASSERTION_LOG: &str = "Restored baseline snapshot cache in 0.4s\n\
+running 1 test\n\
+test ux_scenario_20_real_workspace_providers::module_completion_surfaces_a_real_symbol ... FAILED\n\
+\n\
+failures:\n\n\
+---- ux_scenario_20_real_workspace_providers::module_completion_surfaces_a_real_symbol stdout ----\n\
+assertion failed: the completion response carried no symbol for a real module\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+
+    #[test]
+    fn a_stray_baseline_word_does_not_claim_a_run_whose_own_blocks_are_assertions() -> Result<()> {
+        // The measured shape from job 106081131409: an assertion failure answered
+        // with `update_baseline` because the whole-log scan matched the word in
+        // incidental output. The block-backed failure is a plain assertion, so
+        // `every_failing_test_is_attributed` holds and the scan has to step aside.
+        let receipt = classify(STRAY_BASELINE_PROSE_BESIDE_AN_ASSERTION_LOG, None);
+
+        let [assertion] = receipt.failing_tests.as_slice() else {
+            bail!("the log carries one block-backed failure, got {}", receipt.failing_tests.len());
+        };
+        ensure!(
+            assertion.mode == UxFailureMode::AssertionFailed,
+            "the block is what this claim rests on, got {:?}",
+            assertion.mode
+        );
+        ensure!(
+            !matches!(receipt.failure_class, UxFailureClass::BaselineDrift),
+            "no failing test mentioned a baseline, so the run is not a baseline to move, got {:?}",
+            receipt.failure_class
+        );
+        ensure!(
+            receipt.merge_action != "update_baseline",
+            "the remedy must not instruct a reader to move a number this run never produced"
+        );
+        ensure!(
+            receipt.merge_action == "fix_provider",
+            "re-reading the failing test's own evidence names the failure it actually made"
+        );
+        Ok(())
+    }
+
+    /// The same stray prose, now beside an expired wait. `update_baseline` is the
+    /// one remedy the repository forbids on a bounded-wait failure, and the
+    /// starvation probe's own block is what must answer for it.
+    const STRAY_BASELINE_PROSE_BESIDE_A_SPENT_BUDGET_LOG: &str = "Restored baseline snapshot cache in 0.4s\n\
+running 2 tests\n\
+test ux_latency_raw_rpc::hover ... FAILED\n\
+test ux_scenario_20_real_workspace_providers::module_completion_surfaces_a_real_symbol ... FAILED\n\
+\n\
+failures:\n\n\
+---- ux_latency_raw_rpc::hover stdout ----\n\
+wait ended: deadline expired after 5000ms with the stream still live\n\
+\n\
+---- ux_scenario_20_real_workspace_providers::module_completion_surfaces_a_real_symbol stdout ----\n\
+assertion failed: the completion response carried no symbol for a real module\n\
+\n\
+test result: FAILED. 0 passed; 2 failed";
+
+    #[test]
+    fn a_stray_baseline_word_does_not_claim_a_run_beside_a_spent_budget() {
+        // Not every failure is a budget, so the run-level budget shortcut does not
+        // fire and the stray word would otherwise decide the class on its own.
+        let receipt = classify(STRAY_BASELINE_PROSE_BESIDE_A_SPENT_BUDGET_LOG, None);
+
+        assert!(
+            receipt.failing_tests.iter().any(|test| test.mode == UxFailureMode::BudgetExceeded),
+            "the starvation block is what this claim rests on, got {:?}",
+            receipt.failing_tests.iter().map(|test| test.mode).collect::<Vec<_>>()
+        );
+        assert_ne!(
+            receipt.failure_class,
+            UxFailureClass::BaselineDrift,
+            "a spent wait and an assertion are not a baseline to accept, got {:?}",
+            receipt.failure_class
+        );
+        assert_ne!(
+            receipt.merge_action, "update_baseline",
+            "widening a budget until the noise fits is the remedy this forbids"
+        );
     }
 
     #[test]
