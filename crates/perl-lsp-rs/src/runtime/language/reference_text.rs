@@ -677,13 +677,11 @@ mod tests {
     fn search_document_texts_for_references_keeps_word_boundaries() -> Result<(), Box<dyn Error>> {
         let docs = [("file:///refs.pl", "my $var = 1;\nmy $variant = $var;\n")];
         let refs = scan(&docs, "var", Some('$'), 10);
-        if refs.len() != 2 {
-            return Err(format!("expected 2 references, got {}", refs.len()).into());
-        }
-        for location in &refs {
-            if start_of(location)? == (1, 4) {
-                return Err("embedded match in $variant must not be reported".into());
-            }
+        let starts: Vec<_> = refs.iter().map(start_of).collect::<Result<_, _>>()?;
+        if starts != vec![(0, 3), (1, 14)] {
+            return Err(
+                format!("expected $var at (0,3) and (1,14) without $variant: {starts:?}").into()
+            );
         }
         Ok(())
     }
