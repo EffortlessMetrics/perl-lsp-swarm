@@ -3252,6 +3252,27 @@ my $result = helper_a();
         "Definition should point to My/Utils.pm, got: {uri}"
     );
 
+    // The quoted import-list entry is an intentional symbol target too.
+    let (line, character) = find_line_char(caller, "helper_a',")?;
+    let imported = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": workspace.uri("app.pl")},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+    if !imported
+        .pointer("/0/uri")
+        .and_then(|uri| uri.as_str())
+        .is_some_and(|uri| uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"))
+        || imported.pointer("/0/range/start/line").and_then(|line| line.as_u64()) != Some(4)
+    {
+        return Err(format!(
+            "quoted import-list symbol should reach My::Utils::helper_a: {imported}"
+        )
+        .into());
+    }
+
     Ok(())
 }
 

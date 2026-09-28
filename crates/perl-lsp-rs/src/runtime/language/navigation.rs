@@ -40,6 +40,21 @@ fn in_single_quoted_literal(
     })
 }
 
+/// A line parser may recognize statement-looking text inside a multiline string.
+/// Accept its leading keyword only when the current parse marks that byte as code.
+fn statement_keyword_is_code(
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+    text: &str,
+    line_start: usize,
+) -> bool {
+    let Some(line) = text.get(line_start..) else { return false };
+    let keyword_offset = line_start + line.len().saturating_sub(line.trim_start().len());
+    snapshot.is_some_and(|snapshot| {
+        snapshot.source_region_index().classify_offset(keyword_offset).proven_kind()
+            == Some(perl_parser_core::SourceRegionKind::Code)
+    })
+}
+
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::navigation::definition_shadow::{
     DefinitionCutoverResult, goto_definition_live_exact_or_imported,
@@ -611,13 +626,20 @@ fn normalize_framework_module_reference(
 /// - non-`.pm` paths (e.g. `require "script.pl"`) and dynamic forms
 ///   (`require $var`) never resolve here, so they keep their documented
 ///   non-resolution behavior.
-fn literal_require_path_module_at_offset(text: &str, offset: usize) -> Option<String> {
+fn literal_require_path_module_at_offset(
+    text: &str,
+    offset: usize,
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+) -> Option<String> {
     let mut cursor = offset.min(text.len());
     while cursor > 0 && !text.is_char_boundary(cursor) {
         cursor -= 1;
     }
 
     let line_start = text[..cursor].rfind('\n').map_or(0, |idx| idx + 1);
+    if !statement_keyword_is_code(snapshot, text, line_start) {
+        return None;
+    }
     let line_end = text[cursor..].find('\n').map_or(text.len(), |idx| cursor + idx);
     let line = &text[line_start..line_end];
     let cursor_in_line = cursor.saturating_sub(line_start);
@@ -1472,17 +1494,18 @@ impl LspServer {
                     let quoted_parent_base_argument = if cursor_in_single_quoted_literal {
                         let (line_start, line_end) =
                             perl_parser_core::text_line::line_bounds_at(text, offset);
-                        text.get(line_start..line_end).is_some_and(|line| {
-                            perl_module::parse_module_import_head(line).is_some_and(|head| {
-                                matches!(
-                                    head.kind,
-                                    perl_module::ModuleImportKind::UseParent
-                                        | perl_module::ModuleImportKind::UseBase
-                                ) && line
-                                    .get(head.token_end..offset.saturating_sub(line_start))
-                                    .is_some_and(|prefix| !prefix.contains(';'))
+                        statement_keyword_is_code(current_parsed.as_deref(), text, line_start)
+                            && text.get(line_start..line_end).is_some_and(|line| {
+                                perl_module::parse_module_import_head(line).is_some_and(|head| {
+                                    matches!(
+                                        head.kind,
+                                        perl_module::ModuleImportKind::UseParent
+                                            | perl_module::ModuleImportKind::UseBase
+                                    ) && line
+                                        .get(head.token_end..offset.saturating_sub(line_start))
+                                        .is_some_and(|prefix| !prefix.contains(';'))
+                                })
                             })
-                        })
                     } else {
                         false
                     };
@@ -1525,9 +1548,11 @@ impl LspServer {
                             doc.text_arc.to_string(),
                             offset,
                         ))
-                    } else if let Some(module_name) =
-                        literal_require_path_module_at_offset(text, offset)
-                    {
+                    } else if let Some(module_name) = literal_require_path_module_at_offset(
+                        text,
+                        offset,
+                        current_parsed.as_deref(),
+                    ) {
                         // Literal-path require (`require "Foo/Bar.pm"`): the
                         // quoted form cannot enter the bareword extraction
                         // chain, so normalize it here (#12559).
@@ -2083,6 +2108,36 @@ impl LspServer {
                     let offset = self.pos16_to_offset(doc, line, character);
                     // A literal has no generic symbol of its own. Keep the
                     // AST-aware DeclarationProvider below for method modifiers.
+                    // A quoted import-list member is an intentional exception:
+                    // the semantic Use node supplies a Sub key for that member.
+                    let quoted_import_list_symbol = if cursor_in_single_quoted_literal {
+                        let (line_start, line_end) =
+                            perl_parser_core::text_line::line_bounds_at(&doc.text, offset);
+                        statement_keyword_is_code(parsed.as_deref(), &doc.text, line_start)
+                            && doc.text.get(line_start..line_end).is_some_and(|line| {
+                                perl_module::parse_module_import_head(line).is_some_and(|head| {
+                                    head.kind == perl_module::ModuleImportKind::Use
+                                        && offset.saturating_sub(line_start) > head.token_end
+                                        && line
+                                            .get(head.token_end..offset.saturating_sub(line_start))
+                                            .is_some_and(|prefix| !prefix.contains(';'))
+                                        && crate::declaration::symbol_at_cursor_with_source(
+                                            ast,
+                                            offset,
+                                            crate::declaration::current_package_at(ast, offset),
+                                            &doc.text,
+                                        )
+                                        .is_some_and(
+                                            |key| {
+                                            key.kind == perl_semantic_analyzer::workspace_index::SymKind::Sub
+                                                    && key.pkg.as_ref() == head.token
+                                            },
+                                        )
+                                })
+                            })
+                    } else {
+                        false
+                    };
 
                     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                     if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
@@ -2172,7 +2227,7 @@ impl LspServer {
                         }
                     }
 
-                    if cursor_in_single_quoted_literal {
+                    if cursor_in_single_quoted_literal && !quoted_import_list_symbol {
                         return Ok(Some(json!([])));
                     }
 
@@ -2240,6 +2295,10 @@ impl LspServer {
                         }
                     }
                     // No coordinator: fall through to same-file semantic model
+
+                    if cursor_in_single_quoted_literal {
+                        return Ok(Some(json!([])));
+                    }
 
                     // Fall back to same-file definition
                     let model = crate::semantic::SemanticModel::build(ast, &doc.text);

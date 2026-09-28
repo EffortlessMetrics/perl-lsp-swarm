@@ -277,6 +277,53 @@ fn test_quoted_module_text_does_not_navigate_to_real_module() -> TestResult {
     Ok(())
 }
 
+/// Physical lines inside a multiline literal must not be parsed as module statements.
+#[test]
+fn test_multiline_literal_module_statements_are_inert() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let doc = "use lib 'lib';\nmy $literal = '\nuse parent Foo;\nrequire \"Foo/Bar.pm\";\n';\nuse parent 'Foo';\nrequire \"Foo/Bar.pm\";\n";
+    let foo = "package Foo;\n1;\n";
+    let bar = "package Foo::Bar;\n1;\n";
+    workspace.write("lib/Foo.pm", foo)?;
+    workspace.write("lib/Foo/Bar.pm", bar)?;
+    workspace.write("main.pl", doc)?;
+    let uri = workspace.uri("main.pl");
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    harness.open_document(&workspace.uri("lib/Foo.pm"), foo)?;
+    harness.open_document(&workspace.uri("lib/Foo/Bar.pm"), bar)?;
+    harness.open_document(&uri, doc)?;
+    harness.barrier();
+
+    for (line, character) in [(2, 12), (3, 12)] {
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        )?;
+        if !definition.is_null() && !definition.as_array().is_some_and(|items| items.is_empty()) {
+            return Err(format!("literal statement at line {line} navigated: {definition}").into());
+        }
+    }
+
+    for (line, character, expected) in [(5, 13, "Foo.pm"), (6, 12, "Bar.pm")] {
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        )?;
+        if !definition
+            .pointer("/0/uri")
+            .and_then(|uri| uri.as_str())
+            .is_some_and(|uri| uri.ends_with(expected))
+        {
+            return Err(format!(
+                "real statement at line {line} should reach {expected}: {definition}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// A quoted XS argument is a target only when the loader call itself is code.
 #[test]
 fn test_quoted_xs_argument_keeps_target_but_inert_loader_does_not() -> TestResult {
