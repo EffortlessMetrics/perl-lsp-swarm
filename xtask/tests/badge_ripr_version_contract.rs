@@ -7,8 +7,12 @@ use serde_yaml_ng::Value;
 // `seed-cache` (#12563) installs the same reviewed release to warm the rust
 // caches; it executes no analysis, but it must stay version-aligned with the
 // routed lanes, so the contract covers it too.
+// `ripr-cx43` and `ripr-cx53` were consolidated into one `ripr-selfhosted` job
+// by bcd1ffb7d (#15957), which routes by em-ci capability pool rather than by
+// physical runner name. The retired names stayed here, so the version lookup
+// below could no longer find a job at all.
 const EXPECTED_RIPR_EXECUTION_JOBS: &[&str] =
-    &["ripr-cx53", "ripr-cx43", "ripr-github", "ripr-fallback", "seed-cache"];
+    &["ripr-selfhosted", "ripr-github", "ripr-fallback", "seed-cache"];
 const VARIABLE_INSTALL_COMMAND: &str = "cargo install ripr --version \"$RIPR_VERSION\" --locked";
 
 fn project_root() -> PathBuf {

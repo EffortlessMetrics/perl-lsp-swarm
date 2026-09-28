@@ -1616,7 +1616,7 @@ impl Lowerer {
                     self.visit(default_value, RecoveryConfidence::Parsed);
                 }
             }
-            NodeKind::OptionalParameter { variable, default_value } => {
+            NodeKind::OptionalParameter { variable, default_value, .. } => {
                 if let Some(binding) = variable_binding(variable) {
                     self.record_binding(
                         binding.sigil,

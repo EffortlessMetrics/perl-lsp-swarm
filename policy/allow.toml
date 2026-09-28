@@ -1344,23 +1344,6 @@ expires = "2026-10-20"
 ast_kind = "tracked_file"
 glob = "justfile"
 
-# schemas/ directory - configuration/yml files
-[[allow]]
-id = "allow-b0184"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "test_print_indirect.pl"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root-level Perl test script. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "test_print_indirect.pl"
-
 # vscode-extension/* - unknown_non_rust (b0161 is package_metadata, b0162 is test_fixture)
 [[allow]]
 id = "allow-b0186"

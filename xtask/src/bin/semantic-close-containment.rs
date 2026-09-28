@@ -3,6 +3,24 @@
 //! This is CP00 from issue #10413. It does not decide whether an issue is
 //! semantically complete. It rejects only a closed set of contradictions that
 //! are visible in stable PR sections and exact issue classifications.
+//!
+//! # Remaining work and explicit scope exclusions
+//!
+//! The Remaining-work rule (CP00-REMAINING-SAME-ISSUE) fails when a
+//! Remaining-work unit assigns required work to the issue that the PR closes.
+//! A Remaining-work unit that starts with the structured marker
+//! `Out of scope:` (or the equivalent explicit label
+//! `Explicitly out of scope:`), case-insensitive, after an optional Markdown
+//! `- `, `* `, or `1. ` bullet and optional balanced emphasis, is an explicit
+//! scope exclusion: issue references inside that unit record work that stays
+//! with another owner instead of work this closure leaves open. Unmarked or
+//! ambiguous mentions of the closing issue keep failing; negation wording is
+//! never inferred. The closing relation's own declaration line (for example
+//! `Closes #12`) is a declaration, not remaining-work prose: the section
+//! parser attributes a trailing declaration to the last recognized section.
+//! A pure declaration (a relation keyword and issue references only) is
+//! ignored by the rule; a declaration qualified with additional prose stays
+//! subject to it.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use clap::{Parser, ValueEnum};
@@ -21,6 +39,13 @@ const REPORT_SCHEMA: &str = "semantic_close_containment_report.v1";
 const FIXTURE_SCHEMA: &str = "semantic_close_containment_fixture.v1";
 const EXIT_CONTRADICTION: i32 = 2;
 const EXIT_NOT_PROVEN: i32 = 3;
+/// #16214: exit 3 used to mean both "a relation could not be proven" — a
+/// verdict about the pull request — and "this validator failed" — a statement
+/// about the instrument, carrying no verdict at all. A consumer reading only
+/// the exit code or the check-run annotation could not tell which, so every
+/// instrument failure was indistinguishable from a finding against the PR.
+/// They now exit differently.
+const EXIT_INSTRUMENT_FAILURE: i32 = 4;
 const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FIXTURE_BYTES: usize = 512 * 1024;
 const MAX_PR_BODY_BYTES: usize = 128 * 1024;
@@ -34,6 +59,9 @@ const MAX_SOURCE_LINE_BYTES: usize = 2 * 1024;
 #[derive(Debug, Parser)]
 #[command(name = "semantic-close-containment")]
 #[command(about = "Reject high-confidence contradictory terminal issue relations")]
+#[command(
+    long_about = "Reject high-confidence contradictory terminal issue relations.\n\nRemaining work: a unit that starts with the structured marker `Out of scope:`\n(case-insensitive, after an optional Markdown `- `, `* `, or `1. ` bullet and\noptional balanced emphasis) explicitly excludes the issues it references from\nthis closure's remaining scope. Remaining-work mentions of the closing issue\nwithout that marker still fail (fail-closed)."
+)]
 struct Args {
     /// GitHub event payload. Defaults to GITHUB_EVENT_PATH when neither input is supplied.
     #[arg(long, conflicts_with = "fixture")]
@@ -81,8 +109,17 @@ impl ResultCode {
         )
     }
 
+    /// A verdict about the subject: the relation was checked and could not be
+    /// proven. Deliberately excludes `InstrumentFailure`, which says nothing
+    /// about the subject (#16214).
     fn is_not_proven(self) -> bool {
-        matches!(self, Self::NotProvenGithub | Self::InstrumentFailure)
+        matches!(self, Self::NotProvenGithub)
+    }
+
+    /// The validator could not do its job for this relation. Not a finding
+    /// against the pull request.
+    fn is_instrument_failure(self) -> bool {
+        matches!(self, Self::InstrumentFailure)
     }
 
     fn as_str(self) -> &'static str {
@@ -192,7 +229,14 @@ struct IssueSubject {
 #[derive(Clone, Debug)]
 enum IssueEvidence {
     Available(IssueSubject),
+    /// The relation itself does not hold: the pull request names an issue that
+    /// is absent, foreign, or not an issue at all. A verdict about the pull
+    /// request, so it maps to `NOT_PROVEN_GITHUB` and exit 3.
     Unavailable(String),
+    /// The lookup could not be performed: `gh` would not start, the transport
+    /// failed, or the response was unusable. #16214 — this says nothing about
+    /// the pull request, so it maps to `INSTRUMENT_FAILURE` and exit 4.
+    LookupFailed(String),
 }
 
 #[derive(Clone, Debug)]
@@ -257,8 +301,15 @@ struct Report {
 
 impl Report {
     fn exit_code(&self) -> i32 {
+        // A contradiction outranks an instrument failure: it is a proven
+        // statement about the subject, and it stays true whether or not some
+        // other relation could be checked. Below it, an instrument failure
+        // outranks a not-proven verdict, because a run that could not do its
+        // job should not be reported as having reached a verdict.
         if self.rows.iter().any(|row| row.code.is_failure()) {
             EXIT_CONTRADICTION
+        } else if self.rows.iter().any(|row| row.code.is_instrument_failure()) {
+            EXIT_INSTRUMENT_FAILURE
         } else if self.rows.iter().any(|row| row.code.is_not_proven()) {
             EXIT_NOT_PROVEN
         } else {
@@ -405,7 +456,7 @@ fn main() {
             "INSTRUMENT_FAILURE semantic-close-containment: {}",
             sanitize_for_output(&error.to_string(), 1_024)
         );
-        exit(EXIT_NOT_PROVEN);
+        exit(EXIT_INSTRUMENT_FAILURE);
     }
 }
 
@@ -460,7 +511,7 @@ fn evaluate_live_event(path: &Path) -> Result<Report> {
         if let Some(cached) = cache.get(key) {
             return cached.clone();
         }
-        let evidence = fetch_issue_live(key);
+        let evidence = fetch_issue_live(key, &pull.repository);
         cache.insert(key.clone(), evidence.clone());
         evidence
     })?;
@@ -663,7 +714,7 @@ fn evaluate_fixture_with_rules(fixture: &Fixture, rules: RuleGate) -> Result<Rep
         &pull,
         |key| {
             issues.get(key).cloned().unwrap_or_else(|| {
-                IssueEvidence::Unavailable("fixture omitted the referenced issue".to_string())
+                IssueEvidence::LookupFailed("fixture omitted the referenced issue".to_string())
             })
         },
         rules,
@@ -742,12 +793,7 @@ where
         rows.push(evaluate_relation(pull, &sections, relation_count, relation, evidence, rules));
     }
 
-    let aggregate_code = rows
-        .iter()
-        .find(|row| row.code.is_failure())
-        .map(|row| row.code)
-        .or_else(|| rows.iter().find(|row| row.code.is_not_proven()).map(|row| row.code))
-        .unwrap_or(ResultCode::PassNoHighConfidenceContradiction);
+    let aggregate_code = aggregate_code(&rows);
 
     Ok(Report {
         schema_version: REPORT_SCHEMA,
@@ -759,6 +805,19 @@ where
         rows,
         subject_snapshot: None,
     })
+}
+
+/// The headline row a reader sees. It shares its precedence with
+/// [`Report::exit_code`] deliberately: #16214 exists because the two
+/// disagreed, so they are defined once and tested together rather than
+/// recomputed at each call site.
+fn aggregate_code(rows: &[RelationResult]) -> ResultCode {
+    rows.iter()
+        .find(|row| row.code.is_failure())
+        .map(|row| row.code)
+        .or_else(|| rows.iter().find(|row| row.code.is_instrument_failure()).map(|row| row.code))
+        .or_else(|| rows.iter().find(|row| row.code.is_not_proven()).map(|row| row.code))
+        .unwrap_or(ResultCode::PassNoHighConfidenceContradiction)
 }
 
 fn evaluate_relation(
@@ -789,6 +848,15 @@ fn evaluate_relation(
                 ResultCode::NotProvenGithub,
                 format!(
                     "terminal relation could not be checked against its issue subject: {}",
+                    sanitize_for_output(&reason, 512)
+                ),
+            );
+        }
+        IssueEvidence::LookupFailed(reason) => {
+            return unavailable(
+                ResultCode::InstrumentFailure,
+                format!(
+                    "the issue lookup could not be performed, so this relation was not evaluated: {}",
                     sanitize_for_output(&reason, 512)
                 ),
             );
@@ -864,15 +932,19 @@ fn evaluate_relation(
         );
     }
 
-    let remaining = section_text(sections, &[SectionKind::RemainingWork]);
     if rules.enabled(RuleId::RemainingSameIssue)
-        && references_issue(&remaining, &relation.key, &pull.repository)
+        && remaining_work_assigns_section(
+            sections.get(&SectionKind::RemainingWork),
+            &relation.key,
+            &pull.repository,
+            &relation.source_line,
+        )
     {
         return failed_row(
             &relation,
             ResultCode::FailRemainingWorkSameIssue,
             RuleId::RemainingSameIssue,
-            "the structured Remaining work section assigns required work to the same issue that the PR asks GitHub to close",
+            "the structured Remaining work section assigns required work to the same issue that the PR asks GitHub to close; to record an explicit exclusion instead, start the Remaining-work unit with the structured marker `Out of scope:`",
             suggested_advances(&relation.key, &pull.repository),
         );
     }
@@ -967,7 +1039,53 @@ fn failed_row(
     }
 }
 
-fn fetch_issue_live(key: &IssueKey) -> IssueEvidence {
+/// `gh api` reports every HTTP error through the same exit status, so the
+/// outcomes are told apart on stderr. A 401, a 403, a rate limit or a network
+/// error is plainly the validator's problem (#16214).
+///
+/// A 404 is not plainly anything. GitHub answers 404 rather than 403 for a
+/// resource the caller may not know exists, so absence and invisibility are
+/// the same response — and this evaluator accepts source-qualified references
+/// to any repository, so a relation can name one this token cannot read. An
+/// ambiguous 404 therefore belongs on the instrument's side of the split: it
+/// is exactly the case the split exists to keep off the pull request.
+///
+/// The one repository where a 404 does establish absence is the subject's own.
+/// This validator runs in that repository under a token the workflow grants
+/// `issues: read`, so a 404 there is the repository answering that the issue
+/// is not present, not declining to say. That permission is the whole of the
+/// authority for this branch, so it is pinned by
+/// `semantic_close_containment_keeps_the_issue_read_its_404_rule_depends_on`
+/// in `xtask/tests/quality_ci_wiring_policy.rs`; drop it and a same-repository
+/// 404 stops meaning absence. Nothing else is probed: establishing visibility
+/// for a foreign repository would mean asking about a private resource.
+fn classify_gh_failure(
+    stderr: &str,
+    detail: String,
+    issue_repository: &str,
+    subject_repository: &str,
+) -> IssueEvidence {
+    if !(stderr.contains("(HTTP 404)") || stderr.contains("HTTP 404:")) {
+        return IssueEvidence::LookupFailed(detail);
+    }
+    let same_repository =
+        match (canonical_repository(issue_repository), canonical_repository(subject_repository)) {
+            (Ok(issue), Ok(subject)) => issue == subject,
+            // A repository identity that will not canonicalize cannot establish
+            // read access, so it cannot establish absence either.
+            _ => false,
+        };
+    if same_repository {
+        IssueEvidence::Unavailable(detail)
+    } else {
+        IssueEvidence::LookupFailed(format!(
+            "{detail} -- a 404 from a repository other than the pull request's own does not \
+             distinguish an absent issue from one this token cannot see"
+        ))
+    }
+}
+
+fn fetch_issue_live(key: &IssueKey, subject_repository: &str) -> IssueEvidence {
     if let Err(error) = canonical_repository(&key.repository) {
         return IssueEvidence::Unavailable(error.to_string());
     }
@@ -975,23 +1093,27 @@ fn fetch_issue_live(key: &IssueKey) -> IssueEvidence {
     let output = match Command::new("gh").args(["api", "--method", "GET", &endpoint]).output() {
         Ok(output) => output,
         Err(error) => {
-            return IssueEvidence::Unavailable(format!("failed to start gh api: {error}"));
+            return IssueEvidence::LookupFailed(format!("failed to start gh api: {error}"));
         }
     };
     if !output.status.success() {
-        return IssueEvidence::Unavailable(format!("gh api exited with status {}", output.status));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = format!("gh api exited with status {}: {}", output.status, stderr.trim());
+        return classify_gh_failure(&stderr, detail, &key.repository, subject_repository);
     }
     if output.stdout.len() > MAX_GITHUB_OUTPUT_BYTES {
-        return IssueEvidence::Unavailable("GitHub issue response exceeded the input bound".into());
+        return IssueEvidence::LookupFailed(
+            "GitHub issue response exceeded the input bound".into(),
+        );
     }
     let payload: GithubIssuePayload = match serde_json::from_slice(&output.stdout) {
         Ok(payload) => payload,
         Err(error) => {
-            return IssueEvidence::Unavailable(format!("invalid GitHub issue response: {error}"));
+            return IssueEvidence::LookupFailed(format!("invalid GitHub issue response: {error}"));
         }
     };
     if payload.number != key.number {
-        return IssueEvidence::Unavailable("GitHub returned a different issue number".into());
+        return IssueEvidence::LookupFailed("GitHub returned a different issue number".into());
     }
     if payload.pull_request.is_some() {
         return IssueEvidence::Unavailable(
@@ -1794,6 +1916,10 @@ fn without_supported_emphasis(text: &str) -> String {
         "not established",
         "not claimed",
         "explicitly out of scope",
+        // Remaining-work structured scope-exclusion marker (see
+        // `unit_is_explicit_scope_exclusion`): the label may carry balanced
+        // emphasis without changing its syntax.
+        "out of scope",
     ]) {
         for phrase in [phrase.to_string(), format!("{phrase}:")] {
             for (delimiter, marker) in [("**", '*'), ("*", '*'), ("__", '_'), ("_", '_')] {
@@ -1934,6 +2060,147 @@ fn references_issue(text: &str, key: &IssueKey, current_repository: &str) -> boo
     let lower = text.to_ascii_lowercase();
     lower.contains(&qualified)
         || lower.contains(&format!("https://github.com/{}/issues/{}", key.repository, key.number))
+}
+
+/// Structured Remaining-work scope-exclusion markers (see
+/// `unit_is_explicit_scope_exclusion`).
+const REMAINING_WORK_SCOPE_EXCLUSION_MARKERS: &[&str] =
+    &["out of scope:", "explicitly out of scope:"];
+
+/// True when the Remaining-work section assigns required work to `key`: some
+/// attribution unit references the closing issue, is not an explicit scope
+/// exclusion (see `unit_is_explicit_scope_exclusion`), and is not the closing
+/// relation's own declaration line (see `is_closing_relation_source_line`).
+/// Heading and body units are evaluated separately: the heading is not
+/// remaining-work prose, and the section parser drops the leading blank line
+/// after the heading, so a fused heading+first-paragraph unit would break the
+/// marker's start-of-unit rule for unbulleted first entries. Per-unit
+/// evaluation keeps every unmarked mention failing (fail-closed).
+fn remaining_work_assigns_section(
+    section: Option<&Section>,
+    key: &IssueKey,
+    current_repository: &str,
+    source_line: &str,
+) -> bool {
+    let Some(section) = section else {
+        return false;
+    };
+    section
+        .headings
+        .iter()
+        .map(String::as_str)
+        .chain(attribution_units(&section.body).iter().map(String::as_str))
+        .any(|unit| {
+            !unit_is_explicit_scope_exclusion(unit)
+                && !is_closing_relation_source_line(unit, source_line)
+                && references_issue(unit, key, current_repository)
+        })
+}
+
+/// True when a Remaining-work unit is the closing relation's own PURE
+/// declaration line: the parsed source line (normalized comparison,
+/// whitespace- and case-insensitive, trailing sentence punctuation ignored)
+/// consisting of a relation keyword and issue references only. The section
+/// parser attributes a trailing declaration to the last recognized section,
+/// so a pure declaration can sit inside the Remaining-work section without
+/// being remaining-work prose. A declaration qualified with additional prose
+/// (for example `Closes #12 (partial - slice only)`) is PR-side content in
+/// the section and stays subject to the rule; any other line that mentions
+/// the closing issue still fails.
+fn is_closing_relation_source_line(unit: &str, source_line: &str) -> bool {
+    let normalize = |value: &str| {
+        value
+            .trim()
+            .trim_end_matches(['.', '!', '?'])
+            .split_whitespace()
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let declaration = normalize(source_line);
+    if declaration.is_empty() || normalize(unit) != declaration {
+        return false;
+    }
+    let stripped = source_line.trim().trim_end_matches(['.', '!', '?']);
+    let Some((keyword, remainder)) = stripped.split_once(' ') else {
+        return false;
+    };
+    let keyword = keyword.trim_end_matches(':').to_ascii_lowercase();
+    if !matches!(
+        keyword.as_str(),
+        "close"
+            | "closes"
+            | "closed"
+            | "fix"
+            | "fixes"
+            | "fixed"
+            | "resolve"
+            | "resolves"
+            | "resolved"
+    ) {
+        return false;
+    }
+    let tokens: Vec<&str> =
+        remainder.split([',', ' ', '\t']).filter(|token| !token.is_empty()).collect();
+    !tokens.is_empty() && tokens.iter().all(|token| is_issue_reference_token(token))
+}
+
+/// True for a bare issue-reference token: `#N`, `owner/repo#N`, or a GitHub
+/// issue URL. The caller has already separated tokens on whitespace and
+/// commas.
+fn is_issue_reference_token(token: &str) -> bool {
+    const URL_PREFIX: &str = "https://github.com/";
+    if let Some(number) = token.strip_prefix('#') {
+        return !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
+    }
+    if token.get(..URL_PREFIX.len()).is_some_and(|head| head.eq_ignore_ascii_case(URL_PREFIX)) {
+        let rest = &token[URL_PREFIX.len()..];
+        let Some((_, number)) = split_once_ignore_ascii_case(rest, "/issues/") else {
+            return false;
+        };
+        return !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
+    }
+    match token.split_once('#') {
+        Some((repository, number)) => {
+            !repository.is_empty()
+                && !repository.chars().any(char::is_whitespace)
+                && !number.is_empty()
+                && number.bytes().all(|byte| byte.is_ascii_digit())
+        }
+        None => false,
+    }
+}
+
+/// Case-insensitive ASCII `split_once`, aligned with the closing-relation
+/// regex's `(?i)` matching. A slice index is only used on char boundaries, so
+/// non-ASCII input simply never matches the ASCII separator.
+fn split_once_ignore_ascii_case<'a>(value: &'a str, separator: &str) -> Option<(&'a str, &'a str)> {
+    for (index, _) in value.char_indices() {
+        let tail = &value[index..];
+        if tail.len() >= separator.len()
+            && tail.is_char_boundary(separator.len())
+            && tail[..separator.len()].eq_ignore_ascii_case(separator)
+        {
+            return Some((&value[..index], &tail[separator.len()..]));
+        }
+    }
+    None
+}
+
+/// True when a Remaining-work attribution unit is an explicit scope
+/// exclusion: the structured marker `Out of scope:` (or the equivalent
+/// explicit label `Explicitly out of scope:`), case-insensitive, starts the
+/// unit after an optional Markdown list bullet and optional supported
+/// emphasis. This is syntax, not negation inference: only an explicitly
+/// marked unit reclassifies its issue references, and anything ambiguous
+/// keeps failing.
+fn unit_is_explicit_scope_exclusion(unit: &str) -> bool {
+    let prose = prose_without_inline_code(unit);
+    let body = list_item_body(prose.trim()).unwrap_or(prose.trim());
+    let lowered = body.to_ascii_lowercase();
+    let normalized =
+        without_supported_emphasis(&lowered).split_whitespace().collect::<Vec<_>>().join(" ");
+    REMAINING_WORK_SCOPE_EXCLUSION_MARKERS.iter().any(|marker| normalized.starts_with(marker))
 }
 
 fn relation_scoped_section_text(
@@ -2294,7 +2561,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 26] = [
+    const FIXTURES: [(&str, &str); 28] = [
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2422,6 +2689,20 @@ mod tests {
             )),
         ),
         (
+            "valid-remaining-work-scope-exclusion",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-remaining-work-scope-exclusion.json"
+            )),
+        ),
+        (
+            "valid-remaining-work-scope-exclusion-unbulleted",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-remaining-work-scope-exclusion-unbulleted.json"
+            )),
+        ),
+        (
             "valid-controller-packet",
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -2479,6 +2760,318 @@ mod tests {
         ),
     ];
 
+    /// #16214: the exit code is the only part of this verdict a REST consumer
+    /// can read — the job summary carrying the report is not served by the
+    /// API. These pin the four outcomes apart from each other.
+    fn report_with(codes: &[ResultCode]) -> Report {
+        let rows = codes
+            .iter()
+            .enumerate()
+            .map(|(index, code)| RelationResult {
+                repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+                issue_number: 1000 + index as u64,
+                keyword: "Closes".to_string(),
+                source_line: format!("Closes #{}", 1000 + index),
+                line_number: index + 1,
+                code: *code,
+                rule_id: None,
+                reason: "synthetic row".to_string(),
+                suggested_relation: None,
+                retirement_mapping: None,
+            })
+            .collect::<Vec<_>>();
+        Report {
+            schema_version: REPORT_SCHEMA,
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            pull_request_number: 16214,
+            pull_request_title: "synthetic".to_string(),
+            // Through the production helper, not a literal: a report whose
+            // headline is hardcoded cannot falsify the headline.
+            aggregate_code: aggregate_code(&rows),
+            semantic_completion_proven: false,
+            rows,
+            subject_snapshot: None,
+        }
+    }
+
+    fn expect_exit(codes: &[ResultCode], expected: i32, why: &str) -> Result<()> {
+        let actual = report_with(codes).exit_code();
+        if actual != expected {
+            bail!("{why}: expected exit {expected}, got {actual}");
+        }
+        Ok(())
+    }
+
+    /// The defect this separates: a run that could not do its job used to exit
+    /// the same code as a run that reached a verdict, so no consumer could
+    /// tell a finding against the pull request from a broken instrument.
+    #[test]
+    fn instrument_failure_and_not_proven_no_longer_share_an_exit_code() -> Result<()> {
+        expect_exit(
+            &[ResultCode::NotProvenGithub],
+            EXIT_NOT_PROVEN,
+            "a relation that was checked and could not be proven is a verdict",
+        )?;
+        expect_exit(
+            &[ResultCode::InstrumentFailure],
+            EXIT_INSTRUMENT_FAILURE,
+            "a relation the validator could not check is not a verdict",
+        )?;
+        if EXIT_NOT_PROVEN == EXIT_INSTRUMENT_FAILURE {
+            bail!("the two outcomes must not share an exit code");
+        }
+        Ok(())
+    }
+
+    /// Pinned separately from `exit_code`, because `exit_code` checks the two
+    /// predicates in an order that hides a regression in either: widening
+    /// `is_not_proven` back over `InstrumentFailure` leaves every exit code
+    /// unchanged while the two concepts are silently one again. Asserting the
+    /// predicates are disjoint is what actually holds them apart.
+    #[test]
+    fn the_two_predicates_classify_disjoint_sets() -> Result<()> {
+        for code in [
+            ResultCode::PassNotApplicable,
+            ResultCode::PassNoHighConfidenceContradiction,
+            ResultCode::FailPhaseTerminalRelation,
+            ResultCode::FailExplicitUnprovenRequiredWork,
+            ResultCode::FailRemainingWorkSameIssue,
+            ResultCode::FailControllerPacketMissing,
+            ResultCode::FailPredecessorSuccessorCollapse,
+            ResultCode::FailProofLevelContradiction,
+            ResultCode::NotProvenGithub,
+            ResultCode::InstrumentFailure,
+        ] {
+            let claims = [code.is_failure(), code.is_not_proven(), code.is_instrument_failure()]
+                .into_iter()
+                .filter(|held| *held)
+                .count();
+            if claims > 1 {
+                bail!("{code:?} is claimed by more than one classifier");
+            }
+        }
+        if ResultCode::InstrumentFailure.is_not_proven() {
+            bail!("an instrument failure must not be classified as a not-proven verdict");
+        }
+        if ResultCode::NotProvenGithub.is_instrument_failure() {
+            bail!("a not-proven verdict must not be classified as an instrument failure");
+        }
+        Ok(())
+    }
+
+    /// The 404 seam, pinned directly: without a control here, deleting the
+    /// branch left every other control green, because nothing drives `gh`.
+    ///
+    /// GitHub answers 404 rather than 403 for a resource the caller may not be
+    /// allowed to know exists, so a 404 alone proves nothing. Absence is only
+    /// established for the pull request's own repository, which this validator
+    /// demonstrably reads. Everything else is the instrument's limitation, and
+    /// reporting it as a verdict is the defect this change exists to remove.
+    #[test]
+    fn a_404_establishes_absence_only_where_the_validator_can_read() -> Result<()> {
+        const SUBJECT: &str = "effortlessmetrics/perl-lsp-swarm";
+
+        // Authenticated known absence: the repository this run owns answers
+        // 404 for an issue number, which is an answer, not a refusal.
+        for stderr in [
+            "gh: Not Found (HTTP 404)",
+            "HTTP 404: Not Found (https://api.github.com/repos/effortlessmetrics/perl-lsp-swarm/issues/1)",
+        ] {
+            if !matches!(
+                classify_gh_failure(stderr, stderr.to_string(), SUBJECT, SUBJECT),
+                IssueEvidence::Unavailable(_)
+            ) {
+                bail!("a 404 from the subject's own repository is an absent issue: {stderr:?}");
+            }
+        }
+
+        // Unresolved visibility: the same 404, from a repository this token may
+        // simply not be able to see. Indistinguishable from absence, so it is
+        // the instrument's, not the pull request's.
+        for repository in [
+            "effortlessmetrics/perl-lsp",
+            "someorg/private-repo",
+            "EffortlessMetrics/Perl-LSP-Swarm-Other",
+        ] {
+            if !matches!(
+                classify_gh_failure(
+                    "gh: Not Found (HTTP 404)",
+                    "404".to_string(),
+                    repository,
+                    SUBJECT
+                ),
+                IssueEvidence::LookupFailed(_)
+            ) {
+                bail!(
+                    "a 404 from {repository:?} cannot tell absence from invisibility and must not \
+                     be reported as a verdict"
+                );
+            }
+        }
+
+        // Case differs, repository does not. Canonicalization decides, not the
+        // spelling in the pull request body.
+        if !matches!(
+            classify_gh_failure(
+                "gh: Not Found (HTTP 404)",
+                "404".to_string(),
+                "EffortlessMetrics/Perl-LSP-Swarm",
+                SUBJECT,
+            ),
+            IssueEvidence::Unavailable(_)
+        ) {
+            bail!("repository identity must compare canonically, not by spelling");
+        }
+
+        // A repository identity that will not canonicalize establishes no read
+        // access, so it establishes no absence either.
+        if !matches!(
+            classify_gh_failure(
+                "gh: Not Found (HTTP 404)",
+                "404".to_string(),
+                "not-a-repo",
+                SUBJECT
+            ),
+            IssueEvidence::LookupFailed(_)
+        ) {
+            bail!("an uncanonicalizable repository must not establish absence");
+        }
+
+        // Everything that is not a 404 was never ambiguous.
+        for stderr in [
+            "gh: Bad credentials (HTTP 401)",
+            "gh: API rate limit exceeded (HTTP 403)",
+            "error connecting to api.github.com",
+            "gh: Internal Server Error (HTTP 500)",
+            "",
+        ] {
+            if !matches!(
+                classify_gh_failure(stderr, stderr.to_string(), SUBJECT, SUBJECT),
+                IssueEvidence::LookupFailed(_)
+            ) {
+                bail!("a transport failure must not be reported as a verdict: {stderr:?}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The split has to survive the live lookup, not just the exit table.
+    /// `fetch_issue_live` used to funnel a dead transport and an absent issue
+    /// into one `Unavailable`, so a `gh` that would not start was reported as a
+    /// verdict about the pull request. These drive the production evaluator
+    /// with each evidence kind and read the exit code it actually produces.
+    #[test]
+    fn a_failed_lookup_and_an_absent_issue_reach_different_exit_codes() -> Result<()> {
+        let pull = PullRequestSubject {
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            number: 16233,
+            title: "synthetic".to_string(),
+            body: "Closes #1234\n".to_string(),
+        };
+
+        let lookup_failed = evaluate_with_rules(
+            &pull,
+            |_| IssueEvidence::LookupFailed("failed to start gh api: No such file".to_string()),
+            RuleGate::all_rules(),
+        )?;
+        if lookup_failed.exit_code() != EXIT_INSTRUMENT_FAILURE {
+            bail!(
+                "a lookup that could not run exited {}, expected {EXIT_INSTRUMENT_FAILURE}",
+                lookup_failed.exit_code()
+            );
+        }
+        if lookup_failed.aggregate_code != ResultCode::InstrumentFailure {
+            bail!("a lookup that could not run reported {:?}", lookup_failed.aggregate_code);
+        }
+
+        let absent_issue = evaluate_with_rules(
+            &pull,
+            |_| IssueEvidence::Unavailable("gh api exited with status 1: (HTTP 404)".to_string()),
+            RuleGate::all_rules(),
+        )?;
+        if absent_issue.exit_code() != EXIT_NOT_PROVEN {
+            bail!(
+                "an absent issue exited {}, expected {EXIT_NOT_PROVEN}",
+                absent_issue.exit_code()
+            );
+        }
+        if absent_issue.aggregate_code != ResultCode::NotProvenGithub {
+            bail!("an absent issue reported {:?}", absent_issue.aggregate_code);
+        }
+        Ok(())
+    }
+
+    /// Precedence, asserted rather than left to row order: a mixed report must
+    /// not report a verdict it did not reach.
+    #[test]
+    fn a_broken_relation_outranks_an_unproven_one_but_not_a_contradiction() -> Result<()> {
+        expect_exit(
+            &[ResultCode::NotProvenGithub, ResultCode::InstrumentFailure],
+            EXIT_INSTRUMENT_FAILURE,
+            "one unchecked relation means this run did not reach a clean verdict",
+        )?;
+        expect_exit(
+            &[ResultCode::InstrumentFailure, ResultCode::NotProvenGithub],
+            EXIT_INSTRUMENT_FAILURE,
+            "precedence must not depend on which row came first",
+        )?;
+        // A contradiction is proven about the subject and stays true whether or
+        // not a different relation could be checked.
+        expect_exit(
+            &[ResultCode::InstrumentFailure, ResultCode::FailPhaseTerminalRelation],
+            EXIT_CONTRADICTION,
+            "a proven contradiction outranks an instrument failure",
+        )?;
+        expect_exit(
+            &[ResultCode::PassNotApplicable, ResultCode::PassNoHighConfidenceContradiction],
+            0,
+            "an all-pass report exits clean",
+        )?;
+        Ok(())
+    }
+
+    /// The headline row a reader sees must not contradict the exit code the
+    /// workflow classifies. Both are read off the production report rather
+    /// than recomputed here, so reordering or dropping an arm in either one
+    /// fails this test.
+    #[test]
+    fn the_aggregate_row_agrees_with_the_exit_code() -> Result<()> {
+        for (codes, expected_aggregate, expected_exit) in [
+            (
+                vec![ResultCode::InstrumentFailure],
+                ResultCode::InstrumentFailure,
+                EXIT_INSTRUMENT_FAILURE,
+            ),
+            (
+                vec![ResultCode::NotProvenGithub, ResultCode::InstrumentFailure],
+                ResultCode::InstrumentFailure,
+                EXIT_INSTRUMENT_FAILURE,
+            ),
+            (vec![ResultCode::NotProvenGithub], ResultCode::NotProvenGithub, EXIT_NOT_PROVEN),
+            (
+                vec![ResultCode::InstrumentFailure, ResultCode::FailPhaseTerminalRelation],
+                ResultCode::FailPhaseTerminalRelation,
+                EXIT_CONTRADICTION,
+            ),
+            (vec![ResultCode::PassNotApplicable], ResultCode::PassNoHighConfidenceContradiction, 0),
+        ] {
+            let report = report_with(&codes);
+            if report.aggregate_code != expected_aggregate {
+                bail!(
+                    "aggregate for {codes:?} was {:?}, expected {expected_aggregate:?}",
+                    report.aggregate_code
+                );
+            }
+            if report.exit_code() != expected_exit {
+                bail!(
+                    "exit code for {codes:?} was {}, expected {expected_exit}",
+                    report.exit_code()
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn immutable_fixture_matrix_matches_expected_dispositions() -> Result<()> {
         for (name, raw) in FIXTURES {
@@ -2491,6 +3084,237 @@ mod tests {
             verify_expected(&report, &fixture.expected)
                 .with_context(|| format!("checking embedded fixture {name}"))?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn remaining_work_scope_exclusion_marker_passes_outside_scope_reference() {
+        let key = IssueKey {
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            number: 9000103,
+        };
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let marked_units = [
+            "- Out of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
+            "Out of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
+            "out of scope: debt stays with the existing owners (#9000103).",
+            "1. Out of scope: inherited debt remains with its owners, not this closure (#9000103).",
+            "* **Out of scope:** inherited ledger debt keeps its current owner (#9000103).",
+            "Explicitly out of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
+        ];
+        let assigns = |body: &str| {
+            let sections =
+                parse_sections(body, MAX_PR_BODY_BYTES).expect("bounded test body parses");
+            remaining_work_assigns_section(
+                sections.get(&SectionKind::RemainingWork),
+                &key,
+                repository,
+                "",
+            )
+        };
+        for marked in marked_units {
+            let body = format!("## Remaining work\n\n{marked}");
+            assert!(
+                !assigns(&body),
+                "an explicitly marked exclusion unit must not fail the Remaining-work rule: {marked}"
+            );
+        }
+    }
+
+    #[test]
+    fn remaining_work_unmarked_or_ambiguous_mentions_still_fail() {
+        let key = IssueKey {
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            number: 9000103,
+        };
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        // The first row is the marker test's paired sentence: without the
+        // structured marker the identical prose keeps failing (fail-closed;
+        // no natural-language negation inference).
+        let unmarked_units = [
+            "Unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
+            "Out of scope unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.",
+            "This unit is out of scope: #9000103 stays with its owners.",
+            "Debt is not in scope for this closure (#9000103).",
+            "Out of scope: debt moves to #9000104.\n\nThe rest of #9000103 remains required.",
+        ];
+        let assigns = |body: &str| {
+            let sections =
+                parse_sections(body, MAX_PR_BODY_BYTES).expect("bounded test body parses");
+            remaining_work_assigns_section(
+                sections.get(&SectionKind::RemainingWork),
+                &key,
+                repository,
+                "",
+            )
+        };
+        for unmarked in unmarked_units {
+            let body = format!("## Remaining work\n\n{unmarked}");
+            assert!(
+                assigns(&body),
+                "an unmarked or ambiguous mention must keep failing: {unmarked}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_issue_reference_token_is_panic_safe_off_char_boundary() {
+        // #16288 review round 2: the URL-prefix check must not slice across a
+        // UTF-8 char boundary. The token below is 21 bytes; the CJK character
+        // starts at byte 18 and spans byte offset 19 == URL_PREFIX.len(), so
+        // RangeTo indexing would panic. The token is not an issue reference
+        // and must return false without panicking.
+        let token = "éééééé€€中";
+        assert_eq!(token.len(), 21);
+        assert!(!token.is_char_boundary(19));
+        assert!(!is_issue_reference_token(token));
+    }
+
+    #[test]
+    fn remaining_work_closing_declaration_line_is_not_remaining_work() {
+        // The section parser attributes a trailing `Closes #N` paragraph to
+        // the last recognized section, so the declaration can sit inside the
+        // Remaining-work section. The declaration itself assigns no remaining
+        // work; the skip is exact (normalized source-line match, pure
+        // keyword+reference shape), and any other unit that mentions the
+        // closing issue still fails.
+        let key = IssueKey {
+            repository: "effortlessmetrics/perl-lsp-swarm".to_string(),
+            number: 9000103,
+        };
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let assigns = |body: &str, source_line: &str| {
+            let sections =
+                parse_sections(body, MAX_PR_BODY_BYTES).expect("bounded test body parses");
+            remaining_work_assigns_section(
+                sections.get(&SectionKind::RemainingWork),
+                &key,
+                repository,
+                source_line,
+            )
+        };
+        assert!(
+            !assigns("## Remaining work\n\nCloses #9000103.", "Closes #9000103."),
+            "the closing declaration line alone must not fail the Remaining-work rule"
+        );
+        assert!(
+            !assigns(
+                "## Remaining work\n\nCloses HTTPS://GITHUB.COM/org/repo/issues/9000103.",
+                "Closes HTTPS://GITHUB.COM/org/repo/issues/9000103."
+            ),
+            "the pure-declaration shape matches the relation regex case-insensitively"
+        );
+        assert!(
+            assigns("## Remaining work\n\nfixes #9000103.", "Closes #9000103."),
+            "only the parsed relation's own source line is skipped: any other line mentioning the issue still fails"
+        );
+        assert!(
+            assigns(
+                "## Remaining work\n\nThe follow-up cohort reuses #9000103.\n\nCloses #9000103.",
+                "Closes #9000103."
+            ),
+            "a declaration line does not mask additional unmarked mentions"
+        );
+        assert!(
+            assigns(
+                "## Remaining work\n\nCloses #9000103 (partial - item 2 slice only).",
+                "Closes #9000103 (partial - item 2 slice only)."
+            ),
+            "a declaration qualified with additional prose stays subject to the rule"
+        );
+        assert!(
+            assigns(
+                "## Remaining work\n\nCloses #9000103 https://github.com/org/repo/pulls/9000103.",
+                "Closes #9000103 https://github.com/org/repo/pulls/9000103."
+            ),
+            "a non-issue GitHub URL is not a reference token: the line stays subject to the rule"
+        );
+    }
+
+    #[test]
+    fn remaining_work_scope_exclusion_fixture_pair_discriminates() -> Result<()> {
+        // #16203: the marked Remaining-work unit passes; removing the marker
+        // reproduces the reported #16199-class false positive and must keep
+        // failing.
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let issue = IssueSubject {
+            number: 9000103,
+            title: "fix(runtime): complete the five-row mutation cohort".to_string(),
+            body: "## Acceptance\n\nAll five current mutation rows are proved.".to_string(),
+        };
+        let evidence = IssueEvidence::Available(issue);
+        let marked = PullRequestSubject {
+            repository: repository.to_string(),
+            number: 990009,
+            title: "fix(runtime): land one row while ledger debt keeps its owner".to_string(),
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\n- Out of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.\n\nCloses #9000103.".to_string(),
+        };
+        let marked_report =
+            evaluate_with_rules(&marked, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(marked_report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
+        let unmarked = PullRequestSubject {
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nUnchanged ledger lifecycle debt remains with existing owners; no widening of #9000103.\n\nCloses #9000103.".to_string(),
+            ..marked
+        };
+        let unmarked_report =
+            evaluate_with_rules(&unmarked, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(unmarked_report.aggregate_code, ResultCode::FailRemainingWorkSameIssue);
+        Ok(())
+    }
+
+    #[test]
+    fn remaining_work_unbulleted_first_entry_exclusion_passes_real_section_path() -> Result<()> {
+        // #16288 review round: parse_sections drops the leading blank line
+        // after the heading, so section_text fuses the heading with the first
+        // body paragraph. A documented UNBULLETED first-entry exclusion must
+        // still pass end-to-end; the same shape without the marker keeps
+        // failing.
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let issue = IssueSubject {
+            number: 9000105,
+            title: "fix(runtime): complete the five-row mutation cohort".to_string(),
+            body: "## Acceptance\n\nAll five current mutation rows are proved.".to_string(),
+        };
+        let evidence = IssueEvidence::Available(issue);
+        let marked = PullRequestSubject {
+            repository: repository.to_string(),
+            number: 990010,
+            title: "fix(runtime): land one row while ledger debt keeps its owner".to_string(),
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nOut of scope: unchanged ledger lifecycle debt remains with existing owners; no widening of #9000105.\n\nCloses #9000105.".to_string(),
+        };
+        let marked_report =
+            evaluate_with_rules(&marked, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(marked_report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
+        let unmarked = PullRequestSubject {
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nUnchanged ledger lifecycle debt remains with existing owners; no widening of #9000105.\n\nCloses #9000105.".to_string(),
+            ..marked
+        };
+        let unmarked_report =
+            evaluate_with_rules(&unmarked, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(unmarked_report.aggregate_code, ResultCode::FailRemainingWorkSameIssue);
+        Ok(())
+    }
+
+    #[test]
+    fn remaining_work_pure_declaration_accepts_uppercase_issue_url() -> Result<()> {
+        // #16288 review round: the closing-relation regex is (?i), so an
+        // uppercase GitHub issue URL parses as a pure declaration line; the
+        // declaration skip must recognize it too.
+        let repository = "effortlessmetrics/perl-lsp-swarm";
+        let issue = IssueSubject {
+            number: 9000106,
+            title: "fix(runtime): complete the five-row mutation cohort".to_string(),
+            body: "## Acceptance\n\nAll five current mutation rows are proved.".to_string(),
+        };
+        let evidence = IssueEvidence::Available(issue);
+        let pull = PullRequestSubject {
+            repository: repository.to_string(),
+            number: 990011,
+            title: "fix(runtime): land one row while ledger debt keeps its owner".to_string(),
+            body: "## Claim Boundary\n\nOne bounded row is complete.\n\n## Remaining work\n\nCloses HTTPS://GITHUB.COM/org/repo/issues/9000106".to_string(),
+        };
+        let report = evaluate_with_rules(&pull, |_| evidence.clone(), RuleGate::all_rules())?;
+        assert_eq!(report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
         Ok(())
     }
 

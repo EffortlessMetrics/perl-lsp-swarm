@@ -29,6 +29,14 @@ waiting its turn, which is the defect class this exists to reduce. It is
 reported as an explained wait, naming the predecessor, so the silence is broken
 without inventing a fault.
 
+A fork pull request run held for maintainer approval reads ``waiting`` with no
+scheduled jobs. That is a human-actionable gate, not a scheduling fault
+(#16151), and reporting it as ``infra-no-proof`` attributes a maintainer
+decision to the scheduler and trains the reader that the signal is unreliable.
+It is reported separately as ``awaiting_approval`` so the remedy is named
+correctly: the absence of proof clears the moment a maintainer approves the
+workflow.
+
 Only a run with nothing scheduled, past the floor, and no predecessor to
 explain it is ``infra-no-proof`` — the class ``ripr.yml`` already applies to a
 lane killed by the runner. Nothing is producing proof and nothing is going to.
@@ -48,6 +56,10 @@ from pathlib import Path
 from typing import Any
 
 # Statuses in which GitHub has accepted a run but scheduled nothing for it.
+# `waiting` is the fork-PR approval hold: same observable shape (zero jobs,
+# no scheduled work) as a scheduling stall, but a different cause, so it is in
+# the set for the snapshot to read job counts on it but gets its own
+# classification downstream (#16151).
 UNSTARTED_STATUSES = frozenset({"queued", "pending", "waiting", "requested"})
 
 DEFAULT_FLOOR_MINUTES = 10
@@ -55,14 +67,17 @@ DEFAULT_FLOOR_MINUTES = 10
 SCHEDULED = "scheduled"
 WITHIN_FLOOR = "within_floor"
 SERIALISED = "serialised_behind_predecessor"
+AWAITING_APPROVAL = "awaiting_approval"
 INFRA_NO_PROOF = "infra-no-proof"
 
-REPORTABLE = frozenset({SERIALISED, INFRA_NO_PROOF})
+REPORTABLE = frozenset({SERIALISED, AWAITING_APPROVAL, INFRA_NO_PROOF})
 
 # Never "success": this reports on the absence of proof and must not be able to
-# signal that proof exists.
+# signal that proof exists. `awaiting_approval` is neutral because the wait is
+# a maintainer decision, not a fault the scheduler can recover (#16151).
 CONCLUSIONS = {
     SERIALISED: "neutral",
+    AWAITING_APPROVAL: "neutral",
     INFRA_NO_PROOF: "failure",
 }
 
@@ -341,6 +356,15 @@ def classify_run(
         return SCHEDULED, None
     if run.get("status") not in UNSTARTED_STATUSES:
         return SCHEDULED, None
+    # A run whose status is `waiting` is held for fork-PR maintainer approval
+    # rather than queued for execution (#16151). The approval hold is a
+    # human-actionable gate, not an infrastructure fault: name it so the
+    # remedy is obvious, and skip predecessor lookup because no run can be
+    # holding a slot for an unapproved fork PR.
+    if run.get("status") == "waiting":
+        if waited_minutes < floor_minutes:
+            return WITHIN_FLOOR, None
+        return AWAITING_APPROVAL, None
     if waited_minutes < floor_minutes:
         return WITHIN_FLOOR, None
     predecessor = predecessor_for(run, runs)
@@ -352,6 +376,8 @@ def classify_run(
 def check_title(classification: str, waited_minutes: int) -> str:
     if classification == SERIALISED:
         return f"ripr queued behind an earlier run for {waited_minutes} min"
+    if classification == AWAITING_APPROVAL:
+        return f"ripr awaiting fork-PR approval for {waited_minutes} min"
     return f"ripr has scheduled no jobs for {waited_minutes} min"
 
 
@@ -381,6 +407,18 @@ def check_summary(
             "on this pull request is still producing evidence. Nothing to do; "
             "the gate will report once that run finishes."
         )
+    elif classification == AWAITING_APPROVAL:
+        lines += [
+            "This run is held because it was triggered from a fork pull "
+            "request and is awaiting maintainer approval on the Actions tab. "
+            "No job will schedule until a maintainer approves the workflow "
+            "for this pull request; the wait is by design and the remedy is a "
+            "single human click, not a scheduler intervention.",
+            "",
+            "Reporting this as `infra-no-proof` would attribute a maintainer "
+            "decision to the scheduler and degrade the signal this reporter "
+            "exists to provide, so it is named `awaiting_approval` instead.",
+        ]
     else:
         lines += [
             "No earlier ripr run on this pull request is in progress, so "
@@ -463,6 +501,7 @@ def classify_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             "Reports only that a run has scheduled no jobs; it evaluates no candidate.",
             "Never emits a success conclusion, and never posts under the required context's name.",
             "A run queued behind an earlier run on the same pull request is an explained wait, not a fault.",
+            "A run held for fork-PR maintainer approval is a human-actionable wait, not a scheduling fault (#16151).",
             "A run whose created_at, the snapshot's as_of, or whose job count is unreadable is reported for neither.",
         ],
     }

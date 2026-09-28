@@ -1745,7 +1745,12 @@ mod tests {
         let caps = PeerReportedCapabilities { can_set_breakpoints: true, ..Default::default() };
         // Peer completes handshake but never answers setBreakpoints.
         let peer = spawn_fake_peer(addr, caps, |_req| None);
-        let mut backend = accept_backend_with_timeout(listener, Duration::from_millis(300));
+        // Load-tolerant handshake/request bound (#15749): the property under
+        // test is that a request the peer never answers surfaces Timeout, not
+        // the 300 ms figure. The previous bound also gated the hello
+        // handshake, which raced full-suite parallel load on hosted Windows
+        // and failed before setBreakpoints was ever issued.
+        let mut backend = accept_backend_with_timeout(listener, Duration::from_secs(2));
         must(backend.initialize(InitializeBackendParams::default()));
         let src = DebugSource::from_path("/x.pl");
         let err = must_err(backend.set_breakpoints(SetBackendBreakpointsParams {

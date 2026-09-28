@@ -167,7 +167,6 @@ pub mod publish_closure;
 pub mod publish_manifest_check;
 pub mod publish_receipts;
 pub mod quality_baseline;
-#[path = "quality_gate_facade.rs"]
 pub mod quality_gate;
 pub mod queue_health;
 pub mod queue_snapshot;
@@ -197,6 +196,7 @@ pub mod shadow_parity;
 pub mod srp_microcrates;
 pub mod staged;
 pub mod standalone_diagnostics;
+pub mod standalone_vectors;
 pub mod supported_editor_inline_smoke;
 pub mod swarm_agent_roster;
 pub mod swarm_summary;
