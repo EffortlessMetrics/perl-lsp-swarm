@@ -9,7 +9,14 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+/// Bounded wait for ordinary point queries (`WaitBriefly`). Cold-start
+/// reference-index warm-up is often longer than this (#16650).
 const INDEX_READY_WAIT_MS: u64 = 2_000;
+/// Safety cap for `WaitUntilWarmed`. The wait returns as soon as indexing is
+/// no longer in progress or the index leaves the building access mode. 30s
+/// covers the default 10s initial scan budget and the observed ~15s Windows
+/// cold-start discovery without leaving references unbounded (#16650).
+const INDEX_WARM_WAIT_MS: u64 = 30_000;
 const INDEX_READY_POLL_MS: u64 = 1;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 // 30s: the timeout only bites when a test stalls before releasing the
@@ -342,6 +349,11 @@ fn duration_us(duration: Duration) -> u64 {
 pub(crate) enum IndexReadinessPolicy {
     /// Point queries may briefly wait for a ready index, then fall back honestly.
     WaitBriefly,
+    /// Hold until reference-index warm-up completes (or the safety cap).
+    ///
+    /// Used by `textDocument/references` so a cold-start empty index is not
+    /// answered as a real result after the 2s `WaitBriefly` cap (#16650).
+    WaitUntilWarmed,
     /// Background streams should use their current snapshot and never block.
     SnapshotOnly,
     /// Unsafe edits must refuse stale or partial index state.
@@ -350,12 +362,30 @@ pub(crate) enum IndexReadinessPolicy {
     LocalOnly,
 }
 
-const ALL_INDEX_READINESS_POLICIES: [IndexReadinessPolicy; 4] = [
+const ALL_INDEX_READINESS_POLICIES: [IndexReadinessPolicy; 5] = [
     IndexReadinessPolicy::WaitBriefly,
+    IndexReadinessPolicy::WaitUntilWarmed,
     IndexReadinessPolicy::SnapshotOnly,
     IndexReadinessPolicy::FailClosed,
     IndexReadinessPolicy::LocalOnly,
 ];
+
+/// Wait budget selected by policy. Non-waiting policies report zero.
+pub(crate) fn index_readiness_wait_budget(policy: IndexReadinessPolicy) -> Duration {
+    match policy {
+        IndexReadinessPolicy::WaitBriefly => Duration::from_millis(INDEX_READY_WAIT_MS),
+        IndexReadinessPolicy::WaitUntilWarmed => Duration::from_millis(INDEX_WARM_WAIT_MS),
+        IndexReadinessPolicy::SnapshotOnly
+        | IndexReadinessPolicy::FailClosed
+        | IndexReadinessPolicy::LocalOnly => Duration::ZERO,
+    }
+}
+
+/// Readiness policy for `textDocument/references`: hold until warm-up
+/// completes rather than answering from a cold empty index after 2s (#16650).
+pub(crate) fn references_index_readiness_policy() -> IndexReadinessPolicy {
+    IndexReadinessPolicy::WaitUntilWarmed
+}
 
 /// Result of applying an index readiness policy.
 #[derive(Debug)]
@@ -424,7 +454,7 @@ pub(crate) fn check_readiness(
         coordinator,
         indexing_in_progress,
         policy,
-        Duration::from_millis(INDEX_READY_WAIT_MS),
+        index_readiness_wait_budget(policy),
     )
 }
 
@@ -444,13 +474,13 @@ fn check_readiness_with_budget(
             IndexAccessMode::Partial(reason) => IndexReadinessOutcome::Stale(reason),
             IndexAccessMode::None => IndexReadinessOutcome::Stale("no workspace index"),
         },
-        IndexReadinessPolicy::WaitBriefly => {
-            check_wait_briefly(coordinator, indexing_in_progress, wait_budget)
+        IndexReadinessPolicy::WaitBriefly | IndexReadinessPolicy::WaitUntilWarmed => {
+            check_wait_until_index_leaves_building(coordinator, indexing_in_progress, wait_budget)
         }
     }
 }
 
-fn check_wait_briefly(
+fn check_wait_until_index_leaves_building(
     coordinator: Option<&Arc<IndexCoordinator>>,
     indexing_in_progress: &AtomicBool,
     wait_budget: Duration,
@@ -459,14 +489,19 @@ fn check_wait_briefly(
         return IndexReadinessOutcome::Partial("no workspace index");
     };
 
-    if !indexing_in_progress.load(Ordering::Acquire) {
-        return access_mode_to_readiness(route_index_access(Some(coord)));
-    }
-
     let deadline = Instant::now() + wait_budget;
     let mut waited = false;
 
     loop {
+        if !indexing_in_progress.load(Ordering::Acquire) {
+            return match access_mode_to_readiness(route_index_access(Some(coord))) {
+                IndexReadinessOutcome::Partial(reason) if waited => {
+                    IndexReadinessOutcome::Waited(reason)
+                }
+                other => other,
+            };
+        }
+
         match route_index_access(Some(coord)) {
             IndexAccessMode::Full(_) => {
                 tracing::debug!("check_readiness: index is Ready");
@@ -682,6 +717,7 @@ mod tests {
     use super::{
         IndexReadinessOutcome, IndexReadinessPolicy, ReadinessAnswerKind, ReadinessMilestone,
         WorkspaceReadinessReceipt, check_readiness, check_readiness_with_budget,
+        index_readiness_wait_budget, references_index_readiness_policy,
         set_index_ready_wait_entered_observer,
     };
     use anyhow::{Result, anyhow};
@@ -1083,6 +1119,175 @@ mod tests {
         assert!(matches!(outcome, IndexReadinessOutcome::Waited(_)));
         assert!(outcome.is_fallback_safe());
         assert!(outcome.reason().contains("scan timeout"));
+        Ok(())
+    }
+
+    #[test]
+    fn references_policy_waits_longer_than_wait_briefly() -> Result<()> {
+        let brief = index_readiness_wait_budget(IndexReadinessPolicy::WaitBriefly);
+        let warm = index_readiness_wait_budget(IndexReadinessPolicy::WaitUntilWarmed);
+        if brief != Duration::from_millis(2_000) {
+            return Err(anyhow!("WaitBriefly budget drifted: {brief:?}"));
+        }
+        if warm <= brief {
+            return Err(anyhow!(
+                "WaitUntilWarmed must outlast the 2s WaitBriefly cap: warm={warm:?} brief={brief:?}"
+            ));
+        }
+        if warm != Duration::from_secs(30) {
+            return Err(anyhow!("WaitUntilWarmed safety cap drifted: {warm:?}"));
+        }
+        if references_index_readiness_policy() != IndexReadinessPolicy::WaitUntilWarmed {
+            return Err(anyhow!("references must use WaitUntilWarmed, not WaitBriefly"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn wait_until_warmed_becomes_ready_after_wait_briefly_budget_would_expire() -> Result<()> {
+        let _serial = super::readiness_wait_path_test_lock();
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let indexing = AtomicBool::new(true);
+        let expired = check_readiness_with_budget(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::WaitBriefly,
+            Duration::from_millis(2),
+        );
+        if !matches!(expired, IndexReadinessOutcome::TimedOut(_)) {
+            return Err(anyhow!(
+                "control: WaitBriefly must expire while still building: {expired:?}"
+            ));
+        }
+
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let indexing = Arc::new(AtomicBool::new(true));
+        let worker_coordinator = Arc::clone(&coordinator);
+        let worker_indexing = Arc::clone(&indexing);
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            worker_coordinator.transition_to_ready(1, 1);
+            worker_indexing.store(false, Ordering::Release);
+        });
+        let warm = check_readiness_with_budget(
+            Some(&coordinator),
+            indexing.as_ref(),
+            IndexReadinessPolicy::WaitUntilWarmed,
+            Duration::from_millis(200),
+        );
+        worker.join().map_err(|_| anyhow::anyhow!("warm-up transition thread panicked"))?;
+        if !matches!(warm, IndexReadinessOutcome::Ready) {
+            return Err(anyhow!(
+                "WaitUntilWarmed must still be waiting when WaitBriefly would have expired: {warm:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn wait_until_warmed_does_not_wait_when_scan_is_idle() -> Result<()> {
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let indexing = AtomicBool::new(false);
+        let started = Instant::now();
+        let outcome = check_readiness_with_budget(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::WaitUntilWarmed,
+            Duration::from_secs(30),
+        );
+        if started.elapsed() >= Duration::from_millis(200) {
+            return Err(anyhow!(
+                "idle Building coordinator must not consume the warm-up cap: {:?}",
+                started.elapsed()
+            ));
+        }
+        if !matches!(outcome, IndexReadinessOutcome::Partial(_)) {
+            return Err(anyhow!("idle Building coordinator must be Partial: {outcome:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn wait_until_warmed_degraded_scan_timeout_is_partial_without_wait() -> Result<()> {
+        let coordinator = Arc::new(IndexCoordinator::new());
+        coordinator.transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 123 });
+        let indexing = AtomicBool::new(true);
+        let started = Instant::now();
+        let outcome = check_readiness_with_budget(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::WaitUntilWarmed,
+            Duration::from_secs(30),
+        );
+        if started.elapsed() >= Duration::from_millis(200) {
+            return Err(anyhow!(
+                "ScanTimeout must not consume the warm-up cap: {:?}",
+                started.elapsed()
+            ));
+        }
+        if !matches!(outcome, IndexReadinessOutcome::Partial(_)) {
+            return Err(anyhow!("ScanTimeout must be Partial: {outcome:?}"));
+        }
+        if !outcome.reason().contains("scan timeout") {
+            return Err(anyhow!("ScanTimeout reason missing: {}", outcome.reason()));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn wait_until_warmed_times_out_when_still_building() -> Result<()> {
+        let _serial = super::readiness_wait_path_test_lock();
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let indexing = AtomicBool::new(true);
+        let outcome = check_readiness_with_budget(
+            Some(&coordinator),
+            &indexing,
+            IndexReadinessPolicy::WaitUntilWarmed,
+            Duration::from_millis(2),
+        );
+        if !matches!(outcome, IndexReadinessOutcome::TimedOut(_)) {
+            return Err(anyhow!("still-building warm-up must time out at the cap: {outcome:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn wait_loop_exits_when_indexing_flag_clears_while_still_building() -> Result<()> {
+        let _serial = super::readiness_wait_path_test_lock();
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let indexing = Arc::new(AtomicBool::new(true));
+        let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
+        set_index_ready_wait_entered_observer(wait_entered_tx);
+        let worker_indexing = Arc::clone(&indexing);
+        let worker = std::thread::spawn(move || -> Result<()> {
+            wait_entered_rx.recv_timeout(Duration::from_secs(30))?;
+            worker_indexing.store(false, Ordering::Release);
+            Ok(())
+        });
+
+        let started = Instant::now();
+        let outcome = check_readiness_with_budget(
+            Some(&coordinator),
+            indexing.as_ref(),
+            IndexReadinessPolicy::WaitUntilWarmed,
+            Duration::from_secs(30),
+        );
+        worker.join().map_err(|_| anyhow::anyhow!("flag-clear thread panicked"))??;
+        if started.elapsed() >= Duration::from_secs(2) {
+            return Err(anyhow!(
+                "clearing indexing_in_progress must end the wait without the 30s cap: {:?}",
+                started.elapsed()
+            ));
+        }
+        match outcome {
+            IndexReadinessOutcome::Waited(reason) | IndexReadinessOutcome::Partial(reason)
+                if reason.starts_with("index building") => {}
+            other => {
+                return Err(anyhow!(
+                    "flag-clear while Building must serve the still-building index, not hang or Ready: {other:?}"
+                ));
+            }
+        }
         Ok(())
     }
 }

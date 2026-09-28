@@ -35,8 +35,6 @@ use perl_semantic_facts::AnchorId;
 use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 
 #[cfg(feature = "workspace")]
-use crate::runtime::readiness::IndexReadinessPolicy;
-#[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 
 const REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS: usize = 128;
@@ -917,14 +915,14 @@ impl LspServer {
                     #[cfg(not(feature = "workspace"))]
                     let index_state: &'static str = "none";
 
-                    // Wait for the workspace index to finish building before querying it.
-                    // Without this, a references request while the index is in Building state
-                    // routes to Partial and misses cross-file usages in non-open files.
-                    // The text-search fallback masks this in tests (open files are scanned),
-                    // but production users on large workspaces see empty cross-file results.
-                    // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                    // Hold until reference-index warm-up completes (or the safety cap).
+                    // `WaitBriefly` (2s) is too short for cold-start discovery, so the first
+                    // ask used to return a silent empty list that a retry ~6s later answered
+                    // correctly (#16650). Workspace/symbol keeps the 2s cap.
                     #[cfg(feature = "workspace")]
-                    let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                    let _ = self.check_index_readiness(
+                        crate::runtime::readiness::references_index_readiness_policy(),
+                    );
 
                     // Sample after the readiness wait and before index/semantic use; do
                     // not call while holding `documents_guard()` (#5016 / #6199 deadlock lesson).
@@ -2091,7 +2089,9 @@ impl LspServer {
                 })));
             };
 
-            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+            let _ = self.check_index_readiness(
+                crate::runtime::readiness::references_index_readiness_policy(),
+            );
             let source_backed_receipt_and_cutover = if self
                 .workspace_index_stale_for_any_open_document()
             {
@@ -4167,6 +4167,150 @@ mod tests {
         // `live_source_backed_reference_locations`.
         let _result = server.test_handle_references(Some(params))?;
 
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn seed_open_documents_into_building_coordinator(
+        server: &mut crate::runtime::LspServer,
+    ) -> Result<(), Box<dyn Error>> {
+        use perl_workspace::workspace_index::{IndexCoordinator, SourceCommit};
+        use std::sync::Arc;
+
+        let coordinator = Arc::new(IndexCoordinator::new());
+        coordinator.transition_to_scanning();
+        coordinator.transition_to_indexing(10);
+        {
+            let documents = server.documents.lock();
+            for (normalized_uri, doc) in documents.iter() {
+                let Some(commit_gen) = std::num::NonZeroU32::new(doc.current_generation()) else {
+                    continue;
+                };
+                let url = url::Url::parse(normalized_uri)?;
+                match coordinator.index().index_live_file(
+                    url,
+                    doc.text_str().to_string(),
+                    SourceCommit::new(commit_gen),
+                ) {
+                    perl_workspace::workspace_index::SourceCommitOutcome::Accepted
+                    | perl_workspace::workspace_index::SourceCommitOutcome::NoOp => {}
+                    perl_workspace::workspace_index::SourceCommitOutcome::RejectedStale => {
+                        return Err(format!(
+                            "failed to seed {normalized_uri} into building index: rejected stale"
+                        )
+                        .into());
+                    }
+                    perl_workspace::workspace_index::SourceCommitOutcome::Failed(msg) => {
+                        return Err(format!(
+                            "failed to seed {normalized_uri} into building index: {msg}"
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+        server.index_coordinator = Some(coordinator);
+        Ok(())
+    }
+
+    /// Cold-start empty refs (#16650): a references request that arrives while
+    /// the workspace index is still building must wait for the closed-file
+    /// declaration to be committed, not answer from the empty/partial index.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_references_holds_until_warmup_commits_closed_file_declaration()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let _serial = crate::runtime::readiness::readiness_wait_path_test_lock();
+        let mut server = LspServer::new();
+        let folder = "file:///warmup16650";
+        let consumer_uri = "file:///warmup16650/consumer_glob.pl";
+        let glob_uri = "file:///warmup16650/lib/Glob.pm";
+        let consumer_text = "Glob::Alias::real_impl();\n";
+        let glob_text = "package Glob::Alias;\nsub real_impl { 1 }\n1;\n";
+        let character = u32::try_from(
+            consumer_text.find("real_impl").ok_or("consumer fixture missing real_impl")?,
+        )?;
+
+        server.test_set_workspace_folder_uris(&[folder]);
+        server.test_apply_did_open(consumer_uri, consumer_text, 1)?;
+        seed_open_documents_into_building_coordinator(&mut server)?;
+        server.test_simulate_indexing_start();
+
+        let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
+        server.test_notify_index_ready_wait_entered(wait_entered_tx);
+
+        let server = Arc::new(server);
+        let server_req = Arc::clone(&server);
+        let request = std::thread::spawn(move || {
+            server_req.test_handle_references(Some(serde_json::json!({
+                "textDocument": { "uri": consumer_uri },
+                "position": { "line": 0, "character": character },
+                "context": { "includeDeclaration": true }
+            })))
+        });
+
+        wait_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|e| format!("references wait loop did not start: {e}"))?;
+        server.test_index_file_in_building_state(glob_uri, glob_text)?;
+        server.test_simulate_indexing_complete();
+
+        let result = request.join().map_err(|_| "references thread panicked")??;
+        let locations = result
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .ok_or("textDocument/references must return an array")?;
+        let saw_closed_declaration = locations.iter().any(|location| {
+            location.get("uri").and_then(serde_json::Value::as_str) == Some(glob_uri)
+        });
+        if !saw_closed_declaration {
+            return Err(format!(
+                "cold-start references must wait for the closed-file declaration; got {locations:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Building-without-a-live-scan is a routing fixture, not warm-up. References
+    /// must not consume the 30s cap when `indexing_in_progress` is false.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_references_does_not_wait_when_building_but_scan_is_idle() -> Result<(), Box<dyn Error>>
+    {
+        use crate::runtime::LspServer;
+        use std::time::{Duration, Instant};
+
+        let mut server = LspServer::new();
+        let uri = "file:///warmup16650-idle/consumer.pl";
+        let text = "sub idle_target { 1 }\nidle_target();\n";
+        server.test_apply_did_open(uri, text, 1)?;
+        seed_open_documents_into_building_coordinator(&mut server)?;
+
+        let started = Instant::now();
+        let result = server.test_handle_references(Some(serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 0 },
+            "context": { "includeDeclaration": true }
+        })))?;
+        if started.elapsed() >= Duration::from_millis(500) {
+            return Err(format!(
+                "idle Building references must not consume the warm-up cap: {:?}",
+                started.elapsed()
+            )
+            .into());
+        }
+        let locations = result
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .ok_or("textDocument/references must return an array")?;
+        if locations.is_empty() {
+            return Err("idle Building same-file references should still answer locally".into());
+        }
         Ok(())
     }
 }
