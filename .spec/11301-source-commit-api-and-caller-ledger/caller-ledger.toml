@@ -111,6 +111,15 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # conversion is behavior-identical and costs no coverage. It is also what this
 # prefix's own removal_condition asks for: "initial profile and internal tests
 # use canonical initial names". Baseline therefore stays 710.
+# Held at 710 by #16449 (#16019 lone-minus completion fix): that PR added one
+# `.index_file(Url::parse(...)?, ...)` fixture call in
+# crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
+# (test_dash_trigger_ignores_lone_minus_but_keeps_call_chain_receiver,
+# pre-seeding the MyFactory package as initial on-disk state). Resolved by
+# burndown: `index_file` is a one-line forward to `index_initial_file`
+# (workspace_index.rs), and the seeded content is initial state, so the call
+# was converted to the canonical name with identical behavior. Baseline
+# therefore stays 710.
 compatibility_baseline = 710
 
 # Structural recurrence control (#11305): files under these prefixes must

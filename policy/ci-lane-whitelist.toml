@@ -453,7 +453,9 @@ expensive = false
 blocking_promotion_allowed = false
 duplicate_of = ["nightly:mutation"]
 review_after = "2026-06-07"
-expires = "2026-08-07"
+# 2026-08-07 had already passed while the lane stayed active (#16431 flagged
+# the stale date when the infra-retry arming was investigated).
+expires = "2026-12-31"
 
 [[lane]]
 id = "ripr_infra_retry"
@@ -466,9 +468,9 @@ default_pr = true
 runner = "ubuntu_latest"
 base_lem = 1
 owner = "testing"
-intent = "Bounded automatic same-head retry when the gate classifies a ripr lane kill as infra-no-proof (#6807, #12563, #12771)."
+intent = "Bounded automatic same-head retry when the gate classifies a ripr lane kill as infra-no-proof (#6807, #12563, #12771, #16431)."
 failure_mode = "A runner eviction otherwise false-reds the required ripr+ New Gap Gate with no terminal evidence for the SHA."
-proof_obligation = "Consume the gate's ripr-gate-classification artifact strictly as data; rerun-failed-jobs exactly once while run_attempt == 1; attempt >= 2 surfaces NOT_PROVEN loudly."
+proof_obligation = "Consume the gate's ripr-gate-classification artifact strictly as data; rerun-failed-jobs exactly once while run_attempt == 1; attempt >= 2 surfaces NOT_PROVEN loudly. The gate may classify from lane-log markers or from API-side evidence (check-run annotations / job steps-state fallback, #16431); this consumer stays classifier-agnostic."
 evidence = []
 allowed_triggers = ["workflow_run"]
 labels = ["ripr", "ci-reliability"]
@@ -1103,15 +1105,36 @@ default_pr = false
 runner = "ubuntu_latest"
 base_lem = 1
 owner = "ci"
-intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status."
-failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, or a validator failure masks as a routing skip."
-proof_obligation = "Run both lanes; aggregate passes on agreement or on a fallback success when the trusted lane never completes, and fails on trusted failure or divergence; run the fallback contract test."
+intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status. Reports actionable deadline diagnostics when the trusted lane stays queued without a runner (#15900)."
+failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, a validator failure masks as a routing skip, or a queued-forever trusted lane leaves the run and its check permanently pending without diagnostics."
+proof_obligation = "Run both lanes; aggregate passes on agreement or on a fallback success when the trusted lane never completes, and fails on trusted failure or divergence; report deadline diagnostics for a trusted lane still queued without a runner; run the fallback contract test."
 evidence = ["job output", "step-summary"]
 allowed_triggers = ["pull_request", "workflow_dispatch"]
 expensive = false
 duplicate_of = []
 review_after = "2026-09-18"
 expires = "2027-02-18"
+
+[[lane]]
+id = "policy_validators_nano_reaper"
+workflow = ".github/workflows/policy-validators-nano-reaper.yml"
+job = "reap"
+tier = "frontdoor"
+kind = "control"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 1
+owner = "ci"
+intent = "Cancel Policy Validators trusted-lane jobs that stayed queued without a runner past the service window so affected runs reach an explicit terminal state (#15900)."
+failure_mode = "A queued-forever trusted lane leaves affected PR runs and their checks permanently pending without diagnostics."
+proof_obligation = "Find queued policy-validators trusted-lane jobs older than the service window, cancel them with actionable diagnostics naming the em-ci-nano group and the follow-up."
+evidence = ["job output", "step-summary"]
+allowed_triggers = ["schedule", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-03-18"
 
 [[lane]]
 id = "commit_checks"
