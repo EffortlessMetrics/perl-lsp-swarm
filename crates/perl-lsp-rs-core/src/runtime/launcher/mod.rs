@@ -16,6 +16,7 @@ use std::sync::{Mutex, MutexGuard, Once, PoisonError};
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
 mod checking_guidance;
+mod port;
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
 pub use crate::features::grid::{compliance_counts_for_profile, to_json_for_profile};
@@ -616,7 +617,7 @@ pub enum LaunchParseError {
     InvalidPort {
         /// Raw port token from CLI.
         raw_port: String,
-        /// Parse failure details.
+        /// Actionable reason the value was rejected.
         reason: String,
     },
     /// Invalid shell name for completions.
@@ -866,10 +867,7 @@ fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParse
                 return Err(LaunchParseError::MissingValue { option: "--port".to_string() });
             }
 
-            raw_port.parse::<u16>().map_err(|reason| LaunchParseError::InvalidPort {
-                raw_port: raw_port.clone(),
-                reason: reason.to_string(),
-            })?;
+            port::validate_port_token(&raw_port)?;
 
             index += 2;
             continue;
@@ -880,10 +878,7 @@ fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParse
                 return Err(LaunchParseError::MissingValue { option: "--port".to_string() });
             }
 
-            raw_port.parse::<u16>().map_err(|reason| LaunchParseError::InvalidPort {
-                raw_port: raw_port.to_string(),
-                reason: reason.to_string(),
-            })?;
+            port::validate_port_token(raw_port)?;
         }
 
         if token == "--completion" {

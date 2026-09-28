@@ -1,12 +1,13 @@
-# Perl LSP installer for Windows
+﻿# Perl LSP installer for Windows
 #
-# The piped one-liner is not usable yet. The copy published at
-# perl-lsp/master still derives a `perl-lsp-<version>-...zip` asset name while
-# releases ship `perllsp-<version>-...zip`, so piping that URL into iex 404s
-# (#5461). This file already carries the fix; promoting it to the publication
-# repo is #4348.
+# This development copy carries the current checksum behavior: it requires the
+# release SHA256SUMS manifest and fails closed without it. The published
+# PowerShell script is a separate, older revision with documented checksum
+# limitations; use only the immutable revision and invocation documented in
+# README.md and docs/how-to/INSTALLATION.md. Do not assume perl-lsp/master is
+# equivalent to this file.
 #
-# Until that lands, run it from a clone or a downloaded copy:
+# Run it from a clone or a reviewed downloaded copy:
 #   .\install.ps1                                    # latest, default dir
 #   .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
 
@@ -1016,7 +1017,7 @@ if (-not ($IsArm64Host -or $HostArch -eq "AMD64")) {
 # (#8367): no leading zeroes, optional prerelease/build suffix with its
 # restricted alphabet. Applied to the explicit -Version pin before any URL is
 # built.
-$SemverPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+$SemverPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
 
 if ($Version -eq "latest") {
     try {
@@ -1035,7 +1036,7 @@ if ($Version -eq "latest") {
     if ($VersionSpec -notmatch $SemverPattern) {
         Write-Error "Invalid -Version '$Version': expected a full X.Y.Z semver (for example 0.17.0 or v0.17.0, with optional prerelease/build metadata). Check the release page for an existing tag: https://github.com/$Repo/releases"
     }
-    $Tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
+    $Tag = "v$VersionSpec"
 }
 
 $VersionNum = $Tag.TrimStart("v")

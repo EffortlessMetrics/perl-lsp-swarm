@@ -261,18 +261,17 @@ detect_platform() {
             _libc=""
             ;;
         MINGW*|MSYS*|CYGWIN*)
-            # Do not send Windows users to the piped PowerShell installer: the
-            # copy published at $REPO/master still builds a perl-lsp-*.zip asset
-            # name while releases ship perllsp-*.zip, so it 404s (#5461, fix
-            # pending promotion in #4348). Point at the archive that works.
+            # Keep Windows users on the manual archive from this shell path.
+            # The published PowerShell script has separate provenance and
+            # checksum limitations documented in docs/how-to/INSTALLATION.md.
             err "Windows is not supported by this script. Download
   perllsp-<version>-x86_64-pc-windows-msvc.zip
 from https://github.com/$REPO/releases, extract it, and put the folder
 containing perllsp.exe on your PATH.
 
-The PowerShell installer is not usable yet — the published copy builds a
-download URL that 404s. See
-https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461"
+The PowerShell installer is a separate path; use only the immutable revision
+documented in the installation guide. See
+https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
             ;;
         *)
             err "unsupported operating system: $_os"
@@ -372,7 +371,9 @@ Check your internet connection or set VERSION=v<x.y.z> to pin a version."
     else
         # #16541: reject an invalid pin before any URL is built; previously
         # anything non-"latest" was accepted and survived to a dead-end 404.
-        validate_release_version_spec "$VERSION"
+        if [ "$INSTALL_MODE" = "release" ]; then
+            validate_release_version_spec "$VERSION"
+        fi
         # Accept "0.12.0" or "v0.12.0"
         case "$VERSION" in
             v*) TAG="$VERSION" ;;
