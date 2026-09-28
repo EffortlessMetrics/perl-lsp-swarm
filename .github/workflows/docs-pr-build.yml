@@ -17,6 +17,7 @@ on:
       - 'scripts/ci/test_validate_helix_fixture_drift.py'
       # Same rule for the committed-copy freshness check (#16544).
       - 'scripts/ci/validate_book_copy_freshness.sh'
+      - 'scripts/ci/rewrite_book_source_links.py'
       - 'scripts/tests/test-validate-book-copy-freshness.sh'
       - '.github/workflows/docs-deploy.yml'
       - '.github/workflows/docs-pr-build.yml'

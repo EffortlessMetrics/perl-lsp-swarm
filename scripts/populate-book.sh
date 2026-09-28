@@ -9,7 +9,9 @@ REPO_BLOB_URL="https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main"
 # redirects generation into a scratch tree so it can diff committed copies
 # against fresh output without mutating book/src.
 BOOK_SRC="${PERL_LSP_BOOK_SRC:-$REPO_ROOT/book/src}"
-DOCS_DIR="$REPO_ROOT/docs"
+# The freshness self-test can supply a disposable source tree to prove that
+# absent canonical inputs fail the complete population/check path.
+DOCS_DIR="${PERL_LSP_DOCS_DIR:-$REPO_ROOT/docs}"
 
 echo "Populating mdBook with existing documentation..."
 
@@ -46,7 +48,8 @@ copy_doc() {
         echo "  Copying $(basename "$source") to $dest"
         cp "$source" "$dest"
     else
-        echo "  Warning: Source file not found: $source"
+        echo "  Error: Source file not found: $source" >&2
+        return 1
     fi
 }
 
@@ -93,7 +96,6 @@ rewrite_book_links() {
         -e "s#](\.\./\.\./\.github/#](${repo}/.github/#g" \
         -e "s#](\.\./\.\./features\.toml#](${repo}/features.toml#g" \
         -e "s#](\.\./\.\./RELEASE_HISTORY\.md#](${repo}/RELEASE_HISTORY.md#g" \
-        -e "s#](\.\./\.\./ROADMAP\.md#](${repo}/ROADMAP.md#g" \
         -e "s#](\.\./\.\./NOW_NEXT_LATER\.md#](${repo}/NOW_NEXT_LATER.md#g" \
         -e "s#](\.\./\.\./\.ci/#](${repo}/.ci/#g" \
         -e "s#](\.\./\.\./crates/#](${repo}/crates/#g" \
@@ -131,6 +133,7 @@ copy_book_doc() {
     local srcdir="$(dirname "$source")"
     local reldir="${srcdir#"$DOCS_DIR"}"
     rewrite_bare_book_links "$dest" "${REPO_BLOB_URL}/docs${reldir}"
+    python3 "$REPO_ROOT/scripts/ci/rewrite_book_source_links.py" "$source" "$dest" "$REPO_ROOT"
 }
 
 # Adapt source-relative links when canonical docs are copied into the book.
