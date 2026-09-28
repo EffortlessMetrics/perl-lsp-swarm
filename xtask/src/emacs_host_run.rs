@@ -839,17 +839,44 @@ pub fn host_run(
                 .to_string(),
         );
     }
+    let diagnostics = DiagnosticsIdentity {
+        advertised_mode: DiagnosticMode::NotProven,
+        observed_messages: Vec::new(),
+    };
+    // Pass law (editor_client_compat::validate): a Pass receipt must carry a
+    // proven position-encoding basis and a proven diagnostic mode. This
+    // substrate stamps both NotProven by design — its claim boundary is
+    // supervision-only lifecycle proof, and client support verdicts belong to
+    // #7126/#7721/#7727 — so an observation-level pass must land as a
+    // NotProven receipt. Emitting Pass here would produce a receipt that
+    // fails its own validation and makes every clean host run error at the
+    // freshness binding (#15338 review). The observation-level judgment
+    // stays in `OutcomeJudgment`/`HostRunOutcome`; the receipt records the
+    // evidence-boundary verdict its schema can carry.
+    let (receipt_result, receipt_failure_class) =
+        if outcome.result == ObservationResult::Pass
+            && (capabilities.position_encoding_basis == PositionEncodingBasis::NotProven
+                || diagnostics.advertised_mode == DiagnosticMode::NotProven)
+        {
+            limitations.push(
+                "observation-level pass recorded as not_proven: the substrate's position-encoding \
+                 and diagnostic evidence is not_proven, so the receipt cannot carry the proven \
+                 support evidence a pass requires (client support verdicts belong to \
+                 #7126/#7721/#7727)"
+                    .to_string(),
+            );
+            (ObservationResult::NotProven, Some(FailureClass::Environment))
+        } else {
+            (outcome.result, outcome.failure_class)
+        };
     let receipt = build_receipt(
         &plan,
         &observation,
         capabilities,
-        DiagnosticsIdentity {
-            advertised_mode: DiagnosticMode::NotProven,
-            observed_messages: Vec::new(),
-        },
+        diagnostics,
         outcome_journey(&observation),
-        outcome.result,
-        outcome.failure_class,
+        receipt_result,
+        receipt_failure_class,
         limitations,
         format!(
             "#7778 {}: actual-host substrate proof, no support claim",
@@ -1040,6 +1067,144 @@ fn outcome_journey(observation: &ProcessObservation) -> Vec<JourneyCell> {
 fn file_sha256_of_empty() -> Result<String> {
     let empty = tempfile::NamedTempFile::new()?;
     file_sha256(empty.path())
+}
+
+#[cfg(test)]
+mod pass_receipt_law_tests {
+    use super::*;
+    use emacs_host_runner::{DRIVER_SCHEMA_VERSION, DriverEvent, DriverEventKind};
+
+    fn attested_event(
+        sequence: u64,
+        kind: DriverEventKind,
+        details: Vec<(&str, String)>,
+    ) -> DriverEvent {
+        DriverEvent {
+            schema_version: DRIVER_SCHEMA_VERSION.to_string(),
+            sequence,
+            kind,
+            details: details.into_iter().map(|(key, value)| (key.to_string(), value)).collect(),
+        }
+    }
+
+    /// Producer-shaped control (#15338 review): the receipt shape `host_run`
+    /// composed before the repair — observation-level Pass over the
+    /// substrate's NotProven position-encoding and diagnostic evidence —
+    /// must fail the production validator, and the demoted shape the
+    /// producer emits after the repair must satisfy it. Both controls run
+    /// the production `evaluate_observation`/`outcome_journey`/
+    /// `validate_receipt_binding` pair, not test-local re-implementations.
+    #[test]
+    fn pass_observation_validates_only_in_the_demoted_receipt_shape() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let (plan, _layout) =
+            emacs_host_runner::supervision_plan(root.path(), "passlaw", 30_000)?;
+        let planned_digest = plan
+            .identity
+            .client
+            .source_sha256
+            .strip_prefix("sha256:")
+            .unwrap_or(&plan.identity.client.source_sha256)
+            .to_string();
+        let events = vec![
+            attested_event(1, DriverEventKind::HostStarted, vec![]),
+            attested_event(
+                2,
+                DriverEventKind::ClientLoaded,
+                vec![
+                    ("source_sha256", planned_digest),
+                    ("version", plan.identity.client.version.clone()),
+                ],
+            ),
+            attested_event(3, DriverEventKind::RegistrationSelected, vec![]),
+            attested_event(4, DriverEventKind::InitializeObserved, vec![]),
+            attested_event(5, DriverEventKind::WorkspaceReady, vec![]),
+            attested_event(6, DriverEventKind::BufferOpened, vec![]),
+            attested_event(7, DriverEventKind::ShutdownStarted, vec![]),
+            attested_event(8, DriverEventKind::ShutdownCompleted, vec![]),
+        ];
+        let observation = ProcessObservation {
+            status_code: Some(0),
+            timed_out: false,
+            kill_requested: false,
+            cleanup: CleanupResult::Pass,
+            cleanup_detail: "empty candidate process set".to_string(),
+            events,
+            driver_complete: true,
+            last_completed_barrier: Some("shutdown_completed".to_string()),
+            surviving_processes: Vec::new(),
+            artifacts: Vec::new(),
+        };
+        let outcome = evaluate_observation(&plan, &observation)?;
+        anyhow::ensure!(
+            outcome.result == ObservationResult::Pass && outcome.failure_class.is_none(),
+            "the attested observation must reach the Pass arm, got {:?} ({:?})",
+            outcome.result,
+            outcome.failure_class
+        );
+
+        let capabilities = CapabilityIdentity {
+            initialize_snapshot_sha256: file_sha256_of_empty()?,
+            position_encodings_offered: Vec::new(),
+            position_encoding_basis: PositionEncodingBasis::NotProven,
+            position_encoding_selected: None,
+        };
+        let diagnostics = DiagnosticsIdentity {
+            advertised_mode: DiagnosticMode::NotProven,
+            observed_messages: Vec::new(),
+        };
+        let journey = outcome_journey(&observation);
+        let claim =
+            "#7778 pass-law control: actual-host substrate proof, no support claim".to_string();
+
+        // Pre-repair producer shape: Pass over NotProven support evidence.
+        let pre_repair = emacs_host_runner::build_receipt(
+            &plan,
+            &observation,
+            capabilities.clone(),
+            diagnostics.clone(),
+            journey.clone(),
+            ObservationResult::Pass,
+            None,
+            vec![
+                "substrate lifecycle proof only: client support verdicts belong to                  #7126/#7721/#7727"
+                    .to_string(),
+            ],
+            claim.clone(),
+        );
+        let error = validate_receipt_binding(&pre_repair, &plan).expect_err(
+            "a Pass receipt over NotProven support evidence must fail its own validation",
+        );
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("passing receipt requires a proven position encoding basis"),
+            "the refusal must name the pass law, got: {error:#}"
+        );
+
+        // Post-repair producer shape: demoted to not_proven with an
+        // Environment failure class and a named evidence-boundary limitation.
+        let demoted = emacs_host_runner::build_receipt(
+            &plan,
+            &observation,
+            capabilities,
+            diagnostics,
+            journey,
+            ObservationResult::NotProven,
+            Some(FailureClass::Environment),
+            vec![
+                "substrate lifecycle proof only: client support verdicts belong to                  #7126/#7721/#7727"
+                    .to_string(),
+                "observation-level pass recorded as not_proven: the substrate's                  position-encoding and diagnostic evidence is not_proven"
+                    .to_string(),
+            ],
+            claim,
+        );
+        validate_receipt_binding(&demoted, &plan).context(
+            "the demoted producer shape must satisfy the validator and its own binding",
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
