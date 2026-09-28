@@ -74,6 +74,21 @@ function git(args) {
   return result.stdout.trim();
 }
 
+// The packaged target can differ from the host that runs this proposal: musl
+// Linux mints `alpine`, and cross-packaged VSIX builds name their target with
+// PERL_LSP_VSCODE_TARGET exactly as package-vsix does. Deriving from the host
+// alone would classify every other target's payload as foreign drift.
+function proposalTarget(env = process.env) {
+  const target = (env.PERL_LSP_VSCODE_TARGET || '').trim() || `${process.platform}-${process.arch}`;
+  const match = /^(win32|linux|alpine|darwin)-(x64|arm64)$/.exec(target);
+  if (!match) {
+    throw new Error(
+      `PERL_LSP_VSCODE_TARGET must name a packaged <platform>-<arch> target, got: ${target}`,
+    );
+  }
+  return { platform: match[1], arch: match[2] };
+}
+
 function assertCurrentSubject(args, runGit = git) {
   const head = runGit(['rev-parse', 'HEAD']);
   if (head !== args.candidate) throw new Error('candidate SHA is stale relative to HEAD');
@@ -96,6 +111,9 @@ function candidateInventory(baseInventory, actual, platform, arch, ignoredFiles 
   const ignored = new Set(ignoredFiles);
   const files = { ...baseInventory.files };
   for (const name of Object.keys(files)) {
+    // An ignored staged payload never proposes its own bytes, so an accepted
+    // baseline row for it must survive unchanged rather than read as removed.
+    if (ignored.has(name)) continue;
     const fileTarget = bundleTargetForPackagedFile(name);
     if (fileTarget === null || fileTarget === target) delete files[name];
   }
@@ -188,6 +206,7 @@ function writeProposal(proposal, baseDocument, options = {}) {
     baselineFile = baselinePath,
     declarationFile = declarationPath,
     runGit = git,
+    baseSha = 'HEAD',
   } = options;
   const existing = parseInventoryDocument(fileSystem.readFileSync(baselineFile), baselineFile);
   if (existing.file_sha256 !== baseDocument.file_sha256) {
@@ -204,6 +223,18 @@ function writeProposal(proposal, baseDocument, options = {}) {
     path.relative(repoRoot, declarationFile),
   ]);
   if (changed) throw new Error('baseline or declaration already has worktree edits');
+  // The worktree check above cannot see an edit that the candidate commit
+  // already made to the declaration; compare the committed bytes instead of
+  // silently overwriting an independently reviewed declaration.
+  const declarationRepoPath = path.relative(repoRoot, declarationFile).split(path.sep).join('/');
+  if (
+    runGit(['show', `HEAD:${declarationRepoPath}`]) !==
+    runGit(['show', `${baseSha}:${declarationRepoPath}`])
+  ) {
+    throw new Error(
+      'declaration changed between base and candidate; reconcile it before proposing',
+    );
+  }
   // Stage both canonical documents first. Restore the original bytes if either
   // rename fails; a future invocation rejects a partly changed baseline.
   const tempBaseline = `${baselineFile}.${process.pid}.proposal`;
@@ -231,11 +262,12 @@ async function main(argv = process.argv.slice(2)) {
   const archive = await collectArchiveInventory(path.resolve(args.vsix));
   const baseDocument = readBaselineAtRevision(args.base);
   const candidateDocument = readCandidateBaseline();
+  const { platform, arch } = proposalTarget();
   const ignoredFiles =
     process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1'
       ? currentSourceBundleFiles(
-          process.platform,
-          process.arch,
+          platform,
+          arch,
           process.env.PERL_LSP_CURRENT_SOURCE_DAP_STAGED === '1',
         )
       : [];
@@ -245,8 +277,8 @@ async function main(argv = process.argv.slice(2)) {
     archive,
     ownerIssue: args.ownerIssue,
     reason: args.reason,
-    platform: process.platform,
-    arch: process.arch,
+    platform,
+    arch,
     ignoredFiles,
   });
   if (args.write && proposal.state === 'no_change') {
@@ -258,7 +290,7 @@ async function main(argv = process.argv.slice(2)) {
     const after = await collectArchiveInventory(path.resolve(args.vsix));
     if (after.archive_sha256 !== archive.archive_sha256)
       throw new Error('VSIX changed during proposal');
-    writeProposal(proposal, baseDocument);
+    writeProposal(proposal, baseDocument, { baseSha: args.base });
   }
   process.stdout.write(
     `${JSON.stringify(
@@ -286,6 +318,7 @@ module.exports = {
   assertCurrentSubject,
   candidateInventory,
   makeProposal,
+  proposalTarget,
   writeProposal,
   main,
 };

@@ -14,6 +14,7 @@ const {
   candidateInventory,
   makeProposal,
   parseArgs,
+  proposalTarget,
   writeProposal,
 } = require('./propose-vsix-inventory-transition');
 const { summarizeInventory } = require('./check-vsix-inventory');
@@ -198,6 +199,33 @@ void test('refuses foreign target payload drift instead of overwriting its unobs
   );
 });
 
+void test('an ignored payload path retains its accepted baseline row', () => {
+  const candidate = candidateInventory(
+    inventory(source),
+    inventory({
+      'out/extension.js': 4,
+      'bin/win32-x64/perllsp.exe': 9,
+    }),
+    'win32',
+    'x64',
+    ['bin/win32-x64/perllsp.exe'],
+  );
+  assert.equal(candidate.files['bin/win32-x64/perllsp.exe'], 7);
+  assert.equal(candidate.files['out/extension.js'], 4);
+});
+
+void test('proposalTarget honors the packaged target override like package-vsix', () => {
+  assert.deepEqual(proposalTarget({ PERL_LSP_VSCODE_TARGET: 'alpine-x64' }), {
+    platform: 'alpine',
+    arch: 'x64',
+  });
+  assert.deepEqual(proposalTarget({}), { platform: process.platform, arch: process.arch });
+  assert.throws(
+    () => proposalTarget({ PERL_LSP_VSCODE_TARGET: 'freebsd-x64' }),
+    /packaged <platform>-<arch> target/,
+  );
+});
+
 void test('rejects invalid archive before a proposal exists', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vsix-proposal-'));
   try {
@@ -250,6 +278,51 @@ void test('guarded write produces both exact review documents and refuses stale 
         }),
       /baseline changed since proposal/,
     );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+void test('a declaration committed after the base is never silently overwritten', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vsix-proposal-declaration-'));
+  const baselineFile = path.join(tmp, 'baseline.json');
+  const declarationFile = path.join(tmp, 'declaration.json');
+  try {
+    const baseDocument = document(source);
+    fs.writeFileSync(baselineFile, canonicalJson(baseDocument.value));
+    fs.writeFileSync(declarationFile, '{"committed":"candidate-review"}\n');
+    const measured = await archive({ 'out/extension.js': 'abcd' });
+    const proposal = makeProposal({
+      baseDocument,
+      candidateDocument: baseDocument,
+      archive: measured,
+      ownerIssue: '6889',
+      reason,
+      platform: 'linux',
+      arch: 'x64',
+    });
+    // A clean worktree with a declaration that differs between the selected
+    // base and HEAD is an independently committed review decision.
+    assert.throws(
+      () =>
+        writeProposal(proposal, baseDocument, {
+          baselineFile,
+          declarationFile,
+          baseSha: 'a'.repeat(40),
+          runGit: (args) =>
+            args[0] === 'show' ? (args[1].startsWith('HEAD:') ? 'committed' : 'base') : '',
+        }),
+      /declaration changed between base and candidate/,
+    );
+    assert.equal(fs.readFileSync(declarationFile, 'utf8'), '{"committed":"candidate-review"}\n');
+    // Identical committed bytes pass the gate.
+    writeProposal(proposal, baseDocument, {
+      baselineFile,
+      declarationFile,
+      baseSha: 'a'.repeat(40),
+      runGit: (args) => (args[0] === 'show' ? 'committed' : ''),
+    });
+    assert.equal(fs.readFileSync(declarationFile, 'utf8'), canonicalJson(proposal.declaration));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
