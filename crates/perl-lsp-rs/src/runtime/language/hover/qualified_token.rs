@@ -46,6 +46,9 @@ pub(super) fn classify_qualified_hover_token(
     let followed_by_arrow = text
         .get(span_end..)
         .is_some_and(|rest| rest.trim_start_matches([' ', '\t']).starts_with("->"));
+    let followed_by_call = text
+        .get(span_end..)
+        .is_some_and(|rest| rest.trim_start_matches([' ', '\t']).starts_with('('));
 
     // `File::Path->method`: the whole span is the receiver package, including
     // a cursor on the `File` prefix (existing package-hover coverage).
@@ -60,6 +63,14 @@ pub(super) fn classify_qualified_hover_token(
             return None;
         }
         return Some(QualifiedHoverKind::Package(prefix));
+    }
+
+    // A capitalized final component with no call is a package/module token
+    // (`File::Path`, `Foo::Bar => 1`), not a subroutine. Lowercase finals
+    // (`Pkg::sub`) and any final followed by `(` stay callables.
+    let last_looks_like_package = name.chars().next().is_some_and(|ch| ch.is_ascii_uppercase());
+    if last_looks_like_package && !followed_by_call {
+        return Some(QualifiedHoverKind::Package(candidate.to_string()));
     }
 
     Some(QualifiedHoverKind::Callable {
@@ -255,14 +266,23 @@ mod tests {
     }
 
     #[test]
-    fn fat_comma_is_not_an_arrow_receiver() {
+    fn fat_comma_capitalized_name_is_package_not_callable() {
         let text = "Foo::Bar => 1;\n";
         assert_eq!(
             classify_qualified_hover_token(text, offset_of(text, "Bar")),
+            Some(QualifiedHoverKind::Package("Foo::Bar".to_string()))
+        );
+    }
+
+    #[test]
+    fn capitalized_call_with_parens_is_still_callable() {
+        let text = "print Foo::BAR();\n";
+        assert_eq!(
+            classify_qualified_hover_token(text, offset_of(text, "BAR")),
             Some(QualifiedHoverKind::Callable {
-                qualified: "Foo::Bar".to_string(),
+                qualified: "Foo::BAR".to_string(),
                 package: "Foo".to_string(),
-                name: "Bar".to_string(),
+                name: "BAR".to_string(),
             })
         );
     }

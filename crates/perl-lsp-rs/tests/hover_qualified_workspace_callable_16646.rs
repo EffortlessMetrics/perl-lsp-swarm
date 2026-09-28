@@ -178,8 +178,8 @@ sub helper { return 1; }
 
     assert_not_missing_module_card(&value, "Foo::Bar::helper");
     assert!(
-        value.contains("helper"),
-        "three-component hover should name the indexed sub, got: {value}"
+        value.contains("Defined in `Foo::Bar`") || value.contains("sub Foo::Bar::helper"),
+        "three-component hover should present the indexed callable, got: {value}"
     );
     Ok(())
 }
@@ -313,8 +313,9 @@ fn hover_on_qualified_sub_in_comment_does_not_cpanm() -> TestResult {
 
     let (line, character) = pos_on_line(SCRIPT, 0, "documented_sub")?;
     let result = hover_at(&mut harness, "file:///comment_qualified.pl", line, character)?;
-    if let Some(value) = hover_markdown(&result) {
-        assert_not_missing_module_card(&value, "PodHeavy::documented_sub");
-    }
+    assert!(
+        hover_markdown(&result).is_none(),
+        "qualified name in a comment must fail closed, got: {result:?}"
+    );
     Ok(())
 }
