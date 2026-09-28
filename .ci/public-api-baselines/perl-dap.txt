@@ -1326,7 +1326,7 @@ pub perl_dap::mutation::MutationOutcome::Unsupported::mode: alloc::string::Strin
 pub perl_dap::mutation::MutationOutcome::Unsupported::profile: perl_dap::mutation::MutationValueProfile
 pub perl_dap::mutation::MutationOutcome::UnsupportedFrameOrTargetCohort
 pub perl_dap::mutation::MutationOutcome::ValueParseRefused
-pub fn perl_dap::mutation::MutationOutcome::indeterminate_after_dispatch() -> Self
+pub fn perl_dap::mutation::MutationOutcome::indeterminate_after_dispatch() -> perl_dap::mutation::MutationOutcome
 pub fn perl_dap::mutation::MutationOutcome::invalidates_value_authority(&self) -> bool
 pub fn perl_dap::mutation::MutationOutcome::is_before_dispatch(&self) -> bool
 pub fn perl_dap::mutation::MutationOutcome::is_success(&self) -> bool
@@ -1397,7 +1397,7 @@ pub enum perl_dap::mutation::RefusedWritability
 pub perl_dap::mutation::RefusedWritability::NotProven
 pub perl_dap::mutation::RefusedWritability::ReadOnly
 pub perl_dap::mutation::RefusedWritability::Unaddressable
-pub fn perl_dap::mutation::RefusedWritability::from_disposition(disposition: perl_dap::mutation::WritabilityDisposition) -> core::option::Option<Self>
+pub fn perl_dap::mutation::RefusedWritability::from_disposition(disposition: perl_dap::mutation::WritabilityDisposition) -> core::option::Option<perl_dap::mutation::RefusedWritability>
 pub fn perl_dap::mutation::RefusedWritability::clone(&self) -> perl_dap::mutation::RefusedWritability
 pub fn perl_dap::mutation::RefusedWritability::eq(&self, other: &perl_dap::mutation::RefusedWritability) -> bool
 pub fn perl_dap::mutation::RefusedWritability::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1460,7 +1460,7 @@ pub fn perl_dap::mutation::ExactDecimal::eq(&self, other: &perl_dap::mutation::E
 pub fn perl_dap::mutation::ExactDecimal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::mutation::ExactDecimal::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub struct perl_dap::mutation::ExactInteger
-pub fn perl_dap::mutation::ExactInteger::admitted(canonical: &str) -> core::option::Option<Self>
+pub fn perl_dap::mutation::ExactInteger::admitted(canonical: &str) -> core::option::Option<perl_dap::mutation::ExactInteger>
 pub fn perl_dap::mutation::ExactInteger::canonical(&self) -> &str
 pub fn perl_dap::mutation::ExactInteger::is_negative(&self) -> bool
 pub fn perl_dap::mutation::ExactInteger::significant_digits(&self) -> usize
@@ -1502,7 +1502,7 @@ pub fn perl_dap::mutation::MutationOperation::deadline(&self) -> perl_dap::mutat
 pub fn perl_dap::mutation::MutationOperation::expected_session_generation(&self) -> u64
 pub fn perl_dap::mutation::MutationOperation::expected_suspension_generation(&self) -> u64
 pub fn perl_dap::mutation::MutationOperation::expected_value_authority_generation(&self) -> u64
-pub fn perl_dap::mutation::MutationOperation::new(operation_id: u64, origin: perl_dap::mutation::MutationOrigin, target: perl_dap::mutation::MutationTarget, value: perl_dap::mutation::MutationValue, deadline: perl_dap::mutation::MutationDeadline, response_format: perl_dap::mutation::ResponseValueFormat) -> Self
+pub fn perl_dap::mutation::MutationOperation::new(operation_id: u64, origin: perl_dap::mutation::MutationOrigin, target: perl_dap::mutation::MutationTarget, value: perl_dap::mutation::MutationValue, deadline: perl_dap::mutation::MutationDeadline, response_format: perl_dap::mutation::ResponseValueFormat) -> perl_dap::mutation::MutationOperation
 pub fn perl_dap::mutation::MutationOperation::operation_id(&self) -> u64
 pub fn perl_dap::mutation::MutationOperation::origin(&self) -> perl_dap::mutation::MutationOrigin
 pub fn perl_dap::mutation::MutationOperation::receipt_projection(&self) -> perl_dap::mutation::MutationOperationReceipt
@@ -1599,9 +1599,9 @@ pub fn perl_dap::mutation::ObservedReadBack::clone(&self) -> perl_dap::mutation:
 pub fn perl_dap::mutation::ObservedReadBack::eq(&self, other: &perl_dap::mutation::ObservedReadBack) -> bool
 pub fn perl_dap::mutation::ObservedReadBack::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::mutation::PerlHashKey
-pub fn perl_dap::mutation::PerlHashKey::byte_string(bytes: alloc::vec::Vec<u8>) -> Self
+pub fn perl_dap::mutation::PerlHashKey::byte_string(bytes: alloc::vec::Vec<u8>) -> perl_dap::mutation::PerlHashKey
 pub fn perl_dap::mutation::PerlHashKey::bytes(&self) -> &[u8]
-pub fn perl_dap::mutation::PerlHashKey::character_string(utf8_bytes: alloc::vec::Vec<u8>) -> Self
+pub fn perl_dap::mutation::PerlHashKey::character_string(utf8_bytes: alloc::vec::Vec<u8>) -> perl_dap::mutation::PerlHashKey
 pub fn perl_dap::mutation::PerlHashKey::is_character_string(&self) -> bool
 pub fn perl_dap::mutation::PerlHashKey::clone(&self) -> perl_dap::mutation::PerlHashKey
 pub fn perl_dap::mutation::PerlHashKey::eq(&self, other: &perl_dap::mutation::PerlHashKey) -> bool
