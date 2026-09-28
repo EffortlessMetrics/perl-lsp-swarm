@@ -128,6 +128,10 @@ fn first_references_ask_waits_for_closed_file_index_over_stdio() -> Result<()> {
             contains_uri(&first, &glob_uri)?,
             "first references ask missed closed-file declaration after warm-up: {first}"
         );
+        ensure!(
+            !gate.path().join("indexing-gate-timed-out").exists(),
+            "index gate watchdog, rather than the test, released discovery"
+        );
 
         let warm =
             harness.client.request("textDocument/references", params, Duration::from_secs(5))?;
