@@ -15,6 +15,7 @@ type CapturedOptions = {
 };
 
 const captured: { options?: CapturedOptions | undefined } = {};
+const sentNotifications = new Map<string, (event: unknown) => void>();
 
 jest.mock('vscode-languageclient/node', () => ({
   LanguageClient: class {
@@ -34,12 +35,32 @@ jest.mock('vscode-languageclient/node', () => ({
     setTrace() {
       return Promise.resolve();
     }
+
+    getFeature(method: string) {
+      return {
+        onNotificationSent: (listener: (event: unknown) => void) => {
+          sentNotifications.set(method, listener);
+          return { dispose: () => sentNotifications.delete(method) };
+        },
+      };
+    }
+
+    onDidChangeState() {
+      return { dispose: () => undefined };
+    }
   },
   Trace: { Off: 'off', Messages: 'messages', Verbose: 'verbose' },
   TransportKind: { stdio: 0 },
+  DidOpenTextDocumentNotification: { method: 'textDocument/didOpen' },
+  DidChangeTextDocumentNotification: { method: 'textDocument/didChange' },
 }));
 
 import { createLanguageClient } from '../extension';
+import {
+  installedDiagnosticTraceSnapshot,
+  startInstalledDiagnosticTrace,
+  stopInstalledDiagnosticTrace,
+} from '../installedDiagnosticTrace';
 
 /**
  * Install a `perl-lsp` reader whose values genuinely differ per folder.
@@ -82,6 +103,8 @@ describe('configuration transport wiring (#14447)', () => {
 
   beforeEach(() => {
     captured.options = undefined;
+    sentNotifications.clear();
+    stopInstalledDiagnosticTrace();
     jest.clearAllMocks();
     installScopedConfiguration({ '': {} });
   });
@@ -120,5 +143,44 @@ describe('configuration transport wiring (#14447)', () => {
     expect(answers).toHaveLength(3);
     expect(answers[1]).toEqual({ workspace: { includePaths: ['a/lib'] } });
     expect(answers[2]).toEqual({ workspace: { includePaths: ['b/lib'] } });
+  });
+
+  test('document middleware calls next and sent hooks retain the owned version', async () => {
+    createLanguageClient('/usr/local/bin/perllsp');
+    const owned = 'file:///workspace/diagnostic.pl';
+    startInstalledDiagnosticTrace(owned);
+    const document = { uri: { toString: () => owned }, version: 3 };
+    const next = jest.fn(async () => undefined);
+    const middleware = captured.options?.middleware as
+      | {
+          didOpen?: (
+            document: unknown,
+            next: (document: unknown) => Promise<void>,
+          ) => Promise<void>;
+          didChange?: (event: unknown, next: (event: unknown) => Promise<void>) => Promise<void>;
+        }
+      | undefined;
+    await middleware?.didOpen?.(document, next);
+    await middleware?.didChange?.({ document }, next);
+    expect(next).toHaveBeenCalledTimes(2);
+    sentNotifications.get('textDocument/didOpen')?.({
+      params: { textDocument: { uri: owned, version: 3 } },
+    });
+    sentNotifications.get('textDocument/didChange')?.({
+      params: { textDocument: { uri: owned, version: 3 } },
+    });
+    sentNotifications.get('textDocument/didChange')?.({
+      params: { textDocument: { uri: 'file:///workspace/other.pl', version: 9 } },
+    });
+    expect(
+      installedDiagnosticTraceSnapshot().events.map(({ step, version }) => [step, version]),
+    ).toEqual([
+      ['didOpen_called', 3],
+      ['didOpen_client_processed', 3],
+      ['didChange_called', 3],
+      ['didChange_client_processed', 3],
+      ['didOpen_notification_sent', 3],
+      ['didChange_notification_sent', 3],
+    ]);
   });
 });

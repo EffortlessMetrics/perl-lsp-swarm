@@ -564,6 +564,13 @@ suite('Packaged VSIX bundled-server journey', function () {
     let primaryFailure: unknown;
     let activationStop: (() => Promise<void>) | undefined;
     let activationStopped = false;
+    let diagnosticTraceStarted = false;
+    let startDiagnosticTrace: ((uri: string) => void) | undefined;
+    let getDiagnosticTrace: (() => ReceiptValue) | undefined;
+    let stopDiagnosticTrace: (() => void) | undefined;
+    let diagnosticChangeSubscription: vscode.Disposable | undefined;
+    const collectionEvents: Array<{ version: number | null; count: number; codes: string[] }> = [];
+    let droppedCollectionEvents = 0;
 
     try {
       fs.writeFileSync(workspaceFile, fixtureText, { flag: 'wx' });
@@ -593,10 +600,16 @@ suite('Packaged VSIX bundled-server journey', function () {
               fullyReady: boolean;
             };
             waitForActiveDocumentReady?: (uri: string, timeoutMs?: number) => Promise<void>;
+            startInstalledDiagnosticTrace?: (uri: string) => void;
+            installedDiagnosticTraceSnapshot?: () => ReceiptValue;
+            stopInstalledDiagnosticTrace?: () => void;
             stop?: () => Promise<void>;
           }
         | undefined;
       activationStop = activation?.stop?.bind(activation);
+      startDiagnosticTrace = activation?.startInstalledDiagnosticTrace;
+      getDiagnosticTrace = activation?.installedDiagnosticTraceSnapshot;
+      stopDiagnosticTrace = activation?.stopInstalledDiagnosticTrace;
       const activationCompleted = performance.now();
       const bundledVersion = await bundledServerVersion(bundledServerPath);
       const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
@@ -758,6 +771,35 @@ suite('Packaged VSIX bundled-server journey', function () {
         reason: readinessReason,
       };
       if (readinessReady) {
+        const candidateBound = Boolean(
+          process.env.PERL_LSP_CURRENT_SOURCE_SHA?.trim() &&
+          process.env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST?.trim(),
+        );
+        if (candidateBound) {
+          assert.ok(
+            startDiagnosticTrace && getDiagnosticTrace && stopDiagnosticTrace,
+            'current-source candidate requires installed diagnostic trace activation API',
+          );
+          startDiagnosticTrace(vscode.Uri.file(diagnosticFile).toString());
+          diagnosticTraceStarted = true;
+          diagnosticChangeSubscription = vscode.languages.onDidChangeDiagnostics((event) => {
+            const ownedUri = vscode.Uri.file(diagnosticFile);
+            if (!event.uris.some((uri) => uri.toString() === ownedUri.toString())) return;
+            if (collectionEvents.length >= 32) {
+              droppedCollectionEvents++;
+              return;
+            }
+            const items = vscode.languages.getDiagnostics(ownedUri);
+            collectionEvents.push({
+              version: diagnosticDocument?.version ?? null,
+              count: items.length,
+              codes: items.slice(0, 16).map((item) => {
+                const code = diagnosticCode(item);
+                return typeof code === 'string' && /^PL\d{3}$/.test(code) ? code : 'other';
+              }),
+            });
+          });
+        }
         diagnosticDocument = await vscode.workspace.openTextDocument(diagnosticFile);
         await vscode.window.showTextDocument(diagnosticDocument);
         const diagnosticUri = diagnosticDocument.uri;
@@ -1095,6 +1137,42 @@ suite('Packaged VSIX bundled-server journey', function () {
       throw error;
     } finally {
       const cleanupErrors: unknown[] = [];
+      if (diagnosticTraceStarted) {
+        try {
+          diagnosticChangeSubscription?.dispose();
+          const diagnosticUri = vscode.Uri.file(diagnosticFile);
+          const collection = vscode.languages.getDiagnostics(diagnosticUri);
+          const trace = {
+            ...getDiagnosticTrace?.(),
+            editor_observation: {
+              document_version: diagnosticDocument?.version ?? null,
+              active:
+                vscode.window.activeTextEditor?.document.uri.toString() ===
+                diagnosticUri.toString(),
+              visible: vscode.window.visibleTextEditors.some(
+                (editor) => editor.document.uri.toString() === diagnosticUri.toString(),
+              ),
+              collection_count: collection.length,
+              collection_codes: collection.slice(0, 16).map((item) => {
+                const code = diagnosticCode(item);
+                return typeof code === 'string' && /^PL\d{3}$/.test(code) ? code : 'other';
+              }),
+            },
+            collection_events: collectionEvents,
+            dropped_collection_events: droppedCollectionEvents,
+            journey_outcome: primaryFailure === undefined ? 'completed' : 'failed',
+          };
+          fs.mkdirSync(receiptsDir(), { recursive: true });
+          fs.writeFileSync(
+            path.join(receiptsDir(), 'packaged_diagnostic_trace.json'),
+            JSON.stringify(trace, null, 2),
+          );
+        } catch (error: unknown) {
+          cleanupErrors.push(error);
+        } finally {
+          stopDiagnosticTrace?.();
+        }
+      }
       if (activationStop && !activationStopped) {
         try {
           await withTimeout('packaged extension shutdown after failure', activationStop(), 30_000);
