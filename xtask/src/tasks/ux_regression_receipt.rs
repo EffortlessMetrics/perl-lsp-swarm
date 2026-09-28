@@ -494,13 +494,14 @@ const fn mode_is_evidence_backed(mode: UxFailureMode) -> bool {
     }
 }
 
-/// The text `infer_failure_class` is allowed to read.
+/// Removes the lines a scenario's own diagnostic detail block encloses.
 ///
-/// Two kinds of line are removed because they describe something other than the
-/// failure: a scenario's own diagnostic detail block, and the result line of a test
-/// that passed or was skipped. Both are present on every run and neither says
-/// anything about why this run failed.
-fn classification_input(raw: &str) -> String {
+/// A detail block describes a scenario's internals and may contain any word,
+/// so letting it reach a substring scan lets it veto or reroute a verdict the
+/// real evidence already decided. Shared by `classification_input` and
+/// `failing_test_own_input` so the whole-log and per-test readers cannot drift
+/// apart on this rule (#16713).
+fn strip_diagnostic_detail(raw: &str) -> String {
     let mut in_detail = false;
     let mut retained = Vec::new();
     for line in raw.lines() {
@@ -509,11 +510,25 @@ fn classification_input(raw: &str) -> String {
             in_detail = true;
         } else if trimmed == "UX_SCENARIO_DETAIL_END" {
             in_detail = false;
-        } else if !in_detail && !PASSING_TEST_RE.is_match(line) {
+        } else if !in_detail {
             retained.push(line);
         }
     }
     retained.join("\n")
+}
+
+/// The text `infer_failure_class` is allowed to read.
+///
+/// Two kinds of line are removed because they describe something other than the
+/// failure: a scenario's own diagnostic detail block, and the result line of a test
+/// that passed or was skipped. Both are present on every run and neither says
+/// anything about why this run failed.
+fn classification_input(raw: &str) -> String {
+    strip_diagnostic_detail(raw)
+        .lines()
+        .filter(|line| !PASSING_TEST_RE.is_match(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn scenario_from_test_name(test: &str) -> Option<String> {
@@ -683,7 +698,12 @@ fn failing_test_own_input<'a>(raw: &'a str, failing_tests: &[UxFailingTest]) -> 
         }
     }
 
-    owned.join("\n")
+    // A detail block inside a failing test's stdout is exactly as inert as one
+    // anywhere else in the log: `classification_input` never lets it reach a
+    // substring scan, and neither may the per-test re-read, or a detail line
+    // mentioning `baseline` would veto the local fallback the whole-log reader
+    // already applied (#16713).
+    strip_diagnostic_detail(&owned.join("\n"))
 }
 
 fn infer_failure_class(raw: &str) -> UxFailureClass {
@@ -1588,6 +1608,51 @@ test result: FAILED. 0 passed; 2 failed";
             receipt.failure_class == UxFailureClass::ProviderRegression,
             "positive evidence that the change is the subject outranks the budget, got {:?}",
             receipt.failure_class
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_detail_inside_a_failing_block_cannot_veto_the_local_fallback() -> Result<()> {
+        // Devin Review on #16713. The whole-log reader strips diagnostic detail
+        // blocks before its substring scan, but the per-test re-read did not, so
+        // a detail line mentioning `baseline` inside the failing test's stdout
+        // vetoed the local fallback and kept `update_baseline` for what the
+        // test's own evidence names as an assertion failure.
+        let log = "Restored baseline snapshot cache in 0.4s\n\
+failures:\n\n\
+---- ux_scenario_20_completion::hard_assert stdout ----\n\
+assertion failed: missing completion\n\
+UX_SCENARIO_DETAIL_BEGIN: `scenario_20`\n\
+baseline diagnostic context\n\
+UX_SCENARIO_DETAIL_END\n\
+\n\
+failures:\n\
+    ux_scenario_20_completion::hard_assert\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+
+        let receipt = classify(log, None);
+        let [test] = receipt.failing_tests.as_slice() else {
+            bail!(
+                "the log carries exactly one failing test block, got {}",
+                receipt.failing_tests.len()
+            );
+        };
+        ensure!(
+            test.mode == UxFailureMode::AssertionFailed,
+            "the block's assertion line is the evidence the fallback rests on, got {:?}",
+            test.mode
+        );
+        ensure!(
+            receipt.failure_class == UxFailureClass::ProviderRegression,
+            "inert detail inside the block must not preserve BaselineDrift, got {:?}",
+            receipt.failure_class
+        );
+        ensure!(
+            receipt.merge_action != "update_baseline",
+            "a detail word must not restore the forbidden remedy, got {}",
+            receipt.merge_action
         );
         Ok(())
     }
