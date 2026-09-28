@@ -4,9 +4,12 @@
 
 #![recursion_limit = "256"]
 
+mod common;
 mod support;
 
+use common::{send_notification, send_request, start_lsp_server};
 use serde_json::json;
+use std::time::{Duration, Instant};
 use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -333,10 +336,12 @@ fn test_initialize_contract_3_17() -> TestResult {
 }
 
 #[test]
-fn test_position_encoding_advertised_is_utf16_v0_18_envelope() -> TestResult {
-    // v0.18 (#8129) advertises and uses UTF-16 only. A client list that
-    // includes utf-16 still gets utf-16 even when utf-8 is preferred first.
-    // Well-formed lists that omit utf-16 accept via explicit mandatory fallback.
+fn test_position_encoding_session_contract_advertises_utf16() -> TestResult {
+    // The accepted initialize session carries one immutable text-sync
+    // contract: FULL sync + UTF-16 wire encoding (#9378, #8129 branch
+    // `full_document_utf16`). Every valid string-list offer accepts that
+    // contract. A valid nonempty offer omitting UTF-16 records mandatory
+    // fallback; only malformed offer shapes reject.
 
     // Scenario 1: client prefers UTF-8 first, then UTF-16 -- must still get utf-16.
     let mut harness = LspHarness::new();
@@ -376,9 +381,7 @@ fn test_position_encoding_advertised_is_utf16_v0_18_envelope() -> TestResult {
 
     // Scenario 3: client doesn't specify positionEncodings - default to utf-16.
     let mut harness = LspHarness::new();
-    let result = harness.initialize(Some(json!({
-        "textDocument": {}
-    })))?;
+    let result = harness.initialize(Some(json!({})))?;
 
     let capabilities = &result["capabilities"];
     let encoding = capabilities
@@ -391,6 +394,209 @@ fn test_position_encoding_advertised_is_utf16_v0_18_envelope() -> TestResult {
         "server should default to utf-16 when client doesn't specify positionEncodings"
     );
 
+    // The advertised sync kind is FULL (1) — derived from the same accepted
+    // session contract as the encoding.
+    let change = capabilities
+        .pointer("/textDocumentSync/change")
+        .and_then(|v| v.as_i64())
+        .ok_or("textDocumentSync.change not found or not numeric")?;
+    assert_eq!(change, 1, "textDocumentSync.change must advertise FULL sync");
+
+    // Scenario 4: a valid nonempty offer omitting UTF-16 accepts the mandatory
+    // FULL + UTF-16 contract instead of negotiating another encoding.
+    let mut harness = LspHarness::new();
+    let result = harness.initialize(Some(json!({
+        "general": {
+            "positionEncodings": ["utf-32", "utf-7"]
+        }
+    })))?;
+    assert_eq!(
+        result.pointer("/capabilities/positionEncoding").and_then(|v| v.as_str()),
+        Some("utf-16")
+    );
+    assert_eq!(
+        result.pointer("/capabilities/textDocumentSync/change").and_then(|v| v.as_i64()),
+        Some(1)
+    );
+
+    // Scenario 5: malformed entries remain typed InvalidParams.
+    let mut harness = LspHarness::new();
+    let failure = harness
+        .initialize(Some(json!({
+            "general": {
+                "positionEncodings": ["utf-16", 7]
+            }
+        })))
+        .err()
+        .ok_or("malformed offer must fail initialize over the wire")?;
+    assert!(
+        failure.contains("-32602"),
+        "malformed offer must fail with typed InvalidParams: {failure}"
+    );
+    assert!(
+        failure.contains("malformed-offer"),
+        "error payload must carry the typed rejection reason: {failure}"
+    );
+
+    Ok(())
+}
+
+// ==================== POST-REJECTION FAIL-CLOSED (#14301) ====================
+//
+// A typed -32602 first initialize rejection consumes one-shot attempt
+// authority but does not create serving authority. Neither a follow-up
+// `initialized` notification nor the preflight compatibility path may
+// complete initialization, and every later initialize is -32600 before its
+// own parameters are classified.
+
+#[test]
+fn initialize_rejection_then_initialized_notification_does_not_activate_server() -> TestResult {
+    // Sequence A: malformed initialize → client sends `initialized` anyway →
+    // the server must stay uninitialized and refuse the next request.
+    let mut harness = LspHarness::new();
+    let failure = harness
+        .initialize(Some(json!({
+            "general": { "positionEncodings": ["utf-16", 7] }
+        })))
+        .err()
+        .ok_or("malformed offer must fail initialize over the wire")?;
+    assert!(
+        failure.contains("-32602") && failure.contains("malformed-offer"),
+        "initialize must be rejected as malformed InvalidParams: {failure}"
+    );
+
+    harness.notify("initialized", json!({}));
+
+    let served = harness.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": "file:///test.pl" },
+            "position": { "line": 0, "character": 0 }
+        }),
+    );
+    let error =
+        served.err().ok_or("rejected initialize + `initialized` must not activate the server")?;
+    assert!(
+        error.contains("-32002"),
+        "post-rejection request must be ServerNotInitialized: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn initialize_rejection_then_plain_request_does_not_auto_initialize() -> TestResult {
+    // Sequence B: malformed initialize → plain request with no `initialized`
+    // notification → the compatibility auto-initialize path must not fire.
+    let mut harness = LspHarness::new();
+    let failure = harness
+        .initialize(Some(json!({
+            "general": { "positionEncodings": "utf-16" }
+        })))
+        .err()
+        .ok_or("non-array offer must fail initialize over the wire")?;
+    assert!(
+        failure.contains("-32602") && failure.contains("malformed-offer"),
+        "initialize must be rejected as malformed InvalidParams: {failure}"
+    );
+
+    let served = harness.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": "file:///test.pl" },
+            "position": { "line": 0, "character": 0 }
+        }),
+    );
+    let error =
+        served.err().ok_or("rejected initialize must not auto-initialize on a plain request")?;
+    assert!(
+        error.contains("-32002"),
+        "post-rejection request must be ServerNotInitialized: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn initialize_malformed_first_then_valid_second_is_invalid_request() -> TestResult {
+    let mut harness = LspHarness::new();
+    let first = harness
+        .initialize(Some(json!({
+            "general": { "positionEncodings": ["utf-16", 7] }
+        })))
+        .err()
+        .ok_or("malformed first initialize must fail")?;
+    assert!(
+        first.contains("-32602") && first.contains("malformed-offer"),
+        "first request must retain its malformed InvalidParams result: {first}"
+    );
+
+    let second = harness
+        .initialize(Some(json!({
+            "general": { "positionEncodings": ["utf-16"] }
+        })))
+        .err()
+        .ok_or("valid second initialize must still fail one-shot authority")?;
+    assert!(
+        second.contains("-32600"),
+        "second initialize must be InvalidRequest before offer classification: {second}"
+    );
+
+    let served = harness.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": "file:///test.pl" },
+            "position": { "line": 0, "character": 0 }
+        }),
+    );
+    let error = served.err().ok_or("rejected first initialize must remain non-serving")?;
+    assert!(error.contains("-32002"), "connection must remain non-serving: {error}");
+    Ok(())
+}
+
+/// FC-MALFORMED-PARENT-ABSENT (wire): a wrong-typed `capabilities` or
+/// `general` parent fails initialize as typed InvalidParams, installs no
+/// accepted session, and consumes one-shot attempt authority.
+#[test]
+fn initialize_malformed_parent_first_then_valid_second_is_invalid_request() -> TestResult {
+    for malformed_capabilities in [json!("bad"), json!({ "general": [] })] {
+        let mut harness = LspHarness::new();
+        let first = harness
+            .request(
+                "initialize",
+                json!({
+                    "processId": std::process::id(),
+                    "capabilities": malformed_capabilities,
+                    "rootUri": "file:///workspace"
+                }),
+            )
+            .err()
+            .ok_or("malformed parent capabilities must fail initialize over the wire")?;
+        assert!(
+            first.contains("-32602") && first.contains("malformed-offer"),
+            "wrong-typed parent must retain its malformed InvalidParams result: {first}"
+        );
+
+        let second = harness
+            .initialize(Some(json!({
+                "general": { "positionEncodings": ["utf-16"] }
+            })))
+            .err()
+            .ok_or("valid second initialize must still fail one-shot authority")?;
+        assert!(
+            second.contains("-32600"),
+            "second initialize must be InvalidRequest before offer classification: {second}"
+        );
+
+        let served = harness.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": "file:///test.pl" },
+                "position": { "line": 0, "character": 0 }
+            }),
+        );
+        let error =
+            served.err().ok_or("rejected malformed-parent initialize must remain non-serving")?;
+        assert!(error.contains("-32002"), "connection must remain non-serving: {error}");
+    }
     Ok(())
 }
 
@@ -442,15 +648,43 @@ fn test_initialized_notification() -> TestResult {
 
 #[test]
 fn test_shutdown_exit_3_17() -> TestResult {
-    let mut harness = LspHarness::new();
-    harness.initialize(None)?;
+    // The in-process harness cannot send `exit`: production intentionally
+    // calls process::exit, which would terminate this test binary.
+    let server = start_lsp_server();
+    let initialized = common::initialize_lsp(&server);
+    if initialized.get("error").is_some() {
+        return Err(format!("initialize failed: {initialized:?}").into());
+    }
 
     // Shutdown request
-    let response = harness.request("shutdown", json!(null))?;
-    assert!(response.is_null());
+    let response = send_request(
+        &server,
+        json!({"jsonrpc":"2.0","id":3_170_001,"method":"shutdown","params":null}),
+    );
+    if !response.get("result").is_some_and(serde_json::Value::is_null) {
+        return Err(format!("shutdown response was not null: {response:?}").into());
+    }
 
     // Exit notification
-    harness.notify("exit", json!(null));
+    send_notification(&server, json!({"jsonrpc":"2.0","method":"exit","params":null}));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let status = {
+            let mut process = match server.process.lock() {
+                Ok(process) => process,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            process.try_wait()?
+        };
+        if status.is_some() || Instant::now() >= deadline {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let status = status.ok_or("server child did not exit naturally after exit notification")?;
+    if !status.success() {
+        return Err(format!("server child exited unsuccessfully: {status}").into());
+    }
     Ok(())
 }
 
@@ -461,19 +695,16 @@ fn test_inbound_before_initialize_contract() -> TestResult {
     // Requests before initialize must return -32002 ServerNotInitialized
     // Notifications must be dropped (except exit)
 
-    // This test would need a harness method to create without auto-initialize
-    // let mut harness = LspHarness::new_without_initialize();
-
-    // Request before initialize -> -32002
-    // let resp = harness.request_raw(json!({
-    //     "jsonrpc":"2.0","id":1,"method":"textDocument/hover",
-    //     "params":{"textDocument":{"uri":"file:///t.pl"},
-    //               "position":{"line":0,"character":0}}
-    // }));
-    // assert_eq!(resp["error"]["code"], -32002);
-
-    // Notification before initialize -> drop silently
-    // harness.notify("workspace/didChangeConfiguration", json!({"settings":{}}));
+    let mut harness = LspHarness::new_without_initialize();
+    let response = harness.request_raw(json!({
+        "jsonrpc":"2.0","id":1,"method":"textDocument/hover",
+        "params":{"textDocument":{"uri":"file:///t.pl"},
+                  "position":{"line":0,"character":0}}
+    }));
+    let code = response.pointer("/error/code").and_then(serde_json::Value::as_i64);
+    if code != Some(-32002) {
+        return Err(format!("pre-initialize request returned {response:?}").into());
+    }
     Ok(())
 }
 
@@ -487,11 +718,13 @@ fn test_dollar_prefixed_request_method_not_found() -> TestResult {
     // Requests with methods starting with $/ must return -32601 MethodNotFound
     // (unless explicitly implemented like $/cancelRequest)
 
-    // This would test unknown $/ methods
-    // let resp = harness.request_raw(json!({
-    //     "jsonrpc":"2.0","id":1,"method":"$/unknownRequest","params":{}
-    // }));
-    // assert_eq!(resp["error"]["code"], -32601);
+    let response = harness.request_raw(json!({
+        "jsonrpc":"2.0","id":1,"method":"$/unknownRequest","params":{}
+    }));
+    let code = response.pointer("/error/code").and_then(serde_json::Value::as_i64);
+    if code != Some(-32601) {
+        return Err(format!("unknown $/ request returned {response:?}").into());
+    }
     Ok(())
 }
 

@@ -327,6 +327,33 @@ class MarkerResultTests(unittest.TestCase):
         payload = json.loads(emitted)
         self.assertEqual("MARKER_REFUSED", payload["classification"])
         self.assertEqual("CHANGES_REQUIRED", payload["result"])
+        # The stdout JSON payload must carry schema_version so a wire-shape bump is
+        # observable at the consumer side rather than silent. See #15284.
+        self.assertEqual("semantic_review_currentness.v1", payload["schema_version"])
+
+    def test_cli_marker_refusal_keeps_classification_when_schema_version_added(self) -> None:
+        """Consumer (.classification) is the load-bearing field; schema_version is additive."""
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = module.main(
+                [
+                    "42",
+                    "o/r",
+                    "--root",
+                    str(self.root),
+                    "--emit-marker",
+                    "--result",
+                    "NOT_PROVEN",
+                ]
+            )
+        self.assertEqual(3, code)
+        payload = json.loads(stdout.getvalue())
+        # The marker is refused because NOT_PROVEN is not REVIEW_CURRENT, and the
+        # stdout classification stays MARKER_REFUSED. Adding schema_version does
+        # not change the load-bearing consumer surface.
+        self.assertEqual("MARKER_REFUSED", payload["classification"])
+        self.assertEqual("NOT_PROVEN", payload["result"])
+        self.assertEqual("semantic_review_currentness.v1", payload["schema_version"])
 
     def test_cli_explicit_review_current_emits_the_marker(self) -> None:
         stdout = io.StringIO()
@@ -746,6 +773,10 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual("NOT_PROVEN", payload["classification"])
         self.assertEqual("instrument_failure", payload["reason"])
+        # The NOT_PROVEN/instrument-failure path also carries schema_version so
+        # all three stdout surfaces (success, MARKER_REFUSED, NOT_PROVEN) are
+        # uniformly versioned. See #15284.
+        self.assertEqual("semantic_review_currentness.v1", payload["schema_version"])
 
     def test_marker_head_must_equal_review_commit(self) -> None:
         tmp, root, base, head = setup_repo()
@@ -760,6 +791,151 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
         )
         result = module.evaluate(root, pr=42, current_head=head, reviews=[other])
         self.assertEqual("NOT_PROVEN", result["classification"])
+
+    def test_cli_success_path_stdout_payload_carries_schema_version(self) -> None:
+        """The success path stdout JSON must carry schema_version (#15284).
+
+        The other two surfaces (MARKER_REFUSED, NOT_PROVEN) are covered by
+        dedicated tests in MarkerResultTests. This test pins the success
+        path so a regression that drops schema_version from the verdict dict
+        is observable at the consumer side.
+        """
+        tmp, root, base, head = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        review_row = review(42, root, base, head)
+        fixture_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(fixture_dir.cleanup)
+        fixture = Path(fixture_dir.name) / "f.json"
+        fixture.write_text(
+            json.dumps({"head": head, "reviews": [review_row._asdict()]}),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = module.main(
+                ["42", "o/r", "--root", str(root), "--fixture", str(fixture)]
+            )
+        self.assertEqual(0, code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("REVIEW_CURRENT", payload["classification"])
+        self.assertEqual("semantic_review_currentness.v1", payload["schema_version"])
+
+
+class AncestryPredicateStateTests(unittest.TestCase):
+    """`merge-base --is-ancestor` is a three-state probe, not a boolean (#16175).
+
+    Exit 0 is ancestor, exit 1 is a genuine not-ancestor over the locally
+    available graph, and every other outcome (exit 128, a signal, a broken
+    clone) is an instrument failure that proves nothing about ancestry. A
+    change mapping all nonzero exits onto one diagnostic must fail here.
+    """
+
+    def setUp(self) -> None:
+        self.tmp, self.root, self.base, self.reviewed = setup_repo()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _diverged_side_head(self) -> str:
+        git(self.root, "checkout", "-q", "-b", "side", self.base)
+        (self.root / "docs/route.md").write_text("route = side\n", encoding="utf-8")
+        return commit(self.root, "side")
+
+    def test_shared_history_is_reported_as_ancestor(self) -> None:
+        self.assertEqual(
+            ("ancestor", ""), module.ancestry_state(self.root, self.base, self.reviewed)
+        )
+
+    def test_diverged_history_is_reported_as_not_ancestor(self) -> None:
+        side = self._diverged_side_head()
+        self.assertEqual(
+            ("not-ancestor", ""), module.ancestry_state(self.root, side, self.reviewed)
+        )
+
+    def test_missing_object_is_instrument_failure_with_exit_code(self) -> None:
+        missing = "f" * 40
+        state, detail = module.ancestry_state(self.root, missing, self.reviewed)
+        self.assertEqual("instrument-failure", state)
+        self.assertTrue(detail.startswith("exit 128"), detail)
+
+    def test_subject_digest_keeps_a_negative_verdict_fail_closed(self) -> None:
+        side = self._diverged_side_head()
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.subject_digest(self.root, side, self.reviewed)
+        self.assertIn("is not an ancestor of reviewed head", str(ctx.exception))
+
+    def test_neutral_followup_keeps_a_negative_verdict_fail_closed(self) -> None:
+        side = self._diverged_side_head()
+        self.assertEqual(
+            (False, "reviewed head is not an ancestor of current head"),
+            module.neutral_followup(self.root, side, self.reviewed),
+        )
+
+    def test_neutral_followup_never_reads_an_instrument_failure_as_a_verdict(self) -> None:
+        self._stub_merge_base_instrument_failure(2)
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.neutral_followup(self.root, self.reviewed, self.reviewed)
+        self.assertIn("instrument error", str(ctx.exception))
+        self.assertIn("exit 2", str(ctx.exception))
+
+    def test_subject_digest_never_reads_an_instrument_failure_as_a_verdict(self) -> None:
+        self._stub_merge_base_instrument_failure(128)
+        with self.assertRaises(module.CurrentnessError) as ctx:
+            module.subject_digest(self.root, self.base, self.reviewed)
+        self.assertIn("instrument error", str(ctx.exception))
+        self.assertIn("exit 128", str(ctx.exception))
+
+    def _stub_merge_base_instrument_failure(self, code: int) -> None:
+        """Make only the ancestry probe exit `code`, with empty stderr.
+
+        Real git cannot produce this asymmetry through the public wrappers:
+        ensure_commit's `cat-file -e` sees every corruption merge-base sees,
+        and env-config aliases do not shadow the builtin. The probe's real
+        0/1/128 contract is proven against real git in the ancestry_state
+        tests; this seam double exercises only the wrappers' mapping of an
+        instrument failure to a raised CurrentnessError instead of a verdict.
+        """
+        real_run = module._run
+        self.addCleanup(setattr, module, "_run", real_run)
+
+        def run(args, **kwargs):
+            if list(args[:2]) == ["git", "merge-base"]:
+                return subprocess.CompletedProcess(args, code, stdout="", stderr="")
+            return real_run(args, **kwargs)
+
+        module._run = run
+
+
+class SanitizeGitDiagnosticTests(unittest.TestCase):
+    """Embedded git stderr must not leak credentials, control bytes, or length."""
+
+    def test_control_sequences_are_stripped_and_output_bounded(self) -> None:
+        raw = "fatal: bell \x07 escape \x1b[31mred\x1b[0m\nsecond line"
+        cleaned = module.sanitize_git_diagnostic(raw)
+        self.assertNotIn("\x1b", cleaned)
+        self.assertNotIn("\x07", cleaned)
+        self.assertNotIn("\n", cleaned)
+        self.assertIn("fatal: bell", cleaned)
+        self.assertIn("second line", cleaned)
+        self.assertLessEqual(len(module.sanitize_git_diagnostic("x" * 5000)), 200)
+
+    def test_embedded_url_credentials_are_redacted(self) -> None:
+        raw = (
+            "remote: Authentication failed for "
+            "https://ci-bot:s3cret-token@example.invalid/repo.git/"
+        )
+        cleaned = module.sanitize_git_diagnostic(raw)
+        self.assertNotIn("s3cret-token", cleaned)
+        self.assertIn("https://***@", cleaned)
+
+    def test_token_only_url_credentials_are_redacted(self) -> None:
+        # Token-only remote URLs (`https://TOKEN@host`) carry no user:password
+        # split; the userinfo before `@` is still the secret.
+        raw = "fatal: unable to access 'https://ghp_secret-token@example.invalid/repo.git/'"
+        cleaned = module.sanitize_git_diagnostic(raw)
+        self.assertNotIn("ghp_secret-token", cleaned)
+        self.assertIn("https://***@example.invalid", cleaned)
+
+    def test_empty_stderr_sanitizes_to_empty_so_detail_is_only_the_exit_code(self) -> None:
+        self.assertEqual("", module.sanitize_git_diagnostic(""))
 
 
 if __name__ == "__main__":

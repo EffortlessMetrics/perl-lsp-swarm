@@ -5,6 +5,7 @@
 
 use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::git_context::{default_windows_drive_mount_root, git_output_with_mount_root};
+use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use glob::Pattern;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -203,6 +204,237 @@ pub fn ripr_pr_summary(check: bool) -> Result<()> {
     Ok(())
 }
 
+// -----------------------------------------------------------------------------
+// Suppression lifecycle audit (advisory)
+// -----------------------------------------------------------------------------
+
+/// Days before `expires` at which an entry is called out as due to lapse.
+const SUPPRESSION_EXPIRY_HORIZON_DAYS: i64 = 14;
+
+/// Report the ledger's own lifecycle dates against today, advisory only.
+///
+/// This command exists because the dates were unreadable in practice: the
+/// ledger header demands `owner`, `reason`, `created`, `review_after` and
+/// `expires` on every entry, yet nothing in the toolchain deserialized the last
+/// four, so an entry went on suppressing findings indefinitely past its own
+/// stated end date and no surface said so.
+///
+/// It deliberately does not enforce. Retiring a lapsed suppression is a
+/// judgement about whether the underlying finding is now real, which belongs to
+/// the entry's owner; failing the gate on a date would red PRs that have
+/// nothing to do with the suppression, which is the defect class this work is
+/// meant to reduce rather than add to. The command exits 0 on any readable
+/// ledger.
+pub fn ripr_suppression_audit(
+    suppressions: &Path,
+    out: &Path,
+    json_out: &Path,
+    print_summary: bool,
+) -> Result<()> {
+    let repo = repo_root()?;
+    let rules = read_ripr_suppression_rules(&repo, suppressions)?;
+    let packet = suppression_lifecycle_audit(
+        &rules.lifecycle,
+        Utc::now().date_naive(),
+        &display_path(suppressions),
+    );
+    let markdown = render_suppression_lifecycle_markdown(&packet);
+
+    write_text(&repo.join(json_out), &format_json(&packet)?)?;
+    write_text(&repo.join(out), &markdown)?;
+    if print_summary {
+        print!("{markdown}");
+    }
+    println!("Wrote {}", display_path(json_out));
+    println!("Wrote {}", display_path(out));
+    Ok(())
+}
+
+/// Classify every committed lifecycle row against one explicit date.
+///
+/// Pure in both arguments: the caller supplies `today`, so the whole judgement
+/// is reproducible from the ledger bytes plus a date, and the tests pin real
+/// calendar arithmetic rather than whatever day they happen to run on.
+fn suppression_lifecycle_audit(
+    lifecycle: &[RiprSuppressionLifecycle],
+    today: NaiveDate,
+    ledger_path: &str,
+) -> Value {
+    let mut expired = Vec::new();
+    let mut expiring_soon = Vec::new();
+    let mut review_due = Vec::new();
+    let mut unenforceable = Vec::new();
+    let mut no_expiry = Vec::new();
+    let mut current = 0usize;
+
+    for row in lifecycle {
+        // Completeness and expiry are reported independently. An entry missing
+        // only `owner` still has a readable end date, and folding it into a
+        // single "unenforceable" bucket would hide that date — the exact
+        // silence this audit exists to break.
+        if !row.missing.is_empty() || !row.malformed.is_empty() {
+            unenforceable.push(json!({
+                "id": row.id,
+                "owner": row.owner,
+                "missing": row.missing,
+                "malformed": row.malformed,
+            }));
+        }
+
+        // Read before the `expires` branch below, whose `continue` would
+        // otherwise skip it: an entry with no readable end date can still be
+        // long past its own review date, and dropping that date here is the
+        // same silence the block above refuses.
+        if let Some(review_after) = parse_ledger_date(&row.review_after)
+            && review_after <= today
+        {
+            review_due.push(json!({
+                "id": row.id,
+                "owner": row.owner,
+                "review_after": row.review_after,
+                "days_past_review": (today - review_after).num_days(),
+            }));
+        }
+
+        let Some(expires) = parse_ledger_date(&row.expires) else {
+            // No readable end date at all: a permanent exception living in a
+            // ledger whose header says every entry carries one.
+            no_expiry.push(json!({
+                "id": row.id,
+                "kind": row.kind,
+                "owner": row.owner,
+                "expires": row.expires,
+            }));
+            continue;
+        };
+
+        let days_past = (today - expires).num_days();
+        if days_past > 0 {
+            expired.push(json!({
+                "id": row.id,
+                "kind": row.kind,
+                "owner": row.owner,
+                "created": row.created,
+                "expires": row.expires,
+                "days_past_expiry": days_past,
+            }));
+        } else if -days_past <= SUPPRESSION_EXPIRY_HORIZON_DAYS {
+            expiring_soon.push(json!({
+                "id": row.id,
+                "owner": row.owner,
+                "expires": row.expires,
+                "days_until_expiry": -days_past,
+            }));
+        } else {
+            current += 1;
+        }
+    }
+
+    let oldest_overrun = expired
+        .iter()
+        .filter_map(|entry| entry.get("days_past_expiry").and_then(Value::as_i64))
+        .max()
+        .unwrap_or(0);
+
+    json!({
+        "schema_version": 1,
+        "kind": "ripr_suppression_lifecycle_audit",
+        "mode": "advisory",
+        "decision": "advisory",
+        "as_of": today.to_string(),
+        "ledger": ledger_path,
+        "total_entries": lifecycle.len(),
+        "expired_count": expired.len(),
+        "expiring_within_days": SUPPRESSION_EXPIRY_HORIZON_DAYS,
+        "expiring_soon_count": expiring_soon.len(),
+        "review_due_count": review_due.len(),
+        "unenforceable_count": unenforceable.len(),
+        "no_expiry_count": no_expiry.len(),
+        "current_count": current,
+        "oldest_overrun_days": oldest_overrun,
+        "expired": expired,
+        "expiring_soon": expiring_soon,
+        "review_due": review_due,
+        "unenforceable": unenforceable,
+        "no_expiry": no_expiry,
+        "claim_boundary": [
+            "Advisory report only; no gate verdict reads this artifact and no suppression stops applying on its expires date.",
+            "Dates are the ledger's own committed values, compared against as_of.",
+            "expired, expiring_soon, current and no_expiry partition the ledger by end date; unenforceable overlaps all of them and counts entries missing or malforming a field the ledger header demands.",
+            "review_due is reported only for entries with a readable expires date."
+        ]
+    })
+}
+
+fn render_suppression_lifecycle_markdown(packet: &Value) -> String {
+    let num = |key: &str| packet.get(key).and_then(Value::as_i64).unwrap_or(0);
+    let rows = |key: &str| packet.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+    let text = |value: &Value, key: &str| {
+        value.get(key).and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or("—").to_string()
+    };
+
+    let mut out = String::new();
+    out.push_str("### RIPR suppression lifecycle (advisory)\n\n");
+    out.push_str(&format!(
+        "`{}` — {} entries, as of {}.\n\n",
+        packet.get("ledger").and_then(Value::as_str).unwrap_or("policy/ripr-suppressions.toml"),
+        num("total_entries"),
+        packet.get("as_of").and_then(Value::as_str).unwrap_or("unknown"),
+    ));
+
+    let expired = num("expired_count");
+    if expired == 0 {
+        out.push_str("No suppression is past its own `expires` date.\n\n");
+    } else {
+        out.push_str(&format!(
+            "**{expired} suppression(s) are past their own `expires` date**, the oldest by {} days.\n\n",
+            num("oldest_overrun_days"),
+        ));
+        out.push_str("| id | owner | expires | days past |\n|---|---|---|---|\n");
+        for row in rows("expired") {
+            out.push_str(&format!(
+                "| `{}` | {} | {} | {} |\n",
+                text(&row, "id"),
+                text(&row, "owner"),
+                text(&row, "expires"),
+                row.get("days_past_expiry").and_then(Value::as_i64).unwrap_or(0),
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str(&format!(
+        "Expiring within {} days: {}. Past `review_after`: {}. Current: {}.\n\n",
+        num("expiring_within_days"),
+        num("expiring_soon_count"),
+        num("review_due_count"),
+        num("current_count"),
+    ));
+
+    let no_expiry = num("no_expiry_count");
+    if no_expiry > 0 {
+        out.push_str(&format!(
+            "**{no_expiry} suppression(s) carry no readable `expires` date at all** and are therefore permanent:\n\n",
+        ));
+        for row in rows("no_expiry") {
+            out.push_str(&format!("- `{}` (owner {})\n", text(&row, "id"), text(&row, "owner")));
+        }
+        out.push('\n');
+    }
+
+    let unenforceable = num("unenforceable_count");
+    if unenforceable > 0 {
+        out.push_str(&format!(
+            "{unenforceable} entr(y/ies) are missing or malforming a field the ledger header demands; see `lifecycle-audit.json`.\n\n",
+        ));
+    }
+
+    out.push_str(
+        "These dates are advisory. No gate reads them, and a suppression does not stop applying on its `expires` date; retiring one is the owner's call.\n",
+    );
+    out
+}
+
 pub fn ripr_annotations(comments: &str, out: &str, check: bool) -> Result<()> {
     let repo = repo_root()?;
     let comments = normalized_option(comments, REVIEW_COMMENTS_JSON);
@@ -228,7 +460,10 @@ pub fn ripr_annotations(comments: &str, out: &str, check: bool) -> Result<()> {
         } else if generated.text.is_empty() {
             println!("RIPR annotations: no comments[] guidance to emit.");
         } else {
-            print!("{}", generated.text);
+            println!(
+                "RIPR annotations generated: {} workflow command(s) written to {out}.",
+                generated.text.lines().count()
+            );
         }
         println!("Wrote {out}");
     }
@@ -399,6 +634,10 @@ fn ripr_plus_receipt_packet(
             "path_patterns": suppressions.display_patterns.clone(),
             "invalid_patterns": suppressions.invalid_patterns.clone(),
             "reasons": suppressions.suppression_reasons.clone(),
+            // Committed lifecycle rows, verbatim and clock-free. The expiry
+            // judgement lives in `cargo xtask ripr-suppression-audit`, which is
+            // advisory; nothing here changes a gate verdict.
+            "lifecycle": suppressions.lifecycle.iter().map(RiprSuppressionLifecycle::to_value).collect::<Vec<_>>(),
         },
         "decision": "advisory",
         "claim_boundary": [
@@ -709,6 +948,101 @@ struct RiprSuppression {
     gap_ids: Vec<String>,
     #[serde(default)]
     reason: String,
+    /// Accountable owner. Demanded by the ledger header; see [`RiprSuppressionLifecycle`]
+    /// for why it was previously discarded.
+    #[serde(default)]
+    owner: String,
+    /// Date the suppression was admitted, `YYYY-MM-DD`.
+    #[serde(default)]
+    created: String,
+    /// Date the owner undertook to revisit the suppression, `YYYY-MM-DD`.
+    #[serde(default)]
+    review_after: String,
+    /// Date the suppression was to stop applying, `YYYY-MM-DD`.
+    #[serde(default)]
+    expires: String,
+}
+
+/// One suppression's committed lifecycle row, exactly as the ledger spells it.
+///
+/// The ledger header states that every entry "requires owner, reason, created,
+/// review_after, and expires", but [`RiprSuppression`] deserialized only `id`,
+/// `kind`, `paths`, `classification`, `gap_ids` and `reason`. Serde's default
+/// behaviour is to ignore unknown keys, so the four lifecycle fields parsed
+/// cleanly and were then dropped on the floor: nothing in the toolchain ever
+/// read a `review_after` or an `expires`, and no entry has ever stopped
+/// applying on its own date.
+///
+/// These rows carry the committed dates verbatim and hold no clock reading, so
+/// they are a pure function of the ledger bytes. Every comparison against
+/// "today" happens in [`suppression_lifecycle_audit`], which writes an advisory
+/// artifact and is not an input to any gate verdict.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RiprSuppressionLifecycle {
+    id: String,
+    kind: String,
+    owner: String,
+    created: String,
+    review_after: String,
+    expires: String,
+    /// Fields the ledger header demands that this entry leaves empty.
+    missing: Vec<String>,
+    /// Date fields present but not parseable as `YYYY-MM-DD`.
+    malformed: Vec<String>,
+}
+
+impl RiprSuppressionLifecycle {
+    fn from_entry(suppression: &RiprSuppression) -> Self {
+        let mut missing = Vec::new();
+        let mut malformed = Vec::new();
+        for (field, value) in [
+            ("owner", suppression.owner.as_str()),
+            ("reason", suppression.reason.as_str()),
+            ("created", suppression.created.as_str()),
+            ("review_after", suppression.review_after.as_str()),
+            ("expires", suppression.expires.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                missing.push(field.to_string());
+            }
+        }
+        for (field, value) in [
+            ("created", suppression.created.as_str()),
+            ("review_after", suppression.review_after.as_str()),
+            ("expires", suppression.expires.as_str()),
+        ] {
+            if !value.trim().is_empty() && parse_ledger_date(value).is_none() {
+                malformed.push(field.to_string());
+            }
+        }
+        Self {
+            id: suppression.id.clone(),
+            kind: suppression.kind.clone(),
+            owner: suppression.owner.clone(),
+            created: suppression.created.clone(),
+            review_after: suppression.review_after.clone(),
+            expires: suppression.expires.clone(),
+            missing,
+            malformed,
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        json!({
+            "id": self.id,
+            "kind": self.kind,
+            "owner": self.owner,
+            "created": self.created,
+            "review_after": self.review_after,
+            "expires": self.expires,
+            "missing": self.missing,
+            "malformed": self.malformed,
+        })
+    }
+}
+
+fn parse_ledger_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok()
 }
 
 #[derive(Debug, Default)]
@@ -720,7 +1054,38 @@ struct RiprSuppressionRules {
     gap_id_sets: Vec<Vec<String>>,
     invalid_patterns: Vec<String>,
     suppression_reasons: Vec<Value>,
+    /// One row per `[[suppress]]` entry in ledger order, carrying the committed
+    /// lifecycle fields. Deliberately kept out of `suppression_reasons` so the
+    /// existing receipt shape is unchanged. Holds no clock reading.
+    lifecycle: Vec<RiprSuppressionLifecycle>,
 }
+
+/// Classification values a suppression entry may select on.
+///
+/// `suppression_matches_finding` compares these, by exact canonicalized
+/// string, against a finding's `classification` (ripr 0.5.x) or `grip_class`
+/// (ripr 0.9.x+) field. The set is closed: it is exactly `ripr.toml`'s
+/// `[severity.findings]` vocabulary plus the `weakly_gripped` alias that
+/// [`canonical_suppression_classification`] folds onto `reachable_unrevealed`.
+/// Every other word in circulation — `kind` words such as `activation_unknown`
+/// (they name the seam's activation trace, and also appear in RIPR's
+/// human-readable annotation text) and diff-receipt gap kinds such as
+/// `call_deletion` — is never written into that field, so an entry listing one
+/// parses, loads, keeps suppressing the repo-wide seam receipt
+/// ([`suppression_matches_seam`] is path-only), and yet can never fire against
+/// the diff-scoped `ripr+ New Gap Gate`. That silent inertness is the recorded
+/// defect in issue #15519; loading now refuses such an entry, exactly like an
+/// invalid path glob.
+const SUPPRESSION_CLASSIFICATION_VOCABULARY: [&str; 8] = [
+    "exposed",
+    "weakly_exposed",
+    "reachable_unrevealed",
+    "no_static_path",
+    "infection_unknown",
+    "propagation_unknown",
+    "static_unknown",
+    "weakly_gripped",
+];
 
 fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressionRules> {
     let policy_path = if path.is_absolute() { path.to_path_buf() } else { repo.join(path) };
@@ -731,6 +1096,27 @@ fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressi
 
     let mut rules = RiprSuppressionRules::default();
     for suppression in policy.suppressions {
+        rules.lifecycle.push(RiprSuppressionLifecycle::from_entry(&suppression));
+        let unknown_classifications: Vec<&str> = suppression
+            .classification
+            .iter()
+            .map(String::as_str)
+            .filter(|value| !SUPPRESSION_CLASSIFICATION_VOCABULARY.contains(value))
+            .collect();
+        if !unknown_classifications.is_empty() {
+            bail!(
+                "RIPR suppression {} lists classification value(s) [{}] that no finding \
+                 classification or grip_class can ever carry, leaving the entry inert against \
+                 the new-gap gate; allowed vocabulary: {}",
+                if suppression.id.trim().is_empty() {
+                    "<unnamed entry>"
+                } else {
+                    suppression.id.trim()
+                },
+                unknown_classifications.join(", "),
+                SUPPRESSION_CLASSIFICATION_VOCABULARY.join(", ")
+            );
+        }
         let paths =
             suppression.paths.iter().map(|path| normalize_path_text(path)).collect::<Vec<_>>();
         if !suppression.id.trim().is_empty()
@@ -2025,6 +2411,12 @@ struct RiprPrSummaryCounts {
     /// Same, for findings whose classification was not recognized. Decrements
     /// `severe_gaps` directly, like `suppressed_unclassified`.
     non_production_unclassified: usize,
+    /// `no_static_path` findings on a line that carries a declaration and no
+    /// executable code in the head revision (#16077), per
+    /// [`declaration_seam_lines`]. Dropped from the blocking bucket and
+    /// reported for transparency; not a policy suppression. Lowest precedence,
+    /// so a finding any other filter claims reports under that filter instead.
+    declaration_seam_excluded: usize,
 }
 
 /// The `summary` counts the required `ripr+ New Gap Gate` decision is derived from.
@@ -2138,6 +2530,7 @@ struct RiprFindingBuckets {
     suppressed: RiprPrSummaryCounts,
     outside_head: RiprPrSummaryCounts,
     non_production: RiprPrSummaryCounts,
+    declaration_seam: RiprPrSummaryCounts,
     unsuppressed_from_findings: RiprPrSummaryCounts,
     out_of_graph_buckets: RiprPrSummaryCounts,
     out_of_graph_total: usize,
@@ -2156,6 +2549,7 @@ impl RiprFindingBuckets {
             suppressed,
             outside_head,
             non_production,
+            declaration_seam,
             unsuppressed_from_findings,
             out_of_graph_buckets,
             out_of_graph_total,
@@ -2198,15 +2592,31 @@ impl RiprFindingBuckets {
         // path matches a policy rule — skipping only path-unknown findings, not
         // classification-unknown ones.
         let Some(canonical) = canonical else {
+            // Known non-severe classes are intentionally absent from the three
+            // severe summary buckets.  They must remain visible in
+            // `suppressed_by_policy` / `outside_head_revision`, but cannot be
+            // subtracted from `severe_gaps` or a well-covered non-production
+            // finding could erase a real production gap.  Only a genuinely
+            // unknown class is safe to count as unclassified for that purpose.
+            let known_non_severe = matches!(
+                raw_class,
+                Some("exposed" | "static_unknown" | "infection_unknown" | "propagation_unknown")
+            );
             if suppression_matches_finding(suppressions, finding) {
                 suppressed.suppressed_by_policy += 1;
-                suppressed.suppressed_unclassified += 1;
+                if !known_non_severe {
+                    suppressed.suppressed_unclassified += 1;
+                }
             } else if outside {
                 outside_head.outside_head_revision += 1;
-                outside_head.outside_head_unclassified += 1;
+                if !known_non_severe {
+                    outside_head.outside_head_unclassified += 1;
+                }
             } else if non_production_kind.is_some() {
                 non_production.non_production_excluded += 1;
-                non_production.non_production_unclassified += 1;
+                if !known_non_severe {
+                    non_production.non_production_unclassified += 1;
+                }
             }
             return;
         };
@@ -2230,6 +2640,13 @@ impl RiprFindingBuckets {
             }
             return;
         }
+        // #16077: lowest precedence, and only for `no_static_path`. The other
+        // two classifications assert something a declaration line can still be
+        // guilty of, so they are never filtered here.
+        let declaration_seam_excluded = canonical == "no_static_path"
+            && ripr_finding_path(finding).is_some_and(|path| {
+                is_declaration_seam_at_line(production_surface, &path, finding_line)
+            });
         let counts = if policy_suppressed {
             suppressed.suppressed_by_policy += 1;
             &mut *suppressed
@@ -2239,6 +2656,9 @@ impl RiprFindingBuckets {
         } else if non_production_kind.is_some() {
             non_production.non_production_excluded += 1;
             &mut *non_production
+        } else if declaration_seam_excluded {
+            declaration_seam.declaration_seam_excluded += 1;
+            &mut *declaration_seam
         } else {
             &mut *unsuppressed_from_findings
         };
@@ -2263,6 +2683,7 @@ fn ripr_summary_counts_merge(
         suppressed,
         outside_head,
         non_production,
+        declaration_seam,
         unsuppressed_from_findings,
         out_of_graph_buckets,
         out_of_graph_total,
@@ -2291,7 +2712,8 @@ fn ripr_summary_counts_merge(
                 .saturating_sub(suppressed.no_static_path)
                 .saturating_sub(outside_head.no_static_path)
                 .saturating_sub(out_of_graph_buckets.no_static_path)
-                .saturating_sub(non_production.no_static_path),
+                .saturating_sub(non_production.no_static_path)
+                .saturating_sub(declaration_seam.no_static_path),
             suppressed_by_policy: suppressed.suppressed_by_policy,
             suppressed_unclassified: suppressed.suppressed_unclassified,
             outside_head_revision: outside_head.outside_head_revision,
@@ -2299,6 +2721,7 @@ fn ripr_summary_counts_merge(
             out_of_dependency_graph: out_of_graph_total,
             non_production_excluded: non_production.non_production_excluded,
             non_production_unclassified: non_production.non_production_unclassified,
+            declaration_seam_excluded: declaration_seam.declaration_seam_excluded,
         };
     }
     // Path B: no summary object — bucket totals come from `unsuppressed_from_findings`, which
@@ -2315,6 +2738,7 @@ fn ripr_summary_counts_merge(
         out_of_dependency_graph: out_of_graph_total,
         non_production_excluded: non_production.non_production_excluded,
         non_production_unclassified: 0,
+        declaration_seam_excluded: declaration_seam.declaration_seam_excluded,
         ..unsuppressed_from_findings
     }
 }
@@ -2427,6 +2851,20 @@ fn ripr_finding_line(finding: &Value) -> Option<u64> {
         .filter(|line| *line > 0)
 }
 
+/// Source text a RIPR probe reports for the line it points at (`probe.expression`
+/// on 0.5.x/0.10.x, `seam.expression` on 0.9.x). A finding without one cannot be
+/// anchored to head text and is never filtered on that basis.
+fn ripr_finding_expression(finding: &Value) -> Option<String> {
+    ["probe", "seam"]
+        .into_iter()
+        .find_map(|key| finding.get(key).and_then(|node| node.get("expression")))
+        .or_else(|| finding.get("expression"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 /// Where a finding's path sits in the head revision of the change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeadPathState {
@@ -2460,18 +2898,53 @@ struct HeadLineExtents {
     present: BTreeMap<String, usize>,
     /// Repo-relative paths the change removes.
     removed: BTreeSet<String>,
+    /// Repo-relative path -> the head revision's lines, for anchoring a probe's
+    /// expression to the line it reports (#6260 residual, see
+    /// `probe_expression_is_absent_near`). Absent for a path means the anchor
+    /// check cannot run and the finding stays counted.
+    head_lines: BTreeMap<String, Vec<String>>,
+}
+
+/// How far, in lines either side of the reported line, a probe's expression may
+/// sit in the head revision and still count as anchored there. ripr reports a
+/// head-side probe on its own line; the window only absorbs off-by-a-few line
+/// attribution around multi-line statements.
+const HEAD_ANCHOR_WINDOW: usize = 3;
+
+/// Largest head-revision blob whose lines are retained for probe anchoring.
+/// `from_committed_diff` reads every changed path's head text; without a cap a
+/// large generated asset alongside real code can exhaust the hosted lane's
+/// memory and kill the required check. Blobs over the cap get no entry, so
+/// their findings resolve to `Unknown` and stay counted — fail-closed, never
+/// dropped. Override with [`MAX_HEAD_BLOB_BYTES_ENV`] where a lane's memory
+/// budget genuinely differs.
+const MAX_HEAD_BLOB_BYTES: u64 = 8 * 1024 * 1024;
+/// Environment override for [`MAX_HEAD_BLOB_BYTES`], as a byte count.
+const MAX_HEAD_BLOB_BYTES_ENV: &str = "RIPR_MAX_HEAD_BLOB_BYTES";
+
+/// A probe-expression or head line that carries no identifying text: a lone
+/// delimiter or separator run (`}`, `});`, `];`, …). Either side of the
+/// anchor comparison being such a line makes the match vacuous — any nearby
+/// unrelated block end anchors a deleted finding and keeps it counted even
+/// though none of its substantive text exists at head.
+fn is_low_information_line(text: &str) -> bool {
+    !text.is_empty()
+        && text.chars().all(|c| matches!(c, '(' | ')' | '{' | '}' | '[' | ']' | ';' | ',' | ':'))
 }
 
 impl HeadLineExtents {
     fn from_committed_diff(repo: &Path, diff: &CommittedDiffReceipt) -> Self {
         let mut present = BTreeMap::new();
         let mut removed = BTreeSet::new();
+        let mut head_lines = BTreeMap::new();
         for entry in &diff.entries {
             if let Some(new_path) = entry.new_path.as_deref() {
-                // An unreadable blob yields no entry, so its findings resolve to
-                // `Unknown` and stay counted.
-                if let Some(lines) = head_file_line_count(repo, &diff.head_sha, new_path) {
-                    present.insert(normalize_repo_relative_path(new_path), lines);
+                // An unreadable or oversized blob yields no entry, so its
+                // findings resolve to `Unknown` and stay counted.
+                if let Some(lines) = head_file_lines(repo, &diff.head_sha, new_path) {
+                    let path = normalize_repo_relative_path(new_path);
+                    present.insert(path.clone(), lines.len());
+                    head_lines.insert(path, lines);
                 }
             }
             // Removal is read from the status code, never inferred from "has an old
@@ -2488,7 +2961,7 @@ impl HeadLineExtents {
         }
         // A path some other entry adds back still exists at head and keeps its extent.
         removed.retain(|path| !present.contains_key(path));
-        Self { present, removed }
+        Self { present, removed, head_lines }
     }
 
     fn resolve(&self, raw_path: &str) -> HeadPathState {
@@ -2524,16 +2997,112 @@ impl HeadLineExtents {
             return false;
         };
         match self.resolve(&path) {
-            HeadPathState::Present(lines) => line > lines as u64,
+            HeadPathState::Present(lines) => {
+                line > lines as u64 || self.probe_expression_is_absent_near(&path, line, finding)
+            }
             HeadPathState::Removed => true,
             HeadPathState::Unknown => false,
         }
     }
+
+    /// The #6260 residual: `ripr check --diff` also emits probes for lines the
+    /// change *deletes*, anchored at the head line where the deletion happened.
+    /// When that anchor is inside the head file's extent, the line-count check
+    /// above cannot tell it from a head-side probe, and the gate counts a gap no
+    /// test can ever reach (the deleted code is gone) while the guidance pass
+    /// correctly names no seam for it.
+    ///
+    /// A head-side probe always carries the head line's own text as its
+    /// expression, so the discriminator is textual: the finding is outside the
+    /// head revision only when it carries a non-empty expression, the head
+    /// file's lines are known, and no non-empty line within
+    /// [`HEAD_ANCHOR_WINDOW`] of the reported line contains, or is contained
+    /// by, any substantive line of that expression. A lone delimiter on either
+    /// side (`}`, `});`, …) matches any nearby unrelated block end, so such
+    /// lines never anchor on their own; an expression with no substantive line
+    /// at all stays counted. Every other undecidable case (no expression, no
+    /// head text, an expression that does anchor nearby) stays counted: the
+    /// filter never takes the fail-open direction.
+    fn probe_expression_is_absent_near(&self, path: &str, line: u64, finding: &Value) -> bool {
+        let Some(expression) = ripr_finding_expression(finding) else {
+            return false;
+        };
+        let expression_lines =
+            expression.lines().map(str::trim).filter(|text| !text.is_empty()).collect::<Vec<_>>();
+        if expression_lines.is_empty() {
+            return false;
+        }
+        if !expression_lines.iter().any(|expr| !is_low_information_line(expr)) {
+            return false;
+        }
+        let Some(head_lines) = self.head_lines_for(path) else {
+            return false;
+        };
+        let Some(index) = usize::try_from(line).ok().and_then(|line| line.checked_sub(1)) else {
+            return false;
+        };
+        if index >= head_lines.len() {
+            return false;
+        }
+        let start = index.saturating_sub(HEAD_ANCHOR_WINDOW);
+        let end = index.saturating_add(HEAD_ANCHOR_WINDOW).min(head_lines.len() - 1);
+        let anchored = head_lines[start..=end]
+            .iter()
+            .map(|text| text.trim())
+            .filter(|text| !text.is_empty() && !is_low_information_line(text))
+            .any(|head| {
+                expression_lines.iter().any(|expr| {
+                    !is_low_information_line(expr) && (head.contains(expr) || expr.contains(head))
+                })
+            });
+        !anchored
+    }
+
+    /// Head-revision lines for a finding path, resolved like [`Self::resolve`]:
+    /// an exact normalized key, else a unique repo-relative suffix match.
+    fn head_lines_for(&self, raw_path: &str) -> Option<&[String]> {
+        let normalized = normalize_repo_relative_path(raw_path);
+        if let Some(lines) = self.head_lines.get(&normalized) {
+            return Some(lines.as_slice());
+        }
+        let candidates = self
+            .head_lines
+            .iter()
+            .filter(|(path, _)| path_suffix_matches(&normalized, path))
+            .map(|(_, lines)| lines.as_slice())
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [lines] => Some(lines),
+            _ => None,
+        }
+    }
 }
 
-fn head_file_line_count(repo: &Path, head_sha: &str, path: &str) -> Option<usize> {
+fn max_head_blob_bytes() -> u64 {
+    std::env::var(MAX_HEAD_BLOB_BYTES_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(MAX_HEAD_BLOB_BYTES)
+}
+
+fn head_file_lines(repo: &Path, head_sha: &str, path: &str) -> Option<Vec<String>> {
     let spec = format!("{head_sha}:{path}");
-    run_git_output(repo, &["show", spec.as_str()]).ok().map(|blob| blob.lines().count())
+    // Stat before reading: `git show` materializes the whole blob, and a
+    // multi-hundred-megabyte generated asset would otherwise sit in memory as
+    // per-line Strings until the receipt finishes streaming. Over the cap the
+    // blob gets no entry and its findings stay counted (fail-closed).
+    let size = run_git_output(repo, &["cat-file", "-s", spec.as_str()])
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    if size > max_head_blob_bytes() {
+        return None;
+    }
+    run_git_output(repo, &["show", spec.as_str()])
+        .ok()
+        .map(|blob| blob.lines().map(ToOwned::to_owned).collect())
 }
 
 fn normalize_repo_relative_path(path: &str) -> String {
@@ -2868,6 +3437,10 @@ struct ProductionSurface {
     /// workspace artifacts.
     production_paths: BTreeSet<String>,
     inline_test_ranges: BTreeMap<String, Vec<(usize, usize)>>,
+    /// Lines that resolve, in the head revision, to a syn item carrying no
+    /// executable code (#16077). Used only to drop `no_static_path` findings,
+    /// which measure call-graph reachability a declaration line cannot have.
+    declaration_seam_lines: BTreeMap<String, BTreeSet<usize>>,
 }
 
 impl ProductionSurface {
@@ -2877,6 +3450,7 @@ impl ProductionSurface {
             repo_root: repo_root.to_string(),
             production_paths: production_paths.iter().map(|path| path.to_string()).collect(),
             inline_test_ranges: BTreeMap::new(),
+            declaration_seam_lines: BTreeMap::new(),
         }
     }
 }
@@ -2957,6 +3531,23 @@ fn classify_non_production_at_line(
     None
 }
 
+/// Whether a finding's line resolves to a non-executable declaration in the
+/// head revision (#16077).
+///
+/// Fail-closed at every step: no surface, an unresolvable path, a missing line,
+/// a file the head does not carry, or a file that would not parse all return
+/// `false`, which keeps the finding in the blocking basis.
+fn is_declaration_seam_at_line(
+    surface: Option<&ProductionSurface>,
+    raw_path: &str,
+    line: Option<u64>,
+) -> bool {
+    let Some(surface) = surface else { return false };
+    let Some(path) = repo_relative_surface_path(surface, raw_path) else { return false };
+    let Some(line) = line.and_then(|line| usize::try_from(line).ok()) else { return false };
+    surface.declaration_seam_lines.get(&path).is_some_and(|lines| lines.contains(&line))
+}
+
 /// Build the production surface from cargo metadata and the repo checkout.
 /// Errors mean the surface could not be established; callers must then skip
 /// non-production classification entirely rather than guess.
@@ -2979,6 +3570,7 @@ fn production_surface_from_metadata(
         repo_root: root,
         production_paths: BTreeSet::new(),
         inline_test_ranges: BTreeMap::new(),
+        declaration_seam_lines: BTreeMap::new(),
     };
     let mut scan_queue: Vec<String> = Vec::new();
     for package in packages {
@@ -3041,17 +3633,24 @@ fn production_surface_from_metadata(
         bail!("cargo metadata resolved no workspace production sources");
     }
     scan_include_closure(repo, &mut surface.production_paths, scan_queue);
-    surface.inline_test_ranges = changed_paths
+    for path in changed_paths
         .iter()
         .map(|path| normalize_repo_relative_path(path))
         .filter(|path| surface.production_paths.contains(path))
-        .filter_map(|path| {
-            let spec = format!("{head_sha}:{path}");
-            let source = run_git_output(repo, &["show", spec.as_str()]).ok()?;
-            let ranges = inline_cfg_test_ranges(&source);
-            (!ranges.is_empty()).then_some((path, ranges))
-        })
-        .collect();
+    {
+        let spec = format!("{head_sha}:{path}");
+        // A file the head revision does not carry leaves both maps without an
+        // entry, which keeps its findings in the blocking basis.
+        let Ok(source) = run_git_output(repo, &["show", spec.as_str()]) else { continue };
+        let ranges = inline_cfg_test_ranges(&source);
+        if !ranges.is_empty() {
+            surface.inline_test_ranges.insert(path.clone(), ranges);
+        }
+        let seams = declaration_seam_lines(&source);
+        if !seams.is_empty() {
+            surface.declaration_seam_lines.insert(path, seams);
+        }
+    }
     Ok(surface)
 }
 
@@ -3063,6 +3662,360 @@ fn inline_cfg_test_ranges(source: &str) -> Vec<(usize, usize)> {
     let mut collector = InlineCfgTestRangeCollector::default();
     collector.visit_file(&file);
     collector.ranges
+}
+
+/// Lines that carry a declaration and no executable code, in the head revision
+/// of one file (#16077).
+///
+/// `no_static_path` asserts that no static test path reaches the changed owner.
+/// That is a statement about the call graph, and the item kinds collected here
+/// contribute no node to it: a `use`, an `extern crate`, a bodiless `mod`, a
+/// type declaration, and a literal-initialized `const` or `static` contain no
+/// call site, so no test can produce a path to one. Reporting them as
+/// unreachable is the analyzer applying a call-graph model to a line that has
+/// no call (ripr#1429), not a coverage finding.
+///
+/// Deliberately excluded, because they can carry executable bodies:
+/// `Item::Trait` (default methods), `Item::Impl` (associated methods),
+/// `Item::Fn`, `Item::Mod` with content (its own items are visited on their
+/// own terms), and any `const`/`static` whose initializer is a call, a closure,
+/// or any other non-literal expression.
+///
+/// Like [`inline_cfg_test_ranges`], a parse failure yields nothing so the caller
+/// keeps every finding in the blocking basis.
+fn declaration_seam_lines(source: &str) -> BTreeSet<usize> {
+    let Ok(file) = syn::parse_file(source) else { return BTreeSet::new() };
+    let mut collector = DeclarationSeamCollector::default();
+    collector.visit_file(&file);
+    // A line only stays a seam when nothing executable shares it. Subtracting
+    // rather than refusing to mark keeps the two passes independent: an item is
+    // screened by its own kind, and occupancy is resolved afterwards.
+    collector.lines.difference(&collector.executable).copied().collect()
+}
+
+#[derive(Default)]
+struct DeclarationSeamCollector {
+    lines: BTreeSet<usize>,
+    /// Lines an executable construct occupies. Subtracted from `lines` at the
+    /// end, because marking is per line and a finding is matched by
+    /// `(file, line)` alone: `const OK: bool = true; fn run() { go(); }` puts a
+    /// declaration and a call on one physical line, and without this the call's
+    /// finding would be subtracted from a required gate's blocking basis
+    /// (#16077 review).
+    executable: BTreeSet<usize>,
+}
+
+impl DeclarationSeamCollector {
+    /// Mark every line the item occupies, attributes included. A doc comment or
+    /// a `#[derive]` above a declaration is no more executable than the
+    /// declaration itself, and a finding may land on either.
+    fn mark(&mut self, attrs: &[syn::Attribute], span: proc_macro2::Span) {
+        let start = attrs
+            .iter()
+            .map(Spanned::span)
+            .chain(std::iter::once(span))
+            .map(|span| span.start().line)
+            .min()
+            .unwrap_or_else(|| span.start().line);
+        for line in start..=span.end().line {
+            self.lines.insert(line);
+        }
+    }
+
+    /// Record every line an executable construct occupies, so a declaration
+    /// sharing a physical line with it cannot subtract that line.
+    fn mark_executable(&mut self, attrs: &[syn::Attribute], span: proc_macro2::Span) {
+        let start = attrs
+            .iter()
+            .map(Spanned::span)
+            .chain(std::iter::once(span))
+            .map(|span| span.start().line)
+            .min()
+            .unwrap_or_else(|| span.start().line);
+        for line in start..=span.end().line {
+            self.executable.insert(line);
+        }
+    }
+
+    /// Run [`NonLiteralExprProbe`] over one item and report whether it found
+    /// anything. The closure names which `visit_item_*` to enter, so every
+    /// declaration kind is screened by the same predicate.
+    fn carries_an_expression(visit: impl FnOnce(&mut NonLiteralExprProbe)) -> bool {
+        let mut probe = NonLiteralExprProbe::default();
+        visit(&mut probe);
+        probe.found
+    }
+
+    /// Mark an item whose only possible source of code is its own attributes.
+    ///
+    /// `use`, `extern crate` and `mod name;` hold no expression, so the other
+    /// visitors mark them without probing. That skipped the attribute probe
+    /// entirely, and `#[generate_runtime_path] use std::fmt;` is a real shape:
+    /// the macro may append functions onto that line (#16077 review). Running
+    /// the probe over the attributes alone is the whole question for these
+    /// three kinds.
+    fn mark_by_attrs(&mut self, attrs: &[syn::Attribute], span: proc_macro2::Span) {
+        let readable = !Self::carries_an_expression(|probe| {
+            for attr in attrs {
+                probe.visit_attribute(attr);
+            }
+        });
+        if readable {
+            self.mark(attrs, span);
+        } else {
+            self.mark_executable(attrs, span);
+        }
+    }
+}
+
+/// Whether an item contains any expression other than a bare literal.
+///
+/// This is the predicate that keeps the filter honest, and it is deliberately
+/// blunt. A `const fn` call is legal in an enum discriminant (`A = compute()`),
+/// in a const-generic default (`struct S<const N: usize = compute()>`), and in
+/// an array length, so "this item kind has no function body" is not the same
+/// claim as "no line of this item carries a call". Anything that is not a
+/// literal — a call, a closure, a macro, a path to another const, even `1 + 1`
+/// — leaves the whole item in the blocking basis. Const evaluation is not a
+/// reason to treat a call token as absent.
+#[derive(Default)]
+struct NonLiteralExprProbe {
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for NonLiteralExprProbe {
+    fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+        if matches!(expr, syn::Expr::Lit(_)) {
+            // A literal has no subexpression worth descending into.
+            return;
+        }
+        self.found = true;
+    }
+
+    /// A macro invocation is opaque tokens, not a `syn::Expr`, so `visit_expr`
+    /// never sees what it expands to. In type position — `struct S { field:
+    /// ty!() }` where `ty!()` expands to `[u8; compute()]` — nothing else in
+    /// this probe fires either, and the item would be screened as carrying no
+    /// call while its expansion carries one (#16077 review). Treat every macro
+    /// as an expression the probe cannot read, in every position.
+    fn visit_macro(&mut self, _: &'ast syn::Macro) {
+        self.found = true;
+    }
+
+    /// A procedural attribute macro is a `syn::Attribute`, not a `syn::Macro`,
+    /// so `visit_macro` never fires for it. `#[generate_runtime_path] struct S;`
+    /// can emit arbitrary code while the item reads as a bare declaration
+    /// (#16077 review).
+    ///
+    /// This is the one place the probe must whitelist rather than invert: every
+    /// declaration carries `///`, `#[cfg]` or `#[derive]`, so treating all
+    /// attributes as unreadable would empty the filter. Only attributes the
+    /// language itself defines, and which therefore cannot expand to code, are
+    /// accepted; anything else is an attribute macro or a derive helper whose
+    /// owner may expand to code, and the item stays in the blocking basis.
+    fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
+        if !inert_attribute(attr) {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_attribute(self, attr);
+    }
+}
+
+/// Built-in attributes that cannot expand to code.
+///
+/// `derive` is deliberately here. It does generate an `impl`, but excluding
+/// every deriving declaration would remove most of this filter's subject, and
+/// whether `ripr` attributes a derived impl's finding back to the deriving
+/// item's own line is a property of the external analyzer that this repository
+/// cannot observe. That residual is recorded on the PR rather than guessed at.
+/// Everything absent from this list — an attribute macro, a derive helper such
+/// as `#[serde(...)]`, anything a crate defines — keeps its item blocking.
+fn inert_attribute(attr: &syn::Attribute) -> bool {
+    const INERT: &[&str] = &[
+        "allow",
+        "automatically_derived",
+        "cfg",
+        "cold",
+        "deny",
+        "deprecated",
+        "derive",
+        "doc",
+        "expect",
+        "export_name",
+        "forbid",
+        "inline",
+        "link_section",
+        "must_use",
+        "no_mangle",
+        "non_exhaustive",
+        "repr",
+        "track_caller",
+        "used",
+        "warn",
+    ];
+    // `cfg_attr` is deliberately absent. Its payload is an attribute list that
+    // `syn` keeps as opaque `Meta::List` tokens, so `#[cfg_attr(all(),
+    // generate_runtime_path)]` reaches neither `visit_attribute` nor
+    // `visit_macro` and would be read as inert on the strength of the wrapper's
+    // name alone (#16077 review). Reading that payload would mean re-parsing it;
+    // refusing it costs one line in this workspace — of 387 `cfg_attr`
+    // occurrences under `crates/` and `xtask/`, exactly one sits on a screened
+    // declaration kind, because the rest decorate functions and impls that are
+    // marked executable anyway.
+    // `clippy::…` and `rustfmt::…` are tool attributes: two segments, inert by
+    // definition, and never an attribute macro.
+    let mut segments = attr.path().segments.iter();
+    let Some(first) = segments.next() else { return false };
+    let first = first.ident.to_string();
+    if matches!(first.as_str(), "clippy" | "rustfmt") {
+        return true;
+    }
+    segments.next().is_none() && INERT.contains(&first.as_str())
+}
+
+impl<'ast> Visit<'ast> for DeclarationSeamCollector {
+    /// Conservative default for item kinds this collector does not screen.
+    ///
+    /// Every kind below is classified by an explicit rule. Anything else — an
+    /// item-position macro (`global_asm!`, `include!`, a declarative macro that
+    /// expands to arbitrary code), an `extern` block, a trait alias, or a
+    /// `Verbatim` item `syn` could not resolve into a known kind — occupies its
+    /// lines instead. An unclassified kind must not silently default to
+    /// "carries no call": marking is per line and a finding is matched by
+    /// `(file, line)` alone, so `use std::arch::global_asm; global_asm!("nop");`
+    /// would otherwise let the `use` subtract the macro's finding from a
+    /// required gate's blocking basis (#16077 review).
+    ///
+    /// `Item::Mod` is excluded because its span covers its children, which are
+    /// visited on their own terms; marking it would occupy every line inside it.
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        let screened = matches!(
+            item,
+            syn::Item::Use(_)
+                | syn::Item::ExternCrate(_)
+                | syn::Item::Mod(_)
+                | syn::Item::Fn(_)
+                | syn::Item::Impl(_)
+                | syn::Item::Trait(_)
+                | syn::Item::Enum(_)
+                | syn::Item::Struct(_)
+                | syn::Item::Union(_)
+                | syn::Item::Type(_)
+                | syn::Item::Const(_)
+                | syn::Item::Static(_)
+        );
+        if !screened {
+            let attrs: &[syn::Attribute] = match item {
+                syn::Item::ForeignMod(unscreened) => &unscreened.attrs,
+                syn::Item::Macro(unscreened) => &unscreened.attrs,
+                syn::Item::TraitAlias(unscreened) => &unscreened.attrs,
+                _ => &[],
+            };
+            self.mark_executable(attrs, item.span());
+        }
+        syn::visit::visit_item(self, item);
+    }
+
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        self.mark_by_attrs(&item.attrs, item.span());
+    }
+
+    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+        self.mark_by_attrs(&item.attrs, item.span());
+    }
+
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if item.content.is_none() {
+            // `mod name;` — the declaration line only. A module with a body is
+            // not marked; its items are visited individually below.
+            self.mark_by_attrs(&item.attrs, item.span());
+            return;
+        }
+        // An inline module's own attributes were skipped: only the bodiless
+        // branch probed them, and this branch recursed straight past. A child
+        // declaration then marked the line on its own, so
+        // `#[generate_runtime_path] mod m { struct S; }` read as a seam although
+        // the macro may put code on that line (#16077 review).
+        //
+        // The span is the header, not `item.span()`: the item's span runs to the
+        // closing brace, so marking that executable would bury every seam the
+        // module legitimately contains. `mod` and its name are the last header
+        // tokens before the body, and an unreadable attribute can only reach the
+        // lines they and the attribute occupy.
+        let unreadable = Self::carries_an_expression(|probe| {
+            for attr in &item.attrs {
+                probe.visit_attribute(attr);
+            }
+        });
+        if unreadable {
+            self.mark_executable(&item.attrs, item.ident.span());
+        }
+        syn::visit::visit_item_mod(self, item);
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        self.mark_executable(&item.attrs, item.span());
+        syn::visit::visit_item_fn(self, item);
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        self.mark_executable(&item.attrs, item.span());
+        syn::visit::visit_item_impl(self, item);
+    }
+
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        self.mark_executable(&item.attrs, item.span());
+        syn::visit::visit_item_trait(self, item);
+    }
+
+    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+        if Self::carries_an_expression(|probe| probe.visit_item_enum(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        if Self::carries_an_expression(|probe| probe.visit_item_struct(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_union(&mut self, item: &'ast syn::ItemUnion) {
+        if Self::carries_an_expression(|probe| probe.visit_item_union(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        if Self::carries_an_expression(|probe| probe.visit_item_type(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        if Self::carries_an_expression(|probe| probe.visit_item_const(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if Self::carries_an_expression(|probe| probe.visit_item_static(item)) {
+            self.mark_executable(&item.attrs, item.span());
+        } else {
+            self.mark(&item.attrs, item.span());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -3427,6 +4380,7 @@ fn pr_evidence_packet_from_summary(
             "outside_head_revision": summary.outside_head_revision,
             "out_of_dependency_graph": summary.out_of_dependency_graph,
             "non_production_excluded": summary.non_production_excluded,
+            "declaration_seam_excluded": summary.declaration_seam_excluded,
             "suppression_patterns": suppressions.display_patterns.clone(),
         },
         "attribution": attribution_stamp(attribution_scope),
@@ -3546,6 +4500,10 @@ fn validate_pr_evidence_packet(
     if !summary.get("non_production_excluded").is_some_and(Value::is_u64) {
         violations.push("summary.non_production_excluded is missing or not an integer".to_string());
     }
+    if !summary.get("declaration_seam_excluded").is_some_and(Value::is_u64) {
+        violations
+            .push("summary.declaration_seam_excluded is missing or not an integer".to_string());
+    }
     match packet.get("attribution").and_then(Value::as_object) {
         Some(attribution) => {
             if attribution.get("basis").and_then(Value::as_str) != Some(ATTRIBUTION_BASIS) {
@@ -3630,6 +4588,10 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
     out.push_str(&format!(
         "- non_production_excluded: {}\n",
         count_field(summary, "non_production_excluded")
+    ));
+    out.push_str(&format!(
+        "- declaration_seam_excluded: {}\n",
+        count_field(summary, "declaration_seam_excluded")
     ));
     out.push_str(&format!("- severe gaps: {}\n\n", count_field(summary, "severe_gaps")));
     out.push_str("## Targeted Mutation\n\n");
@@ -4168,6 +5130,17 @@ fn fallback_seam_decision(
     if ripr_finding_path(finding).is_some_and(|path| {
         classify_non_production_at_line(production_surface, &path, finding_line).is_some()
     }) {
+        return FallbackSeamDecision::Ignore;
+    }
+    // #16077: the same predicate the blocking count applies. Without it the two
+    // surfaces disagree — a seam the gate no longer counts would still occupy
+    // one of the FALLBACK_GUIDANCE_LIMIT slots and could crowd out the
+    // executable seam that is actually keeping the gate red.
+    if canonical == "no_static_path"
+        && ripr_finding_path(finding).is_some_and(|path| {
+            is_declaration_seam_at_line(production_surface, &path, finding_line)
+        })
+    {
         return FallbackSeamDecision::Ignore;
     }
     if let Some(attribution) = attribution
@@ -5122,33 +6095,69 @@ fn run_output(cmd: &str, args: &[String]) -> Result<String> {
     String::from_utf8(stdout_bytes).with_context(|| format!("{cmd} stdout was not UTF-8"))
 }
 
+/// `run_output` with a wall-clock timeout. Both child streams are regular
+/// files for the same reason as there (#12569) — and one more: this loop only
+/// polls `try_wait`, so a piped child that writes more than the pipe buffer
+/// blocks on the write and can never exit. The timeout then becomes the only
+/// way out, which is how `ripr-review-comments` lanes burned tens of minutes
+/// before an external SIGTERM on diffs whose output exceeded the buffer.
 fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Result<String> {
+    let stdout_file =
+        tempfile::NamedTempFile::new().context("failed to create command stdout file")?;
+    let stderr_file =
+        tempfile::NamedTempFile::new().context("failed to create command stderr file")?;
     let mut child = Command::new(cmd)
         .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(stdout_file.reopen().context("failed to reopen command stdout file")?))
+        .stderr(Stdio::from(stderr_file.reopen().context("failed to reopen command stderr file")?))
         .spawn()
         .with_context(|| format!("failed to run {cmd}"))?;
     let started = Instant::now();
-    loop {
-        if child.try_wait().with_context(|| format!("failed to poll {cmd}"))?.is_some() {
-            let output =
-                child.wait_with_output().with_context(|| format!("failed to collect {cmd}"))?;
-            return output_to_string(cmd, output);
+    let status = loop {
+        if let Some(status) = child.try_wait().with_context(|| format!("failed to poll {cmd}"))? {
+            break status;
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();
-            let output =
-                child.wait_with_output().with_context(|| format!("failed to collect {cmd}"))?;
+            let _ = child.wait();
             bail!(
                 "{cmd} timed out after {}s\nstdout:\n{}\nstderr:\n{}",
                 timeout.as_secs(),
-                String::from_utf8_lossy(&output.stdout).trim(),
-                String::from_utf8_lossy(&output.stderr).trim()
+                String::from_utf8_lossy(&read_output_excerpt(&stdout_file)?).trim(),
+                String::from_utf8_lossy(&read_output_excerpt(&stderr_file)?).trim()
             );
         }
         std::thread::sleep(Duration::from_millis(200));
+    };
+    let mut stdout_bytes = Vec::new();
+    stdout_file
+        .reopen()
+        .with_context(|| format!("failed to reopen {cmd} stdout file"))?
+        .read_to_end(&mut stdout_bytes)
+        .with_context(|| format!("failed to read {cmd} stdout file"))?;
+    if !status.success() {
+        bail!(
+            "{cmd} failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            status,
+            String::from_utf8_lossy(&stdout_bytes).trim(),
+            String::from_utf8_lossy(&read_output_excerpt(&stderr_file)?).trim()
+        );
     }
+    String::from_utf8(stdout_bytes).with_context(|| format!("{cmd} stdout was not UTF-8"))
+}
+
+/// Reads the first `MAX_RIPR_STDERR_BYTES` of a captured stream file for a
+/// diagnostic message. The full payload stays on disk in the tempfile; error
+/// text only needs an excerpt, and a runaway child may have written far more
+/// than a message should carry.
+fn read_output_excerpt(file: &tempfile::NamedTempFile) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.reopen()
+        .context("failed to reopen captured output file")?
+        .take(MAX_RIPR_STDERR_BYTES as u64)
+        .read_to_end(&mut bytes)
+        .context("failed to read captured output file")?;
+    Ok(bytes)
 }
 
 fn output_to_string(cmd: &str, output: std::process::Output) -> Result<String> {
@@ -5911,9 +6920,8 @@ mod tests {
         for pattern in patterns {
             rules.display_patterns.push((*pattern).to_string());
             rules.path_patterns.push(Pattern::new(pattern).context("test glob must be valid")?);
-            // Empty = no classification filter, matching how the current matcher
-            // treats `policy/ripr-suppressions.toml` classification lists as
-            // documentary rather than selective.
+            // Empty = no classification filter: an entry without a
+            // `classification` key suppresses on path alone (#15519).
             rules.classification_patterns.push(Vec::new());
         }
         Ok(rules)
@@ -5976,6 +6984,141 @@ mod tests {
             (counts_for(&check).weakly_exposed) == (1),
             "proof predicate failed: {}",
             stringify!((counts_for(&check).weakly_exposed) == (1))
+        );
+        Ok(())
+    }
+
+    fn policy_with_classification(dir: &Path, classification: Option<&str>) -> Result<PathBuf> {
+        let policy_path = dir.join("suppressions.toml");
+        let classification_line =
+            classification.map(|values| format!("classification = {values}\n")).unwrap_or_default();
+        write_text(
+            &policy_path,
+            format!("[[suppress]]\nid = \"row\"\npaths = [\"src/**\"]\n{classification_line}")
+                .as_str(),
+        )?;
+        Ok(policy_path)
+    }
+
+    /// One ripr 0.5.x-shaped finding (`classification`) and one ripr 0.9.x-shaped
+    /// finding (`grip_class`), no `summary` object so the buckets are the totals.
+    fn mixed_shape_check() -> Result<Value> {
+        parse_check(
+            r#"{
+                "findings": [
+                    {
+                        "id": "probe:src_lib.rs:call_deletion:065a796b",
+                        "probe": {"file": "./src/lib.rs"},
+                        "classification": "weakly_exposed"
+                    },
+                    {
+                        "id": "seam:src_other.rs:call_effect:deadbeef",
+                        "seam": {"file": "./src/other.rs"},
+                        "grip_class": "weakly_gripped"
+                    }
+                ]
+            }"#,
+        )
+    }
+
+    #[test]
+    fn suppression_load_rejects_classifications_no_finding_can_carry() -> Result<()> {
+        // #15519: `activation_unknown` is a `kind` word, and diff-receipt gap
+        // kinds such as `call_deletion` are not finding classifications. An
+        // entry listing either used to parse, load, keep suppressing the
+        // repo-wide seam receipt (path-only matcher), and yet could never fire
+        // against the diff-scoped new-gap gate. The load must refuse it with
+        // the offending row and value named, exactly like a malformed glob.
+        let dir = tempfile::tempdir()?;
+        for (classification, offending) in [
+            ("[\"activation_unknown\"]", "activation_unknown"),
+            ("[\"weakly_exposed\", \"call_deletion\"]", "call_deletion"),
+        ] {
+            let policy_path = policy_with_classification(dir.path(), Some(classification))?;
+            let error = read_ripr_suppression_rules(dir.path(), &policy_path)
+                .expect_err("an unmatchable classification must fail the load");
+            let message = format!("{error:#}");
+            color_eyre::eyre::ensure!(
+                message.contains("row") && message.contains(offending),
+                "the refusal must name the offending row and value: {message}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checked_in_ripr_suppression_policy_loads_under_classification_vocabulary() -> Result<()> {
+        // Negative control for the #15519 ledger repair: the production ledger
+        // itself must load — every classification it lists is one a finding can
+        // actually carry — and still contribute path rules.
+        let repo =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().context("xtask crate has a parent")?;
+        let rules = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
+        color_eyre::eyre::ensure!(
+            !rules.path_patterns.is_empty(),
+            "the checked-in ledger must contribute path rules"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_classification_selects_only_values_a_finding_can_carry() -> Result<()> {
+        // The falsifier set from #15519: a listed real value filters to exactly
+        // the findings carrying it (both field spellings, across producer
+        // versions), `weakly_gripped` still selects through its
+        // `reachable_unrevealed` canonicalization, and omitting the key still
+        // suppresses on path alone. Without these controls a loader that
+        // dropped the classification filter entirely would be indistinguishable
+        // from a correct one.
+        let check = mixed_shape_check()?;
+        let dir = tempfile::tempdir()?;
+        let counts_for_policy = |classification: Option<&str>| -> Result<RiprPrSummaryCounts> {
+            let policy_path = policy_with_classification(dir.path(), classification)?;
+            let rules = read_ripr_suppression_rules(dir.path(), &policy_path)?;
+            Ok(counts_with(&check, &rules))
+        };
+
+        // No `classification` key: path-scoped, suppresses both findings.
+        let path_scoped = counts_for_policy(None)?;
+        color_eyre::eyre::ensure!(
+            (path_scoped.suppressed_by_policy) == (2),
+            "a keyless entry must suppress on path alone"
+        );
+
+        // A listed real value selects only the finding carrying it: the
+        // selected finding leaves its bucket (0), the survivor stays visible
+        // and blocking (1).
+        let exposed_only = counts_for_policy(Some("[\"weakly_exposed\"]"))?;
+        color_eyre::eyre::ensure!(
+            (exposed_only.suppressed_by_policy) == (1)
+                && (exposed_only.weakly_exposed) == (0)
+                && (exposed_only.reachable_unrevealed) == (1),
+            "weakly_exposed must select exactly the weakly_exposed finding: {exposed_only:?}"
+        );
+
+        // `weakly_gripped` canonicalizes to `reachable_unrevealed` on both
+        // sides of the comparison, in either spelling.
+        let gripped_by_canon = counts_for_policy(Some("[\"reachable_unrevealed\"]"))?;
+        color_eyre::eyre::ensure!(
+            (gripped_by_canon.suppressed_by_policy) == (1)
+                && (gripped_by_canon.reachable_unrevealed) == (0)
+                && (gripped_by_canon.weakly_exposed) == (1),
+            "reachable_unrevealed must select the weakly_gripped finding: {gripped_by_canon:?}"
+        );
+        let gripped_by_alias = counts_for_policy(Some("[\"weakly_gripped\"]"))?;
+        color_eyre::eyre::ensure!(
+            (gripped_by_alias.suppressed_by_policy) == (1),
+            "the weakly_gripped alias must keep selecting weakly_gripped findings"
+        );
+
+        // A real but absent value selects nothing: the finding stays visible
+        // and blocking rather than being silently suppressed.
+        let absent_value = counts_for_policy(Some("[\"no_static_path\"]"))?;
+        color_eyre::eyre::ensure!(
+            (absent_value.suppressed_by_policy) == (0)
+                && (absent_value.weakly_exposed) == (1)
+                && (absent_value.reachable_unrevealed) == (1),
+            "an unmatched classification must leave every finding visible: {absent_value:?}"
         );
         Ok(())
     }
@@ -6735,6 +7878,438 @@ mod maybe_tests {
         Ok(())
     }
 
+    /// #16077: the collector marks a line only when the item occupying it
+    /// carries no executable code. The rejected kinds are the point of the
+    /// test — a filter that swallowed a function body or a computed
+    /// initializer would drop findings the gate must keep.
+    #[test]
+    fn declaration_seam_lines_keeps_lines_shared_with_executable_code() -> Result<()> {
+        // Marking is per line and findings are matched by `(file, line)` alone,
+        // so a declaration sharing a physical line with executable code would
+        // otherwise subtract that code's finding from the blocking basis of a
+        // required gate — a false clean result (#16077 review).
+        let source = r##"pub const FLAG: bool = true; pub fn run() -> bool { compute() }
+pub const ALONE: bool = false;
+const fn compute() -> bool { true }
+pub struct Pair; impl Pair { fn go(&self) -> bool { compute() } }
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Line 1 carries a literal `const` AND a function body; line 4 carries
+        // a unit struct AND an inherent method. Neither may be subtracted.
+        for line in [1, 3, 4] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries executable code and must stay in the blocking basis"
+                ));
+            }
+        }
+        // A declaration with the line to itself is still a seam, so the filter
+        // has not simply been switched off.
+        if !marked.contains(&2) {
+            return Err(eyre!("line 2 is a declaration seam and must still be marked"));
+        }
+        Ok(())
+    }
+
+    /// #16077 review: an item kind the collector does not screen must occupy
+    /// its lines. Before this, `DeclarationSeamCollector` enumerated the
+    /// executable kinds it knew about, so anything it had not enumerated —
+    /// starting with `Item::Macro` — added nothing to `executable` and let a
+    /// declaration on the same physical line subtract the unscreened item's
+    /// finding from a required gate.
+    /// #16077 review: a procedural attribute is a `syn::Attribute`, not a
+    /// `syn::Macro`, so `visit_macro` does not reach it. Only attributes the
+    /// language defines are accepted as inert; anything a crate defines may
+    /// expand to code and keeps its item blocking.
+    #[test]
+    fn declaration_seam_lines_keeps_declarations_carrying_attribute_macros() -> Result<()> {
+        let source = r##"pub const PLAIN: bool = true;
+/// Inert: a doc comment is an attribute the language defines.
+#[allow(dead_code)]
+pub const DOCUMENTED: bool = true;
+#[generate_runtime_path]
+pub struct Generated;
+#[serde(rename = "other")]
+pub struct Helper;
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Built-in attributes leave the declaration a seam, including the
+        // lines the attributes themselves occupy.
+        for line in [1, 2, 3, 4] {
+            if !marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries only built-in attributes and must stay a seam"
+                ));
+            }
+        }
+        // An attribute macro and a derive helper are both crate-defined, so
+        // neither the attribute line nor the item line may be subtracted.
+        for line in [5, 6, 7, 8] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries a crate-defined attribute and must stay in the blocking basis"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// #16077 review: a macro is opaque tokens, not a `syn::Expr`. In type,
+    /// pattern or expression position its expansion can carry a call the probe
+    /// cannot read, so a declaration containing one must not be screened as
+    /// carrying no call.
+    #[test]
+    fn declaration_seam_lines_keeps_declarations_carrying_opaque_macros() -> Result<()> {
+        let source = r##"pub struct Holder { field: ty!() }
+pub const ALONE: bool = false;
+pub const FROM_MACRO: usize = size_of_thing!();
+pub type Alias = wrapper!(u8);
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Each of these is a screened item kind whose only non-literal content
+        // is a macro. `visit_expr` alone sees nothing in the type-position and
+        // alias cases, which is the reachable half of this.
+        for line in [1, 3, 4] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} carries a macro the probe cannot read and must stay in the blocking basis"
+                ));
+            }
+        }
+        if !marked.contains(&2) {
+            return Err(eyre!("line 2 is a literal declaration and must still be marked"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_keeps_lines_shared_with_unscreened_items() -> Result<()> {
+        let source = r##"use std::arch::global_asm; global_asm!("nop");
+pub const ALONE: bool = false;
+extern "C" { fn imported(); } pub const WITH_EXTERN: bool = true;
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // Line 1 carries a `use` AND an item-position macro; line 3 carries a
+        // literal `const` AND an `extern` block. The macro can expand to
+        // anything and the `extern` block declares a callable, so neither line
+        // may be subtracted on the strength of the declaration beside it.
+        for line in [1, 3] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} shares a line with an unscreened item and must stay in the blocking basis"
+                ));
+            }
+        }
+        // The filter is still on: a literal const alone on its line is a seam.
+        if !marked.contains(&2) {
+            return Err(eyre!("line 2 is a declaration seam and must still be marked"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_marks_only_non_executable_items() -> Result<()> {
+        let source = r##"use std::fmt::Debug;
+pub(crate) mod root_input;
+pub const SERVER_SUPPORT: bool = true;
+pub static BUILD_TAG: &str = "release";
+pub const DERIVED: bool = compute();
+pub(crate) enum InitialRootInput {
+    ExplicitWorkspaceFolders,
+    NoWorkspaceRoot,
+}
+pub(crate) use crate::protocol::capabilities::{
+    SERVER_SUPPORT,
+};
+const fn compute() -> bool {
+    true
+}
+pub trait Surface {
+    fn describe(&self) -> bool {
+        true
+    }
+}
+pub mod nested {
+    pub const INNER: u8 = 3;
+    pub fn run() -> u8 {
+        INNER
+    }
+}
+pub enum Computed {
+    First = 1,
+    Second = compute() as isize,
+}
+pub struct Plain {
+    pub items: Vec<u8>,
+}
+pub type Derived = [u8; 8];
+"##;
+        let marked = declaration_seam_lines(source);
+
+        // `use`, bodiless `mod`, literal `const`/`static`, `enum`, multi-line
+        // `use`, and a literal `const` nested in a module with a body.
+        for line in [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 22] {
+            if !marked.contains(&line) {
+                return Err(eyre!("line {line} is a declaration seam but was not marked"));
+            }
+        }
+        // A computed const initializer, a `const fn` body, a trait default
+        // method, a module header with a body, and a function body.
+        for line in [5, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25] {
+            if marked.contains(&line) {
+                return Err(eyre!("line {line} carries executable code but was marked"));
+            }
+        }
+        // A `const fn` call is legal in an enum discriminant, so "an enum has no
+        // method bodies" does not mean "no line of this enum carries a call".
+        // The whole item stays blocking, discriminant line included.
+        for line in [27, 28, 29, 30] {
+            if marked.contains(&line) {
+                return Err(eyre!(
+                    "line {line} belongs to an enum with a computed discriminant but was marked"
+                ));
+            }
+        }
+        // Literal-only declarations on the same footing still mark, so the
+        // screen is not simply rejecting every type declaration.
+        for line in [31, 32, 33, 34] {
+            if !marked.contains(&line) {
+                return Err(eyre!("line {line} is a literal-only declaration but was not marked"));
+            }
+        }
+        if !declaration_seam_lines("pub const BROKEN: bool = ;").is_empty() {
+            return Err(eyre!("unparseable source produced declaration seams"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_keeps_declarations_whose_attribute_is_wrapped_in_cfg_attr()
+    -> Result<()> {
+        // `cfg_attr` keeps its payload as opaque `Meta::List` tokens, so a
+        // procedural attribute nested inside one reaches neither `visit_attribute`
+        // nor `visit_macro`. Reading the wrapper's name alone called it inert.
+        let source = concat!(
+            "pub const PLAIN: bool = true;\n",
+            "#[cfg_attr(all(), generate_runtime_path)]\n",
+            "pub struct Wrapped;\n",
+        );
+        let marked = declaration_seam_lines(source);
+        if !marked.contains(&1) {
+            bail!("line 1 carries no attribute at all and must stay marked: {marked:?}");
+        }
+        for line in [2, 3] {
+            if marked.contains(&line) {
+                bail!(
+                    "line {line} is covered by a cfg_attr payload the probe cannot read \
+                     and must stay in the blocking basis: {marked:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_probes_attributes_on_directly_marked_items() -> Result<()> {
+        // `use`, `extern crate` and `mod name;` hold no expression, so they were
+        // marked without probing — which skipped the attribute probe entirely,
+        // although an attribute macro on any of them may append functions.
+        let source = concat!(
+            "use std::fmt;\n",
+            "#[generate_runtime_path]\n",
+            "use std::io;\n",
+            "#[generate_runtime_path]\n",
+            "extern crate alloc;\n",
+            "#[generate_runtime_path]\n",
+            "mod generated;\n",
+        );
+        let marked = declaration_seam_lines(source);
+        if !marked.contains(&1) {
+            bail!("a plain `use` carries nothing and must stay marked: {marked:?}");
+        }
+        for line in [2, 3, 4, 5, 6, 7] {
+            if marked.contains(&line) {
+                bail!(
+                    "line {line} carries a crate-defined attribute on a directly marked \
+                     item and must stay in the blocking basis: {marked:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_seam_lines_probes_attributes_on_inline_modules() -> Result<()> {
+        // Only the bodiless branch of the module visitor probed attributes; a
+        // module with a body recursed straight past its own. A child
+        // declaration then marked the line by itself, so an attribute macro on
+        // the module cleared a line it may well put code on.
+        let source = concat!(
+            "mod plain { struct A; }\n",
+            "#[generate_runtime_path] mod wrapped { struct B; }\n",
+            "#[generate_runtime_path]\n",
+            "mod split {\n",
+            "    struct C;\n",
+            "}\n",
+        );
+        let marked = declaration_seam_lines(source);
+        if !marked.contains(&1) {
+            bail!("a plain inline module carries nothing and must stay marked: {marked:?}");
+        }
+        if marked.contains(&2) {
+            bail!(
+                "line 2 shares a line with an unreadable attribute on an inline \
+                 module and must stay in the blocking basis: {marked:?}"
+            );
+        }
+        // Lines 3 and 4 carry no assertion on purpose: nothing marks a module
+        // header either way, so a claim about them would pass whatever the
+        // visitor does. `split` earns its place on line 5 instead — it is the
+        // multi-line form, so a header span widened to the whole item would
+        // swallow the declaration inside the body and show up there.
+        if !marked.contains(&5) {
+            bail!(
+                "a declaration inside the body is out of the header's reach and \
+                 must stay marked: {marked:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// #16077: the filter removes `no_static_path` and nothing else, and only
+    /// on a declaration line. Every other combination stays in the blocking
+    /// basis, and the exclusion is reported rather than silent.
+    #[test]
+    fn declaration_seam_filter_drops_only_no_static_path_findings() -> Result<()> {
+        let source = r##"pub const SERVER_SUPPORT: bool = true;
+pub const DERIVED: bool = compute();
+const fn compute() -> bool {
+    true
+}
+"##;
+        let mut surface = ProductionSurface::from_parts("/ws", &["src/lib.rs"]);
+        surface
+            .declaration_seam_lines
+            .insert("src/lib.rs".to_string(), declaration_seam_lines(source));
+
+        let check = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 3 },
+            "findings": [
+                // Declaration line: the one finding this filter exists for.
+                { "classification": "no_static_path", "seam": { "file": "src/lib.rs", "line": 1 } },
+                // Same line, different classification — never filtered.
+                { "classification": "reachable_unrevealed", "seam": { "file": "src/lib.rs", "line": 1 } },
+                // Computed initializer: a call the graph can carry.
+                { "classification": "no_static_path", "seam": { "file": "src/lib.rs", "line": 2 } },
+                // Inside a function body.
+                { "classification": "no_static_path", "seam": { "file": "src/lib.rs", "line": 4 } }
+            ]
+        });
+        let counts = ripr_pr_summary_counts(
+            &check,
+            check.get("summary").and_then(Value::as_object),
+            &no_suppressions(),
+            None,
+            None,
+            Some(&surface),
+        );
+        if counts.no_static_path != 2 {
+            return Err(eyre!(
+                "expected 2 blocking no_static_path findings, got {}",
+                counts.no_static_path
+            ));
+        }
+        if counts.reachable_unrevealed != 1 {
+            return Err(eyre!(
+                "declaration-seam filtering changed reachable_unrevealed to {}",
+                counts.reachable_unrevealed
+            ));
+        }
+        if counts.declaration_seam_excluded != 1 {
+            return Err(eyre!(
+                "expected 1 reported declaration-seam exclusion, got {}",
+                counts.declaration_seam_excluded
+            ));
+        }
+
+        // No surface means no filtering: every finding stays blocking.
+        let unfiltered = ripr_pr_summary_counts(
+            &check,
+            check.get("summary").and_then(Value::as_object),
+            &no_suppressions(),
+            None,
+            None,
+            None,
+        );
+        if unfiltered.no_static_path != 3 || unfiltered.declaration_seam_excluded != 0 {
+            return Err(eyre!(
+                "absent production surface still filtered: no_static_path={}, excluded={}",
+                unfiltered.no_static_path,
+                unfiltered.declaration_seam_excluded
+            ));
+        }
+        Ok(())
+    }
+
+    /// #16077: the blocking count and the degraded fallback guidance must apply
+    /// the same predicate. `fallback_seam_decision` emits at most
+    /// `FALLBACK_GUIDANCE_LIMIT` entries, so a seam the count no longer blocks
+    /// on would otherwise occupy a slot and could crowd out the executable seam
+    /// that is actually keeping the gate red.
+    #[test]
+    fn fallback_guidance_shares_the_declaration_seam_filter() -> Result<()> {
+        let source = r##"pub const SERVER_SUPPORT: bool = true;
+pub const DERIVED: bool = compute();
+const fn compute() -> bool {
+    true
+}
+"##;
+        let mut surface = ProductionSurface::from_parts("/ws", &["src/lib.rs"]);
+        surface
+            .declaration_seam_lines
+            .insert("src/lib.rs".to_string(), declaration_seam_lines(source));
+
+        let filtered = json!({
+            "classification": "no_static_path",
+            "seam": { "file": "src/lib.rs", "line": 1 }
+        });
+        if !matches!(
+            fallback_seam_decision(&filtered, &no_suppressions(), None, None, Some(&surface)),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance still emitted a filtered declaration seam"));
+        }
+
+        // The executable seam the guidance exists to surface must survive.
+        let executable = json!({
+            "classification": "no_static_path",
+            "seam": { "file": "src/lib.rs", "line": 4 }
+        });
+        if matches!(
+            fallback_seam_decision(&executable, &no_suppressions(), None, None, Some(&surface)),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance dropped a seam inside a function body"));
+        }
+
+        // Same declaration line, different classification: still guidance-worthy.
+        let other_class = json!({
+            "classification": "reachable_unrevealed",
+            "seam": { "file": "src/lib.rs", "line": 1 }
+        });
+        if matches!(
+            fallback_seam_decision(&other_class, &no_suppressions(), None, None, Some(&surface)),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance dropped a non-no_static_path finding"));
+        }
+        Ok(())
+    }
+
     #[test]
     fn inline_ranges_use_head_blob_and_filter_fallback_guidance() -> Result<()> {
         let repo = tempfile::tempdir()?;
@@ -7027,6 +8602,7 @@ mod maybe_tests {
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let summary = ripr_plus_seam_summary(&seams, &suppressions, 10);
@@ -7070,6 +8646,7 @@ mod maybe_tests {
                 "reason": "Archived source is not active behavior.",
                 "paths": ["archive/**"],
             })],
+            lifecycle: Vec::new(),
         };
         // Badge supplies the canonical counts; seam summary supplies the triage inventory.
         let badge = json!({
@@ -7384,6 +8961,288 @@ reason = "UX receipt tests are proof inputs."
                 "reason": "Archived source is not active workspace behavior.",
                 "paths": ["archive/**"],
             })
+        );
+        Ok(())
+    }
+
+    fn lifecycle_row(
+        id: &str,
+        owner: &str,
+        created: &str,
+        review_after: &str,
+        expires: &str,
+    ) -> RiprSuppressionLifecycle {
+        RiprSuppressionLifecycle::from_entry(&RiprSuppression {
+            id: id.to_string(),
+            kind: "generated_or_non_production_surface".to_string(),
+            paths: vec!["archive/**".to_string()],
+            classification: Vec::new(),
+            gap_ids: Vec::new(),
+            reason: "documented exception".to_string(),
+            owner: owner.to_string(),
+            created: created.to_string(),
+            review_after: review_after.to_string(),
+            expires: expires.to_string(),
+        })
+    }
+
+    fn audit_on(rows: &[RiprSuppressionLifecycle], today: &str) -> Result<Value> {
+        let today = parse_ledger_date(today)
+            .ok_or_else(|| eyre!("test fixture date `{today}` is not `%Y-%m-%d`"))?;
+        Ok(suppression_lifecycle_audit(rows, today, "policy/ripr-suppressions.toml"))
+    }
+
+    /// The defect this work exists to fix: the four lifecycle fields the ledger
+    /// header demands parsed cleanly and were then discarded, so nothing could
+    /// ever observe an overrun.
+    #[test]
+    fn suppression_lifecycle_fields_survive_deserialization() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(
+            repo.join("policy/ripr-suppressions.toml"),
+            r#"
+schema_version = 1
+policy = "ripr-suppressions"
+
+[[suppress]]
+id = "ripr-suppress-archive"
+kind = "generated_or_non_production_surface"
+paths = ["archive/**"]
+owner = "proof-lane"
+reason = "Archived source is not active workspace behavior."
+created = "2026-05-28"
+review_after = "2026-06-28"
+expires = "2026-09-30"
+"#,
+        )?;
+
+        let rules = read_ripr_suppression_rules(repo, Path::new("policy/ripr-suppressions.toml"))?;
+
+        assert_eq!(rules.lifecycle.len(), 1);
+        let row = &rules.lifecycle[0];
+        assert_eq!(row.owner, "proof-lane");
+        assert_eq!(row.created, "2026-05-28");
+        assert_eq!(row.review_after, "2026-06-28");
+        assert_eq!(row.expires, "2026-09-30");
+        assert!(row.missing.is_empty(), "complete row reported missing {:?}", row.missing);
+        assert!(row.malformed.is_empty());
+        Ok(())
+    }
+
+    /// The receipt carries the committed dates verbatim and reads no clock, so
+    /// `ripr-plus --check` stays byte-stable across a midnight boundary.
+    #[test]
+    fn ripr_plus_lifecycle_rows_hold_no_clock_reading() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(
+            repo.join("policy/ripr-suppressions.toml"),
+            r#"
+schema_version = 1
+policy = "ripr-suppressions"
+
+[[suppress]]
+id = "ripr-suppress-archive"
+kind = "generated_or_non_production_surface"
+paths = ["archive/**"]
+owner = "proof-lane"
+reason = "Archived source is not active workspace behavior."
+created = "2026-05-28"
+review_after = "2026-06-28"
+expires = "2026-09-30"
+"#,
+        )?;
+        let rules = read_ripr_suppression_rules(repo, Path::new("policy/ripr-suppressions.toml"))?;
+        let packet = ripr_plus_receipt_packet(
+            &RiprPlusOptions {
+                root: ".".to_string(),
+                suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
+            },
+            "deadbeef",
+            &rules,
+            &json!({}),
+            ripr_plus_seam_summary(&[], &rules, 10),
+        );
+
+        assert_eq!(
+            packet["suppressions"]["lifecycle"],
+            json!([{
+                "id": "ripr-suppress-archive",
+                "kind": "generated_or_non_production_surface",
+                "owner": "proof-lane",
+                "created": "2026-05-28",
+                "review_after": "2026-06-28",
+                "expires": "2026-09-30",
+                "missing": [],
+                "malformed": [],
+            }])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_audit_reports_overrun_in_days_against_the_supplied_date() -> Result<()> {
+        let rows = vec![
+            lifecycle_row("expired-long", "repo-owner", "2026-05-07", "2026-06-07", "2026-08-07"),
+            lifecycle_row("expired-today", "proof-lane", "2026-05-07", "2026-06-07", "2026-09-19"),
+            lifecycle_row("current", "proof-lane", "2026-05-07", "2026-06-07", "2026-12-31"),
+        ];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["expired_count"], json!(2));
+        assert_eq!(audit["oldest_overrun_days"], json!(44));
+        assert_eq!(audit["current_count"], json!(1));
+        assert_eq!(audit["expired"][0]["id"], json!("expired-long"));
+        assert_eq!(audit["expired"][0]["days_past_expiry"], json!(44));
+        assert_eq!(audit["expired"][1]["days_past_expiry"], json!(1));
+        Ok(())
+    }
+
+    /// An entry expiring exactly today has not yet lapsed; one that expired
+    /// yesterday has. Pins the boundary so the report cannot drift by a day.
+    #[test]
+    fn suppression_audit_treats_the_expiry_date_itself_as_still_current() -> Result<()> {
+        let rows =
+            vec![lifecycle_row("edge", "proof-lane", "2026-01-01", "2026-06-01", "2026-09-20")];
+
+        let on_the_day = audit_on(&rows, "2026-09-20")?;
+        assert_eq!(on_the_day["expired_count"], json!(0));
+        assert_eq!(on_the_day["expiring_soon_count"], json!(1));
+        assert_eq!(on_the_day["expiring_soon"][0]["days_until_expiry"], json!(0));
+
+        let day_after = audit_on(&rows, "2026-09-21")?;
+        assert_eq!(day_after["expired_count"], json!(1));
+        assert_eq!(day_after["expired"][0]["days_past_expiry"], json!(1));
+        Ok(())
+    }
+
+    /// A missing `owner` must not swallow a readable end date. Folding
+    /// completeness and expiry into one bucket would hide exactly the overrun
+    /// this audit exists to surface.
+    #[test]
+    fn suppression_audit_reports_an_incomplete_entry_that_is_also_expired() -> Result<()> {
+        let rows = vec![lifecycle_row("no-owner", "", "2026-05-07", "2026-06-07", "2026-08-07")];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["unenforceable_count"], json!(1));
+        assert_eq!(audit["unenforceable"][0]["missing"], json!(["owner"]));
+        assert_eq!(audit["expired_count"], json!(1), "an incomplete entry still has an end date");
+        assert_eq!(audit["expired"][0]["days_past_expiry"], json!(44));
+        Ok(())
+    }
+
+    /// An entry with no `expires` at all is permanent. It is neither expired
+    /// nor current, and reporting it as current would be the ledger's original
+    /// lie restated.
+    #[test]
+    fn suppression_audit_separates_entries_with_no_expiry_from_current_ones() -> Result<()> {
+        let rows = vec![
+            lifecycle_row("permanent", "proof-lane", "", "", ""),
+            lifecycle_row("malformed", "proof-lane", "2026-05-07", "2026-06-07", "not-a-date"),
+            lifecycle_row("current", "proof-lane", "2026-05-07", "2026-06-07", "2026-12-31"),
+        ];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["no_expiry_count"], json!(2));
+        assert_eq!(audit["current_count"], json!(1));
+        assert_eq!(audit["expired_count"], json!(0));
+        assert_eq!(audit["unenforceable"][1]["malformed"], json!(["expires"]));
+        assert_eq!(
+            audit["review_due_count"],
+            json!(2),
+            "an unreadable `expires` must not also swallow the entry's review date"
+        );
+        Ok(())
+    }
+
+    /// The two dates are independent facts. An entry with no readable `expires`
+    /// can still be long past its own `review_after`, and reporting only the
+    /// missing end date would hide that — the defect a `continue` in the
+    /// expiry branch introduced once already.
+    #[test]
+    fn an_entry_with_no_expiry_still_reports_its_overdue_review_date() -> Result<()> {
+        let rows = vec![
+            lifecycle_row("no-end-date", "proof-lane", "2020-01-01", "2020-01-01", ""),
+            lifecycle_row("unparseable", "proof-lane", "2020-01-01", "2020-01-01", "someday"),
+        ];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["no_expiry_count"], json!(2));
+        assert_eq!(audit["review_due_count"], json!(2));
+        assert_eq!(audit["review_due"][0]["id"], json!("no-end-date"));
+        assert_eq!(audit["review_due"][0]["days_past_review"], json!(2454));
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_audit_reports_review_due_separately_from_expiry() -> Result<()> {
+        let rows =
+            vec![lifecycle_row("due", "proof-lane", "2026-05-07", "2026-09-13", "2026-12-31")];
+
+        let audit = audit_on(&rows, "2026-09-20")?;
+
+        assert_eq!(audit["expired_count"], json!(0));
+        assert_eq!(audit["review_due_count"], json!(1));
+        assert_eq!(audit["review_due"][0]["days_past_review"], json!(7));
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_audit_markdown_names_the_expired_entry_and_its_age() -> Result<()> {
+        let rows = vec![lifecycle_row(
+            "ripr-suppress-generated-status-docs",
+            "repo-owner",
+            "2026-05-07",
+            "2026-06-07",
+            "2026-08-07",
+        )];
+
+        let markdown = render_suppression_lifecycle_markdown(&audit_on(&rows, "2026-09-20")?);
+
+        assert!(markdown.contains("1 suppression(s) are past their own `expires` date"));
+        assert!(markdown.contains("the oldest by 44 days"));
+        assert!(markdown.contains("ripr-suppress-generated-status-docs"));
+        assert!(markdown.contains("repo-owner"));
+        assert!(
+            markdown.contains("advisory"),
+            "the report must say plainly that it changes no gate verdict"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_audit_markdown_says_so_when_nothing_has_lapsed() -> Result<()> {
+        let rows =
+            vec![lifecycle_row("current", "proof-lane", "2026-05-07", "2026-12-01", "2026-12-31")];
+
+        let markdown = render_suppression_lifecycle_markdown(&audit_on(&rows, "2026-09-20")?);
+
+        assert!(markdown.contains("No suppression is past its own `expires` date."));
+        assert!(!markdown.contains("| days past |"));
+        Ok(())
+    }
+
+    /// The live ledger is the subject of the change. This pins that the real
+    /// file parses under the widened schema and that every entry now yields a
+    /// lifecycle row, without pinning today's overrun count.
+    #[test]
+    fn committed_ledger_yields_one_lifecycle_row_per_entry() -> Result<()> {
+        let repo = repo_root()?;
+        let raw = fs::read_to_string(repo.join("policy/ripr-suppressions.toml"))?;
+        let declared = raw.matches("[[suppress]]").count();
+        let rules = read_ripr_suppression_rules(&repo, Path::new("policy/ripr-suppressions.toml"))?;
+
+        assert_eq!(rules.lifecycle.len(), declared);
+        assert!(
+            rules.lifecycle.iter().any(|row| !row.expires.is_empty()),
+            "the ledger must carry at least one readable expires date"
         );
         Ok(())
     }
@@ -7704,6 +9563,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -7744,6 +9604,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let finding = json!({
             "classification": "reachable_unrevealed",
@@ -7765,6 +9626,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let finding = json!({
             "classification": "weakly_exposed",
@@ -7789,6 +9651,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: vec![vec![listed.to_string()]],
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let listed_finding = json!({
             "id": listed,
@@ -7830,6 +9693,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: vec![vec![listed.to_string()]],
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let listed_seam = json!({
             "id": listed,
@@ -7973,6 +9837,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -8039,6 +9904,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -8067,6 +9933,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         }
     }
 
@@ -8096,6 +9963,140 @@ paths = ["archive/["]
         )
     }
 
+    /// #6260 residual, from the `raw-check.json` of run 34732444951 on #14958: ten
+    /// `no_static_path` probes carrying the text of a function the change deleted
+    /// (`if let Some(folder_uri) = folder_uri {` and friends), all anchored at
+    /// `inc_context/mod.rs:357`, a doc-comment line that exists at head. The
+    /// line-count check alone counted them; the guidance pass named no seam at
+    /// 357. Head-side probes on the same head keep their own line's text as the
+    /// expression and must stay counted, as must anything the anchor check cannot
+    /// decide.
+    #[test]
+    fn deleted_line_findings_anchored_inside_head_extents_do_not_count() -> Result<()> {
+        let path = "crates/perl-lsp-rs/src/runtime/lifecycle/inc_context/mod.rs";
+        let head = [
+            "impl LspServer {",
+            "    pub(crate) fn assemble(&self) -> Option<Context> {",
+            "        let mut folders = self.workspace_folders.lock();",
+            "        Some(Context { root, folder_uri })",
+            "    }",
+            "",
+            "    /// Read the startup roots and snapshot from the already-locked stored owner.",
+            "    /// Never reselect the owner after capturing the other context settings.",
+            "    fn system_inc_for_context(",
+            "        config: &mut WorkspaceConfig,",
+            "        access: SystemIncAccess,",
+            "    ) -> (Vec<PathBuf>, SystemIncProbeSnapshot) {",
+            "        config.peek_system_inc()",
+            "    }",
+            "}",
+        ];
+        let probe = |line: u64, expression: Option<&str>| {
+            let mut probe = json!({ "path": path, "line": line });
+            if let Some(expression) = expression {
+                probe["expression"] = json!(expression);
+            }
+            json!({ "classification": "no_static_path", "kind": "call_deletion", "probe": probe })
+        };
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 7 },
+            "findings": [
+                // Deleted code anchored on the doc comment at 7: nothing near it.
+                probe(7, Some("if let Some(folder_uri) = folder_uri {")),
+                probe(7, Some("return folder.effective_workspace_config.get_system_inc().to_vec();")),
+                // Deleted code whose text survives elsewhere in the file (line 3),
+                // but not within the anchor window of the reported line.
+                probe(7, Some("let mut folders = self.workspace_folders.lock();")),
+                // Head-side probe on its own line: counted.
+                probe(13, Some("config.peek_system_inc()")),
+                // Head-side probe attributed a couple of lines off a multi-line
+                // statement: still anchored within the window, counted.
+                probe(9, Some("access: SystemIncAccess,")),
+                // No expression: the anchor check cannot decide, counted.
+                probe(7, None),
+                // Expression text longer than the head line it wraps: counted.
+                probe(4, Some("Some(Context { root, folder_uri })\n    }")),
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(path.to_string(), head.len())]),
+            removed: BTreeSet::new(),
+            head_lines: BTreeMap::from([(
+                path.to_string(),
+                head.iter().map(|line| (*line).to_string()).collect(),
+            )]),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(4)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(4)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(3)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(0)));
+
+        // Without head text the anchor check is inert and the old behavior holds:
+        // every in-extent probe counts.
+        let blind = HeadLineExtents { head_lines: BTreeMap::new(), ..extents };
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &blind);
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(7)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// A deleted multi-line expression whose only near-head match is a lone
+    /// delimiter: the substantive line is gone from head, but an unrelated
+    /// `}` within the anchor window used to keep the finding counted,
+    /// recreating an unsatisfiable gate. Low-information lines never anchor on
+    /// their own. An expression of nothing but delimiters stays counted: with
+    /// no substantive text the check cannot decide, and the filter never takes
+    /// the fail-open direction.
+    #[test]
+    fn deleted_expression_anchored_only_by_delimiter_does_not_count() -> Result<()> {
+        let path = "src/deleted.rs";
+        let head = [
+            "fn keep() {",
+            "    let retained = 1;",
+            "}",
+            "",
+            "fn other() {",
+            "    let x = 2;",
+            "}",
+        ];
+        let probe = |line: u64, expression: Option<&str>| {
+            let mut probe = json!({ "path": path, "line": line });
+            if let Some(expression) = expression {
+                probe["expression"] = json!(expression);
+            }
+            json!({ "classification": "no_static_path", "kind": "call_deletion", "probe": probe })
+        };
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 3 },
+            "findings": [
+                // Substantive line gone; only the trailing `}` matches head
+                // line 3 or 7 within the window: absent, not counted.
+                probe(5, Some("let removed = compute();\n}")),
+                // Substantive line survives at head line 6: anchored, counted.
+                probe(5, Some("let x = 2;\n}")),
+                // Nothing but delimiters: undecidable, stays counted.
+                probe(5, Some("}\n});")),
+            ]
+        });
+        let extents = HeadLineExtents {
+            present: BTreeMap::from([(path.to_string(), head.len())]),
+            removed: BTreeSet::new(),
+            head_lines: BTreeMap::from([(
+                path.to_string(),
+                head.iter().map(|line| (*line).to_string()).collect(),
+            )]),
+        };
+
+        let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(1)));
+        Ok(())
+    }
+
     /// #6260 reproduction, from the `raw-check.json` of run 31273961774 on #6161:
     /// two `no_static_path` probes at `check_version_sync.rs:29`, a line the change
     /// deletes — the file is 13 lines long at head. No test can cover a line that no
@@ -8123,6 +10124,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -8160,6 +10162,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -8187,6 +10190,7 @@ paths = ["archive/["]
         let extents = HeadLineExtents {
             present: BTreeMap::new(),
             removed: BTreeSet::from(["crates/perl-lsp-rs/src/removed.rs".to_string()]),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -8220,6 +10224,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &no_suppressions(), &extents);
@@ -8250,10 +10255,12 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let extents = HeadLineExtents {
             present: BTreeMap::from([("archive/old.rs".to_string(), 4usize)]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         let packet = packet_with_extents(&check_value, &suppressions, &extents);
@@ -8411,6 +10418,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet_on_surface(
@@ -8821,6 +10829,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let production_surface = ProductionSurface::from_parts("/ws", &[]);
         let payload = json!({
@@ -8900,6 +10909,7 @@ paths = ["archive/["]
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
         let first_findings = vec![raw_check_finding(
             "probe:first",
@@ -8980,6 +10990,7 @@ paths = ["archive/["]
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -11191,6 +13202,108 @@ esac
         Ok(())
     }
 
+    /// Helper child that writes `byte_count` ASCII `x` bytes to stderr and then
+    /// a small `ok` payload to stdout — the shape that deadlocked the old
+    /// piped `run_output_with_timeout` transport.
+    fn write_noisy_stderr_script(dir: &Path, byte_count: usize) -> Result<PathBuf> {
+        let source = dir.join("noisy_stderr.rs");
+        fs::write(
+            &source,
+            format!(
+                "use std::io::Write;\n\
+                 fn main() {{\n\
+                     let noise = vec![b'x'; {byte_count}];\n\
+                     if let Err(error) = std::io::stderr().write_all(&noise) {{\n\
+                         eprintln!(\"{{error}}\");\n\
+                         std::process::exit(1);\n\
+                     }}\n\
+                     if let Err(error) = std::io::stdout().write_all(b\"ok\\n\") {{\n\
+                         eprintln!(\"{{error}}\");\n\
+                         std::process::exit(1);\n\
+                     }}\n\
+                 }}\n"
+            ),
+        )?;
+        #[cfg(windows)]
+        let binary = dir.join("noisy_stderr.exe");
+        #[cfg(not(windows))]
+        let binary = dir.join("noisy_stderr");
+        let output = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .context("failed to compile noisy-stderr test helper")?;
+        if !output.status.success() {
+            bail!(
+                "failed to compile noisy-stderr test helper:\n{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(binary)
+    }
+
+    #[test]
+    fn run_output_with_timeout_reads_large_stdout_from_file() -> Result<()> {
+        // The timeout variant must use the same file transport as run_output:
+        // a piped child that out-writes the pipe buffer deadlocks against a
+        // poll loop that never drains it.
+        const TARGET_BYTES: usize = 2 * 1024 * 1024;
+
+        let tmp = tempfile::tempdir()?;
+        let script = write_large_output_script(tmp.path(), TARGET_BYTES)?;
+
+        let result =
+            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_secs(120))?;
+
+        assert_eq!(
+            result.len(),
+            TARGET_BYTES,
+            "Expected exactly {TARGET_BYTES} bytes, captured {}",
+            result.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_output_with_timeout_survives_large_stderr() -> Result<()> {
+        // Regression guard for the review-comments lane hang: the child writes
+        // well past the pipe buffer on stderr while producing a small stdout
+        // result. With pipes this deadlocked until the timeout or an external
+        // SIGTERM; with file transport it returns immediately.
+        let tmp = tempfile::tempdir()?;
+        let script = write_noisy_stderr_script(tmp.path(), 4 * MAX_RIPR_STDERR_BYTES)?;
+
+        let result =
+            run_output_with_timeout(&script.display().to_string(), &[], Duration::from_secs(120))?;
+
+        assert_eq!(result.trim(), "ok", "stdout result must be captured verbatim");
+        Ok(())
+    }
+
+    #[test]
+    fn run_output_with_timeout_reports_failure_status() -> Result<()> {
+        #[cfg(not(windows))]
+        {
+            let tmp = tempfile::tempdir()?;
+            let fail = tmp.path().join("fail.sh");
+            fs::write(&fail, "#!/bin/sh\nprintf 'detailed error' >&2\nexit 2\n")?;
+            use std::os::unix::fs::PermissionsExt;
+            {
+                let mut p = fs::metadata(&fail)?.permissions();
+                p.set_mode(0o755);
+                fs::set_permissions(&fail, p)?;
+            }
+            let err =
+                run_output_with_timeout(&fail.display().to_string(), &[], Duration::from_secs(60))
+                    .unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("detailed error"), "stderr must appear in error: {msg}");
+            assert!(msg.contains("status"), "exit status must appear in error: {msg}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn run_git_reports_failure_status() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -11638,8 +13751,9 @@ esac
             },
             "findings": [
                 {
-                    // Unrecognized classification — not in any canonical match arm.
-                    "classification": "static_unknown",
+                    // Genuinely unknown classification — not in any canonical
+                    // match arm or known non-severe set.
+                    "classification": "future_unknown",
                     "kind": "call_presence",
                     "seam": {
                         "file": "crates/perl-dap/src/debug_adapter/variables.rs",
@@ -11647,8 +13761,8 @@ esac
                     }
                 },
                 {
-                    // Also unrecognized, path matches suppression.
-                    "classification": "infection_unknown",
+                    // Also genuinely unknown, path matches suppression.
+                    "classification": "future_unknown",
                     "kind": "call_presence",
                     "seam": {
                         "file": "crates/perl-dap/src/debug_adapter/variables.rs",
@@ -11665,6 +13779,7 @@ esac
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -11718,7 +13833,7 @@ esac
             },
             "findings": [
                 {
-                    "classification": "static_unknown",
+                    "classification": "future_unknown",
                     "kind": "call_presence",
                     "seam": {
                         "file": "crates/perl-lsp-rs/src/some_new_file.rs",
@@ -11735,6 +13850,7 @@ esac
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -11753,6 +13869,54 @@ esac
             Some(&json!(1)),
             "unsuppressed unrecognized-classification finding must produce severe_gaps > 0"
         );
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_known_non_severe_suppression_does_not_erase_severe_gaps() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let check_value = json!({
+            "summary": {
+                "weakly_exposed": 0,
+                "reachable_unrevealed": 1,
+                "no_static_path": 0
+            },
+            "findings": [{
+                "classification": "exposed",
+                "kind": "call_presence",
+                "seam": {
+                    "file": "crates/perl-dap/src/debug_adapter/variables.rs",
+                    "line": 584
+                }
+            }]
+        });
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
+            classification_patterns: vec![Vec::new()],
+            gap_id_sets: Vec::new(),
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
+        };
+
+        let packet = pr_evidence_packet(
+            &options,
+            &["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+        );
+
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(1)));
         assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
         Ok(())
     }
@@ -11811,6 +13975,7 @@ esac
             invalid_patterns: Vec::new(),
             gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
+            lifecycle: Vec::new(),
         };
 
         let packet = pr_evidence_packet(
@@ -12003,6 +14168,7 @@ esac
                 13usize,
             )]),
             removed: BTreeSet::new(),
+            head_lines: BTreeMap::new(),
         };
         assert_streaming_receipt_matches_dom(payload, Some(&extents), &no_suppressions())
     }

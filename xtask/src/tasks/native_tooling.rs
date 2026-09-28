@@ -772,9 +772,10 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
     let executable_diagnostics = blank_comments(&diagnostics_source);
     let production_diagnostics = production_prefix(&executable_diagnostics);
 
-    let native_service_count = production_diagnostics
-        .matches("NativeCriticService::analyze(NativeCriticSubject::accepted(")
-        .count();
+    let native_service_count =
+        production_diagnostics.matches("NativeCriticService::analyze(").count();
+    let accepted_subject_count =
+        production_diagnostics.matches("NativeCriticSubject::accepted(").count();
     let accepted_capture_count = production_diagnostics.matches("capture_accepted_critic(").count();
     let finalize_critic_count = production_diagnostics.matches("finalize_pending_critic(").count();
 
@@ -823,10 +824,11 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
         DefaultCheck {
             name: "native_critic_routes_through_accepted_service",
             passed: native_service_count >= 1
+                && accepted_subject_count >= 1
                 && accepted_capture_count >= 1
                 && finalize_critic_count >= 1,
             detail: format!(
-                "native critic service entry={native_service_count} accepted-capture={accepted_capture_count} finalize={finalize_critic_count} in diagnostics runtime production code"
+                "native critic service entry={native_service_count} accepted-subject={accepted_subject_count} accepted-capture={accepted_capture_count} finalize={finalize_critic_count} in diagnostics runtime production code"
             ),
         },
         DefaultCheck {
@@ -2410,7 +2412,8 @@ match self.mode {
 fn push_diagnostics(&self, uri: &str) {
     let accepted_critic = self.capture_accepted_critic(uri);
     let pending = self.evaluate_native_critic(ast, text, uri, identity, accepted_critic.clone(), &diagnostics);
-    let run = NativeCriticService::analyze(NativeCriticSubject::accepted(subject, identity, ast, text, state, observations, gate, current));
+    let subject = NativeCriticSubject::accepted(subject, identity, ast, text, state, observations, gate, current);
+    let run = NativeCriticService::analyze(subject);
     if self.finalize_pending_critic(&mut diagnostics, pending) {
     }
 }

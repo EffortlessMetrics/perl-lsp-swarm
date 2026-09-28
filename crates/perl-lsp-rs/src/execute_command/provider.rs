@@ -1536,30 +1536,18 @@ impl ExecuteCommandProvider {
         }
     }
 
+    /// Whether an external tool is available to this server.
+    ///
+    /// Delegates to the module's single availability authority
+    /// ([`command_exists`]) so the test-runner gate and the external-critic
+    /// gate cannot answer the same question under different admission rules.
+    ///
+    /// Previously this spawned `which` as a child process on non-Windows while
+    /// the free function used the `which` crate directly; the two disagreed
+    /// about whether a current-directory candidate counts, and neither matched
+    /// what `run_test_command` will actually launch.
     pub(crate) fn command_exists(&self, command: &str) -> bool {
-        // On Windows, spawning `Command::new("where")` is itself a bare-name call
-        // subject to the same CWD-first CreateProcess RCE (#3028).  Use the
-        // hardened PATH-only resolver instead — it already answers "is this tool
-        // findable on an absolute PATH directory" without touching the CWD.
-        //
-        // On non-Windows, the resolver is a pass-through (returns Ok unchanged),
-        // so we fall back to the `which` crate for the actual PATH search there.
-        #[cfg(all(windows, not(target_arch = "wasm32")))]
-        {
-            perl_subprocess_runtime::resolve_program(command).is_ok()
-        }
-        #[cfg(all(not(windows), not(target_arch = "wasm32")))]
-        {
-            let mut cmd = Command::new("which");
-            cmd.arg(command);
-            crate::util::run_command_with_timeout(cmd, 2)
-                .map(|output| output.status.success())
-                .unwrap_or(false)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            false
-        }
+        command_exists(command)
     }
 }
 
@@ -1829,20 +1817,19 @@ pub(crate) fn select_test_runner(
     }
 }
 
-/// Environment inputs that can change a `which` lookup for a command.
+/// Environment inputs that can change an availability probe for a command.
 ///
 /// `path_present` distinguishes a missing `PATH` from an explicitly empty one:
-/// the probe delegates a missing `PATH` to `which::which` but fails a present
-/// (possibly empty) `PATH` closed once every entry is stripped, so the two
-/// states must never share an entry. `cwd` is the normalized working
-/// directory because `which` resolves relative or separator-containing command
-/// text against it; a `cwd` change re-probes instead of serving the old
-/// directory's answer.
-/// On Windows the `which` crate resolves extension-less names through
-/// `PATHEXT`, so it participates in the key there; on other platforms only the
-/// `PATH` value matters.
-/// The command text remains caller-provided. On Windows, `which` resolves
-/// executable names case-insensitively, so differently cased aliases can occupy
+/// the strict probe refuses an absent or empty `PATH`, but the states remain
+/// distinct cache keys so an environment change re-probes rather than serving
+/// another environment's answer. `cwd` is the normalized working directory;
+/// the probe never searches it, but a `cwd` change re-probes instead of
+/// serving the old directory's answer — the safe direction.
+/// On Windows the resolver applies `PATHEXT` executable-extension rules, so
+/// it participates in the key there; on other platforms only the `PATH` value
+/// matters.
+/// The command text remains caller-provided. On Windows, executable names
+/// resolve case-insensitively, so differently cased aliases can occupy
 /// separate bounded entries; they still receive the same probe semantics.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CommandExistsCacheKey {
@@ -1939,7 +1926,8 @@ fn filesystem_probe_fingerprint(path: &Path) -> FilesystemProbeFingerprint {
     }
 }
 
-/// Build the candidate paths that `which` can inspect for this key.
+/// Build the candidate paths that the availability probe can inspect for this
+/// key.
 ///
 /// Directory fingerprints cover additions/removals even when a candidate is
 /// currently absent. Candidate fingerprints additionally catch replacement,
@@ -2067,64 +2055,47 @@ fn command_exists_via_key(probe: impl Fn(&str) -> bool, key: CommandExistsCacheK
     found
 }
 
-/// Check whether a command exists in the current PATH.
+/// Check whether an external tool is available to this server.
 ///
-/// Empty PATH entries are stripped before delegating to the `which` crate:
-/// `which` 8.x emulates the Unix `which` command, which interprets an empty
-/// entry as the current directory, so a binary planted in the CWD would
-/// otherwise satisfy an availability probe even with an effectively empty
-/// PATH (the CWD-first admission seam, cf. #3028). When nothing searchable
-/// remains, the lookup fails closed.
+/// This is the single bare-name availability authority for the live runtime:
+/// the external-critic gate in this module, `LspServer::detect_tool` (and the
+/// perltidy/perlcritic capability advertisement built on it), and the
+/// perlcritic diagnostics gates all answer through it.
+///
+/// Availability means "found in an absolute `PATH` directory, excluding the
+/// current directory". The current directory is routinely the opened
+/// workspace, so a file planted there must not be able to satisfy a capability
+/// or diagnostics gate (#2764 / #3028). `perl_subprocess_runtime` owns that
+/// probe policy and applies it at launch on Windows too. Unix launch retains
+/// its existing PATH search behavior; this probe does not harden that path.
+///
+/// This is deliberately stricter than `execvp`, which honors relative and
+/// empty `PATH` components: a tool reachable only through such a component is
+/// reported absent and callers take their tool-unavailable branch. It
+/// therefore subsumes the earlier empty-entry stripping that filtered only
+/// `""` before delegating to `which`: an empty component is not absolute, so
+/// it is refused by the same rule that refuses `.` and `tools`, and no
+/// `which` lookup remains to re-admit the current directory.
 ///
 /// Memoized per process after the first probe: the initialize-time
 /// `detect_tool("perltidy")` / `detect_tool("perlcritic")` calls and every
 /// later diagnostics/executeCommand availability guard reuse the cached answer
-/// instead of re-scanning PATH on each call. The cache key includes the
-/// environment inputs that can change the answer (PATH presence and value,
-/// working directory, plus PATHEXT on Windows), so an environment change
-/// re-probes; entries additionally re-probe when their filesystem fingerprint
-/// changes. The map itself is hard-bounded
-/// ([`MAX_COMMAND_EXISTS_CACHE_ENTRIES`]). No LSP
-/// configuration setting can change external-tool presence, so no
-/// config-change invalidation signal is required. Probe order and results are
-/// unchanged — only repetition is removed.
+/// instead of re-probing on each call. The cache key includes the environment
+/// inputs that can change the answer (PATH presence and value, working
+/// directory, plus PATHEXT on Windows), so an environment change re-probes;
+/// entries additionally re-probe when their filesystem fingerprint changes.
+/// The map itself is hard-bounded ([`MAX_COMMAND_EXISTS_CACHE_ENTRIES`]). No
+/// LSP configuration setting can change external-tool presence, so no
+/// config-change invalidation signal is required.
 pub fn command_exists(command: &str) -> bool {
-    command_exists_via(
-        |cmd| {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            command_exists_probe(cmd, std::env::var_os("PATH").as_deref(), &cwd)
-        },
-        command,
-    )
-}
-
-/// The `which`-backed probe behind [`command_exists`], factored to take its
-/// environment inputs explicitly so each error variant is unit-testable
-/// without mutating process-global state:
-///
-/// - missing `PATH` delegates to `which::which` (ambient lookup);
-/// - present `PATH` is stripped of empty entries first: `which` 8.x emulates
-///   the Unix `which` command, which interprets an empty entry as the current
-///   directory, so a binary planted in the CWD would otherwise satisfy an
-///   availability probe even with an effectively empty PATH (the CWD-first
-///   admission seam, cf. #3028). When nothing searchable remains, the lookup
-///   fails closed;
-/// - a relative or separator-containing command is resolved against `cwd`,
-///   matching `which`'s own interpretation.
-fn command_exists_probe(cmd: &str, path: Option<&OsStr>, cwd: &Path) -> bool {
-    match path {
-        None => which::which(cmd).is_ok(),
-        Some(path) => {
-            let dirs: Vec<std::path::PathBuf> =
-                std::env::split_paths(path).filter(|dir| !dir.as_os_str().is_empty()).collect();
-            if dirs.is_empty() {
-                return false;
-            }
-            match std::env::join_paths(dirs.iter()) {
-                Ok(filtered) => which::which_in(cmd, Some(&filtered), cwd).is_ok(),
-                Err(_) => which::which(cmd).is_ok(),
-            }
-        }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        command_exists_via(perl_subprocess_runtime::command_exists, command)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = command;
+        false
     }
 }
 

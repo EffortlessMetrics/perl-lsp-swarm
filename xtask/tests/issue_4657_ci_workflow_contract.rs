@@ -364,10 +364,12 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
         .ok_or("ci.yml no longer defines a `check-all-targets` job")?;
     assert!(
         job.contains("name: Compile All Targets (bit-rot guard)")
-            && job.contains("\n    timeout-minutes: 25\n"),
-        "job `check-all-targets.timeout-minutes` drifted from 25 (the wrapper \
-         watchdog raised from 15 for the grown bit-rot guard); name stays \
-         pinned because branch protection depends on it. Extracted job:\n{job}"
+            && job.contains("\n    timeout-minutes: 35\n"),
+        "job `check-all-targets.timeout-minutes` drifted from 35 (raised \
+         from 25 after job 105961871648 cancelled in a contract step with \
+         the compile itself green in 13m15s; raised from 15 before that for \
+         the grown bit-rot guard); name stays pinned because branch \
+         protection depends on it. Extracted job:\n{job}"
     );
     // The required job does not reach this recipe through the gate runner; it
     // has an independent `run:` step (#12863 P2). Pin that invocation too, or

@@ -1586,6 +1586,16 @@
       "exit_condition": "Inventory row for a test-only target."
     },
     {
+      "name": "incremental_state_read_only_authority",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#13774",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
       "name": "incremental_statistical_validation_test",
       "kind": "test",
       "classification": "product_composition",

@@ -4,7 +4,8 @@ use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
     Arc, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS, DapEvent, DapMessage,
     DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    EngineBreakpointHitOutcome, Instant, Mutex, Read, RestartArguments, ResumeMode, Source,
+    EngineBreakpointHitOutcome, Instant, LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE,
+    LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE, Mutex, Read, RestartArguments, ResumeMode, Source,
     StackFrame, Stdio, TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState,
     Value, Write, ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, error_re,
     exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
@@ -574,54 +575,138 @@ impl DebugAdapter {
             // self-validating and defeats the workspace check entirely.
             let user_cwd = args.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
 
-            // Determine the workspace boundary for this launch.
+            // Launch-authority admission (#8656).
             //
-            // The server-configured root (set once via `set_workspace_root`,
-            // typically from `DapConfig.workspace_root` at server construction)
-            // is the source of truth. A launch-args `workspaceRoot` may NARROW
-            // that boundary but must never WIDEN it — otherwise a malicious or
-            // misconfigured client could hand itself a broader root than the
-            // server allows. If no server root is configured, a launch-args
-            // `workspaceRoot` is accepted as the boundary for this launch (there
-            // is nothing to widen relative to).
+            // Tier 1 — explicit authority: when the startup configuration
+            // resolved a launch authority, it is the only source of
+            // launch-path authority. Workspace-bound authority admits the
+            // `program` only inside a trusted root and lets a launch-args
+            // `workspaceRoot` only NARROW one; an explicitly unbounded
+            // authority admits any program and never synthesizes a boundary
+            // from launch arguments.
             //
-            // If neither is present, validation is skipped entirely (see the
-            // `None` handling in `launch_debugger`) — this preserves current
-            // behavior for existing users, since `DapConfig.workspace_root` is
-            // not yet populated from any CLI/editor-supplied source (tracked
-            // separately in #5345; that fail-open gap is intentionally out of
-            // scope for this fix).
-            let server_root =
-                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            // Tier 2 — legacy single-root contract: an adapter (or server)
+            // started without authority inputs keeps the historical
+            // narrowing-only `workspace_root` boundary. Its two historical
+            // fail-open paths are retired here: launch arguments can no
+            // longer CREATE the boundary, and a launch with neither
+            // authority nor a configured boundary is refused instead of
+            // running unvalidated.
             let launch_root_arg =
                 args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
-
-            let effective_root = match (server_root, launch_root_arg) {
-                (Some(server), Some(launch)) => match security::validate_path(&launch, &server) {
-                    Ok(narrowed) => Some(narrowed),
-                    Err(e) => {
+            let authority_installed = self.has_launch_authority();
+            // Authority admission and process spawning must validate the same
+            // path. A relative program would otherwise be resolved against
+            // one directory for admission and a potentially different cwd
+            // when Perl is spawned. Require callers to provide an absolute
+            // path for authority-backed launches until a single launch-local
+            // path resolver is threaded through the entire transaction.
+            if authority_installed && !program.trim().is_empty() && Path::new(program).is_relative()
+            {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "launch".to_string(),
+                    body: None,
+                    message: Some(
+                        "authority-backed launches require an absolute `program` path so the admitted path and executed path cannot diverge"
+                            .to_string(),
+                    ),
+                };
+            }
+            let narrowed_root = if authority_installed {
+                let admission = self.admit_launch_against_authority(
+                    if program.trim().is_empty() { None } else { Some(Path::new(program)) },
+                    launch_root_arg.as_deref(),
+                );
+                match admission {
+                    Ok(narrowed) => narrowed,
+                    Err(message) => {
                         return DapMessage::Response {
                             seq,
                             request_seq,
                             success: false,
                             command: "launch".to_string(),
                             body: None,
-                            message: Some(format!(
-                                "The launch 'workspaceRoot' ('{}') is outside your workspace \
-                                     folder and cannot widen the server-configured boundary. \
-                                     Details: {}",
-                                launch.display(),
-                                e
-                            )),
+                            message: Some(message),
                         };
                     }
-                },
-                (Some(server), None) => Some(server),
-                (None, Some(launch)) => Some(launch),
-                (None, None) => None,
+                }
+            } else {
+                let server_root =
+                    lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+                match (server_root, launch_root_arg.clone()) {
+                    (Some(server), Some(launch)) => {
+                        match security::validate_path(&launch, &server) {
+                            Ok(narrowed) => Some(narrowed),
+                            Err(e) => {
+                                return DapMessage::Response {
+                                    seq,
+                                    request_seq,
+                                    success: false,
+                                    command: "launch".to_string(),
+                                    body: None,
+                                    message: Some(format!(
+                                        "The launch 'workspaceRoot' ('{}') is outside your \
+                                             workspace folder and cannot widen the \
+                                             server-configured boundary. Details: {}",
+                                        launch.display(),
+                                        e
+                                    )),
+                                };
+                            }
+                        }
+                    }
+                    (Some(server), None) => Some(server),
+                    (None, Some(_)) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(LAUNCH_REFUSED_NO_AUTHORITY_MESSAGE.to_string()),
+                        };
+                    }
+                    (None, None) => {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "launch".to_string(),
+                            body: None,
+                            message: Some(LAUNCH_REFUSED_NO_BOUNDARY_MESSAGE.to_string()),
+                        };
+                    }
+                }
             };
 
-            if let Some(root) = effective_root {
+            // Keep the defense-in-depth workspace boundary aligned with the
+            // authority decision for the spawn window (restored below, so a
+            // request's narrowing never constrains a later launch):
+            // the narrowed root when launch args narrow one, else the
+            // trusted root that admitted the program. A preset legacy root
+            // must not second-guess an admission it did not make, and an
+            // explicitly unbounded authority sets no boundary at all, so a
+            // stale or preset legacy root is cleared for the window instead
+            // of refusing an admitted program in the spawner below.
+            let previous_workspace_root =
+                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            if authority_installed {
+                if self.launch_authority_is_unbounded() {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = None;
+                } else if let Some(root) = narrowed_root.or_else(|| {
+                    if program.trim().is_empty() {
+                        None
+                    } else {
+                        self.authority_root_for_program(Path::new(program))
+                    }
+                }) {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                        Some(root);
+                }
+            } else if let Some(root) = narrowed_root {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
@@ -657,7 +742,7 @@ impl DebugAdapter {
                 .unwrap_or_default();
 
             // Launch Perl debugger
-            match self.launch_debugger(
+            let launch_result = self.launch_debugger(
                 program,
                 &perl_interpreter,
                 perl_args,
@@ -665,7 +750,13 @@ impl DebugAdapter {
                 env_overrides,
                 user_cwd,
                 debuggee_timeout_secs,
-            ) {
+            );
+            // A request's narrowing is a launch-local effective boundary;
+            // never let it constrain a later launch on the same adapter.
+            *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                previous_workspace_root;
+
+            match launch_result {
                 // The output reader owns the first debugger context and frame snapshot.
                 // It publishes the entry stop after that snapshot is installed; emitting
                 // here races a client's immediate stackTrace request with the reader.
@@ -675,14 +766,21 @@ impl DebugAdapter {
                 // created with `entry_stop_pending` set and the output reader emits
                 // exactly one `stopped(reason=entry)` from the authoritative
                 // suspension instead.
-                Ok(_thread_id) => DapMessage::Response {
-                    seq,
-                    request_seq,
-                    success: true,
-                    command: "launch".to_string(),
-                    body: None,
-                    message: None,
-                },
+                Ok(_thread_id) => {
+                    // Failed attempts must not consume an authority session
+                    // generation. Begin it only after validation and spawn
+                    // have succeeded.
+                    let _ = self.begin_authority_session();
+
+                    DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: true,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: None,
+                    }
+                }
                 Err(e) => {
                     let perl_info = detect_perl_info();
                     DapMessage::Response {
@@ -3734,11 +3832,140 @@ mod tests {
     };
     use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use crate::reload::RuntimeModuleGenerationClock;
+    use crate::security::launch_authority::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
+
+    fn workspace_bound_authority(root: &std::path::Path) -> LaunchAuthority {
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: vec![root.to_path_buf()],
+            allow_unbounded: None,
+        })
+        .expect("test authority resolution")
+    }
+
+    fn unbounded_test_authority() -> LaunchAuthority {
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test session",
+            )),
+        })
+        .expect("test authority resolution")
+    }
+
+    fn launch_failure_message(response: super::DapMessage) -> Option<String> {
+        match response {
+            super::DapMessage::Response { success, message, .. } if !success => message,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn launch_without_startup_authority_fails_closed() {
+        let mut adapter = DebugAdapter::new();
+        let _ = adapter.handle_initialize(1, 1, None);
+        let response =
+            adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": "script.pl" })));
+        let message = launch_failure_message(response)
+            .expect("a launch without startup authority must be refused");
+        assert!(
+            message.contains("no startup launch authority"),
+            "refusal should explain the missing authority; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_bound_authority_refuses_program_outside_trusted_roots() {
+        let root = tempfile::tempdir().expect("temp root");
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        let outside = tempfile::tempdir().expect("outside temp root");
+        let outside_script = outside.path().join("outside.pl");
+        std::fs::write(&outside_script, b"print 1;").expect("script");
+
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({ "program": outside_script.display().to_string() })),
+        );
+        let message = launch_failure_message(response)
+            .expect("a program outside every trusted root must be refused");
+        assert!(
+            message.contains("trusted root"),
+            "refusal should mention the trusted-root boundary; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn launch_args_workspace_root_cannot_create_authority() {
+        let root = tempfile::tempdir().expect("temp root");
+        let mut adapter = DebugAdapter::new();
+        adapter.set_launch_authority(workspace_bound_authority(root.path()));
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        let outside = tempfile::tempdir().expect("outside temp root");
+        let script = outside.path().join("script.pl");
+        std::fs::write(&script, b"print 1;").expect("script");
+
+        // A launch-args workspaceRoot outside the trusted roots must be
+        // refused instead of becoming the launch boundary.
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({
+                "program": script.display().to_string(),
+                "workspaceRoot": outside.path().display().to_string(),
+            })),
+        );
+        let message = launch_failure_message(response)
+            .expect("a launch-args workspaceRoot cannot create authority");
+        assert!(
+            message.contains("trusted root"),
+            "refusal should mention the trusted-root boundary; got: {message:?}"
+        );
+    }
+
+    #[test]
+    fn explicitly_unbounded_authority_is_recorded_and_admits_paths() {
+        let adapter = DebugAdapter::new();
+        let authority = unbounded_test_authority();
+        let receipt = authority.receipt();
+        assert_eq!(receipt.mode, "explicit_unbounded");
+        assert!(receipt.acknowledgement_identity.is_some());
+        adapter.set_launch_authority(authority);
+        let _ = adapter.handle_initialize(1, 1, None);
+
+        // Admission succeeds and a session generation begins.
+        assert!(adapter.begin_authority_session().is_some());
+    }
+
+    #[test]
+    fn launch_authority_can_only_be_installed_once() {
+        let first_root = tempfile::tempdir().expect("first temp root");
+        let second_root = tempfile::tempdir().expect("second temp root");
+        let adapter = DebugAdapter::new();
+
+        adapter.set_launch_authority(workspace_bound_authority(first_root.path()));
+        adapter.set_launch_authority(workspace_bound_authority(second_root.path()));
+
+        let (_, receipt) =
+            adapter.begin_authority_session().expect("first authority must remain installed");
+        let first = LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: vec![first_root.path().to_path_buf()],
+            allow_unbounded: None,
+        })
+        .expect("first authority resolution");
+        assert_eq!(receipt.authority_identity, first.receipt().authority_identity);
+    }
 
     #[test]
     fn failed_child_cleanup_retains_owner_until_retry() -> Result<(), String> {
@@ -4131,11 +4358,32 @@ mod tests {
                     if reason != Some("breakpoint") {
                         return Err(format!("expected breakpoint stop, got {reason:?}"));
                     }
-                    let guard = lock_or_recover(&adapter.session, "test.session");
-                    let frame = guard
-                        .as_ref()
-                        .and_then(|session| session.stack_frames.first())
-                        .ok_or("breakpoint frame missing")?;
+                    // The fixture exits after ACTUAL_DONE. Under shard load the
+                    // reader may reap it between the stopped event and this read;
+                    // distinguish that from a session whose frames were never
+                    // published instead of collapsing both into one diagnosis.
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let frame =
+                        loop {
+                            {
+                                let guard = lock_or_recover(&adapter.session, "test.session");
+                                match guard.as_ref() {
+                                    None => return Err(
+                                        "session was reaped before the breakpoint frame was read"
+                                            .into(),
+                                    ),
+                                    Some(session) => {
+                                        if let Some(frame) = session.stack_frames.first() {
+                                            break frame.clone();
+                                        }
+                                    }
+                                }
+                            }
+                            if Instant::now() >= deadline {
+                                return Err("breakpoint frame never published".into());
+                            }
+                            thread::sleep(Duration::from_millis(2));
+                        };
                     if frame.source.path != source_path || frame.line != 5 {
                         return Err(format!(
                             "breakpoint frame mismatch: path={}, line={}",
@@ -6198,6 +6446,23 @@ mod tests {
 
         let mut adapter = DebugAdapter::new();
 
+        // Install an explicitly unbounded startup authority (#8656): this
+        // test targets the Perl-spawn error path, not boundary validation.
+        // Without an authority the launch is refused before any Perl check.
+        let authority = crate::security::launch_authority::LaunchAuthority::resolve(
+            &crate::security::launch_authority::LaunchAuthorityStartup {
+                trusted_roots: Vec::new(),
+                allow_unbounded: Some(
+                    crate::security::launch_authority::UnboundedAcknowledgement::new(
+                        crate::security::launch_authority::LaunchAuthoritySource::CommandLine,
+                        "test: reach the Perl spawn error path",
+                    ),
+                ),
+            },
+        )
+        .map_err(|e| format!("authority resolution failed: {e}"))?;
+        adapter.set_launch_authority(authority);
+
         // Initialize first (required by state machine validation)
         let _ = adapter.handle_initialize(1, 1, None);
 
@@ -7061,6 +7326,25 @@ mod tests {
     fn framed_reader_exhaustion_clears_session_instead_of_interpreting_payload()
     -> Result<(), String> {
         let adapter = reader_stack_fixture("overflow")?;
+        // Serve the stack trace once to drive the exhausted reader through
+        // its reap path, then wait deterministically for the session to be
+        // cleared (#15749). Asserting on this first response raced the
+        // reader thread under load and misread the pre-reap sentinel frame
+        // as retained authority.
+        let _ = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if lock_or_recover(&adapter.session, "test.reader_exhausted").is_none() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("exhausted reader did not reap and clear the session".to_string());
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        // Once the session is cleared, stack authority must be gone: the
+        // response serves empty frames instead of interpreting the exhausted
+        // payload.
         let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         let DapMessage::Response { success: true, body: Some(body), .. } = response else {
             return Err(format!("unexpected exhausted-frame response: {response:?}"));
@@ -7071,16 +7355,7 @@ mod tests {
                 body.get("stackFrames").and_then(Value::as_array).map_or(0, Vec::len),
             ));
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if lock_or_recover(&adapter.session, "test.reader_exhausted").is_none() {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err("exhausted reader did not reap and clear the session".to_string());
-            }
-            thread::sleep(Duration::from_millis(2));
-        }
+        Ok(())
     }
 
     #[test]

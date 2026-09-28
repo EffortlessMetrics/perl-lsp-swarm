@@ -318,7 +318,7 @@
       "id": "nvim-dap",
       "evidence_stage": "preview",
       "support_status": "preview",
-      "launch_mechanism": "nvim-dap type=executable with empty args",
+      "launch_mechanism": "nvim-dap type=executable with host-owned trusted-root args",
       "transport": "stdio",
       "editor_socket_required": false,
       "evidence_paths": [
@@ -327,7 +327,7 @@
       "required_markers": [
         "type = 'executable'",
         "command = 'perl-dap'",
-        "args = {}"
+        "args = { '--trusted-root', '${workspaceFolder}' }"
       ],
       "forbidden_markers": [
         "--socket"
@@ -424,5 +424,5 @@
       "blocks_retirement": false
     }
   ],
-  "digest": "1b2b2b647f69ac41b5801620ed2b84164ba151dae1c3dcf6f5bab3e2c0a8c0c1"
+  "digest": "4650de660df7065a6649560d5059561871ea75c22bce73850f7d8cd0596b9291"
 }

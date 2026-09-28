@@ -15,6 +15,9 @@ reference extraction, and safe renaming.
 - `import` -- `use`/`require` modeling (`ImportBehavior`, `LoadTiming`,
   `RequireForm`, `ModuleImportKind`).
 - `import_match` -- candidate filtering for import-line matching.
+- `module_move` -- pure, generation-bound conventional source-module move
+  planning (`ModuleMovePlan`); consumes fact identities from
+  `perl-semantic-facts`, never materializes edits.
 - `reference` -- `ModuleReference` extraction (feeds go-to-definition /
   find-references).
 - `rename` -- safe module/file rename edit planning
@@ -36,7 +39,7 @@ reference extraction, and safe renaming.
 
 ## Neighbors
 
-- Upstream: `perl-parser-core`, `perl-workspace`, `url`.
+- Upstream: `perl-parser-core`, `perl-workspace`, `perl-semantic-facts`, `url`.
 - Downstream: `perl-lsp-rs-core`, `perl-dap`, `perl-lsp-rs`, `perl-parser`,
   `perl-refactoring`, `perl-semantic-analyzer`, `tree-sitter-perl-rs`.
 

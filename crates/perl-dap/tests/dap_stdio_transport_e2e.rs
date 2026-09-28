@@ -136,6 +136,12 @@ impl DapProcess {
             .arg("--stdio")
             .arg("--log-level")
             .arg("error")
+            // Transport e2e exercises framing/session behavior, not the
+            // launch-authority contract (#8656): without an explicit
+            // acknowledgement every `launch` is refused.
+            .arg("--allow-unbounded")
+            .arg("--unbounded-note")
+            .arg("test: stdio transport e2e")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

@@ -30,6 +30,16 @@ import shlex
 import sys
 from pathlib import Path
 
+# Canonical ci-route envelope schema id (#15388, #15389).
+#
+# Both producers of ``target/receipts/quality/ci-route.json`` -- the Rust
+# router (``xtask/src/tasks/ci_route.rs``, ``CURRENT_ENVELOPE_VERSION``) and
+# the lightweight Python fallback (``scripts/ci/route-codecov-packs.py``) --
+# emit this exact dash spelling.  Consumers must fail closed on any other
+# value (including the historical underscore drift ``ci_route.v1``) rather
+# than silently misreading the coverage matrix.
+CI_ROUTE_SCHEMA_VERSION = "ci-route.v1"
+
 
 def is_test_command(command: str) -> bool:
     """Return True if this is a test invocation (cargo test or cargo llvm-cov test).
@@ -85,6 +95,15 @@ def main() -> int:
         return 1
 
     route = json.loads(route_receipt.read_text(encoding="utf-8"))
+    schema_version = route.get("schema_version")
+    if schema_version != CI_ROUTE_SCHEMA_VERSION:
+        print(
+            f"error: {route_receipt} has schema_version {schema_version!r}; "
+            f"expected {CI_ROUTE_SCHEMA_VERSION!r} -- regenerate the receipt "
+            "with `cargo xtask ci route`",
+            file=sys.stderr,
+        )
+        return 1
     packs = route.get("coverage_proof_packs") or []
 
     commands: list[str] = []

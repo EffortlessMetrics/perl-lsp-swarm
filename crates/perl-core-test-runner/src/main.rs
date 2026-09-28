@@ -536,7 +536,7 @@ fn is_runtime_callable_scope(scope_id: Option<HirScopeId>, hir: &HirFile) -> boo
         if matches!(scope.kind, ScopeKind::PhaseBlock) {
             return false;
         }
-        if matches!(scope.kind, ScopeKind::Subroutine | ScopeKind::Method) {
+        if scope.kind.is_callable() {
             return true;
         }
         current = scope.parent;

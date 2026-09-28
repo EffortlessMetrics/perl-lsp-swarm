@@ -5,6 +5,8 @@ use crate::os_runtime::{candidate_priority, select_path_candidate};
 #[cfg(windows)]
 use crate::os_runtime::{resolve_cmd_exe, resolve_command_invocation, windows_program_priority};
 use crate::*;
+#[cfg(windows)]
+use std::path::Path;
 
 #[test]
 fn test_subprocess_output_success() {
@@ -262,8 +264,40 @@ fn test_select_path_candidate_rejects_relative_candidates_on_all_platforms() {
 #[test]
 fn test_select_path_candidate_empty_candidates_returns_none() {
     let cwd = std::env::temp_dir();
-    let result = select_path_candidate(&[], &cwd);
+    let candidates: &[&str] = &[];
+    let result = select_path_candidate(candidates, &cwd);
     assert!(result.is_none(), "empty candidate list must return None; got: {result:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn availability_rejects_absolute_and_separator_bearing_inputs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let existing = std::env::current_exe()?;
+    let existing = existing.to_str().ok_or("current executable path is not UTF-8")?;
+    let missing = r"C:\definitely-not-a-real-tool-14815.exe";
+
+    for command in [
+        existing,
+        missing,
+        r".\tool.exe",
+        r"tools\tool.exe",
+        "tools/tool.exe",
+        "C:tool.exe",
+        "",
+        ".",
+        "..",
+    ] {
+        if crate::command_exists(command) {
+            return Err(format!("bare-name availability admitted path input {command:?}").into());
+        }
+    }
+    for command in [existing, missing] {
+        if crate::resolve_program(command)? != command {
+            return Err("launch resolution must preserve caller-resolved absolute paths".into());
+        }
+    }
+    Ok(())
 }
 
 /// Layer 2 — CWD exclusion: a candidate whose parent is the CWD is rejected.
@@ -329,7 +363,7 @@ fn test_select_path_candidate_planted_cwd_binary_is_rejected_in_favor_of_path() 
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "planted CWD binary must not be selected; legitimate PATH binary must win"
     );
 }
@@ -357,7 +391,7 @@ fn test_select_path_candidate_legitimate_path_binary_resolves() {
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "a legitimate PATH binary must resolve when CWD is different"
     );
 }
@@ -374,7 +408,7 @@ fn test_select_path_candidate_extension_priority_preserved_among_path_candidates
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         ".exe must beat .bat in extension priority ordering"
     );
 }
@@ -414,7 +448,7 @@ fn test_select_path_candidate_relative_candidate_dropped_absolute_path_wins() {
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "relative candidate must be dropped; absolute PATH binary must win"
     );
 }
@@ -446,7 +480,7 @@ fn test_select_path_candidate_extensioned_bare_cwd_binary_rejected_in_favor_of_p
     let result = select_path_candidate(candidates, &cwd);
     assert_eq!(
         result.as_deref(),
-        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        Some(Path::new(r"C:\Strawberry\perl\bin\perltidy.exe")),
         "extensioned bare name: CWD-planted binary must be rejected; PATH binary must win"
     );
 }

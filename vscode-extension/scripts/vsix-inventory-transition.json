@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 6889,
-  "reason": "Issue #6889 candidate-bound ratchet: the accepted #15940 baseline no longer matches deterministic current-source packaging while no tracked vscode-extension file changed between accepted baseline sha 9aa51820b8 and measured subjects 49509a7c62/ff090d5d14. Measured linux-x64 projected actual (workflow_dispatch run 35460883422 at ff090d5d1443f13dffd1ac11e0c6c80046510dad; identical inventory digest reproduced across pull_request smoke runs 35460286163 and 35459262377): package.json 60871 to 60716, snippets/launch.json 1139 to 791, out/extension.js 1696148 to 1696041, total 1876898 to 1876288, no file added, removed, or renamed, zero policy violations, behavior_safe. Declared size-only shrink re-baseline under the #6889 transition contract.",
-  "base_baseline_file_sha256": "9ce2942d3dd0d02fdbbc3da2ca83e8a43f64867eaf2f5146c184836572cff409",
-  "candidate_baseline_file_sha256": "68410631ff794c5ce32e28c310645316898e0b7f79f7fd85910fcb59a79f4530",
-  "base_inventory_sha256": "49b660b62b3dcd264bde239fe974c5f07b75b9483eb860996575faf1eb59531c",
-  "candidate_inventory_sha256": "896b3f738662ab34991fc07b499033eb647fbaf2c1d8b39d2b46bae3cbc3df3a"
+  "owner_issue": 16381,
+  "reason": "Issue #16381 baseline repair under the #6889 transition contract: main's bundled out/extension.js grew 1698027 to 1698657 (+630) when 8af4d670e (#16120, terminal language-client startup diagnostics) added startup-metrics instrumentation across vscode-extension/src (extension.ts, extensionComposition.ts, languageClientLifecycle.ts, languageClientStartupMetrics.ts) without refreshing this baseline. This is a deliberate size-only growth caused by tracked source already on main, not packaging drift and not any current candidate's change: between the last re-baseline eb9327126 and current main a61a1c01f, 8af4d670e is the only commit touching bundled vscode-extension files. Measured transition: out/extension.js 1698027 to 1698657 (+630), total 1879272 to 1879902 (+630); total_files unchanged at 29; no file added, removed, or renamed; classification size_only; behavior_safe. The delta is the linux-hosted measurement reported by the Current-source Linux smoke runs 35629060060 and 35634409433 on 3914556c7 (fix/15592-vscode-startup-flake, the exact content squash-merged as 8af4d670e), which classified it size_only and refused with transition_required. The declared base digests equal the accepted candidate digests of the preceding #16063 re-baseline (a2b0dd0d.../f279e9d5...), so the ratchet chain is continuous.",
+  "base_baseline_file_sha256": "a2b0dd0d97448d6f20e61969e74b68a0f069f1d507963fc2a48a264ec037c731",
+  "candidate_baseline_file_sha256": "7bf66646d8f58c1cec3aceba617b8dbb84f74c0b830d74f602d9b76713d66c69",
+  "base_inventory_sha256": "f279e9d522233ecd611bc0ef827fd3e44bbabe09787399ab4c9cf9744f94d717",
+  "candidate_inventory_sha256": "45546f0e01d868f33536e00ad41e635bd8a740edf498e784274e73d1a622a221"
 }

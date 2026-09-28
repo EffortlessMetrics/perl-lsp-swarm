@@ -186,12 +186,6 @@ pub struct LspServer {
     pub(crate) documents: Arc<Mutex<HashMap<String, DocumentState>>>,
     /// Whether the `initialize` request has been received
     initialize_requested: AtomicBool,
-    /// Whether the first `initialize` attempt was accepted.
-    ///
-    /// Attempted-but-rejected initialize consumes `initialize_requested` so the
-    /// one-shot cannot retry, but it must not open serving, `initialized`, or
-    /// compat auto-init.
-    initialization_accepted: AtomicBool,
     /// Whether the server is initialized
     initialized: AtomicBool,
     /// Server-owned coordinate authority, published only after initialize succeeds.
@@ -225,6 +219,12 @@ pub struct LspServer {
     outbound_writer_handle: Option<std::thread::JoinHandle<outbound::WriterTerminalOutcome>>,
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
+    /// Root-input classification recorded by the most recent `initialize`
+    /// request (#8161). `None` before the first initialize. Kept as a separate
+    /// receipt from `client_capabilities.workspace_folders_support` so the
+    /// client's advertised bit and the declared root input never merge into
+    /// one derived boolean.
+    initial_root_input: Mutex<Option<lifecycle::root_input::InitialRootInput>>,
     /// Cancelled request IDs
     cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Request IDs that are queued or executing in the async scheduler.
@@ -299,6 +299,12 @@ pub struct LspServer {
     advertised_features: Mutex<crate::protocol::capabilities::AdvertisedFeatures>,
     /// Canonical feature IDs emitted by the most recent initialize response.
     advertised_feature_ids: Mutex<Vec<&'static str>>,
+    /// Accepted text-sync session contract plus the digest of the exact
+    /// `InitializeResult` built from it (#9378). `None` until initialize is
+    /// accepted; set exactly once, and never replaced or partially altered.
+    /// The immutable contract is the single authority for the wire sync kind
+    /// and position encoding — no other field may carry a competing value.
+    text_sync_session: Mutex<Option<lifecycle::session_contract::AcceptedTextSyncSession>>,
     /// Client supports pull diagnostics
     client_supports_pull_diags: Arc<AtomicBool>,
     /// Workspace configuration for module resolution

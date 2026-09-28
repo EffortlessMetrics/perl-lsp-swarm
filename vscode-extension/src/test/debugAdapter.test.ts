@@ -11,6 +11,7 @@ import {
   PerlDebugConfigurationProvider,
   buildDapExecutableArgs as productionBuildDapExecutableArgs,
   buildLaunchJsonContent,
+  canonicalizeWorkspaceRoot,
   debugConfigTemplateChoices,
   hasLaunchJson,
   offerDebugConfigOnFirstPerlOpen,
@@ -54,9 +55,10 @@ function asDebugConfiguration(value: Record<string, unknown>): vscode.DebugConfi
   return value as unknown as vscode.DebugConfiguration;
 }
 
-function buildDapExecutableArgs(value: unknown): string[] {
+function buildDapExecutableArgs(value: unknown, hostWorkspaceRoot?: string): string[] {
   return productionBuildDapExecutableArgs(
     value as unknown as vscode.DebugConfiguration | undefined,
+    hostWorkspaceRoot,
   );
 }
 
@@ -747,6 +749,35 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     expect(result.args).toEqual([]);
   });
 
+  test('descriptor forwards the session workspace folder as the trusted root', () => {
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
+    fs.mkdirSync(binDir, { recursive: true });
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    const dapPath = path.join(binDir, dapName);
+    fs.writeFileSync(dapPath, '#!/bin/sh\necho ok');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(dapPath, 0o755);
+    }
+
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'dap-ws-'));
+    try {
+      const ctx = makeContext(tmpDir);
+      const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+      const session = {
+        configuration: { request: 'launch', program: path.join(workspace, 'x.pl') },
+        workspaceFolder: { uri: { fsPath: workspace } },
+      };
+      const result = factory.createDebugAdapterDescriptor(
+        session as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+
+      expect(result.args).toEqual(['--trusted-root', fs.realpathSync(workspace)]);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   // Mutation-think: if the guard at the top of createDebugAdapterDescriptor
   // were removed (or demoted to a warning that still spawns native), each case
   // below would return a DebugAdapterExecutable instead of undefined and fail
@@ -1154,6 +1185,36 @@ describe('buildDapExecutableArgs', () => {
   test('the native backend (or absent debuggerBackend) yields no bridge args', () => {
     expect(buildDapExecutableArgs({ debuggerBackend: 'native', program: '/x.pl' })).toEqual([]);
     expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' })).toEqual([]);
+  });
+
+  test('native editor sessions receive host-owned workspace authority', () => {
+    expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' }, '/workspace')).toEqual([
+      '--trusted-root',
+      '/workspace',
+    ]);
+  });
+
+  test('a symlinked workspace root is canonicalized before handoff', () => {
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'dap-real-'));
+    const link = `${real}-link`;
+    try {
+      fs.symlinkSync(real, link, 'dir');
+    } catch {
+      // Windows CI without symlink privilege cannot create the link; the
+      // fallback path (unresolvable input passes through) is covered below.
+      expect(canonicalizeWorkspaceRoot(`${real}-missing`)).toBe(`${real}-missing`);
+      return;
+    }
+    try {
+      expect(canonicalizeWorkspaceRoot(link)).toBe(fs.realpathSync(real));
+      expect(buildDapExecutableArgs({ request: 'launch' }, link)).toEqual([
+        '--trusted-root',
+        fs.realpathSync(real),
+      ]);
+    } finally {
+      fs.rmSync(link, { recursive: true, force: true });
+      fs.rmSync(real, { recursive: true, force: true });
+    }
   });
 
   test('never emits an editor --socket or --port flag', () => {

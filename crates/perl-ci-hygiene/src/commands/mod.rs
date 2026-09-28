@@ -2,6 +2,7 @@ pub(crate) mod badges;
 pub(crate) mod doc_drift;
 pub(crate) mod doc_links;
 pub(crate) mod doc_paths;
+pub(crate) mod doctest_enforcement;
 pub(crate) mod fatal_constructs;
 pub(crate) mod must_context;
 pub(crate) mod panic_test;

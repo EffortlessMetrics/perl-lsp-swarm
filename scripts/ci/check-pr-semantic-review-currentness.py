@@ -49,6 +49,12 @@ RESULT_SECTION_RE = re.compile(
 )
 ANY_SECTION_RE = re.compile(r"^[ \t]*##[ \t]", re.MULTILINE)
 RESULT_ITEM_RE = re.compile(r"^[ \t]*[-*][ \t]*([A-Z_]+)\b", re.MULTILINE)
+# Stdout JSON payload version. The marker envelope (`semantic-review:v1`) and the
+# stdout JSON payload are two distinct wire surfaces: the marker is parsed by the
+# campaign review pipeline, the stdout payload is parsed by upstream operators
+# and gates. Pin the payload version explicitly so a shape bump (e.g. a new
+# `finalised_at` key) is observable at the consumer side rather than silent.
+SCHEMA_VERSION = "semantic_review_currentness.v1"
 
 
 class Review(NamedTuple):
@@ -140,15 +146,63 @@ def ensure_commit(root: Path, oid: str) -> None:
         raise CurrentnessError(f"fetched object is not a commit: {oid}")
 
 
-def subject_digest(root: Path, merge_base: str, head: str) -> str:
-    ensure_commit(root, merge_base)
-    ensure_commit(root, head)
-    ancestry = _run(
-        ["git", "merge-base", "--is-ancestor", merge_base, head],
+ANCESTRY_ANCESTOR = "ancestor"
+ANCESTRY_NOT_ANCESTOR = "not-ancestor"
+ANCESTRY_INSTRUMENT_FAILURE = "instrument-failure"
+
+# `https://user:token@host/...` and token-only `https://token@host/...` — git prints
+# credential-bearing URLs on some failures; any userinfo before `@` is a secret.
+_EMBEDDED_CREDENTIALS_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*)://[^\s/@]+@")
+
+
+def sanitize_git_diagnostic(stderr: str, *, limit: int = 200) -> str:
+    """Make git stderr safe to embed in a diagnostic.
+
+    Control sequences become whitespace, embedded URL credentials are redacted,
+    whitespace collapses, and the result is bounded to `limit` characters. The
+    text only explains a broken instrument; no ancestry verdict is ever read
+    from it, so lossy compression cannot change a classification.
+    """
+    cleaned = "".join(ch if ch.isprintable() else " " for ch in stderr)
+    cleaned = _EMBEDDED_CREDENTIALS_RE.sub(r"\1://***@", cleaned)
+    return " ".join(cleaned.split())[:limit]
+
+
+def ancestry_state(root: Path, base: str, head: str) -> tuple[str, str]:
+    """Classify one `git merge-base --is-ancestor` probe; never collapse its outcomes.
+
+    The probe is a three-state predicate, not a boolean: exit 0 is "ancestor",
+    exit 1 is a genuine "not ancestor" over the locally available graph, and
+    everything else — exit 128, a signal, a broken clone — is an instrument
+    failure that proves nothing about ancestry. Returning
+    `(ANCESTRY_INSTRUMENT_FAILURE, "exit N: stderr")` keeps git errors from
+    reading as predicate verdicts in review evidence.
+    """
+    probe = _run(
+        ["git", "merge-base", "--is-ancestor", base, head],
         cwd=root,
         check=False,
     )
-    if ancestry.returncode != 0:
+    if probe.returncode == 0:
+        return ANCESTRY_ANCESTOR, ""
+    if probe.returncode == 1:
+        return ANCESTRY_NOT_ANCESTOR, ""
+    stderr = sanitize_git_diagnostic(probe.stderr or "")
+    detail = f"exit {probe.returncode}: {stderr}" if stderr else f"exit {probe.returncode}"
+    return ANCESTRY_INSTRUMENT_FAILURE, detail
+
+
+def subject_digest(root: Path, merge_base: str, head: str) -> str:
+    ensure_commit(root, merge_base)
+    ensure_commit(root, head)
+    state, detail = ancestry_state(root, merge_base, head)
+    if state == ANCESTRY_INSTRUMENT_FAILURE:
+        raise CurrentnessError(
+            f"ancestry probe between merge base {merge_base} and reviewed head "
+            f"{head} failed as a git instrument error ({detail}); it establishes "
+            "no ancestry verdict"
+        )
+    if state == ANCESTRY_NOT_ANCESTOR:
         raise CurrentnessError(
             f"marker merge base {merge_base} is not an ancestor of reviewed head {head}"
         )
@@ -352,12 +406,14 @@ def blob_text(root: Path, rev: str, path: str) -> str:
 def neutral_followup(root: Path, reviewed_head: str, current_head: str) -> tuple[bool, str]:
     ensure_commit(root, reviewed_head)
     ensure_commit(root, current_head)
-    ancestry = _run(
-        ["git", "merge-base", "--is-ancestor", reviewed_head, current_head],
-        cwd=root,
-        check=False,
-    )
-    if ancestry.returncode != 0:
+    state, detail = ancestry_state(root, reviewed_head, current_head)
+    if state == ANCESTRY_INSTRUMENT_FAILURE:
+        raise CurrentnessError(
+            f"ancestry probe between reviewed head {reviewed_head} and current head "
+            f"{current_head} failed as a git instrument error ({detail}); it "
+            "establishes no ancestry verdict"
+        )
+    if state == ANCESTRY_NOT_ANCESTOR:
         return False, "reviewed head is not an ancestor of current head"
 
     names = _git_text(root, "diff", "--name-status", reviewed_head, current_head, "--")
@@ -605,6 +661,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "detail": str(refusal),
                     "pr": args.pr,
                     "result": args.result,
+                    "schema_version": SCHEMA_VERSION,
                 },
                 sort_keys=True,
             )
@@ -624,10 +681,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             "reason": "instrument_failure",
             "detail": str(error),
             "pr": args.pr,
+            "schema_version": SCHEMA_VERSION,
         }
         print(json.dumps(result, sort_keys=True))
         return 2
-    print(json.dumps(result, sort_keys=True))
+    # The success path: ensure the verdict dict carries the schema version too so
+    # the three stdout surfaces (success, MARKER_REFUSED, NOT_PROVEN) are uniformly
+    # versioned. `result` originates from `evaluate(...)` which builds the verdict
+    # dict; we attach the version field here rather than threading it through the
+    # evaluator to keep the change scoped to this script's stdout contract.
+    enriched_result = dict(result)
+    enriched_result.setdefault("schema_version", SCHEMA_VERSION)
+    print(json.dumps(enriched_result, sort_keys=True))
     return 0 if result["classification"] == "REVIEW_CURRENT" else 1
 
 

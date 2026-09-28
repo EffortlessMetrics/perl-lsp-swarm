@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 mod format;
 
-use crate::lexer::helpers::is_builtin_function;
+use crate::lexer::helpers::{is_builtin_function, is_nullary_builtin};
 use crate::unicode::{is_perl_identifier_continue, is_perl_identifier_start};
 
 use format::{is_format_terminator, opens_terminated_format_body};
@@ -45,6 +45,9 @@ use format::{is_format_terminator, opens_terminated_format_body};
 #[derive(Debug, Clone, Default)]
 pub struct LocalSymbolTable {
     known_subs: Arc<HashSet<Box<str>>>,
+    /// Names declared with an empty prototype (`sub foo ()`). Every bare call
+    /// to one completes a term, so `<<` after it is left shift (#16165).
+    nullary_subs: Arc<HashSet<Box<str>>>,
 }
 
 impl LocalSymbolTable {
@@ -68,15 +71,12 @@ impl LocalSymbolTable {
     /// an opener whose body never closes is left unarmed, so opener-shaped prose
     /// cannot hide the declarations after it.
     ///
-    /// That bounds, but does not remove, one residue. The terminator is matched
-    /// by line shape, so opener-shaped prose can bind to a lone `.` that belongs
-    /// to something else, suppressing declarations in between. It needs the
-    /// prepass to be already mis-scanning a region — the same confusion that
-    /// makes POD swallow to EOF here today — and the region bounds the damage
-    /// where POD does not. Repairing it means recognizing heredoc openers the
-    /// prepass currently misses, which requires term-versus-operator position
-    /// (`my $z = $x <<'END';` is a left shift, not a heredoc), so it belongs to
-    /// the heredoc owners rather than this region. Tracked by #14927.
+    /// Unrecognized source regions can still expose format-shaped prose to this
+    /// scan. Immediate scalar filehandles in `print $handle LIST` are recognized.
+    /// Bareword handles remain unresolved under #14927: constants and imported
+    /// callables can give even STDERR a different term expectation. General
+    /// indirect-method/list-slot grammar is not inferred here, and quoted shift
+    /// operands alone never authorize body skipping.
     ///
     /// Perl alternates picture lines and argument lines inside a body, and a
     /// `sub NAME {}` on an *argument* line is genuinely declared, so excluding
@@ -108,15 +108,24 @@ impl LocalSymbolTable {
         // is declared further down the file is missed and its body is scanned
         // as code. The first pass therefore only collects candidate declaration
         // names; the second pass consults them from the first line onward.
-        let hints = scan_pass(input, &HashSet::new());
-        let known_subs = scan_pass(input, &hints);
+        let hints = scan_pass(input, &Declarations::default());
+        let scanned = scan_pass(input, &hints);
 
-        Self { known_subs: Arc::new(known_subs) }
+        Self { known_subs: Arc::new(scanned.callables), nullary_subs: Arc::new(scanned.nullaries) }
     }
 
     /// Return `true` if `name` was declared as a subroutine in this file.
     pub fn is_known_sub(&self, name: &str) -> bool {
         self.known_subs.contains(name)
+    }
+
+    /// Return `true` if `name` was declared with an empty prototype.
+    ///
+    /// A nullary declaration completes a term at every call site, so `<<`
+    /// after the bare name is the left-shift operator, never a heredoc
+    /// introducer (#16165, local Perl oracle).
+    pub fn is_nullary_sub(&self, name: &str) -> bool {
+        self.nullary_subs.contains(name)
     }
 
     /// Return the number of subroutine names recorded.
@@ -132,6 +141,17 @@ impl LocalSymbolTable {
     /// Ordered name set used as checkpoint policy identity until #8812.
     pub(crate) fn identity_names(&self) -> std::collections::BTreeSet<Box<str>> {
         self.known_subs.iter().cloned().collect()
+    }
+
+    /// Ordered set of nullary-prototype declarations, used alongside
+    /// [`Self::identity_names`] as checkpoint policy identity until #8812.
+    ///
+    /// Nullary membership changes whether a later `<<` after the bare name is
+    /// a left shift or a heredoc opener (#16165), so two tables declaring the
+    /// same callables with different prototypes must not share one policy
+    /// identity.
+    pub(crate) fn identity_nullary_names(&self) -> std::collections::BTreeSet<Box<str>> {
+        self.nullary_subs.iter().cloned().collect()
     }
 }
 
@@ -270,13 +290,25 @@ fn is_data_marker(line: &str) -> bool {
     matches!(line.trim_end_matches([' ', '\t']), "__DATA__" | "__END__")
 }
 
+/// Declarations collected by one full scan pass.
+///
+/// `callables` are the `sub NAME` names; `nullaries` is the subset declared
+/// with an empty prototype. Pass two receives pass one's result as `hints`,
+/// which covers callables — and their prototypes — declared later in the file.
+#[derive(Debug, Default)]
+struct Declarations {
+    callables: HashSet<Box<str>>,
+    nullaries: HashSet<Box<str>>,
+}
+
 /// Run one full forward scan, treating `hints` as additional callable names.
 ///
 /// `hints` is empty on the first pass and carries the first pass's declaration
 /// names on the second, which is what lets a heredoc opener recognize a
 /// callable declared later in the file.
-fn scan_pass(input: &str, hints: &HashSet<Box<str>>) -> HashSet<Box<str>> {
+fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
     let mut known_subs = HashSet::new();
+    let mut nullaries = HashSet::new();
     let mut state = ScanState::default();
     let bytes = input.as_bytes();
     let mut line_start = 0usize;
@@ -319,11 +351,11 @@ fn scan_pass(input: &str, hints: &HashSet<Box<str>>) -> HashSet<Box<str>> {
             break;
         }
 
-        scan_code_line(input, line_start, line, &mut state, &mut known_subs, hints);
+        scan_code_line(input, line_start, line, &mut state, &mut known_subs, &mut nullaries, hints);
         line_start = next_line_start;
     }
 
-    known_subs
+    Declarations { callables: known_subs, nullaries }
 }
 
 /// Return `true` if `word` names something callable for prepass purposes.
@@ -334,13 +366,20 @@ fn is_callable_word(word: &str, known_subs: &HashSet<Box<str>>, hints: &HashSet<
     is_builtin_function(word) || known_subs.contains(word) || hints.contains(word)
 }
 
+/// Return `true` if `word` is declared with an empty prototype in this pass or
+/// in the hints pass.
+fn is_nullary_word(word: &str, nullaries: &HashSet<Box<str>>, hints: &Declarations) -> bool {
+    nullaries.contains(word) || hints.nullaries.contains(word)
+}
+
 fn scan_code_line(
     input: &str,
     line_start: usize,
     line: &str,
     state: &mut ScanState,
     known_subs: &mut HashSet<Box<str>>,
-    hints: &HashSet<Box<str>>,
+    nullaries: &mut HashSet<Box<str>>,
+    hints: &Declarations,
 ) {
     let mut offset = 0usize;
 
@@ -363,6 +402,9 @@ fn scan_code_line(
 
             if let Some((name, end)) = parse_qualified_name(line, offset) {
                 known_subs.insert(name.into());
+                if has_nullary_prototype(line, end) {
+                    nullaries.insert(name.into());
+                }
                 state.awaiting_sub_name = false;
                 offset = end;
                 continue;
@@ -404,9 +446,15 @@ fn scan_code_line(
             continue;
         }
 
-        if line[offset..].starts_with("<<")
-            && heredoc_allowed_before(line, offset, known_subs, hints)
-            && let Some((pending, end)) = parse_heredoc_opener(line, offset)
+        let heredoc_start = if line[offset..].starts_with("<<")
+            && heredoc_allowed_before(line, offset, known_subs, nullaries, hints)
+        {
+            Some(offset)
+        } else {
+            print_scalar_filehandle_heredoc_start(line, offset)
+        };
+        if let Some(start) = heredoc_start
+            && let Some((pending, end)) = parse_heredoc_opener(line, start)
         {
             state.pending_heredocs.push_back(pending);
             offset = end;
@@ -470,7 +518,7 @@ fn apostrophe_is_package_separator(
     line: &str,
     offset: usize,
     known_subs: &HashSet<Box<str>>,
-    hints: &HashSet<Box<str>>,
+    hints: &Declarations,
 ) -> bool {
     let before = line[..offset].chars().next_back();
     let after = line[offset + '\''.len_utf8()..].chars().next();
@@ -479,7 +527,9 @@ fn apostrophe_is_package_separator(
         return false;
     }
 
-    previous_word_before(line, offset).is_none_or(|word| !is_callable_word(word, known_subs, hints))
+    previous_word_and_sigil_before(line, offset).is_none_or(|(sigil, word)| {
+        sigil.is_some() || !is_callable_word(word, known_subs, &hints.callables)
+    })
 }
 
 fn paired_delimiter(opener: char) -> Option<char> {
@@ -674,7 +724,12 @@ fn scan_quote_like_character(line: &str, mut offset: usize, state: &mut ScanStat
     offset + ch.len_utf8()
 }
 
-fn previous_word_before(text: &str, end: usize) -> Option<&str> {
+/// The word ending at `end`, together with the variable sigil (`$`, `@`, `%`,
+/// the typeglob `*`, or the two-byte last-index `$#`) immediately preceding it
+/// when one is present. A sigiled word names a completed variable term, not a
+/// callable: `$print`, `*print`, and `$#print` are all finished terms even
+/// though the bare name `print` is a builtin.
+fn previous_word_and_sigil_before(text: &str, end: usize) -> Option<(Option<char>, &str)> {
     let prefix = text[..end].trim_end_matches([' ', '\t']);
     let mut start = prefix.len();
     while let Some(ch) = prefix[..start].chars().next_back() {
@@ -684,7 +739,15 @@ fn previous_word_before(text: &str, end: usize) -> Option<&str> {
             break;
         }
     }
-    (start < prefix.len()).then(|| &prefix[start..])
+    if start >= prefix.len() {
+        return None;
+    }
+    let sigil = match prefix[..start].chars().next_back() {
+        Some(ch @ ('$' | '@' | '%' | '*')) => Some(ch),
+        _ if prefix[..start].ends_with("$#") => Some('$'),
+        _ => None,
+    };
+    Some((sigil, &prefix[start..]))
 }
 
 fn is_sub_keyword_boundary(line: &str, offset: usize) -> bool {
@@ -766,22 +829,104 @@ fn heredoc_allowed_before(
     line: &str,
     offset: usize,
     known_subs: &HashSet<Box<str>>,
-    hints: &HashSet<Box<str>>,
+    nullaries: &HashSet<Box<str>>,
+    hints: &Declarations,
 ) -> bool {
     let prefix = line[..offset].trim_end_matches([' ', '\t']);
     if prefix.is_empty() {
         return true;
     }
 
-    if prefix
-        .chars()
-        .next_back()
-        .is_some_and(|ch| matches!(ch, '=' | '(' | '[' | '{' | ',' | ';' | ':' | '?'))
+    // Term position: with no left operand, `<<MARKER` is a heredoc, never a
+    // left shift. The fat comma (`key => <<END`) belongs beside the
+    // single-character introducers because its last character is the `>` of
+    // the operator, not a term.
+    if prefix.ends_with("=>")
+        || prefix
+            .chars()
+            .next_back()
+            .is_some_and(|ch| matches!(ch, '=' | '(' | '[' | '{' | ',' | ';' | ':' | '?'))
     {
         return true;
     }
 
-    previous_word_before(line, offset).is_some_and(|word| is_callable_word(word, known_subs, hints))
+    // A callable that can still take arguments makes `<<MARKER` its heredoc
+    // argument (`print <<END`, unprototyped `foo <<END`). A nullary authority
+    // instead completes a term: `sub foo ()` and `time` leave `<<` as the
+    // left-shift operator (local Perl oracle, #16165). A sigiled word is a
+    // variable, not a callable: `$print <<'END'` is a left shift too, so only
+    // a sigil-free callable word introduces a heredoc.
+    previous_word_and_sigil_before(line, offset).is_some_and(|(sigil, word)| {
+        // A sigiled word is a completed term first: `$print <<'END'` and the
+        // typeglob/last-index forms are left shifts, never heredoc
+        // introducers, whatever the word spells (#16338).
+        if sigil.is_some() {
+            return false;
+        }
+        // `return` introduces a term slot without being callable, so
+        // `return <<END;` is a definite heredoc even when nothing callable
+        // precedes the opener (oracle-verified under a statement modifier
+        // too). The word is the keyword only when no dereference arrow
+        // precedes it (`$object->return` is a method invocation), and the
+        // slice before the word carries the same trailing-space trim as the
+        // helper, so spaced forms (`$object-> return`) are recognized as
+        // method invocations as well (#16336).
+        let before_word = prefix[..prefix.len() - word.len()].trim_end_matches([' ', '\t']);
+        let is_return_keyword = word == "return" && !before_word.ends_with("->");
+        is_return_keyword
+            || (is_callable_word(word, known_subs, &hints.callables)
+                && !is_nullary_word(word, nullaries, hints)
+                && !is_nullary_builtin(word))
+    })
+}
+
+/// Recognize the immediate scalar-filehandle `print $handle LIST` term slot.
+/// Start at `print` in code, rather than searching a prefix containing prose.
+/// Bareword handles are deliberately excluded: even STDERR can name a constant
+/// or imported callable, which requires semantic authority this scan lacks.
+fn print_scalar_filehandle_heredoc_start(line: &str, start: usize) -> Option<usize> {
+    let after_print = line[start..].strip_prefix("print")?;
+    if !after_print.starts_with([' ', '\t']) {
+        return None;
+    }
+    let before = &line[..start];
+    if before.trim_end_matches([' ', '\t']).ends_with("->")
+        || before.chars().next_back().is_some_and(|ch| {
+            is_perl_identifier_continue(ch)
+                || matches!(ch, '$' | '@' | '%' | '&' | '*' | ':' | '\'')
+        })
+    {
+        return None;
+    }
+
+    let offset = skip_horizontal_whitespace(line, start + "print".len());
+    line[offset..].strip_prefix('$')?;
+    let (_, end) = parse_qualified_name(line, offset + 1)?;
+    let opener = skip_horizontal_whitespace(line, end);
+    line[opener..].starts_with("<<").then_some(opener)
+}
+
+/// Return `true` when a `sub` declaration carries an empty prototype at `end`.
+///
+/// `sub foo ()` records `foo` as nullary (#16165): every bare call completes a
+/// term, so a following `<<MARKER` is a left shift, not a heredoc. Perl ignores
+/// horizontal whitespace between prototype characters, so `sub foo ( )` and
+/// `sub foo (\t)` are the same empty prototype (local Perl 5.42.2 oracle:
+/// `foo(1)` is rejected with "Too many arguments" and `foo <<'END'` shifts),
+/// and they record as nullary too. Whitespace around the parens and inside
+/// them is the only slack: any prototype token — `($ )`, `( @ )` — keeps the
+/// name plain callable. The peek is single-line and skips only horizontal
+/// whitespace; a prototype continued on the next line keeps the name plain
+/// callable status.
+fn has_nullary_prototype(line: &str, end: usize) -> bool {
+    let Some(rest) = line.get(end..) else {
+        return false;
+    };
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let Some(after_open) = rest.strip_prefix('(') else {
+        return false;
+    };
+    after_open.trim_start_matches([' ', '\t']).starts_with(')')
 }
 
 fn parse_heredoc_opener(line: &str, start: usize) -> Option<(PendingHeredoc, usize)> {
@@ -875,7 +1020,7 @@ mod tests {
             let tokens = tokens_with_table(&with_slash, LocalSymbolTable::scan_subs(&with_slash));
             assert!(
                 tokens.iter().any(|token| matches!(&token.token_type, TokenType::Division)),
-                "{name} leaked into the regex path for {source:?}"
+                "{name} leaked into the regex path for {source:?}; tokens: {tokens:?}"
             );
             assert!(
                 !tokens.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)),
@@ -891,6 +1036,83 @@ mod tests {
                 "{name} lost the known-sub regex path for {source:?}"
             );
         }
+    }
+
+    #[test]
+    fn previous_word_and_sigil_before_distinguishes_sigiled_terms_from_callables() {
+        use super::previous_word_and_sigil_before;
+
+        assert_eq!(previous_word_and_sigil_before("my $print", 9), Some((Some('$'), "print")));
+        assert_eq!(previous_word_and_sigil_before("local @ARGV", 11), Some((Some('@'), "ARGV")));
+        assert_eq!(previous_word_and_sigil_before("%h", 2), Some((Some('%'), "h")));
+        assert_eq!(previous_word_and_sigil_before("*print", 6), Some((Some('*'), "print")));
+        assert_eq!(previous_word_and_sigil_before("$#print", 7), Some((Some('$'), "print")));
+        assert_eq!(previous_word_and_sigil_before("&print", 6), Some((None, "print")));
+        assert_eq!(previous_word_and_sigil_before("print <<END", 5), Some((None, "print")));
+        assert_eq!(previous_word_and_sigil_before(" <<END", 1), None);
+    }
+
+    #[test]
+    fn sigiled_words_keep_the_old_style_package_separator() {
+        use std::collections::HashSet;
+
+        use super::apostrophe_is_package_separator;
+
+        let known: HashSet<Box<str>> = HashSet::new();
+        // The scan's hints type is `Declarations` (callables plus nullaries);
+        // an empty default keeps both lookup sets empty for this unit test.
+        let hints = super::Declarations::default();
+        // `$print` names a variable, so `'` stays the old-style package
+        // separator (`$print'Foo` is `$print::Foo`) even though the bare
+        // name `print` is a callable builtin. The typeglob `*print` and the
+        // last-index `$#print` are completed terms too.
+        assert!(apostrophe_is_package_separator("$print'Foo", 6, &known, &hints));
+        assert!(apostrophe_is_package_separator("*print'Foo", 6, &known, &hints));
+        assert!(apostrophe_is_package_separator("$#print'Foo", 7, &known, &hints));
+        assert!(!apostrophe_is_package_separator("print'Foo", 5, &known, &hints));
+        assert!(apostrophe_is_package_separator("Foo'Bar", 3, &known, &hints));
+    }
+
+    #[test]
+    fn sigiled_print_leaves_the_shift_operand_off_heredoc_authority() {
+        // `$print` is a completed scalar term, so `<<` is a left shift and
+        // the lines that follow stay live code: `sub fake` must be scanned.
+        assert_membership_and_slash(
+            "my $print = shift;\nmy $width = $print <<'END';\nsub fake { }\nEND\nsub real { }\n",
+            &["fake", "real"],
+            &[],
+        );
+        // Matching-marker opposite control: bare `print` keeps heredoc
+        // authority, so the body prose stays out of the scan.
+        assert_membership_and_slash(
+            "print <<END;\nsub fake { }\nEND\nsub real { }\n",
+            &["real"],
+            &["fake"],
+        );
+    }
+
+    #[test]
+    fn typeglob_and_last_index_terms_keep_the_shift_reading() {
+        // `*print` and `$#print` are completed terms too, so their `<<` is a
+        // left shift and the lines that follow stay live code, exactly like
+        // the `$print` scalar form.
+        assert_membership_and_slash(
+            "my $width = *print <<'END';\nsub fake { }\nEND\nsub real { }\n",
+            &["fake", "real"],
+            &[],
+        );
+        assert_membership_and_slash(
+            "my $width = $#print <<'END';\nsub fake { }\nEND\nsub real { }\n",
+            &["fake", "real"],
+            &[],
+        );
+        // Matching-marker opposite control: bare `print` keeps heredoc
+        // authority, so the body prose stays out of the scan.
+        assert_membership_and_slash(
+            "print <<END;\nsub fake { }\nEND\nsub real { }\n",
+            &["real"],
+            &["fake"],
+        );
     }
 
     #[test]
@@ -997,6 +1219,47 @@ mod tests {
         assert!(table.is_known_sub("real"));
         assert!(!table.is_known_sub("first_fake"));
         assert!(!table.is_known_sub("second_fake"));
+    }
+
+    #[test]
+    fn term_slot_heredocs_under_conditional_modifiers_keep_declarations() {
+        // Measured with the local Perl oracle (runtime plus `-MO=Deparse`):
+        // `return <<END` and `key => <<END` keep the heredoc reading under an
+        // `unless` statement modifier, exactly like the initializer forms. The
+        // conditional modifier does not invalidate the statement's declaration
+        // and the body is string content: its prose must not become a known
+        // sub, while declarations after the terminator survive unconditionally.
+        for statement in [
+            "my $x = <<END unless $cond;",
+            "sub f { return <<END; }",
+            "sub f { return <<END unless $cond; }",
+            "my %h = (key => <<END);",
+            "my %h = (key => <<END) unless $cond;",
+        ] {
+            let source = format!("{statement}\nsub fake {{ }}\nEND\nsub real {{ }}\n");
+            assert_membership_and_slash(&source, &["real"], &["fake"]);
+        }
+    }
+
+    #[test]
+    fn dereferenced_return_method_is_not_the_keyword() {
+        // Measured with the local Perl oracle (runtime plus `-MO=Deparse`):
+        // `$object->return << END` is a method invocation whose arrow supplies
+        // the left operand, so the `<<` is a left shift and a bare `END` line
+        // is not a terminator. The lines after the shift stay live code: the
+        // method name must not be classified as the `return` keyword.
+        assert_membership_and_slash(
+            "my $x = $object->return <<END;\nsub fake { }\nEND\nsub real { }\n",
+            &["fake", "real"],
+            &[],
+        );
+        // Keyword control: plain `return <<END` keeps its definite heredoc
+        // reading, so the body prose stays out of the scan.
+        assert_membership_and_slash(
+            "sub f { return <<END; }\nsub fake { }\nEND\nsub real { }\n",
+            &["real"],
+            &["fake"],
+        );
     }
 
     #[test]
@@ -1388,10 +1651,9 @@ mod tests {
         let unterminated = "format STDOUT =\nsub fake { }\nsub real { }\n";
         assert_membership_and_slash(unterminated, &["fake", "real"], &[]);
 
-        // The motivating case, and valid Perl: this prepass does not recognize
-        // `print $fh <<'END';` as a heredoc, so the opener-shaped prose inside
-        // the body is reached as code. It must not erase the file.
-        let prose_in_unrecognized_heredoc = concat!(
+        // A recognized print-filehandle heredoc keeps its format-shaped prose
+        // opaque even when no format terminator follows.
+        let prose_in_heredoc = concat!(
             "open(my $fh, '>', '/dev/null') or die;\n",
             "print $fh <<'END';\n",
             "Usage: declare a report with a line such as\n",
@@ -1400,26 +1662,13 @@ mod tests {
             "END\n",
             "sub helper { return 2 }\n",
         );
-        assert_membership_and_slash(prose_in_unrecognized_heredoc, &["helper"], &[]);
+        assert_membership_and_slash(prose_in_heredoc, &["helper"], &[]);
     }
 
     #[test]
-    fn opener_shaped_prose_can_still_bind_to_an_unrelated_terminator() {
-        // Recorded boundary, not a desired behavior. Arming requires a
-        // terminator, which bounds the damage, but the terminator is found by
-        // line shape and can belong to something else entirely — here a lone `.`
-        // inside a second heredoc. A declaration between the two is suppressed.
-        //
-        // This is valid Perl, and the root cause is upstream of this region: the
-        // prepass does not recognize `print $fh <<'END';` as a heredoc, so prose
-        // reaches the scanner as code. The same confusion already makes POD
-        // swallow to EOF on main, so this is an instance of an accepted class
-        // rather than a new hazard, and the region bounds it where POD does not.
-        //
-        // It is deliberately not repaired here: recognizing that heredoc needs
-        // term-versus-operator position, since `my $z = $x <<'END';` is a left
-        // shift, not a heredoc (verified with perl 5.38.2). That is the heredoc
-        // owners' seam. Tracked by #14927.
+    fn print_filehandle_heredoc_prose_cannot_bind_to_an_unrelated_terminator() {
+        // A format-shaped line belongs to the first heredoc, not to the dot in
+        // the second heredoc. Both intervening and subsequent subs survive.
         let src = concat!(
             "open(my $fh, '>', '/dev/null') or die;\n",
             "print $fh <<'END';\n",
@@ -1431,7 +1680,69 @@ mod tests {
             "TWO\n",
             "sub after_all { 1 }\n",
         );
-        assert_membership_and_slash(src, &["after_all"], &["real_between"]);
+        assert_membership_and_slash(src, &["real_between", "after_all"], &[]);
+    }
+
+    #[test]
+    fn print_scalar_filehandle_heredocs_exclude_prose_and_preserve_real_subs() {
+        for call in [
+            "print $fh",
+            "print $Pkg::fh",
+            "use constant STDERR => 4;\nprint $fh",
+            "use Fcntl qw(O_RDONLY);\nprint $fh",
+        ] {
+            for prose in ["=head1 NAME", "format STDOUT =", "ordinary text"] {
+                let source =
+                    format!("{call} <<'END';\n{prose}\nsub fake {{ }}\nEND\nsub real {{ }}\n");
+                assert_membership_and_slash(&source, &["real"], &["fake"]);
+            }
+        }
+    }
+
+    #[test]
+    fn completed_scalar_terms_keep_quoted_and_numeric_left_shifts() {
+        for term in ["$x", "print($fh)"] {
+            for operand in ["2", "'END'"] {
+                let source = format!(
+                    "my $z = {term} <<{operand};\nsub real {{ }}\nEND\n; sub after {{ }}\n"
+                );
+                assert_membership_and_slash(&source, &["real", "after"], &[]);
+            }
+        }
+    }
+
+    #[test]
+    fn print_constant_operands_do_not_hide_declarations() {
+        for (declaration, operand) in [
+            ("use constant OUT => 4;", "OUT"),
+            ("use constant STDERR => 4;", "STDERR"),
+            ("use Fcntl qw(O_RDONLY);", "O_RDONLY"),
+        ] {
+            for spacing in ["", " "] {
+                for label in ["'END'", "END"] {
+                    let source = format!(
+                        "{declaration}\nmy $x = print {operand}{spacing}<<{label};\nsub real {{ }}\nEND\n; sub after {{ }}\n"
+                    );
+                    assert_membership_and_slash(&source, &["real", "after"], &[]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn print_call_prefixes_keep_left_shifts_across_trivia() {
+        for prefix in ["& ", "$obj->", "$obj->\n", "$obj-> # method\n", "& # call\n"] {
+            let source = format!(
+                "my $x = {prefix}print($fh <<'END');\nsub real {{ }}\nEND\n; sub after {{ }}\n"
+            );
+            assert_membership_and_slash(&source, &["real", "after"], &[]);
+        }
+    }
+
+    #[test]
+    fn ordinary_heredoc_pod_prose_preserves_the_public_slash_path() {
+        let source = "my $x = <<'END';\n=head1 NAME\nsub fake { }\nEND\nsub real { }\n";
+        assert_membership_and_slash(source, &["real"], &["fake"]);
     }
 
     #[test]

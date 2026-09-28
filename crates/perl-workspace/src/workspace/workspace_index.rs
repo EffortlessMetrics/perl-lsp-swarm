@@ -5535,12 +5535,8 @@ fn strip_matching_quote_delimiters(raw_content: &str) -> &str {
 
 impl IndexVisitor {
     fn new(document: &mut Document, uri: String, workspace_folder_uri: Option<String>) -> Self {
-        Self {
-            document: document.clone(),
-            uri,
-            current_package: Some("main".to_string()),
-            workspace_folder_uri,
-        }
+        let current_package = initial_package_for_uri(&uri);
+        Self { document: document.clone(), uri, current_package, workspace_folder_uri }
     }
 
     fn visit(&mut self, node: &Node, file_index: &mut FileIndex) {
@@ -6775,6 +6771,24 @@ impl IndexVisitor {
     }
 }
 
+fn initial_package_for_uri(uri: &str) -> Option<String> {
+    let parsed_uri = Url::parse(uri).ok()?;
+    // Decode file URIs through the shared cross-platform converter; virtual
+    // documents retain their URL path. Only the final filename owns an extension.
+    let file_path = uri_to_fs_path(uri);
+    let path = file_path.as_deref().unwrap_or_else(|| Path::new(parsed_uri.path()));
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    if extension.is_some_and(|extension| {
+        ["pm", "ep", "tt", "tt2", "mason"]
+            .iter()
+            .any(|excluded| extension.eq_ignore_ascii_case(excluded))
+    }) {
+        None
+    } else {
+        Some("main".to_string())
+    }
+}
+
 /// **Production (1711-B cutover).** Canonical [`SymbolRef`] classification for
 /// a single node, duplicated from `perl_symbol::surface::ref`'s private
 /// `walk` match arms for `Variable`/`Typeglob`/`FunctionCall`/`MethodCall`
@@ -7570,6 +7584,106 @@ pub(crate) mod reindex_metrics {
 mod tests {
     use super::*;
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn package_less_extensionless_scripts_keep_main_namespace() -> anyhow::Result<()> {
+        for uri in ["file:///bin/tool", "file:///release.v1/bin/tool", "untitled:tool"] {
+            let index = WorkspaceIndex::new();
+            index
+                .index_initial_file(
+                    Url::parse(uri)?,
+                    "#!/usr/bin/env perl\nsub helper { 1 }".to_string(),
+                )
+                .map_err(anyhow::Error::msg)?;
+            let symbols = index.file_symbols(uri);
+            anyhow::ensure!(
+                symbols
+                    .iter()
+                    .any(|symbol| symbol.qualified_name.as_deref() == Some("main::helper")),
+                "extensionless script must retain main at {uri}: {symbols:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn package_less_library_and_template_extensions_remain_unqualified() -> anyhow::Result<()> {
+        for uri in [
+            "file:///lib/Utility.PM",
+            "file:///lib/Utility%2Epm",
+            "file:///lib/Utility.%70m",
+            "file:///templates/page.EP",
+            "file:///templates/page.tt",
+            "file:///templates/page.tt2",
+            "file:///templates/page.mason",
+            "untitled:Utility.pm",
+        ] {
+            let index = WorkspaceIndex::new();
+            index
+                .index_initial_file(Url::parse(uri)?, "sub helper { 1 }".to_string())
+                .map_err(anyhow::Error::msg)?;
+            let symbols = index.file_symbols(uri);
+            let helper = symbols
+                .iter()
+                .find(|symbol| symbol.name == "helper")
+                .ok_or_else(|| anyhow::anyhow!("missing helper at {uri}: {symbols:?}"))?;
+            anyhow::ensure!(
+                helper.qualified_name.as_deref() != Some("main::helper"),
+                "library/template must not synthesize main at {uri}: {helper:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn package_less_seed_does_not_override_explicit_package() -> anyhow::Result<()> {
+        for uri in ["file:///bin/tool", "file:///lib/Tool.pm"] {
+            let index = WorkspaceIndex::new();
+            index
+                .index_initial_file(Url::parse(uri)?, "package Tool; sub helper { 1 }".to_string())
+                .map_err(anyhow::Error::msg)?;
+            let symbols = index.file_symbols(uri);
+            anyhow::ensure!(
+                symbols
+                    .iter()
+                    .any(|symbol| symbol.qualified_name.as_deref() == Some("Tool::helper")),
+                "explicit package must override seed at {uri}: {symbols:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn package_less_library_does_not_invent_main_namespace() -> anyhow::Result<()> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/Utility.pm";
+        index
+            .index_initial_file(Url::parse(uri)?, "sub helper { 1 }".to_string())
+            .map_err(anyhow::Error::msg)?;
+
+        let symbols = index.file_symbols(uri);
+        anyhow::ensure!(
+            symbols.iter().all(|symbol| symbol.qualified_name.as_deref() != Some("main::helper")),
+            "library files without a package must not synthesize main: {symbols:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_less_script_keeps_main_namespace() -> anyhow::Result<()> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///bin/utility.pl";
+        index
+            .index_initial_file(Url::parse(uri)?, "sub helper { 1 }".to_string())
+            .map_err(anyhow::Error::msg)?;
+
+        let symbols = index.file_symbols(uri);
+        anyhow::ensure!(
+            symbols.iter().any(|symbol| symbol.qualified_name.as_deref() == Some("main::helper")),
+            "scripts must retain their implicit main namespace: {symbols:?}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_use_constant_indexed_as_constant_symbol() {

@@ -361,6 +361,12 @@ impl ExactSession {
             .arg("--stdio")
             .arg("--log-level")
             .arg("error")
+            // Session-matrix cases exercise debugging behavior, not the
+            // launch-authority contract (#8656): without an explicit
+            // acknowledgement every `launch` is refused.
+            .arg("--allow-unbounded")
+            .arg("--unbounded-note")
+            .arg("test: exact session matrix")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

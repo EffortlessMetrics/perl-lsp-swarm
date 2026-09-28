@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "`cargo xtask ripr-pr` no longer counts RIPR `no_static_path` / `reachable_unrevealed` / `weakly_exposed` probes whose expression text is absent near the reported head line as new gaps. `HeadLineExtents` keeps the head revision's lines for the change's file set, and `finding_is_outside_head` now reports a finding as outside the head revision when its probe expression does not anchor within a 3-line window of the reported line — closing the #6260 residual where deleted-line probes anchored inside the head file kept failing the required `ripr+ New Gap Gate` even though the guidance pass correctly named no seam for them. Head-side probes (their own line's text) and ambiguous cases (no expression, no head text, off-by-too-many lines) stay counted."
+time: 2026-09-19T20:00:00Z
+custom:
+  PR: "0000"
+  Slug: ripr-deleted-line-probe-anchor
+  Breaking: "no"

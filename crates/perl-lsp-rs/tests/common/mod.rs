@@ -56,8 +56,8 @@ pub use handshake::{
 pub use protocol_io::{
     ReadResponseOutcome, drain_until_quiet, read_notification_for_uri, read_notification_method,
     read_notification_timeout, read_response, read_response_matching, read_response_matching_i64,
-    read_response_matching_outcome, read_response_only_timeout, read_response_timeout, send_raw,
-    send_raw_message, send_request_no_wait,
+    read_response_matching_outcome, read_response_only_timeout, read_response_timeout,
+    read_response_where, send_raw, send_raw_message, send_request_no_wait,
 };
 
 use binary_resolution::resolve_perl_lsp_cmds;

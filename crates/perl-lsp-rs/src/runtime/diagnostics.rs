@@ -5655,10 +5655,11 @@ system($path);
     fn build_context_uses_server_owned_encoding_after_initialize()
     -> Result<(), Box<dyn std::error::Error>> {
         let (server, _buf) = make_server_with_capture();
+        // A utf-8-only offer records the client's preference in the accepted
+        // contract receipt while the session encoding stays UTF-16.
         server.handle_initialize(Some(serde_json::json!({
             "capabilities": {"general": {"positionEncodings": ["utf-8"]}}
         })))?;
-        server.client_capabilities.lock().position_encoding = crate::textdoc::PosEnc::Utf8;
 
         let context =
             PullDiagnosticsOrchestrator::new().build_context(&server, "file:///test.pl")?;

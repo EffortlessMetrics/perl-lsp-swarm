@@ -18,9 +18,21 @@ use perl_module::{
     LegacySeparatorProfile,
     // import module
     LoadTiming,
+    // module_move module
+    MODULE_MOVE_SCHEMA_VERSION,
     ModuleFilePath,
     ModuleFilePathError,
     ModuleImportKind,
+    ModuleMoveBlocker,
+    ModuleMoveDisposition,
+    ModuleMoveEdit,
+    ModuleMoveFileGeneration,
+    ModuleMoveInvalidPlan,
+    ModuleMoveOccurrence,
+    ModuleMovePlan,
+    ModuleMoveResourceTransition,
+    ModuleMoveSource,
+    ModuleMoveTarget,
     ModuleName,
     ModuleNameError,
     ModuleRequest,
@@ -409,7 +421,7 @@ fn test_api_rs_re_export_count() -> Result<(), Box<dyn std::error::Error>> {
 /// Number of `pub use` statements in `src/api.rs`.
 ///
 /// Update this together with the import list above whenever the facade changes.
-const EXPECTED_API_RE_EXPORTS: usize = 87;
+const EXPECTED_API_RE_EXPORTS: usize = 98;
 
 /// Regression: verify legacy package separator handling.
 #[test]
@@ -490,4 +502,43 @@ fn test_documentation_62_migrated_tests_present() {
     // - rename: tests (the one with the pre-existing bug)
     // - resolution: tests
     // Total: ≥62 from old crates
+}
+
+/// The relocated pure move planner (#7448) is reachable only through the
+/// facade: the types import, the schema constant is stable, and the internal
+/// `module_move` path is not (that direction is proven by the `compile_fail`
+/// doctest in `src/api.rs`).
+#[test]
+fn test_module_move_facade_exports() {
+    assert_eq!(MODULE_MOVE_SCHEMA_VERSION, 1);
+    let target = ModuleMoveTarget::Package("Old::Name".to_string());
+    assert_eq!(target, ModuleMoveTarget::Package("Old::Name".to_string()));
+    let blocker = ModuleMoveBlocker::InvalidSource;
+    assert_eq!(blocker.tag(), "invalid-source");
+    let disposition = ModuleMoveDisposition::Complete;
+    assert_eq!(disposition.tag(), "complete");
+    let invalid = ModuleMoveInvalidPlan::CompletePlanWithoutEdits;
+    assert!(format!("{invalid:?}").contains("CompletePlanWithoutEdits"));
+    // Type-level reachability: constructing these value types compiles.
+    let _ = ModuleMoveFileGeneration {
+        file_id: perl_semantic_facts::FileId(1),
+        generation: perl_semantic_facts::SourceGeneration::Unknown,
+    };
+    let _ = ModuleMoveResourceTransition {
+        source_path: String::new(),
+        target_path: String::new(),
+        source_module: String::new(),
+        target_module: String::new(),
+    };
+}
+
+/// The remaining plan types are facade-exported: naming them in a signature
+/// compiles only when the crate root re-exports them. Never called.
+#[allow(dead_code)]
+fn module_move_types_reachable(
+    _source: ModuleMoveSource,
+    _occurrence: ModuleMoveOccurrence,
+    _edit: ModuleMoveEdit,
+    _plan: ModuleMovePlan,
+) {
 }

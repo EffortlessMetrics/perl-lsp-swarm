@@ -708,7 +708,10 @@ function resolveExternalPeerListenBind(
  * This function intentionally remains a pure argv projection for unit tests and
  * callers that have already validated the explicit backend selection.
  */
-export function buildDapExecutableArgs(config: vscode.DebugConfiguration | undefined): string[] {
+export function buildDapExecutableArgs(
+  config: vscode.DebugConfiguration | undefined,
+  hostWorkspaceRoot?: string,
+): string[] {
   const peer = resolveExternalPeerAddress(config);
   if (peer) {
     return ['--external-peer', peer];
@@ -717,7 +720,25 @@ export function buildDapExecutableArgs(config: vscode.DebugConfiguration | undef
   if (listen) {
     return ['--external-peer-listen', listen];
   }
+  // The editor workspace is host-owned startup authority. Supplying it to
+  // perl-dap keeps native launches usable without allowing launch.json data to
+  // create or widen authority. The root is canonicalized first: the native
+  // adapter rejects symlink roots, so forwarding the link would refuse every
+  // launch in a symlinked workspace instead of debugging it.
+  if (hostWorkspaceRoot && hostWorkspaceRoot.trim().length > 0) {
+    return ['--trusted-root', canonicalizeWorkspaceRoot(hostWorkspaceRoot.trim())];
+  }
   return [];
+}
+
+/** Resolve symlinks/aliases in a host workspace root, falling back to the
+ * trimmed input when resolution fails (missing dir, permissions). */
+export function canonicalizeWorkspaceRoot(root: string): string {
+  try {
+    return fs.realpathSync(root);
+  } catch {
+    return root;
+  }
 }
 
 export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFactory {
@@ -757,7 +778,10 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
       return undefined;
     }
 
-    const args = buildDapExecutableArgs(session?.configuration);
+    const args = buildDapExecutableArgs(
+      session?.configuration,
+      session?.workspaceFolder?.uri.fsPath,
+    );
     return new vscode.DebugAdapterExecutable(dapPath, args, {
       env: { ...process.env, RUST_LOG: 'debug' },
     });

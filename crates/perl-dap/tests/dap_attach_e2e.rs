@@ -8,6 +8,7 @@ mod common;
 use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::transport::framing::frame;
+use perl_tdd_support::must_with;
 use serde_json::{Value, json};
 use std::error::Error;
 use std::io::{Read, Write};
@@ -113,6 +114,7 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
 
     let timeout = smoke_timeout();
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -235,6 +237,7 @@ fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
 
     let timeout = smoke_timeout();
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -448,6 +451,7 @@ fn dap_attach_e2e_tcp_attach_timeout_returns_actionable_message() -> TestResult 
     drop(listener);
 
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
 
     let message = response_failure_message(
@@ -495,6 +499,7 @@ fn dap_attach_validation_errors_reach_the_request_response() -> TestResult {
 
     for (arguments, expected_guidance) in cases {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
         let message = response_failure_message(
             adapter.handle_request(2, "attach", Some(arguments)),
@@ -507,4 +512,26 @@ fn dap_attach_validation_errors_reach_the_request_response() -> TestResult {
     }
 
     Ok(())
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = must_with(
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test: unbounded session",
+            )),
+        }),
+        "test authority resolution",
+    );
+    adapter.set_launch_authority(authority);
 }

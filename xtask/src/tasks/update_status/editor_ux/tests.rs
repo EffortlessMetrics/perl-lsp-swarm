@@ -6,7 +6,7 @@ fn test_editor_ux_receipt_shape() -> Result<()> {
     let root = crate::utils::project_root()?;
     let receipt_raw = generate_editor_ux_receipt(&root)?;
     let receipt: serde_json::Value = serde_json::from_str(&receipt_raw)?;
-    assert_eq!(receipt["schema_version"], 1);
+    assert_eq!(receipt["schema_version"], "editor_ux.v1");
     assert!(
         receipt["receipt_kind"] == "planning_scaffold"
             || receipt["receipt_kind"] == "measured_status"
@@ -63,6 +63,65 @@ fn test_editor_ux_receipt_shape() -> Result<()> {
         );
         assert!(receipt_count > 0, "signal `{name}` has zero workflow coverage");
     }
+    Ok(())
+}
+
+#[test]
+fn measured_scorecard_consumer_accepts_current_producer_envelope() -> Result<()> {
+    let root = crate::utils::project_root()?;
+    let scorecard = load_measured_scorecard(&root)?
+        .expect("tracked .ci/metrics/editor_ux.json must exist and be accepted");
+    assert_eq!(
+        scorecard.schema_version, SUPPORTED_EDITOR_UX_SCHEMA_VERSION,
+        "committed producer output must carry the supported schema_version"
+    );
+    Ok(())
+}
+
+/// Write a mutated scorecard envelope into a temp root and return the root.
+fn temp_root_with_envelope(envelope: &serde_json::Value) -> Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    let metrics_dir = dir.path().join(".ci").join("metrics");
+    fs::create_dir_all(&metrics_dir)?;
+    fs::write(metrics_dir.join("editor_ux.json"), serde_json::to_string_pretty(envelope)?)?;
+    Ok(dir)
+}
+
+fn tracked_scorecard_envelope() -> Result<serde_json::Value> {
+    let root = crate::utils::project_root()?;
+    let raw = fs::read_to_string(root.join(".ci").join("metrics").join("editor_ux.json"))?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+#[test]
+fn measured_scorecard_consumer_refuses_future_schema_version() -> Result<()> {
+    let mut envelope = tracked_scorecard_envelope()?;
+    envelope["schema_version"] = serde_json::json!(SUPPORTED_EDITOR_UX_SCHEMA_VERSION + 1);
+    let dir = temp_root_with_envelope(&envelope)?;
+
+    let err = load_measured_scorecard(dir.path())
+        .expect_err("a future schema_version must fail closed, not silently render")
+        .to_string();
+    assert!(
+        err.contains("expected 1") && err.contains("found 2"),
+        "error must name expected and found versions, got: {err}"
+    );
+    Ok(())
+}
+
+#[test]
+fn measured_scorecard_consumer_refuses_missing_schema_version() -> Result<()> {
+    let mut envelope = tracked_scorecard_envelope()?;
+    envelope.as_object_mut().expect("scorecard envelope is a JSON object").remove("schema_version");
+    let dir = temp_root_with_envelope(&envelope)?;
+
+    let err =
+        load_measured_scorecard(dir.path()).expect_err("a missing schema_version must fail closed");
+    let chain = format!("{err:?}");
+    assert!(
+        chain.contains("schema_version"),
+        "error chain must identify schema_version as the problem, got: {chain}"
+    );
     Ok(())
 }
 

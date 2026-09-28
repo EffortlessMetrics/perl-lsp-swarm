@@ -786,10 +786,10 @@ impl LspServer {
                 .inlay_hint_resolve_support
                 .as_ref()
                 .is_some_and(|properties| properties.contains("label.location"));
-            let profile = match capabilities.position_encoding {
-                crate::textdoc::PosEnc::Utf16 => "profile:inlayhint:utf16",
-                crate::textdoc::PosEnc::Utf8 => "profile:inlayhint:utf8",
-            };
+            // The accepted text-sync session is the sole position-encoding
+            // authority. Its contract is fail-closed to UTF-16, so this
+            // profile must not read the removed client-capability field.
+            let profile = "profile:inlayhint:utf16";
             (supports, profile)
         };
         if !supports_label_location {
