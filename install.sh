@@ -20,6 +20,31 @@ fail() {
     exit 1
 }
 
+# Every remote-bootstrap failure is the same dead end: the identity pair the
+# wrapper needs is not published yet, and nothing in the message says so, or
+# says what works today (#16542). One remedy for all of them, so the text
+# cannot drift between the eight call sites.
+bootstrap_remedy() {
+    cat >&2 <<'REMEDY'
+
+The identity-bound bootstrap needs PERL_LSP_INSTALLER_REF and
+PERL_LSP_INSTALLER_SHA256 as a reviewed pair. The pair is published together
+at release closeout, and has not been published yet - so this path cannot
+complete, and no value of either variable will change that.
+
+The manual archive install works today:
+  https://github.com/EffortlessMetrics/perl-lsp/releases
+See docs/how-to/INSTALLATION.md ("Installer Script (macOS and Linux)") for the
+manual-archive procedure, and "Fastest Path" for the one-line version.
+REMEDY
+}
+
+bootstrap_fail() {
+    echo "Error: $*" >&2
+    bootstrap_remedy
+    exit 1
+}
+
 # `${BASH_SOURCE[0]:-}` — not a bare `${BASH_SOURCE[0]}`. When this script is
 # read from stdin, BASH_SOURCE is an empty array under older Bash versions.
 SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
@@ -55,14 +80,14 @@ if [ -n "$CANONICAL_INSTALLER" ] && [ -f "$CANONICAL_INSTALLER" ]; then
 fi
 
 if ! command -v curl >/dev/null 2>&1; then
-    fail "curl is required to fetch the canonical installer"
+    bootstrap_fail "curl is required to fetch the canonical installer"
 fi
 
 INSTALLER_REF="${PERL_LSP_INSTALLER_REF:-}"
 EXPECTED_SHA256="${PERL_LSP_INSTALLER_SHA256:-}"
 
 if [ -z "$INSTALLER_REF" ]; then
-    fail "remote bootstrap requires PERL_LSP_INSTALLER_REF (a full lowercase commit SHA)"
+    bootstrap_fail "remote bootstrap requires PERL_LSP_INSTALLER_REF (a full lowercase commit SHA)"
 fi
 
 # Only a full commit SHA is immutable for both the piped wrapper and the
@@ -78,15 +103,15 @@ if [ "${#INSTALLER_REF}" -eq 40 ]; then
 fi
 
 if [ "$valid_ref" != "true" ]; then
-    fail "PERL_LSP_INSTALLER_REF must be a full lowercase commit SHA"
+    bootstrap_fail "PERL_LSP_INSTALLER_REF must be a full lowercase commit SHA"
 fi
 
 if [ "${#EXPECTED_SHA256}" -ne 64 ]; then
-    fail "PERL_LSP_INSTALLER_SHA256 must be exactly 64 lowercase hexadecimal characters"
+    bootstrap_fail "PERL_LSP_INSTALLER_SHA256 must be exactly 64 lowercase hexadecimal characters"
 fi
 case "$EXPECTED_SHA256" in
     *[!0-9a-f]*)
-        fail "PERL_LSP_INSTALLER_SHA256 must be exactly 64 lowercase hexadecimal characters"
+        bootstrap_fail "PERL_LSP_INSTALLER_SHA256 must be exactly 64 lowercase hexadecimal characters"
         ;;
 esac
 
@@ -107,7 +132,7 @@ HTTP_STATUS="$(
 )" || fail "failed to fetch the canonical installer"
 
 if [ "$HTTP_STATUS" != "200" ]; then
-    fail "canonical installer request returned HTTP $HTTP_STATUS; redirects and non-success responses are rejected"
+    bootstrap_fail "canonical installer request returned HTTP $HTTP_STATUS; redirects and non-success responses are rejected"
 fi
 
 ACTUAL_SHA256=""
@@ -118,11 +143,11 @@ elif command -v shasum >/dev/null 2>&1; then
     SHA_OUTPUT="$(shasum -a 256 "$TMP_INSTALLER")" || fail "shasum failed"
     ACTUAL_SHA256="${SHA_OUTPUT%% *}"
 else
-    fail "sha256sum or shasum is required to verify the canonical installer"
+    bootstrap_fail "sha256sum or shasum is required to verify the canonical installer"
 fi
 
 if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-    fail "canonical installer SHA-256 mismatch"
+    bootstrap_fail "canonical installer SHA-256 mismatch"
 fi
 
 # Do not exec here: returning through this shell guarantees the EXIT trap
