@@ -116,6 +116,79 @@ jobs:
             LSP:sublimelsp/LSP@${{ env.PERLLSP_LSP_TAG }}
             sublime_aio:packagecontrol/sublime_aio@${{ env.PERLLSP_AIO_TAG }}
 
+      - name: Pin the exact Sublime Text 4200 build over the floating install
+        # The setup action above cannot pin an exact ST4 build: its
+        # `sublime-text-version` input accepts only the literal `3` or `4`, and
+        # both of its installers resolve the actual artifact by scraping the
+        # live sublimetext.com download page for the newest build. That float
+        # crossed 4200 -> 4213 on 2026-09-21: builds after 4200 ship a
+        # python-3.13/3.14 plugin host instead of python-3.8, under which the
+        # pinned LSP 2.13.0 window registry never populates and the journey
+        # dies with `windows.lookup() -> None` before a single test runs
+        # (#16388). Every other input of this lane is already pinned to the
+        # last-green 4200 era (the UnitTesting action SHA, LSP 4070-2.13.0,
+        # the python-3.8-era typing_extensions vendor), so the floating
+        # install is replaced in place with the exact 4200 artifacts, each
+        # verified by digest. Install paths, PATH entries, and the subl
+        # launcher symlinks are unchanged; on Windows the Data directory,
+        # which already holds the packages the action installed, is
+        # preserved across the swap.
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://download.sublimetext.com"
+          staging="$(mktemp -d)"
+          case "$RUNNER_OS" in
+            Windows)
+              artifact="sublime_text_build_4200_x64.zip"
+              digest="d20456bbefcd626c7c89a4a2e95c326a0c570df2fd7626fc35091e43ae5bff9f"
+              curl -fsSL "$base/$artifact" -o "$staging/$artifact"
+              printf '%s  %s\n' "$digest" "$staging/$artifact" | sha256sum -c -
+              restore_data=""
+              if [ -d /c/st/Data ]; then
+                mv /c/st/Data "$staging/Data"
+                restore_data=1
+              fi
+              rm -rf /c/st
+              mkdir -p /c/st
+              python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+                "$staging/$artifact" /c/st
+              if [ -n "$restore_data" ]; then
+                mv "$staging/Data" /c/st/Data
+              fi
+              test -f /c/st/sublime_text.exe
+              test -f /c/st/plugin_host-3.8.exe
+              echo "Sublime Text build 4200 installed in C:\\st"
+              ;;
+            macOS)
+              artifact="sublime_text_build_4200_mac.zip"
+              digest="4835eb2a5d3f2b223ce93a27149f360ef158af9f8dd708b6f501d708c081d319"
+              curl -fsSL "$base/$artifact" -o "$staging/$artifact"
+              printf '%s  %s\n' "$digest" "$staging/$artifact" | sha256sum -c -
+              rm -rf "$HOME/Applications/Sublime Text.app"
+              unzip -q "$staging/$artifact" -d "$HOME/Applications/"
+              test -f "$HOME/Applications/Sublime Text.app/Contents/MacOS/sublime_text"
+              test -f "$HOME/Applications/Sublime Text.app/Contents/MacOS/plugin_host-3.8"
+              echo "Sublime Text build 4200 installed in ~/Applications/Sublime Text.app"
+              ;;
+            Linux)
+              artifact="sublime_text_build_4200_x64.tar.xz"
+              digest="36f69c551ad18ee46002be4d9c523fe545d93b67fea67beea731e724044b469f"
+              curl -fsSL "$base/$artifact" -o "$staging/$artifact"
+              printf '%s  %s\n' "$digest" "$staging/$artifact" | sha256sum -c -
+              rm -rf "$HOME/sublime_text"
+              tar xf "$staging/$artifact" -C "$HOME"
+              test -f "$HOME/sublime_text/sublime_text"
+              test -f "$HOME/sublime_text/plugin_host-3.8"
+              echo "Sublime Text build 4200 installed in ~/sublime_text"
+              ;;
+            *)
+              echo "unsupported RUNNER_OS: $RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+          rm -rf "$staging"
+
       - name: Vendor the pinned typing_extensions dependency
         # The pinned LSP 2.13.0 declares typing_extensions as a Package
         # Control dependency; with Package Control disabled it never installs
