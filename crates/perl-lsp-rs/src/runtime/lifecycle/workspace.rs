@@ -522,8 +522,7 @@ impl LspServer {
             .join("; ");
         let user_msg = format!(
             "Perl LSP: multi-root workspace has conflicting .perl-lsp.toml settings across \
-             folders. The first folder wins for each key; others were ignored: {rendered}. \
-             See docs/reference/CONFIG.md (Multi-root workspaces) for details."
+             folders. The first folder wins for each key; others were ignored: {rendered}."
         );
         tracing::warn!(conflicts = %rendered, "Multi-root config conflict; first folder wins");
         if let Err(e) = self.show_message(MessageType::Warning, &user_msg) {

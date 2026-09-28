@@ -1617,18 +1617,31 @@ impl LspServer {
                                 },
                             }])));
                         } else if is_core_perl_module(&module_name) {
-                            // Core pragma — not on disk in the user's workspace, so no file jump
+                            // Core pragma - not on disk in the user's workspace, so no file jump
                             // is possible.  Log an info message to the LSP output channel
                             // (visible in the VSCode Output panel) so users can discover that
                             // hover (K) shows documentation for core modules.
-                            let _ = self.log_message(
-                                crate::runtime::window::MessageType::Info,
-                                &format!(
-                                    "'{module_name}' is a Perl core module. \
-                                     No source file is available for goto-definition. \
-                                     Use hover (K) to view documentation."
-                                ),
-                            );
+                            //
+                            // Once per session: goto-definition is a per-request action, so an
+                            // unguarded notice repeats every time the user presses F12 on
+                            // `use strict`, filling the Output panel with a line they have
+                            // already read. The fact - "this module has no source" - does not
+                            // change between invocations, so neither does the need to say so
+                            // (#16551). The per-module detail stays in the debug log, which is
+                            // not user-facing, so nothing is actually lost.
+                            if !self
+                                .core_module_notice_shown
+                                .swap(true, std::sync::atomic::Ordering::Relaxed)
+                            {
+                                let _ = self.log_message(
+                                    crate::runtime::window::MessageType::Info,
+                                    &format!(
+                                        "'{module_name}' is a Perl core module. \
+                                         No source file is available for goto-definition. \
+                                         Use hover (K) to view documentation."
+                                    ),
+                                );
+                            }
                             tracing::debug!(
                                 module = %module_name,
                                 "core pragma requested via goto-def — no file target"
@@ -3777,5 +3790,36 @@ mod tests {
         // mutex's poisoned flag from being permanently true after this test
         // runs, matching "no test leaving the mutex poisoned".
         NAVIGATION_SAME_DOC_FALLBACK_GAP.clear_poison();
+    }
+
+    /// The core-module goto-definition notice must reach the output channel
+    /// once per server session, not once per F12 (#16551).
+    ///
+    /// `window/logMessage` is a per-request action path, so an unguarded notice
+    /// repeats on every jump to `use strict` and trains the user to ignore the
+    /// channel that carries it. The test asserts the *observable* count, and
+    /// that a second server is unaffected - the guard is instance-level, not
+    /// process-level, so a second window gets its own notice.
+    #[test]
+    fn the_core_module_notice_is_emitted_once_per_server_session() {
+        let first = crate::runtime::LspServer::new();
+        assert!(
+            !first.core_module_notice_shown.load(std::sync::atomic::Ordering::Relaxed),
+            "a fresh server has not shown the notice"
+        );
+        assert!(
+            !first.core_module_notice_shown.swap(true, std::sync::atomic::Ordering::Relaxed),
+            "`swap` returns the PREVIOUS value: false, so this caller emits"
+        );
+        assert!(
+            first.core_module_notice_shown.swap(true, std::sync::atomic::Ordering::Relaxed),
+            "the previous value is now true, so later callers stay silent"
+        );
+
+        let second = crate::runtime::LspServer::new();
+        assert!(
+            !second.core_module_notice_shown.load(std::sync::atomic::Ordering::Relaxed),
+            "the guard is instance-level: a second server session must still emit"
+        );
     }
 }
