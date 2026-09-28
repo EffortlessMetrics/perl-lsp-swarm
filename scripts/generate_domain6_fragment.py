@@ -54,7 +54,7 @@ PREFILTER = [
 
 EXPECTED_NON_MERGE = 682
 EXPECTED_UNITS = 672
-EXPECTED_SEEDS = 17
+EXPECTED_SEEDS = 26
 # Unsimplified range merge population (START_SHA..OBSERVED_HEAD,
 # --full-history): 2 kept + 1 related-record + 62 content-free +
 # 11 blob-covered + 18 created = 94. Pinned: the range is fixed, the
@@ -1494,6 +1494,312 @@ SEEDS = {
         "commit (verified 2026-09-25); issue #15281 is the tracked "
         "problem (packet 2 of #6067)",
     },
+    "PR#15221": {
+        "commits": ["e3c581240f59fdf7b249e496a48174a5ba169e95"],
+        "subject": "fix(vscode): replace vulnerable ZIP reader dependency "
+        "(#15219) (#15221)",
+        "paths_or_components": [
+            "vscode-extension/package-lock.json",
+            "vscode-extension/package.json",
+            "vscode-extension/rolldown.config.mjs",
+            "vscode-extension/scripts/check-vsix-inventory-transition.js",
+            "vscode-extension/scripts/check-vsix-inventory-transition.test.js",
+            "vscode-extension/scripts/check-vsix-inventory.js",
+            "vscode-extension/scripts/vsix-inventory-baseline.json",
+            "vscode-extension/scripts/vsix-inventory-transition.json",
+            "vscode-extension/src/managedArchiveExtract.ts",
+            "vscode-extension/src/test/managedArchiveExtract.test.ts",
+            "vscode-extension/src/test/rolldown.test.ts",
+            "vscode-extension/test/grammar/README.md",
+        ],
+        "release_domains": ["editor", "install", "security"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "no settings or on-disk format change: managed archives keep "
+            "the vscode-managed-archive-safety.v1 member laws and ceilings; "
+            "the bundled reader swap (adm-zip -> yauzl) and stream "
+            "cancellation are internal to the installed extension"
+        ],
+        "api_schema_package_effects": [
+            "vscode-extension package.json: production dependency adm-zip "
+            "^0.6.0 removed and yauzl ^3.4.0 added; devDependencies swap "
+            "@types/adm-zip for @types/yauzl and add jszip for synthetic "
+            "test archives"
+        ],
+        "proof_owner_refs": [
+            "vscode-extension/src/test/managedArchiveExtract.test.ts",
+            "vscode-extension/src/test/rolldown.test.ts",
+            "vscode-extension/scripts/check-vsix-inventory-transition.test.js",
+            "vscode-extension/scripts/vsix-inventory-transition.json",
+        ],
+        "known_limitations": [
+            "unit/source stage only: cancellation and reader-swap proofs "
+            "are jest suites; installed managed-download acceptance "
+            "belongs to the #6056 lane",
+            "the advisory exposure (GHSA-vwc7-r8mq-g2x9 / CVE-2026-76845, "
+            "Dependabot alert #65) was already unreachable through this "
+            "installer: managedArchiveExtract never called adm-zip's "
+            "extractAllTo, so the swap is dependency hygiene plus reader "
+            "hardening, not a reachable-vulnerability repair; alert #65 "
+            "verified fixed 2026-09-25 (fixed_at 2026-09-09T12:32:03Z)",
+            "in-range successors evolved the same inventory-checker files: "
+            "validated native manifest inventory (PR#15241, #9933), "
+            "packaged DAP startup on Linux (PR#15464, #6694), alpine "
+            "bundle members target-owned (PR#15535, #15534), reviewed "
+            "PR#16207 mapped-RC binding; managedArchiveExtract.ts, its "
+            "test, rolldown.test.ts, and rolldown.config.mjs are "
+            "byte-unchanged through current main (verified 2026-09-25)",
+            "the vsix-inventory-transition.json ratchet moved on after the "
+            "head (owner_issue #16381 post-head); later re-baselines own "
+            "later sizes, not this row",
+            "vscode-extension/CHANGELOG.md still names adm-zip in the "
+            "bundled-dependency list on current main; the stale doc line "
+            "is not repaired by this unit",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["15219-CLOSED"],
+        "invalidators": [
+            "yauzl open options or entry-iteration semantics change "
+            "(lazyEntries, decodeStrings, strictFileNames, "
+            "validateEntrySizes)",
+            "zip member classification change (trailing slash plus DOS "
+            "directory/reparse/device attribute bits, versionMadeBy high "
+            "byte)",
+            "cancellation contract change (stream destroy, pre-return and "
+            "post-loop cancellation re-checks, per-chunk budget "
+            "enforcement)",
+            "dependency rework reintroducing a bundled archive reader "
+            "(closes the reviewed PR#12808 reader-swap invalidator)",
+        ],
+        "platforms_and_targets": [
+            "vscode extension host: windows .zip managed path and "
+            "linux/macos tar.gz path (tar reader unchanged)",
+            "vsix inventory measurement path: check-vsix-inventory.js "
+            "reads archives via yauzl fromBuffer",
+            "dev-only jszip builds synthetic archives in tests",
+        ],
+        "artifact_or_route_effects": [
+            "managed zip extraction replaces adm-zip with yauzl opened "
+            "lazyEntries/decodeStrings/strictFileNames/validateEntrySizes; "
+            "unsupported compression methods (non-STORE/DEFLATE) refuse; "
+            "yauzl unsafe-path failures rethrow as 'unsafe archive member "
+            "path'",
+            "entry inspection and extraction stream under a cancellation "
+            "token: checked before, during (per chunk), and after each "
+            "phase; active streams are destroyed and the open/cancel race "
+            "is closed by racing the open promise and re-checking before "
+            "return",
+            "directory classification moves to trailing slash plus the DOS "
+            "directory attribute bit and versionMadeBy/"
+            "externalFileAttributes fields; the inspect-then-extract "
+            "two-pass member laws and size ceilings are unchanged",
+            "the VSIX inventory checker reads archives with yauzl; the "
+            "inventory baseline and transition refresh declare the "
+            "reviewed size-only move under owner issue #15219",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#15221) of subject pair "
+        "(#15219)(#15221); merge_commit_sha of PR #15221 equals the "
+        "commit (verified 2026-09-25); issue #15219 is the tracked "
+        "problem",
+    },
+    "PR#15456": {
+        "commits": ["dd4145a18ecc496a992693510103aac63c0f963b"],
+        "subject": "fix(vscode): reject incompatible packaged DAP targets "
+        "(#15451) (#15456)",
+        "paths_or_components": [
+            "vscode-extension/scripts/vsix-inventory-baseline.json",
+            "vscode-extension/scripts/vsix-inventory-transition.json",
+            "vscode-extension/src/debugAdapter.ts",
+            "vscode-extension/src/test/debugAdapter.test.ts",
+        ],
+        "release_domains": ["editor", "install"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "upgrade: a packaged VSIX whose __metadata.targetPlatform "
+            "mismatches the host no longer uses its bundled adapter; a "
+            "Windows ARM64 host emulates the x64 packaged adapter only on "
+            "Windows 11 or newer (build-number classified); no settings "
+            "migration"
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "vscode-extension/src/test/debugAdapter.test.ts",
+            "vscode-extension/scripts/vsix-inventory-transition.json",
+        ],
+        "known_limitations": [
+            "unit/source stage only: packaged-target rejection is proven "
+            "by table-driven debugAdapter tests and the declared "
+            "size-only inventory transition; installed packaged-VSIX "
+            "acceptance belongs to the open #6694/#6056 lane",
+            "classifyWindowsArm64Support gates emulated x64 on a parsed "
+            "Windows build number; unknown builds stay native-only (fail "
+            "closed, may refuse a working emulation path)",
+            "an incompatible declared packaged target ends the packaged "
+            "path and the descriptor falls through to the auto-download "
+            "directory, managed storage, and PATH — the ordering "
+            "reviewed PR#15443 already owns",
+            "in-range successors changed surroundings, not this "
+            "selection: launch authority (reviewed PR#14523), processId "
+            "attach fail-closed (PR#14402), language-id coherence "
+            "(PR#15810 + CI repair PR#15818); "
+            "packagedDapTargetDirectoryForContext is byte-unchanged "
+            "through current main (verified 2026-09-25)",
+            "the inventory transition record moved on after the head "
+            "(owner_issue #16381 post-head ratchet); later re-baselines "
+            "own later sizes, not this row",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["15451-CLOSED"],
+        "invalidators": [
+            "packaged __metadata.targetPlatform contract or bin/<target> "
+            "payload layout change",
+            "classifyWindowsArm64Support build-number law or the "
+            "win32-arm64 hostTargets mapping change",
+            "DAP executable selection precedence change",
+            "linux host android/termux exclusion or detectMusl "
+            "alpine/linux split rework",
+        ],
+        "platforms_and_targets": [
+            "vscode-packaged-dap",
+            "windows-arm64 (native preferred; emulated win32-x64 only on "
+            "Windows 11 or newer)",
+            "linux gnu/alpine by detectMusl with android/termux hosts "
+            "excluded; darwin arm64/x64",
+        ],
+        "artifact_or_route_effects": [
+            "packagedDapTargetDirectoryForContext validates the declared "
+            "package.json __metadata.targetPlatform against the "
+            "host-derived target list and refuses a well-formed but "
+            "incompatible packaged target instead of selecting it",
+            "host targets derive per platform: linux gnu/alpine by "
+            "detectMusl with android/termux excluded, darwin by arch, "
+            "win32 x64, and win32 arm64 native plus emulated win32-x64 "
+            "only when classifyWindowsArm64Support reports "
+            "windows-11-or-newer",
+            "fallback selection picks the first host target with an "
+            "executable bin/<target>/perl-dap[.exe] (find), replacing the "
+            "previous exactly-one-candidate filter",
+            "declared size-only VSIX inventory transition (+114 bytes "
+            "out/extension.js) under owner issue #15451",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "editor",
+        "grouping_evidence": "trailing (#15456) of subject pair "
+        "(#15451)(#15456); merge_commit_sha of PR #15456 equals the "
+        "commit (verified 2026-09-25); issue #15451 is the tracked "
+        "problem",
+    },
+    "PR#15911": {
+        "commits": ["257735cd6e2803ca8494033c4432a4373a2f64d8"],
+        "subject": "fix(release): reject regex-literal pseudo-returns + "
+        "commented macOS/Linux branches (#15453) (#15911)",
+        "paths_or_components": [
+            "scripts/generate_release_topology.py",
+            "scripts/test_generate_release_topology.py",
+        ],
+        "release_domains": ["release", "install"],
+        "primary_disposition": "release_integrity_or_lineage",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/test_generate_release_topology.py (three "
+            "downloader-target derivation rejection tests)",
+            "scripts/generate_release_topology.py derive_downloader_targets "
+            "position-aware admission",
+        ],
+        "known_limitations": [
+            "mechanism stage: the admission law is proven by unit tests "
+            "against synthetic and current downloader sources; no tagged "
+            "release has been produced through this derivation path",
+            "the mask is a conservative hand-written TypeScript lexer, "
+            "not a parser: term-position regex disambiguation and "
+            "template-literal pass-through are tuned to the managed "
+            "downloader's shapes; unterminated literals fail closed",
+            "template literal bodies stay visible in the default mask "
+            "because the Linux construction needle lives inside one; "
+            "only the Windows constant-return check runs an "
+            "identifier-strict second pass",
+            "supersedes the reviewed PR#15447-era masking scan: "
+            "regex-literal pseudo-returns and commented Darwin/Linux "
+            "branches its regex mask could still admit now fail closed",
+            "in-range successor reviewed PR#16207 (topology v4) extended "
+            "the same generator file for schema admission and "
+            "byte-identical schema binding; the lexer and "
+            "derive_downloader_targets are byte-unchanged since this "
+            "commit (verified 2026-09-25), and the real downloader admits "
+            "all 8 targets",
+            "post-head drift on the file is a dependabot toolchain pin "
+            "(PR#16357) inside checksum_candidate_steps, not the "
+            "derivation law",
+                    "position-aware masking does not admit unterminated or malformed "
+            "regex-like constructs: such sources are outside this row's proof "
+            "boundary (a lexer-level rejection test is the follow-up owner)",
+],
+        "open_pr_relationships": [
+            "16230-OPEN carrier touches "
+            "scripts/generate_release_topology.py (mapped-RC packaging; "
+            "its branch predates the landed reviewed PR#16207 v4 "
+            "admission)",
+        ],
+        "controlling_issues": ["15453-CLOSED"],
+        "invalidators": [
+            "derive_downloader_targets needle set or admission-law rework "
+            "(darwin ternary, Windows constant-return, Linux construction "
+            "needles)",
+            "_mask_typescript_non_code lexer semantics change "
+            "(term-position rule, template-literal default pass, "
+            "identifier-strict second pass)",
+            "vscode-extension/src/downloader.ts construction shapes "
+            "drifting so the fixed needles no longer match production "
+            "code (targets silently drop from the topology)",
+        ],
+        "platforms_and_targets": [
+            "portable release tooling: python stdlib topology generator",
+            "downloader target admission spans linux (gnu/musl), macOS "
+            "(x86_64/aarch64-apple-darwin), and windows "
+            "(x86_64/aarch64-pc-windows-msvc) through the constants in "
+            "vscode-extension/src/downloader.ts",
+        ],
+        "artifact_or_route_effects": [
+            "derive_downloader_targets admits a target only from "
+            "position-aware evidence: the needle must appear in the raw "
+            "source AND its leading identifier must sit outside comments, "
+            "string literals, and regex literals under a character-based "
+            "TypeScript mask",
+            "regex literals are distinguished from division by term "
+            "position; unterminated literals fail closed; template "
+            "literal bodies stay visible by default because the Linux "
+            "construction needle lives inside one, while the Windows "
+            "constant-return check runs an identifier-strict mask",
+            "commented-out Darwin ternary branches, regex-literal "
+            "pseudo-returns, and template-literal Windows pseudo-returns "
+            "stop admitting targets; the real downloader admits all 8 "
+            "targets",
+            "three unit tests pin the rejection laws (regex-literal "
+            "pseudo-returns, commented Darwin ternary, commented Linux "
+            "construction)",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#15911) of subject pair "
+        "(#15453)(#15911); merge_commit_sha of PR #15911 equals the "
+        "commit (verified 2026-09-25); issue #15453 is the tracked "
+        "problem",
+    },
     "PR#6180": {
         "commits": ["e7481112d94e7680e8efa1204de922c6abc0266b"],
         "subject": "security(install): require exact release checksums "
@@ -1796,6 +2102,642 @@ SEEDS = {
         "(#7832)(#7897); merge_commit_sha of PR #7897 equals the "
         "commit (verified against the API 2026-09-25); issue #7832 is "
         "the tracked problem",
+    },
+    "PR#4788": {
+        "commits": ["1b487414bb858abe377341cf14e6b5b112656a70"],
+        "subject": "fix(cli): reconcile Windows installer binary name "
+        "with docs (#4648) (#4788)",
+        "paths_or_components": [
+            ".changes/unreleased/product-4648-Fixed-000000.yaml",
+            "install.ps1",
+            "scripts/install.sh",
+        ],
+        "release_domains": ["install", "release", "docs"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "install (Windows): the installer now downloads the "
+            "perllsp-* release asset and installs perllsp.exe instead "
+            "of perl-lsp.exe; the unit does not migrate or remove a "
+            "previously installed perl-lsp.exe, so an old copy can "
+            "survive on PATH until manually removed",
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "install.ps1",
+            ".github/workflows/"
+            "installer-powershell-checksum-contract.yml",
+        ],
+        "known_limitations": [
+            "mechanism-stage via successors, not by this diff: the "
+            "as-merged unit is a one-constant rename with no proof of "
+            "its own; the hosted windows-latest checksum harness "
+            "(reviewed PR#6186) later drives the real install.ps1 "
+            "including the $Name-derived asset name against a fixture "
+            "transport, and no tagged-release Windows install has been "
+            "observed (v0.17.0 predates, no later release)",
+            "the swarm fix and the published route diverged: reviewed "
+            "PR#5477 (#5461, 2026-08-05) recorded the copy published "
+            "at $REPO/master as still building the pre-rename "
+            "perl-lsp-*.zip URL, and the product repo promoted a "
+            "perllsp-binding installer on 2026-08-09 (commit "
+            "333497691787, verified via raw fetch 2026-09-25); the "
+            "MINGW fallback comment on current main still says 'fix "
+            "pending promotion in #4348' and is stale, while the "
+            "audited publication join #4348 remains OPEN and the "
+            "published 248-line generation predates the reviewed "
+            "checksum/PATH/archive machinery",
+            "the controlling bundle issue #4648 closed COMPLETED "
+            "citing only criterion 1a; sub-problems 2-4 were not "
+            "addressed by this unit and perl-parse still requires the "
+            "non-default cli feature and the 'Git tag:' version label "
+            "still prints on current main (verified 2026-09-25); the "
+            "doctor exit-code sub-problem was refactored post-range "
+            "(run_doctor split) and stays not_proven here",
+            "later in-range rows re-bound install.ps1 nine times "
+            "(reviewed PR#5477, PR#6186, PR#7897, PR#12742, "
+            "PR#5481 and PR#6233; unreviewed PR#5452, PR#5871, "
+            "PR#12815): checksums, PATH persistence, archive "
+            "inspection, atomic promotion, and ARM64 target "
+            "selection all landed after this rename; the "
+            "$Name = \"perllsp\" binding survives byte-identical "
+            "through current main (verified 2026-09-25, line 29, "
+            "zero post-head commits on install.ps1)",
+            "the unit's own scripts/install.sh edit (fallback URL "
+            "scripts/install.ps1 -> root install.ps1) was rewritten "
+            "in-range by reviewed PR#5477, which stopped recommending "
+            "the piped installer entirely; post-head #16312/#16316 "
+            "touched install.sh release-path robustness without "
+            "touching the fallback",
+                    "docs/EXTENSION.md still directs editor-side users to "
+            "resolve/search perl-lsp on PATH: the editor-side naming "
+            "surface is a separate drift from this unit's installer "
+            "binary-name reconciliation and remains open",
+],
+        "open_pr_relationships": [],
+        "controlling_issues": ["4648-CLOSED"],
+        "invalidators": [
+            "$Name or asset-name derivation rework in install.ps1 "
+            "without the docs/release naming contract following",
+            "release workflow renaming the packaged binary or archive "
+            "name prefix",
+            "publication join (#4348) promoting an installer whose "
+            "naming or generation diverges from the reviewed swarm "
+            "copy",
+            "docs or README reverting to a different canonical binary "
+            "name",
+        ],
+        "platforms_and_targets": [
+            "windows: asset and installed-binary naming for both built "
+            "targets (perllsp.exe); a name-only correction, no target "
+            "set change",
+            "hosted mechanism proof rides the later windows-latest "
+            "checksum harness (reviewed PR#6186), not this unit's "
+            "merge",
+        ],
+        "artifact_or_route_effects": [
+            "install.ps1 $Name binds perllsp with a provenance comment; "
+            "the download URL ($PackageName), extracted binary, and "
+            "destination ($BinaryPath, $DestPath) all derive from it, "
+            "so the installer fetches the perllsp-* release archive "
+            "and installs perllsp.exe, matching POSIX install.sh, the "
+            "release workflow, and every editor doc",
+            "scripts/install.sh MINGW/MSYS/CYGWIN fallback URL "
+            "corrected from the non-existent scripts/install.ps1 to "
+            "the root install.ps1 (superseded in-range by reviewed "
+            "PR#5477 pointing Windows at the manual release archive)",
+            "changelog entry product-4648-Fixed declares the "
+            "user-visible Windows binary-name change",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#4788) of subject pair "
+        "(#4648)(#4788); merge_commit_sha of PR #4788 equals the "
+        "commit (verified against the API 2026-09-25); issue #4648 is "
+        "the tracked problem",
+    },
+    "PR#6371": {
+        "commits": ["cfe1a7eaa36964a4b608c831f90a0f19b750f4bd"],
+        "subject": "test(install): require every built Windows target "
+        "to be reachable (#6196) (#6371)",
+        "paths_or_components": [
+            "scripts/tests/test-install-target-selection.sh",
+        ],
+        "release_domains": ["install", "editor"],
+        "primary_disposition": "proof_or_test_only",
+        "reachable_installed_effect": "no",
+        "public_claim_refs": [],
+        "release_note_disposition": "covered",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/tests/test-install-target-selection.sh",
+            ".github/workflows/ci-gate-self-tests.yml",
+        ],
+        "known_limitations": [
+            "the gate is a static text scrape: after comment "
+            "stripping it counts only literal PS "
+            "$NativeTarget/$Target assignments and TS *TARGET "
+            "constants, so a surface that computes target names "
+            "non-literally fails closed ('names no Windows target "
+            "literally') rather than being checked, and a third "
+            "install surface would not be covered unless wired into "
+            "both directions",
+            "naming, not availability: the gate proves each surface "
+            "names every built Windows target; it executes neither "
+            "PowerShell nor the downloader and does not prove the "
+            "release publishes or serves the asset (release-topology "
+            "rows own that: reviewed PR#16207 owns topology v4 "
+            "admission)",
+            "Windows-scoped by the gate's own comment: POSIX targets "
+            "are selected by uname at runtime and are not enumerable "
+            "statically",
+            "both directions share the release.yml parsing "
+            "(built_windows_targets), so a release.yml format change "
+            "can blind containment and reachability at once; gate "
+            "file is byte-unchanged from the merge through current "
+            "main (zero in-range successors, zero post-head commits, "
+            "verified 2026-09-25) and both reverse-direction "
+            "assertions PASS locally on current main",
+            "the motivating window is historical, per the gate's own "
+            "comment: both surfaces mapped ARM64 Windows to the x64 "
+            "build for five days after the matrix addition (#5208, "
+            "2026-08-03) until the surface fix PR#6233 landed (merged "
+            "2026-08-10), while containment stayed green; this row "
+            "closes that blind spot going forward, it did not repair "
+            "the surfaces",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["6196-CLOSED"],
+        "invalidators": [
+            "test-install-target-selection.sh scrape patterns, "
+            "per-surface split, or bijection assertions reworked or "
+            "removed",
+            "ci-gate-self-tests wiring for the target-selection suite "
+            "removed",
+            "release.yml Windows matrix shape changing without "
+            "built_windows_targets following",
+            "a new install surface shipping without being wired into "
+            "both bijection directions",
+        ],
+        "platforms_and_targets": [
+            "windows: x86_64-pc-windows-msvc and "
+            "aarch64-pc-windows-msvc, the built matrix at merge and "
+            "on current main",
+            "hosted gate execution on ubuntu-24.04 scraping repo text "
+            "(PowerShell and the downloader are not executed)",
+        ],
+        "artifact_or_route_effects": [
+            "new assert_every_built_windows_target_is_reachable "
+            "completes the bijection with "
+            "assert_only_built_windows_targets per surface "
+            "(install.ps1, vscode-extension/src/downloader.ts) "
+            "instead of unioned, so one surface can no longer hide "
+            "behind the other",
+            "counts only target-bearing assignments/constants after "
+            "comment stripping: a diagnostic literal cannot satisfy "
+            "the contract and a surface naming no target fails "
+            "closed",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#6371) of subject pair "
+        "(#6196)(#6371); merge_commit_sha of PR #6371 equals the "
+        "commit (verified against the API 2026-09-25); issue #6196 is "
+        "the tracked problem",
+    },
+    "PR#8899": {
+        "commits": ["f028035dda295df7e82d991ae916e341ff0846da"],
+        "subject": "test(install): add Windows fresh-process PATH "
+        "oracle (#7832) (#8899)",
+        "paths_or_components": [
+            ".github/workflows/ci-gate-self-tests.yml",
+            "scripts/tests/test-install-path-contract.sh",
+            "scripts/tests/test-windows-fresh-path-oracle.sh",
+            "scripts/windows_fresh_path_oracle.py",
+        ],
+        "release_domains": ["install"],
+        "primary_disposition": "proof_or_test_only",
+        "reachable_installed_effect": "no",
+        "public_claim_refs": [],
+        "release_note_disposition": "covered",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/windows_fresh_path_oracle.py",
+            "scripts/tests/test-windows-fresh-path-oracle.sh",
+            ".github/workflows/ci-gate-self-tests.yml",
+        ],
+        "known_limitations": [
+            "fixture-scope oracle only, per the unit's own claim "
+            "boundary: proves fresh-process Machine+User PATH rebuild "
+            "with exact identity/hash matching and that process-PATH "
+            "pollution cannot manufacture a pass; does not prove "
+            "live-host install of a release artifact, POSIX "
+            "package-manager PATH ownership, or runner User-PATH "
+            "mutation",
+            "issue #7832 stays OPEN: primary-route host/product "
+            "receipts consuming this oracle are still pending (the "
+            "same boundary recorded by reviewed PR#7897, merged about "
+            "two hours earlier as the production persistence fix this "
+            "oracle discriminates)",
+            "CI executes only the fixture self-test on ubuntu-24.04; "
+            "the oracle's live-scope read mode (fixture flags omitted "
+            "on a Windows host) exists but no hosted job consumes it",
+            "oracle, wrapper, and path-contract files are "
+            "byte-unchanged from the merge through current main (zero "
+            "in-range successors, zero post-head commits, verified "
+            "2026-09-25); the workflow job survives later workflow "
+            "edits (post-head changes are the #16357 dependabot "
+            "toolchain pin and the #16317 paginator trigger, neither "
+            "touching the oracle job), and the six-discriminator "
+            "self-test PASSES locally on current main",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["7832-OPEN"],
+        "invalidators": [
+            "windows_fresh_path_oracle.py resolution, identity-hash, "
+            "or anti-injection logic rework",
+            "test-windows-fresh-path-oracle.sh wrapper or its "
+            "ci-gate-self-tests job removal",
+            "install.ps1 PATH persistence rework (reviewed PR#7897 "
+            "invalidators) without the oracle discriminators "
+            "following",
+            "a live-host or hosted-install receipt contradicting the "
+            "fixture oracle's claims",
+        ],
+        "platforms_and_targets": [
+            "windows semantics: Machine-then-User PATH rebuild, "
+            "%VAR% expansion, PATHEXT candidate resolution including "
+            "lowercase spellings for case-sensitive hosts, exact "
+            "sha256 identity matching",
+            "hosted self-test on ubuntu-24.04 via python3/python; "
+            "live-scope read mode exists for Windows hosts but no "
+            "hosted job consumes it",
+        ],
+        "artifact_or_route_effects": [
+            "new scripts/windows_fresh_path_oracle.py rebuilds PATH "
+            "from Machine+User fixtures without consulting the "
+            "caller's process PATH, rejects absolute command names, "
+            "expands %VAR%/$VAR entries cross-platform, and fails "
+            "closed when a required identity hash cannot be read",
+            "--self-test runs six discriminating spawn cases: "
+            "user-path subject wins over harness-only process PATH, "
+            "harness PATH injection cannot satisfy fresh-process "
+            "identity, older Machine ambient subject fails "
+            "exact-identity receipt, empty scopes yield no "
+            "resolution, absolute command rejected, expandable User "
+            "entries resolve",
+            "new windows-fresh-path-oracle-self-test job plus path "
+            "filters in ci-gate-self-tests.yml; "
+            "test-install-path-contract.sh header updated to point "
+            "fresh-process proof at the oracle",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#8899) of subject pair "
+        "(#7832)(#8899); merge_commit_sha of PR #8899 equals the "
+        "commit (verified against the API 2026-09-25); issue #7832 is "
+        "the tracked problem",
+    },
+    "PR#5481": {
+        "commits": ["e9e7cc63eee3b0e0aa40724d766f026bb21bfaaf"],
+        "subject": "fix(windows): install the built x64 target on ARM64 "
+        "instead of 404ing (#5007) (#5481)",
+        "paths_or_components": [
+            "docs/how-to/INSTALLATION.md",
+            "install.ps1",
+            "scripts/tests/test-install-target-selection.sh",
+            "vscode-extension/scripts/vsix-inventory-baseline.json",
+            "vscode-extension/src/downloader.ts",
+            "vscode-extension/src/test/downloader.test.ts",
+        ],
+        "release_domains": ["install", "editor", "docs"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "yes",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "upgrade (Windows ARM64): both install surfaces stop "
+            "requesting the never-built aarch64-pc-windows-msvc asset and "
+            "install the x86_64 build under Windows 11 x64 emulation "
+            "instead; Windows 10 ARM64, which has no x64 emulation, is "
+            "pointed at build-from-source; no settings migration",
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/tests/test-install-target-selection.sh",
+            "vscode-extension/src/test/downloader.test.ts",
+            ".github/workflows/ci-gate-self-tests.yml",
+        ],
+        "known_limitations": [
+            "superseded in range after nine days: PR#6233 (#6196, merged "
+            "2026-08-10) replaced the ARM64-to-x64 mapping with a "
+            "prefer-native-ARM64 law once the release matrix built a "
+            "native aarch64-pc-windows-msvc (#5208, 2026-08-03), and "
+            "PR#5871 (#5870, 2026-08-05) meanwhile hardened the Windows 10 "
+            "ARM64 rejection on this unit's now-stale fallback premise; "
+            "the PROCESSOR_ARCHITEW6432-first host detection this row "
+            "introduced survives on current main (verified 2026-09-26)",
+            "source-stage: the bash contract statically scrapes repo text "
+            "on ubuntu-24.04 (PowerShell is not executed) and the jest "
+            "cases run on Linux CI with mocked process.platform/arch "
+            "descriptors; no Windows host, hosted or installed, executes "
+            "either surface in-unit; installed-acceptance proof belongs "
+            "to the #16408/#6056 lanes",
+            "controlling issue #5007 is a five-item bundle closed "
+            "completed citing only item 1 (the ARM64 404; closure comment "
+            "2026-08-02 verified against e57c394cc); items 2-5 "
+            "(HOME-before-USERPROFILE, native formatter CRLF, subprocess "
+            "output mojibake, install.ps1 execution-policy check) were "
+            "re-confirmed as real in the 2026-08-07 research comment and "
+            "are not addressed by this unit",
+            "the same phantom triple in scripts/inject-sha-assets.sh and "
+            "xtask/src/tasks/inject_sha_assets.rs was deliberately left "
+            "to #5499 as a publication-format compatibility decision; "
+            "in-range PR#5577 (merged 2026-08-02) closed it",
+            "external truth: no published release carries any native "
+            "ARM64 Windows asset (product repo latest v0.17.0 2026-06-28 "
+            "ships perllsp-0.17.0-x86_64-pc-windows-msvc.zip only; "
+            "verified via the API 2026-09-26), so every real ARM64 "
+            "install to date resolves through the emulation path this "
+            "row introduced",
+            "reviewed PR#6371 later completed the contract test into a "
+            "per-surface bijection and the file is byte-identical from "
+            "that merge through current main (re-verified 2026-09-26)",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["5007-CLOSED"],
+        "invalidators": [
+            "install.ps1 host-arch detection (PROCESSOR_ARCHITEW6432 "
+            "precedence) or literal-target binding rework",
+            "release.yml Windows matrix shape changing without "
+            "built_windows_targets in the target-selection contract "
+            "following",
+            "ARM64 target-selection rework (owner row PR#6233, reviewed) "
+            "dropping the emulation fallback this mapping became",
+            "target-selection contract test or its ci-gate-self-tests "
+            "wiring removal",
+        ],
+        "platforms_and_targets": [
+            "windows: x86_64-pc-windows-msvc is the only published target "
+            "at merge; ARM64 hosts take it under Windows 11 x64 "
+            "emulation, Windows 10 ARM64 is refused with build-from-source "
+            "guidance",
+            "hosted proof on ubuntu-24.04: bash contract scrapes repo "
+            "text (PowerShell not executed); jest runs the downloader "
+            "branch with mocked process descriptors on every host",
+        ],
+        "artifact_or_route_effects": [
+            "install.ps1 consults PROCESSOR_ARCHITEW6432 before "
+            "PROCESSOR_ARCHITECTURE (a 32-bit host on 64-bit Windows no "
+            "longer reads as x86), names x86_64-pc-windows-msvc as one "
+            "whole literal, and on ARM64 hosts installs it with a labeled "
+            "Windows 11 emulation notice; genuine 32-bit Windows still "
+            "errors, now naming the built target and linking "
+            "build-from-source",
+            "vscode-extension downloader maps win32 arm64 to "
+            "x86_64-pc-windows-msvc with an output-channel emulation "
+            "notice instead of requesting the never-built "
+            "aarch64-pc-windows-msvc asset",
+            "new assert_only_built_windows_targets derives the built "
+            "Windows targets from the release.yml matrix (the authority) "
+            "and refuses any surface that requests an unbuilt triple or "
+            "names no triple literally, closing the vacuous-gate shape "
+            "the original defect exploited",
+            "INSTALLATION.md documents the emulation fallback and the "
+            "Windows 10 ARM64 build-from-source boundary instead of "
+            "documenting the 404; the VSIX size baseline moves 171 bytes "
+            "for the notice",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#5481) of subject pair "
+        "(#5007)(#5481); merge_commit_sha of PR #5481 equals the commit "
+        "(verified against the API 2026-09-26); issue #5007 is the "
+        "tracked problem",
+    },
+    "PR#6233": {
+        "commits": ["4cf1b1579f9e8149186cfc7f3c0467e85bf707f4"],
+        "subject": "fix(windows): prefer the native ARM64 build instead of "
+        "forcing x64 emulation (#6196) (#6233)",
+        "paths_or_components": [
+            "install.ps1",
+            "scripts/tests/test-install-target-selection.sh",
+            "vscode-extension/src/downloader.ts",
+            "vscode-extension/src/test/downloader.test.ts",
+        ],
+        "release_domains": ["install", "editor"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [
+            "upgrade (Windows ARM64): hosts prefer a native "
+            "aarch64-pc-windows-msvc asset when the selected release "
+            "carries one and fall back to x64 emulation only for "
+            "releases without it, where the Windows 11 build floor now "
+            "applies alone; Windows 10 ARM64 hosts gain native installs "
+            "once a release ships the asset; no settings migration",
+        ],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "scripts/tests/test-install-target-selection.sh",
+            "vscode-extension/src/test/downloader.test.ts",
+        ],
+        "known_limitations": [
+            "the native preference is forward-looking: no published "
+            "release carries a native aarch64-pc-windows-msvc asset "
+            "(product repo latest v0.17.0 2026-06-28 is x64-only; "
+            "verified via the API 2026-09-26), so every real ARM64 "
+            "install to date still resolves through the x64-emulation "
+            "fallback and the Windows 10 ARM64 fail-closed refusal; the "
+            "native branch has executed only against synthetic release "
+            "lists in tests",
+            "source-stage: the rewritten contract assertion statically "
+            "checks that the build floor comes after the native-asset "
+            "probe, and the jest cases mock process descriptors on Linux "
+            "CI; no Windows host installs through either surface in-unit; "
+            "installed-acceptance proof belongs to the #16408/#6056 lanes",
+            "docs residue on current main (verified 2026-09-26): the "
+            "extension README support matrix still says there is no "
+            "native ARM64 Windows build and that Windows 10 ARM64 is "
+            "rejected, the INSTALLATION.md asset-suffix table lists only "
+            "x86_64-pc-windows-msvc, and its published-script section "
+            "pins the pre-preference publication revision 866d832 "
+            "(reviewed PR#15103); all three are accurate for every "
+            "release published to date and stale for the first release "
+            "that ships the native asset",
+            "in-range successors re-owned the seam without reverting the "
+            "law: PR#11613 (#9925) routes managed selection through "
+            "selectWindowsArm64Target with both ARM64 candidates (#9844 "
+            "boundary) and reviewed PR#10198 (#9847) made native versus "
+            "windows-arm64-emulation distinct managed namespace rows; "
+            "reviewed PR#6371 completed the contract test into a "
+            "per-surface bijection, byte-identical since through current "
+            "main (verified 2026-09-26)",
+            "both surfaces assume a windows-11-arm runner produces the "
+            "native asset from the matrix added in #5208; that builder "
+            "has never shipped a tagged release, so the HEAD probe and "
+            "asset-list consultation are the only evidence the "
+            "preference ever consumes",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["6196-CLOSED"],
+        "invalidators": [
+            "selectWindowsArm64Target preference, probe, or "
+            "build-floor-gates-fallback-only law rework in "
+            "vscode-extension/src/downloader.ts",
+            "install.ps1 native-asset HEAD probe or fallback refusal "
+            "semantics change",
+            "release.yml dropping or renaming the native "
+            "aarch64-pc-windows-msvc matrix entry without both surfaces "
+            "following",
+            "per-surface target-selection bijection (reviewed PR#6371) "
+            "or its ci-gate-self-tests wiring removal",
+        ],
+        "platforms_and_targets": [
+            "windows: aarch64-pc-windows-msvc preferred, "
+            "x86_64-pc-windows-msvc emulation fallback gated on the "
+            "Windows 11 (build 22000) floor; Windows 10 ARM64 installs "
+            "natively when the asset exists and fails closed otherwise",
+            "hosted proof on ubuntu-24.04: bash contract asserts order "
+            "(floor after probe) from repo text; jest drives "
+            "selectWindowsArm64Target with synthetic asset lists and "
+            "mocked os.release",
+        ],
+        "artifact_or_route_effects": [
+            "both Windows surfaces prefer the native "
+            "aarch64-pc-windows-msvc asset when the specific release "
+            "carries it: install.ps1 probes with a HEAD request treating "
+            "any non-success as absent; downloader.ts consults the "
+            "release's own asset list via new selectWindowsArm64Target",
+            "the Windows 11 (build 22000) floor moves to the emulation "
+            "fallback alone: it is a property of running x64 code on "
+            "ARM64, not of ARM64 itself, so the previous "
+            "unconditional-fallback refusals retire; a probe failure on "
+            "Windows 10 ARM64 fails closed instead of falling back blind",
+            "getPlatformTarget stops depending on the OS build (loses "
+            "its release parameter); the contract test's ARM64 assertion "
+            "now proves the build floor comes after the native-asset "
+            "probe, and its greps are || true-guarded so an unmatched "
+            "pattern fails with a diagnostic instead of aborting "
+            "silently under set -euo pipefail",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "source",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#6233) of subject pair "
+        "(#6196)(#6233); merge_commit_sha of PR #6233 equals the commit "
+        "(verified against the API 2026-09-26); issue #6196 is the "
+        "tracked problem",
+    },
+    "PR#5477": {
+        "commits": ["c79f261705aa906a3f4809f8724131e8480f4333"],
+        "subject": "fix(install): stop the installer scripts handing out a "
+        "command that 404s (#5461) (#5477)",
+        "paths_or_components": [
+            "install.ps1",
+            "scripts/install.sh",
+            "xtask/src/tasks/install_surface_check.rs",
+        ],
+        "release_domains": ["install", "docs"],
+        "primary_disposition": "packaging_install_or_editor",
+        "reachable_installed_effect": "bounded",
+        "public_claim_refs": [],
+        "release_note_disposition": "required",
+        "migration_or_upgrade_refs": [],
+        "api_schema_package_effects": [],
+        "proof_owner_refs": [
+            "xtask/src/tasks/install_surface_check.rs",
+            "install.ps1",
+            "scripts/install.sh",
+        ],
+        "known_limitations": [
+            "the squash message narrates doc-surface repairs (README step "
+            "8 retire, GA_RUNBOOK Homebrew template, LSP_DOCUMENTATION, "
+            "book regeneration) whose as-merged diff is empty: the same "
+            "#5461 doc repairs landed hours earlier via sibling row "
+            "PR#5466 (still not_proven in this fragment) and direct "
+            "commit c771c56ad, so this unit's effective diff is the two "
+            "installer scripts plus the durable xtask guard",
+            "mechanism-stage guard, local-first: install-surface-check is "
+            "an xtask subcommand wired into no GitHub workflow; its unit "
+            "tests (including installer_scripts_are_in_scan_scope and the "
+            "live-tree assertion) run with the xtask package's hosted "
+            "lanes, but no required check fails a merge on the scan "
+            "itself",
+            "the publication join stays open: #4348 (verified OPEN via "
+            "the API 2026-09-26) has not promoted the fixed script, so "
+            "the FORBIDDEN_PATTERNS entry remains in force; the "
+            "install.sh MINGW fallback comment 'fix pending promotion in "
+            "#4348' is stale — reviewed PR#4788's row verified the "
+            "product repo promoted a perllsp-binding installer on "
+            "2026-08-09 — and reviewed rows PR#6180/PR#6186 later made "
+            "both installers checksum-fail-closed without retiring the "
+            "404-command guard",
+            "in-range successor a81b7d808 (PR#6914) extended the same "
+            "guard with product-identity guidance without touching the "
+            "5461 pattern or the installer scan-scope pins (verified on "
+            "current main 2026-09-26); zero post-head commits on "
+            "install.ps1 and install_surface_check.rs through current "
+            "main; install.sh post-head repairs #16312/#16316 touch the "
+            "release path, not the fallback",
+            "the guard is textual: it matches literal patterns, forbids "
+            "only the executable piped form while prose explaining the "
+            "breakage may still name install.ps1, and a surface that "
+            "assembles the command from parts would evade the match",
+        ],
+        "open_pr_relationships": [],
+        "controlling_issues": ["5461-CLOSED"],
+        "invalidators": [
+            "FORBIDDEN_PATTERNS entry, installer SCAN_ROOTS, or "
+            "installer_scripts_are_in_scan_scope pin removal without "
+            "replacing the 404-command contract",
+            "#4348 promotion changing the published script's asset-name "
+            "derivation without retiring the forbidden pattern",
+            "install.ps1 usage banner or scripts/install.sh MINGW "
+            "fallback rework re-advertising a piped installer URL",
+        ],
+        "platforms_and_targets": [
+            "windows: install.ps1 usage banner routes to clone-or-"
+            "download execution; scripts/install.sh MINGW/MSYS/CYGWIN "
+            "fallback points at the perllsp-x86_64 release archive",
+            "hosted proof rides the xtask package test lanes on "
+            "ubuntu-24.04; the scan itself is a local xtask run (no "
+            "dedicated workflow)",
+        ],
+        "artifact_or_route_effects": [
+            "xtask install-surface-check gains installer-script scan "
+            "scope (root install.ps1, install.sh, scripts/, ps1 scan "
+            "candidates) after its first proof reported a clean tree "
+            "while install.ps1 advertised the piped one-liner as its own "
+            "usage and scripts/install.sh routed MINGW/MSYS/CYGWIN users "
+            "to the exact command known to 404; the scan widens from "
+            "1283 to 1604 files",
+            "new FORBIDDEN_PATTERNS entry 'install.ps1 | iex' carrying "
+            "the #5461/#4348 reason; only the executable piped form is "
+            "forbidden, prose explaining the breakage stays clean "
+            "(test-pinned), and installer_scripts_are_in_scan_scope pins "
+            "all three paths so a scan-root edit cannot drop the "
+            "installers from coverage",
+            "install.ps1 documents clone-or-download invocation instead "
+            "of the piped one-liner; scripts/install.sh MINGW fallback "
+            "points Windows users at the working release archive",
+        ],
+        "editor_manifest_or_protocol_effects": [],
+        "installed_evidence_stage": "mechanism",
+        "primary_fragment": "distribution",
+        "grouping_evidence": "trailing (#5477) of subject pair "
+        "(#5461)(#5477); merge_commit_sha of PR #5477 equals the commit "
+        "(verified against the API 2026-09-26); issue #5461 is the "
+        "tracked problem",
     },
 }
 
