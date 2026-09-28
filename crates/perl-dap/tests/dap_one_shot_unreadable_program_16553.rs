@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 const CLI_TIMEOUT: Duration = Duration::from_secs(15);
 const FLAGS: [&str; 2] = ["--ptkdb-bootstrap-rc", "--debug-session-plan"];
 const PARSEABLE: &str = "sub run {\n    my $x = 1;\n    return $x;\n}\n";
+/// Parseable Perl with Latin-1 `é` (0xE9), not UTF-8 `c3 a9`.
+const LATIN1_PARSEABLE: &[u8] = b"sub run {\n    my $x = \"caf\xe9\";\n    return $x;\n}\n";
 
 fn dap_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_perl-dap"))
@@ -105,7 +107,7 @@ fn missing_program_fails_nonzero_with_no_artifact_for_both_flags() -> Result<()>
 
 #[test]
 fn directory_program_fails_nonzero_with_no_artifact_for_both_flags() -> Result<()> {
-    // `Path::exists()` is true for a directory, while `read_to_string` is not.
+    // `Path::exists()` is true for a directory, while `fs::read` is not.
     // A guard of `if !program.exists() { return Ok(()) }` (or the inverse that
     // only checks existence) would still emit a degenerate plan.
     let dir = tempfile::tempdir().context("tempdir")?;
@@ -122,14 +124,32 @@ fn directory_program_fails_nonzero_with_no_artifact_for_both_flags() -> Result<(
 }
 
 #[test]
-fn invalid_utf8_program_fails_nonzero_with_no_artifact_for_both_flags() -> Result<()> {
+fn latin1_program_emits_source_facts_and_exits_zero() -> Result<()> {
+    // Opposite-direction control for #1387: a supported Latin-1 Perl source is
+    // readable. Treating decode failure as "unreadable" would fail closed here.
     let dir = tempfile::tempdir().context("tempdir")?;
-    let program = dir.path().join("invalid-utf8-16553.pl");
-    fs::write(&program, [0xff, 0xfe, 0x00]).context("write invalid utf-8")?;
+    let program = dir.path().join("latin1-16553.pl");
+    fs::write(&program, LATIN1_PARSEABLE).context("write latin-1 fixture")?;
     let program_str = program.to_string_lossy().into_owned();
-    for flag in FLAGS {
-        assert_unreadable_fails(flag, &program_str, "invalid-utf8-16553.pl")?;
+
+    let (status, stdout, stderr) =
+        run_cli(&["--debug-session-plan", &program_str, "--log-level", "error"])?;
+    if !status.success() {
+        return Err(anyhow!(
+            "a readable Latin-1 program must emit the plan and exit zero. stdout={stdout:?} stderr={stderr:?}"
+        ));
     }
+    let plan: Value =
+        serde_json::from_str(&stdout).map_err(|e| anyhow!("stdout must be a JSON plan: {e}"))?;
+    let facts = plan.get("source_facts").ok_or_else(|| {
+        anyhow!("plan must carry source_facts for a readable Latin-1 program: {stdout:?}")
+    })?;
+    if facts.as_object().is_none_or(|entries| entries.is_empty()) {
+        return Err(anyhow!(
+            "source_facts must be populated for a parseable Latin-1 program, got {facts}"
+        ));
+    }
+    assert_readable_exits_zero(&program)?;
     Ok(())
 }
 
@@ -142,10 +162,9 @@ fn permission_denied_program_fails_nonzero_with_no_artifact_for_both_flags() -> 
     let program = dir.path().join("unreadable-16553.pl");
     fs::write(&program, PARSEABLE).context("write unreadable fixture")?;
     fs::set_permissions(&program, fs::Permissions::from_mode(0o000)).context("chmod 000")?;
-    if fs::read_to_string(&program).is_ok() {
+    if fs::read(&program).is_ok() {
         // Root and some filesystems ignore mode bits; this case is not
-        // observable here. Missing/directory/invalid-UTF-8 still cover the
-        // fail-closed read.
+        // observable here. Missing/directory still cover the fail-closed read.
         return Ok(());
     }
     let program_str = program.to_string_lossy().into_owned();
