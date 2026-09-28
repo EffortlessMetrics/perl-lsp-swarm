@@ -7,7 +7,7 @@
       "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13367"
     ],
     "subject_shas": [],
-    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves CP00-PROOF-LEVEL-CONTRADICTION does not arm when the issue excludes a proof level with 'do not implement' phrasing, even when the verb is not enumerated in PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS. The clause-scoped structural-negation detector catches 'not' before the verb 'implement' the same way it does for 'not change' / 'not require' (#15463, #10831). See #15465 for the verb-vocabulary gap and #13367 for the original failing PR review."
+    "boundary": "Immutable bounded structured excerpts; the issue and PR subjects carry the real #13367 text under synthetic numbers (#9001650, PR #990021) with no candidate SHAs retained, so the fixture stays isolated from remote edits the way the unchanged-release family fixtures are. The fixture proves CP00-PROOF-LEVEL-CONTRADICTION does not arm when the issue excludes a proof level with 'do not implement' phrasing, even when the verb is not enumerated in PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS. The clause-scoped structural-negation detector catches 'not' before the verb 'implement' the same way it does for 'not change' / 'not require' (#15463, #10831). See #15465 for the verb-vocabulary gap and #13367 for the original failing PR review."
   },
   "repository": "effortlessmetrics/perl-lsp-swarm",
   "pull_request": {
