@@ -120,6 +120,12 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # (workspace_index.rs), and the seeded content is initial state, so the call
 # was converted to the canonical name with identical behavior. Baseline
 # therefore stays 710.
+# Canonical-only caller identity by #16650 (PR #16687): the test helper
+# `seed_open_documents_into_building_coordinator` in
+# crates/perl-lsp-rs/src/runtime/language/references.rs calls
+# `.index_live_file(..., SourceCommit::new(generation))` so Full-path fixtures
+# are generation-matched and not stale. Fixture-only; compatibility_baseline
+# unchanged. Owner prefix `crates/perl-lsp-rs` already covers the file.
 compatibility_baseline = 710
 
 # Structural recurrence control (#11305): files under these prefixes must
@@ -156,6 +162,7 @@ caller_paths = [
   "crates/perl-lsp-rs/src/runtime/language/misc.rs",
   "crates/perl-lsp-rs/src/runtime/language/navigation.rs",
   "crates/perl-lsp-rs/src/runtime/language/provider_decision_live_trace_tests.rs",
+  "crates/perl-lsp-rs/src/runtime/language/references.rs",
   "crates/perl-lsp-rs/src/runtime/language/references_tier_scorecard_tests.rs",
   "crates/perl-lsp-rs/src/runtime/language/rename.rs",
   "crates/perl-lsp-rs/src/runtime/test_api.rs",
