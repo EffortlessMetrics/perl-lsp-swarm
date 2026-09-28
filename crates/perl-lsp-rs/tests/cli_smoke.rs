@@ -225,25 +225,17 @@ fn doctor_discloses_substituted_workspace_path() -> Result<(), Box<dyn std::erro
     let real = temp.path().join("real target");
     std::fs::create_dir_all(&real)?;
     let alias = temp.path().join("alias-dir");
+    let created = directory_alias(&alias, &real)?;
 
     // Windows directory junctions need no elevated privilege; POSIX uses a
-    // symlink. A host that can build neither cannot prove the claim, so this is
-    // a typed skip rather than a silent pass.
-    #[cfg(windows)]
-    let created = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(&alias)
-        .arg(&real)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false);
-    #[cfg(unix)]
-    let created = std::os::unix::fs::symlink(&real, &alias).is_ok();
-    if !created || !alias.is_dir() {
-        eprintln!("skip: host cannot create a directory alias; #16664 needs one");
-        return Ok(());
+    // symlink. A host that can build neither cannot prove the claim, so this
+    // fails loudly rather than reporting a vacuous pass.
+    if !created {
+        return Err(
+            "environment prerequisite: this host cannot create a directory alias, so the #16664 \
+             disclosure is NOT_PROVEN here"
+                .into(),
+        );
     }
 
     let alias_str = alias.to_str().ok_or("non-UTF-8 alias path")?;
@@ -263,32 +255,50 @@ fn doctor_discloses_substituted_workspace_path() -> Result<(), Box<dyn std::erro
         stdout.contains(&format!("Workspace: {}", real.canonicalize()?.display())),
         "the report must still name the resolved workspace, got:\n{stdout}"
     );
-    // Two aliases for one target must no longer produce identical reports.
+    // Two aliases for one target must no longer produce identical reports. This
+    // is the issue's headline symptom, so it is a hard requirement rather than a
+    // conditional: if the second alias cannot be created the claim is
+    // unproven, and an unproven claim must not report as a pass.
     let second = temp.path().join("second-alias");
+    if !directory_alias(&second, &real)? {
+        return Err("environment prerequisite: cannot create a second alias, so the two-alias \
+             distinction is NOT_PROVEN here"
+            .into());
+    }
+    let mut other = product_command();
+    other.env_remove("PERL5LIB");
+    let second_str = second.to_str().ok_or("non-UTF-8 alias path")?;
+    let other_stdout = String::from_utf8(other.args(["--doctor", second_str]).output()?.stdout)?;
+    assert_ne!(
+        stdout, other_stdout,
+        "two aliases for one workspace must not produce identical reports"
+    );
+    Ok(())
+}
+
+/// Create a directory alias at `alias` pointing at `target`; report whether the
+/// host could build it.
+///
+/// Windows uses a directory junction (`mklink /J`), which needs no elevated
+/// privilege — unlike the *file* symlink probe of #12567. POSIX uses a directory
+/// symlink, which needs none.
+fn directory_alias(
+    alias: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<bool, std::io::Error> {
     #[cfg(windows)]
-    let second_created = std::process::Command::new("cmd")
+    let created = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])
-        .arg(&second)
-        .arg(&real)
+        .arg(alias)
+        .arg(target)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .map(|status| status.success())
         .unwrap_or(false);
     #[cfg(unix)]
-    let second_created = std::os::unix::fs::symlink(&real, &second).is_ok();
-    if second_created && second.is_dir() {
-        let mut other = product_command();
-        other.env_remove("PERL5LIB");
-        let second_str = second.to_str().ok_or("non-UTF-8 alias path")?;
-        let other_stdout =
-            String::from_utf8(other.args(["--doctor", second_str]).output()?.stdout)?;
-        assert_ne!(
-            stdout, other_stdout,
-            "two aliases for one workspace must not produce identical reports"
-        );
-    }
-    Ok(())
+    let created = std::os::unix::fs::symlink(target, alias).is_ok();
+    Ok(created && alias.is_dir())
 }
 
 #[test]

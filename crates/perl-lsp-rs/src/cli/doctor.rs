@@ -297,24 +297,44 @@ fn requested_workspace_dir(dir: &str) -> PathBuf {
 /// would otherwise compare unequal to the workspace on every invocation rather
 /// than only when a real substitution happened. How the verbatim path is
 /// *displayed* is #16662's seam and is deliberately untouched here.
-fn comparable_workspace_path(path: &Path) -> &Path {
+fn comparable_workspace_path(path: &Path) -> std::borrow::Cow<'_, Path> {
+    use std::borrow::Cow;
     let Some(text) = path.to_str() else {
-        return path;
+        return Cow::Borrowed(path);
     };
+    // `\\?\UNC\server\share` is a verbatim UNC path. Stripping only `\\?\UNC\`
+    // would leave `server\share`, which parses as three *relative* components
+    // and can never equal a real UNC path — so every UNC workspace would
+    // report a substitution. Re-attach the `\\` that the verbatim form replaced.
     if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
-        return Path::new(unc);
+        return Cow::Owned(Path::new(r"\\").join(unc));
     }
     match text.strip_prefix(r"\\?\") {
-        Some(stripped) => Path::new(stripped),
-        None => path,
+        Some(stripped) => Cow::Owned(Path::new(stripped).to_path_buf()),
+        None => Cow::Borrowed(path),
     }
 }
 
 /// True when the path the user named resolves to a different directory than the
 /// canonicalized workspace, i.e. a substitution occurred.
+///
+/// Windows spellings of one directory are case-insensitive, and
+/// `GetFullPathNameW` preserves whatever case the user typed, so `c:\code\perl`
+/// and `\\?\C:\Code\Perl` name the same directory. `Path: PartialEq` is
+/// byte-exact on every platform, so without an explicit fold an ordinary
+/// invocation would print a spurious substitution — the same defect class this
+/// change exists to remove, just triggered by capitalization.
 fn workspace_substitution(report: &DoctorReport) -> bool {
-    comparable_workspace_path(&report.requested_workspace)
-        != comparable_workspace_path(&report.workspace)
+    let requested = comparable_workspace_path(&report.requested_workspace);
+    let resolved = comparable_workspace_path(&report.workspace);
+    #[cfg(windows)]
+    {
+        !requested.to_string_lossy().eq_ignore_ascii_case(&resolved.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        requested != resolved
+    }
 }
 
 fn load_workspace_config(
@@ -2848,12 +2868,14 @@ mod tests {
         Ok(())
     }
 
-    /// Create a directory alias pointing at `target` and return the alias path,
-    /// or `Ok(None)` when the host cannot create one.
+    /// Create a directory alias pointing at `target`, or `None` when the host
+    /// cannot create one.
     ///
     /// Windows uses a directory junction (`mklink /J`), which needs no elevated
-    /// privilege; POSIX uses a directory symlink. Failure is a typed skip, not a
-    /// green pass — a host that cannot build the fixture cannot prove #16664.
+    /// privilege — unlike the *file* symlink probe of #12567; POSIX uses a
+    /// directory symlink, which needs none. Callers treat `None` as a test
+    /// failure rather than a pass: a fixture that cannot be built must not
+    /// report the disclosure as proven.
     fn directory_alias(base: &Path, target: &Path) -> Result<Option<PathBuf>, String> {
         let alias = base.join("alias-dir");
         #[cfg(windows)]
@@ -2872,6 +2894,51 @@ mod tests {
         if created && alias.is_dir() { Ok(Some(alias)) } else { Ok(None) }
     }
 
+    /// A minimal `DoctorReport` for asserting on the workspace identity and the
+    /// rendered header, without spawning the perl/perltidy/perlcritic probes.
+    ///
+    /// `build_doctor_report_struct` runs three subprocess version probes with a
+    /// 5s timeout each. The substitution tests do not need any of that, and
+    /// adding four more full report builds pushed the sibling
+    /// `probe_*_reports_version_probe_failure` tests past their own timeout
+    /// under parallel execution — the extra tests made unrelated tests flaky.
+    fn stub_report(workspace: PathBuf, requested_workspace: PathBuf) -> DoctorReport {
+        let missing = |what: &str| ToolReport {
+            binary: None,
+            source: "PATH",
+            version: None,
+            error: Some(format!("{what} not found on PATH")),
+        };
+        DoctorReport {
+            workspace,
+            requested_workspace,
+            config: ProjectConfigReport {
+                status: ProjectConfigStatus::Missing,
+                include_source: "default includePaths",
+                rejected_include_paths: Vec::new(),
+            },
+            perl: PerlReport {
+                binary: None,
+                source: "PATH",
+                version: None,
+                error: Some("perl binary not found on PATH".to_string()),
+            },
+            perltidy: missing("perltidy"),
+            perlcritic: missing("perlcritic"),
+            perl5lib_paths: Vec::new(),
+            perl5lib_enabled: false,
+            perl5lib_precedence: Perl5LibPrecedence::Prepend,
+            configured_paths: Vec::new(),
+            effective_paths: Vec::new(),
+            system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
+            text_sync_envelope: TextSyncEnvelopeReport {
+                decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
+                text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
+                position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
+            },
+        }
+    }
+
     /// The regression control for #16664: a report built from a directory alias
     /// must name the path the user typed, not only the resolved target.
     #[test]
@@ -2879,10 +2946,11 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let real = temp.path().join("real target");
         std::fs::create_dir_all(&real)?;
-        let Some(alias) = directory_alias(temp.path(), &real)? else {
-            eprintln!("skip: host cannot create a directory alias; #16664 needs one");
-            return Ok(());
-        };
+        let alias = directory_alias(temp.path(), &real)?.ok_or(
+            "environment prerequisite: this host cannot create a directory alias (Windows needs a \
+             writable local directory for `mklink /J`; POSIX needs symlink support), so the #16664 \
+             disclosure is NOT_PROVEN here rather than silently passed",
+        )?;
 
         let alias_str = alias.to_str().ok_or("non-UTF-8 temp path")?;
         let report = build_doctor_report_struct(alias_str)?;
@@ -2918,9 +2986,9 @@ mod tests {
     fn doctor_report_omits_disclosure_when_no_substitution_occurred() -> TestResult {
         let temp = tempfile::tempdir()?;
         let canonical = temp.path().canonicalize()?;
-        let dir = canonical.to_str().ok_or("non-UTF-8 temp path")?;
 
-        let report = build_doctor_report_struct(dir)?;
+        let report =
+            stub_report(canonical.clone(), requested_workspace_dir(&canonical.to_string_lossy()));
         assert!(
             !workspace_substitution(&report),
             "a directory passed in its resolved form must not count as a substitution: requested={} workspace={}",
@@ -2942,17 +3010,77 @@ mod tests {
     #[test]
     fn comparable_workspace_path_ignores_windows_verbatim_prefix() {
         let plain = Path::new(r"C:\Code\sp ace");
-        assert_eq!(comparable_workspace_path(plain), plain);
-        assert_eq!(comparable_workspace_path(Path::new(r"\\?\C:\Code\sp ace")), plain);
+        assert_eq!(*comparable_workspace_path(plain), *plain);
+        assert_eq!(*comparable_workspace_path(Path::new(r"\\?\C:\Code\sp ace")), *plain);
+        // A verbatim UNC path must come back as a *UNC* path. Dropping the
+        // `\\?\UNC\` prefix outright would leave `server\share\proj`, three
+        // relative components that can never equal the workspace it came from.
         assert_eq!(
-            comparable_workspace_path(Path::new(r"\\?\UNC\server\share\proj")),
-            Path::new(r"server\share\proj")
+            *comparable_workspace_path(Path::new(r"\\?\UNC\server\share\proj")),
+            *Path::new(r"\\server\share\proj")
         );
         // A genuine substitution survives normalization.
         assert_ne!(
             comparable_workspace_path(Path::new(r"\\?\C:\Code\jn-dir")),
             comparable_workspace_path(Path::new(r"\\?\C:\Code\sp ace"))
         );
+    }
+
+    /// The control the previous test could not reach: a *plain, non-verbatim*
+    /// spelling of a directory whose workspace is verbatim. This is the shape of
+    /// every ordinary Windows invocation, and it is precisely the input that
+    /// would produce a false substitution without the prefix normalization.
+    ///
+    /// Feeding the canonical spelling instead (as the sibling test does) leaves
+    /// the two sides byte-identical, so that test passes with or without
+    /// `comparable_workspace_path` and cannot discriminate it. This one cannot.
+    #[test]
+    fn doctor_report_does_not_disclose_when_only_the_verbatim_prefix_differs() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let canonical = temp.path().canonicalize()?;
+        if !canonical.to_string_lossy().starts_with(r"\\?\") {
+            eprintln!("skip: canonical form carries no verbatim prefix on this platform");
+            return Ok(());
+        }
+        // The same directory, spelled the way a user types it.
+        let plain = canonical.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+
+        let report = stub_report(canonical, requested_workspace_dir(&plain));
+        assert!(
+            !workspace_substitution(&report),
+            "a plain spelling of the workspace is not a substitution: requested={} workspace={}",
+            report.requested_workspace.display(),
+            report.workspace.display()
+        );
+        let rendered = render_report(report);
+        assert!(
+            !rendered.contains("Workspace path as requested:"),
+            "the verbatim prefix alone must not trigger a disclosure, got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A capitalization difference names the same Windows directory and must
+    /// not read as a substitution.
+    #[cfg(windows)]
+    #[test]
+    fn doctor_report_does_not_disclose_for_a_case_differing_spelling() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let canonical = temp.path().canonicalize()?;
+        let spelled = canonical.to_string_lossy().trim_start_matches(r"\\?\").to_lowercase();
+        if spelled == canonical.to_string_lossy().trim_start_matches(r"\\?\") {
+            eprintln!("skip: temp path has no case-differing spelling on this host");
+            return Ok(());
+        }
+
+        let report = stub_report(canonical, requested_workspace_dir(&spelled));
+        assert!(
+            !workspace_substitution(&report),
+            "case-differing spellings are one Windows directory: requested={} workspace={}",
+            report.requested_workspace.display(),
+            report.workspace.display()
+        );
+        Ok(())
     }
 
     #[cfg(unix)]
