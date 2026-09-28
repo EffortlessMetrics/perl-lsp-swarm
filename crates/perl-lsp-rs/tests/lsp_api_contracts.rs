@@ -57,10 +57,17 @@ fn test_initialization_contract() -> TestResult {
 
     let trigger_set: HashSet<_> = triggers.iter().filter_map(|v| v.as_str()).collect();
 
-    // Must have exactly these single-character triggers
-    for trigger in ["$", "@", "%", ">", ":", "-"] {
+    // Must have exactly these single-character triggers. Mirrors
+    // perl_lsp_rs_core::protocol::capabilities::completion_trigger_characters():
+    // `-` is deliberately excluded (it is also subtraction; `->` completion is
+    // opened by the advertised `>`).
+    for trigger in ["$", "@", "%", ">", ":", ".", "/", "\\", "\"", "'"] {
         assert!(trigger_set.contains(trigger), "Missing required trigger character: {}", trigger);
     }
+    assert!(
+        !trigger_set.contains("-"),
+        "Must not advertise '-' as a completion trigger before '->' is complete"
+    );
 
     // LSP trigger characters must be one character each, so multi-character
     // operator strings should not be advertised directly.
