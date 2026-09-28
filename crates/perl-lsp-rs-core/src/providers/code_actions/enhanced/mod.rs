@@ -83,13 +83,16 @@ impl EnhancedCodeActionsProvider {
         // extract-variable actions when both a parent and child node overlap the range.
         let mut extract_var_seen: HashSet<(usize, String)> = HashSet::new();
 
-        // Find all nodes that overlap the range and collect actions
+        // Find all nodes that overlap the range and collect actions.
+        // `ast` is the full program AST, so it doubles as the root that the
+        // scope-aware extract-variable guard needs to resolve visible names.
         self.collect_actions_for_range(
             ast,
             normalized_range,
             false,
             &mut actions,
             &mut extract_var_seen,
+            ast,
         );
 
         // Signature refactoring: collect add-parameter actions for any subroutine
@@ -217,6 +220,7 @@ impl EnhancedCodeActionsProvider {
         is_control_body: bool,
         actions: &mut Vec<CodeAction>,
         extract_var_seen: &mut HashSet<(usize, String)>,
+        ast_root: &Node,
     ) {
         // Prune entire subtree when the node is completely outside the range.
         // Children are always within the parent span, so if the parent doesn't
@@ -236,8 +240,12 @@ impl EnhancedCodeActionsProvider {
         // Partial-left overlap (cursor inside expression) is still supported.
         let node_reaches_selection_end = node.location.end >= range.1;
         if node_reaches_selection_end && self.is_extractable_expression(node) {
-            let action =
-                extract_variable::create_extract_variable_action(node, &self.source, &helpers);
+            let action = extract_variable::create_extract_variable_action(
+                node,
+                &self.source,
+                &helpers,
+                ast_root,
+            );
             if let Some(decl) = action.edit.changes.first() {
                 let key = (decl.location.start, decl.new_text.clone());
                 if extract_var_seen.insert(key) {
@@ -276,56 +284,162 @@ impl EnhancedCodeActionsProvider {
         match &node.kind {
             NodeKind::Program { statements } => {
                 for stmt in statements {
-                    self.collect_actions_for_range(stmt, range, false, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        stmt,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
             }
             NodeKind::Block { statements } => {
                 for stmt in statements {
-                    self.collect_actions_for_range(stmt, range, false, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        stmt,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
             }
             NodeKind::ExpressionStatement { expression } => {
-                self.collect_actions_for_range(expression, range, false, actions, extract_var_seen);
+                self.collect_actions_for_range(
+                    expression,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
             }
             NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                self.collect_actions_for_range(condition, range, false, actions, extract_var_seen);
+                self.collect_actions_for_range(
+                    condition,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
                 self.collect_actions_for_range(
                     then_branch,
                     range,
                     true, // then-body is a control-flow block
                     actions,
                     extract_var_seen,
+                    ast_root,
                 );
                 for (cond, branch) in elsif_branches {
-                    self.collect_actions_for_range(cond, range, false, actions, extract_var_seen);
-                    self.collect_actions_for_range(branch, range, true, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        cond,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
+                    self.collect_actions_for_range(
+                        branch,
+                        range,
+                        true,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
                 if let Some(branch) = else_branch {
-                    self.collect_actions_for_range(branch, range, true, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        branch,
+                        range,
+                        true,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
             }
             NodeKind::FunctionCall { args, .. } => {
                 for arg in args {
-                    self.collect_actions_for_range(arg, range, false, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        arg,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
             }
             NodeKind::Binary { left, right, .. } => {
-                self.collect_actions_for_range(left, range, false, actions, extract_var_seen);
-                self.collect_actions_for_range(right, range, false, actions, extract_var_seen);
+                self.collect_actions_for_range(
+                    left,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
+                self.collect_actions_for_range(
+                    right,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
             }
             NodeKind::Assignment { lhs, rhs, .. } => {
-                self.collect_actions_for_range(lhs, range, false, actions, extract_var_seen);
-                self.collect_actions_for_range(rhs, range, false, actions, extract_var_seen);
+                self.collect_actions_for_range(
+                    lhs,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
+                self.collect_actions_for_range(
+                    rhs,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
             }
             NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                self.collect_actions_for_range(variable, range, false, actions, extract_var_seen);
+                self.collect_actions_for_range(
+                    variable,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
                 if let Some(init) = initializer {
-                    self.collect_actions_for_range(init, range, false, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        init,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
             }
             NodeKind::For { init, condition, update, body, .. } => {
                 if let Some(init) = init {
-                    self.collect_actions_for_range(init, range, false, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        init,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
                 if let Some(condition) = condition {
                     self.collect_actions_for_range(
@@ -334,10 +448,18 @@ impl EnhancedCodeActionsProvider {
                         false,
                         actions,
                         extract_var_seen,
+                        ast_root,
                     );
                 }
                 if let Some(update) = update {
-                    self.collect_actions_for_range(update, range, false, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        update,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
                 self.collect_actions_for_range(
                     body,
@@ -345,30 +467,81 @@ impl EnhancedCodeActionsProvider {
                     true, // loop body is a control-flow block
                     actions,
                     extract_var_seen,
+                    ast_root,
                 );
             }
             NodeKind::Foreach { variable, list, body, continue_block } => {
-                self.collect_actions_for_range(variable, range, false, actions, extract_var_seen);
-                self.collect_actions_for_range(list, range, false, actions, extract_var_seen);
-                self.collect_actions_for_range(body, range, true, actions, extract_var_seen);
+                self.collect_actions_for_range(
+                    variable,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
+                self.collect_actions_for_range(
+                    list,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
+                self.collect_actions_for_range(
+                    body,
+                    range,
+                    true,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
                 if let Some(cb) = continue_block {
-                    self.collect_actions_for_range(cb, range, false, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        cb,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
             }
             NodeKind::While { condition, body, .. } => {
-                self.collect_actions_for_range(condition, range, false, actions, extract_var_seen);
+                self.collect_actions_for_range(
+                    condition,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
                 self.collect_actions_for_range(
                     body,
                     range,
                     true, // loop body is a control-flow block
                     actions,
                     extract_var_seen,
+                    ast_root,
                 );
             }
             NodeKind::MethodCall { object, args, .. } => {
-                self.collect_actions_for_range(object, range, false, actions, extract_var_seen);
+                self.collect_actions_for_range(
+                    object,
+                    range,
+                    false,
+                    actions,
+                    extract_var_seen,
+                    ast_root,
+                );
                 for arg in args {
-                    self.collect_actions_for_range(arg, range, false, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        arg,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
             }
             NodeKind::Subroutine { body, prototype, signature, .. } => {
@@ -378,12 +551,27 @@ impl EnhancedCodeActionsProvider {
                     true, // subroutine body block is not a standalone block
                     actions,
                     extract_var_seen,
+                    ast_root,
                 );
                 if let Some(proto) = prototype {
-                    self.collect_actions_for_range(proto, range, false, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        proto,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
                 if let Some(sig) = signature {
-                    self.collect_actions_for_range(sig, range, false, actions, extract_var_seen);
+                    self.collect_actions_for_range(
+                        sig,
+                        range,
+                        false,
+                        actions,
+                        extract_var_seen,
+                        ast_root,
+                    );
                 }
             }
             _ => {}
@@ -1016,5 +1204,84 @@ mod extract_variable_tests {
         // start > end
         let normalized = provider.normalize_range_for_refactors((8, 3));
         assert_eq!(normalized, (8, 3));
+    }
+
+    /// Return the declaration text of the single Extract action for `range`.
+    fn extract_decl(source: &str, range: (usize, usize)) -> String {
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        let provider = EnhancedCodeActionsProvider::new(source.to_string());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, range);
+        let extract_actions: Vec<_> =
+            actions.iter().filter(|a| a.title.contains("Extract")).collect();
+        assert!(
+            !extract_actions.is_empty(),
+            "Expected an Extract action, got: {:?}",
+            actions.iter().map(|a| &a.title).collect::<Vec<_>>()
+        );
+        extract_actions[0].edit.changes[0].new_text.clone()
+    }
+
+    /// Issue #16643(b): `2 + 3` suggests `result`, but `my $result` is already
+    /// bound in the same scope. Emitting `my $result` would redeclare it and
+    /// silently mask the original, changing the program's output.
+    #[test]
+    fn test_extract_variable_suffixes_name_already_bound_in_same_scope() {
+        let source = "my $result = 1;\nmy $total = 2 + 3;\n";
+        // `2 + 3` occupies bytes 28..33.
+        let decl = extract_decl(source, (28, 33));
+        assert!(decl.contains("my $result2"), "expected a suffixed name, got: {decl}");
+    }
+
+    /// Issue #16643(a): extracting `length($string)` suggests `len`, but the
+    /// very statement being extracted already declares `my $len`. Without the
+    /// guard this produces a self-referential `my $len = $len;`.
+    #[test]
+    fn test_extract_variable_suffixes_name_declared_by_the_same_statement() {
+        let source = "my $string = 'abc';\nmy $len = length($string);\n";
+        // `length($string)` occupies bytes 31..47.
+        let decl = extract_decl(source, (31, 47));
+        assert!(decl.contains("my $len2"), "expected a suffixed name, got: {decl}");
+    }
+
+    /// The guard must be scoped, not file-wide. A `my $result` inside a
+    /// different subroutine is not visible at the insertion point, so the base
+    /// name must survive — otherwise every extraction in a large file degrades
+    /// to `$result2`, `$result3`, ...
+    ///
+    /// The unrelated scope is placed *after* the extracted statement on
+    /// purpose. `find_statement_start` resolves the insertion point from the
+    /// last `;` before the expression, so an unrelated scope on an earlier
+    /// line would put the insertion point inside that scope and test a
+    /// different defect (insertion-point selection, not name selection).
+    #[test]
+    fn test_extract_variable_keeps_base_name_when_collision_is_in_another_scope() {
+        let source = "my $total = 2 + 3;\nsub other { my $result = 1; }\n";
+        // `2 + 3` occupies bytes 12..17.
+        let decl = extract_decl(source, (12, 17));
+        assert!(decl.contains("my $result ="), "expected the base name, got: {decl}");
+        assert!(!decl.contains("my $result2"), "must not suffix for an unrelated scope: {decl}");
+    }
+
+    /// A `my` inside a sibling block is likewise not visible at the insertion
+    /// point, and must not leak into the name.
+    #[test]
+    fn test_extract_variable_keeps_base_name_when_collision_is_in_a_sibling_block() {
+        let source = "my $total = 2 + 3;\nif ($x) { my $result = 1; }\n";
+        // `2 + 3` occupies bytes 12..17.
+        let decl = extract_decl(source, (12, 17));
+        assert!(decl.contains("my $result ="), "expected the base name, got: {decl}");
+        assert!(!decl.contains("my $result2"), "must not suffix for a sibling block: {decl}");
+    }
+
+    /// An *enclosing* scope is different from a sibling: a `my $result` in the
+    /// surrounding sub is visible at the insertion point, so reusing the name
+    /// would shadow it.
+    #[test]
+    fn test_extract_variable_suffixes_name_bound_in_enclosing_scope() {
+        let source = "sub outer { my $result = 1; my $total = 2 + 3; }\n";
+        // `2 + 3` occupies bytes 40..45.
+        let decl = extract_decl(source, (40, 45));
+        assert!(decl.contains("my $result2"), "expected a suffixed name, got: {decl}");
     }
 }
