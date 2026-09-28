@@ -84,8 +84,8 @@ const ALLOWED: &[(&str, &str)] = &[
     ),
 ];
 
-/// Exact lines that explain refused settings to users. The rest of each page
-/// remains scanned, including any second occurrence of the same token.
+/// Exact refusal headings in the reference. The rest of each page remains
+/// scanned, including any second occurrence of the same token.
 const DOC_ALLOWED_LINES: &[(&str, &str)] = &[
     (
         "../../docs/reference/CONFIG.md",
@@ -95,15 +95,37 @@ const DOC_ALLOWED_LINES: &[(&str, &str)] = &[
         "../../docs/reference/CONFIG.md",
         "#### `perl.workspace.perlArgs` — refused, not configurable",
     ),
-    (
-        "../../docs/how-to/PERL_SETUP_TROUBLESHOOTING.md",
-        "interpreter-path setting: `perl.workspace.perlPath` (and the project-config",
-    ),
 ];
+
+/// The guide's token is in a wrapped sentence. Exempt the complete paragraph
+/// so changing an adjacent line into advice invalidates the exemption.
+const TROUBLESHOOTING_REFUSAL: &str = concat!(
+    "If you manage the server binary yourself, set the VS Code extension setting\n",
+    "`perl-lsp.serverPath` to the `perllsp` binary. The language server accepts no\n",
+    "interpreter-path setting: `perl.workspace.perlPath` (and the project-config\n",
+    "equivalent) is refused on every channel and silently ignored, so the only way to\n",
+    "choose which Perl the server probes with is resolution order. Change the active\n",
+    "perlbrew or plenv version when one is present; when neither is active, put the\n",
+    "intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl`\n",
+    "elsewhere). The debugger is a separate channel: it takes a per-launch `perlPath` in\n",
+    "`launch.json`, and that one is honored."
+);
+const TROUBLESHOOTING_PATH: &str = "../../docs/how-to/PERL_SETUP_TROUBLESHOOTING.md";
 
 fn unexpected_tokens(relative: &Path, text: &str) -> Vec<String> {
     let mut offenders = Vec::new();
-    for (index, line) in text.lines().enumerate() {
+    let mut screened = text.lines().collect::<Vec<_>>().join("\n");
+    if relative == Path::new(TROUBLESHOOTING_PATH)
+        && let Some(start) = screened.find(TROUBLESHOOTING_REFUSAL)
+    {
+        let end = start + TROUBLESHOOTING_REFUSAL.len();
+        let masked = TROUBLESHOOTING_REFUSAL
+            .chars()
+            .map(|ch| if ch == '\n' { '\n' } else { ' ' })
+            .collect::<String>();
+        screened.replace_range(start..end, &masked);
+    }
+    for (index, line) in screened.lines().enumerate() {
         if DOC_ALLOWED_LINES
             .iter()
             .any(|(path, allowed)| relative == Path::new(path) && line == *allowed)
@@ -217,6 +239,20 @@ fn refused_setting_explanation_does_not_exempt_bad_advice_on_the_same_page() {
             "a second setting reference in {relative} must not be hidden by its refusal line"
         );
     }
+    assert!(unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), TROUBLESHOOTING_REFUSAL).is_empty());
+    let adjacent_rewrite = TROUBLESHOOTING_REFUSAL.replace(
+        "equivalent) is refused on every channel and silently ignored, so the only way to",
+        "equivalent) in your editor or `.perl-lsp.toml` to choose the Perl to use.",
+    );
+    assert!(
+        !unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), &adjacent_rewrite).is_empty(),
+        "advice rewritten next to the token must invalidate the guide exemption"
+    );
+    let repeated_refusal = format!("{TROUBLESHOOTING_REFUSAL}\n{TROUBLESHOOTING_REFUSAL}");
+    assert!(
+        !unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), &repeated_refusal).is_empty(),
+        "a second guide paragraph must not inherit the one allowed occurrence"
+    );
 }
 
 #[test]
@@ -230,6 +266,13 @@ fn every_allowed_doc_line_exists_exactly_once() -> Result<(), Box<dyn std::error
             "documented refusal in {relative} changed; review its exception"
         );
     }
+    let guide = std::fs::read_to_string(crate_root.join(TROUBLESHOOTING_PATH))?;
+    let normalized = guide.lines().collect::<Vec<_>>().join("\n");
+    assert_eq!(
+        normalized.matches(TROUBLESHOOTING_REFUSAL).count(),
+        1,
+        "the guide's refusal paragraph changed; review its exception"
+    );
     Ok(())
 }
 
