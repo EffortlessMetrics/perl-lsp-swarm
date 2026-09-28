@@ -11,7 +11,7 @@ use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 use perl_semantic_analyzer::pragma_tracker::PragmaTracker;
 use perl_semantic_analyzer::{Node, NodeKind};
-use perl_tdd_support::must;
+use perl_tdd_support::{must, must_some_with};
 
 fn parse_ast(code: &str) -> Node {
     let mut parser = Parser::new(code);
@@ -177,9 +177,11 @@ fn require_then_same_spelling_in_expression_still_flags_the_expression() {
         "only the expression-position DBI is illegal: {:?}",
         unquoted_names(&issues)
     );
-    assert_eq!(code.get(dbi_hits[0].range.0..dbi_hits[0].range.1), Some("DBI"));
+    let hit = must_some_with(dbi_hits.into_iter().next(), "exactly one DBI UnquotedBareword");
+    assert_eq!(code.get(hit.range.0..hit.range.1), Some("DBI"));
+    let require_at = must_some_with(code.find("require DBI"), "require DBI present");
     assert!(
-        dbi_hits[0].range.0 > code.find("require DBI").expect("require DBI present"),
+        hit.range.0 > require_at,
         "the remaining UnquotedBareword must be the later expression, not the require operand"
     );
 }
