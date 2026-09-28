@@ -51,7 +51,25 @@ impl<'a> Parser<'a> {
     /// 4. Array subscript (`[...]`)
     /// 5. Hash subscript with block handling (`{...}`)
     /// 6. Function call parentheses (`(...)`)
-    pub(crate) fn parse_postfix_chain(&mut self, mut expr: Node) -> ParseResult<Node> {
+    pub(crate) fn parse_postfix_chain(&mut self, expr: Node) -> ParseResult<Node> {
+        self.parse_postfix_chain_with(expr, false)
+    }
+
+    /// Arrow-only postfix continuation for word `not` results (#13932,
+    /// FC-WORD-NOT-POSTFIX-OVERADMIT). Perl admits `->` chains on a
+    /// parenthesized `not` result (`not($x)->foo`) but rejects direct `[]`,
+    /// `{}`, `++`, `--`, and call continuations (`not($x)[0]`, `not($x)++`
+    /// are syntax errors per perl 5.38.2 `-c`). Anything else stays
+    /// unconsumed so statement recovery reports it instead of a clean AST.
+    pub(crate) fn parse_arrow_chain(&mut self, expr: Node) -> ParseResult<Node> {
+        self.parse_postfix_chain_with(expr, true)
+    }
+
+    fn parse_postfix_chain_with(
+        &mut self,
+        mut expr: Node,
+        arrow_only: bool,
+    ) -> ParseResult<Node> {
         let mut postfix_chain_depth = 0usize;
 
         // Closure to track nesting depth and prevent stack overflow on deeply
@@ -68,6 +86,12 @@ impl<'a> Parser<'a> {
         };
 
         loop {
+            // #13932 (FC-WORD-NOT-POSTFIX-OVERADMIT): word `not` results admit
+            // only `->` continuations. Anything else is left unconsumed so
+            // statement recovery reports the residue instead of a clean AST.
+            if arrow_only && !matches!(self.peek_kind(), Some(TokenKind::Arrow)) {
+                break;
+            }
             // #15649: leave a surviving do-while trailing `{` for
             // `parse_statement_modifier` to reject with `DoWhileTrailingBlock`.
             // This single gate covers every direct-`{` postfix arm below (hash

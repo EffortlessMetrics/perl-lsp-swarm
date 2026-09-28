@@ -195,6 +195,61 @@ fn exact_tree_schema_validation_delegates_to_canonical_allow_schema() -> Result<
     Ok(())
 }
 
+/// Negative control for #15636: an absent/empty subject SHA must be refused
+/// with a typed identity failure naming the missing input, and the receipt
+/// must record that refusal instead of evaluating an unbound subject.
+#[test]
+fn exact_tree_refuses_empty_subject_sha_and_names_the_missing_input() -> Result<()> {
+    let _guard = inventory_output_lock();
+    let root = project_root()?;
+    let receipt = root.join("target/policy/non-rust-policy-exact-tree-empty-subject.json");
+    let _ = std::fs::remove_file(&receipt);
+    let output = Command::cargo_bin("xtask")?
+        .args([
+            "non-rust",
+            "exact-tree",
+            "--base-sha",
+            "HEAD",
+            "--subject-sha",
+            "",
+            "--event-name",
+            "workflow_dispatch",
+            "--repository",
+            "example/perl-lsp",
+            "--receipt",
+        ])
+        .arg(&receipt)
+        .current_dir(&root)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(output.stderr)?;
+    ensure!(
+        stderr.contains("missing required input: --subject-sha"),
+        "refusal must name --subject-sha as the missing input; stderr was:\n{stderr}"
+    );
+    let receipt_bytes = std::fs::read(&receipt)?;
+    let parsed: serde_json::Value = serde_json::from_slice(&receipt_bytes)?;
+    ensure!(
+        parsed["outcome"] == "fail",
+        "unbound-subject receipt must record outcome fail: {parsed}"
+    );
+    ensure!(
+        parsed["failure_stage"] == "identity",
+        "unbound-subject receipt must classify an identity failure: {parsed}"
+    );
+    ensure!(
+        parsed["subject_sha"] == "",
+        "unbound-subject receipt must not fabricate a subject: {parsed}"
+    );
+    ensure!(
+        parsed["error"].as_str().is_some_and(|error| error.contains("--subject-sha")),
+        "receipt error must name the missing input: {parsed}"
+    );
+    Ok(())
+}
+
 /// End-to-end test: runs on the actual repo and exits 0.
 #[test]
 fn non_rust_inventory_command_exits_zero() -> Result<()> {
