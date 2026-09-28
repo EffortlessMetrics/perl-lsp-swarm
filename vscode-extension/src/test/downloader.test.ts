@@ -25,10 +25,13 @@ import {
   WINDOWS_ARM64_TARGET,
   WINDOWS_X64_TARGET,
   isTransientManagedInstallError,
+  isDownloadCancellationMessage,
+  isNetworkErrorMessage,
   parseLocalVersion,
   hostManagedCompatibilityKeys,
   readGitHubToken,
   resolveGitHubAuthDisposition,
+  UPDATE_PROMPT_SUPPRESSED_KEY,
   __resetManagedInstallSingleflightForTesting,
 } from '../downloader';
 import {
@@ -84,8 +87,9 @@ interface DownloaderPrivateSurface {
 
 interface TestDownloader extends DownloaderPrivateSurface {
   getLocalBinaryPath(): string;
+  getLastErrorMessage(): string | undefined;
   ensureBinary(forceDownload?: boolean): Promise<string | null>;
-  checkForUpdateSilent(): Promise<void>;
+  checkForUpdateSilent(force?: boolean): Promise<void>;
   downloadFile(url: string, dest: string, timeoutMs?: number): Promise<void>;
 }
 
@@ -1243,6 +1247,30 @@ describe('Singleflight managed install', () => {
     expect(runSpy).toHaveBeenCalledTimes(1);
     expect(r1).toBe('/path/from/force');
     expect(r2).toBe('/path/from/force');
+  });
+
+  test('a force joiner receives the owning cancellation reason', async () => {
+    const owner = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    const joiner = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    const deferred = makeDeferred<string | null>();
+    jest.spyOn(owner, 'runEnsureBinary').mockReturnValue(deferred.promise);
+    const joinRun = jest.spyOn(joiner, 'runEnsureBinary');
+
+    const first = owner.ensureBinary(true);
+    const second = joiner.ensureBinary(true);
+    (owner as unknown as { lastErrorMessage: string }).lastErrorMessage = 'Download cancelled';
+    deferred.resolve(null);
+
+    expect(await first).toBeNull();
+    expect(await second).toBeNull();
+    expect(joiner.getLastErrorMessage()).toBe('Download cancelled');
+    expect(joinRun).not.toHaveBeenCalled();
   });
 
   test('force during ensure waits for ensure to finish then runs its own install', async () => {
@@ -2810,32 +2838,65 @@ describe('checkForUpdateSilent', () => {
     );
   });
 
-  test('"Don\'t ask again" sets updateCheckInterval to 0', async () => {
-    const updateFn = jest.fn();
-    const vscode = require('vscode');
-    vscode.workspace.getConfiguration.mockReturnValue({
-      get: jest.fn((key: string, defaultValue?: unknown) => {
-        const cfg: Record<string, unknown> = {
-          channel: 'latest',
-          serverPath: '',
-          updateCheckInterval: 24,
-          autoUpdate: false,
-        };
-        return key in cfg ? cfg[key] : defaultValue;
-      }),
-      update: updateFn,
-    });
+  test('"Don\'t ask again" records the prompt-suppression key without touching updateCheckInterval', async () => {
+    // #16536: suppression used to write updateCheckInterval: 0 globally, which
+    // also disabled interval checks and any later perl-lsp.autoUpdate=true.
+    // It must suppress only the prompt.
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
       tag_name: 'v0.13.0',
       assets: [],
     });
+    const vscode = require('vscode');
     vscode.window.showInformationMessage.mockResolvedValue("Don't ask again");
 
     await downloader.checkForUpdateSilent();
 
-    // ConfigurationTarget.Global === 1 in the vscode mock
-    expect(updateFn).toHaveBeenCalledWith('updateCheckInterval', 0, 1);
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
+    expect(ctx.globalState.update).toHaveBeenCalledWith(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    expect(ctx.globalState._store.get(UPDATE_PROMPT_SUPPRESSED_KEY)).toBe(true);
+    // The configuration surface is never written by the prompt.
+    const configMock = vscode.workspace.getConfiguration.mock.results.at(-1)!.value;
+    expect(configMock.update).not.toHaveBeenCalled();
+    // And the scoped update-check timestamp still advances.
+    expect(ctx.globalState._store.get(scopedKey)).toEqual(expect.any(Number));
+  });
+
+  test('a suppressed prompt still lets interval checks run — but shows no prompt (#16536)', async () => {
+    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    const getLatestSpy = jest
+      .spyOn(downloader, 'getLatestRelease')
+      .mockResolvedValue({ tag_name: 'v0.13.0', assets: [] });
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent();
+
+    // The check itself still happens; only the notification is suppressed.
+    expect(getLatestSpy).toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(outputChannel.appendLine).toHaveBeenCalledWith(
+      expect.stringContaining('prompts are suppressed'),
+    );
+  });
+
+  test('a suppressed prompt does not disable autoUpdate (#16536)', async () => {
+    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    const ensureSpy = jest.spyOn(downloader, 'ensureBinary').mockResolvedValue('/path/to/perllsp');
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(ensureSpy).toHaveBeenCalledWith(true);
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
   test('silent failure — logs error but shows no notification on network error', async () => {
@@ -2971,6 +3032,159 @@ describe('checkForUpdateSilent', () => {
 
     expect(ensureSpy).toHaveBeenCalledWith(true);
   });
+
+  // #16530: the manual command used to reset only the legacy unscoped state
+  // key while the interval guard reads the compatibility-scoped key, so a
+  // recent background check silently no-op'd the command. The forced path
+  // bypasses the interval guards entirely.
+  test('forced check bypasses the interval guard even with a fresh scoped timestamp', async () => {
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
+    ctx.globalState._store.set(scopedKey, Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    const getLatestSpy = jest
+      .spyOn(downloader, 'getLatestRelease')
+      .mockResolvedValue({ tag_name: 'v0.12.0', assets: [] });
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(getLatestSpy).toHaveBeenCalled();
+  });
+
+  test('forced check bypasses the legacy unscoped timestamp seed too', async () => {
+    ctx.globalState._store.set('perl-lsp.lastUpdateCheck', Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    const getLatestSpy = jest
+      .spyOn(downloader, 'getLatestRelease')
+      .mockResolvedValue({ tag_name: 'v0.12.0', assets: [] });
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(getLatestSpy).toHaveBeenCalled();
+  });
+
+  test('forced check reports "You are up to date" when nothing newer exists', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.12.0',
+      assets: [],
+    });
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'You are up to date (0.12.0).',
+    );
+  });
+
+  test('failed forced release fetch reports failure without delaying background checks', async () => {
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockRejectedValue(new Error('offline'));
+    const vscode = require('vscode');
+    vscode.window.showWarningMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(ctx.globalState._store.has(scopedKey)).toBe(false);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('failed'),
+      'View Logs',
+    );
+  });
+
+  test.each([
+    ['configured server path', { serverPath: '/custom/perllsp' }, 'serverPath'],
+    ['missing managed binary', { serverPath: '' }, 'missing'],
+  ])('forced check explains %s instead of silently returning', async (_label, config, reason) => {
+    mockConfig(config);
+    if (reason === 'missing') fs.rmSync(tmpBinary);
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent(true);
+
+    const notices = [
+      ...vscode.window.showInformationMessage.mock.calls,
+      ...vscode.window.showWarningMessage.mock.calls,
+    ];
+    expect(
+      notices.some((call: unknown[]) => typeof call[0] === 'string' && call[0].includes(reason)),
+    ).toBe(true);
+  });
+
+  test('background check stays silent when up to date even after a forced check ran', async () => {
+    // The no-prompt contract of the background path is unchanged by the
+    // forced reporting above.
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.12.0',
+      assets: [],
+    });
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent();
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('forced check explains that checks are disabled while channel is pinned to tag', async () => {
+    mockConfig({ channel: 'tag', versionTag: 'v0.12.0' });
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease');
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('tag'),
+    );
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('v0.12.0'),
+    );
+    expect(getLatestSpy).not.toHaveBeenCalled();
+  });
+
+  test('background path with channel pinned to tag stays silent', async () => {
+    mockConfig({ channel: 'tag', versionTag: 'v0.12.0' });
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease');
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent();
+
+    expect(getLatestSpy).not.toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('forced check offers the update prompt even when prompts were suppressed', async () => {
+    // The manual command is explicit intent: "Don't ask again" governs
+    // automatic prompts, not a check the user just requested.
+    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('0.13.0'),
+      'Update',
+      'Dismiss',
+      "Don't ask again",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3025,7 +3239,9 @@ describe('ensureBinary error classification', () => {
   });
 
   function setupDownloadError(errorMessage: string) {
-    jest.spyOn(downloader, 'downloadWithProgress').mockRejectedValue(new Error(errorMessage));
+    return jest
+      .spyOn(downloader, 'downloadWithProgress')
+      .mockRejectedValue(new Error(errorMessage));
   }
 
   test('network timeout shows message containing proxy/VPN guidance and manual install path', async () => {
@@ -3109,6 +3325,51 @@ describe('ensureBinary error classification', () => {
     const call = vscode.window.showErrorMessage.mock.calls[0];
     expect(call[0]).toMatch(/403|rate.?limit|GITHUB_TOKEN/i);
     expect(call[0]).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  // #16534: a plain 403 is not always a rate limit — proxies, VPNs, and
+  // captive portals return 403 too, so the banner must not blame the rate
+  // limit unconditionally.
+  test('non-withheld HTTP 403 names GitHub/network-proxy and keeps both remedies', async () => {
+    setupDownloadError('Failed to download: HTTP 403');
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/blocked by GitHub or your network\/proxy/);
+    expect(message).not.toMatch(/HTTP 403 — GitHub rate limit/);
+    // The rate-limit sentence survives alongside the new proxy hint.
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).toMatch(/proxy or VPN/);
+    expect(message).toMatch(/http\.proxy/);
+    expect(message).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  // #16534: the network branch only matched ECONNREFUSED|ETIMEDOUT|timeout and
+  // every other transport failure fell through to the generic dialog.
+  test.each([
+    ['DNS failure', 'getaddrinfo ENOTFOUND api.github.com'],
+    ['DNS temporary failure', 'request failed, reason: getaddrinfo EAI_AGAIN api.github.com'],
+    ['unreachable network', 'connect ENETUNREACH 140.82.121.3:443'],
+    ['connection reset', 'read ECONNRESET'],
+    ['TLS certificate failure', 'unable to verify the first certificate'],
+    ['self-signed certificate', 'self signed certificate in certificate chain'],
+    ['timeout', 'Download timeout after 30 seconds'],
+    ['connection refused', 'connect ECONNREFUSED 140.82.121.3:443'],
+  ])('network failure (%s) renders the network-unreachable guidance', async (_label, error) => {
+    setupDownloadError(error);
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/network unreachable/i);
+    expect(message).toMatch(/Perl: Reinstall Server Binary/);
+    expect(message).toMatch(/VPN|proxy/i);
+    expect(message).toMatch(/perl-lsp\.serverPath/);
   });
 
   /**
@@ -3346,6 +3607,115 @@ describe('ensureBinary error classification', () => {
     expect(call[0]).toMatch(/perl-lsp\.serverPath/);
   });
 
+  // #16532: the checksum banner said "Please retry" with no retry affordance.
+  test('checksum retry uses the reinstall command that owns health and startup', async () => {
+    const downloadSpy = setupDownloadError(
+      'Security check failed: Checksum verification failed (file may be corrupted or tampered with).',
+    );
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage
+      .mockResolvedValueOnce('Retry Download')
+      .mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+    // Let the dialog handler dispatch the registered workflow.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const call = vscode.window.showErrorMessage.mock.calls[0];
+    const buttons: string[] = call.slice(1);
+    expect(buttons).toContain('Retry Download');
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.reinstall');
+    expect(downloadSpy.mock.calls.length).toBe(1);
+  });
+
+  test('missing SHA256SUMS metadata names the manifest and mirror setting without claiming corruption (#16532)', async () => {
+    // The downloaded bytes were never judged when the manifest itself is
+    // absent — the message must not read as "download may be corrupted".
+    setupDownloadError('Security check failed: No SHA256SUMS file found in release assets.');
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/SHA256SUMS/);
+    expect(message).toMatch(/perl-lsp\.downloadBaseUrl/);
+    expect(message).toMatch(/perl-lsp\.serverPath/);
+    expect(message).not.toMatch(/corrupt/i);
+  });
+
+  test('a missing SHA256SUMS entry for the asset is metadata-missing, not corruption (#16532)', async () => {
+    // Previously lumped into the corruption message; the manifest exists but
+    // has no usable entry for this archive.
+    setupDownloadError(
+      'Security check failed: Checksum for perllsp-x86_64-unknown-linux-gnu.tar.gz not found in SHA256SUMS file.',
+    );
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/SHA256SUMS/);
+    expect(message).toMatch(/perl-lsp\.downloadBaseUrl/);
+    expect(message).not.toMatch(/corrupt/i);
+    // Still routes to checksum guidance, never the generic dialog.
+    expect(message).toMatch(/checksum/i);
+    expect(message).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  test.each([
+    'Security check failed: Conflicting checksum entries for perllsp.tar.gz',
+    'Security check failed: Malformed checksum entry for perllsp.tar.gz',
+  ])('invalid manifest metadata never claims archive corruption: %s', async (error) => {
+    setupDownloadError(error);
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/SHA256SUMS/);
+    expect(message).toMatch(/metadata is missing or invalid/);
+    expect(message).not.toMatch(/corrupt/i);
+  });
+
+  test('a digest mismatch still reports possible corruption with retry guidance', async () => {
+    // The genuine verification-failure branch keeps its corruption verdict.
+    setupDownloadError(
+      'Security check failed: Checksum verification failed (file may be corrupted or tampered with).',
+    );
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/corrupt/i);
+    expect(message).toMatch(/retry/i);
+  });
+
+  // #16532: the cancel strings from the progress wrapper and the bounded
+  // transports matched no classification branch and landed in the generic
+  // failure dialog. Cancellation is a user choice, not a failure.
+  test.each(['Download cancelled', 'Archive download cancelled', 'Release fetch cancelled'])(
+    'cancellation ("%s") shows an info line, never the failure dialog',
+    async (cancelMessage) => {
+      setupDownloadError(cancelMessage);
+      const vscode = require('vscode');
+      vscode.window.showErrorMessage.mockResolvedValue(undefined);
+      vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+      const result = await downloader.ensureBinary();
+
+      expect(result).toBeNull();
+      expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+        'Perl LSP download cancelled.',
+      );
+    },
+  );
+
   test('checksum-not-found in SHA256SUMS shows corruption message (case-insensitive match)', async () => {
     // This error has capital-C "Checksum" — verifies the classifier uses case-insensitive matching
     setupDownloadError(
@@ -3422,5 +3792,65 @@ describe('ensureBinary error classification', () => {
     );
     const uriArg = vscode.env.openExternal.mock.calls[0][0];
     expect(uriArg.toString()).toMatch(/github\.com.*perl-lsp/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Download failure classifiers (#16532, #16534)
+// ---------------------------------------------------------------------------
+describe('download failure classifiers', () => {
+  test('isNetworkErrorMessage covers the widened transport failure set (#16534)', () => {
+    const networkFailures = [
+      'connect ECONNREFUSED 140.82.121.3:443',
+      'connect ETIMEDOUT 140.82.121.3:443',
+      'getaddrinfo ENOTFOUND api.github.com',
+      'getaddrinfo EAI_AGAIN api.github.com',
+      'connect ENETUNREACH 140.82.121.3:443',
+      'read ECONNRESET',
+      'Download timeout after 30 seconds',
+      'unable to verify the first certificate',
+      'SELF_SIGNED_CERT_IN_CHAIN',
+      'certificate is not yet valid',
+    ];
+    for (const message of networkFailures) {
+      expect(isNetworkErrorMessage(message)).toBe(true);
+    }
+  });
+
+  test('isNetworkErrorMessage does not claim unrelated failures', () => {
+    const notNetwork = [
+      'Download cancelled',
+      'Failed to download: HTTP 403',
+      'Failed to download: HTTP 404',
+      'Security check failed: No SHA256SUMS file found in release assets.',
+      'No binary found for platform: x86_64-unknown-linux-gnu',
+      'Failed to extract archive: tar exited with code 1',
+    ];
+    for (const message of notNetwork) {
+      expect(isNetworkErrorMessage(message)).toBe(false);
+    }
+  });
+
+  test('isDownloadCancellationMessage matches every bounded-transport cancel string (#16532)', () => {
+    const cancellations = [
+      'Download cancelled',
+      'Archive download cancelled',
+      'Release fetch cancelled',
+    ];
+    for (const message of cancellations) {
+      expect(isDownloadCancellationMessage(message)).toBe(true);
+    }
+  });
+
+  test('isDownloadCancellationMessage does not match real failures', () => {
+    const failures = [
+      'Download timeout after 30 seconds',
+      'Archive download exceeded 524288000 compressed bytes',
+      'Release fetch returned invalid JSON',
+      'cancelled by the server', // not a trailing cancel marker
+    ];
+    for (const message of failures) {
+      expect(isDownloadCancellationMessage(message)).toBe(false);
+    }
   });
 });
