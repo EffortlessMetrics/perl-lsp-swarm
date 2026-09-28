@@ -1089,13 +1089,17 @@ impl LspServer {
                                             "References: deadline exceeded during text search"
                                         );
                                     }
+                                    let index_count = workspace_locations.len();
                                     let enhanced_locations = if fallback_receipt.deadline_exhausted
                                     {
                                         Vec::new()
                                     } else {
-                                        // Bare-name word-boundary scan already sees `Pkg::name`
-                                        // because `::` is a boundary. A second qualified regex
-                                        // used to report overlapping ranges for the same site.
+                                        // Identifier-boundary scan treats `:` as a separator, so
+                                        // `Pkg::name` is a hit for needle `name`. Kind filtering
+                                        // drops hash keys; identity dedup collapses overlap with
+                                        // index hits. Scan past `cap` by the current index size so
+                                        // index+text duplicates cannot exhaust the budget before
+                                        // merge (#16638).
                                         search_document_texts_for_references(
                                             docs_snapshot.iter().map(|(doc_uri, doc_text)| {
                                                 (doc_uri.as_str(), doc_text.as_str())
@@ -1105,7 +1109,7 @@ impl LspServer {
                                                 sigil: symbol_key.sigil,
                                                 include_declaration,
                                             },
-                                            cap,
+                                            cap.saturating_add(index_count),
                                         )
                                     };
 
@@ -1115,7 +1119,6 @@ impl LspServer {
                                     // (WorkspaceMixed) must not be collapsed into WorkspaceExact.
                                     // Dedup before cap so identical index+text pairs cannot
                                     // consume the budget (#16638).
-                                    let index_count = workspace_locations.len();
                                     let text_count = enhanced_locations.len();
                                     workspace_locations.extend(enhanced_locations);
                                     let all_combined_locations =

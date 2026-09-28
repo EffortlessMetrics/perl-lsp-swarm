@@ -6,9 +6,24 @@
 //! index-plus-text answers are then collapsed by identical `(uri, range)`, not
 //! by JSON object equality, so key-order differences cannot reintroduce
 //! duplicates (#16638).
+//!
+//! Identifier bounds treat `:` as a separator so `Pkg::name` is a hit for
+//! needle `name`. `perl-symbol::is_word_boundary` does not, because `:` is a
+//! name byte. Hash-key braces require `->` or a sigiled identifier; block
+//! bodies are not keys. Double-quoted `$name` stays a variable reference.
 
-use crate::util::{byte_to_utf16_col, is_word_boundary};
+use crate::util::byte_to_utf16_col;
 use serde_json::{Value, json};
+
+/// Line context of a candidate match. Quote/comment scanning is line-local and
+/// does not model `q{}`/`qq{}` or interpolating heredocs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineMatchContext {
+    Code,
+    SingleString,
+    DoubleString,
+    Comment,
+}
 
 /// Query identity used to filter text-search hits.
 #[derive(Debug, Clone, Copy)]
@@ -62,8 +77,7 @@ pub(super) fn classify_reference_word(
     if !valid_span(line, match_start, match_end) {
         return ReferenceWordKind::Other;
     }
-    if is_sigiled_variable(line, match_start)
-        || is_braced_scalar_deref(line, match_start, match_end)
+    if is_sigiled_variable(line, match_start) || is_braced_sigil_deref(line, match_start, match_end)
     {
         return ReferenceWordKind::Variable;
     }
@@ -87,10 +101,18 @@ pub(super) fn keep_text_reference_match(
     if !valid_span(line, match_start, match_end) {
         return false;
     }
-    if is_in_quotes_or_comment(line, match_start) {
+    let context = line_match_context(line, match_start);
+    if matches!(context, LineMatchContext::Comment | LineMatchContext::SingleString) {
         return false;
     }
     let kind = classify_reference_word(line, match_start, match_end);
+    if context == LineMatchContext::DoubleString {
+        // Double quotes interpolate `$name` / `@name` / `%name`; uninterpolated
+        // literals (`"name"`) and quoted hash keys stay dropped.
+        return matches!(sigil, Some('$' | '@' | '%'))
+            && kind == ReferenceWordKind::Variable
+            && !should_skip_text_reference_match(line, match_start, sigil, include_declaration);
+    }
     match sigil {
         Some('$' | '@' | '%') => {
             kind == ReferenceWordKind::Variable
@@ -161,7 +183,7 @@ where
             while let Some(idx) = line.get(start..).and_then(|tail| tail.find(needle)) {
                 let byte_pos = start + idx;
                 let match_end = byte_pos + needle_bytes.len();
-                if is_word_boundary(line_bytes, byte_pos, needle_bytes.len())
+                if is_reference_ident_boundary(line_bytes, byte_pos, needle_bytes.len())
                     && keep_text_reference_match(
                         line,
                         byte_pos,
@@ -170,8 +192,10 @@ where
                         query.include_declaration,
                     )
                 {
-                    let start_utf16 = byte_to_utf16_col(line, byte_pos);
-                    let end_utf16 = byte_to_utf16_col(line, match_end);
+                    let (range_start, range_end) =
+                        emitted_match_byte_range(line, byte_pos, match_end);
+                    let start_utf16 = byte_to_utf16_col(line, range_start);
+                    let end_utf16 = byte_to_utf16_col(line, range_end);
                     out.push(location_value(doc_uri, line_num, start_utf16, end_utf16));
                     if out.len() >= cap {
                         break 'docs;
@@ -277,7 +301,8 @@ fn is_sigiled_variable(line: &str, match_start: usize) -> bool {
     matches!(char_before(line, match_start), Some('$' | '@' | '%'))
 }
 
-fn is_braced_scalar_deref(line: &str, match_start: usize, match_end: usize) -> bool {
+/// `${name}`, `@{name}`, `%{name}` (optional whitespace inside the braces).
+fn is_braced_sigil_deref(line: &str, match_start: usize, match_end: usize) -> bool {
     let inner_start = skip_ws_left(line, match_start);
     let inner_end = skip_ws_right(line, match_end);
     if char_before(line, inner_start) != Some('{') || char_at(line, inner_end) != Some('}') {
@@ -285,7 +310,7 @@ fn is_braced_scalar_deref(line: &str, match_start: usize, match_end: usize) -> b
     }
     let brace_at = inner_start.saturating_sub('{'.len_utf8());
     let before_brace = skip_ws_left(line, brace_at);
-    char_before(line, before_brace) == Some('$')
+    matches!(char_before(line, before_brace), Some('$' | '@' | '%'))
 }
 
 fn is_hash_key_occurrence(line: &str, match_start: usize, match_end: usize) -> bool {
@@ -300,7 +325,76 @@ fn is_hash_key_occurrence(line: &str, match_start: usize, match_end: usize) -> b
     if char_before(line, inner_start) != Some('{') || char_at(line, inner_end) != Some('}') {
         return false;
     }
-    !is_braced_scalar_deref(line, match_start, match_end)
+    if is_braced_sigil_deref(line, match_start, match_end) {
+        return false;
+    }
+    has_hash_subscript_context(line, inner_start)
+}
+
+/// `{ident}` is a hash key only after `->` or a sigiled identifier (`$h{k}`).
+/// Bare block bodies (`if { name }`, `map { name }`) are not hash keys.
+fn has_hash_subscript_context(line: &str, inner_start: usize) -> bool {
+    let brace_at = inner_start.saturating_sub('{'.len_utf8());
+    let before_brace = skip_ws_left(line, brace_at);
+    if char_before(line, before_brace) == Some('>') {
+        let gt_at = before_brace.saturating_sub('>'.len_utf8());
+        let before_gt = skip_ws_left(line, gt_at);
+        return char_before(line, before_gt) == Some('-');
+    }
+    let Some(ident) = previous_ident(line, brace_at) else {
+        return false;
+    };
+    let ident_end = skip_ws_left(line, brace_at);
+    let ident_start = ident_end.saturating_sub(ident.len());
+    matches!(char_before(line, ident_start), Some('$' | '@' | '%'))
+}
+
+/// `perl-symbol::is_word_boundary` treats `:` as a name byte, so `Pkg::name`
+/// is one token. Regex `\b` (the previous combined-path scanner) does not.
+/// Identifier-only bounds restore `Pkg::name` hits for needle `name` without
+/// matching `namesake`.
+fn is_reference_ident_boundary(text: &[u8], pos: usize, word_len: usize) -> bool {
+    let Some(end_pos) = pos.checked_add(word_len) else {
+        return false;
+    };
+    if pos > 0 && is_ident_byte(text[pos - 1]) {
+        return false;
+    }
+    end_pos >= text.len() || !is_ident_byte(text[end_pos])
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// Include a leading `$`/`@`/`%` (and `${name}` braces) so text hits share
+/// identity with index locations that span the sigil.
+fn emitted_match_byte_range(line: &str, match_start: usize, match_end: usize) -> (usize, usize) {
+    if is_braced_sigil_deref(line, match_start, match_end) {
+        let inner_start = skip_ws_left(line, match_start);
+        let brace_at = inner_start.saturating_sub('{'.len_utf8());
+        let before_brace = skip_ws_left(line, brace_at);
+        let Some(sigil) = char_before(line, before_brace) else {
+            return (match_start, match_end);
+        };
+        if !matches!(sigil, '$' | '@' | '%') {
+            return (match_start, match_end);
+        }
+        let start = before_brace.saturating_sub(sigil.len_utf8());
+        let inner_end = skip_ws_right(line, match_end);
+        let end = if char_at(line, inner_end) == Some('}') {
+            inner_end.saturating_add('}'.len_utf8())
+        } else {
+            match_end
+        };
+        return (start, end);
+    }
+    if let Some(sigil) = char_before(line, match_start)
+        && matches!(sigil, '$' | '@' | '%')
+    {
+        return (match_start.saturating_sub(sigil.len_utf8()), match_end);
+    }
+    (match_start, match_end)
 }
 
 fn is_subroutine_occurrence(line: &str, match_start: usize, match_end: usize) -> bool {
@@ -338,9 +432,9 @@ fn is_ident_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
-fn is_in_quotes_or_comment(line: &str, match_start: usize) -> bool {
+fn line_match_context(line: &str, match_start: usize) -> LineMatchContext {
     let Some(prefix) = line.get(..match_start) else {
-        return true;
+        return LineMatchContext::Comment;
     };
     let mut in_single = false;
     let mut in_double = false;
@@ -353,11 +447,17 @@ fn is_in_quotes_or_comment(line: &str, match_start: usize) -> bool {
         match ch {
             '\'' if !in_double => in_single = !in_single,
             '"' if !in_single => in_double = !in_double,
-            '#' if !in_single && !in_double => return true,
+            '#' if !in_single && !in_double => return LineMatchContext::Comment,
             _ => {}
         }
     }
-    in_single || in_double
+    if in_single {
+        LineMatchContext::SingleString
+    } else if in_double {
+        LineMatchContext::DoubleString
+    } else {
+        LineMatchContext::Code
+    }
 }
 
 #[cfg(test)]
@@ -488,12 +588,18 @@ mod tests {
     }
 
     #[test]
-    fn braced_scalar_deref_is_variable_not_hash_key() -> Result<(), Box<dyn Error>> {
-        let line = "print ${name};";
-        let start = line.find("name").ok_or("missing braced scalar")?;
-        assert_eq!(classify_reference_word(line, start, start + 4), ReferenceWordKind::Variable);
-        assert!(keep_text_reference_match(line, start, start + 4, Some('$'), true));
-        assert!(!keep_text_reference_match(line, start, start + 4, None, true));
+    fn braced_sigil_deref_is_variable_not_hash_key() -> Result<(), Box<dyn Error>> {
+        for (line, sigil) in
+            [("print ${name};", '$'), ("print @{name};", '@'), ("print %{name};", '%')]
+        {
+            let start = line.find("name").ok_or("missing braced deref")?;
+            assert_eq!(
+                classify_reference_word(line, start, start + 4),
+                ReferenceWordKind::Variable
+            );
+            assert!(keep_text_reference_match(line, start, start + 4, Some(sigil), true));
+            assert!(!keep_text_reference_match(line, start, start + 4, None, true));
+        }
         Ok(())
     }
 
@@ -526,6 +632,7 @@ mod tests {
             "use Classic;\n",
             "my $obj = Classic->new(name => 'x');\n",
             "my $n = $obj->name;\n",
+            "my $q = Classic::name();\n",
         );
         let refs = scan(
             &[("file:///Classic.pm", classic), ("file:///consumer.pl", consumer)],
@@ -558,6 +665,11 @@ mod tests {
         }) {
             return Err(format!("$obj->name call missing: {starts:?}").into());
         }
+        if !starts.iter().any(|(uri, line, character)| {
+            uri.ends_with("consumer.pl") && *line == 3 && *character == 17
+        }) {
+            return Err(format!("Classic::name qualified call missing: {starts:?}").into());
+        }
         Ok(())
     }
 
@@ -584,7 +696,7 @@ mod tests {
             return Err(format!("expected 2 references, got {}", refs.len()).into());
         }
         let starts: Vec<_> = refs.iter().map(start_of).collect::<Result<_, _>>()?;
-        if starts != vec![(0, 4), (0, 18)] {
+        if starts != vec![(0, 3), (0, 17)] {
             return Err(format!("unexpected UTF-16 starts: {starts:?}").into());
         }
         Ok(())
@@ -692,6 +804,91 @@ mod tests {
             should_skip_text_reference_match(line, match_start, Some('$'), false),
             "declaration targets inside variable lists must be omitted"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_final_component_survives_colon_name_bytes() -> Result<(), Box<dyn Error>> {
+        let docs = [("file:///q.pl", "my $x = Classic::name();\nmy $y = namesake;\n")];
+        let refs = scan(&docs, "name", None, 10);
+        let starts: Vec<_> = refs.iter().map(start_of).collect::<Result<_, _>>()?;
+        if !starts.contains(&(0, 17)) {
+            return Err(format!("Classic::name must be a text-search hit: {starts:?}").into());
+        }
+        if starts.iter().any(|&(line, _)| line == 1) {
+            return Err("namesake must not match needle name".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn block_brace_bareword_is_not_a_hash_key() -> Result<(), Box<dyn Error>> {
+        let block = "if ($ok) { name; }";
+        let map = "map { name } @xs;";
+        let hash = "$args{name}";
+        let arrow = "$self->{name}";
+        let block_at = block.find("name").ok_or("missing block call")?;
+        let map_at = map.find("name").ok_or("missing map call")?;
+        let hash_at = hash.find("name").ok_or("missing hash key")?;
+        let arrow_at = arrow.find("name").ok_or("missing arrow key")?;
+        assert_ne!(
+            classify_reference_word(block, block_at, block_at + 4),
+            ReferenceWordKind::HashKey
+        );
+        assert_ne!(classify_reference_word(map, map_at, map_at + 4), ReferenceWordKind::HashKey);
+        assert!(keep_text_reference_match(block, block_at, block_at + 4, None, true));
+        assert!(keep_text_reference_match(map, map_at, map_at + 4, None, true));
+        assert_eq!(classify_reference_word(hash, hash_at, hash_at + 4), ReferenceWordKind::HashKey);
+        assert_eq!(
+            classify_reference_word(arrow, arrow_at, arrow_at + 4),
+            ReferenceWordKind::HashKey
+        );
+        assert!(!keep_text_reference_match(hash, hash_at, hash_at + 4, None, true));
+        assert!(!keep_text_reference_match(arrow, arrow_at, arrow_at + 4, None, true));
+        Ok(())
+    }
+
+    #[test]
+    fn interpolated_variable_in_double_quotes_is_kept() -> Result<(), Box<dyn Error>> {
+        let interpolated = r#"print "hello $name";"#;
+        let literal = r#"print "name";"#;
+        let single = "print 'hello $name';";
+        let interp_at = interpolated.find("name").ok_or("missing interpolated")?;
+        let literal_at = literal.find("name").ok_or("missing literal")?;
+        let single_at = single.find("name").ok_or("missing single")?;
+        assert!(keep_text_reference_match(interpolated, interp_at, interp_at + 4, Some('$'), true));
+        assert!(!keep_text_reference_match(interpolated, interp_at, interp_at + 4, None, true));
+        assert!(!keep_text_reference_match(literal, literal_at, literal_at + 4, Some('$'), true));
+        assert!(!keep_text_reference_match(literal, literal_at, literal_at + 4, None, true));
+        assert!(!keep_text_reference_match(single, single_at, single_at + 4, Some('$'), true));
+        Ok(())
+    }
+
+    #[test]
+    fn variable_match_range_includes_leading_sigil() -> Result<(), Box<dyn Error>> {
+        let docs = [("file:///v.pl", "my $total = $total;\n")];
+        let refs = scan(&docs, "total", Some('$'), 10);
+        let starts: Vec<_> = refs.iter().map(start_of).collect::<Result<_, _>>()?;
+        if starts != vec![(0, 3), (0, 12)] {
+            return Err(format!("variable ranges must start at '$': {starts:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn search_keeps_block_calls_and_drops_hash_subscripts() -> Result<(), Box<dyn Error>> {
+        let text = concat!("if ($ok) { name; }\n", "$h{name} = 1;\n", "map { name } @xs;\n",);
+        let refs = scan(&[("file:///b.pl", text)], "name", None, 10);
+        let starts: Vec<_> = refs.iter().map(start_of).collect::<Result<_, _>>()?;
+        if starts.iter().any(|&(line, _)| line == 1) {
+            return Err(format!("hash subscript leaked: {starts:?}").into());
+        }
+        if !starts.contains(&(0, 11)) {
+            return Err(format!("if-block bare call missing: {starts:?}").into());
+        }
+        if !starts.iter().any(|&(line, _)| line == 2) {
+            return Err(format!("map-block bare call missing: {starts:?}").into());
+        }
         Ok(())
     }
 }
