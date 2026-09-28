@@ -350,13 +350,17 @@ impl LspServer {
             use_system_inc: config.use_system_inc,
             use_perl5lib: config.use_perl5lib,
             // Hard envelope (#16182): the delivered resolution deadline is
-            // bounded even when a programmatically composed or unvalidated
-            // config value reaches this seam, so no consumer can observe a
-            // single-resolution wait wider than the product envelope owned by
-            // `RESOLUTION_TIMEOUT_MS_RANGE` in perl-lsp-rs-core config.
-            resolution_timeout_ms: config
-                .resolution_timeout_ms
-                .min(perl_lsp_rs_core::config::RESOLUTION_TIMEOUT_HARD_CAP_MS),
+            // clamped to the full accepted interval (1..=10_000 ms, owned by
+            // `RESOLUTION_TIMEOUT_MS_RANGE` in perl-lsp-rs-core config and the
+            // configuration-authority catalog) even when a programmatically
+            // composed or unvalidated config value reaches this seam. `min`
+            // alone only bounds the upper endpoint: a composed zero deadline
+            // would reach `collect_module_uri_candidates` and time out before
+            // the first include root is examined.
+            resolution_timeout_ms: config.resolution_timeout_ms.clamp(
+                1,
+                perl_lsp_rs_core::config::RESOLUTION_TIMEOUT_HARD_CAP_MS,
+            ),
             system_inc_state,
         })
     }
@@ -634,6 +638,42 @@ mod tests {
             context.resolution_timeout_ms,
             perl_lsp_rs_core::config::RESOLUTION_TIMEOUT_HARD_CAP_MS,
         );
+        Ok(())
+    }
+
+    /// #16182: `min` only bounds the upper endpoint, so a programmatically
+    /// composed zero deadline used to survive this seam and make
+    /// `collect_module_uri_candidates` time out before the first include
+    /// root was examined. The consumption seam must floor the deadline at
+    /// the accepted interval's minimum, exactly as the parser/catalog pair
+    /// (`Validation::UnsignedRange { minimum: 1, .. }`) admits no zero.
+    #[test]
+    fn effective_inc_context_floors_zero_resolution_deadline_to_envelope() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let script = workspace.join("script").join("run.pl");
+        std::fs::create_dir_all(script.parent().ok_or("missing script parent")?)?;
+
+        let workspace_uri = file_uri(&workspace)?;
+        let doc_uri = file_uri(&script)?;
+        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string()];
+        config.use_perl5lib = false;
+        config.resolution_timeout_ms = 0;
+
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            WorkspaceFolderState::new(workspace_uri.clone())
+                .with_path(workspace.clone())
+                .with_effective_workspace_config(config),
+        ];
+        *server.root_path.lock() = Some(workspace.clone());
+
+        let source = "use Demo::Worker;\n";
+        let context = server
+            .effective_inc_context_for_doc(Some(&doc_uri), Some(source), Some(source.len()))
+            .ok_or("expected effective @INC context")?;
+        assert_eq!(context.resolution_timeout_ms, 1);
         Ok(())
     }
 
