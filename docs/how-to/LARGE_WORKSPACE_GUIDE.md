@@ -280,20 +280,15 @@ RUST_LOG=perl_lsp=trace RUST_LOG_STYLE=always \
   perllsp --stdio 2>trace.log
 ```
 
-For real-time async task inspection, connect `tokio-console`:
+For real-time async task inspection, `tokio-console` is the usual choice - but it is
+**not available in this tree**. No crate here declares a `tokio-console` feature and no
+source file reads a `tokio_unstable` cfg, so the invocation this guide used to carry
+(`cargo run -p perl-lsp-rs --features tokio-console -- --stdio`) could never have worked:
+`perl-lsp-rs` publishes no executable target, and the feature does not exist.
 
-```bash
-# In one terminal — start the server with tokio-console support
-RUSTFLAGS="--cfg tokio_unstable" \
-  cargo run -p perl-lsp-rs --features tokio-console -- --stdio
-
-# In another terminal
-cargo install tokio-console
-tokio-console
-```
-
-`tokio-console` shows live task timings, waker counts, and poll durations — useful for
-finding tasks that hold locks too long or are polled at high frequency.
+Use the `tracing` route above instead. It is supported today and answers the same
+question - which tasks hold locks, and for how long - at the granularity this repository
+actually instruments.
 
 ### Interpreting Results
 
