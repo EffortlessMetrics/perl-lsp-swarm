@@ -2,7 +2,10 @@
 
 use super::super::types::{CodeAction, CodeActionEdit, CodeActionKind};
 use crate::providers::rename::TextEdit;
-use perl_parser_core::ast::{Node, NodeKind, SourceLocation};
+use perl_parser_core::{
+    Parser,
+    ast::{Node, NodeKind, SourceLocation},
+};
 use std::collections::HashSet;
 
 use super::helpers::Helpers;
@@ -23,6 +26,9 @@ pub fn create_extract_subroutine_action(
         return None;
     }
     let insert_pos = helpers.find_subroutine_insert_position(node.location.start);
+    if !is_enclosing_subroutine_start(source, node, insert_pos) {
+        return None;
+    }
     let first_sub = source.find("sub ").unwrap_or(node.location.start);
     let strict_context = source
         .get(..node.location.start.min(insert_pos).min(first_sub))?
@@ -93,6 +99,28 @@ pub fn create_extract_subroutine_action(
         },
         is_preferred: false,
     })
+}
+
+/// The text helper's `rfind("sub ")` is only a candidate: that spelling can
+/// occur inside a multiline string or comment. Require the same byte to be a
+/// parsed subroutine whose body actually encloses the selected block.
+fn is_enclosing_subroutine_start(source: &str, selected: &Node, insert_pos: usize) -> bool {
+    let mut parser = Parser::new(source);
+    let Ok(ast) = parser.parse() else { return false };
+    let mut pending = vec![&ast];
+    while let Some(candidate) = pending.pop() {
+        if let NodeKind::Subroutine { body, declarator, attributes, .. } = &candidate.kind
+            && candidate.location.start == insert_pos
+            && body.location.start <= selected.location.start
+            && selected.location.end <= body.location.end
+            && declarator.is_none()
+            && attributes.is_empty()
+        {
+            return true;
+        }
+        pending.extend(candidate.children());
+    }
+    false
 }
 
 fn has_unsafe_scope_directive(source: &str, allowed_end: usize) -> bool {
@@ -321,7 +349,6 @@ fn collect_variables_inner(
 mod tests {
     use super::super::EnhancedCodeActionsProvider;
     use super::*;
-    use perl_parser_core::Parser;
     use perl_tdd_support::{must, must_some};
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -581,6 +608,15 @@ mod tests {
         let edited = apply(source, &must_some(extract_action(source)));
         assert!(edited.contains("sub process_data_2 {"), "name collision survived:\n{edited}");
         assert!(perl_compiles(&edited), "renamed action did not compile:\n{edited}");
+    }
+
+    #[test]
+    fn insertion_spelling_inside_multiline_string_is_refused() {
+        let source = "use strict;\nsub worker {\n my $s = 'before\nsub marker\n';\n { my $x = 2; $x + 1; }\n}\nprint worker(), \"\\n\";\n";
+        assert!(
+            extract_action(source).is_none(),
+            "string content was treated as a subroutine start"
+        );
     }
 
     #[test]
