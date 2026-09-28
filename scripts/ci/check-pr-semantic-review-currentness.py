@@ -608,6 +608,23 @@ def emit_marker(root: Path, repo: str, pr: int, result: str) -> str:
     ) + " -->"
 
 
+def stdout_payload(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Pin the operator/gate JSON wire surface.
+
+    The marker envelope (`semantic-review:v1`) is a distinct versioned surface.
+    Every stdout JSON object — success, MARKER_REFUSED, and instrument failure —
+    goes through this helper so a fourth call site cannot omit `schema_version`,
+    and a stale or foreign `schema_version` in the verdict dict cannot leak.
+    """
+    payload = dict(fields)
+    payload["schema_version"] = SCHEMA_VERSION
+    return payload
+
+
+def emit_stdout_json(fields: Mapping[str, Any]) -> None:
+    print(json.dumps(stdout_payload(fields), sort_keys=True))
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pr", type=int)
@@ -653,18 +670,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     except MarkerRefused as refusal:
         # A refusal is a correct outcome of a non-REVIEW_CURRENT review, not a broken
         # instrument, so it stays distinguishable from both verdicts and failures.
-        print(
-            json.dumps(
-                {
-                    "classification": "MARKER_REFUSED",
-                    "reason": "result_does_not_carry_a_marker",
-                    "detail": str(refusal),
-                    "pr": args.pr,
-                    "result": args.result,
-                    "schema_version": SCHEMA_VERSION,
-                },
-                sort_keys=True,
-            )
+        emit_stdout_json(
+            {
+                "classification": "MARKER_REFUSED",
+                "reason": "result_does_not_carry_a_marker",
+                "detail": str(refusal),
+                "pr": args.pr,
+                "result": args.result,
+            }
         )
         return 3
     except (
@@ -676,23 +689,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         TypeError,
         ValueError,
     ) as error:
-        result = {
-            "classification": "NOT_PROVEN",
-            "reason": "instrument_failure",
-            "detail": str(error),
-            "pr": args.pr,
-            "schema_version": SCHEMA_VERSION,
-        }
-        print(json.dumps(result, sort_keys=True))
+        emit_stdout_json(
+            {
+                "classification": "NOT_PROVEN",
+                "reason": "instrument_failure",
+                "detail": str(error),
+                "pr": args.pr,
+            }
+        )
         return 2
-    # The success path: ensure the verdict dict carries the schema version too so
-    # the three stdout surfaces (success, MARKER_REFUSED, NOT_PROVEN) are uniformly
-    # versioned. `result` originates from `evaluate(...)` which builds the verdict
-    # dict; we attach the version field here rather than threading it through the
-    # evaluator to keep the change scoped to this script's stdout contract.
-    enriched_result = dict(result)
-    enriched_result.setdefault("schema_version", SCHEMA_VERSION)
-    print(json.dumps(enriched_result, sort_keys=True))
+    emit_stdout_json(result)
     return 0 if result["classification"] == "REVIEW_CURRENT" else 1
 
 
