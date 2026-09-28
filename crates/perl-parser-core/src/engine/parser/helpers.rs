@@ -85,16 +85,20 @@ impl<'a> Parser<'a> {
     ///
     /// Perl permits `func { ... } @list` and DSL-style named args such as
     /// `func { ... } foreach => $items` without a comma after the block. We
-    /// still stop at real statement boundaries and at postfix modifiers unless
-    /// the modifier token is being autoquoted before `=>`.
+    /// still stop at real statement boundaries and at postfix modifiers / low-
+    /// precedence word operators unless that token is being autoquoted before
+    /// `=>` (`has { 1 } or => 2`, #16639).
     fn should_continue_bare_call_after_block(&mut self) -> bool {
         match self.peek_kind() {
             Some(kind) if kind.is_recovery_boundary() => false,
             None => false,
             // `?` begins a ternary on the block-call result, not an argument to it.
             Some(TokenKind::Question) => false,
-            Some(kind) if kind.is_low_precedence_word_operator() => false,
-            Some(kind) if Self::is_stmt_modifier_kind(kind) => self.is_keyword_before_fat_arrow(),
+            Some(kind)
+                if kind.is_low_precedence_word_operator() || Self::is_stmt_modifier_kind(kind) =>
+            {
+                self.is_keyword_before_fat_arrow()
+            }
             _ => true,
         }
     }
@@ -380,6 +384,14 @@ impl<'a> Parser<'a> {
                 | TokenKind::Else
                 | TokenKind::Elsif
         )
+    }
+
+    /// Barewords Perl autoquotes before `=>`: identifiers, reserved-word
+    /// tokens, and low-precedence word operators (`and`/`or`/`not`/`xor`).
+    fn is_autoquoted_bareword_kind(kind: TokenKind) -> bool {
+        kind == TokenKind::Identifier
+            || Self::is_keyword_token(kind)
+            || kind.is_low_precedence_word_operator()
     }
 
     /// Check if a token kind is a binary operator that couldn't start an expression argument.
@@ -1428,6 +1440,34 @@ impl<'a> Parser<'a> {
         let has_typeglob_first_arg = self.peek_kind() == Some(TokenKind::Star)
             && matches!(name, "is" | "isnt" | "like" | "unlike" | "cmp_ok" | "isa_ok" | "can_ok");
 
+        // Peek at the next token to see if it could be an argument
+        let next = match self.tokens.peek() {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        let next_kind = next.kind();
+        let next_text = next.text.clone();
+
+        // `func qw(a b)` is one QuoteWords token; split `qw` plus a delimiter is
+        // the same list in list-operator position (#14808).
+        if Self::token_starts_qw_list(next_kind, next_text.as_ref()) {
+            return true;
+        }
+
+        // Perl autoquotes any bareword before `=>`, including reserved words
+        // and names that the lexer classifies as builtins (`log`, `abs`) or
+        // keywords (`class`, `method`, `format`). Those tokens are valid
+        // list-operator arguments: `has log => sub {}`, `has class => (is =>
+        // 'rw')` (#16639). This check must precede the statement-end / binary-
+        // operator refusal: `and`/`or` are logical operators, and `if` is a
+        // statement-end token, but `has and => 1` / `has if => 1` are still
+        // autoquoted list-operator arguments. The Identifier match below used
+        // to return early for builtins without consulting `=>`, and keyword
+        // tokens fell through to `_ => false`.
+        if Self::is_autoquoted_bareword_kind(next_kind) && self.is_keyword_before_fat_arrow() {
+            return true;
+        }
+
         // Must not already be at a statement end or followed by a binary operator.
         // Test helpers are commonly imported as list operators and may take a
         // typeglob slot expression as their first argument: `is *BEGIN{CODE}, ...`.
@@ -1437,24 +1477,12 @@ impl<'a> Parser<'a> {
             return false;
         }
 
-        // Peek at the next token to see if it could be an argument
-        let next = match self.tokens.peek() {
-            Ok(t) => t,
-            Err(_) => return false,
-        };
-
-        // `func qw(a b)` is one QuoteWords token; split `qw` plus a delimiter is
-        // the same list in list-operator position (#14808).
-        if Self::token_starts_qw_list(next.kind(), next.text.as_ref()) {
-            return true;
-        }
-
-        match next.kind() {
+        match next_kind {
             // Sigiled variables: `func $x`, `func @arr`, `func %hash`
             TokenKind::Identifier
-                if next.text.starts_with('$')
-                    || next.text.starts_with('@')
-                    || next.text.starts_with('%') =>
+                if next_text.starts_with('$')
+                    || next_text.starts_with('@')
+                    || next_text.starts_with('%') =>
             {
                 true
             }
@@ -1483,12 +1511,12 @@ impl<'a> Parser<'a> {
             TokenKind::Number => true,
 
             // `func other_func(args)` — identifier followed by `(`
-            // `func bareword => value` — identifier followed by fat arrow (auto-quoted arg)
             // Also: `func Qualified::Name->method(...)` — qualified name as arg (Sub-pattern A).
             // The `!starts_with_uppercase` guard is relaxed for names that contain `::` so that
             // `func File::Spec->catfile(...)` is recognised as a bare call.
+            // Bareword `=>` autoquoting lives above this match so builtins and
+            // keyword tokens share one admission (`has log =>`, `has class =>`).
             TokenKind::Identifier => {
-                let next_text = next.text.clone();
                 // Special tokens like __PACKAGE__, __FILE__, __LINE__, __SUB__ are
                 // nullary builtins that produce values. They are valid bare-call arguments.
                 // e.g. `croak __PACKAGE__, ": error"` (Encode/Encoder.pm)
@@ -1497,8 +1525,7 @@ impl<'a> Parser<'a> {
                 if matches!(
                     next_text.as_ref(),
                     "__PACKAGE__" | "__FILE__" | "__LINE__" | "__SUB__" | "__CLASS__"
-                )
-                {
+                ) {
                     return true;
                 }
                 // Allow qualified names (e.g. `File::Spec`, `Scalar::Util`) as arguments.
@@ -1515,19 +1542,17 @@ impl<'a> Parser<'a> {
                 }
                 if next_text.starts_with(|c: char| c.is_ascii_uppercase()) {
                     // Plain uppercase identifier (e.g. constant) — not an argument.
-                    // Exception: if followed by `=>`, the fat-comma auto-quotes
-                    // it, making it a valid bare-call argument (#5929).
-                    if let Ok(third) = self.tokens.peek_second() {
-                        return third.kind() == TokenKind::FatArrow;
-                    }
+                    // Fat-arrow autoquoting of the same spelling is admitted
+                    // above, before this Identifier match.
                     return false;
                 }
                 // Block-list functions (map/grep/sort/etc.) as argument: `uniq map { ... } @list`
                 if Self::is_block_list_func(&next_text)
-                    && let Ok(third) = self.tokens.peek_second() {
-                        return third.kind() == TokenKind::LeftBrace
-                            || third.kind() == TokenKind::LeftParen;
-                    }
+                    && let Ok(third) = self.tokens.peek_second()
+                {
+                    return third.kind() == TokenKind::LeftBrace
+                        || third.kind() == TokenKind::LeftParen;
+                }
                 // Builtin functions as arguments:
                 //
                 // Pattern A (sigil arg): `func values %hash`, `func keys %h`
@@ -1544,26 +1569,26 @@ impl<'a> Parser<'a> {
                 // the fallthrough to the general `(` check at the bottom of this
                 // branch, causing `croak ref($x) . "y"` to drop the argument.
                 if Self::is_builtin_function(&next_text)
-                    && let Ok(third) = self.tokens.peek_second() {
-                        let third_text: &str = &third.text;
-                        if third.kind() == TokenKind::LeftParen {
-                            // builtin(args) — the builtin is called with parens,
-                            // producing a value that is the outer function's argument.
-                            return true;
-                        }
-                        return Self::is_sigil_argument_start(third.kind(), third_text);
+                    && let Ok(third) = self.tokens.peek_second()
+                {
+                    let third_text: &str = &third.text;
+                    if third.kind() == TokenKind::LeftParen {
+                        // builtin(args) — the builtin is called with parens,
+                        // producing a value that is the outer function's argument.
+                        return true;
                     }
+                    return Self::is_sigil_argument_start(third.kind(), third_text);
+                }
                 if next_text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
                     && self.tokens.peek_second().ok().is_some_and(|third| {
                         Self::is_sigil_argument_start(third.kind(), third.text.as_ref())
-                    }) {
-                        return true;
-                    }
-                // Check if the next-next token is `(` — that signals a function call
-                // or `=>` (fat arrow after bareword) — that signals an auto-quoted arg
-                self.tokens.peek_second().ok().is_some_and(|t| {
-                    t.kind() == TokenKind::LeftParen || t.kind() == TokenKind::FatArrow
-                })
+                    })
+                {
+                    return true;
+                }
+                // Check if the next-next token is `(` — that signals a function call.
+                // Fat-arrow autoquoting of the same identifier is admitted above.
+                self.tokens.peek_second().ok().is_some_and(|t| t.kind() == TokenKind::LeftParen)
             }
 
             _ => false,

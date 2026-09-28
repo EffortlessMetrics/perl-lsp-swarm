@@ -690,6 +690,11 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
           CANDIDATE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || '' }}
+          # pull_request executes ci.yml from the synthetic merge tree
+          # (github.sha), not the PR head. A base-only ci.yml advancement
+          # on main must remain comparable. merge_group uses the
+          # merge-group head. Never fall back to CANDIDATE_SHA here.
+          EFFECTIVE_WORKFLOW_TREE: ${{ github.event_name == 'pull_request' && github.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || '' }}
         run: |
           set -u
           probe_dir="$(mktemp -d)"
@@ -770,10 +775,13 @@ jobs:
                 : >"$probe_dir/candidate-workflow-runs.json"
                 api_ok=false
               }
-            CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$CANDIDATE_SHA" candidate)" || {
-              CANDIDATE_WORKFLOW_SHA=""
-              api_ok=false
-            }
+            CANDIDATE_WORKFLOW_SHA=""
+            if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then
+              CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE" candidate)" || {
+                CANDIDATE_WORKFLOW_SHA=""
+                api_ok=false
+              }
+            fi
           else
             echo "::warning::${EVENT_NAME} has no PR/merge-group subject SHA; main-red refusal probe is non-applicable"
             : >"$probe_dir/main-runs.json"
@@ -835,9 +843,12 @@ jobs:
               >"$probe_dir/candidate-workflow-runs.json" 2>"$probe_dir/candidate-workflow-runs.err" || {
                 : >"$probe_dir/candidate-workflow-runs.json"
               }
-            CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$CANDIDATE_SHA" candidate)" || {
-              CANDIDATE_WORKFLOW_SHA=""
-            }
+            CANDIDATE_WORKFLOW_SHA=""
+            if [ -n "${EFFECTIVE_WORKFLOW_TREE:-}" ]; then
+              CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$EFFECTIVE_WORKFLOW_TREE" candidate)" || {
+                CANDIDATE_WORKFLOW_SHA=""
+              }
+            fi
             run_refusal
             refusal_status=$?
           done
