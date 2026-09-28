@@ -9,6 +9,8 @@ impl<'a> PerlLexer<'a> {
     /// Create a new lexer with explicit configuration.
     pub fn with_config(input: &'a str, config: LexerConfig) -> Self {
         Self {
+            angle_scan_bytes: 0,
+            angle_scan_steps: 0,
             input,
             input_bytes: input.as_bytes(),
             position: 0,

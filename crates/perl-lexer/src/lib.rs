@@ -181,6 +181,7 @@
 
 use std::sync::Arc;
 
+mod angle;
 pub mod api;
 pub mod builtins;
 pub mod checkpoint;
@@ -198,13 +199,14 @@ pub mod token;
 pub mod tokenizer;
 mod unicode;
 
+pub use angle::AngleSpan;
 pub use api::*;
 pub use checkpoint::{
     CHECKPOINT_SCHEMA_VERSION, CheckpointCache, CheckpointNewlinePolicy, CheckpointRestoreError,
     Checkpointable, LexerCheckpoint, LexerCheckpointIdentity, LexerPolicyIdentity,
 };
 pub use config::LexerConfig;
-pub use error::{LexerError, Result};
+pub use error::{AngleScanDimension, LexerError, Result};
 pub use lexer::PerlLexer;
 pub use limits::MAX_REGEX_PARSE_STEPS;
 pub use mode::LexerMode;
@@ -717,6 +719,8 @@ impl<'a> PerlLexer<'a> {
     ///
     /// Clears all internal state (mode, delimiter stack, heredoc queue, etc.)
     /// so the lexer can re-tokenize the same source from scratch.
+    /// Cumulative angle work is not refunded: construct a new lexer to begin
+    /// a new source operation with fresh work allowances.
     pub fn reset(&mut self) {
         self.position = 0;
         self.mode = LexerMode::ExpectTerm;

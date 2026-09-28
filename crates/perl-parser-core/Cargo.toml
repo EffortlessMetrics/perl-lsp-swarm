@@ -39,6 +39,7 @@ perl-token = { workspace = true }
 #   perl-path-normalize → src/syntax/path_normalize.rs
 #   perl-path-security → src/syntax/path_security.rs
 #   perl-text-line → src/syntax/text_line.rs
+unicode-ident = "1.0.22"
 thiserror.workspace = true
 perl-source-identity = { workspace = true }
 serde = { workspace = true }

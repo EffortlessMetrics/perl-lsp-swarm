@@ -12,6 +12,8 @@ use std::sync::OnceLock;
 /// Tokenizes Perl source text with mode tracking to correctly disambiguate
 /// context-sensitive constructs such as `/` (division vs. regex) and heredocs.
 pub struct PerlLexer<'a> {
+    pub(crate) angle_scan_bytes: usize,
+    pub(crate) angle_scan_steps: usize,
     pub(crate) input: &'a str,
     pub(crate) input_bytes: &'a [u8],
     pub(crate) position: usize,
