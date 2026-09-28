@@ -138,16 +138,49 @@ def _word_to_int(token: str) -> int:
     raise ValueError(f"unparseable count token: {token!r}")
 
 
-def _inside_code_span(line: str, match_start: int, match_end: int) -> bool:
-    """Return True when ``line[match_start:match_end]`` sits between two
-    backticks (inline code span) or between an unbalanced pair that opens a
-    multi-backtick span on the same line.
+def _code_span_regions(line: str) -> list[tuple[int, int]]:
+    """Return ``[(start, end)]`` inline code-span regions on ``line``.
+
+    Markdown code spans pair backtick delimiter runs: a run opens a span and
+    the next run of at least the same length closes it, so a valid
+    ```` two-backtick ```` span has even counts on both sides and must not be
+    scanned as prose (#16127 review). An unclosed run extends its span to the
+    end of the line.
     """
-    before = line[:match_start].count("`")
-    after = line[match_end:].count("`")
-    # An odd number of backticks on either side means the match is inside
-    # (or extends) an unclosed inline code span.
-    return (before % 2 == 1) or (after % 2 == 1)
+    regions: list[tuple[int, int]] = []
+    in_span = False
+    open_len = 0
+    open_start = 0
+    i = 0
+    n = len(line)
+    while i < n:
+        if line[i] == "`":
+            j = i
+            while j < n and line[j] == "`":
+                j += 1
+            run = j - i
+            if in_span:
+                if run >= open_len:
+                    regions.append((open_start, j))
+                    in_span = False
+            else:
+                in_span = True
+                open_len = run
+                open_start = i
+            i = j
+        else:
+            i += 1
+    if in_span:
+        regions.append((open_start, n))
+    return regions
+
+
+def _inside_code_span(line: str, match_start: int, match_end: int) -> bool:
+    """Return True when the match overlaps an inline code span on ``line``."""
+    return any(
+        start < match_end and end > match_start
+        for start, end in _code_span_regions(line)
+    )
 
 
 def find_count_mentions(line: str) -> list[tuple[int, str]]:
@@ -183,6 +216,22 @@ def find_count_mentions(line: str) -> list[tuple[int, str]]:
     return findings
 
 
+def _fence_marker(stripped: str) -> tuple[str, int] | None:
+    """Return ``(fence_char, run_length)`` when ``stripped`` is a fence line.
+
+    A fenced code block opens with a run of at least three backticks or
+    tildes (optionally followed by an info string) and closes only with a run
+    of the same character at least as long as the opener (#16127 review).
+    """
+    if len(stripped) < 3 or stripped[0] not in ("`", "~"):
+        return None
+    char = stripped[0]
+    run = len(stripped) - len(stripped.lstrip(char))
+    if run < 3:
+        return None
+    return char, run
+
+
 def check_doc(
     doc_path: Path,
     required_count: int,
@@ -195,9 +244,21 @@ def check_doc(
     ``in_code_block`` carries the fence state from the previous chunk so that
     a code block that starts mid-line does not leak. The contract ignores
     fenced code blocks because they may legitimately quote another repository.
+
+    Two fidelity rules close the #16127 review findings: a fenced block only
+    closes on the same fence character with a run at least as long as its
+    opener, and consecutive non-blank prose lines form one logical paragraph
+    (Markdown renders the soft line break as a space), so a count phrase
+    wrapped across lines is still presented to ``COUNT_RE`` in full.
     """
     findings: list[DriftFinding] = []
     inside_block = in_code_block
+    # ``(char, run)`` of the fence that opened the current block. ``None``
+    # while resuming a chunk that was already inside a block, where the opener
+    # is unknown and any fence line closes (the pre-existing degraded edge).
+    open_fence: tuple[str, int] | None = None if inside_block else None
+    # ``None`` while resuming a chunk that was already inside a block (opener
+    # unknown: any fence line closes); set to the opener when a fence opens.
     try:
         text = doc_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -211,30 +272,90 @@ def check_doc(
         )
         return findings, False
 
-    for line_no, line in enumerate(text.splitlines(), start=1):
-        # Track fenced code blocks; opening and closing fences are themselves
-        # matched by ``find_count_mentions``'s own ``startswith("```")`` guard.
-        stripped = line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            inside_block = not inside_block
-            continue
-        if inside_block:
-            continue
+    def report(count: int, matched: str, line_no: int, line: str) -> None:
+        findings.append(
+            DriftFinding(
+                path=doc_path,
+                line_number=line_no,
+                line_text=line,
+                detail=(
+                    f"mentions {count!r} required checks but the "
+                    f"policy file lists {required_count}; "
+                    f"matched text: {matched!r}"
+                ),
+            )
+        )
 
-        for count, matched in find_count_mentions(line):
-            if count != required_count:
-                findings.append(
-                    DriftFinding(
-                        path=doc_path,
-                        line_number=line_no,
-                        line_text=line,
-                        detail=(
-                            f"mentions {count!r} required checks but the "
-                            f"policy file lists {required_count}; "
-                            f"matched text: {matched!r}"
-                        ),
-                    )
-                )
+    paragraph: list[tuple[str, int]] = []
+
+    def flush_paragraph() -> None:
+        if not paragraph:
+            return
+        reported: set[tuple[int, int]] = set()
+        # Per-line pass (unchanged behavior): every physical line is scanned.
+        for line_text, line_no in paragraph:
+            for count, matched in find_count_mentions(line_text):
+                if count == required_count or (count, line_no) in reported:
+                    continue
+                reported.add((count, line_no))
+                report(count, matched, line_no, line_text)
+        # Paragraph pass: soft-wrapped phrases render as one prose line, so
+        # scan the joined paragraph and attribute each new finding to the
+        # line where the match starts. Already-reported (count, line) pairs
+        # from the per-line pass are not duplicated.
+        if len(paragraph) > 1:
+            parts: list[str] = []
+            offsets: list[tuple[int, int, int, str]] = []
+            cursor = 0
+            for line_text, line_no in paragraph:
+                stripped_text = line_text.strip()
+                parts.append(stripped_text)
+                offsets.append((cursor, cursor + len(stripped_text), line_no, line_text))
+                cursor += len(stripped_text) + 1
+            joined = " ".join(parts)
+            for match in COUNT_RE.finditer(joined):
+                if _inside_code_span(joined, match.start(), match.end()):
+                    continue
+                if FRACTION_PRECEDING.search(joined[: match.start()]):
+                    continue
+                count = _word_to_int(match.group("count"))
+                if count == required_count:
+                    continue
+                target = offsets[0]
+                for start, end, line_no, line_text in offsets:
+                    if match.start() < end:
+                        target = (start, end, line_no, line_text)
+                        break
+                _, _, line_no, line_text = target
+                if (count, line_no) in reported:
+                    continue
+                reported.add((count, line_no))
+                report(count, match.group(0), line_no, line_text)
+        paragraph.clear()
+
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        fence = _fence_marker(stripped)
+        if inside_block:
+            # A closing fence uses the opener's character with a run at
+            # least as long; anything else is literal block content.
+            if fence is not None and (
+                open_fence is None
+                or (fence[0] == open_fence[0] and fence[1] >= open_fence[1])
+            ):
+                inside_block = False
+                open_fence = None
+            continue
+        if fence is not None:
+            inside_block = True
+            open_fence = fence
+            flush_paragraph()
+            continue
+        if not stripped:
+            flush_paragraph()
+            continue
+        paragraph.append((line, line_no))
+    flush_paragraph()
 
     return findings, inside_block
 
@@ -252,8 +373,12 @@ def iter_doc_paths(
     paths: list[Path] = []
     for rel_root in doc_roots:
         root_path = root / rel_root
-        if not root_path.exists():
-            continue
+        if not root_path.is_dir():
+            # Fail closed (#16127 review): a missing or non-directory
+            # configured root means the contract validated nothing; silently
+            # returning no files would report clean while the validation
+            # subject disappeared (rename, typo).
+            raise FileNotFoundError(f"documentation root not found: {root_path}")
         for path in sorted(root_path.rglob("*.md")):
             rel_parts = path.relative_to(root).parts
             if any(part in ARCHIVE_PATH_PARTS for part in rel_parts):
@@ -321,7 +446,11 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     doc_roots = tuple(args.doc_root) if args.doc_root else DEFAULT_DOC_ROOTS
-    findings = run(args.root, args.policy, doc_roots)
+    try:
+        findings = run(args.root, args.policy, doc_roots)
+    except FileNotFoundError as exc:
+        print(f"required_checks_doc_contract: {exc}")
+        return 1
 
     receipt = {
         "policy_path": str(args.policy),

@@ -224,8 +224,110 @@ class CheckDocTests(unittest.TestCase):
             findings, _ = contract.check_doc(doc, self.count, self.names)
             self.assertEqual(findings, [], findings)
 
+    def test_multi_backtick_inline_span_is_excluded(self) -> None:
+        """#16127 review — a valid two-backtick span whose content contains a
+        single-backtick run is still code and must not be scanned as prose."""
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Path(tmp) / "spans.md"
+            doc.write_text(
+                "``the `two required checks` example``; the five required"
+                " checks are green.\n",
+                encoding="utf-8",
+            )
+            findings, _ = contract.check_doc(doc, self.count, self.names)
+            self.assertEqual(findings, [], findings)
+
+    def test_three_backtick_line_inside_four_backtick_block_is_literal(self) -> None:
+        """#16127 review — a fenced block closes only with the same character
+        and a run at least as long as its opener; a shorter fence inside a
+        longer block is literal content, not a closing fence."""
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Path(tmp) / "fence.md"
+            doc.write_text(
+                textwrap.dedent(
+                    """\
+                    ````text
+                    ```text
+                    the two required checks must be green
+                    ```
+                    ````
+                    The five required checks are green.
+                    """
+                ),
+                encoding="utf-8",
+            )
+            findings, _ = contract.check_doc(doc, self.count, self.names)
+            self.assertEqual(findings, [], findings)
+
+    def test_backtick_fence_inside_tilde_block_is_literal(self) -> None:
+        """#16127 review — a fence of the other character never closes a
+        block, so quoted counts behind it are not scanned as prose."""
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Path(tmp) / "fence.md"
+            doc.write_text(
+                textwrap.dedent(
+                    """\
+                    ~~~text
+                    ```text
+                    the two required checks must be green
+                    ```
+                    ~~~
+                    The five required checks are green.
+                    """
+                ),
+                encoding="utf-8",
+            )
+            findings, _ = contract.check_doc(doc, self.count, self.names)
+            self.assertEqual(findings, [], findings)
+
+    def test_wrapped_wrong_count_is_flagged(self) -> None:
+        """#16127 review — Markdown renders the paragraph's soft line break
+        as a space, so a count phrase wrapped across lines is still prose the
+        contract must see; the finding attributes to the match's first line."""
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Path(tmp) / "wrapped.md"
+            doc.write_text(
+                "The policy has two required\nchecks before merge.\n",
+                encoding="utf-8",
+            )
+            findings, _ = contract.check_doc(doc, self.count, self.names)
+            self.assertEqual(len(findings), 1, findings)
+            self.assertEqual(findings[0].line_number, 1)
+            self.assertIn("2", findings[0].detail)
+            self.assertIn("5", findings[0].detail)
+
+    def test_wrapped_compliant_prose_stays_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Path(tmp) / "wrapped-ok.md"
+            doc.write_text(
+                "The policy has five required\nchecks before merge.\n",
+                encoding="utf-8",
+            )
+            findings, _ = contract.check_doc(doc, self.count, self.names)
+            self.assertEqual(findings, [], findings)
+
 
 class RunTests(unittest.TestCase):
+    def test_missing_doc_root_fails_closed(self) -> None:
+        """#16127 review — a missing configured root is the whole validation
+        subject disappearing: iter_doc_paths raises and the CLI exits 1
+        instead of reporting clean over an empty corpus."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_tree(root, {"policy/required-checks.toml": five_required_policy()})
+            with self.assertRaises(FileNotFoundError):
+                contract.iter_doc_paths(root, ("docs/references",))
+            rc = contract.main(
+                [
+                    "--root",
+                    str(root),
+                    "--policy",
+                    str(root / "policy" / "required-checks.toml"),
+                    "--doc-root",
+                    "docs/references",
+                ]
+            )
+            self.assertEqual(rc, 1)
     def test_archive_subtree_is_excluded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
