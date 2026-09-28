@@ -212,7 +212,9 @@ pub use perl_position_tracking::Position;
 pub use symbol_table::LocalSymbolTable;
 pub use token::{StringPart, Token, TokenType};
 
-use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
+use unicode::{
+    is_perl_identifier_continue, is_perl_identifier_start, is_perl_package_segment_start,
+};
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
@@ -1140,7 +1142,83 @@ impl<'a> PerlLexer<'a> {
     }
 
     #[inline]
+    fn immediately_after_double_colon(&self) -> bool {
+        let start = self.position;
+        start >= 2 && self.input_bytes[start - 2] == b':' && self.input_bytes[start - 1] == b':'
+    }
+
+    /// Consume the remainder of one identifier / package segment.
+    ///
+    /// `quote_op_word_start` is the start of a bareword that might still be a
+    /// quote-like operator (`q'…'`, `s'…'`). After a `::` separator that
+    /// check does not apply.
+    fn consume_identifier_segment_tail(&mut self, quote_op_word_start: Option<usize>) {
+        let bytes = self.input_bytes;
+        let len = bytes.len();
+        while self.position < len {
+            let byte = bytes[self.position];
+            if byte == b'\'' {
+                let split_quote_op = quote_op_word_start
+                    .is_some_and(|start| is_quote_op_word_prefix(&bytes[start..self.position]));
+                if split_quote_op || !self.apostrophe_starts_legacy_package_segment(self.position) {
+                    break;
+                }
+                self.position += 1;
+                continue;
+            }
+
+            if byte.is_ascii_alphanumeric() || byte == b'_' {
+                self.position += 1;
+                continue;
+            }
+
+            if byte < 128 {
+                break;
+            }
+
+            if let Some(ch) = self.current_char()
+                && is_perl_identifier_continue(ch)
+            {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+    }
+
+    /// Fold trailing `::segment` pairs into the identifier already in progress.
+    ///
+    /// After `::`, a segment may start with an ASCII digit (`Encode::KR::2022_KR`).
+    /// A trailing `::` with no following segment is kept on the identifier
+    /// (existing `Foo::` spelling).
+    fn consume_trailing_package_segments(&mut self) {
+        let bytes = self.input_bytes;
+        let len = bytes.len();
+        while self.config.max_lookahead >= 1
+            && self.position + 1 < len
+            && bytes[self.position] == b':'
+            && bytes[self.position + 1] == b':'
+        {
+            self.position += 2;
+            let Some(ch) = self.current_char() else {
+                break;
+            };
+            if !is_perl_package_segment_start(ch) {
+                break;
+            }
+            self.advance();
+            self.consume_identifier_segment_tail(None);
+        }
+    }
+
+    #[inline]
     fn try_number(&mut self) -> Option<Token> {
+        // Adjacent `::` starts a package segment, not a numeric literal.
+        // `package Foo:: 1` keeps the space-separated `1` as VERSION.
+        if self.immediately_after_double_colon() {
+            return None;
+        }
+
         let start = self.position;
 
         // Fast byte check for digits - optimized bounds checking
@@ -1885,21 +1963,62 @@ impl<'a> PerlLexer<'a> {
             .is_some_and(is_perl_identifier_start)
     }
 
+    /// `{` opens a hash or slice subscript when it follows a subscript-capable
+    /// term: a sigiled variable (`$h{k}`), a just-closed array/hash subscript
+    /// (`$a[0]{k}`, `$h{a}{b}`), or an arrow (`$h->{k}`, `$h->{a}{y}`).
+    ///
+    /// The arrow arm is required so `->{outer}{y}` increments brace depth.
+    /// Closing that first `}` then sets `after_var_subscript` for the chained
+    /// `{y}` key instead of lexing `y}...}` as transliteration (#16641).
+    #[inline]
+    fn left_brace_opens_hash_subscript(&self) -> bool {
+        self.after_var_subscript || self.after_arrow
+    }
+
+    /// Bareword hash keys end at `,` / `}` / `;` (`$h{s}`, `@h{m, s}`,
+    /// and the missing-closer shape `$h->{a}{y;`). A following quote
+    /// delimiter (`/`, paired, quotes) is a computed-key expression:
+    /// `$h->{scalar s/foo/bar/r}`.
+    #[inline]
+    fn hash_subscript_bare_key_boundary(&self, next: char) -> bool {
+        self.hash_brace_depth > 0 && matches!(next, ',' | '}' | ';')
+    }
+
+    /// q-family quote words still open inside subscripts (`@h{qw/a b/}`).
+    /// `m` opens only when the next char is a real delimiter, not a key
+    /// boundary (`$h{m}` vs `$h->{scalar m/foo/}`). `s`/`tr`/`y` use the
+    /// dedicated identifier path above this keyword match.
+    #[inline]
+    fn quote_operator_word_opens_here(&self, op: &str) -> bool {
+        if self.hash_brace_depth == 0 {
+            return true;
+        }
+        matches!(op, "q" | "qq" | "qw" | "qr" | "qx")
+            || (op == "m" && self.hash_subscript_allows_match_operator())
+    }
+
+    /// Inside a subscript, `m` is a match operator only when the following
+    /// character is a quote delimiter, not a bare-key terminator.
+    #[inline]
+    fn hash_subscript_allows_match_operator(&self) -> bool {
+        self.current_char().is_some_and(|ch| !self.hash_subscript_bare_key_boundary(ch))
+    }
+
     #[inline]
     fn try_identifier_or_keyword(&mut self) -> Option<Token> {
         let start = self.position;
         let ch = self.current_char()?;
-        let bytes = self.input_bytes;
-        let len = bytes.len();
 
-        if is_perl_identifier_start(ch) {
+        if is_perl_identifier_start(ch)
+            || (self.immediately_after_double_colon() && is_perl_package_segment_start(ch))
+        {
             // Special case: substitution/transliteration with single-quote delimiter
             // The single quote is considered an identifier continuation, so we need to
             // detect these operators before consuming it as part of an identifier.
+            // Digit-led `::` segments never take this path (`s`/`y`/`tr` are letters).
             let follows_sigil_prefix = self.immediately_follows_sigil_prefix(start);
             if !follows_sigil_prefix
                 && !self.after_arrow
-                && self.hash_brace_depth == 0
                 && ch == 's'
                 && self.peek_char(1) == Some('\'')
             {
@@ -1907,7 +2026,6 @@ impl<'a> PerlLexer<'a> {
                 return self.parse_substitution(start);
             } else if !follows_sigil_prefix
                 && !self.after_arrow
-                && self.hash_brace_depth == 0
                 && ch == 'y'
                 && self.peek_char(1) == Some('\'')
             {
@@ -1915,7 +2033,6 @@ impl<'a> PerlLexer<'a> {
                 return self.parse_transliteration(start);
             } else if !follows_sigil_prefix
                 && !self.after_arrow
-                && self.hash_brace_depth == 0
                 && ch == 't'
                 && self.peek_char(1) == Some('r')
                 && self.peek_char(2) == Some('\'')
@@ -1925,80 +2042,9 @@ impl<'a> PerlLexer<'a> {
                 return self.parse_transliteration(start);
             }
 
-            // Fast ASCII path for identifier continuation.
-            while self.position < len {
-                let byte = bytes[self.position];
-                if byte == b'\'' {
-                    if is_quote_op_word_prefix(&bytes[start..self.position])
-                        || !self.apostrophe_starts_legacy_package_segment(self.position)
-                    {
-                        // Keep apostrophe for quote/string parsing in cases like q'...'
-                        // and split' ', while still accepting Foo'Bar package spelling.
-                        break;
-                    }
-                    self.position += 1;
-                    continue;
-                }
-
-                if byte.is_ascii_alphanumeric() || byte == b'_' {
-                    self.position += 1;
-                    continue;
-                }
-
-                if byte < 128 {
-                    break;
-                }
-
-                if let Some(ch) = self.current_char()
-                    && is_perl_identifier_continue(ch)
-                {
-                    self.advance();
-                    continue;
-                }
-                break;
-            }
-            // Handle package-qualified identifiers like Foo::bar.
-            while self.config.max_lookahead >= 1
-                && self.position + 1 < len
-                && bytes[self.position] == b':'
-                && bytes[self.position + 1] == b':'
-            {
-                self.position += 2; // consume '::'
-
-                // consume following identifier segment if present
-                let Some(ch) = self.current_char() else {
-                    break;
-                };
-                if !is_perl_identifier_start(ch) {
-                    break;
-                }
-                self.advance();
-                while self.position < len {
-                    let byte = bytes[self.position];
-                    if byte == b'\'' {
-                        if !self.apostrophe_starts_legacy_package_segment(self.position) {
-                            break;
-                        }
-                        self.position += 1;
-                        continue;
-                    }
-
-                    if byte.is_ascii_alphanumeric() || byte == b'_' {
-                        self.position += 1;
-                        continue;
-                    }
-                    if byte < 128 {
-                        break;
-                    }
-                    if let Some(ch) = self.current_char()
-                        && is_perl_identifier_continue(ch)
-                    {
-                        self.advance();
-                        continue;
-                    }
-                    break;
-                }
-            }
+            // Fast ASCII path for identifier continuation, then `::` segments.
+            self.consume_identifier_segment_tail(Some(start));
+            self.consume_trailing_package_segments();
 
             let text = &self.input[start..self.position];
 
@@ -2054,7 +2100,6 @@ impl<'a> PerlLexer<'a> {
             if !self.after_sub
                 && !self.after_arrow
                 && !follows_sigil_prefix
-                && self.hash_brace_depth == 0
                 && matches!(text, "s" | "tr" | "y")
             {
                 let (candidate, char_after_next, has_gap) =
@@ -2072,6 +2117,7 @@ impl<'a> PerlLexer<'a> {
                     let is_valid_delim = Self::is_quote_delim(next)
                         && !is_fat_arrow
                         && !is_filetest_s
+                        && !self.hash_subscript_bare_key_boundary(next)
                         && !substitution_disallows_whitespace
                         && (!has_gap
                             || is_paired_delim
@@ -2119,15 +2165,15 @@ impl<'a> PerlLexer<'a> {
                     }
                     // Quote operators expect a delimiter next.
                     // Skip if after '->' -- these are method names, not operators.
-                    // Inside hash subscript braces, regex-like operators stay bareword
-                    // keys (`@h{m, s}`), but q-family operators can still introduce real
-                    // quote expressions in slices (`@h{qw/a b/}`).
+                    // Inside hash subscript braces, `,` / `}` / `;` keep regex-like
+                    // words as keys (`$h{s}`, `@h{m, s}`, `$h->{a}{y;`); a real
+                    // delimiter is a computed-key quote expression
+                    // (`$h->{scalar s/foo/bar/r}`, `@h{qw/a b/}`).
                     op if !self.after_sub
                         && !self.after_arrow
                         && !follows_sigil_prefix
                         && quote_handler::is_quote_operator(op)
-                        && (self.hash_brace_depth == 0
-                            || matches!(op, "q" | "qq" | "qw" | "qr" | "qx")) =>
+                        && self.quote_operator_word_opens_here(op) =>
                     {
                         // Perl allows whitespace between a quote-like operator and its delimiter,
                         // but ONLY for paired delimiters (s { ... } { ... }g).
@@ -2168,7 +2214,7 @@ impl<'a> PerlLexer<'a> {
                             let is_quote_char = matches!(next, '\'' | '"') && op != "s";
                             let is_spaced_slash_delim = next == '/' && op != "s";
                             let is_hash_subscript_bare_key_boundary =
-                                self.hash_brace_depth > 0 && matches!(next, ',' | '}');
+                                self.hash_subscript_bare_key_boundary(next);
                             let is_valid_delim = Self::is_quote_delim(next)
                                 && !is_fat_arrow
                                 && !is_filetest_s
@@ -2622,6 +2668,10 @@ impl<'a> PerlLexer<'a> {
                 }
                 self.paren_depth += 1;
                 self.after_var_subscript = false;
+                // `->(` is a coderef call, not `->{`. Consume arrow state so a
+                // following hash constructor (`$cb->({ s/foo/bar/r })`) does not
+                // inherit subscript brace depth (#16641 review).
+                self.after_arrow = false;
                 self.mode = LexerMode::ExpectTerm;
                 Some(Token {
                     token_type: TokenType::LeftParen,
@@ -2682,6 +2732,8 @@ impl<'a> PerlLexer<'a> {
             '[' => {
                 self.advance();
                 self.after_var_subscript = false;
+                // `->[` is array deref, not `->{`.
+                self.after_arrow = false;
                 self.mode = LexerMode::ExpectTerm;
                 Some(Token {
                     token_type: TokenType::LeftBracket,
@@ -2709,16 +2761,17 @@ impl<'a> PerlLexer<'a> {
                 self.advance();
                 // Opening brace ends prototype window — no prototype follows
                 self.after_sub = false;
-                // `{` is a hash/slice subscript opener only when it immediately follows
-                // a variable token ($x, @x, %x) — tracked by `after_var_subscript`.
-                // This is narrower than the old `mode == ExpectOperator` check, which
-                // incorrectly incremented depth for block-opening braces after `sub foo`,
-                // `if (cond)`, `else`, `while (cond)`, etc., causing quote-op suppression
-                // inside those block bodies and breaking m//, s///, qr//, tr/// etc.
-                if self.after_var_subscript {
+                // Subscript `{` is narrower than `ExpectOperator`: block openers
+                // after `sub foo`, `if (cond)`, `else`, `while (cond)` must not
+                // increment depth or they suppress m// / s/// / y/// in the body.
+                if self.left_brace_opens_hash_subscript() {
                     self.hash_brace_depth = self.hash_brace_depth.saturating_add(1);
                 }
                 self.after_var_subscript = false;
+                // `{` consumed `->` as a hash-deref opener. Clear the flag so a
+                // nested constructor `{ ... }` inside the key does not inherit
+                // arrow context and increment depth a second time.
+                self.after_arrow = false;
                 self.mode = LexerMode::ExpectTerm;
                 Some(Token {
                     token_type: TokenType::LeftBrace,

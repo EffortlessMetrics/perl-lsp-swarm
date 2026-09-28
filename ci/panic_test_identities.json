@@ -4736,15 +4736,6 @@
       "state": "active"
     },
     {
-      "path": "xtask/tests/quality_gate_ownership_contract.rs",
-      "enclosing_test_or_function": "facade_source",
-      "macro_family": "panic!",
-      "normalized_snippet": "panic!(\"could not read quality_gate_facade.rs at {}: {error}\", path.display())",
-      "selector_identity": "invocation:5d4ad22baf55f850:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
-      "state": "active"
-    },
-    {
       "path": "xtask/tests/routed_gate_result.rs",
       "enclosing_test_or_function": "every_runner_status_variant_builds_a_consistent_valid_result",
       "macro_family": "panic!",

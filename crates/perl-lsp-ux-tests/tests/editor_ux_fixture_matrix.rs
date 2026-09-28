@@ -29,6 +29,12 @@ const VALID_COMPONENTS: &[&str] = &[
 
 /// Required keys inside each workflow's `instrumentation` object.
 const INSTRUMENTATION_KEYS: &[&str] = &["run_receipt", "first_useful_result", "protocol_goldens"];
+/// Rollup membership is intentionally limited to semantic inline-completion
+/// quality workflows (`*_inline_completion_quality`): the assertions below pin
+/// component `completion` and a quality-scenario filename. Guard-class
+/// scenarios that emit structured receipts (e.g.
+/// `inline_completion_position_encoding_guard`) are excluded from this rollup
+/// by design; their receipts are verified by their own guard tests.
 const SEMANTIC_INLINE_RECEIPT_IDS: &[&str] = &[
     "mojolicious_inline_completion_quality",
     "test_inline_completion_quality",

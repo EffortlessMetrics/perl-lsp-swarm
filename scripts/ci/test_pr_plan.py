@@ -378,6 +378,48 @@ required_checks = ["docs"]
         self.assertIn("not found", changeset["detail"])
         self.assertEqual(["git", "diff", "--name-only", "origin/main...HEAD"], changeset["command"])
 
+    def test_discover_changed_files_timeout_refuses_without_planning_empty(self) -> None:
+        command = ["git", "diff", "--name-only", "origin/main...HEAD"]
+
+        def timed_out(actual_command, **kwargs):
+            self.assertEqual(command, actual_command)
+            self.assertEqual(pr_plan.GIT_DIFF_TIMEOUT_SECONDS, kwargs["timeout"])
+            self.assertTrue(kwargs["capture_output"])
+            raise pr_plan.subprocess.TimeoutExpired(actual_command, kwargs["timeout"])
+
+        old_run = pr_plan.subprocess.run
+        try:
+            pr_plan.subprocess.run = timed_out
+            changeset = pr_plan.discover_changed_files("origin/main", "HEAD")
+        finally:
+            pr_plan.subprocess.run = old_run
+
+        self.assertEqual("unavailable", changeset["status"])
+        self.assertEqual("git-diff-timeout", changeset["code"])
+        self.assertIn("30 seconds", changeset["detail"])
+        self.assertEqual(command, changeset["command"])
+        self.assertNotIn("files", changeset)
+
+    def test_discovery_annotation_escapes_git_stderr_but_keeps_receipt_detail(self) -> None:
+        detail = "fatal: bad revision 100%\rmore detail\n::warning::injected"
+        changeset = {
+            "status": "unavailable",
+            "code": "git-diff-exit-128",
+            "detail": detail,
+            "command": ["git", "diff", "--name-only", "origin/main...HEAD"],
+        }
+        plan = pr_plan.not_proven_plan(
+            base="origin/main", head="HEAD", labels=[], changeset=changeset
+        )
+
+        self.assertEqual(detail, plan["refusal"]["detail"])
+        self.assertEqual(detail, plan["changed_set"]["detail"])
+        self.assertIn(detail, pr_plan.render_not_proven_summary(plan))
+        annotation = plan["warnings"][0]
+        self.assertEqual(1, len(annotation.splitlines()))
+        self.assertIn("100%25%0Dmore detail%0A::warning::injected", annotation)
+        self.assertTrue(annotation.startswith("::error::"))
+
     def test_main_writes_not_proven_receipt_and_fails_when_discovery_fails(self) -> None:
         """Negative control: a Rust change behind a failed diff cannot route
         as a zero-impact plan; the receipt must be refuseable without prose."""
