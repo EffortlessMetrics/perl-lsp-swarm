@@ -469,7 +469,8 @@ fn tool_version_probe_error(name: &str, output: &std::process::Output) -> String
 /// resolvable parent directory has nowhere to point.
 ///
 /// The upstream `PATH` entries are preserved in order; only the owning
-/// directory gains precedence.
+/// directory gains precedence. An unset inherited `PATH` still gets the
+/// owning directory so the shim can resolve its bare `perl`.
 fn shim_aware_child_path(
     binary: &Path,
     inherited: Option<&std::ffi::OsStr>,
@@ -478,9 +479,10 @@ fn shim_aware_child_path(
         return None;
     }
     let shim_dir = binary.parent()?;
-    let inherited = inherited?;
     let mut entries = vec![shim_dir.as_os_str().to_os_string()];
-    entries.extend(std::env::split_paths(inherited).map(PathBuf::into_os_string));
+    if let Some(inherited) = inherited {
+        entries.extend(std::env::split_paths(inherited).map(PathBuf::into_os_string));
+    }
     std::env::join_paths(entries).ok()
 }
 
@@ -3481,15 +3483,27 @@ mod tests {
 
     #[test]
     fn shim_aware_child_path_prepends_the_owning_distribution() -> TestResult {
-        let path = shim_aware_child_path(
-            Path::new("C:/strawberry/perl/bin/perltidy.bat"),
-            Some(std::ffi::OsStr::new("C:/git/usr/bin;C:/windows/system32")),
-        )
-        .ok_or("a .bat shim should get a corrected PATH")?;
+        let shim_dir = PathBuf::from("strawberry").join("perl").join("bin");
+        let first = PathBuf::from("git").join("usr").join("bin");
+        let second = PathBuf::from("system32");
+        let inherited = std::env::join_paths([first.as_os_str(), second.as_os_str()])?;
+        let path =
+            shim_aware_child_path(&shim_dir.join("perltidy.bat"), Some(inherited.as_os_str()))
+                .ok_or("a .bat shim should get a corrected PATH")?;
 
         let entries: Vec<_> = std::env::split_paths(&path).collect();
-        assert_eq!(entries[0], Path::new("C:/strawberry/perl/bin"));
-        assert!(entries.len() == 3, "inherited entries must be preserved, got {entries:?}");
+        assert_eq!(entries, vec![shim_dir, first, second]);
+        Ok(())
+    }
+
+    #[test]
+    fn shim_aware_child_path_uses_owner_without_inherited_path() -> TestResult {
+        let shim_dir = PathBuf::from("strawberry").join("perl").join("bin");
+        let path = shim_aware_child_path(&shim_dir.join("perltidy.cmd"), None)
+            .ok_or("a .cmd shim should get its owning directory on PATH")?;
+
+        let entries: Vec<_> = std::env::split_paths(&path).collect();
+        assert_eq!(entries, vec![shim_dir]);
         Ok(())
     }
 
