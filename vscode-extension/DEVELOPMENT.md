@@ -154,12 +154,19 @@ fixture). Then check the editor service:
    fallback message for this workspace. Record the VS Code version, preview
    extension version (Extensions view), active service, and output result.
    An installed extension alone does not prove that it is serving this file.
+   If no **TypeScript 7** channel is listed, the preview extension is absent,
+   disabled, or incompatible (step 1), and the editor is served by the
+   built-in/workspace TypeScript service: record that identity from the
+   built-in **TypeScript** output channel and the language status entry's
+   TypeScript version instead, and skip the TypeScript 7 log cross-check
+   below.
 3. With the `.ts` file open, run **TypeScript: Select TypeScript Version** or
    inspect the TypeScript item in the language status bar as a cross-check.
    The selector can offer **Use TypeScript 7** as well as built-in/workspace
-   versions. Record what it shows, but verify the active service against the
-   **TypeScript 7** Output log: a selectable option or installed extension
-   alone does not establish that its server started for this workspace. See
+   versions. Record what it shows, but when the **TypeScript 7** output
+   channel exists, verify the active service against that log: a selectable
+   option or installed extension alone does not establish that its server
+   started for this workspace. See
    [VS Code's version selector](https://code.visualstudio.com/docs/typescript/typescript-transpiling#_using-the-workspace-version-of-typescript).
 
 If the output and editor indicators disagree, report the editor identity as
