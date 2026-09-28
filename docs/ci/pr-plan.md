@@ -195,3 +195,32 @@ The planner now consumes learned LEM estimates whenever the history file has
 substitute `p50 × 1.15` (clamped to the static floor) for the static `base_lem`,
 and the plan's `learned` block reports `lanes_using_learned` and
 `delta_lem_vs_static`.
+
+### History envelope
+
+`pr_plan.py` accepts a history payload only when its `schema_version` is exactly
+`1` and its `lanes` value is an object — the same envelope the aggregator's
+`validate_history_payload()` requires when it writes the file. A payload that
+fails either check is not read as v1.
+
+This matters because the estimate is written *into* the lane: an unreadable
+payload does not merely fail to supply data, it can substitute another version's
+numbers for the static floor. Before the check, a `schema_version: 2` file
+whose records still carried a `lanes` key was consumed as v1 and each lane's
+`base_lem` was overwritten from the v2 record.
+
+The `learned` block therefore reports how the read resolved, so a rejected
+payload is never mistaken for a sparse one:
+
+| Field | Meaning |
+|---|---|
+| `history_present` | the history file exists |
+| `history_disposition` | `absent`, `accepted`, `unreadable`, `unsupported_schema`, or `malformed` |
+| `lanes_using_learned` | lanes that took a learned estimate |
+| `delta_lem_vs_static` | LEM delta the learned estimates introduced |
+
+Every disposition except `accepted` and `absent` also adds a plan warning naming
+the file and the reason. All of them fall back to the static `base_lem` floors,
+matching the planner's existing behavior for absent or corrupt history: learned
+estimates are advisory, and a rejected payload is a reason to ignore them, not
+to fail planning.

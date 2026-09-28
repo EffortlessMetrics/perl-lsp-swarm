@@ -41,6 +41,28 @@ captures.
 many samples in the rolling window, the planner keeps using the static
 floor and the consumer returns `learned: false`.
 
+### Envelope checks on read
+
+`schema_version` is not write-only. Each consumer validates the envelope before
+reading any field:
+
+| Consumer | Behavior |
+|---|---|
+| `aggregate_lane_history.py` | `validate_history_payload()` requires `schema_version == 1` before emitting. |
+| `pr_plan.py` | `load_learned_history()` requires `schema_version == 1` and an object `lanes`, and reports how the read resolved in the plan receipt's `learned.history_disposition`. |
+
+The read-side check exists because a payload from a different envelope version
+is not merely unreadable — it is *consumable*, and reading it as v1 writes
+another version's numbers into the lane estimate. A v2 payload that still used a
+`lanes` key would have had its `static_floor` substituted for the planner's own
+`base_lem`, with no error. See [pr-plan.md](pr-plan.md#history-envelope).
+
+A rejected payload falls back to the static `base_lem` floors, the same as an
+absent or corrupt file, and is named in the plan warnings. If you introduce a
+second envelope version, update `HISTORY_SCHEMA_VERSION` in `pr_plan.py` (and
+`SCHEMA_VERSION` in the aggregator) together — the consumers fail closed against
+versions they were not written for, by design.
+
 ---
 
 ## Window

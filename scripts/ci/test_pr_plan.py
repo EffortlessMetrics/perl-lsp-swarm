@@ -207,6 +207,147 @@ class PrPlanTests(unittest.TestCase):
         self.assertEqual("static_floor", lanes[1]["learned_source"])
         self.assertEqual(5, lanes[2]["base_lem"])
 
+    def _write_history(self, root: Path, text: str, name: str = "ci-lane-history.json") -> Path:
+        path = root / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_load_learned_history_accepts_a_v1_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "lanes": {
+                            "rust_small": {"learned": True, "p50": 20.0},
+                        },
+                    }
+                ),
+            )
+            payload, disposition = pr_plan.load_learned_history(path)
+
+        self.assertEqual("accepted", disposition)
+        self.assertEqual(1, payload["schema_version"])
+        self.assertIn("rust_small", payload["lanes"])
+
+    def test_load_learned_history_rejects_a_future_schema_even_when_lanes_survive(
+        self,
+    ) -> None:
+        """The control that matters: the check is on the envelope version, not
+        on whether a `lanes` key happens to still be present. A v2 producer that
+        reshapes the per-record shape must not be consumed as v1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "lanes": {
+                            "rust_small": {
+                                "learned": True,
+                                "p50": 1.0,
+                                "static_floor": 999.0,
+                            }
+                        },
+                    }
+                ),
+            )
+            lanes = [{"id": "rust_small", "base_lem": 10}]
+            payload, disposition = pr_plan.load_learned_history(path)
+            delta, learned_count = pr_plan.apply_learned_estimates(lanes, payload)
+
+        self.assertEqual("unsupported_schema", disposition)
+        self.assertEqual({}, payload)
+        self.assertEqual(0, learned_count)
+        self.assertEqual(0.0, delta)
+        self.assertEqual(10, lanes[0]["base_lem"], "static floor must survive")
+
+    def test_load_learned_history_rejects_a_renamed_lane_container(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "lane_stats": {"rust_small": {"learned": True, "p50": 20.0}},
+                    }
+                ),
+            )
+            payload, disposition = pr_plan.load_learned_history(path)
+
+        self.assertEqual("malformed", disposition)
+        self.assertEqual({}, payload)
+
+    def test_load_learned_history_rejects_a_payload_with_no_envelope(self) -> None:
+        """An unenveloped payload is not v1. Accepting it would re-open exactly
+        the drift this check exists to catch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                json.dumps({"lanes": {"rust_small": {"learned": True, "p50": 20.0}}}),
+            )
+            payload, disposition = pr_plan.load_learned_history(path)
+
+        self.assertEqual("unsupported_schema", disposition)
+        self.assertEqual({}, payload)
+
+    def test_load_learned_history_rejects_non_object_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(Path(tmp), json.dumps([{"lanes": {}}]))
+            payload, disposition = pr_plan.load_learned_history(path)
+
+        self.assertEqual("malformed", disposition)
+        self.assertEqual({}, payload)
+
+    def test_load_learned_history_separates_corrupt_from_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            corrupt = self._write_history(root, "{not json")
+
+            payload, disposition = pr_plan.load_learned_history(corrupt)
+            self.assertEqual("unreadable", disposition)
+            self.assertEqual({}, payload)
+
+            missing_payload, missing_disposition = pr_plan.load_learned_history(
+                root / "does-not-exist.json"
+            )
+            self.assertEqual("absent", missing_disposition)
+            self.assertEqual({}, missing_payload)
+
+    def test_every_disposition_the_loader_can_return_is_declared(self) -> None:
+        """The receipt advertises a closed token vocabulary. Drive the loader
+        through every reachable outcome and hold each one to that vocabulary,
+        so a future branch cannot emit an undeclared disposition."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases: list[tuple[str, Path]] = [
+                ("absent", root / "never-written.json"),
+                ("unreadable", self._write_history(root, "{not json", "corrupt.json")),
+                ("malformed", self._write_history(root, "[]", "list.json")),
+                (
+                    "unsupported_schema",
+                    self._write_history(
+                        root,
+                        json.dumps({"schema_version": 7, "lanes": {}}),
+                        "v7.json",
+                    ),
+                ),
+                (
+                    "accepted",
+                    self._write_history(
+                        root,
+                        json.dumps({"schema_version": 1, "lanes": {}}),
+                        "v1.json",
+                    ),
+                ),
+            ]
+            declared = set(pr_plan.HISTORY_DISPOSITIONS)
+            for expected, path in cases:
+                _, disposition = pr_plan.load_learned_history(path)
+                self.assertEqual(expected, disposition, f"{path.name}")
+                self.assertIn(disposition, declared, f"{path.name} emitted undeclared")
+
     def test_main_writes_plan_summary_and_trust_lane_for_pr_plan_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
