@@ -263,13 +263,15 @@ impl EnhancedCodeActionsProvider {
             actions.push(action);
         }
 
-        // Extract subroutine — only for standalone blocks, not control-flow bodies
-        if !is_control_body && self.is_extractable_block(node) {
-            actions.push(extract_subroutine::create_extract_subroutine_action(
-                node,
-                &self.source,
-                &helpers,
-            ));
+        // Extract subroutine — only for standalone blocks, not control-flow
+        // bodies. The generator refuses to offer an extraction whose applied
+        // edit would not parse (#16642 validity gate).
+        if !is_control_body
+            && self.is_extractable_block(node)
+            && let Some(action) =
+                extract_subroutine::create_extract_subroutine_action(node, &self.source, &helpers)
+        {
+            actions.push(action);
         }
 
         // Recursively check children, flagging control-flow body blocks
