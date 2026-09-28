@@ -1011,6 +1011,13 @@ if (-not ($IsArm64Host -or $HostArch -eq "AMD64")) {
 # Resolve the version before selecting a target. Target selection now depends
 # on which assets a specific release actually carries, so the tag has to be
 # known first.
+
+# #16541: X.Y.Z semver core, mirroring PLSP_SEMVER_RE in scripts/install.sh
+# (#8367): no leading zeroes, optional prerelease/build suffix with its
+# restricted alphabet. Applied to the explicit -Version pin before any URL is
+# built.
+$SemverPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+
 if ($Version -eq "latest") {
     try {
         $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
@@ -1020,6 +1027,14 @@ if ($Version -eq "latest") {
         Write-Error "Failed to fetch latest release: $_"
     }
 } else {
+    # #16541: reject an invalid pin before any URL is built; previously
+    # anything non-"latest" was accepted and survived to a bare 404. Strip one
+    # optional leading "v" (-creplace is case-sensitive, matching the POSIX
+    # ${VERSION#v}) and apply the same semver core as scripts/install.sh.
+    $VersionSpec = $Version -creplace '^v', ''
+    if ($VersionSpec -notmatch $SemverPattern) {
+        Write-Error "Invalid -Version '$Version': expected a full X.Y.Z semver (for example 0.17.0 or v0.17.0, with optional prerelease/build metadata). Check the release page for an existing tag: https://github.com/$Repo/releases"
+    }
     $Tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
 }
 
@@ -1122,7 +1137,8 @@ try {
     try {
         Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
     } catch {
-        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $_"
+        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $($_.Exception.Message)
+Check the release page for an existing tag: https://github.com/$Repo/releases"
         throw
     }
 
