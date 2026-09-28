@@ -2293,10 +2293,10 @@ print "result: $final\n";
                 assert!(msg.contains("localhost:13603"));
                 // #16555: the wrapper no longer restates a hard-coded timeout
                 // default that can drift from the real budget; the connect
-                // error carries the exact budget (for the refused verdict, the
-                // "nothing is listening … (connection refused), or the peer
-                // did not accept within {N}ms" wording) and the wrapper
-                // carries the PERLDB_OPTS remediation.
+                // error carries the exact configured budget ("({N}ms timeout)"
+                // on every attach failure, including the refused verdict's
+                // "nothing is listening … (connection refused)" wording) and
+                // the wrapper carries the PERLDB_OPTS remediation.
                 assert!(msg.contains("RemotePort=localhost:13603"));
                 assert!(
                     !msg.contains("30000"),

@@ -50,8 +50,25 @@ fn is_explicit_interpreter_path(interpreter: &str) -> bool {
     interpreter.contains('/') || interpreter.contains('\\')
 }
 
-pub(super) fn format_perl_spawn_error(perl_interpreter: &str, error: &std::io::Error) -> String {
+pub(super) fn format_perl_spawn_error(
+    perl_interpreter: &str,
+    working_directory: Option<&std::path::Path>,
+    error: &std::io::Error,
+) -> String {
     if error.kind() == std::io::ErrorKind::NotFound {
+        // A `NotFound` spawn is attributed to the interpreter only when the
+        // launch's working directory actually exists: process creation fails
+        // with `NotFound` when the configured `cwd` does not, even with a
+        // valid executable, so blaming `perlPath` there sends users to fix the
+        // wrong field (#16552 review).
+        if let Some(cwd) = working_directory
+            && !cwd.exists()
+        {
+            return format!(
+                "Debuggee working directory not found at '{}'. Point the launch.json                     `cwd` field at an existing directory, then start debugging again.",
+                cwd.display()
+            );
+        }
         // #16552: an interpreter spelling that contains a path separator was
         // never looked up on PATH — the user named an explicit location and the
         // spawn misspelled or misplaced it. Saying "not available on PATH"

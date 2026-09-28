@@ -853,13 +853,22 @@ impl DebugAdapter {
                     // program, compiler output, workspace boundary) is the
                     // whole message.
                     let message = if failure.kind() == LaunchFailureKind::Interpreter {
+                        // `detect_perl_info`'s not-found hint already ends with
+                        // a period; adding another before the `perlPath`
+                        // advice produced "path.. To use" in the launch
+                        // response (#16552 review).
                         let perl_info = detect_perl_info();
+                        let perl_info = if perl_info.ends_with('.') {
+                            perl_info
+                        } else {
+                            format!("{perl_info}.")
+                        };
                         format!(
                             "Cannot start Perl debugger: {}",
                             join_sentences(
                                 &failure.to_string(),
                                 &format!(
-                                    "{perl_info}. To use a specific Perl interpreter, add \
+                                    "{perl_info} To use a specific Perl interpreter, add \
                                      `perlPath` to your launch.json \
                                      (e.g. {{\"perlPath\": \"/path/to/perl\"}})."
                                 )
@@ -1268,9 +1277,11 @@ impl DebugAdapter {
 
                 Ok(thread_id)
             }
-            Err(e) => {
-                Err(LaunchFailure::interpreter(format_perl_spawn_error(perl_interpreter, &e)))
-            }
+            Err(e) => Err(LaunchFailure::interpreter(format_perl_spawn_error(
+                perl_interpreter,
+                Some(&debuggee_cwd),
+                &e,
+            ))),
         }
     }
 
@@ -6649,6 +6660,17 @@ mod tests {
         writeln!(tmp, "}}").map_err(|e| format!("could not write to temp file: {e}"))?;
         let tmp_path = tmp.path().to_str().ok_or("temp path is not valid UTF-8")?.to_string();
 
+        // Runtime precondition, stated explicitly: this case pins the
+        // wrapper's pass-through of the embedded compiler diagnosis, which
+        // only a working interpreter can produce. Without Perl on PATH the
+        // launch fails interpreter-first and the "Syntax error in" diagnosis
+        // never exists, so the case would fail with a misleading
+        // interpreter-shaped message rather than a real regression (#16552
+        // review).
+        if !detect_perl_info().contains("Found Perl at") {
+            return Ok(());
+        }
+
         let mut adapter = launch_test_adapter()?;
         let response =
             adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": tmp_path })));
@@ -6793,7 +6815,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_includes_custom_interpreter_name() {
         let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("/custom/perl", &error);
+        let message = format_perl_spawn_error("/custom/perl", None, &error);
 
         assert!(
             message.contains("/custom/perl"),
@@ -6803,7 +6825,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_for_missing_perl_is_actionable() {
         let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("perl", &error);
+        let message = format_perl_spawn_error("perl", None, &error);
 
         assert!(message.contains("Install Perl"), "expected install guidance, got: {message}");
         assert!(
@@ -6819,7 +6841,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_preserves_non_not_found_error_detail() {
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
-        let message = format_perl_spawn_error("/secure/perl", &error);
+        let message = format_perl_spawn_error("/secure/perl", None, &error);
 
         assert!(message.contains("/secure/perl"), "expected interpreter path, got: {message}");
         assert!(
@@ -6833,6 +6855,51 @@ mod tests {
         assert!(
             !message.contains("Install Perl"),
             "non-NotFound errors should not use missing-perl guidance, got: {message}"
+        );
+    }
+
+    /// #16552 review: a `NotFound` spawn with a nonexistent working directory
+    /// names the missing `cwd`, not the interpreter — process creation fails
+    /// with `NotFound` for a missing cwd even when the executable exists.
+    #[test]
+    fn format_perl_spawn_error_blames_a_missing_cwd_not_the_interpreter() {
+        let missing_dir = std::path::Path::new("./no-such-cwd-16552-review");
+        assert!(!missing_dir.exists(), "precondition: the probe directory must not exist");
+        let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
+        let message = format_perl_spawn_error("/usr/bin/perl", Some(missing_dir), &error);
+
+        assert!(
+            message.contains("working directory not found"),
+            "a missing cwd must be named as the failure, got: {message}"
+        );
+        assert!(
+            message.contains("no-such-cwd-16552-review"),
+            "the message must name the missing directory, got: {message}"
+        );
+        assert!(
+            !message.contains("perlPath"),
+            "a missing cwd must not send users to fix perlPath, got: {message}"
+        );
+    }
+
+    /// #16552 review: with a working directory that exists, a `NotFound`
+    /// spawn keeps the interpreter attribution — the cwd is not the failing
+    /// component there.
+    #[test]
+    fn format_perl_spawn_error_keeps_interpreter_attribution_for_an_existing_cwd() {
+        // The OS temp directory exists on every test runner; an existing cwd
+        // must not trigger the missing-directory wording.
+        let dir = std::env::temp_dir();
+        let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
+        let message = format_perl_spawn_error("/definitely/not/a/perl", Some(&dir), &error);
+
+        assert!(
+            message.contains("not found at '/definitely/not/a/perl'"),
+            "an existing cwd keeps the interpreter attribution, got: {message}"
+        );
+        assert!(
+            !message.contains("working directory not found"),
+            "the cwd wording must not ride on an existing directory, got: {message}"
         );
     }
 
