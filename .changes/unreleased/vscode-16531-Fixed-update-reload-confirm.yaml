@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: "Accepting a perllsp update — through the availability prompt's Update button or perl-lsp.autoUpdate — now confirms the staged install with \"perllsp x.y.z downloaded. Reload the window to switch to it.\" and a Reload Window button, instead of finishing silently while the running server stays on the old binary. The update install's progress is labelled \"Updating Perl Language Server\" so it no longer looks identical to a first-run download."
+time: 2026-09-28T00:00:00Z
+custom:
+  PR: "16531"
+  Slug: vscode-update-reload-confirm
+  Breaking: "no"

@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: "When perl-lsp.serverPath is configured but the path does not exist, the extension now shows a once-per-session warning naming the path — \"perl-lsp.serverPath \\\"<path>\\\" does not exist; using the auto-downloaded binary instead.\" with a button that opens the setting — instead of only logging the configuration-to-auto-download swap to the output channel."
+time: 2026-09-28T00:00:00Z
+custom:
+  PR: "16535"
+  Slug: vscode-serverPath-fallback-warning
+  Breaking: "no"

@@ -30,6 +30,7 @@ import {
   readGitHubToken,
   resolveGitHubAuthDisposition,
   __resetManagedInstallSingleflightForTesting,
+  __resetVersionTagIgnoredWarningForTesting,
 } from '../downloader';
 import {
   legacyManagedBaseDir,
@@ -78,13 +79,13 @@ interface DownloaderPrivateSurface {
   calculateSHA256(filePath: string): Promise<string>;
   getLatestRelease(timeoutMs?: number): Promise<unknown>;
   getLocalVersion(binaryPath: string): Promise<string | null>;
-  downloadWithProgress(): Promise<string>;
+  downloadWithProgress(progressTitle?: string): Promise<string>;
   httpGet(...args: never[]): EventEmitter;
 }
 
 interface TestDownloader extends DownloaderPrivateSurface {
   getLocalBinaryPath(): string;
-  ensureBinary(forceDownload?: boolean): Promise<string | null>;
+  ensureBinary(forceDownload?: boolean, progressTitle?: string): Promise<string | null>;
   checkForUpdateSilent(): Promise<void>;
   downloadFile(url: string, dest: string, timeoutMs?: number): Promise<void>;
 }
@@ -1721,6 +1722,7 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   afterEach(() => {
     restoreProcessHost?.();
     restoreProcessHost = undefined;
+    __resetVersionTagIgnoredWarningForTesting();
     jest.restoreAllMocks();
   });
 
@@ -1932,6 +1934,130 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     });
 
     await expect(seams.getLatestRelease(1000)).rejects.toThrow('No releases found');
+  });
+
+  test('names the configured pin when the tag route answers 404 (#16533)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    // A fat-fingered tag is the one wrong setting; the refusal must name it
+    // instead of reporting that the project publishes nothing.
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'versionTag') {
+          return 'v0.99.99';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const response = makeResponse(404);
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify({ message: 'Not Found' }));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'No release found for the configured tag "v0.99.99"; check the perl-lsp.versionTag setting.',
+    );
+  });
+
+  test('an empty versionTag on the tag channel refuses with the pin remedy, not policy jargon (#16533)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        // versionTag falls through to the '' default.
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const httpGetSpy = jest.spyOn(seams, 'httpGet');
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
+        'set versionTag (for example v0.12.1) to pin a release.',
+    );
+    // The empty tag short-circuits the fetch; the refusal comes from the
+    // selector's closed policy without a network round trip.
+    expect(httpGetSpy).not.toHaveBeenCalled();
+  });
+
+  test('a versionTag outside the tag channel warns once per session that it is ignored (#16533)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'versionTag') {
+          return 'v0.12.1';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    respondWithReleaseList(seams, [
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
+    ]);
+    const outputChannel = (downloader as unknown as { outputChannel: { appendLine: jest.Mock } })
+      .outputChannel;
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+    // A second selection in the same session must not repeat the warning.
+    respondWithReleaseList(seams, [
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
+    ]);
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+
+    const pinWarnings = outputChannel.appendLine.mock.calls.filter(
+      ([line]) =>
+        typeof line === 'string' && line.includes('versionTag') && line.includes('ignored'),
+    );
+    expect(pinWarnings).toHaveLength(1);
+    expect(pinWarnings[0]![0]).toContain('v0.12.1');
+    expect(pinWarnings[0]![0]).toContain('tag');
   });
 
   test('rejects release metadata that does not match the expected schema', async () => {
@@ -2939,7 +3065,7 @@ describe('checkForUpdateSilent', () => {
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
-  test('autoUpdate=true triggers ensureBinary without showing a notification', async () => {
+  test('autoUpdate=true installs, then confirms the staged update with a reload prompt (#16531)', async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
@@ -2951,12 +3077,51 @@ describe('checkForUpdateSilent', () => {
 
     await downloader.checkForUpdateSilent();
 
-    // No prompt — downloads silently
-    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
-    expect(ensureSpy).toHaveBeenCalledWith(true);
+    // The availability prompt is skipped, but the install is not silent: the
+    // user is told what was staged and how to switch to it.
+    expect(ensureSpy).toHaveBeenCalledWith(true, 'Updating Perl Language Server');
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'perllsp 0.13.0 downloaded. Reload the window to switch to it.',
+      'Reload Window',
+    );
   });
 
-  test('"Update" button click triggers ensureBinary', async () => {
+  test('a failed update install does not claim an update was downloaded (#16531)', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    jest.spyOn(downloader, 'ensureBinary').mockResolvedValue(null);
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent();
+
+    // The failure banner is runEnsureBinary's own error surface; the success
+    // confirmation must not fire for a null install.
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('choosing "Reload Window" reloads the window to switch to the staged binary (#16531)', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    jest.spyOn(downloader, 'ensureBinary').mockResolvedValue('/path/to/perllsp');
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue('Reload Window');
+
+    await downloader.checkForUpdateSilent();
+    // Let the message's button handler settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('workbench.action.reloadWindow');
+  });
+
+  test('"Update" button click installs, then confirms the staged update with a reload prompt (#16531)', async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
@@ -2969,7 +3134,59 @@ describe('checkForUpdateSilent', () => {
 
     await downloader.checkForUpdateSilent();
 
-    expect(ensureSpy).toHaveBeenCalledWith(true);
+    expect(ensureSpy).toHaveBeenCalledWith(true, 'Updating Perl Language Server');
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'perllsp 0.13.0 downloaded. Reload the window to switch to it.',
+      'Reload Window',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Update install progress labeling (#16531)
+// ---------------------------------------------------------------------------
+describe('update install progress labeling', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function makeDownloader(): { downloader: TestDownloader; cleanup: () => void } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-progress-'));
+    const downloader = new BinaryDownloader(
+      makeContext(dir),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    return { downloader, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  test('an update install labels the progress as updating, not first-run downloading', async () => {
+    const { downloader, cleanup } = makeDownloader();
+    try {
+      const progressSpy = jest
+        .spyOn(downloader, 'downloadWithProgress')
+        .mockResolvedValue('/path/to/perllsp');
+
+      await downloader.ensureBinary(true, 'Updating Perl Language Server');
+
+      expect(progressSpy).toHaveBeenCalledWith('Updating Perl Language Server');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('a first-run download keeps the established progress label', async () => {
+    const { downloader, cleanup } = makeDownloader();
+    try {
+      const progressSpy = jest
+        .spyOn(downloader, 'downloadWithProgress')
+        .mockResolvedValue('/path/to/perllsp');
+
+      await downloader.ensureBinary(false);
+
+      expect(progressSpy).toHaveBeenCalledWith('Downloading Perl Language Server');
+    } finally {
+      cleanup();
+    }
   });
 });
 

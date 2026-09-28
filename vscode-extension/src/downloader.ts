@@ -230,6 +230,26 @@ export function __resetManagedInstallSingleflightForTesting(): void {
   activeManagedInstall = undefined;
 }
 
+/** Progress label for a first-run (or repair) managed download. */
+const DOWNLOAD_PROGRESS_TITLE = 'Downloading Perl Language Server';
+/**
+ * Progress label for an update install (#16531). An update that looks exactly
+ * like a first-run download gives an autoUpdate user no signal that the
+ * feature — not a stray download — is doing the work.
+ */
+const UPDATE_PROGRESS_TITLE = 'Updating Perl Language Server';
+
+/**
+ * Session guard for the `versionTag`-ignored warning (#16533). One warning per
+ * extension-host session: the mismatch is configuration, not progress, so it
+ * must not repeat on every update check or download.
+ */
+let versionTagIgnoredWarningShown = false;
+
+export function __resetVersionTagIgnoredWarningForTesting(): void {
+  versionTagIgnoredWarningShown = false;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -476,8 +496,32 @@ function describeManagedReleaseRefusal(
     case 'configured_incompatible':
       return `Configured release is not compatible: ${refusal.detail}`;
     case 'invalid_policy':
+      // A tag channel with no configured tag is half-finished pin configuration
+      // (#16533). The actionable remedy is the versionTag setting; the generic
+      // policy wrapper and the generic banner's manual-binary fallback both
+      // point somewhere that cannot fix it.
+      if (channel === 'tag' && refusal.detail.startsWith('The tag channel requires')) {
+        return (
+          'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
+          'set versionTag (for example v0.12.1) to pin a release.'
+        );
+      }
       return `Invalid managed release policy: ${refusal.detail}`;
   }
+}
+
+/**
+ * Whether an error means "GitHub has no release record for this exact request"
+ * (HTTP 404, as a status or as a Not Found response body).
+ *
+ * `fetchReleaseMetadata` converts both shapes to `No releases found`
+ * (#16533); the tag route rewrites that message to name the configured pin.
+ */
+function isMissingReleaseRecordError(error: unknown): boolean {
+  if (error instanceof BoundedJsonStatusError && error.statusCode === 404) {
+    return true;
+  }
+  return error instanceof Error && error.message === 'No releases found';
 }
 
 /**
@@ -798,7 +842,10 @@ export class BinaryDownloader {
     return 'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit.';
   }
 
-  async ensureBinary(forceDownload = false): Promise<string | null> {
+  async ensureBinary(
+    forceDownload = false,
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string | null> {
     this.lastErrorMessage = undefined;
     const myReason: ManagedInstallReason = forceDownload ? 'force' : 'ensure';
 
@@ -826,7 +873,7 @@ export class BinaryDownloader {
     // its own metadata disposition. Resetting on entry would both leak that
     // value into this run's remedy and wipe the in-flight run's own record.
     this.releaseMetadata403Disposition = undefined;
-    const promise = this.runEnsureBinary(forceDownload);
+    const promise = this.runEnsureBinary(forceDownload, progressTitle);
     activeManagedInstall = { promise, reason: myReason };
     try {
       return await promise;
@@ -837,16 +884,22 @@ export class BinaryDownloader {
     }
   }
 
-  private async runEnsureBinary(forceDownload: boolean): Promise<string | null> {
+  private async runEnsureBinary(
+    forceDownload: boolean,
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string | null> {
     this.ownedDownloadRunActive = true;
     try {
-      return await this.runEnsureBinaryInner(forceDownload);
+      return await this.runEnsureBinaryInner(forceDownload, progressTitle);
     } finally {
       this.ownedDownloadRunActive = false;
     }
   }
 
-  private async runEnsureBinaryInner(forceDownload: boolean): Promise<string | null> {
+  private async runEnsureBinaryInner(
+    forceDownload: boolean,
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string | null> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const channel = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
@@ -880,7 +933,7 @@ export class BinaryDownloader {
       // needed depends on whether the target release carries a native ARM64
       // asset, which is not known until the release is fetched; rejecting up
       // front refused installs that would have succeeded natively (#6196).
-      return await this.downloadWithProgress();
+      return await this.downloadWithProgress(progressTitle);
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.lastErrorMessage = errorMsg;
@@ -982,11 +1035,13 @@ export class BinaryDownloader {
     }
   }
 
-  private async downloadWithProgress(): Promise<string> {
+  private async downloadWithProgress(
+    progressTitle: string = DOWNLOAD_PROGRESS_TITLE,
+  ): Promise<string> {
     return vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: 'Downloading Perl Language Server',
+        title: progressTitle,
         cancellable: true,
       },
       async (progress, token) => {
@@ -1283,6 +1338,17 @@ export class BinaryDownloader {
     }
     const channel: ManagedReleaseChannel = channelSetting;
 
+    // A pinned tag only takes effect on the tag channel (#16533). A user who
+    // set versionTag expecting a pin must not silently keep tracking the
+    // recency channel, so say so once per session.
+    if (versionTag && channel !== 'tag' && !versionTagIgnoredWarningShown) {
+      versionTagIgnoredWarningShown = true;
+      this.outputChannel.appendLine(
+        `[config] perl-lsp.versionTag "${versionTag}" is ignored unless perl-lsp.channel is "tag" ` +
+          `(current channel: "${channel}"). Set channel to "tag" to pin this release.`,
+      );
+    }
+
     const expectation = this.managedReleaseExpectation();
     const isWindowsArm64 = process.platform === 'win32' && process.arch === 'arm64';
     // On Windows ARM64 a release can serve this host natively or through the
@@ -1309,7 +1375,22 @@ export class BinaryDownloader {
 
     let releases: Release[] = [];
     if (url) {
-      const parsed = await this.fetchReleaseMetadata(url, timeoutMs, cancellationToken);
+      let parsed: unknown;
+      try {
+        parsed = await this.fetchReleaseMetadata(url, timeoutMs, cancellationToken);
+      } catch (error) {
+        if (channel === 'tag' && isMissingReleaseRecordError(error)) {
+          // On the exact-tag route a 404 means the configured pin has no
+          // release record (#16533) — not that the project publishes nothing.
+          // Name the pin so the one wrong setting is identifiable; the
+          // selector's own refusal is unreachable because the 404 throws
+          // before selection.
+          throw new Error(
+            `No release found for the configured tag "${versionTag}"; check the perl-lsp.versionTag setting.`,
+          );
+        }
+        throw error;
+      }
       if (channel === 'tag') {
         if (!isReleaseShape(parsed)) {
           throw new Error('Release metadata response has an invalid schema');
@@ -2099,7 +2180,10 @@ export class BinaryDownloader {
       const autoUpdate = config.get<boolean>('autoUpdate', false);
       if (autoUpdate) {
         this.outputChannel.appendLine(`[update-check] Auto-updating to ${remoteVersion}`);
-        await this.ensureBinary(true);
+        const installed = await this.ensureBinary(true, UPDATE_PROGRESS_TITLE);
+        if (installed) {
+          this.offerReloadToSwitch(remoteVersion);
+        }
         return;
       }
 
@@ -2111,7 +2195,10 @@ export class BinaryDownloader {
       );
 
       if (choice === 'Update') {
-        await this.ensureBinary(true);
+        const installed = await this.ensureBinary(true, UPDATE_PROGRESS_TITLE);
+        if (installed) {
+          this.offerReloadToSwitch(remoteVersion);
+        }
       } else if (choice === "Don't ask again") {
         await config.update('updateCheckInterval', 0, vscode.ConfigurationTarget.Global);
       }
@@ -2120,6 +2207,29 @@ export class BinaryDownloader {
       const msg = err instanceof Error ? err.message : String(err);
       this.outputChannel.appendLine(`[update-check] Skipping: ${msg}`);
     }
+  }
+
+  /**
+   * Confirm a successful update install and offer the one action that switches
+   * the running server to it (#16531).
+   *
+   * An update install stages a versioned directory and moves the shared
+   * `current` pointer, but the running client stays bound to the exact binary
+   * it launched (`bound_running`) until the host restarts. Reusing the reload
+   * affordance keeps that handoff honest without duplicating the Reinstall
+   * command's stop/restart flow.
+   */
+  private offerReloadToSwitch(version: string): void {
+    void vscode.window
+      .showInformationMessage(
+        `perllsp ${version} downloaded. Reload the window to switch to it.`,
+        'Reload Window',
+      )
+      .then((choice) => {
+        if (choice === 'Reload Window') {
+          void vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
+      });
   }
 
   private async getLocalVersion(binaryPath: string): Promise<string | null> {

@@ -208,6 +208,10 @@ let currentServerPath: string | null = null;
 // does not exist, so the "not found" error can name the broken setting instead
 // of failing silently.
 let configuredServerPathMissing: string | null = null;
+// Session guard for the serverPath-fallback warning (#16535): the silent
+// configuration-to-auto-download swap must be surfaced once, not on every
+// restart or configuration change within the same session.
+let serverPathMissingWarningShown = false;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let healthWidget: HealthWidget | undefined;
 let healthWidgetDataSource: HealthWidgetDataSource | undefined;
@@ -1823,6 +1827,38 @@ export function diagnoseConfiguredServerPath(
   return userPath;
 }
 
+/**
+ * Surface the silent configured-serverPath fallback as a visible, once-per-
+ * session warning (#16535).
+ *
+ * `diagnoseConfiguredServerPath` records the broken setting, but an
+ * output-channel line is invisible to a user whose governed `serverPath`
+ * (network share, mounted drive) quietly swaps to an auto-downloaded public
+ * binary. The warning names the path and opens the owning setting; the
+ * session guard keeps restarts and configuration changes from repeating it.
+ */
+export function warnConfiguredServerPathMissing(userPath: string): void {
+  if (serverPathMissingWarningShown) {
+    return;
+  }
+  serverPathMissingWarningShown = true;
+  void vscode.window
+    .showWarningMessage(
+      `perl-lsp.serverPath "${userPath}" does not exist; using the auto-downloaded binary instead.`,
+      'Check serverPath Setting',
+    )
+    .then((choice) => {
+      if (choice === 'Check serverPath Setting') {
+        void vscode.commands.executeCommand('workbench.action.openSettings', 'perl-lsp.serverPath');
+      }
+    });
+}
+
+/** Reset the once-per-session guard so a test can observe the first warning. */
+export function _resetServerPathMissingWarningForTest(): void {
+  serverPathMissingWarningShown = false;
+}
+
 async function getServerPath(
   context: vscode.ExtensionContext,
 ): Promise<{ path: string | null; source: BinaryResolutionSource }> {
@@ -1842,6 +1878,9 @@ async function getServerPath(
     userPathExists,
     outputChannel,
   );
+  if (configuredServerPathMissing) {
+    warnConfiguredServerPathMissing(configuredServerPathMissing);
+  }
 
   const platform = process.platform;
   const arch = process.arch;
