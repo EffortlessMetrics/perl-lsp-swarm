@@ -208,6 +208,33 @@ fn build_session_packet(program: &Path) -> DebugSessionPacket {
     builder.build()
 }
 
+/// Refuse a one-shot emit whose program cannot be read.
+///
+/// [`build_session_packet`] tolerates an unreadable program: it emits a plan
+/// with empty `source_facts`. That tolerance is right for the live adapter,
+/// where the program may be produced later, and wrong for the two one-shot
+/// arms - their whole product *is* the derived plan, so an unreadable path
+/// yields a plausible-looking artifact that exits 0. A typo in a Makefile then
+/// produces a bootstrap rc with no program-specific setup and no signal why.
+///
+/// Failing rather than warning is deliberate: these outputs are read by
+/// scripts, and a warning on stderr is invisible to anything checking exit
+/// status. A missing program is a caller error, not a degraded mode (#16553).
+fn require_readable_program(program: &Path) -> anyhow::Result<()> {
+    let metadata = std::fs::metadata(program)
+        .map_err(|error| anyhow::anyhow!("program '{}' cannot be read: {error}", program.display()))?;
+    // `metadata` succeeds for a directory, and `read_to_string` does not - so a
+    // bare existence check would let a directory through and land exactly in
+    // the silent-degenerate-plan case this guard exists to prevent.
+    if !metadata.is_file() {
+        return Err(anyhow::anyhow!(
+            "program '{}' is not a regular file",
+            program.display()
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_socket_port(args: &perl_lsp_rs_core::runtime::launcher::TransportArgs) -> Option<u16> {
     if args.socket || args.port.is_some() {
         Some(args.port.unwrap_or(DEFAULT_DAP_PORT))
@@ -306,12 +333,14 @@ fn main() -> anyhow::Result<()> {
     // the stdout handle (rather than the print!/println! macros) so the shipped
     // binary stays clear of the `clippy::print_stdout` restriction lint.
     if let Some(program) = args.ptkdb_bootstrap_rc.as_deref() {
-        let packet = build_session_packet(program);
+        require_readable_program(Path::new(program))?;
+        let packet = build_session_packet(Path::new(program));
         write!(std::io::stdout(), "{}", render_ptkdbrc(&packet, true))?;
         return Ok(());
     }
     if let Some(program) = args.debug_session_plan.as_deref() {
-        let packet = build_session_packet(program);
+        require_readable_program(Path::new(program))?;
+        let packet = build_session_packet(Path::new(program));
         writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&packet)?)?;
         return Ok(());
     }
@@ -396,12 +425,13 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{
         Args, DEFAULT_DAP_PORT, editor_socket_retired, native_editor_socket_retired,
-        resolve_socket_port, windows_shell_quote,
+        require_readable_program, resolve_socket_port, windows_shell_quote,
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
         BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, requested_identity_output,
     };
+    use std::path::Path;
 
     #[test]
     fn native_socket_flags_fail_with_stdio_migration_before_any_bind() {
@@ -529,5 +559,56 @@ mod tests {
     fn windows_remediation_uses_cmd_quoting() {
         assert_eq!(windows_shell_quote("[::1]:13604"), "\"[::1]:13604\"");
         assert_eq!(windows_shell_quote("100% ready\"now"), "\"100% ready\"\"now\"");
+    }
+
+    // ── one-shot emit refuses an unreadable program (#16553) ─────────────────
+
+    /// A path under a directory that does not exist, so the failure is
+    /// independent of the host's temp-dir configuration.
+    const MISSING: &str = "./no-such-dir-for-tests/no-such.pl";
+
+    #[test]
+    fn a_readable_program_is_accepted() -> anyhow::Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "dap-readable-program-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let program = dir.join("real.pl");
+        std::fs::write(&program, "print 1;\n")?;
+        let outcome = require_readable_program(&program);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(outcome.is_ok(), "a readable program must be accepted: {outcome:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_program_is_refused_with_the_path_named() {
+        let error = require_readable_program(Path::new(MISSING))
+            .expect_err("a missing program must be refused, not tolerated");
+        let message = error.to_string();
+        assert!(
+            message.contains(MISSING),
+            "the message must name the offending path, got: {message}"
+        );
+    }
+
+    #[test]
+    fn a_directory_is_refused_because_it_is_not_a_readable_program() {
+        // `fs::metadata` succeeds for a directory, so this is the case a naive
+        // `program.exists()` check would let through. `build_session_packet`
+        // would then silently drop it (read_to_string fails on a directory)
+        // and emit the very degenerate plan this guard exists to prevent.
+        let dir = std::env::temp_dir().join(format!(
+            "dap-directory-not-a-program-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("fixture directory must be creatable");
+        let outcome = require_readable_program(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            outcome.is_err(),
+            "a directory is not a readable program and must be refused"
+        );
     }
 }
