@@ -91,6 +91,18 @@ jobs:
             "$(jq -r .updatedAt <<<"$pr_snapshot")" \
             "$(jq -r .headRefOid <<<"$pr_snapshot")" \
             "$(printf '%s' "$body" | sha256sum | cut -d' ' -f1)"
+          # One coherent revision or none (#15759): the changed-file list below
+          # comes from this run's replayed checkout, so if the live PR head has
+          # moved past the event head (a rerun of a pre-push run), the live body
+          # would be judged against the old revision's diff. Fail as stale
+          # instead of publishing a mixed-revision verdict. Body-only edits
+          # keep working because the head OID is unchanged.
+          live_head="$(jq -r .headRefOid <<<"$pr_snapshot")"
+          event_head="${{ github.event.pull_request.head.sha }}"
+          if [[ "$live_head" != "$event_head" ]]; then
+            echo "::error title=stale advisory run::live PR head ${live_head} differs from this run's event head ${event_head}; rerun the latest run (or push) instead of judging a new body against an old revision (#15759)."
+            exit 1
+          fi
           # No `|| true` here: a failing `git diff` must surface as a real CI
           # failure (this step, not the merge gate — the workflow isn't
           # required), not silently degrade to an empty changed-file list.
