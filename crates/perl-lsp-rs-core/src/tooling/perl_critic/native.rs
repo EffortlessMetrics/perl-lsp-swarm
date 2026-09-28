@@ -8,8 +8,8 @@
 #[cfg(test)]
 use super::CriticConfig;
 use super::{CriticFindingShape, Severity, insertion_range};
-use crate::providers::diagnostics::unreachable_code::check_unreachable_code;
 use crate::providers::diagnostics::known_scalar_argument_count;
+use crate::providers::diagnostics::unreachable_code::check_unreachable_code;
 use perl_parser_core::Node;
 use perl_parser_core::NodeKind;
 use perl_parser_core::position::{Position, Range};

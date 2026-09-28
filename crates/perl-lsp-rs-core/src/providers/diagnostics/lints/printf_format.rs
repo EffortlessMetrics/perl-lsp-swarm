@@ -107,13 +107,10 @@ fn check_format_args(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
 pub(crate) fn known_scalar_argument_count(args: &[Node]) -> Option<usize> {
     args.iter()
         .all(|arg| match &arg.kind {
-            NodeKind::Number { .. }
-            | NodeKind::VString { .. }
-            | NodeKind::Undef => true,
+            NodeKind::Number { .. } | NodeKind::VString { .. } | NodeKind::Undef => true,
             // The parser currently represents qx/backticks as String nodes,
             // but they return output lines in list context.
-            NodeKind::String { value, .. } =>
-                !value.starts_with("qx") && !value.starts_with('`'),
+            NodeKind::String { value, .. } => !value.starts_with("qx") && !value.starts_with('`'),
             NodeKind::Heredoc { command, .. } => !command,
             NodeKind::Variable { sigil, .. } => sigil == "$",
             _ => false,
