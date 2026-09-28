@@ -152,6 +152,7 @@ fn build_doctor_report_struct(dir: &str) -> Result<DoctorReport, String> {
 
     Ok(DoctorReport {
         workspace,
+        requested_workspace: requested_workspace_dir(dir),
         config: config_report,
         perl: perl_report,
         perltidy: perltidy_report,
@@ -173,6 +174,13 @@ fn build_doctor_report_struct(dir: &str) -> Result<DoctorReport, String> {
 #[derive(Serialize)]
 struct DoctorReport {
     workspace: PathBuf,
+    /// The directory as the caller named it, made absolute without resolving
+    /// junctions or symlinks.
+    ///
+    /// `workspace` is canonicalized, so it follows every link and cannot say
+    /// which path the user actually typed. Two junctions aliasing one workspace
+    /// produce byte-identical reports without this field (#16664).
+    requested_workspace: PathBuf,
     config: ProjectConfigReport,
     perl: PerlReport,
     perltidy: ToolReport,
@@ -268,6 +276,45 @@ fn workspace_dir(dir: &str) -> Result<PathBuf, String> {
 
 fn canonicalize_workspace_dir(dir: &str, root: &Path) -> Result<PathBuf, String> {
     root.canonicalize().map_err(|error| format!("{dir}: cannot resolve directory: {error}"))
+}
+
+/// The directory as the caller named it: made absolute against the current
+/// directory *without* resolving junctions or symlinks.
+///
+/// `canonicalize_workspace_dir` follows every link, so a report built from its
+/// result cannot disclose which path the user actually typed. `path::absolute`
+/// normalizes `.`/`..` and prepends the current directory but performs no
+/// filesystem resolution, which is exactly the identity seam #16664 needs — and
+/// unlike echoing the raw `dir` string, it still yields a usable absolute path
+/// for the common `--doctor` default of `"."`.
+fn requested_workspace_dir(dir: &str) -> PathBuf {
+    std::path::absolute(dir).unwrap_or_else(|_| PathBuf::from(dir))
+}
+
+/// `path` with a Windows verbatim (`\\?\`) prefix removed, for *comparison* only.
+///
+/// `canonicalize` returns verbatim paths on Windows, so a plain absolute spelling
+/// would otherwise compare unequal to the workspace on every invocation rather
+/// than only when a real substitution happened. How the verbatim path is
+/// *displayed* is #16662's seam and is deliberately untouched here.
+fn comparable_workspace_path(path: &Path) -> &Path {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        return Path::new(unc);
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(stripped) => Path::new(stripped),
+        None => path,
+    }
+}
+
+/// True when the path the user named resolves to a different directory than the
+/// canonicalized workspace, i.e. a substitution occurred.
+fn workspace_substitution(report: &DoctorReport) -> bool {
+    comparable_workspace_path(&report.requested_workspace)
+        != comparable_workspace_path(&report.workspace)
 }
 
 fn load_workspace_config(
@@ -2375,6 +2422,12 @@ fn render_report(report: DoctorReport) -> String {
     out.push_str("perl-lsp doctor\n");
     out.push_str("===============\n\n");
     out.push_str(&format!("Workspace: {}\n", report.workspace.display()));
+    if workspace_substitution(&report) {
+        out.push_str(&format!(
+            "Workspace path as requested: {}\n",
+            report.requested_workspace.display()
+        ));
+    }
     out.push_str(&format!("Project config: {}\n", render_project_config_status(&report.config)));
     if !report.config.rejected_include_paths.is_empty() {
         out.push_str("Rejected .perl-lsp.toml include_paths entries:\n");
@@ -2793,6 +2846,113 @@ mod tests {
                 if error.starts_with(&format!("{child_dir}: cannot access directory: "))
         ));
         Ok(())
+    }
+
+    /// Create a directory alias pointing at `target` and return the alias path,
+    /// or `Ok(None)` when the host cannot create one.
+    ///
+    /// Windows uses a directory junction (`mklink /J`), which needs no elevated
+    /// privilege; POSIX uses a directory symlink. Failure is a typed skip, not a
+    /// green pass — a host that cannot build the fixture cannot prove #16664.
+    fn directory_alias(base: &Path, target: &Path) -> Result<Option<PathBuf>, String> {
+        let alias = base.join("alias-dir");
+        #[cfg(windows)]
+        let created = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&alias)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(target, &alias).is_ok();
+
+        if created && alias.is_dir() { Ok(Some(alias)) } else { Ok(None) }
+    }
+
+    /// The regression control for #16664: a report built from a directory alias
+    /// must name the path the user typed, not only the resolved target.
+    #[test]
+    fn doctor_report_discloses_requested_workspace_path_when_it_was_substituted() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let real = temp.path().join("real target");
+        std::fs::create_dir_all(&real)?;
+        let Some(alias) = directory_alias(temp.path(), &real)? else {
+            eprintln!("skip: host cannot create a directory alias; #16664 needs one");
+            return Ok(());
+        };
+
+        let alias_str = alias.to_str().ok_or("non-UTF-8 temp path")?;
+        let report = build_doctor_report_struct(alias_str)?;
+        let resolved = real.canonicalize()?;
+
+        // The resolved target is still the load-bearing workspace identity.
+        assert_eq!(report.workspace, resolved, "workspace must stay canonicalized");
+        // ...and the path the user actually passed is disclosed alongside it.
+        assert_eq!(report.requested_workspace, std::path::absolute(&alias)?);
+        assert!(workspace_substitution(&report), "an alias must count as a substitution");
+
+        let rendered = render_report(report);
+        assert!(
+            rendered.contains(&format!("Workspace path as requested: {}", alias.display())),
+            "report must disclose the substituted path, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("Workspace: {}", resolved.display())),
+            "report must still name the resolved workspace, got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// The negative control: a directory passed in its own resolved form
+    /// produces no disclosure line.
+    ///
+    /// The control is deliberately fed the *canonical* directory, not a raw
+    /// `tempdir()` path: on macOS `/tmp` is itself a symlink into
+    /// `/private/tmp`, so a raw temp path is a genuine substitution there and
+    /// asserting "no disclosure" against it would encode a platform accident
+    /// as the contract.
+    #[test]
+    fn doctor_report_omits_disclosure_when_no_substitution_occurred() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let canonical = temp.path().canonicalize()?;
+        let dir = canonical.to_str().ok_or("non-UTF-8 temp path")?;
+
+        let report = build_doctor_report_struct(dir)?;
+        assert!(
+            !workspace_substitution(&report),
+            "a directory passed in its resolved form must not count as a substitution: requested={} workspace={}",
+            report.requested_workspace.display(),
+            report.workspace.display()
+        );
+
+        let rendered = render_report(report);
+        assert!(
+            !rendered.contains("Workspace path as requested:"),
+            "an undisguised workspace must not claim a substitution, got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// The verbatim-prefix control: a `\\?\` difference alone is not a
+    /// substitution. Without this, the Windows path above would pass for the
+    /// wrong reason.
+    #[test]
+    fn comparable_workspace_path_ignores_windows_verbatim_prefix() {
+        let plain = Path::new(r"C:\Code\sp ace");
+        assert_eq!(comparable_workspace_path(plain), plain);
+        assert_eq!(comparable_workspace_path(Path::new(r"\\?\C:\Code\sp ace")), plain);
+        assert_eq!(
+            comparable_workspace_path(Path::new(r"\\?\UNC\server\share\proj")),
+            Path::new(r"server\share\proj")
+        );
+        // A genuine substitution survives normalization.
+        assert_ne!(
+            comparable_workspace_path(Path::new(r"\\?\C:\Code\jn-dir")),
+            comparable_workspace_path(Path::new(r"\\?\C:\Code\sp ace"))
+        );
     }
 
     #[cfg(unix)]
@@ -3384,6 +3544,7 @@ mod tests {
 
         let rendered = render_report(DoctorReport {
             workspace,
+            requested_workspace: temp.path().to_path_buf(),
             config: ProjectConfigReport {
                 status: ProjectConfigStatus::Missing,
                 include_source: "default includePaths",
