@@ -17,11 +17,14 @@
 //! ## Deadlock analysis
 //!
 //! `try_send` is non-blocking — it never waits on the consumer. Producers take
-//! the short admission-gate lock only to snapshot the shared sender and perform
-//! `try_send`; the writer thread never takes that gate. The writer thread holds
-//! the `output` lock (for `spawn_writer_shared`) only while performing the actual
-//! write, and it reads from the channel via `blocking_recv`/`try_recv` with no
-//! other lock held. Therefore there is no circular lock+channel dependency.
+//! the short admission-gate lock to snapshot the shared sender, perform
+//! `try_send`, and — on a closed gate — record a refused required response
+//! before releasing. Exit settlement acquires the same lock after the writer
+//! wait so that increment is visible. The writer thread never takes that gate.
+//! The writer thread holds the `output` lock (for `spawn_writer_shared`) only
+//! while performing the actual write, and it reads from the channel via
+//! `blocking_recv`/`try_recv` with no other lock held. Therefore there is no
+//! circular lock+channel dependency.
 
 #[cfg(test)]
 use crate::protocol::JsonRpcId;
@@ -235,11 +238,22 @@ impl OutboundSender {
 
     /// Close admission, wait for the writer, and join refused required
     /// responses that lost the race with that close (#16655).
+    ///
+    /// The refused-required snapshot takes the admission gate after the
+    /// writer wait so a producer that already observed the closed gate
+    /// finishes recording that refusal before the load. A producer that
+    /// first enters [`Self::send_response`] after this function returns
+    /// is after settlement; `process::exit` follows.
     pub(crate) fn settle_for_exit(&self, timeout: Duration) -> ExitSettlement {
-        ExitSettlement {
-            writer: self.close_and_wait(timeout),
-            rejected_required: self.completion.rejected_required(),
-        }
+        let writer = self.close_and_wait(timeout);
+        ExitSettlement { writer, rejected_required: self.snapshot_rejected_required() }
+    }
+
+    /// Load refused required responses only after producers that already
+    /// hold the gate have recorded or abandoned that observation.
+    fn snapshot_rejected_required(&self) -> usize {
+        let _gate = self.gate.lock();
+        self.completion.rejected_required()
     }
 
     /// Stop producers before the scheduler begins its cooperative drain.
@@ -258,10 +272,9 @@ impl OutboundSender {
         // still-open gate between `try_send` and `gate.take()`.
         let mut gate = self.gate.lock();
         let Some(tx) = gate.as_ref() else {
-            drop(gate);
-            // Admission was closed on purpose (exit or a prior required-response
-            // failure). The response never entered the channel, so the writer
-            // outcome cannot account for it (#16655).
+            // Hold the gate across the increment so [`Self::settle_for_exit`]
+            // cannot snapshot a stale zero between this observation and the
+            // counter update (#16655).
             self.completion.record_rejected_required();
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"));
         };
@@ -801,53 +814,15 @@ pub(crate) mod tests {
 
     #[test]
     fn blocked_writer_wait_is_bounded_and_releases_cleanly() -> Result<(), Box<dyn Error>> {
-        struct GatedSink {
-            entered: Arc<std::sync::atomic::AtomicBool>,
-            release: Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
-        }
-
-        impl Write for GatedSink {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.entered.store(true, std::sync::atomic::Ordering::SeqCst);
-                let (lock, cvar) = &*self.release;
-                let mut released = lock.lock();
-                while !*released {
-                    cvar.wait(&mut released);
-                }
-                Ok(bytes.len())
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let release = Arc::new((parking_lot::Mutex::new(false), parking_lot::Condvar::new()));
-        let (sender, handle) = spawn_writer(Box::new(GatedSink {
-            entered: Arc::clone(&entered),
-            release: Arc::clone(&release),
-        }));
+        let (sink, entered, release) = GatedSink::pair();
+        let (sender, handle) = spawn_writer(Box::new(sink));
         let send_result = sender.send_notification("window/logMessage", json!({"blocked": true}));
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        let reached_gate = loop {
-            if entered.load(std::sync::atomic::Ordering::SeqCst) {
-                break true;
-            }
-            if std::time::Instant::now() >= deadline {
-                break false;
-            }
-            std::thread::yield_now();
-        };
+        let reached_gate = GatedSink::wait_until_entered(&entered, Duration::from_secs(1));
 
         let wait_started = std::time::Instant::now();
         let unsettled = sender.close_and_wait(Duration::from_millis(20));
         let wait_elapsed = wait_started.elapsed();
-        {
-            let (lock, cvar) = &*release;
-            *lock.lock() = true;
-            cvar.notify_all();
-        }
+        GatedSink::release(&release);
         let outcome = handle.join().map_err(|_| "writer thread panicked")?;
         send_result?;
         assert!(reached_gate, "writer did not reach its releasable gate");
@@ -1024,6 +999,71 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// #16655: a required response refused while `settle_for_exit` is
+    /// still waiting on the writer must appear in the snapshot. The
+    /// process burst cannot coordinate that producer with settlement.
+    #[test]
+    fn settle_for_exit_counts_refusal_that_races_the_writer_wait() -> Result<(), Box<dyn Error>> {
+        let (sink, entered, release) = GatedSink::pair();
+        let (sender, handle) = spawn_writer(Box::new(sink));
+        sender.send_notification("window/logMessage", json!({"blocked": true}))?;
+        assert!(
+            GatedSink::wait_until_entered(&entered, Duration::from_secs(1)),
+            "writer did not reach its releasable gate"
+        );
+
+        let settler = {
+            let sender = sender.clone();
+            thread::spawn(move || sender.settle_for_exit(Duration::from_secs(2)))
+        };
+
+        let late = sender.clone();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let admission_closed = loop {
+            match late.send_notification("window/logMessage", json!({"probe": true})) {
+                Ok(()) => {
+                    if std::time::Instant::now() >= deadline {
+                        break false;
+                    }
+                    thread::yield_now();
+                }
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break true,
+                Err(error) => {
+                    return Err(format!("admission probe failed unexpectedly: {error}").into());
+                }
+            }
+        };
+        assert!(
+            admission_closed,
+            "settle_for_exit did not close admission while the writer was blocked"
+        );
+
+        let error = late
+            .send_response(JsonRpcResponse::error(
+                Some(JsonRpcId::Integer(3)),
+                crate::protocol::JsonRpcError {
+                    code: -32600,
+                    message: "Server has been shutdown".to_string(),
+                    data: None,
+                },
+            ))
+            .err()
+            .ok_or("required response must be refused after admission close")?;
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+
+        GatedSink::release(&release);
+
+        let settlement = settler.join().map_err(|_| "settler thread panicked")?;
+        handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(settlement.rejected_required, 1);
+        assert_eq!(settlement.writer, Some(WriterTerminalOutcome::NormalClose));
+        assert!(
+            !settlement.is_clean_delivery(),
+            "a refusal that completed during the writer wait must not report clean delivery"
+        );
+        Ok(())
+    }
+
     #[test]
     fn spawn_writer_shared_serializes_payloads() -> Result<(), Box<dyn Error>> {
         let buffer = SharedBuffer::new();
@@ -1050,6 +1090,64 @@ pub(crate) mod tests {
         assert_eq!(payloads[1]["method"], "client/registerCapability");
 
         Ok(())
+    }
+
+    /// Writer sink that blocks in `write` until [`GatedSink::release`] fires.
+    /// Shared by the bounded-wait test and the #16655 settlement-race test.
+    struct GatedSink {
+        entered: Arc<std::sync::atomic::AtomicBool>,
+        release: Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
+    }
+
+    impl GatedSink {
+        fn pair() -> (
+            Self,
+            Arc<std::sync::atomic::AtomicBool>,
+            Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
+        ) {
+            let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let release = Arc::new((parking_lot::Mutex::new(false), parking_lot::Condvar::new()));
+            (
+                Self { entered: Arc::clone(&entered), release: Arc::clone(&release) },
+                entered,
+                release,
+            )
+        }
+
+        fn wait_until_entered(entered: &std::sync::atomic::AtomicBool, timeout: Duration) -> bool {
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                if entered.load(std::sync::atomic::Ordering::SeqCst) {
+                    return true;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::yield_now();
+            }
+        }
+
+        fn release(release: &(parking_lot::Mutex<bool>, parking_lot::Condvar)) {
+            let (lock, cvar) = release;
+            *lock.lock() = true;
+            cvar.notify_all();
+        }
+    }
+
+    impl Write for GatedSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            let (lock, cvar) = &*self.release;
+            let mut released = lock.lock();
+            while !*released {
+                cvar.wait(&mut released);
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     /// Sink whose `write` always fails with a fixed error kind and records how
