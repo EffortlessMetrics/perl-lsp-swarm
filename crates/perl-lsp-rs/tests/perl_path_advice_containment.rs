@@ -192,11 +192,15 @@ fn only_the_remediation_owner_and_its_guards_name_the_unsettable_setting()
         } else {
             files_with_extension(&dir, "md", &mut sources)?;
         }
-        assert!(sources.len() > before, "scan root {root} matched no files");
+        if sources.len() == before {
+            return Err(format!("scan root {root} matched no files").into());
+        }
     }
     for file in SCAN_FILES {
         let path = crate_root.join(file);
-        assert!(path.is_file(), "scanned file {file} is missing; repoint SCAN_FILES");
+        if !path.is_file() {
+            return Err(format!("scanned file {file} is missing; repoint SCAN_FILES").into());
+        }
         sources.push(path);
     }
 
@@ -228,31 +232,39 @@ fn only_the_remediation_owner_and_its_guards_name_the_unsettable_setting()
 }
 
 #[test]
-fn refused_setting_explanation_does_not_exempt_bad_advice_on_the_same_page() {
+fn refused_setting_explanation_does_not_exempt_bad_advice_on_the_same_page()
+-> Result<(), Box<dyn std::error::Error>> {
     for (relative, allowed_line) in DOC_ALLOWED_LINES {
-        assert!(unexpected_tokens(Path::new(relative), allowed_line).is_empty());
+        if !unexpected_tokens(Path::new(relative), allowed_line).is_empty() {
+            return Err(format!("refusal heading in {relative} must be allowed").into());
+        }
         let with_bad_advice = format!(
             "{allowed_line}\nIf Perl is missing, configure `perl.workspace.perlPath` in your editor."
         );
-        assert!(
-            !unexpected_tokens(Path::new(relative), &with_bad_advice).is_empty(),
-            "a second setting reference in {relative} must not be hidden by its refusal line"
-        );
+        if unexpected_tokens(Path::new(relative), &with_bad_advice).is_empty() {
+            return Err(format!(
+                "a second setting reference in {relative} was hidden by its refusal line"
+            )
+            .into());
+        }
     }
-    assert!(unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), TROUBLESHOOTING_REFUSAL).is_empty());
+    if !unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), TROUBLESHOOTING_REFUSAL).is_empty() {
+        return Err("the guide's refusal paragraph must be allowed".into());
+    }
     let adjacent_rewrite = TROUBLESHOOTING_REFUSAL.replace(
         "equivalent) is refused on every channel and silently ignored, so the only way to",
         "equivalent) in your editor or `.perl-lsp.toml` to choose the Perl to use.",
     );
-    assert!(
-        !unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), &adjacent_rewrite).is_empty(),
-        "advice rewritten next to the token must invalidate the guide exemption"
-    );
+    if unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), &adjacent_rewrite).is_empty() {
+        return Err(
+            "advice rewritten next to the token did not invalidate the guide exemption".into()
+        );
+    }
     let repeated_refusal = format!("{TROUBLESHOOTING_REFUSAL}\n{TROUBLESHOOTING_REFUSAL}");
-    assert!(
-        !unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), &repeated_refusal).is_empty(),
-        "a second guide paragraph must not inherit the one allowed occurrence"
-    );
+    if unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), &repeated_refusal).is_empty() {
+        return Err("a second guide paragraph inherited the one allowed occurrence".into());
+    }
+    Ok(())
 }
 
 #[test]
@@ -260,19 +272,23 @@ fn every_allowed_doc_line_exists_exactly_once() -> Result<(), Box<dyn std::error
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for (relative, allowed_line) in DOC_ALLOWED_LINES {
         let text = std::fs::read_to_string(crate_root.join(relative))?;
-        assert_eq!(
-            text.lines().filter(|line| line == allowed_line).count(),
-            1,
-            "documented refusal in {relative} changed; review its exception"
-        );
+        let count = text.lines().filter(|line| line == allowed_line).count();
+        if count != 1 {
+            return Err(format!(
+                "documented refusal in {relative} occurs {count} times; review its exception"
+            )
+            .into());
+        }
     }
     let guide = std::fs::read_to_string(crate_root.join(TROUBLESHOOTING_PATH))?;
     let normalized = guide.lines().collect::<Vec<_>>().join("\n");
-    assert_eq!(
-        normalized.matches(TROUBLESHOOTING_REFUSAL).count(),
-        1,
-        "the guide's refusal paragraph changed; review its exception"
-    );
+    let count = normalized.matches(TROUBLESHOOTING_REFUSAL).count();
+    if count != 1 {
+        return Err(format!(
+            "the guide's refusal paragraph occurs {count} times; review its exception"
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -301,21 +317,16 @@ fn every_allowlisted_file_exists_and_still_needs_its_entry()
 /// spot reopens silently. Asserted directly rather than left to the reader of
 /// SCAN_ROOTS.
 #[test]
-fn the_scan_covers_first_party_user_facing_docs() {
+fn the_scan_covers_first_party_user_facing_docs() -> Result<(), Box<dyn std::error::Error>> {
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    assert!(
-        crate_root.join("../../docs").is_dir(),
-        "documented scan root ../../docs is missing; if the docs moved, repoint SCAN_ROOTS and \
-         re-check that no user-facing page advises the setting"
-    );
-    assert!(
-        SCAN_ROOTS.len() > 1,
-        "SCAN_ROOTS collapsed to a single root; the docs are where four of the #16612 offenders \
-         lived"
-    );
-    assert!(
-        SCAN_FILES.iter().any(|file| file.ends_with("README.md")),
-        "no root-level README is scanned; it is the most widely read file in the repository and \
-         no recursive root reaches it"
-    );
+    if !crate_root.join("../../docs").is_dir() {
+        return Err("documented scan root ../../docs is missing; repoint SCAN_ROOTS".into());
+    }
+    if SCAN_ROOTS.len() <= 1 {
+        return Err("SCAN_ROOTS collapsed to a single root; docs are no longer scanned".into());
+    }
+    if !SCAN_FILES.iter().any(|file| file.ends_with("README.md")) {
+        return Err("no root-level README is scanned; repoint SCAN_FILES".into());
+    }
+    Ok(())
 }

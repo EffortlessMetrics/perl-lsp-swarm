@@ -726,10 +726,11 @@ fn test_execute_command_workspace_trust_report() -> Result<(), Box<dyn std::erro
         result.pointer("/setup_hints/perl_binary/version_status").and_then(|value| value.as_str()),
         Some("not_probed_by_report")
     );
-    assert_eq!(
-        result.pointer("/setup_hints/perl_binary/resolution_status").and_then(Value::as_str),
-        Some("uses_toolchain_resolution_when_needed_not_probed_by_report")
-    );
+    let resolution_status =
+        result.pointer("/setup_hints/perl_binary/resolution_status").and_then(Value::as_str);
+    if resolution_status != Some("uses_toolchain_resolution_when_needed_not_probed_by_report") {
+        return Err(format!("unexpected Perl resolution status: {resolution_status:?}").into());
+    }
     let perl_hint = result
         .pointer("/setup_hints/hints")
         .and_then(Value::as_array)
@@ -745,7 +746,9 @@ fn test_execute_command_workspace_trust_report() -> Result<(), Box<dyn std::erro
         let perlbrew = advice.find("perlbrew").ok_or("perlbrew missing from advice")?;
         let plenv = advice.find("plenv").ok_or("plenv missing from advice")?;
         let path = advice.find("PATH").ok_or("PATH missing from advice")?;
-        assert!(perlbrew < plenv && plenv < path, "{field} must follow resolver precedence");
+        if !(perlbrew < plenv && plenv < path) {
+            return Err(format!("{field} must follow perlbrew, plenv, PATH order: {advice}").into());
+        }
     }
     assert!(
         result
