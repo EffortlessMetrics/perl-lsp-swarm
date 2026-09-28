@@ -85,16 +85,20 @@ impl<'a> Parser<'a> {
     ///
     /// Perl permits `func { ... } @list` and DSL-style named args such as
     /// `func { ... } foreach => $items` without a comma after the block. We
-    /// still stop at real statement boundaries and at postfix modifiers unless
-    /// the modifier token is being autoquoted before `=>`.
+    /// still stop at real statement boundaries and at postfix modifiers / low-
+    /// precedence word operators unless that token is being autoquoted before
+    /// `=>` (`has { 1 } or => 2`, #16639).
     fn should_continue_bare_call_after_block(&mut self) -> bool {
         match self.peek_kind() {
             Some(kind) if kind.is_recovery_boundary() => false,
             None => false,
             // `?` begins a ternary on the block-call result, not an argument to it.
             Some(TokenKind::Question) => false,
-            Some(kind) if kind.is_low_precedence_word_operator() => false,
-            Some(kind) if Self::is_stmt_modifier_kind(kind) => self.is_keyword_before_fat_arrow(),
+            Some(kind)
+                if kind.is_low_precedence_word_operator() || Self::is_stmt_modifier_kind(kind) =>
+            {
+                self.is_keyword_before_fat_arrow()
+            }
             _ => true,
         }
     }
@@ -380,6 +384,14 @@ impl<'a> Parser<'a> {
                 | TokenKind::Else
                 | TokenKind::Elsif
         )
+    }
+
+    /// Barewords Perl autoquotes before `=>`: identifiers, reserved-word
+    /// tokens, and low-precedence word operators (`and`/`or`/`not`/`xor`).
+    fn is_autoquoted_bareword_kind(kind: TokenKind) -> bool {
+        kind == TokenKind::Identifier
+            || Self::is_keyword_token(kind)
+            || kind.is_low_precedence_word_operator()
     }
 
     /// Check if a token kind is a binary operator that couldn't start an expression argument.
@@ -1442,10 +1454,6 @@ impl<'a> Parser<'a> {
             return true;
         }
 
-        let next_is_autoquoted_bareword = next_kind == TokenKind::Identifier
-            || Self::is_keyword_token(next_kind)
-            || next_kind.is_low_precedence_word_operator();
-
         // Perl autoquotes any bareword before `=>`, including reserved words
         // and names that the lexer classifies as builtins (`log`, `abs`) or
         // keywords (`class`, `method`, `format`). Those tokens are valid
@@ -1456,7 +1464,7 @@ impl<'a> Parser<'a> {
         // autoquoted list-operator arguments. The Identifier match below used
         // to return early for builtins without consulting `=>`, and keyword
         // tokens fell through to `_ => false`.
-        if next_is_autoquoted_bareword && self.is_keyword_before_fat_arrow() {
+        if Self::is_autoquoted_bareword_kind(next_kind) && self.is_keyword_before_fat_arrow() {
             return true;
         }
 

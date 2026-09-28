@@ -1498,16 +1498,18 @@ impl<'a> Parser<'a> {
             // `?` starts a ternary operator at a higher expression level; it is
             // not a valid start of a bare-call argument so it terminates arg collection.
             Some(TokenKind::Question) => true,
-            Some(TokenKind::If)
-            | Some(TokenKind::Unless)
-            | Some(TokenKind::While)
-            | Some(TokenKind::Until)
-            | Some(TokenKind::For)
-            | Some(TokenKind::Foreach) => !self.is_keyword_before_fat_arrow(),
-            Some(TokenKind::DataMarker) => true,
-            Some(kind) if kind.is_low_precedence_word_operator() => {
+            Some(kind)
+                if (Self::is_stmt_modifier_kind(kind) && kind != TokenKind::When)
+                    || kind.is_low_precedence_word_operator() =>
+            {
+                // `when` is a statement modifier (`is_stmt_modifier_kind`) but
+                // not a list-operator terminator here; given/when recovery
+                // stays on the modifier path. Other modifiers and word
+                // operators still end the call unless they are autoquoted
+                // before `=>` (`has if => 1`, `has or => 1`, #16639).
                 !self.is_keyword_before_fat_arrow()
             }
+            Some(TokenKind::DataMarker) => true,
             None => true,
             _ => false,
         }

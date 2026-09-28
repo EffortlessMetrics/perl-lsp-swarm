@@ -50,6 +50,44 @@ fn require_call_args<'a>(ast: &'a Node, name: &str, source: &str) -> (&'a str, &
     must_some_with(call_args(call), format!("expected FunctionCall shape for {name} in {source:?}"))
 }
 
+fn autoquoted_keys(args: &[Node]) -> Vec<&str> {
+    args.iter().filter_map(autoquoted_key).collect()
+}
+
+fn assert_has_autoquoted_keys(source: &str, expected: &[&str]) {
+    assert_clean_parse(source);
+    assert_no_blocking_diagnostics(source);
+    let ast = parse_source(source);
+    let (_, args) = require_call_args(&ast, "has", source);
+    assert_eq!(
+        autoquoted_keys(args),
+        expected,
+        "autoquoted has keys for {source:?}:\n{}",
+        ast.to_sexp()
+    );
+}
+
+fn assert_has_leading_block_then_keys(source: &str, expected: &[&str]) {
+    assert_clean_parse(source);
+    assert_no_blocking_diagnostics(source);
+    let ast = parse_source(source);
+    let (_, args) = require_call_args(&ast, "has", source);
+    let first =
+        must_some_with(args.first(), format!("expected a leading block argument in {source:?}"));
+    assert!(
+        matches!(first.kind, NodeKind::Block { .. }),
+        "first argument of {source:?} must be the block, got:\n{}",
+        ast.to_sexp()
+    );
+    let after_block: Vec<&str> = args.iter().skip(1).filter_map(autoquoted_key).collect();
+    assert_eq!(
+        after_block,
+        expected,
+        "autoquoted keys after the block in {source:?}:\n{}",
+        ast.to_sexp()
+    );
+}
+
 fn assert_has_keyword_slot(source: &str, keyword: &str) {
     assert_clean_parse(source);
     assert_no_blocking_diagnostics(source);
@@ -317,4 +355,63 @@ fn has_undef_without_fat_arrow_stays_the_undef_value() {
         "has undef without => must not autoquote `undef` into a string key:\n{}",
         ast.to_sexp()
     );
+}
+
+#[test]
+fn later_keyword_args_remain_autoquoted_slots() {
+    assert_has_autoquoted_keys("has commands => 1, if => 2;", &["commands", "if"]);
+    assert_has_autoquoted_keys("has commands => 1, when => 2;", &["commands", "when"]);
+    assert_has_autoquoted_keys("has commands => 1, or => 2;", &["commands", "or"]);
+    assert_has_autoquoted_keys("has foo => 1, class => 2;", &["foo", "class"]);
+}
+
+#[test]
+fn after_block_keyword_args_remain_autoquoted_slots() {
+    assert_has_leading_block_then_keys("has { 1 } if => 2;", &["if"]);
+    assert_has_leading_block_then_keys("has { 1 } when => 2;", &["when"]);
+    assert_has_leading_block_then_keys("has { 1 } or => 2;", &["or"]);
+    assert_has_leading_block_then_keys("has { 1 } and => 2;", &["and"]);
+    assert_has_leading_block_then_keys("has { 1 } xor => 2;", &["xor"]);
+    assert_has_leading_block_then_keys("has { 1 } not => 2;", &["not"]);
+}
+
+#[test]
+fn later_if_without_fat_arrow_stays_a_statement_modifier() {
+    for source in ["has commands => 1 if 1;", "has commands => 1, if 1;", "has { 1 } if 1;"] {
+        let ast = parse_source(source);
+        assert!(
+            find_kind(
+                &ast,
+                |kind| matches!(kind, NodeKind::StatementModifier { modifier, .. } if modifier == "if")
+            ),
+            "{source:?} must keep `if` as a statement modifier:\n{}",
+            ast.to_sexp()
+        );
+        let (_, args) = require_call_args(&ast, "has", source);
+        assert!(
+            !args.iter().any(|arg| autoquoted_key(arg) == Some("if")),
+            "{source:?} must not autoquote `if` without =>:\n{}",
+            ast.to_sexp()
+        );
+    }
+}
+
+#[test]
+fn later_or_without_fat_arrow_stays_a_word_operator() {
+    for source in ["has commands => 1 or die;", "has { 1 } or die;"] {
+        assert_clean_parse(source);
+        assert_no_blocking_diagnostics(source);
+        let ast = parse_source(source);
+        assert!(
+            find_kind(&ast, |kind| matches!(kind, NodeKind::Binary { op, .. } if op == "or")),
+            "{source:?} must keep `or` as a word operator:\n{}",
+            ast.to_sexp()
+        );
+        let (_, args) = require_call_args(&ast, "has", source);
+        assert!(
+            !args.iter().any(|arg| autoquoted_key(arg) == Some("or")),
+            "{source:?} must not autoquote `or` without =>:\n{}",
+            ast.to_sexp()
+        );
+    }
 }
