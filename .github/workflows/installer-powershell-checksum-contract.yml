@@ -78,25 +78,7 @@ jobs:
       # Windows-1252. This step never executes the installer.
       - name: Parse PowerShell sources under Windows PowerShell 5.1
         shell: powershell
-        run: |
-          foreach ($Path in @(
-              'install.ps1',
-              'scripts/tests/test-install-ps1-checksum-required.ps1',
-              'scripts/tests/test-install-ps1-archive-safety.ps1',
-              'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
-          )) {
-              $Tokens = $null
-              $Errors = $null
-              [System.Management.Automation.Language.Parser]::ParseFile(
-                  (Resolve-Path $Path),
-                  [ref]$Tokens,
-                  [ref]$Errors
-              ) | Out-Null
-              if ($Errors.Count -ne 0) {
-                  $Errors | ForEach-Object { Write-Error $_ }
-                  throw "$Path contains PowerShell parse errors under Windows PowerShell 5.1"
-              }
-          }
+        run: ./scripts/tests/test-powershell-51-parse-guard.ps1
 
       - name: Run checksum negative controls
         shell: pwsh

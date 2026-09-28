@@ -1,15 +1,13 @@
 ﻿# Perl LSP installer for Windows
 #
-# The installer is published at
-# https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1
-# and that published copy works (#5461 is closed). The published copy is an
-# older revision: it warns and continues when checksum verification is not
-# possible (the fail-open checksum boundary described in
-# docs/how-to/INSTALLATION.md). This file carries the current behavior, which
-# requires the release SHA256SUMS manifest and fails closed without it.
+# This development copy carries the current checksum behavior: it requires the
+# release SHA256SUMS manifest and fails closed without it. The published
+# PowerShell script is a separate, older revision with documented checksum
+# limitations; use only the immutable revision and invocation documented in
+# README.md and docs/how-to/INSTALLATION.md. Do not assume perl-lsp/master is
+# equivalent to this file.
 #
-# Run it from a clone, a downloaded copy, or the published one-liner in the
-# README:
+# Run it from a clone or a reviewed downloaded copy:
 #   .\install.ps1                                    # latest, default dir
 #   .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
 
