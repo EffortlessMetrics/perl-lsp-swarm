@@ -2170,6 +2170,31 @@ impl LspServer {
 
                     // Find definition at the position
                     if let Some(definition) = model.definition_at(offset) {
+                        // These built-in variables have no local declaration. The
+                        // semantic analyzer can instead return the sub whose span
+                        // contains them, which is not their definition.
+                        let on_special_variable = ["$|", "@_"].into_iter().any(|special| {
+                            [Some(offset), offset.checked_sub(1)].into_iter().flatten().any(
+                                |start| {
+                                    doc.text.get(start..).is_some_and(|tail| {
+                                        tail.starts_with(special)
+                                            && (special != "@_"
+                                                || !tail.as_bytes().get(2).is_some_and(|byte| {
+                                                    byte.is_ascii_alphanumeric() || *byte == b'_'
+                                                }))
+                                    })
+                                },
+                            )
+                        });
+                        if on_special_variable
+                            && matches!(
+                                definition.kind,
+                                crate::symbol::SymbolKind::Subroutine
+                                    | crate::symbol::SymbolKind::Method
+                            )
+                        {
+                            return Ok(Some(json!([])));
+                        }
                         let (def_line, def_char) =
                             self.offset_to_pos16(doc, definition.location.start);
                         let (def_end_line, def_end_char) =

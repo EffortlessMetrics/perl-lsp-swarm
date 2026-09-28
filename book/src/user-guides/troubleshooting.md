@@ -120,7 +120,7 @@ chmod +x ~/.cargo/bin/perl-lsp
    {
      "perl": {
        "limits": {
-         "maxIndexedFiles": 1000
+         "referencesCap": 1000
        }
      }
    }
@@ -203,7 +203,6 @@ chmod +x ~/.cargo/bin/perl-lsp
 
 1. Ensure the definition is in an indexed file:
    - File must be in workspace or `includePaths`
-   - File count must be under `maxIndexedFiles` limit
 
 2. Check include paths are configured:
    ```json
@@ -246,7 +245,7 @@ chmod +x ~/.cargo/bin/perl-lsp
    }
    ```
 
-2. Ensure all relevant files are indexed (check `maxIndexedFiles`)
+2. Ensure all relevant files are indexed
 
 3. Wait for workspace indexing to complete (check progress notification)
 
