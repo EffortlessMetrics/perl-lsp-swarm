@@ -123,7 +123,11 @@ const EXTERNAL_PEER_POLL: Duration = Duration::from_millis(50);
 /// running debugger peer at `peer_addr` and translate DAP ↔ the Perl Debugger
 /// Peer Protocol.
 fn run_external_peer_bridge_stdio(peer_addr: &str) -> anyhow::Result<()> {
-    tracing::info!(peer = peer_addr, "Starting external-peer DAP session on stdio");
+    // Validate the spec's HOST:PORT shape before any connect attempt (#16556):
+    // the transport's own failure for a malformed spec is a raw "invalid socket
+    // address" that never names the expected format.
+    let (peer_host, peer_port) = parse_peer_connect_spec(peer_addr).map_err(anyhow::Error::msg)?;
+    tracing::info!(peer = peer_addr, peer_host = %peer_host, peer_port, "Starting external-peer DAP session on stdio");
     let backend = ExternalDebuggerPeerBackend::connect(peer_addr, EXTERNAL_PEER_TIMEOUT)
         .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
     let bridge = DapPeerBridge::new(Box::new(backend));
@@ -131,20 +135,68 @@ fn run_external_peer_bridge_stdio(peer_addr: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Parse a `HOST:PORT` dial spec for `--external-peer` into host and port.
+///
+/// The whole spec is later handed to the peer transport, whose own failure for
+/// a malformed spec is the raw "invalid socket address" — it never names the
+/// expected shape (#16556). Validating here turns a typo'd rendezvous into a
+/// startup error that names `HOST:PORT` instead. The host may be a hostname or
+/// IPv4 address with no whitespace (bracketed IPv6 literals like `[::1]` are
+/// accepted); the port must be numeric.
+///
+/// # Errors
+/// Names the offending spec and the expected `HOST:PORT` format.
+fn parse_peer_connect_spec(spec: &str) -> Result<(String, u16), String> {
+    let spec = spec.trim();
+    let expected = "expected HOST:PORT where HOST is a hostname or IP literal with no \
+                    whitespace or unbracketed colons and PORT is numeric 0-65535 \
+                    (for example 127.0.0.1:13604)";
+    let reject =
+        |reason: &str| format!("invalid --external-peer spec '{spec}': {reason}; {expected}");
+    let Some((host, port)) = spec.rsplit_once(':') else {
+        return Err(reject("missing ':' separator"));
+    };
+    if host.is_empty() {
+        return Err(reject("host is empty"));
+    }
+    if host.chars().any(char::is_whitespace) {
+        return Err(reject("host contains whitespace"));
+    }
+    let bracketed_ipv6 = host.starts_with('[') && host.ends_with(']');
+    if host.contains(':') && !bracketed_ipv6 {
+        return Err(reject("host contains unbracketed colons"));
+    }
+    match port.trim().parse::<u16>() {
+        Ok(port) => Ok((host.to_owned(), port)),
+        Err(_) => Err(reject("port is not a number in 0..=65535")),
+    }
+}
+
 /// Parse a `HOST` or `HOST:PORT` bind spec for `--external-peer-listen`.
 ///
 /// A bare host (or empty string) binds an ephemeral loopback port (`port = 0`).
-/// A `HOST:PORT` binds the given port. An unparseable port falls back to `0`.
-fn parse_listen_bind(spec: &str) -> (String, u16) {
+/// A `HOST:PORT` binds the given port. An explicit-but-unparseable port is a
+/// startup error: silently falling back to `0` would move the rendezvous
+/// contract the peer must dial, and the session would then time out with no
+/// explanation of why the peer never arrived (#16556).
+///
+/// # Errors
+/// Names the offending spec and the expected `HOST[:PORT]` format.
+fn parse_listen_bind(spec: &str) -> Result<(String, u16), String> {
     let spec = spec.trim();
     if spec.is_empty() {
-        return ("127.0.0.1".to_string(), 0);
+        return Ok(("127.0.0.1".to_string(), 0));
     }
     match spec.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() => {
-            (host.to_string(), port.trim().parse().unwrap_or(0))
-        }
-        _ => (spec.to_string(), 0),
+        Some((host, port)) if !host.is_empty() => match port.trim().parse::<u16>() {
+            Ok(port) => Ok((host.to_string(), port)),
+            Err(_) => Err(format!(
+                "invalid --external-peer-listen spec '{spec}': PORT must be numeric 0-65535 \
+                 when given; expected HOST[:PORT], where a bare HOST or empty value binds an \
+                 ephemeral port (for example 127.0.0.1:13604)"
+            )),
+        },
+        _ => Ok((spec.to_string(), 0)),
     }
 }
 
@@ -157,7 +209,7 @@ fn parse_listen_bind(spec: &str) -> (String, u16) {
 /// host side of the mirror session, proven end-to-end against a fake peer in the
 /// crate tests. The editor speaks DAP over stdio only.
 fn run_external_peer_listen(spec: &str) -> anyhow::Result<()> {
-    let (host, port) = parse_listen_bind(spec);
+    let (host, port) = parse_listen_bind(spec).map_err(anyhow::Error::msg)?;
     let config = ExternalPeerLaunchConfig {
         mode: PeerRendezvousMode::Listen,
         control: ControlMode::Mirror,
@@ -198,14 +250,24 @@ fn run_external_peer_listen(spec: &str) -> anyhow::Result<()> {
 }
 
 /// Build a debug-session packet for `program`, deriving source facts from the
-/// program text when it is readable.
-fn build_session_packet(program: &Path) -> DebugSessionPacket {
+/// program text.
+///
+/// An unreadable program is a hard error, not a degenerate emit (#16553): both
+/// one-shot consumers render program-specific setup from `source_facts`, so a
+/// silently emitted packet (`"source_facts": {}`, no program setup) would look
+/// complete while missing every program-specific fact, and the exit 0 would
+/// hide the typo from scripts and Makefiles. The underlying read error is
+/// preserved so a bad path is diagnosable.
+///
+/// # Errors
+/// Fails when `program` cannot be read, naming the path and the OS error.
+fn build_session_packet(program: &Path) -> anyhow::Result<DebugSessionPacket> {
     let mut builder = DebugSessionPlanBuilder::new(program);
-    if let Ok(text) = std::fs::read_to_string(program) {
-        let source = DebugSource::from_path(program);
-        builder = builder.source_facts_from_text(&source, &text);
-    }
-    builder.build()
+    let text = std::fs::read_to_string(program)
+        .map_err(|e| anyhow::anyhow!("program '{}' could not be read: {e}", program.display()))?;
+    let source = DebugSource::from_path(program);
+    builder = builder.source_facts_from_text(&source, &text);
+    Ok(builder.build())
 }
 
 fn resolve_socket_port(args: &perl_lsp_rs_core::runtime::launcher::TransportArgs) -> Option<u16> {
@@ -306,12 +368,14 @@ fn main() -> anyhow::Result<()> {
     // the stdout handle (rather than the print!/println! macros) so the shipped
     // binary stays clear of the `clippy::print_stdout` restriction lint.
     if let Some(program) = args.ptkdb_bootstrap_rc.as_deref() {
-        let packet = build_session_packet(program);
+        let packet = build_session_packet(program)
+            .map_err(|e| anyhow::anyhow!("--ptkdb-bootstrap-rc: {e}"))?;
         write!(std::io::stdout(), "{}", render_ptkdbrc(&packet, true))?;
         return Ok(());
     }
     if let Some(program) = args.debug_session_plan.as_deref() {
-        let packet = build_session_packet(program);
+        let packet = build_session_packet(program)
+            .map_err(|e| anyhow::anyhow!("--debug-session-plan: {e}"))?;
         writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&packet)?)?;
         return Ok(());
     }
@@ -395,13 +459,16 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, DEFAULT_DAP_PORT, editor_socket_retired, native_editor_socket_retired,
+        Args, DEFAULT_DAP_PORT, build_session_packet, editor_socket_retired,
+        native_editor_socket_retired, parse_listen_bind, parse_peer_connect_spec,
         resolve_socket_port, windows_shell_quote,
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
         BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, requested_identity_output,
     };
+    use perl_test_must::{must, must_err_with, must_with};
+    use std::path::Path;
 
     #[test]
     fn native_socket_flags_fail_with_stdio_migration_before_any_bind() {
@@ -529,5 +596,83 @@ mod tests {
     fn windows_remediation_uses_cmd_quoting() {
         assert_eq!(windows_shell_quote("[::1]:13604"), "\"[::1]:13604\"");
         assert_eq!(windows_shell_quote("100% ready\"now"), "\"100% ready\"\"now\"");
+    }
+
+    #[test]
+    fn one_shot_packet_refuses_an_unreadable_program_with_a_named_path() {
+        let missing = Path::new("./no-such-dir/no-such-16553.pl");
+        let error = must_err_with(
+            build_session_packet(missing),
+            "an unreadable program must fail the one-shot emit instead of exiting 0 (#16553)",
+        );
+        let message = error.to_string();
+        assert!(message.contains("could not be read"), "{message}");
+        assert!(message.contains("no-such-16553.pl"), "{message}");
+    }
+
+    #[test]
+    fn one_shot_packet_still_attaches_source_facts_for_a_readable_program() {
+        let dir = must_with(tempfile::tempdir(), "test fixture tempdir must be created");
+        let program = dir.path().join("prog.pl");
+        must_with(
+            std::fs::write(&program, "sub run {\n    my $x = 1;\n    return $x;\n}\n"),
+            "test fixture program must be written",
+        );
+        let packet =
+            must_with(build_session_packet(&program), "a readable program must build a packet");
+        assert!(!packet.source_facts.is_empty(), "a readable program must keep its source facts");
+    }
+
+    #[test]
+    fn listen_ephemeral_fallback_forms_survive_spec_validation() {
+        assert_eq!(must(parse_listen_bind("")), ("127.0.0.1".to_owned(), 0));
+        assert_eq!(must(parse_listen_bind("localhost")), ("localhost".to_owned(), 0));
+        assert_eq!(must(parse_listen_bind("127.0.0.1:5000")), ("127.0.0.1".to_owned(), 5000));
+    }
+
+    #[test]
+    fn listen_explicit_unparseable_port_is_a_startup_error_naming_the_format() {
+        for spec in ["127.0.0.1:notaport", "127.0.0.1:1364O", "127.0.0.1:", "127.0.0.1:70000"] {
+            let error = must_err_with(
+                parse_listen_bind(spec),
+                "an explicit-but-unparseable port must fail startup instead of binding ephemeral (#16556)",
+            );
+            assert!(error.contains("HOST[:PORT]"), "{error}");
+            assert!(error.contains(spec), "{error}");
+        }
+    }
+
+    #[test]
+    fn peer_connect_spec_accepts_documented_host_port_forms() {
+        assert_eq!(
+            must(parse_peer_connect_spec("127.0.0.1:13604")),
+            ("127.0.0.1".to_owned(), 13_604)
+        );
+        assert_eq!(must(parse_peer_connect_spec("localhost:5000")), ("localhost".to_owned(), 5000));
+        assert_eq!(
+            must(parse_peer_connect_spec("  localhost:5000  ")),
+            ("localhost".to_owned(), 5000)
+        );
+        assert_eq!(must(parse_peer_connect_spec("[::1]:5000")), ("[::1]".to_owned(), 5000));
+    }
+
+    #[test]
+    fn peer_connect_spec_malformed_specs_error_naming_host_port_format() {
+        for spec in [
+            "no-colon-thing",
+            ":5000",
+            "host name:5000",
+            "a:b:5000",
+            "127.0.0.1:notaport",
+            "127.0.0.1:",
+            "127.0.0.1:70000",
+        ] {
+            let error = must_err_with(
+                parse_peer_connect_spec(spec),
+                "a malformed spec must fail startup before any connect attempt (#16556)",
+            );
+            assert!(error.contains("HOST:PORT"), "{error}");
+            assert!(error.contains(spec), "{error}");
+        }
     }
 }
