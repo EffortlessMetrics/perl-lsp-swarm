@@ -62,7 +62,8 @@ INSTALLER_REF="${PERL_LSP_INSTALLER_REF:-}"
 EXPECTED_SHA256="${PERL_LSP_INSTALLER_SHA256:-}"
 
 if [ -z "$INSTALLER_REF" ]; then
-    fail "remote bootstrap requires PERL_LSP_INSTALLER_REF (a full lowercase commit SHA)"
+    fail "remote bootstrap requires PERL_LSP_INSTALLER_REF (a full lowercase commit SHA)
+Identity-bound bootstrap requires the ref+digest pair published at release closeout. The manual archive install works today: see docs/how-to/INSTALLATION.md (installer-script-macos-and-linux)."
 fi
 
 # Only a full commit SHA is immutable for both the piped wrapper and the
@@ -78,7 +79,8 @@ if [ "${#INSTALLER_REF}" -eq 40 ]; then
 fi
 
 if [ "$valid_ref" != "true" ]; then
-    fail "PERL_LSP_INSTALLER_REF must be a full lowercase commit SHA"
+    fail "PERL_LSP_INSTALLER_REF must be a full lowercase commit SHA
+Identity-bound bootstrap requires the ref+digest pair published at release closeout. The manual archive install works today: see docs/how-to/INSTALLATION.md (installer-script-macos-and-linux)."
 fi
 
 if [ "${#EXPECTED_SHA256}" -ne 64 ]; then
@@ -107,7 +109,8 @@ HTTP_STATUS="$(
 )" || fail "failed to fetch the canonical installer"
 
 if [ "$HTTP_STATUS" != "200" ]; then
-    fail "canonical installer request returned HTTP $HTTP_STATUS; redirects and non-success responses are rejected"
+    fail "canonical installer request returned HTTP $HTTP_STATUS; redirects and non-success responses are rejected
+Identity-bound bootstrap requires the ref+digest pair published at release closeout. The manual archive install works today: see docs/how-to/INSTALLATION.md (installer-script-macos-and-linux)."
 fi
 
 ACTUAL_SHA256=""
@@ -122,7 +125,8 @@ else
 fi
 
 if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-    fail "canonical installer SHA-256 mismatch"
+    fail "canonical installer SHA-256 mismatch
+Identity-bound bootstrap requires the ref+digest pair published at release closeout. The manual archive install works today: see docs/how-to/INSTALLATION.md (installer-script-macos-and-linux)."
 fi
 
 # Do not exec here: returning through this shell guarantees the EXIT trap
