@@ -16,6 +16,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
 from learned_estimate import estimate_for, main  # noqa: E402
+import learned_estimate  # noqa: E402
 
 
 class LearnedEstimateTests(unittest.TestCase):
@@ -197,6 +198,16 @@ class LaneHistoryVersionTests(unittest.TestCase):
         self.assertIsNone(emitted["estimate"])
         self.assertIn("schema_version", emitted["reason"])
         self.assertIn("2", emitted["reason"])
+
+    def test_the_supported_version_is_pinned_here_not_by_the_producer(self) -> None:
+        # The refusal must key on the version this parser reads. Binding the
+        # producer's `SCHEMA_VERSION` would advance the gate automatically when
+        # the producer bumps and renames a field, re-opening the exact v2
+        # under-price this gate exists to close (#15286). Re-adding the import
+        # binds `SCHEMA_VERSION` into this module's namespace, so its absence
+        # is the falsifier.
+        self.assertEqual(1, learned_estimate.SUPPORTED_SCHEMA_VERSION)
+        self.assertNotIn("SCHEMA_VERSION", vars(learned_estimate))
 
     def test_a_matching_version_history_is_still_read_and_learned(self) -> None:
         # The control: the refusal must key on the version, not on the

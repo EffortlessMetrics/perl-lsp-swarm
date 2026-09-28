@@ -266,6 +266,16 @@ class PrPlanTests(unittest.TestCase):
             current.write_text(json.dumps(payload), encoding="utf-8")
             self.assertEqual(payload, pr_plan.load_learned_history(current))
 
+    def test_the_supported_version_is_pinned_here_not_by_the_producer(self) -> None:
+        # The version gate must key on the shape `apply_learned_estimates`
+        # reads. Binding the producer's `SCHEMA_VERSION` would advance the gate
+        # automatically when the producer bumps and renames `static_floor`,
+        # re-opening the exact v2 under-price this gate closes (#15286).
+        # Re-adding the import binds `SCHEMA_VERSION` into this module's
+        # namespace, so its absence is the falsifier.
+        self.assertEqual(1, pr_plan.SUPPORTED_SCHEMA_VERSION)
+        self.assertNotIn("SCHEMA_VERSION", vars(pr_plan))
+
     def test_main_writes_plan_summary_and_trust_lane_for_pr_plan_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

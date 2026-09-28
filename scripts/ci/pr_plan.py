@@ -44,9 +44,13 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 # The lane history is a versioned wire contract written by
-# `aggregate_lane_history.py`; bound to that single authority rather than
-# restating the integer, so the reader cannot drift from the producer (#15286).
-from aggregate_lane_history import SCHEMA_VERSION  # noqa: E402
+# `aggregate_lane_history.py`. This gate pins the version *this reader* can
+# parse, not the producer's current `SCHEMA_VERSION`: importing the producer
+# constant would advance the check automatically when the producer bumps and
+# renames a field, silently accepting a shape `apply_learned_estimates`'s
+# `static_floor`/`p50` lookups cannot read (#15286). Move this constant only
+# together with this file's parser.
+SUPPORTED_SCHEMA_VERSION = 1
 
 
 def read_toml(path: Path) -> dict[str, Any]:
@@ -523,7 +527,7 @@ def load_learned_history(path: Path) -> dict[str, Any]:
         history = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
-    if not isinstance(history, dict) or history.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(history, dict) or history.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
         return {}
     return history
 

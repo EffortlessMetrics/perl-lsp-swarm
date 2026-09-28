@@ -28,11 +28,12 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 # The history file is a versioned wire contract written by
-# `aggregate_lane_history.py`, which also gates the checked-in payload on this
-# value. Bound to that single authority rather than restating the integer here:
-# a reader that pins its own copy of the number drifts from the producer the
-# moment either side moves (#15286).
-from aggregate_lane_history import SCHEMA_VERSION  # noqa: E402
+# `aggregate_lane_history.py`. This gate pins the version *this reader* can
+# parse, not the producer's current `SCHEMA_VERSION`: importing the producer
+# constant would advance the check automatically when the producer bumps and
+# renames a field, silently accepting a shape the v1 field names below cannot
+# read (#15286). Move this constant only together with the parser below.
+SUPPORTED_SCHEMA_VERSION = 1
 
 
 def history_version_refusal(history: Any) -> str | None:
@@ -49,9 +50,9 @@ def history_version_refusal(history: Any) -> str | None:
     if not isinstance(history, dict):
         return f"lane history payload is not a JSON object, got {type(history).__name__}"
     found = history.get("schema_version")
-    if found != SCHEMA_VERSION:
+    if found != SUPPORTED_SCHEMA_VERSION:
         return (
-            f"lane history schema_version must be {SCHEMA_VERSION}, "
+            f"lane history schema_version must be {SUPPORTED_SCHEMA_VERSION}, "
             f"got {found!r}; refusing to read an unfamiliar shape"
         )
     return None
