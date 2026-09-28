@@ -258,6 +258,11 @@ pub(super) fn handle_untie<'a>(
 }
 
 /// Handle `NodeKind::Identifier`.
+///
+/// Strict-subs UnquotedBareword applies only to expression-position
+/// identifiers. Module-request operands (`require DBI`), autoquoted hash
+/// keys, method receivers, known functions, and imported names have a
+/// different syntactic or semantic role and are not fed through that check.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_identifier(
     analyzer: &ScopeAnalyzer,
@@ -269,21 +274,27 @@ pub(super) fn handle_identifier(
     pragma_state: &PragmaState,
     strict_subs_mode: bool,
 ) {
-    // Check for barewords under strict mode, excluding hash keys
-    // Hybrid check: Fast path for immediate hash keys (depth 1), then known functions, then deep check
-    if strict_subs_mode
-        && !analyzer.is_in_hash_key_context(node, ancestors, 1)
-        && !is_known_function(name)
-        && !pragma_state.has_builtin_import(name)
-        && !context.has_imported_bareword(name)
-        && !analyzer.is_in_hash_key_context(node, ancestors, 10)
-    {
-        issues.push(ScopeIssue {
-            kind: super::IssueKind::UnquotedBareword,
-            variable_name: name.to_string(),
-            line: context.get_line(node.location.start),
-            range: (node.location.start, node.location.end),
-            description: format!("Bareword '{}' not allowed under 'use strict'", name),
-        });
+    if !strict_subs_mode {
+        return;
     }
+    if analyzer.is_require_module_operand(node, ancestors) {
+        return;
+    }
+    // Hybrid check: immediate hash-key / method-receiver, then known
+    // functions and imports, then a deeper hash-key walk.
+    if analyzer.is_in_hash_key_context(node, ancestors, 1)
+        || is_known_function(name)
+        || pragma_state.has_builtin_import(name)
+        || context.has_imported_bareword(name)
+        || analyzer.is_in_hash_key_context(node, ancestors, 10)
+    {
+        return;
+    }
+    issues.push(ScopeIssue {
+        kind: super::IssueKind::UnquotedBareword,
+        variable_name: name.to_string(),
+        line: context.get_line(node.location.start),
+        range: (node.location.start, node.location.end),
+        description: format!("Bareword '{}' not allowed under 'use strict'", name),
+    });
 }

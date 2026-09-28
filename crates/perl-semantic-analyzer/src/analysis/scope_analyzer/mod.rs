@@ -1636,6 +1636,26 @@ impl ScopeAnalyzer {
         }
     }
 
+    /// Whether `node` is the direct module-name operand of `require`.
+    ///
+    /// Matches HIR `BarewordRole::ModuleRequest`:
+    /// only the first argument of `FunctionCall { name: "require" }` when that
+    /// argument *is* this identifier. Nested identifiers inside a computed
+    /// first argument (`require Foo . ".pm"`) stay expression barewords.
+    /// Presence of `require` elsewhere in the ancestor chain or on the same
+    /// source line is not enough.
+    pub(super) fn is_require_module_operand(&self, node: &Node, ancestors: &[&Node]) -> bool {
+        let Some(parent) = ancestors.last() else {
+            return false;
+        };
+        match &parent.kind {
+            NodeKind::FunctionCall { name, args } if name == "require" => {
+                args.first().is_some_and(|first| std::ptr::eq(first, node))
+            }
+            _ => false,
+        }
+    }
+
     /// Determines if a node is in a hash key context, where barewords are legitimate.
     ///
     /// This method efficiently detects various hash key contexts to avoid false positives
