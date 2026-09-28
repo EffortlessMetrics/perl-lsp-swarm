@@ -3,6 +3,7 @@
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use std::{
+    collections::HashSet,
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
@@ -198,11 +199,129 @@ fn is_historical_release_runbook(rel_path: &Path) -> bool {
         .is_some_and(|name| name.starts_with("RELEASE_RUNBOOK_") && name.ends_with(".md"))
 }
 
+/// Schema string a typed release-reconciliation ledger self-declares in its top-level
+/// `schema` field (pinned as a `const` by `docs/releases/*.v1.schema.json`).
+const RECONCILIATION_LEDGER_SCHEMA: &str = "post_sync_release_reconciliation.v1";
+
+/// String-valued narration fields of the reconciliation-ledger schema whose values are
+/// historical evidence rather than install guidance.
+///
+/// These ledgers quote the guard patterns and retired commands that past commits
+/// actually introduced: run 36298260616 failed because the domain6 fragment's
+/// `artifact_or_route_effects` narration quotes the #5461/#4348 decision to add
+/// `install.ps1 | iex` to `FORBIDDEN_PATTERNS`. That quote is the frozen record of the
+/// decision -- the same class of evidence as a version-pinned release runbook -- and
+/// rewriting it would make the ledger false, while deleting it would discard the
+/// recorded rationale. The line-contains scan cannot otherwise tell a quoted decision
+/// from live guidance, which is exactly the typed-evidence boundary defect this
+/// exemption closes.
+///
+/// The boundary is deliberately narrow in every direction that could hide a live
+/// violation:
+///
+/// 1. the file must sit under `docs/releases/` with a version-pinned `.v1.json` name;
+/// 2. the document must parse as JSON and self-declare the reconciliation schema --
+///    every other `.json` ledger in that directory (exposed-surface, scope, semver)
+///    stays fully in scope;
+/// 3. a line is exempt only when it decodes to a string value of one of the narration
+///    fields AND the same decoded string appears under no other field of the document;
+/// 4. only `check_forbidden_patterns` honors the exemption -- command-position rules
+///    and the required-pattern floor stay unconditional;
+/// 5. any line that fails to decode as a JSON string stays scanned, so formatter or
+///    schema drift fails toward the live rule instead of silently widening the hole.
+const LEDGER_NARRATION_FIELDS: &[&str] = &[
+    "corrections",
+    "grouping_evidence",
+    "api_schema_package_effects",
+    "artifact_or_route_effects",
+    "editor_manifest_or_protocol_effects",
+    "known_limitations",
+    "invalidators",
+    "platforms_and_targets",
+];
+
+/// Narration strings collected from one declared reconciliation ledger, split by
+/// whether the string appeared under a narration field (`quoted`) or under any other
+/// field (`live`).
+#[derive(Debug, Default)]
+struct LedgerNarration {
+    quoted: HashSet<String>,
+    live: HashSet<String>,
+}
+
+impl LedgerNarration {
+    /// True when `line` is the JSON encoding of a string that appears only under a
+    /// narration field of a declared ledger. A bare fragment, a `"key": "value"`
+    /// member, or an undecodable line never qualifies.
+    fn exempts(&self, line: &str) -> bool {
+        let trimmed = line.trim();
+        let candidate = trimmed.strip_suffix(',').unwrap_or(trimmed);
+        let Ok(decoded) = serde_json::from_str::<String>(candidate) else {
+            return false;
+        };
+        self.quoted.contains(&decoded) && !self.live.contains(&decoded)
+    }
+}
+
+/// Narration sets of a typed reconciliation ledger, or `None` when the file is not a
+/// declared ledger and must stay fully in scope.
+fn ledger_narration(rel_path: &Path, text: &str) -> Option<LedgerNarration> {
+    if !rel_path.starts_with("docs/releases") {
+        return None;
+    }
+    if !rel_path.file_name().and_then(OsStr::to_str).is_some_and(|name| name.ends_with(".v1.json"))
+    {
+        return None;
+    }
+
+    let document = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    if document.get("schema").and_then(serde_json::Value::as_str)
+        != Some(RECONCILIATION_LEDGER_SCHEMA)
+    {
+        return None;
+    }
+
+    let mut narration = LedgerNarration::default();
+    collect_narration_strings(&document, None, &mut narration);
+    Some(narration)
+}
+
+fn collect_narration_strings(
+    value: &serde_json::Value,
+    field: Option<&str>,
+    narration: &mut LedgerNarration,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, member) in map {
+                collect_narration_strings(member, Some(key.as_str()), narration);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_narration_strings(item, field, narration);
+            }
+        }
+        serde_json::Value::String(string) => {
+            let target = if field.is_some_and(|field| LEDGER_NARRATION_FIELDS.contains(&field)) {
+                &mut narration.quoted
+            } else {
+                &mut narration.live
+            };
+            target.insert(string.clone());
+        }
+        _ => {}
+    }
+}
+
 fn check_forbidden_patterns(files: &[SourceFile], violations: &mut Vec<Violation>) {
     for file in files {
+        let narration = ledger_narration(&file.rel_path, &file.text);
         for (line_no, line) in file.text.lines().enumerate() {
             for &(pattern, reason) in FORBIDDEN_PATTERNS {
-                if line.contains(pattern) {
+                if line.contains(pattern)
+                    && !narration.as_ref().is_some_and(|ledger| ledger.exempts(line))
+                {
                     violations.push(line_violation(
                         file,
                         line_no + 1,
@@ -518,6 +637,127 @@ mod tests {
             violations.iter().filter(|v| v.message.contains("install.ps1 | iex")).collect();
         assert_eq!(piped.len(), 1, "got: {violations:?}");
         assert!(piped[0].location.ends_with(":1"));
+    }
+
+    /// The accepted half of the typed boundary: a declared reconciliation ledger
+    /// quoting the #5461/#4348 decision in its narration fields is historical
+    /// evidence, not install guidance. Mirrors the real quote at
+    /// `docs/releases/domain6-windows-editor-distribution-first-mile.v1.json`
+    /// `artifact_or_route_effects` that failed run 36298260616.
+    #[test]
+    fn quoted_narration_in_declared_reconciliation_ledger_is_not_live_guidance() {
+        let file = SourceFile {
+            rel_path: PathBuf::from(
+                "docs/releases/domain6-windows-editor-distribution-first-mile.v1.json",
+            ),
+            text: r#"{
+  "schema": "post_sync_release_reconciliation.v1",
+  "corrections": [
+    "the retired tap brew tap effortlesssteven/tap is quoted here as history"
+  ],
+  "work_units": [
+    {
+      "work_unit_id": "PR#5477",
+      "grouping_evidence": "trailing (#5477) of subject pair",
+      "artifact_or_route_effects": [
+        "new FORBIDDEN_PATTERNS entry 'install.ps1 | iex' carrying the #5461/#4348 reason"
+      ],
+      "paths_or_components": [
+        "install.ps1"
+      ]
+    }
+  ]
+}"#
+            .to_string(),
+        };
+
+        let mut violations = Vec::new();
+        check_forbidden_patterns(&[file], &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "quoted ledger narration must be accepted, got: {violations:?}"
+        );
+    }
+
+    /// The rejected half of the typed boundary: the same piped command on a live
+    /// surface -- including a release-notes body under `docs/releases/` itself --
+    /// stays a violation.
+    #[test]
+    fn piped_command_on_live_surfaces_is_still_rejected() {
+        let piped_sentence = "run irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex";
+        for surface in ["README.md", "docs/how-to/INSTALLATION.md", "docs/releases/v0.18.0.md"] {
+            let file =
+                SourceFile { rel_path: PathBuf::from(surface), text: piped_sentence.to_string() };
+            let mut violations = Vec::new();
+            check_forbidden_patterns(&[file], &mut violations);
+
+            let piped =
+                violations.iter().filter(|v| v.message.contains("install.ps1 | iex")).count();
+            assert_eq!(piped, 1, "{surface} must stay live, got: {violations:?}");
+        }
+    }
+
+    /// The exemption is scoped to declared narration fields only: an undeclared
+    /// schema, a non-narration field of a declared ledger, a path outside the ledger
+    /// family, and malformed JSON all stay fully in scope.
+    #[test]
+    fn ledger_exemption_stays_scoped_to_declared_narration_fields() {
+        let narration_sentence =
+            "new FORBIDDEN_PATTERNS entry 'install.ps1 | iex' carrying the #5461/#4348 reason";
+        let ledger_path = "docs/releases/domain6-windows-editor-distribution-first-mile.v1.json";
+
+        let undeclared_schema = SourceFile {
+            rel_path: PathBuf::from(ledger_path),
+            text: format!(
+                r#"{{
+  "schema": "exposed_surface_disposition.v1",
+  "artifact_or_route_effects": [
+    "{narration_sentence}"
+  ]
+}}"#
+            ),
+        };
+        let non_narration_field = SourceFile {
+            rel_path: PathBuf::from(ledger_path),
+            text: format!(
+                r#"{{
+  "schema": "post_sync_release_reconciliation.v1",
+  "paths_or_components": [
+    "{narration_sentence}"
+  ]
+}}"#
+            ),
+        };
+
+        for file in [undeclared_schema, non_narration_field] {
+            let mut violations = Vec::new();
+            check_forbidden_patterns(std::slice::from_ref(&file), &mut violations);
+            let piped =
+                violations.iter().filter(|v| v.message.contains("install.ps1 | iex")).count();
+            assert_eq!(piped, 1, "{} must stay live, got: {violations:?}", file.rel_path.display());
+        }
+
+        let body = format!(
+            r#"{{"schema": "post_sync_release_reconciliation.v1", "corrections": ["{narration_sentence}"]}}"#
+        );
+        assert!(
+            ledger_narration(Path::new(ledger_path), &body).is_some(),
+            "the declared ledger itself is recognized"
+        );
+        // Family gate: the same content outside docs/releases stays live.
+        assert!(ledger_narration(Path::new("notes/domain6.v1.json"), &body).is_none());
+        // Version-pinned name required: schema files never qualify.
+        assert!(
+            ledger_narration(Path::new("docs/releases/domain6-test.v1.schema.json"), &body)
+                .is_none()
+        );
+        // Undeclared or malformed documents stay live.
+        assert!(
+            ledger_narration(Path::new(ledger_path), r#"{"schema": "some_other_schema.v1"}"#,)
+                .is_none()
+        );
+        assert!(ledger_narration(Path::new(ledger_path), "{not json").is_none());
     }
 
     #[test]
