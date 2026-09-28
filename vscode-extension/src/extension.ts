@@ -55,7 +55,8 @@ import {
 } from './coexistenceAdvisory';
 import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
-import { generateBoilerplate } from './fileCreation';
+import { FileKind } from './fileCreation';
+import { createPerlScaffold } from './scaffoldCommands';
 import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
 import { HealthWidgetDataSource } from './healthWidgetDataSource';
@@ -1171,6 +1172,8 @@ async function runExtensionActivation(
     formatDocument: formatDocumentCommand,
     showIncPaths: showIncPathsCommand,
     openModule: openPerlModuleCommand,
+    createModule: () => createPerlScaffold(FileKind.Module).then(() => undefined),
+    createTest: () => createPerlScaffold(FileKind.Test).then(() => undefined),
     showParserAst: () =>
       showParserAstCommand({
         activeClient: client,
@@ -1368,15 +1371,6 @@ async function runExtensionActivation(
 
   const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
   activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
-
-  const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
-    try {
-      await populateCreatedFiles(event);
-    } catch (e) {
-      outputChannel.error('File creation handler error', e);
-    }
-  });
-  activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
 
   const arrowCompletionWatcher = vscode.workspace.onDidChangeTextDocument((event) => {
     maybeNudgeArrowCompletion(event);
@@ -2918,47 +2912,6 @@ export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent)
   }
 
   void vscode.commands.executeCommand('editor.action.triggerSuggest');
-}
-
-/**
- * Insert boilerplate into newly created Perl files that are still empty.
- *
- * `perl-lsp.autoPopulateNewFiles` is contributed `scope: "resource"`, so the
- * gate is resolved against each created URI rather than once for the whole
- * event (#14547). An unscoped `getConfiguration('perl-lsp')` cannot observe a
- * `workspaceFolderValue` at all, so a multi-root workspace where one folder
- * turns population off previously took the global value for every folder. The
- * read must stay inside the loop for the declared scope to mean anything.
- *
- * A URI outside every workspace folder resolves to the global/workspace value,
- * which is the same answer the hoisted read gave, as does an unset value. A
- * workspace opened as a single folder has no workspace-folder layer to select,
- * so it is unaffected too — but note that a `.code-workspace` listing exactly
- * one folder is mechanically multi-root and does have that layer, so a value
- * set on that folder now wins where it previously could not be seen.
- */
-export async function populateCreatedFiles(event: vscode.FileCreateEvent): Promise<void> {
-  for (const uri of event.files) {
-    const scoped = vscode.workspace.getConfiguration('perl-lsp', uri);
-    if (!scoped.get<boolean>('autoPopulateNewFiles', true)) {
-      continue;
-    }
-
-    const boilerplate = generateBoilerplate(uri.fsPath);
-    if (!boilerplate) {
-      continue;
-    }
-
-    const doc = await vscode.workspace.openTextDocument(uri);
-    if (doc.getText().length > 0) {
-      // File already has content — don't overwrite
-      continue;
-    }
-
-    const edit = new vscode.WorkspaceEdit();
-    edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
-    await vscode.workspace.applyEdit(edit);
-  }
 }
 
 /**

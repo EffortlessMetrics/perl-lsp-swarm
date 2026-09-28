@@ -49,7 +49,7 @@ describe('workspace configuration event routing', () => {
     registerWorkspaceConfigurationEvents(handlers);
 
     listener?.({
-      affectsConfiguration: (setting: string) => setting === 'perl-lsp.autoPopulateNewFiles',
+      affectsConfiguration: (setting: string) => setting === 'editor.tabSize',
     } as vscode.ConfigurationChangeEvent);
 
     expect(handlers.onLiveConfigurationChanged).not.toHaveBeenCalled();

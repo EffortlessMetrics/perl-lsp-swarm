@@ -1059,7 +1059,6 @@ launch `perllsp --stdio`.
 | `perl-lsp.enableFormatting` | `boolean` | `true` | Document formatting. Native formatting is built in; external perltidy is compatibility mode. |
 | `perl-lsp.formatOnSave` | `boolean` | `false` | Auto-format on save. The extension formats through the whole-document provider; server-owned `willSaveWaitUntil` formatting is withdrawn (#11955) until #8092 proves one save owner. |
 | `perl-lsp.enableTestIntegration` | `boolean` | `true` | Test::More and Test2 integration. |
-| `perl-lsp.autoPopulateNewFiles` | `boolean` | `true` | Insert package boilerplate into new `.pm` files and Test::More boilerplate into new `.t` files. Files with existing content are not modified. |
 
 ### Perl-specific
 
