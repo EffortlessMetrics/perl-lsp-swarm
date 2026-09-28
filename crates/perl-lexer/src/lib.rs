@@ -212,7 +212,9 @@ pub use perl_position_tracking::Position;
 pub use symbol_table::LocalSymbolTable;
 pub use token::{StringPart, Token, TokenType};
 
-use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
+use unicode::{
+    is_perl_identifier_continue, is_perl_identifier_start, is_perl_package_segment_start,
+};
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
@@ -1140,7 +1142,83 @@ impl<'a> PerlLexer<'a> {
     }
 
     #[inline]
+    fn immediately_after_double_colon(&self) -> bool {
+        let start = self.position;
+        start >= 2 && self.input_bytes[start - 2] == b':' && self.input_bytes[start - 1] == b':'
+    }
+
+    /// Consume the remainder of one identifier / package segment.
+    ///
+    /// `quote_op_word_start` is the start of a bareword that might still be a
+    /// quote-like operator (`q'…'`, `s'…'`). After a `::` separator that
+    /// check does not apply.
+    fn consume_identifier_segment_tail(&mut self, quote_op_word_start: Option<usize>) {
+        let bytes = self.input_bytes;
+        let len = bytes.len();
+        while self.position < len {
+            let byte = bytes[self.position];
+            if byte == b'\'' {
+                let split_quote_op = quote_op_word_start
+                    .is_some_and(|start| is_quote_op_word_prefix(&bytes[start..self.position]));
+                if split_quote_op || !self.apostrophe_starts_legacy_package_segment(self.position) {
+                    break;
+                }
+                self.position += 1;
+                continue;
+            }
+
+            if byte.is_ascii_alphanumeric() || byte == b'_' {
+                self.position += 1;
+                continue;
+            }
+
+            if byte < 128 {
+                break;
+            }
+
+            if let Some(ch) = self.current_char()
+                && is_perl_identifier_continue(ch)
+            {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+    }
+
+    /// Fold trailing `::segment` pairs into the identifier already in progress.
+    ///
+    /// After `::`, a segment may start with a digit (`Encode::KR::2022_KR`).
+    /// A trailing `::` with no following segment is kept on the identifier
+    /// (existing `Foo::` spelling).
+    fn consume_trailing_package_segments(&mut self) {
+        let bytes = self.input_bytes;
+        let len = bytes.len();
+        while self.config.max_lookahead >= 1
+            && self.position + 1 < len
+            && bytes[self.position] == b':'
+            && bytes[self.position + 1] == b':'
+        {
+            self.position += 2;
+            let Some(ch) = self.current_char() else {
+                break;
+            };
+            if !is_perl_package_segment_start(ch) {
+                break;
+            }
+            self.advance();
+            self.consume_identifier_segment_tail(None);
+        }
+    }
+
+    #[inline]
     fn try_number(&mut self) -> Option<Token> {
+        // Adjacent `::` starts a package segment, not a numeric literal.
+        // `package Foo:: 1` keeps the space-separated `1` as VERSION.
+        if self.immediately_after_double_colon() {
+            return None;
+        }
+
         let start = self.position;
 
         // Fast byte check for digits - optimized bounds checking
@@ -1889,13 +1967,14 @@ impl<'a> PerlLexer<'a> {
     fn try_identifier_or_keyword(&mut self) -> Option<Token> {
         let start = self.position;
         let ch = self.current_char()?;
-        let bytes = self.input_bytes;
-        let len = bytes.len();
 
-        if is_perl_identifier_start(ch) {
+        if is_perl_identifier_start(ch)
+            || (self.immediately_after_double_colon() && is_perl_package_segment_start(ch))
+        {
             // Special case: substitution/transliteration with single-quote delimiter
             // The single quote is considered an identifier continuation, so we need to
             // detect these operators before consuming it as part of an identifier.
+            // Digit-led `::` segments never take this path (`s`/`y`/`tr` are letters).
             let follows_sigil_prefix = self.immediately_follows_sigil_prefix(start);
             if !follows_sigil_prefix
                 && !self.after_arrow
@@ -1925,80 +2004,9 @@ impl<'a> PerlLexer<'a> {
                 return self.parse_transliteration(start);
             }
 
-            // Fast ASCII path for identifier continuation.
-            while self.position < len {
-                let byte = bytes[self.position];
-                if byte == b'\'' {
-                    if is_quote_op_word_prefix(&bytes[start..self.position])
-                        || !self.apostrophe_starts_legacy_package_segment(self.position)
-                    {
-                        // Keep apostrophe for quote/string parsing in cases like q'...'
-                        // and split' ', while still accepting Foo'Bar package spelling.
-                        break;
-                    }
-                    self.position += 1;
-                    continue;
-                }
-
-                if byte.is_ascii_alphanumeric() || byte == b'_' {
-                    self.position += 1;
-                    continue;
-                }
-
-                if byte < 128 {
-                    break;
-                }
-
-                if let Some(ch) = self.current_char()
-                    && is_perl_identifier_continue(ch)
-                {
-                    self.advance();
-                    continue;
-                }
-                break;
-            }
-            // Handle package-qualified identifiers like Foo::bar.
-            while self.config.max_lookahead >= 1
-                && self.position + 1 < len
-                && bytes[self.position] == b':'
-                && bytes[self.position + 1] == b':'
-            {
-                self.position += 2; // consume '::'
-
-                // consume following identifier segment if present
-                let Some(ch) = self.current_char() else {
-                    break;
-                };
-                if !is_perl_identifier_start(ch) {
-                    break;
-                }
-                self.advance();
-                while self.position < len {
-                    let byte = bytes[self.position];
-                    if byte == b'\'' {
-                        if !self.apostrophe_starts_legacy_package_segment(self.position) {
-                            break;
-                        }
-                        self.position += 1;
-                        continue;
-                    }
-
-                    if byte.is_ascii_alphanumeric() || byte == b'_' {
-                        self.position += 1;
-                        continue;
-                    }
-                    if byte < 128 {
-                        break;
-                    }
-                    if let Some(ch) = self.current_char()
-                        && is_perl_identifier_continue(ch)
-                    {
-                        self.advance();
-                        continue;
-                    }
-                    break;
-                }
-            }
+            // Fast ASCII path for identifier continuation, then `::` segments.
+            self.consume_identifier_segment_tail(Some(start));
+            self.consume_trailing_package_segments();
 
             let text = &self.input[start..self.position];
 

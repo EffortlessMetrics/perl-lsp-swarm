@@ -64,6 +64,16 @@ pub fn is_perl_identifier_start(ch: char) -> bool {
     is_emoji
 }
 
+/// Check whether `ch` may start a package segment *after* `::`.
+///
+/// The first segment of a bareword still requires [`is_perl_identifier_start`].
+/// After `::`, Perl admits a digit-led segment (`Encode::KR::2022_KR`,
+/// `Foo::1`). Apostrophe is an identifier-continue character (old-style
+/// `Foo'Bar`) but never starts a `::` segment.
+pub fn is_perl_package_segment_start(ch: char) -> bool {
+    ch != '\'' && is_perl_identifier_continue(ch)
+}
+
 /// Check if a character can continue a Perl identifier
 pub fn is_perl_identifier_continue(ch: char) -> bool {
     // For continuation, we accept identifier start chars, XID_Continue chars,
@@ -119,7 +129,7 @@ pub fn analyze_unicode_complexity(text: &str) -> (usize, usize, usize) {
 mod tests {
     use super::{
         analyze_unicode_complexity, get_unicode_stats, is_perl_identifier_continue,
-        is_perl_identifier_start,
+        is_perl_identifier_start, is_perl_package_segment_start,
     };
 
     #[test]
@@ -140,6 +150,17 @@ mod tests {
     #[test]
     fn identifier_start_rejects_punctuation() {
         assert!(!is_perl_identifier_start('-'));
+    }
+
+    #[test]
+    fn package_segment_after_colon_colon_admits_digits_but_not_apostrophe() {
+        assert!(is_perl_package_segment_start('1'));
+        assert!(is_perl_package_segment_start('A'));
+        assert!(is_perl_package_segment_start('_'));
+        assert!(!is_perl_package_segment_start('\''));
+        assert!(!is_perl_package_segment_start('-'));
+        assert!(!is_perl_package_segment_start(' '));
+        assert!(!is_perl_identifier_start('1'));
     }
 
     #[test]
