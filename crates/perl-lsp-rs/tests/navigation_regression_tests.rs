@@ -1430,6 +1430,52 @@ fn test_refs_qualified_middle_longer_than_classification_window() -> TestResult 
     Ok(())
 }
 
+/// A long middle component must not masquerade as the final callable when the
+/// cursor component guard is evaluated (#14618). The final cursor is the
+/// non-vacuous control for both the fixture and workspace index.
+#[test]
+fn test_def_qualified_middle_longer_than_classification_window() -> TestResult {
+    let doc = concat!(
+        "package My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff;\n",
+        "\n",
+        "sub process { return 1; }\n",
+        "\n",
+        "package main;\n",
+        "\n",
+        "My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff::process();\n",
+    );
+    let uri = "file:///def_long_middle.pl";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document(uri, doc)?;
+
+    let definition = |harness: &mut LspHarness, character: u32| -> Result<_, String> {
+        harness.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 6, "character": character}
+            }),
+        )
+    };
+    let final_component = definition(&mut harness, 66)?;
+    assert_eq!(
+        first_location_line(&final_component),
+        Some(2),
+        "final `process` must reach its declaration: {final_component}"
+    );
+
+    for character in [0, 2, 3, 4, 30, 63, 64, 65] {
+        let result = definition(&mut harness, character)?;
+        assert!(
+            result.is_null(),
+            "prefix/middle/separator cursor at {character} must receive explicit null, got {result}"
+        );
+    }
+
+    Ok(())
+}
+
 /// Regression (#1849, review finding): the prefix guard must not suppress a package
 /// *variable* whose name merely contains `::`.
 ///
