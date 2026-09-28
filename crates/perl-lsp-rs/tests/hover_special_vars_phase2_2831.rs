@@ -324,6 +324,94 @@ fn test_multiline_literal_module_statements_are_inert() -> TestResult {
     Ok(())
 }
 
+/// A partial literal in a parent/base expression is not a standalone module.
+#[test]
+fn test_concatenated_parent_base_argument_does_not_open_partial_module() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let foo = "package Foo;\n1;\n";
+    let foo_bar = "package FooBar;\n1;\n";
+    let bar = "package Bar;\n1;\n";
+    let doc = "use lib 'lib';\nuse parent ('Foo' . 'Bar');\nuse base ('Foo' . 'Bar');\nuse parent 'Foo';\nuse base 'Foo';\nuse parent ('Foo');\nuse base ('Foo');\nuse parent -norequire => 'Foo';\nuse parent uc('Foo');\nuse base uc('Foo');\nuse parent 'Foo' => 'Bar';\nuse base 'Foo' => 'Bar';\n";
+    workspace.write("lib/Foo.pm", foo)?;
+    workspace.write("lib/FooBar.pm", foo_bar)?;
+    workspace.write("lib/Bar.pm", bar)?;
+    workspace.write("lib/FOO.pm", "package FOO;\n1;\n")?;
+    workspace.write("main.pl", doc)?;
+    let uri = workspace.uri("main.pl");
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    harness.open_document(&workspace.uri("lib/Foo.pm"), foo)?;
+    harness.open_document(&workspace.uri("lib/FooBar.pm"), foo_bar)?;
+    harness.open_document(&workspace.uri("lib/Bar.pm"), bar)?;
+    harness.open_document(&uri, doc)?;
+    harness.barrier();
+
+    for (line, needle) in [(1, "Foo"), (1, "Bar"), (2, "Foo"), (2, "Bar"), (8, "Foo"), (9, "Foo")] {
+        let character = doc
+            .lines()
+            .nth(line)
+            .and_then(|source| source.find(needle))
+            .ok_or("Expected quoted fragment in test source")?
+            + 1;
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        )?;
+        if !definition.is_null() && !definition.as_array().is_some_and(|items| items.is_empty()) {
+            return Err(format!(
+                "partial parent/base literal at line {line} navigated: {definition}"
+            )
+            .into());
+        }
+    }
+
+    for line in [3, 4, 5, 6, 7] {
+        let character = doc
+            .lines()
+            .nth(line)
+            .and_then(|source| source.find("Foo"))
+            .ok_or("Expected standalone module in test source")?
+            + 1;
+        let real = harness.request(
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        )?;
+        if !real
+            .pointer("/0/uri")
+            .and_then(|uri| uri.as_str())
+            .is_some_and(|uri| uri.ends_with("Foo.pm"))
+        {
+            return Err(format!(
+                "standalone parent/base at line {line} should reach Foo.pm: {real}"
+            )
+            .into());
+        }
+    }
+    for (line, module) in [(10, "Foo"), (10, "Bar"), (11, "Foo"), (11, "Bar")] {
+        let character = doc
+            .lines()
+            .nth(line)
+            .and_then(|source| source.find(module))
+            .ok_or("Expected fat-arrow module in test source")?
+            + 1;
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        )?;
+        if !definition
+            .pointer("/0/uri")
+            .and_then(|uri| uri.as_str())
+            .is_some_and(|uri| uri.ends_with(&format!("{module}.pm")))
+        {
+            return Err(format!(
+                "fat-arrow parent/base member {module} at line {line} should navigate: {definition}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// A quoted XS argument is a target only when the loader call itself is code.
 #[test]
 fn test_quoted_xs_argument_keeps_target_but_inert_loader_does_not() -> TestResult {

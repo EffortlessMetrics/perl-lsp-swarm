@@ -55,6 +55,94 @@ fn statement_keyword_is_code(
     })
 }
 
+/// Accept only a standalone argument prefix before a quoted parent/base name.
+/// `Use` stores expression tokens without argument spans, so a function call
+/// opener must not be treated like the import list's grouping parenthesis.
+fn standalone_parent_base_prefix(mut prefix: &str) -> bool {
+    prefix = prefix.trim_start();
+    if let Some(after_flag) = prefix.strip_prefix("-norequire") {
+        let after_flag = after_flag.trim_start();
+        prefix = if let Some(rest) = after_flag.strip_prefix("=>") {
+            rest
+        } else if let Some(rest) = after_flag.strip_prefix(',') {
+            rest
+        } else {
+            return false;
+        };
+    }
+    prefix = prefix.trim_start();
+    if let Some(rest) = prefix.strip_prefix('(') {
+        prefix = rest;
+    }
+    loop {
+        prefix = prefix.trim_start();
+        if prefix.is_empty() {
+            return true;
+        }
+        if let Some(rest) = prefix.strip_prefix('\'') {
+            let Some(close) = rest.find('\'') else { return false };
+            prefix = &rest[close + 1..];
+        } else {
+            let token_end = prefix
+                .bytes()
+                .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':'))
+                .count();
+            if token_end == 0 {
+                return false;
+            }
+            prefix = &prefix[token_end..];
+        }
+        let separator = prefix.trim_start();
+        let Some(rest) = separator.strip_prefix(',').or_else(|| separator.strip_prefix("=>"))
+        else {
+            return false;
+        };
+        prefix = rest;
+    }
+}
+
+/// Permit early parent/base module lookup only for a complete quoted argument.
+/// The text scanner also sees tokens inside expressions such as 'Foo' . 'Bar',
+/// where neither literal names the module passed to parent/base.
+fn standalone_quoted_parent_base_argument(
+    snapshot: &crate::state::ParsedSnapshot,
+    text: &str,
+    offset: usize,
+) -> bool {
+    let (line_start, line_end) = perl_parser_core::text_line::line_bounds_at(text, offset);
+    if !statement_keyword_is_code(Some(snapshot), text, line_start) {
+        return false;
+    }
+    let Some(line) = text.get(line_start..line_end) else { return false };
+    let Some(head) = perl_module::parse_module_import_head(line) else { return false };
+    if !matches!(
+        head.kind,
+        perl_module::ModuleImportKind::UseParent | perl_module::ModuleImportKind::UseBase
+    ) {
+        return false;
+    }
+    let region_index = snapshot.source_region_index();
+    let Some(region) = region_index.regions().iter().find(|region| {
+        region.kind == perl_parser_core::SourceRegionKind::StringLiteral
+            && region.contains_offset(offset)
+            && text.as_bytes().get(region.start) == Some(&b'\'')
+            && text.as_bytes().get(region.end.saturating_sub(1)) == Some(&b'\'')
+    }) else {
+        return false;
+    };
+    let Some(quote_start) = region.start.checked_sub(line_start) else { return false };
+    let Some(quote_end) = region.end.checked_sub(line_start) else { return false };
+    let Some(before) = line.get(head.token_end..quote_start) else { return false };
+    if !standalone_parent_base_prefix(before) {
+        return false;
+    }
+    let Some(after) = line.get(quote_end..) else { return false };
+    let after = after.trim_start();
+    let after = after.strip_prefix(')').unwrap_or(after).trim_start();
+    after.starts_with("=>")
+        || after.as_bytes().first().is_none_or(|byte| matches!(byte, b',' | b';' | b'#'))
+}
+
 /// Find the parsed `use` statement that owns a cursor, including a member on
 /// a later physical line of its import list.
 fn use_statement_at_offset(node: &crate::ast::Node, offset: usize) -> Option<&crate::ast::Node> {
@@ -1559,24 +1647,10 @@ impl LspServer {
                     let current_parsed = doc.current_parsed();
                     let cursor_in_single_quoted_literal =
                         in_single_quoted_literal(current_parsed.as_deref(), offset);
-                    let quoted_parent_base_argument = if cursor_in_single_quoted_literal {
-                        let (line_start, line_end) =
-                            perl_parser_core::text_line::line_bounds_at(text, offset);
-                        statement_keyword_is_code(current_parsed.as_deref(), text, line_start)
-                            && text.get(line_start..line_end).is_some_and(|line| {
-                                perl_module::parse_module_import_head(line).is_some_and(|head| {
-                                    matches!(
-                                        head.kind,
-                                        perl_module::ModuleImportKind::UseParent
-                                            | perl_module::ModuleImportKind::UseBase
-                                    ) && line
-                                        .get(head.token_end..offset.saturating_sub(line_start))
-                                        .is_some_and(|prefix| !prefix.contains(';'))
-                                })
-                            })
-                    } else {
-                        false
-                    };
+                    let quoted_parent_base_argument = cursor_in_single_quoted_literal
+                        && current_parsed.as_ref().is_some_and(|snapshot| {
+                            standalone_quoted_parent_base_argument(snapshot, text, offset)
+                        });
 
                     let radius = 50;
                     let (text_start, text_around) =
