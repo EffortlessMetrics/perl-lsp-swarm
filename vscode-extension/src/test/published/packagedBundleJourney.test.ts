@@ -174,27 +174,39 @@ async function waitForDiagnostic(
   predicate: (diagnostics: readonly vscode.Diagnostic[]) => boolean,
   label: string,
   requireChangeEvent = false,
+  signal?: AbortSignal,
 ): Promise<vscode.Diagnostic[]> {
   const timeoutMs = 15_000;
   const current = vscode.languages.getDiagnostics(uri);
   if (!requireChangeEvent && predicate(current)) return current;
   return new Promise((resolve, reject) => {
+    let timeout: NodeJS.Timeout;
+    const dispose = () => {
+      clearTimeout(timeout);
+      subscription.dispose();
+      signal?.removeEventListener('abort', abort);
+    };
+    const abort = () => {
+      dispose();
+      reject(new Error(`${label} for ${uri.toString()} was cancelled before the edit completed`));
+    };
     const subscription = vscode.languages.onDidChangeDiagnostics((event) => {
       if (!event.uris.some((changed) => changed.toString() === uri.toString())) return;
       const diagnostics = vscode.languages.getDiagnostics(uri);
       if (!predicate(diagnostics)) return;
-      clearTimeout(timeout);
-      subscription.dispose();
+      dispose();
       resolve(diagnostics);
     });
-    const timeout = setTimeout(() => {
-      subscription.dispose();
+    timeout = setTimeout(() => {
+      dispose();
       reject(
         new Error(
           `${label} for ${uri.toString()} timed out after ${timeoutMs}ms; observed ${JSON.stringify(vscode.languages.getDiagnostics(uri).map((diagnostic) => ({ code: diagnosticCode(diagnostic), source: diagnostic.source ?? null, message: diagnostic.message, range: diagnostic.range })))}`,
         ),
       );
     }, timeoutMs);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
   });
 }
 
@@ -738,60 +750,85 @@ suite('Packaged VSIX bundled-server journey', function () {
         };
       }
 
-      diagnosticDocument = await vscode.workspace.openTextDocument(diagnosticFile);
-      await vscode.window.showTextDocument(diagnosticDocument);
-      const diagnosticUri = diagnosticDocument.uri;
-      const strictBefore = await waitForDiagnostic(
-        diagnosticUri,
-        (items) => items.some(expectedStrictDiagnostic),
-        'diagnostic PL100 with expected code, source, range, and message',
-      );
-      const diagnosticVersionBefore = diagnosticDocument.version;
-      const strictClear = waitForDiagnostic(
-        diagnosticUri,
-        (items) =>
-          !items.some((item) => diagnosticCode(item) === 'PL100') &&
-          items.some(
-            (item) =>
-              diagnosticCode(item) === 'PL102' &&
-              item.source === 'perl-lsp' &&
-              item.message.includes('$fresh_unused'),
-          ),
-        'diagnostic PL100 clearing and new PL102 for $fresh_unused after edit',
-        true,
-      );
-      const strictEdit = new vscode.WorkspaceEdit();
-      strictEdit.insert(
-        diagnosticUri,
-        new vscode.Position(0, 0),
-        'use strict;\nmy $fresh_unused = 1;\n',
-      );
-      assert.ok(
-        await vscode.workspace.applyEdit(strictEdit),
-        `diagnostic edit rejected for ${diagnosticUri}`,
-      );
-      assert.ok(
-        diagnosticDocument.version > diagnosticVersionBefore,
-        `diagnostic version did not advance for ${diagnosticUri}`,
-      );
-      const strictAfter = await strictClear;
-      const diagnosticAnswer = {
-        status: 'ok',
-        subject: diagnosticUri.toString(),
-        before_version: diagnosticVersionBefore,
-        after_version: diagnosticDocument.version,
-        expected_code: 'PL100',
-        before: strictBefore.filter(expectedStrictDiagnostic).map((item) => ({
-          code: diagnosticCode(item),
-          source: item.source,
-          message: item.message,
-          range: item.range,
-        })),
-        after_code_count: strictAfter.filter((item) => diagnosticCode(item) === 'PL100').length,
-        after_fresh_code_count: strictAfter.filter(
-          (item) => diagnosticCode(item) === 'PL102' && item.message.includes('$fresh_unused'),
-        ).length,
+      let diagnosticAnswer: ReceiptValue = {
+        status: 'not_proven',
+        reason: readinessReason,
       };
+      if (readinessReady) {
+        diagnosticDocument = await vscode.workspace.openTextDocument(diagnosticFile);
+        await vscode.window.showTextDocument(diagnosticDocument);
+        const diagnosticUri = diagnosticDocument.uri;
+        const diagnosticReadiness = await observeActiveDocumentReadiness(
+          activation?.waitForActiveDocumentReady,
+          diagnosticUri.toString(),
+          30_000,
+        );
+        assert.equal(
+          diagnosticReadiness.status,
+          'ready',
+          `diagnostic document was not ready: ${JSON.stringify(diagnosticReadiness)}`,
+        );
+        const strictBefore = await waitForDiagnostic(
+          diagnosticUri,
+          (items) => items.some(expectedStrictDiagnostic),
+          'diagnostic PL100 with expected code, source, range, and message',
+        );
+        const diagnosticVersionBefore = diagnosticDocument.version;
+        const diagnosticWaitAbort = new AbortController();
+        const strictClear = waitForDiagnostic(
+          diagnosticUri,
+          (items) =>
+            !items.some((item) => diagnosticCode(item) === 'PL100') &&
+            items.some(
+              (item) =>
+                diagnosticCode(item) === 'PL102' &&
+                item.source === 'perl-lsp' &&
+                item.message.includes('$fresh_unused'),
+            ),
+          'diagnostic PL100 clearing and new PL102 for $fresh_unused after edit',
+          true,
+          diagnosticWaitAbort.signal,
+        );
+        // Keep a rejection handler attached if the edit fails before this wait is awaited.
+        void strictClear.catch(() => undefined);
+        let strictAfter: vscode.Diagnostic[];
+        try {
+          const strictEdit = new vscode.WorkspaceEdit();
+          strictEdit.insert(
+            diagnosticUri,
+            new vscode.Position(0, 0),
+            'use strict;\nmy $fresh_unused = 1;\n',
+          );
+          assert.ok(
+            await vscode.workspace.applyEdit(strictEdit),
+            `diagnostic edit rejected for ${diagnosticUri}`,
+          );
+          assert.ok(
+            diagnosticDocument.version > diagnosticVersionBefore,
+            `diagnostic version did not advance for ${diagnosticUri}`,
+          );
+          strictAfter = await strictClear;
+        } finally {
+          diagnosticWaitAbort.abort();
+        }
+        diagnosticAnswer = {
+          status: 'ok',
+          subject: diagnosticUri.toString(),
+          before_version: diagnosticVersionBefore,
+          after_version: diagnosticDocument.version,
+          expected_code: 'PL100',
+          before: strictBefore.filter(expectedStrictDiagnostic).map((item) => ({
+            code: diagnosticCode(item),
+            source: item.source,
+            message: item.message,
+            range: item.range,
+          })),
+          after_code_count: strictAfter.filter((item) => diagnosticCode(item) === 'PL100').length,
+          after_fresh_code_count: strictAfter.filter(
+            (item) => diagnosticCode(item) === 'PL102' && item.message.includes('$fresh_unused'),
+          ).length,
+        };
+      }
 
       const diagnostics = vscode.languages.getDiagnostics(document.uri);
       const metrics = activation?.getLanguageClientStartupMetrics

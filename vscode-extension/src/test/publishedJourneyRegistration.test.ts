@@ -11,6 +11,7 @@ interface Harness {
   firstProviderCall: Promise<void>;
   readinessEntered: Promise<void>;
   readinessArguments: Array<{ uri: string; timeoutMs?: number }>;
+  activeDiagnosticListeners: () => number;
   receiptDirectory: string;
   cleanup: () => void;
 }
@@ -67,9 +68,12 @@ function fakeVscode(
   exposeReadiness: boolean,
   generationStartDelayMs: number,
   initialGeneration: number,
+  rejectDiagnosticEdit: boolean,
 ): Record<string, unknown> {
   let generation = initialGeneration;
-  let openedPath: string | undefined;
+  let diagnosticPath: string | undefined;
+  let diagnosticEdited = false;
+  const diagnosticHandlers = new Set<(event: { uris: readonly unknown[] }) => void>();
   let documentText = '\n\n\nmy $value = 42;\nprint $value;\n';
   const document = {
     uri: {
@@ -80,6 +84,26 @@ function fakeVscode(
       return documentText.split('\n').length;
     },
     getText: () => documentText,
+    positionAt: (offset: number) => {
+      const prefix = documentText.slice(0, offset).split('\n');
+      return { line: prefix.length - 1, character: prefix[prefix.length - 1]?.length ?? 0 };
+    },
+  };
+  const diagnosticDocument = {
+    uri: { fsPath: '', toString: () => `file://${diagnosticDocument.uri.fsPath}` },
+    version: 1,
+  };
+  const strictDiagnostic = {
+    code: 'PL100',
+    source: 'perl-lsp',
+    message: "Consider adding 'use strict;'",
+    range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+  };
+  const freshDiagnostic = {
+    code: 'PL102',
+    source: 'perl-lsp',
+    message: 'Unused variable $fresh_unused',
+    range: { start: { line: 1, character: 4 }, end: { line: 1, character: 17 } },
   };
   const sameDocumentUri = (
     uri: { fsPath?: string; toString?: () => string } | undefined,
@@ -167,10 +191,21 @@ function fakeVscode(
       readonly character: number,
     ) {}
   }
+  class Location {
+    constructor(
+      readonly uri: typeof document.uri,
+      readonly range: {
+        start: { line: number; character: number };
+        end: { line: number; character: number };
+      },
+    ) {}
+  }
   return {
+    activeDiagnosticListeners: () => diagnosticHandlers.size,
     ConfigurationTarget: { Global: 1 },
     WorkspaceEdit,
     Position,
+    Location,
     // The packaged journey (`packagedBundleJourney.test.ts`) reaches for
     // `vscode.Uri.file(...)` from its cleanup path (#15558, #15572). The local
     // double must keep the `Uri` surface in lock-step with the shared mock
@@ -188,7 +223,11 @@ function fakeVscode(
       workspaceFolders: [{ uri: { fsPath: workspacePath } }],
       getConfiguration: () => configuration,
       openTextDocument: async (filePath: string) => {
-        openedPath = filePath;
+        if (path.basename(filePath).startsWith('packaged_diagnostic_')) {
+          diagnosticPath = filePath;
+          diagnosticDocument.uri.fsPath = filePath;
+          return diagnosticDocument;
+        }
         document.uri.fsPath = filePath;
         if (generation === 0) {
           setTimeout(() => {
@@ -199,10 +238,7 @@ function fakeVscode(
       },
       applyEdit: async (edit?: WorkspaceEdit) => {
         if (edit?.deletePath) {
-          if (
-            edit.deletePath !== openedPath ||
-            !edit.deletePath.startsWith(`${workspacePath}${path.sep}`)
-          ) {
+          if (!edit.deletePath.startsWith(`${workspacePath}${path.sep}`)) {
             return false;
           }
           if (!fs.existsSync(edit.deletePath)) return false;
@@ -220,6 +256,20 @@ function fakeVscode(
           documentText = lines.join('\n');
         }
         for (const inserted of edit?.inserted ?? []) {
+          if (
+            diagnosticPath &&
+            inserted.uri.toString() === diagnosticDocument.uri.toString() &&
+            inserted.position.line === 0 &&
+            inserted.position.character === 0
+          ) {
+            if (rejectDiagnosticEdit) return false;
+            diagnosticDocument.version += 1;
+            diagnosticEdited = true;
+            for (const handler of diagnosticHandlers) {
+              handler({ uris: [diagnosticDocument.uri] });
+            }
+            continue;
+          }
           if (
             !sameDocumentUri(inserted.uri) ||
             inserted.position.line !== document.lineCount ||
@@ -279,10 +329,32 @@ function fakeVscode(
             ],
           };
         }
+        if (command === 'vscode.executeCompletionItemProvider') {
+          return { items: [{ label: '$value' }] };
+        }
+        if (command === 'vscode.executeDefinitionProvider') {
+          return [
+            new Location(document.uri, {
+              start: { line: 3, character: 3 },
+              end: { line: 3, character: 9 },
+            }),
+          ];
+        }
         return [];
       },
     },
-    languages: { getDiagnostics: () => [] },
+    languages: {
+      getDiagnostics: (uri: { fsPath?: string }) =>
+        uri.fsPath === diagnosticPath
+          ? diagnosticEdited
+            ? [freshDiagnostic]
+            : [strictDiagnostic]
+          : [],
+      onDidChangeDiagnostics: (handler: (event: { uris: readonly unknown[] }) => void) => {
+        diagnosticHandlers.add(handler);
+        return { dispose: () => diagnosticHandlers.delete(handler) };
+      },
+    },
   };
 }
 
@@ -401,6 +473,7 @@ async function makeHarness(
   exposeReadiness = true,
   generationStartDelayMs = 0,
   initialGeneration = 0,
+  rejectDiagnosticEdit = false,
 ): Promise<Harness> {
   const receiptDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-receipts-'));
   const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-workspace-'));
@@ -428,6 +501,7 @@ async function makeHarness(
     exposeReadiness,
     generationStartDelayMs,
     initialGeneration,
+    rejectDiagnosticEdit,
   );
   const journey = loadRegisteredJourney(source, { calls, receiptDirectory, vscode });
   return {
@@ -436,6 +510,7 @@ async function makeHarness(
     firstProviderCall,
     readinessEntered,
     readinessArguments,
+    activeDiagnosticListeners: vscode.activeDiagnosticListeners as () => number,
     receiptDirectory,
     cleanup: () => {
       fs.rmSync(receiptDirectory, { recursive: true, force: true });
@@ -466,6 +541,18 @@ describe('registered packaged journey readiness contract', () => {
     for (const provider of ['completion', 'hover', 'definition', 'references', 'symbols']) {
       expect(immediate?.[provider]).toMatchObject({ status: 'not_proven' });
     }
+  }
+
+  function assertBothDocumentsReachedReadiness(
+    args: Array<{ uri: string; timeoutMs?: number }>,
+  ): void {
+    expect(args).toHaveLength(2);
+    expect(args[0]).toEqual({
+      uri: 'file:///workspace/packaged_daily_driver.pl',
+      timeoutMs: 30_000,
+    });
+    expect(args[1]).toMatchObject({ timeoutMs: 30_000 });
+    expect(args[1]?.uri).toContain('packaged_diagnostic_');
   }
 
   // Each test transpiles the packaged journey with the real pinned tsc inside
@@ -500,9 +587,7 @@ describe('registered packaged journey readiness contract', () => {
         await run;
         expect(harness.calls).toContain('vscode.executeCompletionItemProvider');
         expect(harness.calls).toContain('vscode.executeDocumentSymbolProvider');
-        expect(harness.readinessArguments).toEqual([
-          { uri: 'file:///workspace/packaged_daily_driver.pl', timeoutMs: 30_000 },
-        ]);
+        assertBothDocumentsReachedReadiness(harness.readinessArguments);
         const receipt = JSON.parse(
           fs.readFileSync(
             path.join(harness.receiptDirectory, 'packaged_bundle_journey_receipt.json'),
@@ -541,9 +626,7 @@ describe('registered packaged journey readiness contract', () => {
       const harness = await makeHarness(journeySource(), readiness, true, 0, 1);
       try {
         await harness.journey.call({ timeout: () => undefined });
-        expect(harness.readinessArguments).toEqual([
-          { uri: 'file:///workspace/packaged_daily_driver.pl', timeoutMs: 30_000 },
-        ]);
+        assertBothDocumentsReachedReadiness(harness.readinessArguments);
         expect(harness.calls).toContain('vscode.executeCompletionItemProvider');
         const receipt = readReceipt(harness.receiptDirectory);
         const requests = receipt.requests as {
@@ -552,6 +635,22 @@ describe('registered packaged journey readiness contract', () => {
         };
         expect(requests.after_edit?.status).toBe('ok');
         expect(requests.rename?.status).toBe('applied_text_edits_verified');
+      } finally {
+        harness.cleanup();
+      }
+    },
+    transpileTimeoutMs,
+  );
+
+  test(
+    'rejected diagnostic edit releases its pending diagnostics listener',
+    async () => {
+      const harness = await makeHarness(journeySource(), Promise.resolve(), true, 0, 1, true);
+      try {
+        await expect(harness.journey.call({ timeout: () => undefined })).rejects.toThrow(
+          'diagnostic edit rejected',
+        );
+        expect(harness.activeDiagnosticListeners()).toBe(0);
       } finally {
         harness.cleanup();
       }
@@ -590,7 +689,7 @@ describe('registered packaged journey readiness contract', () => {
           rejectReadiness?.(new Error('readiness refused'));
         } else {
           await Promise.race([
-            run,
+            run.catch(() => undefined),
             new Promise<never>((_, reject) => {
               watchdog = setTimeout(
                 () => reject(new Error('missing readiness journey stalled')),
@@ -599,7 +698,7 @@ describe('registered packaged journey readiness contract', () => {
             }),
           ]);
         }
-        await run;
+        await expect(run).rejects.toThrow();
         expect(harness.calls).toEqual([]);
         const receipt = readReceipt(harness.receiptDirectory);
         expect(receipt.readiness_wait).toMatchObject({
@@ -639,6 +738,7 @@ describe('registered packaged journey readiness contract', () => {
         true,
         0,
         1,
+        false,
       );
       expect(shape.Uri).toBeDefined();
       const uri = shape.Uri as {
