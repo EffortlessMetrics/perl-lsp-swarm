@@ -90,10 +90,33 @@ load_num UNRESOLVED_TOTAL '.unresolved_total'
 load_num RESOLVED_WITHOUT_DISPOSITION '.resolved_without_disposition'
 load_num HUMAN_REVIEW_COUNT '.human_review_count'
 load_num DISMISSED_HUMAN_REVIEW_COUNT '.dismissed_human_review_count'
-SUBMITTED_HUMAN_REVIEW_COUNT=$((HUMAN_REVIEW_COUNT - DISMISSED_HUMAN_REVIEW_COUNT))
-if [[ "$SUBMITTED_HUMAN_REVIEW_COUNT" -lt 0 ]]; then
-    SUBMITTED_HUMAN_REVIEW_COUNT=0
+
+# What this count actually is, stated once so the published field name and its
+# compatibility alias cannot drift apart:
+#
+#   non_dismissed_latest_nonbot_review_count
+#     = (non-bot entries in GitHub's `latestReviews` projection)
+#       - (those dismissed as DISMISSED)
+#
+# It is NOT "all submitted human reviews" and NOT "non-author human reviews".
+# `latestReviews` is a latest-per-user projection, so superseded pre-push
+# reviews are already absent, and on GitHub.com PR-author submissions were
+# observed to be absent too (observed behavior, not documented contract — see
+# the derivation note in check-pr-review-convergence-core and issue #15035).
+# Because the author exclusion is undocumented, this name deliberately
+# describes the derivation rather than asserting an exclusion rule that
+# upstream may change or may not actually be.
+NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT=$((HUMAN_REVIEW_COUNT - DISMISSED_HUMAN_REVIEW_COUNT))
+if [[ "$NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT" -lt 0 ]]; then
+    NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT=0
 fi
+
+# `submitted_human_review_count` is retained as a documented compatibility
+# alias carrying the identical value, because in-repo consumers cannot rule
+# out an out-of-repo consumer pinned to the old name (NOT_PROVEN, #15035).
+# Deletion condition: once no tracked consumer and no documented external
+# contract references the old name, drop the alias in one change and record
+# the removal here. Do not let the two names drift — they are one value.
 
 CONVERGED=true
 PENDING=false
@@ -148,7 +171,7 @@ elif [[ "$FINDINGS_OPEN" == "true" ]]; then
     FORMAL_CLASSIFICATION="FINDINGS_OPEN"
     FORMAL_STATUS="findings_open"
     FORMAL_REASON="change_request_or_thread_finding"
-elif [[ "$SUBMITTED_HUMAN_REVIEW_COUNT" -gt 0 ]]; then
+elif [[ "$NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT" -gt 0 ]]; then
     FORMAL_CLASSIFICATION="SUBMITTED_REVIEW_PRESENT"
     FORMAL_STATUS="present_unclassified"
     FORMAL_REASON="semantic_currentness_requires_subject_bound_marker"
@@ -166,7 +189,7 @@ jq -n \
     --arg classification "$FORMAL_CLASSIFICATION" \
     --arg status "$FORMAL_STATUS" \
     --arg reason "$FORMAL_REASON" \
-    --argjson submittedReviews "$SUBMITTED_HUMAN_REVIEW_COUNT" \
+    --argjson submittedReviews "$NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT" \
     '$core + {
       converged: $converged,
       native_review_facts_converged: $converged,
@@ -174,6 +197,7 @@ jq -n \
       semantic_currentness_required: true,
       exact_head_review_required: false,
       material_claim_receipt_required: false,
+      non_dismissed_latest_nonbot_review_count: $submittedReviews,
       submitted_human_review_count: $submittedReviews,
       formal_review: {
         classification: $classification,

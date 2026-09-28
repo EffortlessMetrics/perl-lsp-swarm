@@ -503,6 +503,30 @@ fi
 #    "the same treatment as an outdated thread" anymore. Only non-bot
 #    (human) reviewers' staleness blocks convergence among review
 #    submissions.
+#
+# ── What this connection is, and is not ─────────────────────────────────────
+#    `latestReviews` is GitHub's *latest review per user* projection. Every
+#    count derived from it below therefore inherits that projection's scope,
+#    and this script does not widen it.
+#
+#    OBSERVED, NOT CONTRACTUAL: on GitHub.com, reviews submitted by the PR
+#    author were not returned in `latestReviews` across 10/10 self-reviewed
+#    PRs in the campaign backfill set, while the same submissions were
+#    present in REST review history. GitHub's published schema documents
+#    `latestReviews` only as "a list of latest reviews per user associated
+#    with the pull request that are not also pending review" — it does NOT
+#    document a PR-author exclusion. Treat author omission as an observed
+#    provider behavior, not a guarantee. Do NOT encode "excludes the PR
+#    author" into any field name or schema promise on this basis. See #15035.
+#
+#    Consequently a non-zero human count here does NOT prove that all
+#    submitted human reviews are visible to this script, and a zero count
+#    does NOT prove that no human review was ever submitted. It means the
+#    projection this script reads is empty. Authoritative review-history
+#    questions belong to a caller that reads the full `reviews` connection.
+#    Nothing here changes that choice: `latestReviews` remains correct for
+#    its purpose, because superseded pre-push reviews must not count as
+#    finished.
 LATEST_REVIEWS="$(paginate_pr_connection "latestReviews" "author { login __typename } state commit { oid }")"
 
 HUMAN_REVIEWS="$(printf '%s' "$LATEST_REVIEWS" | jq -c '[.[] | select((.author.__typename // "User") != "Bot")]')"
