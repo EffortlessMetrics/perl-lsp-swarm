@@ -30,13 +30,17 @@ fn contains_uri(response: &Value, uri: &str) -> Result<bool> {
 
 #[test]
 fn first_references_ask_waits_for_closed_file_index_over_stdio() -> Result<()> {
-    let binary = std::env::var("PERL_LSP_BIN")
-        .context("set PERL_LSP_BIN to the exact just-built expose_lsp_test_api binary")?;
+    let binary = std::env::var("PERL_LSP_BIN").context(
+        "set PERL_LSP_BIN to the exact just-built perllsp binary with expose_lsp_test_api",
+    )?;
     let binary = std::fs::canonicalize(&binary).context("PERL_LSP_BIN must exist")?;
     ensure!(binary.is_absolute(), "PERL_LSP_BIN must be absolute");
     let expected_hash = std::env::var("PERL_LSP_PROOF_SHA256")
         .context("set PERL_LSP_PROOF_SHA256 from the just-built PERL_LSP_BIN")?;
-    let actual_hash = format!("{:x}", Sha256::digest(std::fs::read(&binary)?));
+    let actual_hash = Sha256::digest(std::fs::read(&binary)?)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     ensure!(
         actual_hash.eq_ignore_ascii_case(&expected_hash),
         "PERL_LSP_BIN hash differs from the just-built proof binary"
