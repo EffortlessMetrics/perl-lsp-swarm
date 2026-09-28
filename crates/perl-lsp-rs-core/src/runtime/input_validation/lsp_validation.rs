@@ -47,12 +47,24 @@ const TEXT_SYNC_METHODS: &[&str] =
 /// roughly doubles the payload). `validate_file_content` then enforces the real
 /// configured limit precisely. Every other method keeps the flat bound.
 fn max_params_size_for(method: &str) -> usize {
-    if TEXT_SYNC_METHODS.contains(&method) {
-        let file_limit = limits_max_file_size_bytes();
-        MAX_PARAMS_SIZE.max(file_limit.saturating_mul(2).saturating_add(4_096))
-    } else {
-        MAX_PARAMS_SIZE
-    }
+    if TEXT_SYNC_METHODS.contains(&method) { text_sync_params_ceiling() } else { MAX_PARAMS_SIZE }
+}
+
+/// The effective serialized-params ceiling for text-synchronization methods.
+///
+/// Single source of truth for the number [`max_params_size_for`] applies to
+/// [`TEXT_SYNC_METHODS`], exported so the runtime can name the same ceiling
+/// to users when a sync notification is rejected against it (#16659) without
+/// duplicating the arithmetic and drifting from the gate.
+pub fn text_sync_params_ceiling() -> usize {
+    let file_limit = limits_max_file_size_bytes();
+    MAX_PARAMS_SIZE.max(file_limit.saturating_mul(2).saturating_add(4_096))
+}
+
+/// Whether `method` is a text-synchronization notification whose rejection at
+/// admission silently desynchronizes a stored document (#16659).
+pub fn is_text_sync_method(method: &str) -> bool {
+    TEXT_SYNC_METHODS.contains(&method)
 }
 
 /// Admit a decoded JSON-RPC request on generic protocol grounds alone.
