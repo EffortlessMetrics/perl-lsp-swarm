@@ -66,7 +66,7 @@ fn setup_hints_summary(config: &WorkspaceConfig) -> Value {
             "perl_path_uses_path",
             "info",
             "No explicit Perl binary is configured; perl-lsp will resolve `perl` from PATH when a subprocess needs it.",
-            "Put the intended `perl` first on PATH so resolution order picks it (`where perl` on Windows, `which -a perl` elsewhere). The language server deliberately accepts no interpreter-path setting.",
+            "Select the Perl to use by changing the active perlbrew or plenv version, which the server prefers over `PATH`; when neither is active, put the intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl` elsewhere). The language server accepts no interpreter-path setting.",
         ));
     }
 

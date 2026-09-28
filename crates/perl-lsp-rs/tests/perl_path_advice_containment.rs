@@ -83,16 +83,32 @@ const ALLOWED: &[(&str, &str)] = &[
         "../../docs/how-to/PERL_SETUP_TROUBLESHOOTING.md",
         "documents that the server accepts no interpreter-path setting (#16612)",
     ),
+    (
+        "../../docs/project/discovery/cross-session-triage-2026-05-30.md",
+        "historical triage record describing the unreachability (#3729)",
+    ),
 ];
 
-/// Roots scanned, relative to the crate, and what each one is.
+/// Directories scanned recursively, relative to the crate, and what each is.
 ///
-/// `src/` is the message surface. `docs/reference` and `docs/how-to` are the
-/// first-party user-facing sets — the pages a user reaches when something is
-/// already broken. The other `docs/` subtrees (architecture, specs, design,
-/// adr, archive, writeups) are internal records and are not scanned; adding one
-/// is a judgement call this test makes visible rather than hides.
-const SCAN_ROOTS: &[&str] = &["src", "../../docs/reference", "../../docs/how-to"];
+/// `src/` is the message surface. `docs/` is scanned whole rather than by
+/// curated subdirectory, because the original blind spot was exactly that kind
+/// of curation: `docs/reference` and `docs/how-to` were chosen by hand and the
+/// offenders were in them, but `docs/tutorials`, `docs/concepts` and
+/// `docs/EDITORS` were never opened and nothing would have said so. Whole-tree
+/// scanning costs one allowlist entry instead of a judgement call per future
+/// directory.
+///
+/// The residual gap is no longer a scan root: it is the bare `perlPath`
+/// spelling, which is deliberately unmatched (see the header). An editor page
+/// naming the language-server setting in a form absent from
+/// `LSP_SETTING_TOKENS` would pass; the fix there is a token, not a root.
+const SCAN_ROOTS: &[&str] = &["src", "../../docs"];
+
+/// Individual files scanned, relative to the crate. `README.md` is the most
+/// widely read file in the repository and no recursive root reaches it, so it is
+/// named explicitly rather than assumed covered.
+const SCAN_FILES: &[&str] = &["../../README.md"];
 
 fn files_with_extension(
     dir: &Path,
@@ -119,12 +135,17 @@ fn only_the_remediation_owner_and_its_guards_name_the_unsettable_setting()
     for root in SCAN_ROOTS {
         let dir = crate_root.join(root);
         let before = sources.len();
-        if root.ends_with(".rs") || root.starts_with("src") {
+        if root.starts_with("src") {
             files_with_extension(&dir, "rs", &mut sources)?;
         } else {
             files_with_extension(&dir, "md", &mut sources)?;
         }
         assert!(sources.len() > before, "scan root {root} matched no files");
+    }
+    for file in SCAN_FILES {
+        let path = crate_root.join(file);
+        assert!(path.is_file(), "scanned file {file} is missing; repoint SCAN_FILES");
+        sources.push(path);
     }
 
     let allowed: Vec<PathBuf> = ALLOWED.iter().map(|(path, _)| crate_root.join(path)).collect();
@@ -181,21 +202,25 @@ fn every_allowlisted_file_exists_and_still_needs_its_entry()
     Ok(())
 }
 
-/// The scan must actually cover the docs, or the widest blind spot reopens
-/// silently. Asserted directly rather than left to the reader of SCAN_ROOTS.
+/// The scan must actually cover the docs and the README, or the widest blind
+/// spot reopens silently. Asserted directly rather than left to the reader of
+/// SCAN_ROOTS.
 #[test]
 fn the_scan_covers_first_party_user_facing_docs() {
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for root in ["../../docs/reference", "../../docs/how-to"] {
-        assert!(
-            crate_root.join(root).is_dir(),
-            "documented scan root {root} is missing; if the docs moved, repoint SCAN_ROOTS and \
-             re-check that no user-facing page advises the setting"
-        );
-    }
+    assert!(
+        crate_root.join("../../docs").is_dir(),
+        "documented scan root ../../docs is missing; if the docs moved, repoint SCAN_ROOTS and \
+         re-check that no user-facing page advises the setting"
+    );
     assert!(
         SCAN_ROOTS.len() > 1,
         "SCAN_ROOTS collapsed to a single root; the docs are where four of the #16612 offenders \
          lived"
+    );
+    assert!(
+        SCAN_FILES.iter().any(|file| file.ends_with("README.md")),
+        "no root-level README is scanned; it is the most widely read file in the repository and \
+         no recursive root reaches it"
     );
 }

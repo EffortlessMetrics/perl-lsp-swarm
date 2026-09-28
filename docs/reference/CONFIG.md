@@ -287,9 +287,11 @@ the workspace root. Absolute entries are honored as provided only when they
 still stay inside the workspace boundary. These paths are searched by
 `perl-lsp` and are not appended to Perl's runtime `@INC`.
 
-When `perlPath` is unset, the server will try perlbrew/plenv-managed
-interpreters before falling back to `perl` on `PATH` for the system `@INC`
-probe. Use `useSystemInc` to opt in to that system `@INC` lookup.
+The server resolves `perl` in a fixed order: an active perlbrew interpreter,
+then an active plenv interpreter, then `perl` on `PATH`. perlbrew and plenv
+therefore take precedence over `PATH` — change the active version there, or
+reorder `PATH` when neither is active. Use `useSystemInc` to opt in to that
+system `@INC` lookup.
 
 #### `perl.workspace.perlPath` — refused, not configurable
 
