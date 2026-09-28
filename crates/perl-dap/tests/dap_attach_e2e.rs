@@ -468,7 +468,10 @@ fn dap_attach_e2e_tcp_attach_timeout_returns_actionable_message() -> TestResult 
     )?;
 
     assert!(message.contains("Cannot attach to Perl debugger at 127.0.0.1"));
-    assert!(message.contains("(250ms timeout)"));
+    assert!(
+        message.contains("(250ms timeout)"),
+        "the attach failure must carry the configured budget: {message}"
+    );
     assert!(message.contains("RemotePort=127.0.0.1"));
 
     Ok(())

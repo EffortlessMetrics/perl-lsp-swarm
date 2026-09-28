@@ -52,6 +52,70 @@ enum AttachSubject {
     Ambiguous(String),
 }
 
+/// Why a launch failed — the launch-failure wrapper keys its guidance on this
+/// classification (#16552).
+///
+/// Before #16552 every failed launch was wrapped with an unconditional
+/// `perlPath` suggestion and an ambient "Found Perl at …" report, which
+/// misattributed program-path typos and syntax errors to the interpreter and
+/// sometimes contradicted the cause message itself. The classification is
+/// carried by the error value instead of being re-derived from message text so
+/// a reworded cause can never silently change the wrapper's guidance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LaunchFailureKind {
+    /// The configured interpreter could not be used: it was not found or
+    /// could not be spawned, its name was invalid, or it cannot host the core
+    /// debugger module. Ambient-Perl discovery info and `perlPath` advice are
+    /// relevant to this class.
+    Interpreter,
+    /// The launch configuration, the debuggee, or an internal boundary was
+    /// rejected (missing program, syntax error, workspace boundary, session
+    /// lifecycle). Interpreter advice would misattribute the cause and stays
+    /// out of the message.
+    Other,
+}
+
+/// A launch failure: the user-facing cause message plus the classification the
+/// response wrapper uses to decide whether interpreter guidance applies
+/// (#16552).
+#[derive(Debug, Clone)]
+pub(super) struct LaunchFailure {
+    kind: LaunchFailureKind,
+    message: String,
+}
+
+impl LaunchFailure {
+    /// An interpreter-class failure: `perlPath` guidance applies.
+    fn interpreter(message: impl Into<String>) -> Self {
+        Self { kind: LaunchFailureKind::Interpreter, message: message.into() }
+    }
+
+    /// Any failure the interpreter advice would misattribute.
+    fn other(message: impl Into<String>) -> Self {
+        Self { kind: LaunchFailureKind::Other, message: message.into() }
+    }
+
+    fn kind(&self) -> LaunchFailureKind {
+        self.kind
+    }
+}
+
+impl std::fmt::Display for LaunchFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Join two sentences with exactly one separator so an embedded cause that
+/// already ends in punctuation never produces `". ."` (#16552).
+fn join_sentences(first: &str, second: &str) -> String {
+    if first.ends_with('.') || first.ends_with('!') || first.ends_with('?') {
+        format!("{first} {second}")
+    } else {
+        format!("{first}. {second}")
+    }
+}
+
 /// Read one debugger record, accepting either a newline or a prompt-only
 /// record. perl5db may leave `DB<N>` unterminated while it waits for the next
 /// command; `read_line` would block forever in that state and prevent the
@@ -781,21 +845,45 @@ impl DebugAdapter {
                         message: None,
                     }
                 }
-                Err(e) => {
-                    let perl_info = detect_perl_info();
+                Err(failure) => {
+                    // #16552: interpreter discovery info and `perlPath` advice
+                    // are only added when the interpreter is actually the
+                    // failing component; for every other cause the wrapper
+                    // stays out of the way so the embedded diagnosis (missing
+                    // program, compiler output, workspace boundary) is the
+                    // whole message.
+                    let message = if failure.kind() == LaunchFailureKind::Interpreter {
+                        // `detect_perl_info`'s not-found hint already ends with
+                        // a period; adding another before the `perlPath`
+                        // advice produced "path.. To use" in the launch
+                        // response (#16552 review).
+                        let perl_info = detect_perl_info();
+                        let perl_info = if perl_info.ends_with('.') {
+                            perl_info
+                        } else {
+                            format!("{perl_info}.")
+                        };
+                        format!(
+                            "Cannot start Perl debugger: {}",
+                            join_sentences(
+                                &failure.to_string(),
+                                &format!(
+                                    "{perl_info} To use a specific Perl interpreter, add \
+                                     `perlPath` to your launch.json \
+                                     (e.g. {{\"perlPath\": \"/path/to/perl\"}})."
+                                )
+                            )
+                        )
+                    } else {
+                        format!("Cannot start Perl debugger: {}", failure)
+                    };
                     DapMessage::Response {
                         seq,
                         request_seq,
                         success: false,
                         command: "launch".to_string(),
                         body: None,
-                        message: Some(format!(
-                            "Cannot start Perl debugger: {}. \
-                             {perl_info}. \
-                             To use a specific Perl interpreter, add `perlPath` to your launch.json \
-                             (e.g. {{\"perlPath\": \"/path/to/perl\"}}).",
-                            e
-                        )),
+                        message: Some(message),
                     }
                 }
             }
@@ -901,7 +989,7 @@ impl DebugAdapter {
         env_overrides: HashMap<String, String>,
         cwd_override: Option<PathBuf>,
         debuggee_timeout_secs: u64,
-    ) -> Result<i32, String> {
+    ) -> Result<i32, LaunchFailure> {
         // Security: Validate program path before any process spawning
         // This prevents command injection via flag arguments (e.g., "-e malicious_code")
         // and ensures we're launching a real Perl script file.
@@ -910,11 +998,11 @@ impl DebugAdapter {
 
         // Reject empty or whitespace-only paths
         if program.is_empty() {
-            return Err(
+            return Err(LaunchFailure::other(
                 "No Perl script was specified. Set the 'program' field in your launch.json \
                  to the path of the script you want to debug."
                     .to_string(),
-            );
+            ));
         }
 
         // Detect shell-style quotes around the program path (#1985).
@@ -925,11 +1013,11 @@ impl DebugAdapter {
             (program.starts_with('\'') && program.ends_with('\'') && program.len() > 1)
                 || (program.starts_with('"') && program.ends_with('"') && program.len() > 1);
         if has_surrounding_quotes && !Path::new(program).is_file() {
-            return Err(format!(
+            return Err(LaunchFailure::other(format!(
                 "The 'program' path '{program}' has surrounding quotes. \
                  Remove the quotes in your launch.json — the path should be just \
                  the script path, e.g. \"program\": \"script.pl\"."
-            ));
+            )));
         }
 
         // Validate that the program is a regular file (not a directory, device, etc.)
@@ -941,19 +1029,19 @@ impl DebugAdapter {
         match std::fs::metadata(path) {
             Ok(metadata) => {
                 if !metadata.is_file() {
-                    return Err(format!(
+                    return Err(LaunchFailure::other(format!(
                         "'{}' is not a file. Update the 'program' field in your launch.json \
                          to point to a Perl script (.pl or .t).",
                         program
-                    ));
+                    )));
                 }
             }
             Err(e) => {
-                return Err(format!(
+                return Err(LaunchFailure::other(format!(
                     "Cannot find '{}': {}. \
                      Check that the 'program' path in your launch.json is correct.",
                     program, e
-                ));
+                )));
             }
         }
 
@@ -963,20 +1051,20 @@ impl DebugAdapter {
             lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
         if let Some(root) = workspace_root.as_ref() {
             security::validate_path(path, root).map_err(|e| {
-                format!(
+                LaunchFailure::other(format!(
                     "The script '{}' is outside your workspace folder. \
                      Only scripts within the open workspace can be debugged. \
                      Details: {}",
                     program, e
-                )
+                ))
             })?;
         }
 
         if !is_valid_perl_interpreter(perl_interpreter) {
-            return Err(format!(
+            return Err(LaunchFailure::interpreter(format!(
                 "Invalid Perl interpreter '{}'. Set launch.json `perl` to a Perl executable path (for example, `perl` or `/usr/bin/perl`).",
                 perl_interpreter
-            ));
+            )));
         }
 
         // Effective debuggee working directory, shared by the capability
@@ -996,13 +1084,15 @@ impl DebugAdapter {
         // but never hosts a session. Probe it — from the same effective
         // debuggee directory — before spawning so such a launch fails with a
         // typed, actionable error instead of a mid-session pipe failure.
-        Self::check_debugger_capability(perl_interpreter, &env_overrides, &prog_cwd)?;
+        Self::check_debugger_capability(perl_interpreter, &env_overrides, &prog_cwd)
+            .map_err(LaunchFailure::interpreter)?;
 
         // Pre-launch syntax check: run `perl -c <script>` before spawning the
         // debugger.  This catches syntax errors early and surfaces a clear,
         // actionable message to the user instead of a generic "Cannot start
         // Perl debugger" failure after `perl -d` exits immediately.
-        Self::check_syntax(perl_interpreter, program, &env_overrides, Some(prog_cwd.clone()))?;
+        Self::check_syntax(perl_interpreter, program, &env_overrides, Some(prog_cwd.clone()))
+            .map_err(LaunchFailure::other)?;
 
         // Use PerlOracleEnv to deny ambient PERL5LIB/PERL5OPT so the debug
         // session env is controlled entirely by launch.json `env` (#8688).
@@ -1039,7 +1129,9 @@ impl DebugAdapter {
         // workspace security boundary. Pin an absolute spelling so a relative
         // launch cwd cannot later be reinterpreted against the adapter's cwd.
         let debuggee_cwd = std::path::absolute(cmd.get_current_dir().unwrap_or(Path::new(".")))
-            .map_err(|error| format!("Cannot resolve debugger working directory: {error}"))?;
+            .map_err(|error| {
+                LaunchFailure::other(format!("Cannot resolve debugger working directory: {error}"))
+            })?;
         cmd.current_dir(&debuggee_cwd);
         let launch_source_path = {
             let path = Path::new(program);
@@ -1047,26 +1139,28 @@ impl DebugAdapter {
         };
         let launch_source_digest = std::fs::read(&launch_source_path)
             .map(|bytes| perl_source_identity::ContentDigest::of_bytes(&bytes).to_string())
-            .map_err(|error| format!("Cannot snapshot launched source identity: {error}"))?;
+            .map_err(|error| {
+                LaunchFailure::other(format!("Cannot snapshot launched source identity: {error}"))
+            })?;
 
         // Allocate the execution-context id BEFORE spawning: a launch that
         // cannot mint a fresh id must fail without side effects.
         let Some(thread_id) = self.allocate_thread_id() else {
-            return Err(
+            return Err(LaunchFailure::other(
                 "Debugger could not be started: the execution-context id space is exhausted. \
                  Restart the debug adapter to reset execution contexts."
                     .to_string(),
-            );
+            ));
         };
 
         // A previously rejected replacement remains the sole owner of an
         // unconfirmed child. Do not spawn another child until terminal
         // cleanup has retried that owner successfully.
         if lock_or_recover(&self.rejected_child, "debug_adapter.rejected_child").is_some() {
-            return Err(
+            return Err(LaunchFailure::other(
                 "Cannot replace the active debugger session while a rejected process cleanup remains unconfirmed"
                     .to_string(),
-            );
+            ));
         }
 
         // #15538: make the session child a process-group leader on Unix so
@@ -1079,7 +1173,9 @@ impl DebugAdapter {
                 // launch must leave the currently active reader valid for its existing session.
                 if !self.prepare_replacement_session() {
                     let cleanup = Self::terminate_child_process(&mut child);
-                    return Err(self.reject_spawned_replacement_child(child, cleanup));
+                    return Err(LaunchFailure::other(
+                        self.reject_spawned_replacement_child(child, cleanup),
+                    ));
                 }
                 if let Ok(mut identity) = self.launch_source_identity.lock() {
                     *identity = Some((launch_source_path.clone(), launch_source_digest.clone()));
@@ -1103,11 +1199,11 @@ impl DebugAdapter {
                 if let Ok(mut guard) = self.session.lock() {
                     *guard = Some(session);
                 } else {
-                    return Err(
+                    return Err(LaunchFailure::other(
                         "Debugger could not be started: an internal state error occurred. \
                          Try stopping the debug session and relaunching."
                             .to_string(),
-                    );
+                    ));
                 }
                 self.operation_broker.open_session();
                 self.admit_terminal_lifecycle();
@@ -1151,13 +1247,15 @@ impl DebugAdapter {
                     })
                     .unwrap_or_default();
                 if installed_source_breakpoints.ambiguous {
-                    return Err(if installed_source_breakpoints.cleanup_succeeded {
-                        "Debugger session was invalidated because a source breakpoint acknowledgement was ambiguous"
+                    return Err(LaunchFailure::other(
+                        if installed_source_breakpoints.cleanup_succeeded {
+                            "Debugger session was invalidated because a source breakpoint acknowledgement was ambiguous"
                             .to_string()
-                    } else {
-                        "Debugger session was invalidated but cleanup was not confirmed after an ambiguous source breakpoint acknowledgement"
+                        } else {
+                            "Debugger session was invalidated but cleanup was not confirmed after an ambiguous source breakpoint acknowledgement"
                             .to_string()
-                    });
+                        },
+                    ));
                 }
                 for id in installed_source_breakpoints.installed {
                     self.send_event(
@@ -1179,7 +1277,11 @@ impl DebugAdapter {
 
                 Ok(thread_id)
             }
-            Err(e) => Err(format_perl_spawn_error(perl_interpreter, &e)),
+            Err(e) => Err(LaunchFailure::interpreter(format_perl_spawn_error(
+                perl_interpreter,
+                Some(&debuggee_cwd),
+                &e,
+            ))),
         }
     }
 
@@ -2895,17 +2997,18 @@ impl DebugAdapter {
                     success: false,
                     command: "attach".to_string(),
                     body: None,
+                    // #16555: the connect error itself carries the exact
+                    // timeout budget and the refused-vs-timed-out verdict
+                    // ("Nothing is listening … (connection refused) …"), so
+                    // the wrapper only adds the remediation instead of
+                    // restating a hard-coded timeout default that drifted
+                    // from the real one.
                     message: Some(format!(
-                        "Cannot attach to Perl debugger at {}:{} ({}ms timeout): {}. \
+                        "Cannot attach to Perl debugger at {}:{}: {}. \
                              Make sure the Perl process was started with \
                              'PERLDB_OPTS=\"RemotePort={}:{}\"' \
                              and is still running before attaching.",
-                        config.host,
-                        config.port,
-                        config.timeout_ms.unwrap_or(30000),
-                        e,
-                        config.host,
-                        config.port,
+                        config.host, config.port, e, config.host, config.port,
                     )),
                 },
             }
@@ -6421,50 +6524,50 @@ mod tests {
         );
     }
 
-    /// Verify that a failed launch returns a response whose message mentions Perl.
-    ///
-    /// We construct a temporary file so that the file-exists check passes, then
-    /// rely on the fact that on PATH-less environments `perl -d` will fail and
-    /// the enhanced error path fires, or that the Perl syntax check / spawn of
-    /// `perl -d` on a trivially-empty script eventually surfaces an error whose
-    /// message includes Perl-related text.
-    ///
-    /// The assertion is intentionally broad: the message must contain the word
-    /// "perl" (case-insensitive).  This covers both the success branch
-    /// ("Found Perl at …") and the not-found branch ("Perl was not found …").
-    #[test]
-    fn handle_launch_error_includes_perl_info() -> Result<(), String> {
-        use std::io::Write;
-        use tempfile::NamedTempFile;
-
-        // Create a temporary file so that the file-exists validation in
-        // launch_debugger() passes, letting us reach the Perl-spawn error path.
-        let mut tmp =
-            NamedTempFile::new().map_err(|e| format!("could not create temp file: {e}"))?;
-        writeln!(tmp, "# placeholder").map_err(|e| format!("could not write to temp file: {e}"))?;
-        let tmp_path = tmp.path().to_str().ok_or("temp path is not valid UTF-8")?.to_string();
-
-        let mut adapter = DebugAdapter::new();
-
-        // Install an explicitly unbounded startup authority (#8656): this
-        // test targets the Perl-spawn error path, not boundary validation.
-        // Without an authority the launch is refused before any Perl check.
+    /// Build an adapter that passes launch-authority validation so a test
+    /// launch reaches the real program/interpreter paths under test (#16552).
+    fn launch_test_adapter() -> Result<DebugAdapter, String> {
+        let adapter = DebugAdapter::new();
+        // Install an explicitly unbounded startup authority (#8656): these
+        // tests target the launch-failure wrapper, not boundary validation.
         let authority = crate::security::launch_authority::LaunchAuthority::resolve(
             &crate::security::launch_authority::LaunchAuthorityStartup {
                 trusted_roots: Vec::new(),
                 allow_unbounded: Some(
                     crate::security::launch_authority::UnboundedAcknowledgement::new(
                         crate::security::launch_authority::LaunchAuthoritySource::CommandLine,
-                        "test: reach the Perl spawn error path",
+                        "test: reach the launch failure wrapper",
                     ),
                 ),
             },
         )
         .map_err(|e| format!("authority resolution failed: {e}"))?;
         adapter.set_launch_authority(authority);
-
-        // Initialize first (required by state machine validation)
+        // Initialize first (required by state machine validation).
         let _ = adapter.handle_initialize(1, 1, None);
+        Ok(adapter)
+    }
+
+    /// #16552: a failed launch of a *valid program* under the default
+    /// interpreter can only be an interpreter-class failure, so the response
+    /// wrapper must keep the `perlPath` advice and the Perl discovery info —
+    /// joined with single spaces, never `". ."`. The launch may legitimately
+    /// succeed on a healthy interpreter; the assertions bind only the failure
+    /// branch. The per-class companions below pin the branches that fail
+    /// deterministically.
+    #[test]
+    fn handle_launch_error_includes_perl_info() -> Result<(), String> {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a temporary file so that the file-exists validation in
+        // launch_debugger() passes, letting us reach the interpreter path.
+        let mut tmp =
+            NamedTempFile::new().map_err(|e| format!("could not create temp file: {e}"))?;
+        writeln!(tmp, "# placeholder").map_err(|e| format!("could not write to temp file: {e}"))?;
+        let tmp_path = tmp.path().to_str().ok_or("temp path is not valid UTF-8")?.to_string();
+
+        let mut adapter = launch_test_adapter()?;
 
         let response = adapter.handle_launch(
             2,
@@ -6477,15 +6580,168 @@ mod tests {
         match response {
             super::DapMessage::Response { success, message, .. } => {
                 // The launch may succeed (Perl on PATH ran the empty script) or fail.
-                // When it fails, the message must mention Perl.
+                // When it fails, the failure is interpreter-class.
                 if !success {
                     let msg = message.unwrap_or_default();
                     assert!(
                         msg.to_lowercase().contains("perl"),
                         "launch error message should mention 'perl'; got: {msg:?}"
                     );
+                    assert!(
+                        msg.contains("perlPath"),
+                        "a failed launch of a valid program is interpreter-class and must \
+                         keep the perlPath advice; got: {msg:?}"
+                    );
+                    assert!(
+                        !msg.contains(".."),
+                        "launch error sentences must be joined without double punctuation; \
+                         got: {msg:?}"
+                    );
                 }
                 // success == true means Perl is on PATH and launched fine — valid outcome.
+                Ok(())
+            }
+            other => Err(format!("expected Response from handle_launch; got {other:?}")),
+        }
+    }
+
+    /// #16552 case 1: a nonexistent program path must not be wrapped with
+    /// interpreter guidance — the embedded cause is the whole message, and the
+    /// join must not produce `correct..`-style double punctuation.
+    #[test]
+    fn launch_failure_for_a_missing_program_omits_interpreter_advice() -> Result<(), String> {
+        let missing = std::env::temp_dir().join("no-such-program-16552.pl");
+        let missing = missing.to_string_lossy().into_owned();
+
+        let mut adapter = launch_test_adapter()?;
+        let response = adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": missing })));
+
+        match response {
+            super::DapMessage::Response { success, message, .. } => {
+                assert!(!success, "a nonexistent program must fail the launch");
+                let msg = message.unwrap_or_default();
+                assert!(
+                    msg.contains("Cannot find"),
+                    "expected the missing-program cause in the message, got: {msg:?}"
+                );
+                assert!(
+                    !msg.contains("perlPath"),
+                    "interpreter advice must not ride on a missing-program failure: {msg:?}"
+                );
+                assert!(
+                    !msg.contains("Found Perl at"),
+                    "ambient interpreter info must not ride on a missing-program failure: {msg:?}"
+                );
+                assert!(
+                    !msg.contains("To use a specific Perl interpreter"),
+                    "the wrapper must stay silent for a program-path failure: {msg:?}"
+                );
+                assert!(
+                    !msg.contains(".."),
+                    "launch error sentences must be joined without double punctuation: {msg:?}"
+                );
+                Ok(())
+            }
+            other => Err(format!("expected Response from handle_launch; got {other:?}")),
+        }
+    }
+
+    /// #16552 case 2: a compile-error program keeps its embedded compiler
+    /// output verbatim but must not pick up interpreter advice from the
+    /// wrapper.
+    #[test]
+    fn launch_failure_for_a_syntax_error_omits_interpreter_advice() -> Result<(), String> {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut tmp = NamedTempFile::with_suffix(".pl")
+            .map_err(|e| format!("could not create temp file: {e}"))?;
+        writeln!(tmp, "print 1;").map_err(|e| format!("could not write to temp file: {e}"))?;
+        writeln!(tmp, "}}").map_err(|e| format!("could not write to temp file: {e}"))?;
+        let tmp_path = tmp.path().to_str().ok_or("temp path is not valid UTF-8")?.to_string();
+
+        // Runtime precondition, stated explicitly: this case pins the
+        // wrapper's pass-through of the embedded compiler diagnosis, which
+        // only a working interpreter can produce. Without Perl on PATH the
+        // launch fails interpreter-first and the "Syntax error in" diagnosis
+        // never exists, so the case would fail with a misleading
+        // interpreter-shaped message rather than a real regression (#16552
+        // review).
+        if !detect_perl_info().contains("Found Perl at") {
+            return Ok(());
+        }
+
+        let mut adapter = launch_test_adapter()?;
+        let response =
+            adapter.handle_launch(2, 2, Some(serde_json::json!({ "program": tmp_path })));
+
+        match response {
+            super::DapMessage::Response { success, message, .. } => {
+                assert!(!success, "a syntax-error program must fail the launch");
+                let msg = message.unwrap_or_default();
+                assert!(
+                    msg.contains("Syntax error in"),
+                    "expected the embedded compiler diagnosis, got: {msg:?}"
+                );
+                assert!(
+                    !msg.contains("perlPath"),
+                    "interpreter advice must not ride on a syntax-error failure: {msg:?}"
+                );
+                assert!(
+                    !msg.contains("Found Perl at"),
+                    "ambient interpreter info must not ride on a syntax-error failure: {msg:?}"
+                );
+                Ok(())
+            }
+            other => Err(format!("expected Response from handle_launch; got {other:?}")),
+        }
+    }
+
+    /// #16552 case 3: an explicit `perlPath` that does not exist must be
+    /// reported as "not found at '<path>'" — never as the false "is not
+    /// available on PATH" claim — while still counting as an interpreter-class
+    /// failure, so the wrapper keeps its advice and joins sentences cleanly.
+    #[test]
+    fn launch_failure_for_a_broken_explicit_interpreter_names_the_path() -> Result<(), String> {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut tmp = NamedTempFile::with_suffix(".pl")
+            .map_err(|e| format!("could not create temp file: {e}"))?;
+        writeln!(tmp, "print 1;").map_err(|e| format!("could not write to temp file: {e}"))?;
+        let tmp_path = tmp.path().to_str().ok_or("temp path is not valid UTF-8")?.to_string();
+
+        let broken = std::env::temp_dir().join("no-such-interpreter-16552").join("perl.exe");
+        let broken = broken.to_string_lossy().into_owned();
+
+        let mut adapter = launch_test_adapter()?;
+        let response = adapter.handle_launch(
+            2,
+            2,
+            Some(serde_json::json!({ "program": tmp_path, "perlPath": broken })),
+        );
+
+        match response {
+            super::DapMessage::Response { success, message, .. } => {
+                assert!(!success, "a broken explicit interpreter must fail the launch");
+                let msg = message.unwrap_or_default();
+                assert!(
+                    msg.contains(&format!("not found at '{broken}'")),
+                    "an explicit interpreter path must be reported as not found at its path; \
+                     got: {msg:?}"
+                );
+                assert!(
+                    !msg.contains("is not available on PATH"),
+                    "an explicit path must not be misreported as a PATH lookup: {msg:?}"
+                );
+                assert!(
+                    msg.contains("perlPath"),
+                    "an interpreter-class failure keeps the perlPath advice: {msg:?}"
+                );
+                assert!(
+                    !msg.contains(".."),
+                    "launch error sentences must be joined without double punctuation: {msg:?}"
+                );
                 Ok(())
             }
             other => Err(format!("expected Response from handle_launch; got {other:?}")),
@@ -6527,7 +6783,7 @@ mod tests {
         );
         let error = match result {
             Ok(thread_id) => return Err(format!("unexpectedly launched thread {thread_id}")),
-            Err(error) => error,
+            Err(error) => error.to_string(),
         };
 
         assert!(
@@ -6559,7 +6815,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_includes_custom_interpreter_name() {
         let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("/custom/perl", &error);
+        let message = format_perl_spawn_error("/custom/perl", None, &error);
 
         assert!(
             message.contains("/custom/perl"),
@@ -6569,7 +6825,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_for_missing_perl_is_actionable() {
         let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let message = format_perl_spawn_error("perl", &error);
+        let message = format_perl_spawn_error("perl", None, &error);
 
         assert!(message.contains("Install Perl"), "expected install guidance, got: {message}");
         assert!(
@@ -6585,7 +6841,7 @@ mod tests {
     #[test]
     fn format_perl_spawn_error_preserves_non_not_found_error_detail() {
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
-        let message = format_perl_spawn_error("/secure/perl", &error);
+        let message = format_perl_spawn_error("/secure/perl", None, &error);
 
         assert!(message.contains("/secure/perl"), "expected interpreter path, got: {message}");
         assert!(
@@ -6599,6 +6855,51 @@ mod tests {
         assert!(
             !message.contains("Install Perl"),
             "non-NotFound errors should not use missing-perl guidance, got: {message}"
+        );
+    }
+
+    /// #16552 review: a `NotFound` spawn with a nonexistent working directory
+    /// names the missing `cwd`, not the interpreter — process creation fails
+    /// with `NotFound` for a missing cwd even when the executable exists.
+    #[test]
+    fn format_perl_spawn_error_blames_a_missing_cwd_not_the_interpreter() {
+        let missing_dir = std::path::Path::new("./no-such-cwd-16552-review");
+        assert!(!missing_dir.exists(), "precondition: the probe directory must not exist");
+        let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
+        let message = format_perl_spawn_error("/usr/bin/perl", Some(missing_dir), &error);
+
+        assert!(
+            message.contains("working directory not found"),
+            "a missing cwd must be named as the failure, got: {message}"
+        );
+        assert!(
+            message.contains("no-such-cwd-16552-review"),
+            "the message must name the missing directory, got: {message}"
+        );
+        assert!(
+            !message.contains("perlPath"),
+            "a missing cwd must not send users to fix perlPath, got: {message}"
+        );
+    }
+
+    /// #16552 review: with a working directory that exists, a `NotFound`
+    /// spawn keeps the interpreter attribution — the cwd is not the failing
+    /// component there.
+    #[test]
+    fn format_perl_spawn_error_keeps_interpreter_attribution_for_an_existing_cwd() {
+        // The OS temp directory exists on every test runner; an existing cwd
+        // must not trigger the missing-directory wording.
+        let dir = std::env::temp_dir();
+        let error = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
+        let message = format_perl_spawn_error("/definitely/not/a/perl", Some(&dir), &error);
+
+        assert!(
+            message.contains("not found at '/definitely/not/a/perl'"),
+            "an existing cwd keeps the interpreter attribution, got: {message}"
+        );
+        assert!(
+            !message.contains("working directory not found"),
+            "the cwd wording must not ride on an existing directory, got: {message}"
         );
     }
 

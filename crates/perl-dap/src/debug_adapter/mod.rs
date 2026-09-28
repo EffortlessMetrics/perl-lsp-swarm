@@ -2291,7 +2291,17 @@ print "result: $final\n";
                 assert!(message.is_some());
                 let msg = message.ok_or("Expected message")?;
                 assert!(msg.contains("localhost:13603"));
-                assert!(msg.contains("5000ms timeout"));
+                // #16555: the wrapper no longer restates a hard-coded timeout
+                // default that can drift from the real budget; the connect
+                // error carries the exact configured budget ("({N}ms timeout)"
+                // on every attach failure, including the refused verdict's
+                // "nothing is listening … (connection refused)" wording) and
+                // the wrapper carries the PERLDB_OPTS remediation.
+                assert!(msg.contains("RemotePort=localhost:13603"));
+                assert!(
+                    !msg.contains("30000"),
+                    "no hard-coded timeout default may leak into the attach refusal: {msg}"
+                );
             }
             _ => return Err("Expected response".into()),
         }
