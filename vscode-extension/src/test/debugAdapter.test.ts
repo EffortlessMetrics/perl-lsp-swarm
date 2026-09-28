@@ -32,6 +32,7 @@ interface LaunchConfiguration {
   type: string;
   request: string;
   name?: string;
+  program?: string;
   host?: string;
   port?: number;
   externalPeer?: string;
@@ -914,6 +915,30 @@ describe('buildLaunchJsonContent', () => {
     const cfg = required(parsed.configurations[0], 'launch-script configuration');
     expect(cfg.type).toBe('perl');
     expect(cfg.request).toBe('launch');
+    expect(cfg.program).toBe('${file}');
+  });
+
+  test('package launch defaults target the active file, while attach stays TCP', () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'),
+    ) as {
+      contributes: {
+        debuggers: Array<{
+          configurationAttributes: { launch: { properties: { program: { default: string } } } };
+          initialConfigurations: LaunchConfiguration[];
+        }>;
+      };
+    };
+    const debuggerContribution = required(manifest.contributes.debuggers[0], 'Perl debugger');
+    expect(debuggerContribution.configurationAttributes.launch.properties.program.default).toBe(
+      '${file}',
+    );
+    const launch = required(debuggerContribution.initialConfigurations[0], 'initial launch');
+    expect(launch.request).toBe('launch');
+    expect(launch.program).toBe('${file}');
+    const attach = required(debuggerContribution.initialConfigurations[1], 'initial attach');
+    expect(attach.request).toBe('attach');
+    expect(attach.host).toBe('localhost');
   });
 
   test('attach-process template produces attach config with host and port', () => {
