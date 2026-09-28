@@ -1503,9 +1503,11 @@ impl<'a> Parser<'a> {
             | Some(TokenKind::While)
             | Some(TokenKind::Until)
             | Some(TokenKind::For)
-            | Some(TokenKind::Foreach)
-            | Some(TokenKind::DataMarker) => true,
-            Some(kind) if kind.is_low_precedence_word_operator() => true,
+            | Some(TokenKind::Foreach) => !self.is_keyword_before_fat_arrow(),
+            Some(TokenKind::DataMarker) => true,
+            Some(kind) if kind.is_low_precedence_word_operator() => {
+                !self.is_keyword_before_fat_arrow()
+            }
             None => true,
             _ => false,
         }
