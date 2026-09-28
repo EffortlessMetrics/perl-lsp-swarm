@@ -22,10 +22,14 @@ mod hover_extracted;
 #[cfg(test)]
 mod hover_tests;
 mod live_compiler_hover;
+mod qualified_token;
 mod regex_hover;
 mod signature_help;
 
 use hover_extracted::HoverExtracted;
+#[cfg(feature = "workspace")]
+use qualified_token::indexed_member_matches_qualified_callable;
+use qualified_token::{QualifiedHoverKind, classify_qualified_hover_token};
 
 thread_local! {
     /// Trace-only source-region kind for the hover request running on *this*
@@ -394,6 +398,58 @@ impl LspServer {
                         uri,
                         captured_generation,
                         Self::inject_hover_range_opt(hv, &hover_range),
+                    );
+                }
+                HoverExtracted::QualifiedCallable(package, name, qualified) => {
+                    #[cfg(feature = "workspace")]
+                    {
+                        // Cross-file callable lookup must fail closed when any
+                        // open document is newer than the index, matching
+                        // navigation. Caller-only freshness would present a
+                        // stale defining-file symbol as current.
+                        if !self.workspace_index_stale_for_any_open_document() {
+                            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                            if let Some(hover_value) =
+                                self.build_qualified_callable_hover(&package, &name)
+                            {
+                                if let Some(compiler_hover) = self.try_live_compiler_hover(
+                                    Some(&hover_value),
+                                    live_compiler_context.as_ref(),
+                                ) {
+                                    return self.publish_hover_answer(
+                                        uri,
+                                        captured_generation,
+                                        Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                                    );
+                                }
+                                return self.publish_hover_answer(
+                                    uri,
+                                    captured_generation,
+                                    Self::inject_hover_range_opt(hover_value, &hover_range),
+                                );
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "workspace"))]
+                    {
+                        let _ = (&package, &name);
+                    }
+                    // Index miss, stale snapshot, or no workspace feature: do not
+                    // invent a proven sub and do not reuse the missing-module card.
+                    let generic = hover_cards::unresolved_qualified_token_hover(&qualified);
+                    if let Some(compiler_hover) =
+                        self.try_live_compiler_hover(Some(&generic), live_compiler_context.as_ref())
+                    {
+                        return self.publish_hover_answer(
+                            uri,
+                            captured_generation,
+                            Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                        );
+                    }
+                    return self.publish_hover_answer(
+                        uri,
+                        captured_generation,
+                        Self::inject_hover_range_opt(generic, &hover_range),
                     );
                 }
                 #[cfg(feature = "workspace")]
@@ -1155,15 +1211,21 @@ impl LspServer {
                 }));
             }
 
-            // Before the bare-token fallback, check if the cursor is on a package name
-            // (an identifier that spans `::` separators, e.g. `File::Path`, `DBI`).
-            // Defer resolution to Phase 2 via `build_module_hover` so no workspace lock
-            // is held here.
-            if let Some(pkg_name) = Self::get_package_name_at_position(text, offset) {
+            // Before the bare-token fallback, classify a `::`-qualified token.
+            // Package/module references defer to `build_module_hover`. Qualified
+            // callables (`Pkg::sub`) must not take that path: a miss there is the
+            // missing-module `cpanm` card (#16646). Defer workspace lookup to
+            // Phase 2 so no workspace lock is held here.
+            if let Some(kind) = classify_qualified_hover_token(text, offset) {
+                let lookup_name = match &kind {
+                    QualifiedHoverKind::Package(pkg_name) => pkg_name.as_str(),
+                    QualifiedHoverKind::Callable { qualified, .. } => qualified.as_str(),
+                };
                 // Namespaced builtins (e.g. utf8::encode, utf8::decode) must take
-                // priority over module resolution: there is no utf8/encode.pm to
-                // find, and the correct response is the builtin hover card.
-                if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(&pkg_name) {
+                // priority over module and callable resolution: there is no
+                // utf8/encode.pm to find, and the correct response is the builtin
+                // hover card.
+                if let Some(builtin_doc) = crate::semantic::get_builtin_documentation(lookup_name) {
                     return HoverExtracted::Complete(json!({
                         "contents": {
                             "kind": "markdown",
@@ -1175,12 +1237,17 @@ impl LspServer {
                         },
                     }));
                 }
-                return HoverExtracted::PossiblePackage(
-                    pkg_name,
-                    text.to_string(),
-                    uri.to_string(),
-                    offset,
-                );
+                return match kind {
+                    QualifiedHoverKind::Package(pkg_name) => HoverExtracted::PossiblePackage(
+                        pkg_name,
+                        text.to_string(),
+                        uri.to_string(),
+                        offset,
+                    ),
+                    QualifiedHoverKind::Callable { package, name, qualified } => {
+                        HoverExtracted::QualifiedCallable(package, name, qualified)
+                    }
+                };
             }
 
             // Operator hover: show documentation for common Perl operators. (UX_GAP_06)
@@ -1478,47 +1545,38 @@ impl LspServer {
         content[start_byte..end_byte].to_string()
     }
 
-    /// Extract a package name at `offset`, spanning `::` separators.
+    /// Build hover for an indexed workspace-qualified callable (`Pkg::sub`).
     ///
-    /// Returns `Some(name)` only when the extracted token contains `::`,
-    /// indicating it is a qualified package name (e.g. `File::Path`, `Foo::Bar::Baz`).
-    /// Returns `None` for bare single-component identifiers to avoid misidentifying
-    /// function names or variables.
-    fn get_package_name_at_position(text: &str, offset: usize) -> Option<String> {
-        let bytes = text.as_bytes();
-        let len = bytes.len();
-        if offset >= len {
-            return None;
-        }
+    /// Returns `None` when the index has no matching subroutine, method, or
+    /// constant. Callers must not treat that miss as a missing CPAN module.
+    #[cfg(feature = "workspace")]
+    fn build_qualified_callable_hover(&self, package: &str, name: &str) -> Option<Value> {
+        use perl_symbol::SymbolKind;
 
-        // Scan left over alphanumeric, underscore, and `::` sequences.
-        let mut start = offset;
-        while start > 0 {
-            let prev = start - 1;
-            if bytes[prev].is_ascii_alphanumeric() || bytes[prev] == b'_' {
-                start -= 1;
-            } else if prev >= 1 && bytes[prev] == b':' && bytes[prev - 1] == b':' {
-                start -= 2;
-            } else {
-                break;
-            }
-        }
+        let coord = self.coordinator()?;
+        let workspace_index = coord.index();
+        let qualified = format!("{package}::{name}");
+        let symbol = workspace_index.get_package_members(package).into_iter().find(|symbol| {
+            indexed_member_matches_qualified_callable(
+                package,
+                name,
+                &symbol.name,
+                symbol.container_name.as_deref(),
+                symbol.qualified_name.as_deref(),
+            ) && (symbol.kind.is_callable() || matches!(symbol.kind, SymbolKind::Constant))
+        })?;
 
-        // Scan right over alphanumeric, underscore, and `::` sequences.
-        let mut end = offset;
-        while end < len {
-            if bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' {
-                end += 1;
-            } else if end + 1 < len && bytes[end] == b':' && bytes[end + 1] == b':' {
-                end += 2;
-            } else {
-                break;
-            }
-        }
-
-        // Trim any trailing `::` (e.g. cursor right after the separator).
-        let candidate = text[start..end].trim_end_matches(':');
-        if candidate.contains("::") { Some(candidate.to_string()) } else { None }
+        let (kind_str, signature) = match symbol.kind {
+            SymbolKind::Method => ("Method", format!("method {qualified}")),
+            SymbolKind::Constant => ("Constant", qualified.clone()),
+            _ => ("Subroutine", format!("sub {qualified}")),
+        };
+        Some(hover_cards::qualified_callable_hover(
+            kind_str,
+            &signature,
+            package,
+            symbol.documentation.as_deref(),
+        ))
     }
 
     fn extract_xs_api_hover(uri: &str, text: &str, offset: usize) -> Option<Value> {
