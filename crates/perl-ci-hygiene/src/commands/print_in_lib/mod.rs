@@ -127,7 +127,7 @@ fn scan_offenders(repo_root: &Path) -> Result<Vec<String>> {
 ///   - Any future deliberate exception must add the clippy allow attribute with a
 ///     comment explaining why.
 ///
-/// This check mirrors the pattern of `cmd_check_unwraps_prod`. The baseline is stored
+/// This check mirrors the pattern of `check_unwraps_prod`. The baseline is stored
 /// in `ci/print_in_lib_baseline.txt`; the check fails if the current count exceeds it.
 pub(crate) fn check_print_in_lib(repo_root: &Path) -> Result<i32> {
     let offenders = scan_offenders(repo_root)?;
