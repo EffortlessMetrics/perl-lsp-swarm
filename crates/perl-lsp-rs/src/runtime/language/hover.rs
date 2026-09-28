@@ -27,6 +27,8 @@ mod regex_hover;
 mod signature_help;
 
 use hover_extracted::HoverExtracted;
+#[cfg(feature = "workspace")]
+use qualified_token::indexed_member_matches_qualified_callable;
 use qualified_token::{QualifiedHoverKind, classify_qualified_hover_token};
 
 thread_local! {
@@ -398,10 +400,14 @@ impl LspServer {
                         Self::inject_hover_range_opt(hv, &hover_range),
                     );
                 }
-                HoverExtracted::QualifiedCallable(package, name, qualified, doc_uri) => {
+                HoverExtracted::QualifiedCallable(package, name, qualified) => {
                     #[cfg(feature = "workspace")]
                     {
-                        if !self.workspace_index_stale_for_document(&doc_uri) {
+                        // Cross-file callable lookup must fail closed when any
+                        // open document is newer than the index, matching
+                        // navigation. Caller-only freshness would present a
+                        // stale defining-file symbol as current.
+                        if !self.workspace_index_stale_for_any_open_document() {
                             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                             if let Some(hover_value) =
                                 self.build_qualified_callable_hover(&package, &name)
@@ -426,7 +432,7 @@ impl LspServer {
                     }
                     #[cfg(not(feature = "workspace"))]
                     {
-                        let _ = (&package, &name, &doc_uri);
+                        let _ = (&package, &name);
                     }
                     // Index miss, stale snapshot, or no workspace feature: do not
                     // invent a proven sub and do not reuse the missing-module card.
@@ -1239,7 +1245,7 @@ impl LspServer {
                         offset,
                     ),
                     QualifiedHoverKind::Callable { package, name, qualified } => {
-                        HoverExtracted::QualifiedCallable(package, name, qualified, uri.to_string())
+                        HoverExtracted::QualifiedCallable(package, name, qualified)
                     }
                 };
             }
@@ -1551,10 +1557,13 @@ impl LspServer {
         let workspace_index = coord.index();
         let qualified = format!("{package}::{name}");
         let symbol = workspace_index.get_package_members(package).into_iter().find(|symbol| {
-            let name_matches =
-                symbol.name == name || symbol.qualified_name.as_deref() == Some(qualified.as_str());
-            name_matches
-                && (symbol.kind.is_callable() || matches!(symbol.kind, SymbolKind::Constant))
+            indexed_member_matches_qualified_callable(
+                package,
+                name,
+                &symbol.name,
+                symbol.container_name.as_deref(),
+                symbol.qualified_name.as_deref(),
+            ) && (symbol.kind.is_callable() || matches!(symbol.kind, SymbolKind::Constant))
         })?;
 
         let (kind_str, signature) = match symbol.kind {

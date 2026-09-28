@@ -34,6 +34,11 @@ pub(super) fn classify_qualified_hover_token(
     if !candidate.contains("::") {
         return None;
     }
+    // `$Foo::bar` / `@Foo::ISA` / `%Foo::EXPORT` / `*Foo::bar` are variables
+    // or globs, not callables. `&Pkg::sub` stays a callable.
+    if preceded_by_variable_or_glob_sigil(text, start) {
+        return None;
+    }
 
     let last_sep = candidate.rfind("::")?;
     let final_component_start = last_sep.checked_add(2)?;
@@ -78,6 +83,32 @@ pub(super) fn classify_qualified_hover_token(
         package: package.to_string(),
         name: name.to_string(),
     })
+}
+
+/// `$`, `@`, `%`, and `*` immediately before a `::` span name a variable or glob.
+fn preceded_by_variable_or_glob_sigil(text: &str, start: usize) -> bool {
+    start
+        .checked_sub(1)
+        .and_then(|index| text.as_bytes().get(index).copied())
+        .is_some_and(|byte| matches!(byte, b'$' | b'@' | b'%' | b'*'))
+}
+
+/// True when an indexed member is the requested `package::name` callable.
+///
+/// `get_package_members` also returns nested-package descendants whose
+/// qualified names start with `package::`. Accept only an exact qualified
+/// name or an exact container plus bare name so `Foo::run()` cannot be
+/// proven by `Foo::Bar::run`.
+pub(super) fn indexed_member_matches_qualified_callable(
+    package: &str,
+    name: &str,
+    symbol_name: &str,
+    container_name: Option<&str>,
+    qualified_name: Option<&str>,
+) -> bool {
+    let expected_qualified = format!("{package}::{name}");
+    qualified_name == Some(expected_qualified.as_str())
+        || (container_name == Some(package) && symbol_name == name)
 }
 
 /// Byte span of a `::`-qualified identifier at `offset`, with trailing `:` trimmed.
@@ -303,5 +334,88 @@ mod tests {
     #[test]
     fn bare_identifier_is_not_qualified() {
         assert_eq!(classify_qualified_hover_token("print helper();\n", 6), None);
+    }
+
+    #[test]
+    fn variable_and_glob_sigils_are_not_qualified_tokens() {
+        for (text, needle) in [
+            ("print $Foo::bar;\n", "bar"),
+            ("print @Foo::ISA;\n", "ISA"),
+            ("print %Foo::EXPORT;\n", "EXPORT"),
+            ("print *Foo::bar;\n", "bar"),
+        ] {
+            assert_eq!(
+                classify_qualified_hover_token(text, offset_of(text, needle)),
+                None,
+                "sigiled `{text}` must not classify as a qualified hover token"
+            );
+        }
+    }
+
+    #[test]
+    fn ampersand_sigil_still_classifies_as_callable() {
+        let text = "print &Foo::bar;\n";
+        assert_eq!(
+            classify_qualified_hover_token(text, offset_of(text, "bar")),
+            Some(QualifiedHoverKind::Callable {
+                qualified: "Foo::bar".to_string(),
+                package: "Foo".to_string(),
+                name: "bar".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn capitalized_receiver_with_newline_before_arrow_is_still_package() {
+        let text = "File::Path\n  ->make_path('/tmp');\n";
+        assert_eq!(
+            classify_qualified_hover_token(text, offset_of(text, "Path")),
+            Some(QualifiedHoverKind::Package("File::Path".to_string())),
+            "capitalized final without `(` stays Package even when `->` wraps"
+        );
+    }
+
+    #[test]
+    fn nested_package_member_does_not_match_parent_callable() {
+        assert!(
+            !super::indexed_member_matches_qualified_callable(
+                "Foo",
+                "run",
+                "run",
+                Some("Foo::Bar"),
+                Some("Foo::Bar::run"),
+            ),
+            "Foo::Bar::run must not prove Foo::run"
+        );
+        assert!(
+            super::indexed_member_matches_qualified_callable(
+                "Foo",
+                "run",
+                "run",
+                Some("Foo"),
+                Some("Foo::run"),
+            ),
+            "exact Foo::run must match"
+        );
+        assert!(
+            super::indexed_member_matches_qualified_callable(
+                "Foo",
+                "run",
+                "run",
+                Some("Foo"),
+                None,
+            ),
+            "container+name remains valid when qualified_name is absent"
+        );
+        assert!(
+            super::indexed_member_matches_qualified_callable(
+                "Foo",
+                "run",
+                "other",
+                Some("Foo::Bar"),
+                Some("Foo::run"),
+            ),
+            "exact qualified_name is identity even if container disagrees"
+        );
     }
 }

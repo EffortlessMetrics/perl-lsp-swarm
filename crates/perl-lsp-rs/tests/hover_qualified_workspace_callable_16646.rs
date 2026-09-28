@@ -80,6 +80,15 @@ fn assert_not_missing_module_card(value: &str, qualified: &str) {
     );
 }
 
+fn assert_proven_callable(value: &str, package: &str, qualified: &str) {
+    assert_not_missing_module_card(value, qualified);
+    assert!(
+        value.contains(&format!("Defined in `{package}`"))
+            || value.contains(&format!("sub {qualified}")),
+        "hover should present the indexed callable `{qualified}` in `{package}`, got: {value}"
+    );
+}
+
 fn open_podheavy_workspace(harness: &mut LspHarness) -> TestResult {
     harness.initialize(None)?;
     harness.open("file:///lib/PodHeavy.pm", PODHEAVY)?;
@@ -100,15 +109,7 @@ fn hover_on_indexed_qualified_workspace_sub_is_callable_not_cpanm() -> TestResul
     let value =
         hover_markdown(&result).ok_or("expected hover content on PodHeavy::documented_sub")?;
 
-    assert_not_missing_module_card(&value, "PodHeavy::documented_sub");
-    assert!(value.contains("documented_sub"), "hover should name the indexed sub, got: {value}");
-    assert!(
-        value.contains("Subroutine")
-            || value.contains("Method")
-            || value.contains("sub PodHeavy::documented_sub")
-            || value.contains("`sub documented_sub"),
-        "hover should present callable information, got: {value}"
-    );
+    assert_proven_callable(&value, "PodHeavy", "PodHeavy::documented_sub");
     Ok(())
 }
 
@@ -149,11 +150,7 @@ fn hover_on_ampersand_qualified_workspace_sub_is_callable_not_cpanm() -> TestRes
     let value =
         hover_markdown(&result).ok_or("expected hover content on &PodHeavy::documented_sub")?;
 
-    assert_not_missing_module_card(&value, "PodHeavy::documented_sub");
-    assert!(
-        value.contains("documented_sub"),
-        "ampersand-call hover should name the indexed sub, got: {value}"
-    );
+    assert_proven_callable(&value, "PodHeavy", "PodHeavy::documented_sub");
     Ok(())
 }
 
@@ -176,11 +173,7 @@ sub helper { return 1; }
     let result = hover_at(&mut harness, "file:///app.pl", line, character)?;
     let value = hover_markdown(&result).ok_or("expected hover content on Foo::Bar::helper")?;
 
-    assert_not_missing_module_card(&value, "Foo::Bar::helper");
-    assert!(
-        value.contains("Defined in `Foo::Bar`") || value.contains("sub Foo::Bar::helper"),
-        "three-component hover should present the indexed callable, got: {value}"
-    );
+    assert_proven_callable(&value, "Foo::Bar", "Foo::Bar::helper");
     Ok(())
 }
 
@@ -317,5 +310,98 @@ fn hover_on_qualified_sub_in_comment_does_not_cpanm() -> TestResult {
         hover_markdown(&result).is_none(),
         "qualified name in a comment must fail closed, got: {result:?}"
     );
+    Ok(())
+}
+
+/// Nested `Foo::Bar::run` must not prove a parent `Foo::run()` callable.
+#[test]
+fn hover_on_parent_call_is_not_proven_by_nested_package_sub() -> TestResult {
+    const NESTED: &str = r#"package Foo::Bar;
+sub run { return 1; }
+1;
+"#;
+    const SCRIPT: &str = "print Foo::run();\n";
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open("file:///lib/Foo/Bar.pm", NESTED)?;
+    harness.open("file:///app.pl", SCRIPT)?;
+    harness.barrier();
+
+    let (line, character) = pos_on_line(SCRIPT, 0, "run")?;
+    let result = hover_at(&mut harness, "file:///app.pl", line, character)?;
+    let value = hover_markdown(&result).ok_or("expected hover content on Foo::run")?;
+
+    assert_not_missing_module_card(&value, "Foo::run");
+    assert!(
+        !value.contains("Defined in `Foo`"),
+        "nested Foo::Bar::run must not prove Foo::run, got: {value}"
+    );
+    assert!(
+        !value.contains("sub Foo::run"),
+        "nested Foo::Bar::run must not render as sub Foo::run, got: {value}"
+    );
+    assert!(
+        !value.contains("**Subroutine**"),
+        "unresolved parent call must not get a subroutine card from a nested member, got: {value}"
+    );
+    Ok(())
+}
+
+/// Direct `Foo::run` still wins when a nested `Foo::Bar::run` also exists.
+#[test]
+fn hover_on_parent_call_uses_direct_member_not_nested_namesake() -> TestResult {
+    const PARENT: &str = r#"package Foo;
+sub run { return 1; }
+1;
+"#;
+    const NESTED: &str = r#"package Foo::Bar;
+sub run { return 1; }
+1;
+"#;
+    const SCRIPT: &str = "print Foo::run();\n";
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open("file:///lib/Foo.pm", PARENT)?;
+    harness.open("file:///lib/Foo/Bar.pm", NESTED)?;
+    harness.open("file:///app.pl", SCRIPT)?;
+    harness.barrier();
+
+    let (line, character) = pos_on_line(SCRIPT, 0, "run")?;
+    let result = hover_at(&mut harness, "file:///app.pl", line, character)?;
+    let value = hover_markdown(&result).ok_or("expected hover content on Foo::run")?;
+
+    assert_proven_callable(&value, "Foo", "Foo::run");
+    assert!(
+        !value.contains("Defined in `Foo::Bar`"),
+        "direct Foo::run must not be attributed to Foo::Bar, got: {value}"
+    );
+    Ok(())
+}
+
+/// `$Pkg::sub` is a package variable, not the same-named subroutine.
+#[test]
+fn hover_on_sigiled_qualified_name_is_not_subroutine_card() -> TestResult {
+    let mut harness = LspHarness::new();
+    open_podheavy_workspace(&mut harness)?;
+
+    const SCRIPT: &str = "print $PodHeavy::documented_sub;\n";
+    harness.open("file:///script/sigil_caller.pl", SCRIPT)?;
+    harness.barrier();
+
+    let (line, character) = pos_on_line(SCRIPT, 0, "documented_sub")?;
+    let result = hover_at(&mut harness, "file:///script/sigil_caller.pl", line, character)?;
+    if let Some(value) = hover_markdown(&result) {
+        assert!(
+            !value.contains("**Subroutine**"),
+            "sigiled $PodHeavy::documented_sub must not use the subroutine card, got: {value}"
+        );
+        assert!(
+            !value.contains("Defined in `PodHeavy`"),
+            "sigiled $PodHeavy::documented_sub must not be a proven sub, got: {value}"
+        );
+        assert_not_missing_module_card(&value, "PodHeavy::documented_sub");
+    }
     Ok(())
 }
