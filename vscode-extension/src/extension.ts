@@ -1225,8 +1225,12 @@ async function runExtensionActivation(
         return;
       }
       const downloader = new BinaryDownloader(context, outputChannel);
-      await context.globalState.update('perl-lsp.lastUpdateCheck', 0);
-      await downloader.checkForUpdateSilent();
+      // Force a real check (#16530): the former global-state reset only
+      // cleared the legacy `perl-lsp.lastUpdateCheck` key, while the interval
+      // guard reads the compatibility-scoped key, so a recent background
+      // check silently no-op'd this command for up to a day. `force` bypasses
+      // the interval guards and reports the outcome to the user.
+      await downloader.checkForUpdateSilent(true);
     },
   });
   // Onboarding/What's New and support surfaces are intentionally usable after

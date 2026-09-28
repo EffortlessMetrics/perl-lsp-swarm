@@ -734,6 +734,52 @@ export const MANAGED_INSTALL_TARGET_FILE = 'target.json';
  */
 export const UNSUPPORTED_COMPATIBILITY_KEY = 'unsupported-host-target';
 
+/**
+ * `globalState` key recording that the user chose "Don't ask again" on the
+ * update prompt (#16536).
+ *
+ * Suppression is scoped to the PROMPT only. It used to write
+ * `updateCheckInterval: 0` globally, which also silenced interval checks and
+ * silently disabled a later `perl-lsp.autoUpdate=true`. Users who want checks
+ * fully off still have that setting; this key only stops the notification.
+ */
+export const UPDATE_PROMPT_SUPPRESSED_KEY = 'perl-lsp.updatePromptSuppressed';
+
+/**
+ * Cancellation thrown by the bounded transports and the download progress
+ * wrapper (#16532): `Download cancelled`, `Archive download cancelled`,
+ * `Release fetch cancelled`. These are user choices, not failures, so they
+ * must be classified before any error guidance.
+ */
+export function isDownloadCancellationMessage(message: string): boolean {
+  return /cancelled$/i.test(message.trim());
+}
+
+/**
+ * Transport-level failure signatures routed to network guidance (#16534).
+ *
+ * Beyond the original connection-refused/timeout set, this covers DNS
+ * failures (ENOTFOUND, EAI_AGAIN), unreachable networks and resets, and TLS
+ * certificate failures — Node surfaces those with "cert"/"certificate" in the
+ * message (or in codes like SELF_SIGNED_CERT_IN_CHAIN), so a lowercase
+ * substring check covers both spellings.
+ */
+const NETWORK_ERROR_PATTERNS = [
+  'econnrefused',
+  'etimedout',
+  'enotfound',
+  'eai_again',
+  'enetunreach',
+  'econnreset',
+  'timeout',
+  'cert',
+] as const;
+
+export function isNetworkErrorMessage(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return NETWORK_ERROR_PATTERNS.some((pattern) => lowered.includes(pattern));
+}
+
 export class BinaryDownloader {
   private static readonly REPO_OWNER = 'EffortlessMetrics';
   private static readonly REPO_NAME = 'perl-lsp';
@@ -795,7 +841,12 @@ export class BinaryDownloader {
       );
     }
 
-    return 'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit.';
+    // A 403 is not always a rate limit (#16534): proxies, VPNs, and captive
+    // portals return 403 too, so name the proxy alongside the rate-limit advice.
+    return (
+      'This may be a GitHub rate limit: wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit. ' +
+      'A proxy or VPN can also return HTTP 403 — check the "http.proxy" setting if one is configured.'
+    );
   }
 
   async ensureBinary(forceDownload = false): Promise<string | null> {
@@ -890,22 +941,28 @@ export class BinaryDownloader {
       const manualInstallNote =
         'To use a manually installed binary, set the "perl-lsp.serverPath" setting to its path.';
 
+      // Cancellation is a user choice, not a failure (#16532): no error
+      // dialog, just a one-line confirmation that nothing is broken.
+      if (isDownloadCancellationMessage(errorMsg)) {
+        this.outputChannel.appendLine(`Download cancelled: ${errorMsg}`);
+        vscode.window.showInformationMessage(
+          'Perl LSP download cancelled — will retry on next startup.',
+        );
+        return null;
+      }
+
       let message: string;
       let buttons: string[];
 
       if (errorMsg.includes('Windows ARM64 x64 emulation')) {
         message = `perl-lsp: ${errorMsg} ${manualInstallNote}`;
         buttons = ['Install Manually', 'View Logs'];
-      } else if (
-        errorMsg.includes('ECONNREFUSED') ||
-        errorMsg.includes('ETIMEDOUT') ||
-        errorMsg.includes('timeout')
-      ) {
-        // Network connectivity failure — proxy, VPN, or firewall
+      } else if (isNetworkErrorMessage(errorMsg)) {
+        // Network connectivity failure — connection, DNS, proxy, VPN, firewall,
+        // or TLS interception (#16534).
         message =
-          'perl-lsp: Binary download failed — network error ' +
-          `(${errorMsg.split('\n')[0]}). ` +
-          'Check your proxy/VPN settings (http.proxy in VS Code settings). ' +
+          'perl-lsp: Binary download failed — network unreachable. ' +
+          "Check your connection, VPN, or proxy, then run 'Perl: Reinstall Server Binary' to retry. " +
           manualInstallNote;
         buttons = ['Open Proxy Settings', 'Install Manually'];
       } else if (errorMsg.includes('No binary found for platform')) {
@@ -925,13 +982,14 @@ export class BinaryDownloader {
         }
         buttons = ['Install Manually'];
       } else if (errorMsg.includes('HTTP 403')) {
-        // GitHub rate limit or auth failure. The banner follows the remedy: a
-        // withheld credential is not a rate-limit story, so it must not be
-        // labelled as one.
+        // GitHub rejection or network-path refusal. The banner follows the
+        // remedy: a withheld credential is not a rate-limit story, so it must
+        // not be labelled as one, and a plain 403 is not always a rate limit
+        // either (#16534).
         const withheldCredential = this.releaseMetadata403Disposition === 'withheld_unverified_tls';
         const banner = withheldCredential
           ? 'perl-lsp: Download blocked (HTTP 403 — request was unauthenticated).'
-          : 'perl-lsp: Download blocked (HTTP 403 — GitHub rate limit).';
+          : 'perl-lsp: Download blocked (HTTP 403 — blocked by GitHub or your network/proxy).';
         message = `${banner} ${this.rateLimitRemedy()} ${manualInstallNote}`;
         buttons = ['Install Manually', 'View Logs'];
       } else if (errorMsg.includes('HTTP 404')) {
@@ -941,13 +999,28 @@ export class BinaryDownloader {
           'The release asset may not exist yet for this platform. ' +
           manualInstallNote;
         buttons = ['Install Manually', 'View Logs'];
-      } else if (errorMsg.toLowerCase().includes('checksum') || errorMsg.includes('SHA256SUMS')) {
-        // Corrupted or tampered download, or missing checksum file
+      } else if (
+        errorMsg.includes('No SHA256SUMS file found') ||
+        errorMsg.includes('not found in SHA256SUMS')
+      ) {
+        // Checksum metadata is absent, not wrong (#16532): the downloaded
+        // bytes were never judged, so do not imply corruption. Name the
+        // manifest and the mirror setting that usually owns the gap.
         message =
-          'perl-lsp: Checksum verification failed — download may be corrupted. ' +
-          'Please retry. If this persists, install manually. ' +
+          'perl-lsp: Download blocked — checksum metadata is missing. ' +
+          'The release (or the "perl-lsp.downloadBaseUrl" mirror) does not provide a usable SHA256SUMS manifest entry for this archive. ' +
+          'Fix the mirror configuration, wait for the release to be completed, or install manually. ' +
           manualInstallNote;
         buttons = ['Install Manually', 'View Logs'];
+      } else if (errorMsg.toLowerCase().includes('checksum')) {
+        // Genuine verification failure — a verdict on the bytes themselves.
+        // Offer the retry the message already asks for (#16532); the
+        // singleflight makes a force re-entry safe.
+        message =
+          'perl-lsp: Checksum verification failed — download may be corrupted. ' +
+          'Please retry; if this persists, install manually. ' +
+          manualInstallNote;
+        buttons = ['Retry Download', 'Install Manually', 'View Logs'];
       } else if (
         errorMsg.includes('tar') ||
         errorMsg.includes('unzip') ||
@@ -973,6 +1046,10 @@ export class BinaryDownloader {
           vscode.commands.executeCommand('workbench.action.openSettings', 'http.proxy');
         } else if (choice === 'View Logs') {
           this.outputChannel.show();
+        } else if (choice === 'Retry Download') {
+          // Force re-entry. The singleflight has already been released by the
+          // failed run, so this starts a fresh download.
+          void this.ensureBinary(true);
         }
       });
 
@@ -2026,14 +2103,32 @@ export class BinaryDownloader {
    * - not enough time has elapsed since the last check
    * - versions are equal or local is ahead
    *
+   * With `force` (the manual "Check for Binary Updates" command, #16530) the
+   * two interval guards are bypassed so the command always performs a real
+   * check — the legacy global-state reset used to be defeated by the
+   * compatibility-scoped timestamp (#16530) — and an explicit user gets a
+   * visible outcome: "You are up to date" when nothing newer exists, the
+   * pinned-channel explanation when checks are disabled, and the update
+   * prompt even when automatic prompts were suppressed.
+   *
    * All errors are logged to the output channel; none are shown to the user.
    */
-  async checkForUpdateSilent(): Promise<void> {
+  async checkForUpdateSilent(force = false): Promise<void> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
 
     // Guard: skip if user pinned a specific version
     const channel = config.get<string>('channel', 'latest');
     if (channel === 'tag') {
+      if (force) {
+        // A manual command must explain why it will not check (#16530)
+        // instead of silently doing nothing.
+        const versionTag = config.get<string>('versionTag', '');
+        void vscode.window.showInformationMessage(
+          versionTag
+            ? `Binary update checks are disabled while perl-lsp.channel is pinned to "tag" (${versionTag}). Change perl-lsp.channel to check for updates.`
+            : 'Binary update checks are disabled while perl-lsp.channel is set to "tag". Change perl-lsp.channel to check for updates.',
+        );
+      }
       return;
     }
 
@@ -2053,28 +2148,34 @@ export class BinaryDownloader {
       return;
     }
 
-    // Guard: check interval (treat negative values same as 0 — disabled)
-    const intervalHours = config.get<number>('updateCheckInterval', 24);
-    if (intervalHours <= 0) {
-      return;
-    }
-    // The check interval is a property of one target's managed row. A GNU host
-    // must not suppress a musl host's check merely because both hosts share
-    // one extension global state object (#9847). The unscoped pre-#9847 value
-    // is read once as a seed so upgrading does not force an immediate check.
-    const stateKey =
-      managedUpdateCheckStateKey(this.getHostCompatibilityKey()) ?? LEGACY_UPDATE_CHECK_STATE_KEY;
-    const scopedCheck = this.context.globalState.get<number>(stateKey, 0);
-    const lastCheck =
-      scopedCheck > 0
-        ? scopedCheck
-        : this.context.globalState.get<number>(LEGACY_UPDATE_CHECK_STATE_KEY, 0);
-    const elapsedHours = (Date.now() - lastCheck) / (1000 * 60 * 60);
-    if (elapsedHours < intervalHours) {
-      return;
+    // Guard: check interval (treat negative values same as 0 — disabled).
+    // An explicit manual check bypasses both interval guards (#16530); the
+    // background path keeps them.
+    if (!force) {
+      const intervalHours = config.get<number>('updateCheckInterval', 24);
+      if (intervalHours <= 0) {
+        return;
+      }
+      // The check interval is a property of one target's managed row. A GNU host
+      // must not suppress a musl host's check merely because both hosts share
+      // one extension global state object (#9847). The unscoped pre-#9847 value
+      // is read once as a seed so upgrading does not force an immediate check.
+      const stateKey =
+        managedUpdateCheckStateKey(this.getHostCompatibilityKey()) ?? LEGACY_UPDATE_CHECK_STATE_KEY;
+      const scopedCheck = this.context.globalState.get<number>(stateKey, 0);
+      const lastCheck =
+        scopedCheck > 0
+          ? scopedCheck
+          : this.context.globalState.get<number>(LEGACY_UPDATE_CHECK_STATE_KEY, 0);
+      const elapsedHours = (Date.now() - lastCheck) / (1000 * 60 * 60);
+      if (elapsedHours < intervalHours) {
+        return;
+      }
     }
 
     // Record that we checked (even if the check fails) to avoid hammering
+    const stateKey =
+      managedUpdateCheckStateKey(this.getHostCompatibilityKey()) ?? LEGACY_UPDATE_CHECK_STATE_KEY;
     await this.context.globalState.update(stateKey, Date.now());
 
     try {
@@ -2089,6 +2190,11 @@ export class BinaryDownloader {
 
       if (compareVersions(localVersion, remoteVersion) >= 0) {
         this.outputChannel.appendLine(`[update-check] Up to date (${localVersion})`);
+        if (force) {
+          // The manual command owes the user a visible outcome (#16530);
+          // the background path stays silent.
+          void vscode.window.showInformationMessage(`You are up to date (${localVersion}).`);
+        }
         return;
       }
 
@@ -2103,6 +2209,22 @@ export class BinaryDownloader {
         return;
       }
 
+      // "Don't ask again" suppresses only this prompt (#16536); interval
+      // checks and autoUpdate are unaffected. A forced manual check overrides
+      // the suppression: the user asked, so they get the offer.
+      const promptSuppressed = this.context.globalState.get<boolean>(
+        UPDATE_PROMPT_SUPPRESSED_KEY,
+        false,
+      );
+      if (!force && promptSuppressed) {
+        this.outputChannel.appendLine(
+          '[update-check] Update available, but update prompts are suppressed ' +
+            '("Don\'t ask again" was chosen earlier). Set perl-lsp.autoUpdate or run ' +
+            "'Perl: Check for Binary Updates' to install.",
+        );
+        return;
+      }
+
       const choice = await vscode.window.showInformationMessage(
         `perllsp ${remoteVersion} is available (installed: ${localVersion})`,
         'Update',
@@ -2113,7 +2235,10 @@ export class BinaryDownloader {
       if (choice === 'Update') {
         await this.ensureBinary(true);
       } else if (choice === "Don't ask again") {
-        await config.update('updateCheckInterval', 0, vscode.ConfigurationTarget.Global);
+        // Scope the suppression to the prompt (#16536): writing
+        // `updateCheckInterval: 0` here used to also disable interval checks
+        // and any later perl-lsp.autoUpdate=true.
+        await this.context.globalState.update(UPDATE_PROMPT_SUPPRESSED_KEY, true);
       }
       // 'Dismiss' is a no-op — will check again next interval
     } catch (err: unknown) {
