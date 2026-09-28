@@ -198,7 +198,7 @@ fn unsupported_due_review_still_emits_fail_closed_artifacts() -> TestResult {
 }
 
 #[test]
-fn facade_success_output_names_only_caller_artifacts() -> TestResult {
+fn success_output_names_only_caller_artifacts() -> TestResult {
     let root = repo_root()?;
     let dir = tempdir()?;
     let coverage = dir.path().join("coverage.json");
@@ -221,16 +221,15 @@ fn facade_success_output_names_only_caller_artifacts() -> TestResult {
     let output = patch_gate(&root, &coverage, &policy, &receipt, &summary)?.output()?;
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
-    // Exactly one success line, naming the published caller artifacts: the
-    // engine evaluates in a temporary workspace whose paths vanish on return.
+    // Exactly one success line, naming the published caller artifacts.
     assert_eq!(
         stdout.matches("quality gate passed").count(),
         1,
-        "expected a single facade success line, got: {stdout}"
+        "expected a single quality-gate success line, got: {stdout}"
     );
     assert!(
         !stdout.contains("perl-lsp-quality-gate-"),
-        "success output names a deleted temporary workspace path: {stdout}"
+        "success output names a temporary workspace path: {stdout}"
     );
     assert!(
         stdout.contains(&*receipt.to_string_lossy()),
