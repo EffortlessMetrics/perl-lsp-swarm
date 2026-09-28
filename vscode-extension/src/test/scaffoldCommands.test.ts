@@ -118,3 +118,34 @@ test('a second workspace folder owns the chosen module name', async () => {
     'package Other;',
   );
 });
+
+test('a nonlocal seed folder defers to a local workspace folder', async () => {
+  // Uri.parse in the mock carries no `scheme`, so it models a nonlocal folder.
+  const remote = vscode.Uri.parse('perlx://remote/project');
+  const second = vscode.Uri.file('/second');
+  (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [
+    { uri: remote },
+    { uri: second },
+  ];
+  (vscode.window as { activeTextEditor?: unknown }).activeTextEditor = {
+    document: { uri: remote },
+  };
+  (vscode.workspace.getWorkspaceFolder as jest.Mock).mockImplementation(
+    (uri: vscode.Uri) => (uri.scheme === undefined ? { uri: remote } : { uri: second }),
+  );
+
+  (vscode.window.showSaveDialog as jest.Mock).mockResolvedValue(
+    vscode.Uri.file('/second/lib/Seeded.pm'),
+  );
+  expect(await createPerlScaffold(FileKind.Module)).toBe('applied');
+  const dialog = (vscode.window.showSaveDialog as jest.Mock).mock.calls[0]?.[0] as {
+    defaultUri: vscode.Uri;
+  };
+  expect(dialog.defaultUri.fsPath).toBe('/second/lib/NewModule.pm');
+
+  // With no local folder at all the refusal stays, and no dialog is offered.
+  (vscode.window.showSaveDialog as jest.Mock).mockClear();
+  (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: remote }];
+  expect(await createPerlScaffold(FileKind.Module)).toBe('ineligible_target');
+  expect(vscode.window.showSaveDialog).not.toHaveBeenCalled();
+});

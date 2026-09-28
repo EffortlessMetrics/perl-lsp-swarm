@@ -12,7 +12,7 @@ export function scaffoldContent(
   rootPath: string,
   targetPath: string,
 ): string | null {
-  const relative = path.relative(rootPath, targetPath).replace(/\\/g, '/');
+  const relative = path.relative(rootPath, targetPath).split(path.sep).join('/');
   if (relative === '..' || relative.startsWith('../') || path.isAbsolute(relative)) return null;
 
   if (kind === FileKind.Test) {

@@ -14,10 +14,11 @@ export type ScaffoldOutcome =
 /** An explicit user action; never runs in response to ordinary file creation. */
 export async function createPerlScaffold(kind: FileKind): Promise<ScaffoldOutcome> {
   const activeUri = vscode.window.activeTextEditor?.document.uri;
+  const activeFolder = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined;
   const folder =
-    (activeUri && vscode.workspace.getWorkspaceFolder(activeUri)) ??
-    vscode.workspace.workspaceFolders?.[0];
-  if (!folder || folder.uri.scheme !== 'file') {
+    (activeFolder?.uri.scheme === 'file' ? activeFolder : undefined) ??
+    vscode.workspace.workspaceFolders?.find((candidate) => candidate.uri.scheme === 'file');
+  if (!folder) {
     void vscode.window.showWarningMessage(
       'Open a local workspace folder before creating a Perl file.',
     );

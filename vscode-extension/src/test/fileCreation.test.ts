@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { FileKind, scaffoldContent } from '../fileCreation';
 
 test('module declaration follows the owning lib tree', () => {
@@ -22,4 +23,9 @@ test.each([
   ['/project/lib/Foo.pm', FileKind.Test],
 ] as const)('rejects ambiguous or ineligible target %s', (target, kind) => {
   expect(scaffoldContent(kind, '/project', target)).toBeNull();
+});
+
+test('a backslash in a POSIX module filename is never read as a separator', () => {
+  if (path.sep !== '/') return; // On Windows a backslash is a real separator.
+  expect(scaffoldContent(FileKind.Module, '/project', '/project/lib/Foo\\Bar.pm')).toBeNull();
 });
