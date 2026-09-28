@@ -6,8 +6,8 @@
 #
 # Safety contract:
 #   * candidates are only `target/` directories at the repo root and directly
-#     under .worktrees/*/ — never the cargo registry, never lockfiles, never
-#     anything else;
+#     under .worktrees/*/ or .claude/worktrees/*/ — never the cargo registry,
+#     never lockfiles, never anything else;
 #   * a target/ is stale only when NOTHING inside it has been modified within
 #     the threshold (default 30 days); a single fresh file keeps the tree;
 #   * refuses to run while the devplane build flock is held (a lane may be
@@ -82,7 +82,7 @@ collect_candidates() {
   local root="$1"
   [ -d "$root/target" ] && printf '%s\n' "$root/target"
   local wt
-  for wt in "$root"/.worktrees/*/target; do
+  for wt in "$root"/.worktrees/*/target "$root"/.claude/worktrees/*/target; do
     [ -d "$wt" ] && printf '%s\n' "$wt"
   done
 }
@@ -128,7 +128,7 @@ run_gc() {
     # Defense in depth: only ever delete paths that end in /target below the
     # repo root, never the registry, never lockfiles.
     case "$candidate" in
-      "$root"/target|"$root"/.worktrees/*/target) ;;
+      "$root"/target|"$root"/.worktrees/*/target|"$root"/.claude/worktrees/*/target) ;;
       *) echo "REFUSING: candidate outside the allowed shape: $candidate" >&2; exit 65 ;;
     esac
     # Revalidate immediately before removal: freshness evidence must be
@@ -150,21 +150,29 @@ self_test() {
 
   # Fixture: one fresh worktree target, one stale worktree target, plus
   # registry-looking and lockfile-looking decoys that must never be touched.
+  # The stale/fresh pair is mirrored under .claude/worktrees/, the real
+  # agent-worktree home, which the collector must also cover.
   mkdir -p "$tmp/.worktrees/fresh/target/sub" "$tmp/.worktrees/stale/target/sub"
   mkdir -p "$tmp/.worktrees/stale/registry-cache"
+  mkdir -p "$tmp/.claude/worktrees/fresh/target/sub" "$tmp/.claude/worktrees/stale/target/sub"
   echo fresh > "$tmp/.worktrees/fresh/target/sub/new.o"
   echo stale > "$tmp/.worktrees/stale/target/sub/old.o"
   echo decoy > "$tmp/.worktrees/stale/registry-cache/keep.me"
   echo lock > "$tmp/.worktrees/stale/target/Cargo.lock"
+  echo fresh > "$tmp/.claude/worktrees/fresh/target/sub/new.o"
+  echo stale > "$tmp/.claude/worktrees/stale/target/sub/old.o"
   touch -d "60 days ago" \
     "$tmp/.worktrees/stale/target" \
     "$tmp/.worktrees/stale/target/sub" \
     "$tmp/.worktrees/stale/target/sub/old.o" \
     "$tmp/.worktrees/stale/target/Cargo.lock" \
     "$tmp/.worktrees/stale/registry-cache" \
-    "$tmp/.worktrees/stale/registry-cache/keep.me"
+    "$tmp/.worktrees/stale/registry-cache/keep.me" \
+    "$tmp/.claude/worktrees/stale/target" \
+    "$tmp/.claude/worktrees/stale/target/sub" \
+    "$tmp/.claude/worktrees/stale/target/sub/old.o"
 
-  # Discrimination 1: dry-run selects exactly the stale tree.
+  # Discrimination 1: dry-run selects exactly the stale trees.
   local report
   report=$(TARGET_GC_SELFTEST_DRY_RUN="$tmp" DEVPLANE="$tmp/devplane" bash "${BASH_SOURCE[0]}" --days=30 --self-test-dry-run)
   if ! grep -q "stale: $tmp/.worktrees/stale/target" <<<"$report"; then
@@ -172,8 +180,18 @@ self_test() {
     echo "$report" >&2
     exit 1
   fi
+  if ! grep -q "stale: $tmp/.claude/worktrees/stale/target" <<<"$report"; then
+    echo "SELF-TEST FAILED: stale agent-worktree tree not selected:" >&2
+    echo "$report" >&2
+    exit 1
+  fi
   if grep -q "stale: $tmp/.worktrees/fresh/target" <<<"$report"; then
     echo "SELF-TEST FAILED: fresh tree wrongly selected:" >&2
+    echo "$report" >&2
+    exit 1
+  fi
+  if grep -q "stale: $tmp/.claude/worktrees/fresh/target" <<<"$report"; then
+    echo "SELF-TEST FAILED: fresh agent-worktree tree wrongly selected:" >&2
     echo "$report" >&2
     exit 1
   fi
@@ -189,6 +207,8 @@ self_test() {
   [ -f "$tmp/.worktrees/fresh/target/sub/new.o" ] || { echo "SELF-TEST FAILED: fresh tree content removed" >&2; exit 1; }
   [ -f "$tmp/.worktrees/stale/registry-cache/keep.me" ] || { echo "SELF-TEST FAILED: registry decoy removed" >&2; exit 1; }
   [ ! -e "$tmp/.worktrees/stale/target" ] || { echo "SELF-TEST FAILED: stale tree not deleted" >&2; exit 1; }
+  [ -f "$tmp/.claude/worktrees/fresh/target/sub/new.o" ] || { echo "SELF-TEST FAILED: fresh agent-worktree content removed" >&2; exit 1; }
+  [ ! -e "$tmp/.claude/worktrees/stale/target" ] || { echo "SELF-TEST FAILED: stale agent-worktree not deleted" >&2; exit 1; }
 
   # Discrimination 3: flock held -> refusal (where flock exists).
   if command -v flock >/dev/null 2>&1; then

@@ -180,6 +180,7 @@ pub(crate) fn owner_kind(kind: &SymbolKind) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use perl_tdd_support::{must, must_some};

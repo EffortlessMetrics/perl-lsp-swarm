@@ -1584,7 +1584,15 @@ impl<'a> Parser<'a> {
         let default_value =
             if default_token.is_some() { Some(Box::new(self.parse_ternary()?)) } else { None };
         if let Some(default) = &default_value {
-            end = default.location.end;
+            // #16242: a grouped default such as `$a = (1+2)` consumes its closing
+            // parentheses while the parenthesized primary returns the *inner*
+            // expression node, so the child's `location.end` can stop short of the
+            // consumed grouping delimiters. Keep the consumed extent honest for both
+            // the parameter node and the InvalidSignatureParameter ranges below by
+            // also taking the parser's consumed-token endpoint; the max with the
+            // child's own end covers expression paths that take tokens straight off
+            // the stream, where `last_end_position` lags behind (see #5503).
+            end = default.location.end.max(self.previous_position());
         }
         if let Some(kind) = invalid_kind {
             let range = SourceLocation { start, end };

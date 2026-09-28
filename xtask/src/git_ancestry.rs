@@ -1037,6 +1037,67 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_lock_disappearing_does_not_break_listing_invariance() -> Result<()> {
+        // #15147: simulate the externally-observed flake class where
+        // `objects/maintenance.lock` appears or disappears while classification
+        // runs. The listing snapshot must remain stable across that churn
+        // because the classifier cannot own a `.lock` file (it is read-only).
+        let repository = initialized_repository()?;
+        let maintenance_lock = repository.path().join(".git/objects/maintenance.lock");
+        fs::write(&maintenance_lock, "")?;
+        let listing_before = git_dir_listing(&repository.path().join(".git"))?;
+
+        // External `.lock` churn between the two snapshots must not flip the
+        // listing diff. The classifier is read-only; any difference here is a
+        // regression in either the classifier or the listing filter.
+        fs::remove_file(&maintenance_lock)?;
+        let _receipt = classify_ancestry(repository.path(), "HEAD", "HEAD");
+        let listing_after = git_dir_listing(&repository.path().join(".git"))?;
+
+        assert!(
+            !listing_before.iter().any(|entry| entry.ends_with("maintenance.lock:0")),
+            "lock-file filter must suppress maintenance.lock entries, got: {:?}",
+            listing_before,
+        );
+        assert_eq!(
+            listing_before, listing_after,
+            "listing diff must be invariant across `.lock` churn"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn non_lock_file_still_triggers_listing_diff() -> Result<()> {
+        // Negative control for `is_ephemeral_git_lock`: a non-`.lock` file that
+        // appears or disappears between snapshots MUST still flip the listing
+        // diff, otherwise the lock filter would mask a real classifier
+        // mutation. The marker here is shaped like a write the classifier
+        // could legitimately perform; the test contract is "do not silently
+        // exclude anything that is not provably external."
+        let repository = initialized_repository()?;
+        let marker = repository.path().join(".git/_classifier_write_marker");
+        fs::write(&marker, "before\n")?;
+        let listing_before = git_dir_listing(&repository.path().join(".git"))?;
+        assert!(
+            listing_before.iter().any(|entry| entry.starts_with("_classifier_write_marker:")),
+            "marker must be present in the before-snapshot, got: {:?}",
+            listing_before,
+        );
+
+        // A non-lock file disappearing between snapshots must be visible to
+        // the diff. We do not run classify_ancestry here — the test pins the
+        // listing-filter behavior, not the classifier.
+        fs::remove_file(&marker)?;
+        let listing_after = git_dir_listing(&repository.path().join(".git"))?;
+
+        assert_ne!(
+            listing_before, listing_after,
+            "a non-lock file disappearing must still change the listing diff",
+        );
+        Ok(())
+    }
+
+    #[test]
     fn classification_of_shallow_clone_does_not_deepen() -> Result<()> {
         let source = initialized_repository()?;
         commit_file(&source, "second.txt", "second\n", "second")?;
@@ -1163,11 +1224,35 @@ mod tests {
                 .into_owned();
             if path.is_dir() {
                 collect_listing(root, &path, entries)?;
+            } else if is_ephemeral_git_lock(&path) {
+                // External: concurrent background git operations (gc --auto,
+                // maintenance, fetch, ref updates) take short-lived `.lock`
+                // files inside `.git`. `classify_ancestry` is read-only, so
+                // it cannot own one of these. The `non_lock_file_still_triggers_listing_diff`
+                // test pins the contract: a non-lock write is still detected.
             } else {
                 entries.push(format!("{}:{}", relative, path.metadata()?.len()));
             }
         }
         Ok(())
+    }
+
+    /// True for files under `.git` that can only be created by an external
+    /// writer while `classify_ancestry` runs.
+    ///
+    /// The basename ends in `.lock`. By construction, a `.lock` file is held
+    /// for the duration of some other git operation; the classifier does not
+    /// take locks (it is read-only), so any `.lock` file observed in the
+    /// listing is external to the read-only contract this test pins.
+    ///
+    /// Subtract from this set only when the file is provably not a write
+    /// artifact; in particular, do not add `.lock` matches on
+    /// `objects/pack/*.lock` without checking that those are not the
+    /// classifier's own reservation. (`git pack-objects` and `git index-pack`
+    /// both write pack locks; a future classifier that pre-allocates would
+    /// lose that signal here.)
+    fn is_ephemeral_git_lock(path: &Path) -> bool {
+        path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(".lock"))
     }
 
     fn git_at(repository: &Path, arguments: &[&str]) -> Result<String> {
