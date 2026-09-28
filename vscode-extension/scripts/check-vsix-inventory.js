@@ -292,8 +292,13 @@ module.exports = {
 };
 
 if (require.main === module) {
+  // Exit-status contract: 1 = the VSIX compared against the baseline and
+  // violated it (the offending files are listed); 2 = a precheck error
+  // (unreadable archive, invalid candidate manifest, candidate SHA mismatch)
+  // that ended the run before any comparison (#16570 review). The packaging
+  // wrapper words its failure by this status.
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
+    process.exitCode = 2;
   });
 }
