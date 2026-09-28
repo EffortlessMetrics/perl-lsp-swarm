@@ -262,6 +262,8 @@ fn run_gate_with_fake_gh(
         Some("gate-token"),
         0,
         30,
+        "",
+        "",
     )
 }
 
@@ -284,6 +286,8 @@ fn run_gate_with_fast_failing_requests(
         Some("gate-token"),
         0,
         2,
+        "",
+        "",
     )
 }
 
@@ -302,6 +306,8 @@ fn run_gate_after_delayed_setup(
         Some("gate-token"),
         initial_now,
         30,
+        "",
+        "",
     )
 }
 
@@ -324,6 +330,11 @@ fn run_gate_with_fake_gh_logs(
     token: Option<&str>,
     initial_now: u64,
     request_seconds: u64,
+    // #16431: canned bodies for the lane job's annotation and steps-state
+    // endpoints. Empty means the endpoint fails, which is the shape of every
+    // scenario that predates the API-evidence fallback.
+    api_annotations: &str,
+    api_steps: &str,
 ) -> Result<(std::process::Output, String, Option<String>)> {
     let root = project_root()?;
     let sandbox = tempfile::tempdir().context("creating gate workflow sandbox")?;
@@ -416,22 +427,49 @@ gh() {
   done
   local expected_jobs_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/jobs?per_page=100"
   local expected_log_url="repos/${FAKE_REPOSITORY}/actions/jobs/${FAKE_JOB_ID}/logs"
+  local expected_annotations_url="repos/${FAKE_REPOSITORY}/check-runs/${FAKE_JOB_ID}/annotations"
   case "$url" in
     "$expected_jobs_url")
       local count=0
       if [ -f "$FAKE_LOOKUP_CALLS" ]; then count=$(cat "$FAKE_LOOKUP_CALLS"); fi
       printf '%s' "$((count + 1))" > "$FAKE_LOOKUP_CALLS"
       if [ "$count" -lt "$FAKE_LOOKUP_FAILURES" ]; then return 1; fi
-      if [ "$jq_selector" != ".jobs[] | select(.name == \"$FAKE_JOB_NAME\") | .id" ]; then
-        printf 'unexpected job selector: %s\n' "$jq_selector" >&2
-        return 1
-      fi
+      case "$jq_selector" in
+        ".jobs[] | select(.name == \"$FAKE_JOB_NAME\") | .id")
+          ;;
+        *"conclusion: .conclusion"*)
+          # #16431: the steps-state fetch projects the lane job (stale job
+          # first again, so a wrong-job projection stays observable through
+          # the real selector and the real classifier).
+          if [ -z "$FAKE_STEPS_JSON" ]; then
+            printf 'no steps fixture\n' >&2
+            return 1
+          fi
+          printf '%s\n' "$FAKE_STEPS_JSON" > "$FAKE_JOBS_RESPONSE"
+          jq "$jq_selector" "$FAKE_JOBS_RESPONSE"
+          return $?
+          ;;
+        *)
+          printf 'unexpected job selector: %s\n' "$jq_selector" >&2
+          return 1
+          ;;
+      esac
       # A stale job appears first in the response. Let the real jq executable
       # evaluate the workflow's selector against this JSON; a canned ID or
       # discarded response would make the wrong-job negative control vacuous.
       printf '{"jobs":[{"name":"ripr+ stale job","id":11111},{"name":"%s","id":%s}]}\n' "$FAKE_JOB_NAME" "$FAKE_JOB_ID" > "$FAKE_JOBS_RESPONSE"
       jq -r "$jq_selector" "$FAKE_JOBS_RESPONSE"
       return $?
+      ;;
+    "$expected_annotations_url")
+      # #16431: the check-run annotations endpoint; the check-run id of an
+      # Actions job equals its job id (verified against the #16431 runs).
+      if [ -z "$FAKE_ANNOTATIONS_JSON" ]; then
+        printf 'no annotation fixture\n' >&2
+        return 1
+      fi
+      printf '%s\n' "$FAKE_ANNOTATIONS_JSON"
+      return 0
       ;;
     "$expected_log_url")
       local requested_job_id="${url%/logs}"
@@ -492,6 +530,8 @@ gh() {
         .env("RIPR_GATE_DEADLINE_EPOCH", "240")
         .env("RIPR_GATE_FINALIZATION_RESERVE_SECONDS", "60")
         .env("FAKE_JOBS_RESPONSE", &jobs_response)
+        .env("FAKE_ANNOTATIONS_JSON", api_annotations)
+        .env("FAKE_STEPS_JSON", api_steps)
         .env("FAKE_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
         .env("FAKE_RUN_ID", "4242")
         .env("FAKE_JOB_NAME", job_name)
@@ -1912,16 +1952,20 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     let gate = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
     let retry = fs::read_to_string(root.join(".github/workflows/ripr-infra-retry.yml"))?;
 
-    // #6807 slice 2: the gate remains the single eviction classifier and
-    // hands its verdict to the retry workflow strictly as data.
+    // #6807 slice 2 + #16431: the gate remains the single eviction classifier
+    // and hands its verdict to the retry workflow strictly as data. Every
+    // classified lane failure now leaves the file — infra-no-proof and
+    // ripr-failure alike — so the consumer reads a verdict from an artifact
+    // that always exists.
     let evaluate_step = workflow_step(&gate, "Evaluate routed result")
         .ok_or_else(|| anyhow!("missing evaluate step"))?;
     assert!(
-        evaluate_step.contains("classification=infra-no-proof")
+        evaluate_step.contains("write_gate_classification \"infra-no-proof\"")
+            && evaluate_step.contains("write_gate_classification \"ripr-failure\"")
             && evaluate_step.contains("> ripr-gate-classification.env")
             && evaluate_step.contains("head_sha=${GITHUB_SHA}")
             && evaluate_step.contains("run_id=${GITHUB_RUN_ID}"),
-        "the ripr gate must emit its infra-no-proof verdict as a data file for the retry workflow"
+        "the ripr gate must emit every classified lane verdict as a data file for the retry workflow"
     );
     let upload_step = workflow_step(&gate, "Upload gate classification")
         .ok_or_else(|| anyhow!("missing classification upload"))?;
@@ -1929,7 +1973,7 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
         upload_step.contains("if: failure()")
             && upload_step.contains("name: ripr-gate-classification")
             && upload_step.contains("if-no-files-found: ignore"),
-        "genuine ripr failures produce no classification file, so the upload must tolerate its absence"
+        "the upload must keep tolerating the rare exits that precede any lane classification"
     );
 
     // The retry workflow fires on completed failing ripr runs only.
@@ -2204,6 +2248,9 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
         "Process completed with exit code 143.",
         "The operation was canceled",
         "quality gate failed; see receipt",
+        // #16431: annotation-only marker for the hosted-runner evictions that
+        // end mid-cargo with zero in-log teardown lines.
+        "lost communication with the server",
     ] {
         assert!(
             classifier.contains(marker),
@@ -2231,6 +2278,10 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
     assert!(
         self_test.contains("empty log fails closed to ripr-failure"),
         "self-test must prove absent evidence fails closed"
+    );
+    assert!(
+        self_test.contains("--api-evidence") && self_test.contains("API DISCRIMINATOR core"),
+        "self-test must pin the #16431 api-evidence mode and its boundary"
     );
 
     // Lane hygiene: the privileged responder must carry a whitelist entry.
@@ -2260,14 +2311,14 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
     let timeout_prefix = "timeout --signal=TERM --kill-after=5s";
-    if run.matches("bounded_gh_api ").count() != 2
+    if run.matches("bounded_gh_api ").count() != 4
         || run.matches(timeout_prefix).count() != 1
         || !run.contains("gate_deadline=\"${RIPR_GATE_DEADLINE_EPOCH:-}\"")
         || !run.contains("remaining_until_deadline")
         || !run.contains("trap 'finalize_on_termination; exit 1' TERM INT")
     {
         bail!(
-            "both production GitHub API calls must share one job-level deadline and bounded timeout helper"
+            "all four production GitHub API calls must share one job-level deadline and bounded timeout helper"
         );
     }
     let evicted_log = concat!(
@@ -2311,13 +2362,20 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
             "a retrieved genuine gap must remain fail-closed even with teardown noise:\n{genuine_output}"
         );
     }
-    if genuine_classification.is_some() {
+    // #16431: the classification file now always exists for classified lane
+    // failures — but a genuine receipt must land in it as ripr-failure, which
+    // the retry consumer never arms on.
+    let genuine_classification = genuine_classification
+        .ok_or_else(|| anyhow!("genuine-failure classification artifact is missing"))?;
+    if genuine_classification.contains("classification=infra-no-proof")
+        || !genuine_classification.contains("classification=ripr-failure")
+    {
         bail!(
-            "a genuine ripr failure must not create an infra retry artifact:\n{genuine_classification:?}"
+            "a genuine ripr failure must not be classified as infra in the retry artifact:\n{genuine_classification}"
         );
     }
 
-    let (failed, failed_output, no_classification) =
+    let (failed, failed_output, failed_classification) =
         run_gate_with_fake_gh(None, 0, 0, GateRoute::github_failure())?;
     if failed.status.success() {
         bail!("an unretrievable lane log must keep the gate red");
@@ -2331,8 +2389,15 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
             "failed retrieval must emit an explicit fail-closed classification and warning:\n{failed_output}"
         );
     }
-    if no_classification.is_some() {
-        bail!("failed retrieval must not create an infra retry artifact:\n{no_classification:?}");
+    // #16431: retrieval failure alone is not teardown evidence. With no time
+    // left for the API-evidence fallback, the always-written classification
+    // file must carry ripr-failure so the retry consumer never arms.
+    let failed_classification = failed_classification
+        .ok_or_else(|| anyhow!("fail-closed classification artifact is missing"))?;
+    if failed_classification.contains("classification=infra-no-proof")
+        || !failed_classification.contains("classification=ripr-failure")
+    {
+        bail!("failed retrieval must not create an infra retry artifact:\n{failed_classification}");
     }
     // #14774: the bound is the shared deadline, not an attempt count. With the
     // 30s request model the budget is what stops the loop, so the warning must
@@ -2372,14 +2437,14 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
 
     // The same fast-request model with a log that never arrives must still fail
     // closed and must not arm the retry — but it must exhaust the budget first.
-    // Fifteen attempts reaching 227s of a 240s reserve is the deterministic
-    // outcome under the virtual clock; the loop stops only once the next
-    // backoff would overrun the deadline. The old five-attempt bound stopped
-    // here at 5 attempts with most of the reserve unspent, which is the defect.
+    // #16431: after the fetch loop's fifteen attempts (227s), the API-evidence
+    // fallback spends the remaining reserve on annotation/steps reads that
+    // never succeed (no fixtures served), so the full 240s is spent before the
+    // fail-closed verdict. The old five-attempt bound stopped at 5 attempts
+    // with most of the reserve unspent, which is the defect.
     let (never, never_output, never_classification) =
         run_gate_with_fast_failing_requests(None, 0, 0, GateRoute::github_failure())?;
     if never.status.success()
-        || never_classification.is_some()
         || !never_output.contains("classification=ripr-failure")
         || !never_output.contains("RIPR_GATE_VERDICT=ripr-failure")
         || never_output.contains("verdict=infra-no-proof")
@@ -2387,11 +2452,22 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         bail!("an unretrievable log must fail closed without arming the retry:\n{never_output}");
     }
     if !never_output.contains("lookup=Some(\"1\")\nfetch=Some(\"15\")")
-        || !never_output.contains("elapsed=Some(\"227\\n\")")
+        || !never_output.contains("elapsed=Some(\"240\\n\")")
         || !never_output.contains("was not retrievable after 15 attempts")
+        || !never_output
+            .contains("API classification evidence for ripr+ on GitHub Hosted (job 97001) reached the job-level retrieval deadline")
     {
         bail!(
             "fast-failing retrieval must spend the reserve rather than stop at a fixed attempt count:\n{never_output}"
+        );
+    }
+    let never_classification = never_classification
+        .ok_or_else(|| anyhow!("fail-closed classification artifact is missing"))?;
+    if never_classification.contains("classification=infra-no-proof")
+        || !never_classification.contains("classification=ripr-failure")
+    {
+        bail!(
+            "an unretrievable log with no API evidence must land as ripr-failure in the retry artifact:\n{never_classification}"
         );
     }
 
@@ -2408,13 +2484,21 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     let (lookup_never, lookup_never_output, lookup_never_classification) =
         run_gate_with_fast_failing_requests(None, 99, 0, GateRoute::github_failure())?;
     if lookup_never.status.success()
-        || lookup_never_classification.is_some()
         || !lookup_never_output.contains("classification=ripr-failure")
         || !lookup_never_output.contains("RIPR_GATE_VERDICT=ripr-failure")
         || lookup_never_output.contains("verdict=infra-no-proof")
     {
         bail!(
             "an unresolvable job id must fail closed without arming the retry:\n{lookup_never_output}"
+        );
+    }
+    let lookup_never_classification = lookup_never_classification
+        .ok_or_else(|| anyhow!("fail-closed classification artifact is missing"))?;
+    if lookup_never_classification.contains("classification=infra-no-proof")
+        || !lookup_never_classification.contains("classification=ripr-failure")
+    {
+        bail!(
+            "an unresolvable job id must land as ripr-failure in the retry artifact:\n{lookup_never_classification}"
         );
     }
     if !lookup_never_output.contains("lookup=Some(\"15\")")
@@ -2435,7 +2519,6 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     let (budget_exhausted, budget_output, budget_classification) =
         run_gate_with_fake_gh(Some(evicted_log), 4, 4, GateRoute::github_failure())?;
     if budget_exhausted.status.success()
-        || budget_classification.is_some()
         || !budget_output.contains("job-level retrieval deadline")
         || !budget_output.contains("RIPR_GATE_VERDICT=ripr-failure")
         || !budget_output.contains("lookup=Some(\"5\")")
@@ -2445,6 +2528,15 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     {
         bail!(
             "the maximum lookup-plus-fetch duration must stop at the shared budget and preserve the fail-closed terminal verdict:\n{budget_output}"
+        );
+    }
+    let budget_classification = budget_classification
+        .ok_or_else(|| anyhow!("fail-closed classification artifact is missing"))?;
+    if budget_classification.contains("classification=infra-no-proof")
+        || !budget_classification.contains("classification=ripr-failure")
+    {
+        bail!(
+            "an exhausted budget must land as ripr-failure in the retry artifact:\n{budget_classification}"
         );
     }
 
@@ -2467,11 +2559,11 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
 
     // Model setup consuming most of the pre-reserved retrieval interval and a
     // non-cooperative request being terminated by TERM/kill-after. The gate must
-    // still emit its fail-closed verdict without creating an eviction artifact.
+    // still emit its fail-closed verdict, and #16431 keeps the classification
+    // file red rather than absent.
     let (delayed, delayed_output, delayed_classification) =
         run_gate_after_delayed_setup(Some(evicted_log), GateRoute::github_failure(), 190)?;
     if delayed.status.success()
-        || delayed_classification.is_some()
         || !delayed_output.contains("job-level retrieval deadline")
         || !delayed_output.contains("RIPR_GATE_VERDICT=ripr-failure")
         || !delayed_output.contains("fetch=None")
@@ -2480,6 +2572,131 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     {
         bail!(
             "delayed setup and a terminated non-cooperative request must preserve the fail-closed terminal verdict:\n{delayed_output}"
+        );
+    }
+    let delayed_classification = delayed_classification
+        .ok_or_else(|| anyhow!("fail-closed classification artifact is missing"))?;
+    if delayed_classification.contains("classification=infra-no-proof")
+        || !delayed_classification.contains("classification=ripr-failure")
+    {
+        bail!(
+            "a deadline-terminated retrieval must land as ripr-failure in the retry artifact:\n{delayed_classification}"
+        );
+    }
+
+    // #16431: when the lane log never becomes retrievable, the gate must not
+    // give up while the lane job's own API evidence still carries positive
+    // platform-teardown markers. The log fetch fails forever, but the
+    // check-run annotations carry the hosted-runner lost-communication notice
+    // measured on runs 35444262230 / 35501271465 (that eviction class ends
+    // mid-cargo with zero in-log markers), so the classifier arms
+    // infra-no-proof from API-side evidence alone and the bounded retry can
+    // fire. The steps projection runs through the real selector against a
+    // jobs listing that again lists the stale job first.
+    let lost_communication_annotations = r#"[{"annotation_level":"failure","message":"The hosted runner lost communication with the server. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error."}]"#;
+    let concluded_steps = r#"{"total_count":2,"jobs":[{"name":"ripr+ stale job","id":11111,"conclusion":"success","steps":[]},{"name":"ripr+ on GitHub Hosted","id":97001,"conclusion":"failure","steps":[{"name":"Generate review guidance","status":"completed","conclusion":"failure"},{"name":"Complete job","status":"completed","conclusion":"success"}]}]}"#;
+    let (api_classified, api_output, api_classification) = run_gate_with_fake_gh_logs(
+        None,
+        "##[error]The runner has received a shutdown signal.\n",
+        0,
+        0,
+        GateRoute::github_failure(),
+        GhApiControl::Valid,
+        Some("gate-token"),
+        0,
+        2,
+        lost_communication_annotations,
+        concluded_steps,
+    )?;
+    if api_classified.status.success()
+        || !api_output.contains("classification=infra-no-proof")
+        || !api_output.contains("RIPR_GATE_VERDICT=infra-no-proof")
+        || !api_output.contains("lost_communication_matches=1")
+        || !api_output.contains("lane_job_conclusion=failure")
+        || !api_output.contains("annotations_read=true")
+        || !api_output.contains("fetch=Some(\"15\")")
+    {
+        bail!(
+            "an evicted lane whose annotations carry the lost-communication notice must classify from API evidence:\n{api_output}"
+        );
+    }
+    if !api_classification
+        .ok_or_else(|| anyhow!("api-evidence classification artifact is missing"))?
+        .contains("classification=infra-no-proof")
+    {
+        bail!("api-side teardown evidence must arm the bounded retry:\n{api_output}");
+    }
+
+    // The steps-state shape of the same eviction class: annotations hold
+    // nothing, but the lane failed while a step it had started never
+    // concluded — a runner that died before it could print anything.
+    let stuck_steps = r#"{"total_count":2,"jobs":[{"name":"ripr+ stale job","id":11111,"conclusion":"success","steps":[]},{"name":"ripr+ on GitHub Hosted","id":97001,"conclusion":"failure","steps":[{"name":"Set up job","status":"completed","conclusion":"success"},{"name":"Generate review guidance","status":"in_progress","conclusion":null},{"name":"Enforce new RIPR gap quality gate","status":"pending","conclusion":null}]}]}"#;
+    let (api_steps_classified, api_steps_output, api_steps_classification) =
+        run_gate_with_fake_gh_logs(
+            None,
+            "##[error]The runner has received a shutdown signal.\n",
+            0,
+            0,
+            GateRoute::github_failure(),
+            GhApiControl::Valid,
+            Some("gate-token"),
+            0,
+            2,
+            "[]",
+            stuck_steps,
+        )?;
+    if api_steps_classified.status.success()
+        || !api_steps_output.contains("classification=infra-no-proof")
+        || !api_steps_output.contains("RIPR_GATE_VERDICT=infra-no-proof")
+        || !api_steps_output.contains("stuck_in_progress_steps=1")
+        || !api_steps_output.contains("lane_job_conclusion=failure")
+        || !api_steps_output.contains("lost_communication_matches=0")
+    {
+        bail!(
+            "a failed lane with an unconcluded step must classify from its steps state:\n{api_steps_output}"
+        );
+    }
+    if !api_steps_classification
+        .ok_or_else(|| anyhow!("steps-state classification artifact is missing"))?
+        .contains("classification=infra-no-proof")
+    {
+        bail!("steps-state teardown evidence must arm the bounded retry:\n{api_steps_output}");
+    }
+
+    // Negative control on the same endpoints: readable evidence with no
+    // teardown marker anywhere — every step concluded, empty annotations —
+    // is absence of evidence, not positive evidence, and must land as
+    // ripr-failure in the classification artifact.
+    let (api_negative, api_negative_output, api_negative_classification) =
+        run_gate_with_fake_gh_logs(
+            None,
+            "##[error]The runner has received a shutdown signal.\n",
+            0,
+            0,
+            GateRoute::github_failure(),
+            GhApiControl::Valid,
+            Some("gate-token"),
+            0,
+            2,
+            "[]",
+            concluded_steps,
+        )?;
+    if api_negative.status.success()
+        || !api_negative_output.contains("classification=ripr-failure")
+        || !api_negative_output.contains("RIPR_GATE_VERDICT=ripr-failure")
+        || api_negative_output.contains("verdict=infra-no-proof")
+    {
+        bail!(
+            "api evidence without any teardown marker must stay fail-closed:\n{api_negative_output}"
+        );
+    }
+    let api_negative_classification = api_negative_classification
+        .ok_or_else(|| anyhow!("negative api-evidence classification artifact is missing"))?;
+    if api_negative_classification.contains("classification=infra-no-proof")
+        || !api_negative_classification.contains("classification=ripr-failure")
+    {
+        bail!(
+            "marker-free api evidence must land as ripr-failure in the retry artifact:\n{api_negative_classification}"
         );
     }
 
@@ -2496,6 +2713,8 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         Some("gate-token"),
         0,
         30,
+        "",
+        "",
     )?;
     if reused.status.success()
         || !reused_output.contains("classification=ripr-failure")
@@ -2504,10 +2723,20 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         || !reused_output.contains("log_lines_scanned=1")
         || !reused_output.contains("fetch=Some(\"2\")")
         || !reused_output.contains("fetch_urls=Some(\"97001\\n97001\\n\")")
-        || reused_classification.is_some()
+        || reused_classification.is_none()
     {
         bail!(
             "a failed partial teardown fetch followed by a distinct genuine-gap log must truncate and reclassify the buffer:\n{reused_output}"
+        );
+    }
+    // #16431: a genuine receipt keeps the classification file red — the retry
+    // consumer greps classification=infra-no-proof and never arms on it.
+    if !reused_classification
+        .ok_or_else(|| anyhow!("ripr-failure classification artifact is missing"))?
+        .contains("classification=ripr-failure")
+    {
+        bail!(
+            "a genuine receipt must land in the classification artifact as ripr-failure:\n{reused_output}"
         );
     }
 
@@ -2615,10 +2844,20 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
             token,
             0,
             30,
+            "",
+            "",
         )?;
-        if negative.status.success() || artifact.is_some() {
+        // #16431: the classification file now exists for every classified lane
+        // failure, but a wrong-repository/wrong-run/wrong-job/auth failure
+        // must land in it as ripr-failure — nothing that arms the retry.
+        let artifact = artifact
+            .ok_or_else(|| anyhow!("{name} negative control must still classify as data"))?;
+        if negative.status.success()
+            || artifact.contains("classification=infra-no-proof")
+            || !artifact.contains("classification=ripr-failure")
+        {
             bail!(
-                "{name} API/auth negative control must fail closed without retry artifact:\n{output}"
+                "{name} API/auth negative control must fail closed without an infra classification:\n{output}\n{artifact}"
             );
         }
         if !output.contains("RIPR_GATE_VERDICT=ripr-failure") {

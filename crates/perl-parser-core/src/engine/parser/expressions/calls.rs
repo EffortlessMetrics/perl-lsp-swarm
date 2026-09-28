@@ -439,9 +439,9 @@ impl<'a> Parser<'a> {
                     if s.peek_kind() == Some(TokenKind::FatArrow)
                         && let Some(arg) = args.last_mut()
                     {
-                        Self::auto_quote_bareword_before_fat_comma(arg);
+                        s.auto_quote_bareword_before_fat_comma(arg)?;
                     }
-                    s.tokens.next()?;
+                    s.advance_token()?;
                 } else if Self::is_statement_terminator(s.peek_kind())
                     || s.is_statement_modifier_keyword()
                 {
@@ -451,7 +451,7 @@ impl<'a> Parser<'a> {
 
             let end =
                 args.last().map(|arg| arg.location.end).unwrap_or_else(|| s.previous_position());
-            Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
+            s.charge_node(NodeKind::FunctionCall { name, args }, SourceLocation { start, end })
         })
     }
 
@@ -484,10 +484,10 @@ impl<'a> Parser<'a> {
                 && self.peek_kind() == Some(TokenKind::Try)
             {
                 let token = self.consume_token()?;
-                Node::new(
+                self.charge_node(
                     NodeKind::Identifier { name: token.text.to_string() },
                     SourceLocation { start: token.start(), end: token.end() },
-                )
+                )?
             } else {
                 self.parse_primary()?
             };
@@ -511,7 +511,7 @@ impl<'a> Parser<'a> {
                 NodeKind::Unary { op, .. } if op == "${}"
             ));
         if self.peek_kind() == Some(TokenKind::FatArrow) || comma_after_double_sigil_object {
-            self.tokens.next()?; // consume , or =>
+            self.advance_token()?; // consume , or =>
         }
 
         // Continue parsing arguments until we hit a statement terminator
@@ -552,7 +552,7 @@ impl<'a> Parser<'a> {
 
             // Check if we should continue (comma or fat arrow as separator in indirect syntax)
             if matches!(self.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
-                self.tokens.next()?; // consume , or =>
+                self.advance_token()?; // consume , or =>
             } else if Self::is_statement_terminator(self.peek_kind())
                 || self.is_statement_modifier_keyword()
             {
@@ -595,10 +595,10 @@ impl<'a> Parser<'a> {
         };
 
         // Return as an indirect call node (using MethodCall with a flag or separate node)
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::IndirectCall { method, object: Box::new(object), args },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Parse an assignment expression or a variable declaration.
@@ -656,7 +656,22 @@ impl<'a> Parser<'a> {
             _ => true, // not a declaration node; treat as already complete
         };
 
-        if has_initializer { Ok(decl) } else { self.parse_below_assignment_with(decl) }
+        if has_initializer {
+            return Ok(decl);
+        }
+        // Contextual repetition assignment on a declaration used as a call
+        // argument (`f(my $v x= 3)`): `parse_declaration_arg` only consumes
+        // plain `=`, and the binary chain below never applies assignment
+        // operators, so route the declaration through the shared assignment
+        // seam to form one `x=` assignment over it (#13486). The
+        // `Identifier` gate keeps symbolic operators on their existing path:
+        // the seam consumes nothing unless it recognizes an adjacent `x=`.
+        if self.peek_kind() == Some(TokenKind::Identifier)
+            && let Some((op, op_start)) = self.consume_assignment_operator()?
+        {
+            return self.finish_declaration_repetition_assignment(decl, op, op_start);
+        }
+        self.parse_below_assignment_with(decl)
     }
 
     /// Parse a variable declaration as a function argument.
@@ -689,7 +704,7 @@ impl<'a> Parser<'a> {
             self.expect_closing_delimiter(TokenKind::RightParen)?;
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
-                let op_token = self.tokens.next()?; // consume =
+                let op_token = self.advance_token()?; // consume =
                 let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
@@ -707,7 +722,7 @@ impl<'a> Parser<'a> {
                 .as_ref()
                 .map_or(variable.location.end, |node| node.location.end)
                 .max(self.previous_position());
-            Ok(Node::new(
+            self.charge_node(
                 NodeKind::VariableDeclaration {
                     declarator,
                     variable: Box::new(variable),
@@ -715,7 +730,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            ))
+            )
         // Check if we have a list declaration like `my ($x, $y)`
         } else if self.peek_kind() == Some(TokenKind::LeftParen) {
             self.consume_token()?; // consume (
@@ -741,7 +756,7 @@ impl<'a> Parser<'a> {
             self.expect_closing_delimiter(TokenKind::RightParen)?; // consume )
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
-                let op_token = self.tokens.next()?; // consume =
+                let op_token = self.advance_token()?; // consume =
                 let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
@@ -753,7 +768,7 @@ impl<'a> Parser<'a> {
             };
 
             let end = self.previous_position();
-            Ok(Node::new(
+            self.charge_node(
                 NodeKind::VariableListDeclaration {
                     declarator,
                     variables,
@@ -761,7 +776,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            ))
+            )
         } else {
             // Single variable declaration
             let variable = if declarator == "local" {
@@ -771,7 +786,7 @@ impl<'a> Parser<'a> {
             };
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
-                let op_token = self.tokens.next()?; // consume =
+                let op_token = self.advance_token()?; // consume =
                 let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
@@ -789,7 +804,7 @@ impl<'a> Parser<'a> {
                 .as_ref()
                 .map_or(variable.location.end, |node| node.location.end)
                 .max(self.previous_position());
-            Ok(Node::new(
+            self.charge_node(
                 NodeKind::VariableDeclaration {
                     declarator,
                     variable: Box::new(variable),
@@ -797,7 +812,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            ))
+            )
         }
     }
 
@@ -846,10 +861,10 @@ impl<'a> Parser<'a> {
                     if s.peek_kind() == Some(TokenKind::FatArrow)
                         && let Some(arg) = args.last_mut()
                     {
-                        Self::auto_quote_bareword_before_fat_comma(arg);
+                        s.auto_quote_bareword_before_fat_comma(arg)?;
                     }
                     if matches!(s.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
-                        s.tokens.next()?;
+                        s.advance_token()?;
                     }
                     if s.peek_kind() == Some(TokenKind::RightParen) {
                         break;
@@ -866,12 +881,12 @@ impl<'a> Parser<'a> {
                 while s.peek_kind() != Some(TokenKind::RightParen) && !s.tokens.is_eof() {
                     let mut arg = s.parse_assignment_or_declaration()?;
                     if s.peek_kind() == Some(TokenKind::FatArrow) {
-                        Self::auto_quote_bareword_before_fat_comma(&mut arg);
+                        s.auto_quote_bareword_before_fat_comma(&mut arg)?;
                     }
                     args.push(arg);
                     match s.peek_kind() {
                         Some(TokenKind::Comma) | Some(TokenKind::FatArrow) => {
-                            s.tokens.next()?;
+                            s.advance_token()?;
                         }
                         _ => break,
                     }
@@ -898,11 +913,11 @@ impl<'a> Parser<'a> {
 
                 // A fat comma auto-quotes a bare identifier on its left.
                 if s.peek_kind() == Some(TokenKind::FatArrow) {
-                    Self::auto_quote_bareword_before_fat_comma(&mut arg);
+                    s.auto_quote_bareword_before_fat_comma(&mut arg)?;
                     args.push(arg);
-                    s.tokens.next()?; // consume =>
+                    s.advance_token()?; // consume =>
                     if s.peek_kind() == Some(TokenKind::FatArrow) {
-                        s.tokens.next()?; // consume redundant chained =>
+                        s.advance_token()?; // consume redundant chained =>
                     }
                     // Continue to parse more arguments (the value after =>)
                     continue;

@@ -38,7 +38,7 @@ pub(crate) use dispatch::SUPPORTED_COMMANDS;
 pub(crate) use dispatch::is_supported_dap_command;
 
 use crate::breakpoint::{AstBreakpointValidator, BreakpointValidator};
-use crate::eval::SafeEvaluator;
+use crate::eval::{ReplTrustPolicy, SafeEvaluator};
 use crate::feature_catalog::has_feature as catalog_has_feature;
 use crate::inline_values::{collect_inline_values_with_runtime, extract_variable_names};
 use crate::protocol::{
@@ -218,6 +218,12 @@ pub struct DebugAdapter {
     cleanup_failure_for_test: Arc<AtomicBool>,
     /// Tracks whether initialize request has been received (state machine validation)
     initialized: Arc<AtomicBool>,
+    /// Whether the explicit `repl` context may execute side-effectful Perl.
+    ///
+    /// Process-owned and never read from project or workspace configuration, so
+    /// a checked-in project file cannot grant broader execution authority to
+    /// whoever opens the folder (#9385).
+    repl_trust: ReplTrustPolicy,
     /// Reload-family route state (R03, #10102): the exact preview/test
     /// profile gate, session epoch, negotiated family wiring, and
     /// subject bindings. Absent behavior (the default) leaves the family
@@ -338,9 +344,27 @@ impl DebugAdapter {
             #[cfg(test)]
             cleanup_failure_for_test: Arc::new(AtomicBool::new(false)),
             initialized: Arc::new(AtomicBool::new(false)),
+            repl_trust: ReplTrustPolicy::default(),
             reload_route: Arc::new(Mutex::new(reload_route::ReloadRouteState::default())),
             operation_broker: Arc::new(operation_broker::OperationBroker::new()),
         }
+    }
+
+    /// Set the trusted-REPL execution policy for this adapter.
+    ///
+    /// Deliberately an in-process constructor-style setter rather than a
+    /// configuration key: project and workspace input must not be able to widen
+    /// execution authority (#9385).
+    #[must_use]
+    pub fn with_repl_trust(mut self, policy: ReplTrustPolicy) -> Self {
+        self.repl_trust = policy;
+        self
+    }
+
+    /// The trusted-REPL execution policy in force for this adapter.
+    #[must_use]
+    pub(crate) fn repl_trust(&self) -> ReplTrustPolicy {
+        self.repl_trust
     }
 
     /// Set the event sender (primarily for testing).
@@ -2107,7 +2131,9 @@ print "result: $final\n";
                     "breakpoints": [{ "line": 1, "hitCondition": ">= 1", "logMessage": "breakpoint hit" }]
                 })),
                 "setExceptionBreakpoints" => Some(json!({"filters": ["die"]})),
-                "evaluate" => Some(json!({"expression": "$x", "allowSideEffects": true})),
+                "evaluate" => {
+                    Some(json!({"expression": "$x", "context": "repl", "allowSideEffects": true}))
+                }
                 "setVariable" => {
                     Some(json!({"variablesReference": 11, "name": "$x", "value": "1"}))
                 }

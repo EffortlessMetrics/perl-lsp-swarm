@@ -399,7 +399,7 @@ impl DocumentHighlightProvider {
             // Signature and parameter types (Issue #191)
             NodeKind::Signature { parameters } => Some(parameters.iter().collect()),
             NodeKind::MandatoryParameter { variable } => Some(vec![variable.as_ref()]),
-            NodeKind::OptionalParameter { variable, default_value } => {
+            NodeKind::OptionalParameter { variable, default_value, .. } => {
                 Some(vec![variable.as_ref(), default_value.as_ref()])
             }
             NodeKind::SlurpyParameter { variable } => Some(vec![variable.as_ref()]),

@@ -66,7 +66,8 @@ use tasks::{
     release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
     semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
     semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, standalone_diagnostics, supported_editor_inline_smoke, swarm_agent_roster,
+    srp_microcrates, standalone_diagnostics, standalone_vectors, supported_editor_inline_smoke,
+    swarm_agent_roster,
     swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
     unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
@@ -838,6 +839,12 @@ enum Commands {
         /// Head revision used for diff-scoped RIPR receipt commands.
         #[arg(long, default_value = "HEAD")]
         ripr_head: String,
+        /// Commit the repo-wide RIPR+ total-debt receipt may be bound to
+        /// instead of the head, for `--mode enforce-new-ripr` only. Normally
+        /// the merge base the pull request is measured against. Must name the
+        /// commit exactly; omitting it keeps the receipt head-bound.
+        #[arg(long)]
+        ripr_baseline_commit: Option<String>,
         /// Quality-gate JSON receipt path.
         #[arg(long, default_value = "target/receipts/quality/quality-gate.json")]
         receipt: PathBuf,
@@ -1367,6 +1374,12 @@ enum Commands {
         /// Emit machine-readable output.
         #[arg(long)]
         json: bool,
+
+        /// Schema version this producer must emit and validate. Only `v1`
+        /// is supported; anything else fails loudly instead of emitting a
+        /// shape the caller does not parse (#15371).
+        #[arg(long, default_value = "v1")]
+        api_version: String,
     },
 
     /// Measure CI baseline from recent workflow runs.
@@ -1394,6 +1407,12 @@ enum Commands {
         /// historical or per-branch baselines side by side.
         #[arg(short, long, default_value = metrics::release_health::CI_BASELINE_OUTPUT_DIR)]
         output: PathBuf,
+
+        /// Schema version this producer must emit and validate. Only `v1`
+        /// is supported; anything else fails loudly instead of emitting a
+        /// shape the caller does not parse (#15371).
+        #[arg(long, default_value = "v1")]
+        api_version: String,
     },
 
     /// Compute the CI scope — changed crates, reverse-dep closure, and architectural wideners.
@@ -2402,6 +2421,17 @@ enum Commands {
     /// Check active install docs and release notes for stale install command drift.
     InstallSurfaceCheck,
 
+    /// Standalone install semantic conformance vectors (#11550): the
+    /// versioned deterministic corpus, independent expected-outcome oracle,
+    /// fixture-port protocol data, and mutation bank used to prove POSIX and
+    /// PowerShell transaction conformance. Proof-only: never executes
+    /// production adapters and implements no product behavior.
+    #[command(name = "standalone-vectors")]
+    StandaloneVectors {
+        #[command(subcommand)]
+        command: StandaloneVectorsCommand,
+    },
+
     /// Validate PR intent/title/body against changed paths and closeout evidence.
     IntentDiffGate {
         /// Pull request number to inspect via `gh pr view`.
@@ -3082,6 +3112,27 @@ enum CheckFilePolicyCliMode {
 }
 
 #[derive(Subcommand)]
+enum StandaloneVectorsCommand {
+    /// Validate the corpus: schema, contract rules, independent-oracle
+    /// derivations, authored expectations, and byte-identical goldens.
+    /// `--update-golden` is an explicit writer action, never live state.
+    Check {
+        /// Rewrite the golden semantic packets.
+        #[arg(long)]
+        update_golden: bool,
+    },
+    /// Render one vector's full derivation (stage walk, receipts, ceilings,
+    /// terminal fold) and its assertion results.
+    Explain {
+        /// Vector id, e.g. v001-archive-pair-success.
+        vector: String,
+    },
+    /// Apply every registered wrong-behavior mutation to its target vectors;
+    /// fail if any mutation survives with a packet identical to its golden.
+    MutationCheck,
+}
+
+#[derive(Subcommand)]
 enum EditorCompatCommand {
     /// Run one exact Vim + vim-lsp actual-host subject through the hermetic
     /// Rust host runner (#10944). The pinned vim-lsp checkout is verified
@@ -3207,6 +3258,13 @@ enum VimEditorCompatCommand {
         /// Host run timeout in milliseconds (default 240000).
         #[arg(long, default_value_t = 240_000)]
         timeout_ms: u64,
+
+        /// Envelope schema version this run must emit and validate (#15340).
+        /// Only the current `editor_client_compat` envelope is supported;
+        /// anything else fails closed before any work instead of emitting a
+        /// shape the caller does not parse.
+        #[arg(long, default_value = xtask::editor_client_compat::SCHEMA_VERSION)]
+        api_version: String,
     },
 }
 
@@ -4899,6 +4957,13 @@ enum EmacsIntegrationCommand {
         /// Host run timeout in milliseconds (default 180000).
         #[arg(long, default_value_t = 180_000)]
         timeout_ms: u64,
+
+        /// Envelope schema version this run must emit and validate (#15340).
+        /// Only the current `editor_client_compat` envelope is supported;
+        /// anything else fails closed before any work instead of emitting a
+        /// shape the caller does not parse.
+        #[arg(long, default_value = xtask::editor_client_compat::SCHEMA_VERSION)]
+        api_version: String,
     },
     /// Governed Emacs host-journey and fixture/cell manifest operations
     /// (#11768). Offline, deterministic, and second-run clean; validating or
@@ -5563,7 +5628,10 @@ fn run_cli(cli: Cli) -> Result<()> {
                     candidate,
                     out,
                     timeout_ms,
+                    api_version,
                 } => {
+                    xtask::editor_client_compat::ensure_api_version(&api_version)
+                        .map_err(|error| eyre!("{error:#}"))?;
                     let repo_root =
                         utils::project_root().map_err(|error| eyre!(error.to_string()))?;
                     if journey == "save-format" {
@@ -5881,6 +5949,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
                         &repo_root,
+                        &api_version,
                         &subject,
                         vim,
                         vim_lsp_dir,
@@ -6088,6 +6157,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_baseline_commit,
             receipt,
             summary,
             check,
@@ -6102,6 +6172,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_baseline_commit,
             receipt,
             summary,
             check,
@@ -6372,9 +6443,11 @@ fn run_cli(cli: Cli) -> Result<()> {
                 timeout_secs,
             })
         }
-        Commands::CiCostMonitor { days, json } => ci_metrics::run_cost_monitor(days, json),
-        Commands::CiBaseline { branch, days, limit, output } => {
-            ci_metrics::run_ci_baseline(branch, days, limit, output)
+        Commands::CiCostMonitor { days, json, api_version } => {
+            ci_metrics::run_cost_monitor(days, json, &api_version)
+        }
+        Commands::CiBaseline { branch, days, limit, output, api_version } => {
+            ci_metrics::run_ci_baseline(branch, days, limit, output, &api_version)
         }
         Commands::CiScope { base, subject, root, format } => {
             ci_scope::run(ci_scope::CiScopeConfig { base, subject, root, format })
@@ -6497,11 +6570,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                     client_package,
                     out,
                     timeout_ms,
+                    api_version,
                 } => {
                     let root =
                         crate::utils::project_root().map_err(|error| eyre!(error.to_string()))?;
                     let outcome = xtask::emacs_host_run::host_run_from_cli(
                         &root,
+                        &api_version,
                         &subject,
                         emacs,
                         candidate,
@@ -7116,6 +7191,15 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::DocClaims => doc_claims::run(),
         Commands::InstallSurfaceCheck => install_surface_check::run(),
+        Commands::StandaloneVectors { command } => match command {
+            StandaloneVectorsCommand::Check { update_golden } => {
+                standalone_vectors::run_check(update_golden)
+            }
+            StandaloneVectorsCommand::Explain { vector } => {
+                standalone_vectors::run_explain(&vector)
+            }
+            StandaloneVectorsCommand::MutationCheck => standalone_vectors::run_mutation_check(),
+        },
         Commands::IntentDiffGate { pr, fixture, receipt } => {
             intent_diff_gate::run(intent_diff_gate::IntentDiffGateConfig { pr, fixture, receipt })
         }

@@ -9,12 +9,12 @@ This status tracks parser AST construct coverage for the crate-local HIR baselin
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `lowered` | 38 | Emits one or more HIR items today. |
+| `lowered` | 39 | Emits one or more HIR items today. |
 | `dynamic_boundary` | 5 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
 | `intentionally_skipped` | 20 | Traversal, metadata, or recovery placeholder; no standalone HIR item expected. |
 | `not_yet_modeled` | 13 | Parser AST construct exists, but HIR has no shell yet. |
 
-AST kinds tracked: `76`. HIR construct kinds tracked: `29`.
+AST kinds tracked: `77`. HIR construct kinds tracked: `29`.
 
 ## Inventory
 
@@ -74,6 +74,7 @@ AST kinds tracked: `76`. HIR construct kinds tracked: `29`.
 | `Return` | `lowered` | `ControlTransfer` | Lowered as a control-transfer shell recording whether a value is returned. |
 | `LoopControl` | `lowered` | `ControlTransfer` | `next`/`last`/`redo` lowered as control-transfer shells with optional label. |
 | `Goto` | `lowered` | `ControlTransfer` | Lowered as a control-transfer shell; plain label targets are preserved. |
+| `TargetlessGoto` | `lowered` | `ControlTransfer` | Honest targetless goto emits a control-transfer shell with no label and no executed child. |
 | `MethodCall` | `lowered` | `MethodCallExpr` | Lowered as method-call shell. |
 | `FunctionCall` | `lowered` | `CallExpr`, `DynamicBoundary`, `RequireDecl` | `require` calls lower as `RequireDecl`; coderef calls add a dynamic boundary. |
 | `AmperCall` | `not_yet_modeled` | - | No first-slice HIR shell yet. |

@@ -118,13 +118,26 @@ EOF
 #[test]
 fn test_regex_heredoc_detection() {
     let detector = AntiPatternDetector::new();
-    // Single-line case: (?{ and << on the same line — detected by the bounded pattern.
-    // Multi-line cases ((?{ on one line, << on the next) are not detected after #1756;
-    // that tradeoff is explicit: line-boundary anchoring prevents ReDoS.
+    // Single-line case: (?{ and << on the same line.
     let code = "m/a(?{b<<'X'})c/";
     let diagnostics = detector.detect_all(code);
     assert_eq!(diagnostics.len(), 1);
     assert!(matches!(diagnostics[0].pattern, AntiPattern::RegexCodeBlockHeredoc { .. }));
+}
+
+#[test]
+fn test_regex_heredoc_detection_spanning_lines() {
+    // A heredoc inside a regex code block spans newlines by construction. The
+    // scan bound comes from `}` exclusion, not a newline horizon (#3597).
+    let detector = AntiPatternDetector::new();
+    let code = "m/pattern(?{\n    print <<'MATCH';\nMatch text\nMATCH\n})/";
+    let diagnostics = detector.detect_all(code);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diag| matches!(diag.pattern, AntiPattern::RegexCodeBlockHeredoc { .. })),
+        "multi-line regex code block heredoc must be detected"
+    );
 }
 
 #[test]
@@ -163,16 +176,14 @@ fn test_regex_heredoc_does_not_overmatch_triple_question() {
 }
 
 #[test]
-fn test_regex_heredoc_pattern_static_matches_both_openers() {
-    // #14390: observe the production REGEX_HEREDOC_PATTERN static directly. The
-    // detector-level tests above reach it only transitively through trait-object
-    // dispatch, which static analysis cannot follow; this direct observation pins
-    // the changed `?{1,2}` opener to its falsifying inputs.
-    let pattern =
-        super::compiled(&super::REGEX_HEREDOC_PATTERN).expect("production regex compiles");
-    assert!(pattern.is_match("m/a(?{b<<'X'})c/"));
-    assert!(pattern.is_match("m/a(??{b<<'X'})c/"));
-    assert!(!pattern.is_match("m/a(???{b<<'X'})c/"));
+fn test_regex_code_block_scan_matches_both_openers() {
+    // #14390: since #3597 the detector finds regex code blocks with a literal
+    // opener scan rather than a regex static, so the production seam is
+    // `regex_code_block_matches`. The same falsifying inputs stay pinned: the
+    // `(?{` and `(??{` openers both match, `(???{` does not.
+    assert!(!super::regex_code_block_matches("m/a(?{b<<'X'})c/").is_empty());
+    assert!(!super::regex_code_block_matches("m/a(??{b<<'X'})c/").is_empty());
+    assert!(super::regex_code_block_matches("m/a(???{b<<'X'})c/").is_empty());
 }
 
 #[test]
@@ -200,13 +211,26 @@ fn test_detector_state_helpers_call_observation() {
 #[test]
 fn test_eval_heredoc_detection() {
     let detector = AntiPatternDetector::new();
-    // Single-line case: eval and << on the same line — detected by the bounded pattern.
-    // Multi-line cases (closing quote on a later line) are not detected after #1756;
-    // that tradeoff is explicit: line-boundary anchoring prevents ReDoS.
+    // Single-line case: eval and << on the same line.
     let code = "eval 'print <<EOF;'";
     let diagnostics = detector.detect_all(code);
     assert_eq!(diagnostics.len(), 1);
     assert!(matches!(diagnostics[0].pattern, AntiPattern::EvalStringHeredoc { .. }));
+}
+
+#[test]
+fn test_eval_heredoc_detection_spanning_lines() {
+    // The eval string must reach its heredoc terminator, so the closing quote
+    // is on a later line. Bounded by the quote, not by a newline (#3597).
+    let detector = AntiPatternDetector::new();
+    let code = "eval 'print <<\"EVAL\";\nbody text\nEVAL\n';";
+    let diagnostics = detector.detect_all(code);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diag| matches!(diag.pattern, AntiPattern::EvalStringHeredoc { .. })),
+        "multi-line eval string heredoc must be detected"
+    );
 }
 
 #[test]

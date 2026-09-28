@@ -75,6 +75,7 @@ const LAYERS: &[LayerRow] = &[
     layer!("text_sync", ApplicationServices),
     layer!("timing", ObservabilityTest),
     layer!("types", ModelTypes),
+    layer!("v0_18_text_sync_envelope", ApplicationServices),
     layer!("window", AdapterPolicy),
     layer!("workspace", ApplicationServices),
     layer!("workspace_folder", ApplicationServices),
