@@ -923,8 +923,10 @@ def main() -> int:
 
     # A history file that exists but cannot be read as v1 is a real signal, not
     # a quiet absence. Say so in the summary so an unenveloped or future-schema
-    # payload is never mistaken for "no lane had enough samples yet".
-    if history_disposition in ("unreadable", "unsupported_schema", "malformed"):
+    # payload is never mistaken for "no lane has enough samples yet". Deriving
+    # this from the clean outcomes means a future rejection reason warns by
+    # default instead of having to be added to a second list.
+    if history_disposition not in ("accepted", "absent"):
         warnings.append(
             f"Lane history `{args.history}` was not applied "
             f"(`{history_disposition}`); using static `base_lem` floors. "
