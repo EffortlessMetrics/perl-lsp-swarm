@@ -130,19 +130,17 @@ be computed — prints a warning and continues without verification. Download
 it, inspect it, then run it from PowerShell:
 
 ```powershell
-$InstallerRef = '<full-40-char-commit-sha>'
-irm "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$InstallerRef/install.ps1" -OutFile install.ps1
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/866d83285b69c7a80276735cbdc2b20d66694d86/install.ps1 -OutFile install.ps1
 # Review install.ps1, then:
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Pin `$InstallerRef` to a commit, exactly as the macOS/Linux bootstrap above
-does. Fetching from `master` means the bytes you reviewed are not necessarily
-the bytes you then run: `master` can move between the `irm` and the
-`ExecutionPolicy Bypass`, and the installer decides which asset to download at
-run time. `docs/how-to/INSTALLATION.md` states the same rule the wrapper
-enforces — a ref is not accepted unless it is a full 40-character commit SHA,
-precisely so the fetch is immutable.
+This fetches the exact audited revision pinned in the
+[installation guide](docs/how-to/INSTALLATION.md#published-powershell-script).
+Note that the `install.ps1` in a development checkout is the stricter
+revision: it fails closed on missing or malformed checksum evidence and
+promotes `perllsp.exe` and `perl-dap.exe` as one atomic product unit
+([details](docs/how-to/INSTALLATION.md#development-checkout-installer)).
 
 Windows 10 ARM64 and unsupported architectures must build from source. On
 x86_64 Windows the manual archive above remains available as an alternative to

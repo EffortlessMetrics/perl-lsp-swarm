@@ -1816,7 +1816,6 @@ version = "0.17.0"
 dependencies = [
  "criterion",
  "memchr",
- "perl-ast-v2",
  "perl-parser-core",
  "perl-position-tracking",
  "perl-source-identity",
