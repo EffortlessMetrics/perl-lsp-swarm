@@ -207,6 +207,65 @@ class PrPlanTests(unittest.TestCase):
         self.assertEqual("static_floor", lanes[1]["learned_source"])
         self.assertEqual(5, lanes[2]["base_lem"])
 
+    def test_load_learned_history_refuses_a_version_it_does_not_understand(self) -> None:
+        # `load_learned_history` read `.ci/metrics/ci-lane-history.json` and
+        # returned whatever parsed, so a version bump that renames
+        # `static_floor` reached `apply_learned_estimates` with the floor
+        # unreadable: the `isinstance(floor, (int, float))` guard fell
+        # through, a 45.0 floor became a 4.6 learned estimate, and the plan
+        # under-priced the lane by ~90%. Refusing the payload is the fail-safe;
+        # returning {} leaves every lane on its static floor (#15286).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ci-lane-history.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "min_samples_for_learned": 5,
+                        "lane_count": 1,
+                        "lanes": {
+                            "rust_small": {
+                                "samples": 40,
+                                "floor": 45.0,  # v2 spelling of static_floor
+                                "learned": True,
+                                "p50": 4.0,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual({}, pr_plan.load_learned_history(path))
+
+    def test_load_learned_history_still_loads_the_supported_version(self) -> None:
+        # The control: an absent file and an unreadable one both still yield
+        # the same tolerant {} the caller already handles. Only the version
+        # gate is new.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual({}, pr_plan.load_learned_history(root / "absent.json"))
+
+            broken = root / "broken.json"
+            broken.write_text("{", encoding="utf-8")
+            self.assertEqual({}, pr_plan.load_learned_history(broken))
+
+            current = root / "ci-lane-history.json"
+            payload = {
+                "schema_version": 1,
+                "min_samples_for_learned": 5,
+                "lane_count": 1,
+                "lanes": {
+                    "rust_small": {
+                        "samples": 40,
+                        "static_floor": 45.0,
+                        "learned": True,
+                        "p50": 4.0,
+                    }
+                },
+            }
+            current.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(payload, pr_plan.load_learned_history(current))
+
     def test_main_writes_plan_summary_and_trust_lane_for_pr_plan_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

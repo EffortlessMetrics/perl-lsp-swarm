@@ -23,6 +23,39 @@ import sys
 from pathlib import Path
 from typing import Any
 
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+# The history file is a versioned wire contract written by
+# `aggregate_lane_history.py`, which also gates the checked-in payload on this
+# value. Bound to that single authority rather than restating the integer here:
+# a reader that pins its own copy of the number drifts from the producer the
+# moment either side moves (#15286).
+from aggregate_lane_history import SCHEMA_VERSION  # noqa: E402
+
+
+def history_version_refusal(history: Any) -> str | None:
+    """Why this payload cannot be read as a v1 lane history, or `None`.
+
+    The reader below resolves `lanes`, `p50` and `static_floor` by name, so a
+    payload written by any other version is not merely unrecognised -- it is
+    read with the wrong field names. A renamed `static_floor` makes
+    `estimate_for`'s floor guard silently fall through and report a bare
+    `p50 * 1.15`, dropping a static floor that exists to prevent exactly that
+    optimism. Refusing is the only honest answer to a shape this reader does
+    not know.
+    """
+    if not isinstance(history, dict):
+        return f"lane history payload is not a JSON object, got {type(history).__name__}"
+    found = history.get("schema_version")
+    if found != SCHEMA_VERSION:
+        return (
+            f"lane history schema_version must be {SCHEMA_VERSION}, "
+            f"got {found!r}; refusing to read an unfamiliar shape"
+        )
+    return None
+
 
 def estimate_for(lane_id: str, history: dict[str, Any]) -> dict[str, Any]:
     lane = (history.get("lanes") or {}).get(lane_id)
@@ -110,6 +143,21 @@ def main() -> int:
         history = json.loads(args.history.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         print(json.dumps({"lane": args.lane, "learned": False, "error": str(e)}))
+        return 0
+
+    refusal = history_version_refusal(history)
+    if refusal is not None:
+        print(
+            json.dumps(
+                {
+                    "lane": args.lane,
+                    "learned": False,
+                    "estimate": None,
+                    "samples": 0,
+                    "reason": refusal,
+                }
+            )
+        )
         return 0
 
     print(json.dumps(estimate_for(args.lane, history)))

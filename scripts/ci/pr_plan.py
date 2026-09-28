@@ -39,6 +39,15 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+# The lane history is a versioned wire contract written by
+# `aggregate_lane_history.py`; bound to that single authority rather than
+# restating the integer, so the reader cannot drift from the producer (#15286).
+from aggregate_lane_history import SCHEMA_VERSION  # noqa: E402
+
 
 def read_toml(path: Path) -> dict[str, Any]:
     with path.open("rb") as f:
@@ -499,13 +508,24 @@ def lane_lem(lane: dict[str, Any], multipliers: dict[str, float]) -> float:
 
 
 def load_learned_history(path: Path) -> dict[str, Any]:
-    """Read .ci/metrics/ci-lane-history.json if present; tolerant on errors."""
+    """Read .ci/metrics/ci-lane-history.json if present; tolerant on errors.
+
+    Tolerant means "fall back to static floors", not "accept any shape". A
+    payload whose `schema_version` is not the one this planner understands is
+    refused rather than handed to `apply_learned_estimates`, which resolves
+    `p50` and `static_floor` by name: read with the wrong names, a renamed
+    `static_floor` falls out of its `isinstance` guard and the lane is priced
+    at a bare `p50 * 1.15` with the floor protection silently gone (#15286).
+    """
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        history = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+    if not isinstance(history, dict) or history.get("schema_version") != SCHEMA_VERSION:
+        return {}
+    return history
 
 
 def apply_learned_estimates(
