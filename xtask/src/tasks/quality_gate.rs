@@ -3480,7 +3480,7 @@ mod tests {
         )));
     }
 
-    fn hosted_16619_guidance() -> Result<Value> {
+    fn hosted_16619_inline_subset() -> Result<Value> {
         let mut guidance: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/ripr-0.10/hosted-16619-static-limitations.json"
         ))?;
@@ -3488,6 +3488,9 @@ mod tests {
         // this evaluation so the gate checks the same identity relationship.
         guidance["head_sha"] = json!("hosted-head");
         guidance["base_sha"] = json!("hosted-base");
+        // Isolate the three inline cards for per-item accept/reject controls.
+        // The complete hosted receipt has seven additional summary-only cards;
+        // the separate counted-basis test below must use all ten.
         guidance["summary_only"] = json!([]);
         guidance["suppressed"] = json!([]);
         guidance["warnings"] = json!([]);
@@ -3528,8 +3531,8 @@ mod tests {
     /// explicitly nonactionable call-presence limitations. The suggestion must
     /// not spend an actionable slot or turn the disposition into a repair packet.
     #[test]
-    fn hosted_16619_static_limitations_clear_only_auditable_same_subject_gaps() -> Result<()> {
-        let guidance = hosted_16619_guidance()?;
+    fn hosted_16619_inline_subset_clears_only_auditable_same_subject_gaps() -> Result<()> {
+        let guidance = hosted_16619_inline_subset()?;
         let pass = evaluate_hosted_16619_guidance(&guidance, 3, "hosted-head", "hosted-base")?;
         assert!(!pass.failed, "{:?}", pass.receipt["next_actions"]);
         assert_eq!(pass.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(3)));
@@ -3626,6 +3629,37 @@ mod tests {
         let old_pass = evaluate_hosted_16619_guidance(&older, 3, "hosted-head", "hosted-base")?;
         assert!(!old_pass.failed, "{:?}", old_pass.receipt["next_actions"]);
         assert_eq!(old_pass.receipt.pointer("/ripr_pr/static_limitation_cleared"), Some(&json!(3)));
+        Ok(())
+    }
+
+    /// The complete hosted artifact falsifies count-only disposition clearing:
+    /// its three counted raw probes are changed literals, not the three inline
+    /// static-limitation call seams. A safe gate must retain all three blockers
+    /// until a producer-backed item-to-count relationship can be established.
+    #[test]
+    fn hosted_16619_full_receipt_does_not_clear_unrelated_raw_gaps() -> Result<()> {
+        let raw: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/ripr-0.10/hosted-16619-counted-raw-gaps.json"
+        ))?;
+        assert_eq!(raw["summary"]["no_static_path"], json!(3));
+        assert_eq!(raw["findings"].as_array().map(Vec::len), Some(3));
+
+        let mut guidance: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/ripr-0.10/hosted-16619-static-limitations.json"
+        ))?;
+        assert_eq!(guidance["summary"]["comments"], json!(3));
+        assert_eq!(guidance["summary"]["summary_only"], json!(7));
+        guidance["head_sha"] = json!("hosted-head");
+        guidance["base_sha"] = json!("hosted-base");
+        let evaluation =
+            evaluate_hosted_16619_guidance(&guidance, 3, "hosted-head", "hosted-base")?;
+        assert!(evaluation.failed, "the changed raw gaps must remain blocking");
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_pr/static_limitation_cleared"),
+            Some(&json!(0)),
+            "unjoined static guidance cannot clear distinct counted raw probes"
+        );
+        assert_eq!(gap_action(&evaluation, "new_ripr_gap")["new_unresolved"], json!(3));
         Ok(())
     }
 
