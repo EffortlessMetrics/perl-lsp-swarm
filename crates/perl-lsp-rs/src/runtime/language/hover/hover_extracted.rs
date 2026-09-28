@@ -28,6 +28,10 @@ pub(super) enum HoverExtracted {
     /// earlier semantic or `use` path. Carries (package_name, doc_text, doc_uri, doc_offset).
     /// Phase 2 resolves it via `build_module_hover` (same as `UseModule`).
     PossiblePackage(String, String, String, usize),
+    /// Cursor is on the final component of a qualified callable (`Pkg::sub`).
+    /// Carries (package, name, qualified, doc_uri). Phase 2 looks up the indexed
+    /// sub; a miss must not emit the missing-module `cpanm` card (#16646).
+    QualifiedCallable(String, String, String, String),
     /// Nothing hoverable at this position.
     None,
 }
