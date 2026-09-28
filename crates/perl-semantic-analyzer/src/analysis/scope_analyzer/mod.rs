@@ -1636,24 +1636,39 @@ impl ScopeAnalyzer {
         }
     }
 
-    /// Whether `node` is the direct module-name operand of `require`.
+    /// Whether `node` is the unparenthesized module-name operand of `require`.
     ///
-    /// Matches HIR `BarewordRole::ModuleRequest`:
-    /// only the first argument of `FunctionCall { name: "require" }` when that
-    /// argument *is* this identifier. Nested identifiers inside a computed
-    /// first argument (`require Foo . ".pm"`) stay expression barewords.
-    /// Presence of `require` elsewhere in the ancestor chain or on the same
-    /// source line is not enough.
-    pub(super) fn is_require_module_operand(&self, node: &Node, ancestors: &[&Node]) -> bool {
+    /// Matches the Perl form that strict `subs` exempts (`require DBI`), which
+    /// is also HIR `BarewordRole::ModuleRequest` for a bare identifier target.
+    /// Nested identifiers inside a computed first argument (`require(Foo . ".pm")`)
+    /// stay expression barewords. Parenthesized `require(DBI)` is an expression
+    /// under strict and must still be diagnosed. Presence of `require` elsewhere
+    /// in the ancestor chain or on the same source line is not enough.
+    pub(super) fn is_require_module_operand(
+        &self,
+        node: &Node,
+        ancestors: &[&Node],
+        source: &str,
+    ) -> bool {
         let Some(parent) = ancestors.last() else {
             return false;
         };
         match &parent.kind {
             NodeKind::FunctionCall { name, args } if name == "require" => {
                 args.first().is_some_and(|first| std::ptr::eq(first, node))
+                    && !Self::require_call_parenthesizes_operand(parent, node, source)
             }
             _ => false,
         }
+    }
+
+    /// Perl treats `require DBI` as a module name, but `require(DBI)` as an
+    /// expression. Under `use strict 'subs'` the parenthesized form is a
+    /// compile error (`Bareword "DBI.pm" not allowed`).
+    fn require_call_parenthesizes_operand(call: &Node, operand: &Node, source: &str) -> bool {
+        source
+            .get(call.location.start..operand.location.start)
+            .is_some_and(|between| between.contains('('))
     }
 
     /// Determines if a node is in a hash key context, where barewords are legitimate.

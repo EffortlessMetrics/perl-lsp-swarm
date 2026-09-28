@@ -121,7 +121,6 @@ fn nested_begin_eval_and_conditional_require_keep_the_module_role() {
         ),
         ("use strict;\nrequire DBI or die;\n", "DBI"),
         ("use strict;\nrequire DBI if $need;\n", "DBI"),
-        ("use strict;\nrequire(DBI);\n", "DBI"),
     ];
     for (code, module) in cases {
         assert_require_operand_role(code, &[module]);
@@ -221,6 +220,34 @@ fn other_require_forms_are_not_reclassified_as_module_barewords() {
             has_unquoted(&issues, "BARE"),
             "unrelated expression bareword must still flag after a non-bareword require in {code:?}: {:?}",
             unquoted_names(&issues)
+        );
+    }
+}
+
+#[test]
+fn parenthesized_require_operand_stays_an_expression_bareword() {
+    // Oracle: perl 5.38.2
+    //   `use strict; require DBI;`     → syntax OK
+    //   `use strict; require(DBI);`    → Bareword "DBI.pm" not allowed
+    //   `use strict; require (DBI);`   → Bareword "DBI.pm" not allowed
+    let cases = ["use strict;\nrequire(DBI);\n", "use strict;\nrequire (DBI);\n"];
+    for code in cases {
+        let ast = parse_ast(code);
+        assert_eq!(
+            require_module_operand_names(&ast),
+            ["DBI"],
+            "parser still exposes DBI as the require argument in {code:?}"
+        );
+        let issues = scope_issues_strict(code);
+        assert!(
+            has_unquoted(&issues, "DBI"),
+            "parenthesized require(DBI) is illegal under strict subs: {code:?} {:?}",
+            unquoted_names(&issues)
+        );
+        assert_eq!(
+            unquoted_span_text(code, &issues, "DBI"),
+            Some("DBI"),
+            "PL109 range must cover the DBI token in {code:?}"
         );
     }
 }

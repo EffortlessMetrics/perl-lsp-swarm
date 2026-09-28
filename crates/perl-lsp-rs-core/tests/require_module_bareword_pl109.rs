@@ -99,3 +99,12 @@ fn nearby_expression_bareword_stays_diagnosed_beside_legal_require() {
     assert_eq!(nearby.len(), 1, "unrelated expression bareword must still emit PL109: {diags:?}");
     assert_eq!(source.get(nearby[0].range.0..nearby[0].range.1), Some("NearbyBare"));
 }
+
+#[test]
+fn parenthesized_require_dbi_still_emits_pl109() {
+    let source = "use strict;\nrequire(DBI);\n";
+    let diags = diagnostics_for(source);
+    let hits = pl109_for(&diags, "DBI");
+    assert_eq!(hits.len(), 1, "require(DBI) is a strict-subs error in perl 5.38.2: {diags:?}");
+    assert_eq!(source.get(hits[0].range.0..hits[0].range.1), Some("DBI"));
+}

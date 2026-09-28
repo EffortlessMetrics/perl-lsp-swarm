@@ -277,7 +277,7 @@ pub(super) fn handle_identifier(
     if !strict_subs_mode {
         return;
     }
-    if analyzer.is_require_module_operand(node, ancestors) {
+    if analyzer.is_require_module_operand(node, ancestors, context.code) {
         return;
     }
     // Hybrid check: immediate hash-key / method-receiver, then known
