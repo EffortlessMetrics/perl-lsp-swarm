@@ -98,7 +98,8 @@ where
                 print!("{}", render_shell_completion(script, &command_name));
                 0
             } else {
-                eprintln!("Unknown shell: {shell}. Supported: bash, zsh, fish, powershell");
+                // Fallback list must mirror the InvalidShell supported-shell list in launcher/mod.rs.
+                eprintln!("Unknown shell: {shell}. Supported: bash, zsh, fish, powershell, pwsh");
                 1
             }
         }
@@ -759,6 +760,18 @@ mod tests {
 
         assert_eq!(exit_code, 1);
         Ok(())
+    }
+
+    #[test]
+    fn run_cli_completion_accepts_pwsh_alias() {
+        assert_eq!(run_cli(["perllsp", "--completion", "pwsh"]), 0);
+    }
+
+    #[test]
+    fn run_cli_rejects_unknown_shell_before_completion_dispatch() {
+        // Unknown shells must fail in parse_args (InvalidShell), never reach
+        // the Completion fallback — the "pwsh"-less list there is unreachable.
+        assert_eq!(run_cli(["perllsp", "--completion", "nushell"]), 1);
     }
 
     #[test]
