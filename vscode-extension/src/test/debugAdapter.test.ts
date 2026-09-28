@@ -166,7 +166,10 @@ describe('PerlDebugConfigurationProvider', () => {
         name: 'Custom Debug',
         program: '/my/script.pl',
       });
-      const result = provider.resolveDebugConfiguration(undefined, config);
+      // A launch.json inside a folder resolves with that folder; the launch's
+      // own folder is what licenses a rooted session (#16554 review).
+      const folder = { uri: { fsPath: '/ws' }, name: 'ws' } as unknown as vscode.WorkspaceFolder;
+      const result = provider.resolveDebugConfiguration(folder, config);
       expect(result).toBeDefined();
       expect((result as vscode.DebugConfiguration).program).toBe('/my/script.pl');
     });
@@ -243,8 +246,51 @@ describe('PerlDebugConfigurationProvider', () => {
       expect(result).toBeUndefined();
       expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
       expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-        'Perl debugging requires an open workspace folder.',
+        expect.stringContaining('Perl debugging requires an open workspace folder'),
       );
+    });
+    // #16554 review: the launch's own folder decides. A folderless session
+    // (folder === undefined) carries no workspace root, so an open-but-
+    // unrelated folder must not license it -- the descriptor would emit no
+    // --trusted-root and perl-dap would reach the very refusal this
+    // predicate exists to prevent.
+    test('refuses a folderless launch even when an unrelated folder is open (#16554 review)', async () => {
+      const vscode = require('vscode');
+      vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/other' }, name: 'other' }];
+      vscode.window.showWarningMessage.mockClear();
+      const config = asDebugConfiguration({
+        type: 'perl',
+        request: 'launch',
+        name: 'Folderless Launch',
+        program: '/test.pl',
+      });
+
+      const result = await provider.resolveDebugConfiguration(undefined, config);
+
+      expect(result).toBeUndefined();
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining('Perl debugging requires an open workspace folder'),
+      );
+    });
+
+    // #16554 review: the launch's own folder licenses the session even when
+    // VS Code reports no other open folders.
+    test('allows a launch whose own folder is passed with no open folders (#16554 review)', async () => {
+      const vscode = require('vscode');
+      vscode.workspace.workspaceFolders = undefined;
+      vscode.window.showWarningMessage.mockClear();
+      const config = asDebugConfiguration({
+        type: 'perl',
+        request: 'launch',
+        name: 'Folder Launch',
+        program: '/ws/script.pl',
+      });
+      const folder = { uri: { fsPath: '/ws' }, name: 'ws' } as unknown as vscode.WorkspaceFolder;
+
+      const result = await provider.resolveDebugConfiguration(folder, config);
+
+      expect(result).toBe(config);
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
     });
 
     test('refuses the synthesized folder-less launch the same way (#16554)', async () => {
@@ -262,7 +308,7 @@ describe('PerlDebugConfigurationProvider', () => {
 
         expect(result).toBeUndefined();
         expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-          'Perl debugging requires an open workspace folder.',
+          expect.stringContaining('Perl debugging requires an open workspace folder'),
         );
       } finally {
         vscode.window.activeTextEditor = undefined;
@@ -928,7 +974,14 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
     const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
     fs.mkdirSync(binDir, { recursive: true });
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
-    fs.writeFileSync(path.join(binDir, dapName), '#!/bin/sh\necho ok');
+    const dapPath = path.join(binDir, dapName);
+    fs.writeFileSync(dapPath, '#!/bin/sh\necho ok');
+    if (process.platform !== 'win32') {
+      // POSIX `isExecutable` checks X_OK: an unexecutable stub makes the
+      // factory skip this fixture for a host-installed perl-dap, or return
+      // undefined without one (#16554 review).
+      fs.chmodSync(dapPath, 0o755);
+    }
 
     const vscodeApi = require('vscode') as { workspace: { getConfiguration: jest.Mock } };
     const previousConfiguration = vscodeApi.workspace.getConfiguration.getMockImplementation();
@@ -1101,6 +1154,7 @@ describe('perl-lsp.debugTest command', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     const vscode = require('vscode');
     vscode.workspace.workspaceFolders = undefined;
+    vscode.workspace.getWorkspaceFolder.mockReset();
     (vscode.debug.startDebugging as jest.Mock).mockClear();
     vscode.window.showWarningMessage.mockClear();
   });
@@ -1121,17 +1175,24 @@ describe('perl-lsp.debugTest command', () => {
 
     expect(result).toBeUndefined();
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-      'Perl debugging requires an open workspace folder.',
+      expect.stringContaining('Perl debugging requires an open workspace folder'),
     );
     expect(vscode.debug.startDebugging).not.toHaveBeenCalled();
   });
 
-  test('launches with an open workspace folder and no refusal (#16554)', async () => {
+  test('launches with the folder containing the program (#16554 review)', async () => {
     const vscode = require('vscode');
-    vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/ws' }, name: 'ws' }];
+    const wsFolder = { uri: { fsPath: '/ws' }, name: 'ws' };
+    vscode.workspace.workspaceFolders = [wsFolder];
+    // The launch's own folder is the one containing the debugged program --
+    // resolved here so the session carries its workspace root (and its
+    // --trusted-root) instead of being a folderless session. The containing
+    // folder, not the first folder: a multi-root session stays rooted where
+    // the program lives (#16554 review).
+    vscode.workspace.getWorkspaceFolder.mockReturnValue(wsFolder);
     registerCommandHandler();
 
-    const fileUri = process.platform === 'win32' ? 'file:///C:/tmp/basic.t' : 'file:///tmp/basic.t';
+    const fileUri = process.platform === 'win32' ? 'file:///C:/ws/basic.t' : 'file:///ws/basic.t';
     await vscode.commands.executeCommand(VSCODE_DEBUG_TEST_COMMAND, `${fileUri}::test_basic`);
 
     expect(vscode.debug.startDebugging).toHaveBeenCalledTimes(1);
@@ -1139,15 +1200,12 @@ describe('perl-lsp.debugTest command', () => {
       unknown,
       Record<string, unknown>,
     ];
-    // The session folder stays host-resolved: passing `workspaceFolders[0]`
-    // here would pin a multiroot session to the first folder and mint a
-    // trusted root that can exclude the debugged program.
-    expect(passedFolder).toBeUndefined();
+    expect(passedFolder).toBe(wsFolder);
     expect(config).toMatchObject({
       type: 'perl',
       request: 'launch',
       name: 'Debug test_basic',
-      program: process.platform === 'win32' ? path.normalize('C:/tmp/basic.t') : '/tmp/basic.t',
+      program: process.platform === 'win32' ? path.normalize('C:/ws/basic.t') : '/ws/basic.t',
     });
     expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
   });
@@ -1405,6 +1463,44 @@ describe('buildDapExecutableArgs', () => {
   test('returns no args when externalPeer is absent', () => {
     expect(buildDapExecutableArgs({ request: 'launch' })).toEqual([]);
     expect(buildDapExecutableArgs(undefined)).toEqual([]);
+  });
+
+  // #16554 review: the native adapter rejects duplicate canonical trusted
+  // roots at startup, so the editor must forward one flag per distinct
+  // directory.
+  test('deduplicates a configured root that equals the host workspace root', () => {
+    const args = buildDapExecutableArgs({ request: 'launch' }, '/ws', ['/ws']);
+    expect(args).toEqual(['--trusted-root', canonicalizeWorkspaceRoot('/ws')]);
+  });
+
+  test('deduplicates repeated configured entries by canonical path', () => {
+    const args = buildDapExecutableArgs({ request: 'launch' }, '/ws', ['/a', '/a', '/b']);
+    expect(args).toEqual([
+      '--trusted-root',
+      canonicalizeWorkspaceRoot('/ws'),
+      '--trusted-root',
+      canonicalizeWorkspaceRoot('/a'),
+      '--trusted-root',
+      canonicalizeWorkspaceRoot('/b'),
+    ]);
+  });
+
+  test('deduplicates a symlink alias of the host workspace root on posix', () => {
+    if (process.platform === 'win32') {
+      // Creating symlinks on Windows needs privileges; the realpath fallback
+      // keeps the behavior covered by the exact-string dedupe tests above.
+      return;
+    }
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'dap-root-'));
+    const link = path.join(os.tmpdir(), `dap-root-link-${path.basename(target)}`);
+    try {
+      fs.symlinkSync(target, link, 'dir');
+      const args = buildDapExecutableArgs({ request: 'launch' }, target, [link]);
+      expect(args).toEqual(['--trusted-root', fs.realpathSync(target)]);
+    } finally {
+      fs.rmSync(link, { force: true });
+      fs.rmSync(target, { recursive: true, force: true });
+    }
   });
 
   test('ignores a malformed peer address rather than passing it through', () => {
