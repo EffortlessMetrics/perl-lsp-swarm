@@ -1,0 +1,78 @@
+# Policy Validators Nano Reaper
+#
+# The trusted `Validate CI policy ledgers (self-hosted)` lane runs on the
+# em-ci-nano self-hosted pool. When that pool is unreachable, the job queues
+# forever (job queue time ignores timeout-minutes) and the affected run and
+# its check stay pending (#15900). The aggregate lane already fail-overs the
+# required verdict to the hosted twin; this scheduled reaper supplies the
+# missing explicit terminal state: it cancels trusted-lane jobs that stayed
+# queued without a runner past the service window and records actionable
+# diagnostics.
+#
+# See policy/ci-lane-whitelist.toml entry `policy_validators_nano_reaper`.
+
+name: Policy Validators Nano Reaper
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: policy-validators-nano-reaper
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # actions: write is required by the deadline cancel of queued trusted-lane
+  # jobs (#15900). This workflow is schedule/dispatch-triggered only and
+  # checks out no code, so it holds no candidate write surface.
+  actions: write
+
+jobs:
+  reap:
+    name: Cancel queued trusted lanes past service window
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Cancel queued trusted lanes past service window
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NANO_JOB: Validate CI policy ledgers (self-hosted)
+          NANO_WORKFLOW: policy-validators.yml
+          MAX_QUEUE_SECONDS: 900
+        run: |
+          set -euo pipefail
+          cancelled=0
+          {
+            echo "### Policy Validators trusted-lane reaper"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          run_ids="$(gh api "repos/$REPO/actions/workflows/$NANO_WORKFLOW/runs?status=queued&per_page=100" \
+            --jq '.workflow_runs[] | .id')"
+          for run_id in $run_ids; do
+            job_line="$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" \
+              --jq ".jobs[] | select(.name == \"$NANO_JOB\" and .status == \"queued\" and (.conclusion | not)) | \"\\(.id) \\(.started_at)\"")"
+            [ -n "$job_line" ] || continue
+            job_id="$(printf '%s' "$job_line" | head -n 1 | cut -d ' ' -f 1)"
+            queued_at="$(printf '%s' "$job_line" | head -n 1 | cut -d ' ' -f 2)"
+            age=$(( $(date -u +%s) - $(date -u -d "$queued_at" +%s) ))
+            [ "$age" -ge "$MAX_QUEUE_SECONDS" ] || continue
+            if gh api -X POST "repos/$REPO/actions/jobs/$job_id/cancel" >/dev/null 2>&1; then
+              cancelled=$((cancelled + 1))
+              echo "::warning::Cancelled trusted lane job $job_id queued with no runner for ${age}s on run $run_id (runner group em-ci-nano, labels self-hosted/linux/x64/em-ci/trusted-pr/workflow-nano). The run's required verdict already fail-overs to the hosted lane. See issue #15900."
+              echo "- Cancelled queued trusted job $job_id on run $run_id after ${age}s with no runner (group em-ci-nano)." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Trusted lane job $job_id on run $run_id queued with no runner for ${age}s but the cancel API call failed; investigate the em-ci-nano pool. See issue #15900."
+              echo "- Cancel API call failed for queued trusted job $job_id on run $run_id after ${age}s (group em-ci-nano)." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          {
+            echo "- Cancelled $cancelled queued trusted job(s) past the ${MAX_QUEUE_SECONDS}s service window."
+            echo "- Follow-up: verify em-ci-nano runner registration and connectivity before the next trusted run."
+          } >> "$GITHUB_STEP_SUMMARY"
