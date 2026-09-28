@@ -2776,15 +2776,12 @@ mod tests {
 
         // `use v5.36;` -- the version literal is one token spanning the whole
         // `v5.36` run, not `v5` unstyled with `36` split off as a separate
-        // integer.
-        assert!(
-            numbers.contains(&(0, 4, 5)),
-            "use-version v5.36 must be one 5-wide number token at line 0 col 4, got {numbers:?}"
-        );
-        // A standalone v-string literal, spanning both dotted components.
-        assert!(
-            numbers.contains(&(1, 8, 9)),
-            "v65.66.67 must be one number token at line 1 col 8, got {numbers:?}"
+        // integer. The list is exact: an extra or duplicate number token from
+        // a mapping regression must fail this test, not hide behind `contains`.
+        assert_eq!(
+            numbers,
+            vec![(0, 4, 5), (1, 8, 9)],
+            "expected exactly the use-version and standalone v-string number tokens, got {numbers:?}"
         );
         Ok(())
     }
@@ -2815,13 +2812,12 @@ mod tests {
             }
         }
 
-        assert!(
-            numbers.contains(&(12, 4)),
-            "package decimal version 1.23 must stay a plain 4-wide number, got {numbers:?}"
-        );
-        assert!(
-            !numbers.iter().any(|(_, length)| *length == 5),
-            "no token may absorb the `v` prefix shape; got {numbers:?}"
+        // Exact list: `1.23` is the only number token, still plain 4-wide, and
+        // no token may absorb the `v` prefix shape.
+        assert_eq!(
+            numbers,
+            vec![(12, 4)],
+            "package decimal version 1.23 must be the only, plain 4-wide number, got {numbers:?}"
         );
         Ok(())
     }

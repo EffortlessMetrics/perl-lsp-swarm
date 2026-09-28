@@ -98,4 +98,20 @@
 #       ^^^^^^^^^^^^^^ source.perl
 #                     ^^^^ source.perl constant.numeric.float.perl
 #                         ^^ source.perl
+>sub v5 { return 42; }
+#^^^ source.perl keyword.other.perl
+#   ^^^^^^ source.perl
+#         ^^^^^^ source.perl support.function.builtin.perl
+#               ^ source.perl
+#                ^^ source.perl constant.numeric.integer.perl
+#                  ^^^^ source.perl
+>my $unfinished = v5.36foo;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^^^^ source.perl variable.other.scalar.perl
+#              ^ source.perl
+#               ^ source.perl keyword.operator.assignment.perl
+#                ^^^ source.perl
+#                   ^ source.perl keyword.operator.string.perl
+#                    ^^^^^^^ source.perl
 >

@@ -10,3 +10,5 @@ my $vstring = v65.66.67;
 my $vshort = v5;
 my $vdeep = v1.2.3.4;
 package Modern::Tool 1.23;
+sub v5 { return 42; }
+my $unfinished = v5.36foo;
