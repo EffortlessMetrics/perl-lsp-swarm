@@ -1346,6 +1346,171 @@ atomic_symlink_replace() {
     err "atomic current-pointer replace requires GNU mv -T or perl rename"
 }
 
+# ── Durability of the selector move (#13289) ───────────────────────────────────
+# rename(2) publishes the `current` pointer atomically but says nothing about
+# whether the candidate it names is on stable storage. A power loss between the
+# candidate publish and the pointer move can otherwise leave `current` pointing
+# at incomplete contents with no proven rollback to `previous`. Everything below
+# exists to make the pointer move the last step of the promotion, not the first.
+
+product_unit_flush_status="unverified"
+
+# Test-only flush accounting. Process-level fault injection cannot reproduce
+# power loss, so the crash-window proof counts the flushes that happened before
+# the selector move instead of simulating the crash itself. Unset in production.
+product_unit_flush_trace() {
+    [ -n "${PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE:-}" ] || return 0
+    printf '%s\n' "$1" >> "$PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE"
+}
+
+# fsync(2) one file or one directory, printing how it went. Perl is present on
+# the supported POSIX hosts (atomic_symlink_replace already depends on it for
+# rename(2)), and one helper covers both: a directory needs its own fsync because
+# a file flush does not make the directory entry naming it durable.
+#
+# Prints one of:
+#   flushed           the path is on stable storage
+#   host_unsupported  this host has no working fsync primitive at all
+#   open_failed       the path exists but could not be opened for flushing
+#
+# host_unsupported is a host limitation, not a per-path failure, and the caller
+# records it rather than guessing. Perl ships POSIX::fsync unimplemented on some
+# builds (notably Windows), where the call croaks instead of returning a status,
+# so the two cases have to be distinguished to stay honest about what ran.
+fsync_path() {
+    perl -e '
+        use strict;
+        use warnings;
+        use Fcntl qw(O_RDONLY);
+        my $native = 0;
+        eval { require POSIX; $native = POSIX->can("fsync") ? 1 : 0; 1 };
+        my ($path) = @ARGV;
+        my $fh;
+        if (-d $path) {
+            opendir($fh, $path) or do { print "open_failed\n"; exit 0 };
+        } else {
+            sysopen($fh, $path, O_RDONLY) or do { print "open_failed\n"; exit 0 };
+        }
+        if ($native) {
+            my $r = eval { POSIX::fsync($fh) };
+            print(!$@ && defined $r && $r == 0 ? "flushed\n" : "host_unsupported\n");
+            exit 0;
+        }
+        my $r = eval { $fh->sync() };
+        print(!$@ && $r ? "flushed\n" : "host_unsupported\n");
+    ' "$1" 2>/dev/null || printf 'host_unsupported\n'
+}
+
+# Flushes every staged member, the manifest, the candidate directory, and the
+# store directory. Runs before any pointer replace so `current` can never name
+# contents that a crash could still truncate. Records the outcome in
+# product_unit_flush_status instead of only printing it, because the receipt
+# has to say whether durability was proven or merely attempted.
+flush_candidate_durability() {
+    local _store="$1" _id="$2" _cand _member _dir _result _worst="flushed"
+    _cand="${_store}/candidates/${_id}"
+    # Test-only stand-in for "this host cannot prove durability". Promotion must
+    # refuse closed rather than publish a pointer to contents it could not flush.
+    if [ "${PERL_LSP_PRODUCT_UNIT_NO_FLUSH:-}" = "1" ]; then
+        product_unit_flush_status="skipped"
+        product_unit_flush_trace "skipped ${_id}"
+        return 0
+    fi
+    for _member in "${BIN_NAME}" "${DAP_BIN_NAME}" "product_unit.v1"; do
+        [ -f "${_cand}/${_member}" ] || continue
+        _result="$(fsync_path "${_cand}/${_member}")"
+        product_unit_flush_trace "file ${_id}/${_member} ${_result}"
+        case "$_result" in
+            open_failed) _worst="open_failed" ;;
+            host_unsupported) [ "$_worst" = "flushed" ] && _worst="host_unsupported" ;;
+        esac
+    done
+    for _dir in "${_cand}" "$_store"; do
+        _result="$(fsync_path "$_dir")"
+        if [ "$_dir" = "$_cand" ]; then
+            product_unit_flush_trace "dir candidates/${_id} ${_result}"
+        else
+            product_unit_flush_trace "dir store ${_result}"
+        fi
+        case "$_result" in
+            open_failed) _worst="open_failed" ;;
+            host_unsupported) [ "$_worst" = "flushed" ] && _worst="host_unsupported" ;;
+        esac
+    done
+    product_unit_flush_status="$_worst"
+    if [ "$_worst" != "flushed" ]; then
+        warn "product-unit durability for candidate ${_id}: ${_worst}"
+    fi
+}
+
+# The pointer's own directory entry only becomes durable once the store
+# directory is flushed after the rename, so the commit flushes it again.
+flush_store_dir() {
+    if [ "${PERL_LSP_PRODUCT_UNIT_NO_FLUSH:-}" = "1" ]; then
+        return 0
+    fi
+    fsync_path "$(product_store_dir)" >/dev/null || true
+}
+
+product_unit_dir_disposition() {
+    local _manifest="${1}/product_unit.v1"
+    if [ -f "$_manifest" ]; then
+        awk -F= '/^disposition=/ {print $2; exit}' "$_manifest"
+    else
+        printf 'unknown\n'
+    fi
+}
+
+# Returns 0 when the candidate directory carries every member its disposition
+# requires. A candidate missing members is what a crash between the publish and
+# the pointer move leaves behind.
+product_unit_dir_complete() {
+    local _dir="$1" _disposition
+    [ -d "$_dir" ] || return 1
+    [ -f "${_dir}/${BIN_NAME}" ] || return 1
+    _disposition="$(product_unit_dir_disposition "$_dir")"
+    if [ "$_disposition" = "archive_pair_required" ]; then
+        [ -f "${_dir}/${DAP_BIN_NAME}" ] || return 1
+    fi
+    return 0
+}
+
+# Startup validate/recover: when the selected unit is incomplete, roll the
+# pointer back to `previous` when that one is complete, and record that the
+# recovery happened. With no complete unit to fall back to there is no proven
+# rollback, so this fails closed instead of serving a truncated pair.
+validate_and_recover_current_selection() {
+    local _store _current _previous _rel _id _prev_rel _prev_id
+    _store="$(product_store_dir)"
+    _current="${_store}/current"
+    if [ ! -L "$_current" ]; then
+        printf 'none\n'
+        return 0
+    fi
+    # The pointer target is store-relative ("candidates/<id>"), so completeness
+    # is checked against that path and never against a bare candidate id.
+    _rel="$(readlink "$_current")"
+    _id="${_rel##*/}"
+    if product_unit_dir_complete "${_store}/${_rel}"; then
+        printf 'none\n'
+        return 0
+    fi
+    _previous="${_store}/previous"
+    if [ -L "$_previous" ]; then
+        _prev_rel="$(readlink "$_previous")"
+        _prev_id="${_prev_rel##*/}"
+        if product_unit_dir_complete "${_store}/${_prev_rel}"; then
+            atomic_symlink_replace "$_current" "$_prev_rel"
+            flush_store_dir
+            printf 'rolled_back candidate_id=%s recovered_to=%s\n' "$_id" "$_prev_id"
+            return 0
+        fi
+    fi
+    err "selected product unit ${_id} is incomplete and no complete previous unit exists"
+    printf 'unrecoverable candidate_id=%s\n' "$_id"
+    return 1
+}
+
 publish_immutable_candidate() {
     local _src="$1" _disposition="$2" _allow_fault="${3:-1}"
     local _store _server_src _server_hash _dap_src _dap_hash="-" _id _dest _attempt _existing_dap
@@ -1395,11 +1560,25 @@ commit_current_selection() {
     if [ "$_allow_fault" = "1" ]; then
         maybe_inject_install_fault "before_commit"
     fi
+    # The commit point. `current` must never be moved to name contents this run
+    # could not make durable, so a refusal keeps the previous unit selected.
+    # A host with no fsync primitive at all is a documented limitation that is
+    # recorded in the receipt rather than used as a reason to block every
+    # install on that host.
+    flush_candidate_durability "$_store" "$_id"
+    case "$product_unit_flush_status" in
+        flushed|host_unsupported) ;;
+        *)
+            err "product-unit promotion refused: candidate ${_id} contents are not durable (${product_unit_flush_status})"
+            return 1
+            ;;
+    esac
     if [ -L "$_current" ]; then
         _old="$(readlink "$_current")"
         atomic_symlink_replace "${_store}/previous" "$_old"
     fi
     atomic_symlink_replace "$_current" "candidates/${_id}"
+    flush_store_dir
     if [ "$_allow_fault" = "1" ]; then
         maybe_inject_install_fault "after_commit"
     fi
@@ -1543,7 +1722,7 @@ promote_legacy_layout_if_needed() {
 
 install_binaries() {
     local _mode="${1:-${INSTALL_MODE:-release}}"
-    local _disposition _id _store _previous="none" _receipt _server_hash _dap_hash="-" _incoming_pair
+    local _disposition _id _store _previous="none" _receipt _server_hash _dap_hash="-" _incoming_pair _recovery="none"
 
     mkdir -p "$INSTALL_DIR"
 
@@ -1557,6 +1736,13 @@ Try one of:
     _disposition="$(classify_staged_product_unit "$EXTRACT_DIR" "$_mode")" || return
     _store="$(product_store_dir)"
     mkdir -p "$_store"
+
+    # Startup validate/recover runs before this attempt publishes anything, so
+    # an incomplete unit left by an earlier crash is repaired against the
+    # unit it should have stayed on.
+    if ! _recovery="$(validate_and_recover_current_selection)"; then
+        return 1
+    fi
 
     promote_legacy_layout_if_needed || return
 
@@ -1607,7 +1793,7 @@ Try one of:
     if [ -f "${_store}/current/${DAP_BIN_NAME}" ]; then
         _dap_hash="$(hash_product_member "${_store}/current/${DAP_BIN_NAME}")" || return
     fi
-    _receipt="product_unit_receipt disposition=${_disposition} candidate_id=${_id} previous=${_previous} server_sha256=${_server_hash} dap_sha256=${_dap_hash} state=selected"
+    _receipt="product_unit_receipt disposition=${_disposition} candidate_id=${_id} previous=${_previous} server_sha256=${_server_hash} dap_sha256=${_dap_hash} state=selected durability=${product_unit_flush_status} recovery=${_recovery%% *}"
     case "$_receipt" in
         *"${INSTALL_DIR}"*|*"${EXTRACT_DIR}"*)
             err "product-unit receipt contained a private path"

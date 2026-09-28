@@ -61,6 +61,11 @@ setup_root() {
     INSTALL_DIR="$CASE_ROOT/install"
     EXTRACT_DIR="$CASE_ROOT/stage"
     unset PERL_LSP_INSTALL_FAULT
+    # Durability switches leak across cases if a case sets them: a line like
+    # `VAR=1 OUT="$(install_binaries)"` has no command word, so bash treats it
+    # as plain assignments and they persist in this shell.
+    unset PERL_LSP_PRODUCT_UNIT_NO_FLUSH
+    unset PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE
 }
 
 run_promote() {
@@ -774,6 +779,141 @@ if [ -s "$TMP/pointer_hits.txt" ]; then
         "$(cat "$TMP/pointer_hits.txt")"
 else
     pass "no installer reads PERL_LSP_INSTALL_POINTER"
+fi
+
+# ── Crash-window durability proof (#13289) ───────────────────────────────────
+# Process-level fault injection cannot reproduce power loss, so these cases
+# use the flush accounting oracle plus the production refuse-closed guard:
+# the discriminator is whether a candidate that could not be made durable is
+# allowed to become the selected unit.
+
+store_dir() { printf '%s\n' "${INSTALL_DIR}/.perl-lsp"; }
+current_id() { readlink "$(store_dir)/current" 2>/dev/null || true; }
+
+# An unflushed candidate must not be published. The previous complete unit has
+# to stay selected, because this is exactly the state a crash between the
+# candidate publish and the pointer move would leave `current` in.
+setup_root
+stage_pair "$EXTRACT_DIR" "durable-a" "durable-a-dap"
+run_promote release
+first_id="$(current_id)"
+stage_pair "$EXTRACT_DIR" "durable-b" "durable-b-dap"
+set +e
+PERL_LSP_PRODUCT_UNIT_NO_FLUSH=1 LAST_OUTPUT="$(install_binaries release 2>&1)"
+unflushed_status=$?
+set -e
+if [ "$unflushed_status" -ne 0 ] \
+    && [ "$(current_id)" = "$first_id" ] \
+    && assert_complete_pair "durable-a" "durable-a-dap"; then
+    pass "candidate that could not be made durable is not published"
+else
+    fail_case "candidate that could not be made durable is not published" \
+        "status=$unflushed_status first=$first_id now=$(current_id) output=$LAST_OUTPUT"
+fi
+
+# The commit must flush the members, the manifest, the candidate directory, and
+# the store directory. The oracle is the trace of flush attempts, and each line
+# carries the outcome so a host limitation is never counted as proven durability.
+setup_root
+stage_pair "$EXTRACT_DIR" "trace-a" "trace-a-dap"
+: > "$TMP/flush-trace.txt"
+PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE="$TMP/flush-trace.txt" run_promote release
+trace_id="$(current_id)"
+trace_id="${trace_id##*/}"
+trace_body="$(cat "$TMP/flush-trace.txt")"
+if [ "$LAST_STATUS" -eq 0 ] \
+    && grep -q "^file ${trace_id}/${BIN_NAME} " "$TMP/flush-trace.txt" \
+    && grep -q "^file ${trace_id}/${DAP_BIN_NAME} " "$TMP/flush-trace.txt" \
+    && grep -q "^file ${trace_id}/product_unit.v1 " "$TMP/flush-trace.txt" \
+    && grep -q "^dir candidates/${trace_id} " "$TMP/flush-trace.txt" \
+    && grep -q "^dir store " "$TMP/flush-trace.txt"; then
+    pass "commit flushes staged members and directories before the pointer move"
+else
+    fail_case "commit flushes staged members and directories before the pointer move" \
+        "status=$LAST_STATUS id=$trace_id trace=$trace_body"
+fi
+
+# The receipt must name the durability outcome rather than implying it. A host
+# that cannot flush is reported as such; it is never reported as proven.
+setup_root
+stage_pair "$EXTRACT_DIR" "receipt-a" "receipt-a-dap"
+run_promote release
+receipt_durability=()
+if [ "$LAST_STATUS" -eq 0 ]; then
+    receipt_durability=(
+        $(printf '%s\n' "$LAST_OUTPUT" | sed -n 's/.*durability=\([a-z_]*\).*/\1/p')
+    )
+fi
+if [ "${#receipt_durability[@]}" -eq 1 ] \
+    && { [ "${receipt_durability[0]}" = "flushed" ] || [ "${receipt_durability[0]}" = "host_unsupported" ]; }; then
+    pass "receipt records the durability outcome instead of implying it"
+else
+    fail_case "receipt records the durability outcome instead of implying it" \
+        "durability=${receipt_durability[*]:-none} output=$LAST_OUTPUT"
+fi
+
+# Startup recovery: a current pointer left naming an incomplete candidate is
+# rolled back to the last complete unit rather than served as a working pair.
+setup_root
+stage_pair "$EXTRACT_DIR" "recover-a" "recover-a-dap"
+run_promote release
+recover_first="$(current_id)"
+stage_pair "$EXTRACT_DIR" "recover-b" "recover-b-dap"
+run_promote release
+recover_second="$(current_id)"
+rm -f "$(store_dir)/${recover_second}/${DAP_BIN_NAME}"
+set +e
+recovered="$(validate_and_recover_current_selection 2>&1)"
+recovered_status=$?
+set -e
+if [ "$recovered_status" -eq 0 ] \
+    && [ "${recovered%% *}" = "rolled_back" ] \
+    && [ "$(current_id)" = "$recover_first" ] \
+    && assert_complete_pair "recover-a" "recover-a-dap"; then
+    pass "incomplete current selection rolls back to the last complete unit"
+else
+    fail_case "incomplete current selection rolls back to the last complete unit" \
+        "status=$recovered_status out=$recovered first=$recover_first now=$(current_id)"
+fi
+
+# With no complete unit to fall back to there is no proven rollback, so the
+# installer has to fail closed rather than serve a truncated pair.
+rm -f "$(store_dir)/${recover_first}/${DAP_BIN_NAME}"
+# err() calls exit 1, so the fail-closed path has to run in a subshell or it
+# would take the whole proof down with it instead of being observed.
+set +e
+unrecoverable_out="$(validate_and_recover_current_selection 2>&1)"
+unrecoverable_status=$?
+set -e
+if [ "$unrecoverable_status" -ne 0 ]; then
+    pass "incomplete current with no complete previous unit fails closed"
+else
+    fail_case "incomplete current with no complete previous unit fails closed" \
+        "expected non-zero status, got 0 with current=$(current_id)"
+fi
+
+# Recovery has to run on the real startup path, before this attempt publishes
+# anything. A fault after recovery but before the publish leaves the rolled
+# back unit selected.
+setup_root
+stage_pair "$EXTRACT_DIR" "startup-a" "startup-a-dap"
+run_promote release
+startup_first="$(current_id)"
+stage_pair "$EXTRACT_DIR" "startup-b" "startup-b-dap"
+run_promote release
+startup_second="$(current_id)"
+rm -f "$(store_dir)/${startup_second}/${DAP_BIN_NAME}"
+set +e
+PERL_LSP_INSTALL_FAULT=before_publish LAST_OUTPUT="$(install_binaries release 2>&1)"
+startup_status=$?
+set -e
+if [ "$startup_status" -ne 0 ] \
+    && [ "$(current_id)" = "$startup_first" ] \
+    && assert_complete_pair "startup-a" "startup-a-dap"; then
+    pass "startup recovery runs before the attempt publishes a new candidate"
+else
+    fail_case "startup recovery runs before the attempt publishes a new candidate" \
+        "status=$startup_status first=$startup_first now=$(current_id) output=$LAST_OUTPUT"
 fi
 
 if [ "$FAIL" -ne 0 ]; then

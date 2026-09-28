@@ -652,6 +652,10 @@ function Write-StandalonePointerFile {
         Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     }
     Set-Content -LiteralPath $tmp -Value $RelativeTarget -Encoding ascii -NoNewline
+    # MoveFileEx publishes the pointer but does not push the pointer file to
+    # stable storage, so flush it here rather than after the replace: the
+    # pointer must never become durable ahead of the contents it names.
+    Invoke-StandaloneFlushFile -Path $tmp | Out-Null
     try {
         Invoke-StandaloneMoveFileReplace -From $tmp -To $Path
     } catch {
@@ -660,6 +664,115 @@ function Write-StandalonePointerFile {
         }
         throw
     }
+}
+
+# Whether the last commit proved the promoted candidate durable on this host.
+# Reported in the receipt so durability is never implied when it was not run.
+$script:StandaloneProductUnitDurability = "unverified"
+
+# FlushFileBuffers is the Windows equivalent of fsync(2): it does not return
+# until the data reaches stable storage. A bare Dispose would not do it, and
+# .NET's default FileStream.Flush() only reaches the OS cache.
+function Invoke-StandaloneFlushFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $stream.Flush($true)
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
+# Flushes every staged member of a candidate so the pointer move is the last
+# step of the promotion. Records the outcome in the durability status instead
+# of only returning it, because the receipt has to distinguish proven
+# durability from a host that could not provide it.
+function Invoke-StandaloneCandidateDurability {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [Parameter(Mandatory = $true)][string]$CandidateId
+    )
+    if ($env:PERL_LSP_PRODUCT_UNIT_NO_FLUSH -eq "1") {
+        $script:StandaloneProductUnitDurability = "skipped"
+        return
+    }
+    $store = Get-StandaloneProductStore -InstallDir $InstallDir
+    $candidate = Join-Path $store "candidates\$CandidateId"
+    if (-not (Test-Path -LiteralPath $candidate)) {
+        $script:StandaloneProductUnitDurability = "open_failed"
+        return
+    }
+    $status = "flushed"
+    foreach ($member in @("$Name.exe", "$DapName.exe", "product_unit.v1")) {
+        $path = Join-Path $candidate $member
+        if (-not (Test-Path -LiteralPath $path)) {
+            continue
+        }
+        if (-not (Invoke-StandaloneFlushFile -Path $path)) {
+            $status = "open_failed"
+        }
+    }
+    $script:StandaloneProductUnitDurability = $status
+    if ($status -ne "flushed") {
+        Write-Warning "product-unit durability for candidate ${CandidateId}: $status"
+    }
+}
+
+function Test-StandaloneCandidateComplete {
+    param([Parameter(Mandatory = $true)][string]$CandidateDir)
+    if (-not (Test-Path -LiteralPath $CandidateDir)) {
+        return $false
+    }
+    $manifest = Join-Path $CandidateDir "product_unit.v1"
+    $disposition = "unknown"
+    if (Test-Path -LiteralPath $manifest) {
+        $line = Get-Content -LiteralPath $manifest | Where-Object { $_ -like "disposition=*" } | Select-Object -First 1
+        if ($line) {
+            $disposition = $line.Split("=", 2)[1]
+        }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $CandidateDir "$Name.exe"))) {
+        return $false
+    }
+    if ($disposition -eq "archive_pair_required" -and -not (Test-Path -LiteralPath (Join-Path $CandidateDir "$DapName.exe"))) {
+        return $false
+    }
+    return $true
+}
+
+# Startup validate/recover: when the selected unit is incomplete, roll the
+# pointer back to `previous` when that one is complete, and report what
+# happened so the receipt can record it. With no complete unit to fall back
+# to there is no proven rollback, so this throws instead of serving a
+# truncated pair.
+function Repair-StandaloneCurrentSelection {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    $store = Get-StandaloneProductStore -InstallDir $InstallDir
+    $current = Join-Path $store "current"
+    $rel = Read-StandalonePointerRelative -Path $current -Store $store
+    if ([string]::IsNullOrWhiteSpace($rel)) {
+        return "none"
+    }
+    $normalized = $rel.Replace("/", "\")
+    if (Test-StandaloneCandidateComplete -CandidateDir (Join-Path $store $normalized)) {
+        return "none"
+    }
+    $previous = Join-Path $store "previous"
+    $prevRel = Read-StandalonePointerRelative -Path $previous -Store $store
+    if (-not [string]::IsNullOrWhiteSpace($prevRel)) {
+        $prevNormalized = $prevRel.Replace("/", "\")
+        if (Test-StandaloneCandidateComplete -CandidateDir (Join-Path $store $prevNormalized)) {
+            Write-StandalonePointerFile -Path $current -RelativeTarget $prevRel
+            return "rolled_back"
+        }
+    }
+    throw "selected product unit $rel is incomplete and no complete previous unit exists"
 }
 
 function Read-StandalonePointerRelative {
@@ -777,6 +890,12 @@ function Set-StandaloneCurrentSelection {
     $store = Get-StandaloneProductStore -InstallDir $InstallDir
     $current = Join-Path $store "current"
     Invoke-ProductUnitFaultIfRequested -Barrier "before_commit" -AllowFault $AllowFault
+    # The commit point. `current` must never be moved to name contents this run
+    # could not make durable, so a refusal keeps the previous unit selected.
+    Invoke-StandaloneCandidateDurability -InstallDir $InstallDir -CandidateId $CandidateId
+    if ($script:StandaloneProductUnitDurability -ne "flushed") {
+        throw "product-unit promotion refused: candidate $CandidateId contents are not durable ($($script:StandaloneProductUnitDurability))"
+    }
     $oldRel = Read-StandalonePointerRelative -Path $current -Store $store
     if (-not [string]::IsNullOrWhiteSpace($oldRel)) {
         Write-StandalonePointerFile -Path (Join-Path $store "previous") -RelativeTarget $oldRel
@@ -931,6 +1050,11 @@ function Install-StandaloneProductUnit {
     $store = Get-StandaloneProductStore -InstallDir $InstallDir
     New-Item -ItemType Directory -Path $store -Force | Out-Null
 
+    # Startup validate/recover runs before this attempt publishes anything, so
+    # an incomplete unit left by an earlier crash is repaired against the unit
+    # it should have stayed on.
+    $recovery = Repair-StandaloneCurrentSelection -InstallDir $InstallDir
+
     $legacy = ConvertTo-StandaloneLegacyCandidate -InstallDir $InstallDir
     if ($null -ne $legacy) {
         $legacyId = Publish-ImmutableStandaloneCandidate -SourceDir $legacy.Dir -InstallDir $InstallDir -Disposition $legacy.Disposition -AllowFault $false
@@ -978,7 +1102,7 @@ function Install-StandaloneProductUnit {
     if (Test-Path -LiteralPath $currentDap) {
         $dapHash = Get-StagedMemberSha256 -Path $currentDap
     }
-    $receipt = "product_unit_receipt disposition=$disposition candidate_id=$id previous=$previous server_sha256=$serverHash dap_sha256=$dapHash state=selected"
+    $receipt = "product_unit_receipt disposition=$disposition candidate_id=$id previous=$previous server_sha256=$serverHash dap_sha256=$dapHash state=selected durability=$($script:StandaloneProductUnitDurability) recovery=$($recovery -split ' ')[0]"
     if ($receipt.Contains($InstallDir) -or $receipt.Contains($ExtractDir)) {
         throw "product-unit receipt contained a private path"
     }
