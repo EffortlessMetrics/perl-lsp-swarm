@@ -261,6 +261,13 @@ class MarkerResultTests(unittest.TestCase):
         self.assertEqual("REVIEW_CURRENT", payload["result"])
         self.assertEqual(42, payload["pr"])
         self.assertEqual(self.head, payload["head"])
+        # The marker envelope is the other versioned surface (`semantic-review:v1`).
+        # Stdout `schema_version` must not leak into this exact key set.
+        self.assertNotIn("schema_version", payload)
+        self.assertEqual(
+            {"head", "merge_base", "pr", "result", "subject_sha256"},
+            set(payload),
+        )
 
     def test_legacy_bare_emit_marker_cannot_mint_a_marker(self) -> None:
         """The published pre-#14653 invocation must not still mint REVIEW_CURRENT.
@@ -819,6 +826,142 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual("REVIEW_CURRENT", payload["classification"])
         self.assertEqual("semantic_review_currentness.v1", payload["schema_version"])
+
+
+class StdoutSchemaVersionTests(unittest.TestCase):
+    """Stdout JSON is a distinct versioned wire surface from the marker envelope (#15284).
+
+    The landed producer field is not enough: a fourth `json.dumps` site, or a
+    verdict that already carries a foreign `schema_version`, can still emit an
+    unversioned or wrong-version payload. These cases have to fail before the
+    helper exists, and stay failed if the helper is bypassed.
+    """
+
+    def _run_main(self, argv: list[str]) -> tuple[int, object]:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = module.main(argv)
+        raw = stdout.getvalue()
+        try:
+            return code, json.loads(raw)
+        except json.JSONDecodeError:
+            return code, raw
+
+    def _fixture(self, payload: dict) -> tuple[Path, Path]:
+        tmp, root, _base, head = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        fixture_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(fixture_dir.cleanup)
+        fixture = Path(fixture_dir.name) / "f.json"
+        body = {"head": head, **payload} if "head" not in payload else payload
+        fixture.write_text(json.dumps(body), encoding="utf-8")
+        return root, fixture
+
+    def test_not_current_success_verdict_still_versions_stdout(self) -> None:
+        """RC=1 is still a stdout JSON surface; schema_version is not RC=0-only."""
+        root, fixture = self._fixture({"reviews": []})
+        code, payload = self._run_main(
+            ["42", "o/r", "--root", str(root), "--fixture", str(fixture)]
+        )
+        self.assertEqual(1, code)
+        self.assertIsInstance(payload, dict)
+        self.assertEqual("NOT_PROVEN", payload["classification"])
+        self.assertEqual("no_substantive_review_currentness_marker", payload["reason"])
+        self.assertEqual(module.SCHEMA_VERSION, payload["schema_version"])
+        self.assertEqual(42, payload["pr"])
+
+    def test_malformed_fixture_json_versions_instrument_failure(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        fixture = Path(tmp.name) / "f.json"
+        fixture.write_text("{not-json", encoding="utf-8")
+        code, payload = self._run_main(
+            ["42", "o/r", "--root", tmp.name, "--fixture", str(fixture)]
+        )
+        self.assertEqual(2, code)
+        self.assertIsInstance(payload, dict)
+        self.assertEqual("NOT_PROVEN", payload["classification"])
+        self.assertEqual("instrument_failure", payload["reason"])
+        self.assertEqual(module.SCHEMA_VERSION, payload["schema_version"])
+
+    def test_missing_fixture_head_versions_instrument_failure(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        fixture = Path(tmp.name) / "f.json"
+        fixture.write_text("{}", encoding="utf-8")
+        code, payload = self._run_main(
+            ["42", "o/r", "--root", tmp.name, "--fixture", str(fixture)]
+        )
+        self.assertEqual(2, code)
+        self.assertIsInstance(payload, dict)
+        self.assertEqual("NOT_PROVEN", payload["classification"])
+        self.assertEqual("instrument_failure", payload["reason"])
+        self.assertEqual(module.SCHEMA_VERSION, payload["schema_version"])
+
+    def test_stale_schema_version_from_evaluate_is_overwritten(self) -> None:
+        """setdefault would leak a foreign version; the stdout contract must pin."""
+        root, fixture = self._fixture({"reviews": []})
+        original = module.evaluate
+
+        def fake_evaluate(*args, **kwargs):
+            return {
+                "classification": "REVIEW_CURRENT",
+                "reason": "injected_stale_schema",
+                "pr": 42,
+                "schema_version": "stale.v0",
+            }
+
+        module.evaluate = fake_evaluate
+        self.addCleanup(lambda: setattr(module, "evaluate", original))
+        code, payload = self._run_main(
+            ["42", "o/r", "--root", str(root), "--fixture", str(fixture)]
+        )
+        self.assertEqual(0, code)
+        self.assertIsInstance(payload, dict)
+        self.assertEqual("injected_stale_schema", payload["reason"])
+        self.assertEqual(module.SCHEMA_VERSION, payload["schema_version"])
+        self.assertNotEqual("stale.v0", payload["schema_version"])
+
+    def test_stdout_payload_pins_canonical_version_without_mutating_input(self) -> None:
+        fields = {"classification": "NOT_PROVEN", "schema_version": "stale.v0"}
+        pinned = module.stdout_payload(fields)
+        self.assertEqual(module.SCHEMA_VERSION, pinned["schema_version"])
+        self.assertEqual("NOT_PROVEN", pinned["classification"])
+        self.assertEqual("stale.v0", fields["schema_version"])
+        self.assertIsNot(fields, pinned)
+
+    def test_emit_stdout_json_prints_one_sorted_canonical_object(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            module.emit_stdout_json({"z": 1, "a": 2})
+        raw = stdout.getvalue()
+        payload = json.loads(raw)
+        self.assertEqual(
+            {"a": 2, "schema_version": module.SCHEMA_VERSION, "z": 1},
+            payload,
+        )
+        self.assertEqual(raw, json.dumps(payload, sort_keys=True) + "\n")
+
+    def test_parse_marker_rejects_a_marker_that_grows_stdout_schema_version(self) -> None:
+        """Opposite-direction control: versioning stdout must not enlarge the marker keys.
+
+        `parse_marker` requires an exact key set. Adding `schema_version` there is
+        a different-surface break, not a fix for this claim.
+        """
+        tmp, root, base, head = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        valid = body(42, root, base, head)
+        self.assertIsNotNone(module.parse_marker(valid, 42, head))
+        match = module.MARKER_RE.search(valid)
+        self.assertIsNotNone(match)
+        raw = json.loads(match.group(1))
+        raw["schema_version"] = module.SCHEMA_VERSION
+        polluted = (
+            valid[: match.start(1)]
+            + json.dumps(raw, sort_keys=True, separators=(",", ":"))
+            + valid[match.end(1) :]
+        )
+        self.assertIsNone(module.parse_marker(polluted, 42, head))
 
 
 class AncestryPredicateStateTests(unittest.TestCase):

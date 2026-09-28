@@ -95,7 +95,7 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
     type: 'perl',
     request: 'launch',
     name: 'Perl: Launch Script',
-    program: '${workspaceFolder}/script.pl',
+    program: '${file}',
     stopOnEntry: true,
     args: [],
     perlPath: 'perl',
