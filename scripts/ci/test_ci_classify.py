@@ -19,6 +19,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # ---------------------------------------------------------------------------
 # Path setup: add scripts/ci to sys.path so we can import ci_classify directly.
@@ -42,6 +43,7 @@ from ci_classify import (  # noqa: E402
     json_envelope,
     load_check_runs,
 )
+import ci_classify  # noqa: E402
 
 SCRIPT = _HERE / "ci_classify.py"
 
@@ -660,16 +662,17 @@ class TestJsonEnvelope(unittest.TestCase):
         self.assertIsInstance(record["conclusion"], str)
 
     def test_null_name_and_conclusion_become_empty_strings(self) -> None:
-        record = classification_record(
-            {"name": None, "conclusion": None}, CLASS_UNKNOWN, "no pattern"
-        )
+        check = {"name": None, "conclusion": None}
+        cls, rationale = classify_one(check)
+        record = classification_record(check, cls, rationale)
         self.assertEqual(record["name"], "")
         self.assertEqual(record["conclusion"], "")
-        envelope = json_envelope(
-            [({"name": None, "conclusion": "failure"}, CLASS_UNKNOWN, "x")]
-        )
+        self.assertNotIn("None", rationale)
+        self.assertIn("''", rationale)
+        envelope = json_envelope([(check, cls, rationale)])
         dumped = json.loads(json.dumps(envelope))
         self.assertEqual(dumped["classifications"][0]["name"], "")
+        self.assertEqual(dumped["classifications"][0]["rationale"], rationale)
         self.assertNotIn(None, dumped["classifications"][0].values())
 
     def test_input_extra_keys_do_not_leak_into_records(self) -> None:
@@ -708,18 +711,21 @@ class TestJsonEnvelope(unittest.TestCase):
         self.assertEqual(record["routing"], "")
         self.assertIn("routing", record)
 
-    def test_run_json_stdout_matches_json_envelope(self) -> None:
-        """``run --json`` must call the shared serializer, not a private copy."""
+    def test_run_json_delegates_to_json_envelope(self) -> None:
+        """A duplicate inline serializer in ``run()`` must not pass.
+
+        Equality against ``json_envelope()`` cannot catch a private copy that
+        happens to match. A sentinel return from the helper can.
+        """
         import argparse
         import contextlib
         import io
 
-        from ci_classify import run
-
-        checks = [
-            {"name": "fmt", "conclusion": "failure"},
-            {"name": "ok", "conclusion": "success"},
-        ]
+        sentinel = {
+            "schema_version": "sentinel.v1",
+            "classifications": [{"name": "sentinel"}],
+        }
+        checks = [{"name": "fmt", "conclusion": "failure"}]
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False, encoding="utf-8"
         ) as handle:
@@ -727,19 +733,31 @@ class TestJsonEnvelope(unittest.TestCase):
             path = handle.name
         try:
             buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = run(argparse.Namespace(input=path, pr=None, json=True))
+            with mock.patch.object(
+                ci_classify, "json_envelope", return_value=sentinel
+            ) as patched:
+                with contextlib.redirect_stdout(buf):
+                    rc = ci_classify.run(
+                        argparse.Namespace(input=path, pr=None, json=True)
+                    )
+            patched.assert_called_once()
             self.assertEqual(rc, 0)
-            stdout = json.loads(buf.getvalue())
+            self.assertEqual(json.loads(buf.getvalue()), sentinel)
         finally:
             os.unlink(path)
 
-        failing = filter_failing(checks)
-        expected_results = []
-        for check in failing:
-            cls, rationale = classify_one(check)
-            expected_results.append((check, cls, rationale))
-        self.assertEqual(stdout, json_envelope(expected_results))
+    def test_json_envelope_delegates_to_classification_record(self) -> None:
+        """Bypassing ``classification_record`` inside ``json_envelope`` must fail."""
+        sentinel = {"name": "sentinel-record"}
+        with mock.patch.object(
+            ci_classify, "classification_record", return_value=sentinel
+        ) as patched:
+            envelope = ci_classify.json_envelope(
+                [({"name": "fmt", "conclusion": "failure"}, "cls", "why")]
+            )
+        patched.assert_called_once()
+        self.assertEqual(envelope["schema_version"], "ci_classify.v1")
+        self.assertEqual(envelope["classifications"], [sentinel])
 
 
 class TestJsonEnvelopeCli(unittest.TestCase):
@@ -838,8 +856,11 @@ class TestJsonEnvelopeCli(unittest.TestCase):
         completed = _cli_json_file([{"name": None, "conclusion": "failure"}])
         self.assertEqual(completed.returncode, 0, completed.stderr)
         envelope = json.loads(completed.stdout)
-        self.assertEqual(envelope["classifications"][0]["name"], "")
-        self.assertIsInstance(envelope["classifications"][0]["name"], str)
+        record = envelope["classifications"][0]
+        self.assertEqual(record["name"], "")
+        self.assertIsInstance(record["name"], str)
+        self.assertNotIn("None", record["rationale"])
+        self.assertIn("''", record["rationale"])
 
     def test_cli_json_all_passing_still_emits_envelope(self) -> None:
         completed = _cli_json_file([{"name": "fmt", "conclusion": "success"}])
@@ -855,6 +876,11 @@ class TestJsonEnvelopeCli(unittest.TestCase):
         self.assertIn("CLASS", completed.stdout)
         with self.assertRaises(json.JSONDecodeError):
             json.loads(completed.stdout)
+
+    def test_cli_prose_null_name_matches_empty_identity(self) -> None:
+        completed = _cli_file([{"name": None, "conclusion": "failure"}])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("'None'", completed.stdout)
 
 
 class TestPrEmptyFetchJsonEnvelope(unittest.TestCase):

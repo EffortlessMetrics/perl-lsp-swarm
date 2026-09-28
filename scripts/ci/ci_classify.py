@@ -177,6 +177,18 @@ ROUTING: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+def _json_text(value: object) -> str:
+    """Coerce a check-run JSON field to text; missing/null become empty strings.
+
+    Shared by ``classify_one`` and ``classification_record`` so a JSON ``null``
+    name or conclusion cannot become ``"None"`` in the rationale while the
+    envelope record emits ``""``.
+    """
+    if value is None:
+        return ""
+    return str(value)
+
+
 def classify_one(check: dict[str, Any]) -> tuple[str, str]:
     """Classify a single check-run dict.
 
@@ -186,8 +198,8 @@ def classify_one(check: dict[str, Any]) -> tuple[str, str]:
     Missing optional fields are handled via .get() with safe defaults so the
     function never raises on partial input.
     """
-    name: str = str(check.get("name", ""))
-    conclusion: str = str(check.get("conclusion", ""))
+    name: str = _json_text(check.get("name"))
+    conclusion: str = _json_text(check.get("conclusion"))
     quarantine: bool = bool(check.get("quarantine", False))
     required: bool = bool(check.get("required", True))
     run_ci: bool = bool(check.get("run_ci", True))
@@ -396,7 +408,7 @@ def format_results(results: list[tuple[dict[str, Any], str, str]]) -> str:
     lines.append("-" * 160)
 
     for check, cls, rationale in results:
-        name = str(check.get("name", ""))
+        name = _json_text(check.get("name"))
         routing = ROUTING.get(cls, "")
         lines.append(f"{name:<50} {cls:<22} {routing:<42} {rationale}")
 
@@ -410,13 +422,6 @@ def format_results(results: list[tuple[dict[str, Any], str, str]]) -> str:
         lines.append(f"  {cls}: {count}")
 
     return "\n".join(lines) + "\n"
-
-
-def _json_text(value: object) -> str:
-    """Coerce a JSON record field to text; missing/null become empty strings."""
-    if value is None:
-        return ""
-    return str(value)
 
 
 def classification_record(
