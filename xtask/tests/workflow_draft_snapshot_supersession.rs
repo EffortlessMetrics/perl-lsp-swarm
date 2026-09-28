@@ -821,7 +821,8 @@ fn job_timeout_seconds(gate: Gate) -> Result<u64> {
 }
 
 /// The mirror poll waits inside a job that is killed when its own budget runs
-/// out, and the RIPR aggregator's is five minutes. A wait sized for the
+/// out, and the RIPR aggregator's is twelve minutes (#16431 raised it for the
+/// retrieval budget; the mirror stays a small fraction). A wait sized for the
 /// required lane rather than for the check-run creation gap would not make the
 /// gate patient; it would make the job die, which publishes the same red by a
 /// worse route. So the default budget has to stay a small fraction of the job

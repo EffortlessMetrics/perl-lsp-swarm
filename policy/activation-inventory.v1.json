@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 94,
-      "emitted": 94,
+      "considered": 95,
+      "emitted": 95,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -5117,6 +5117,33 @@
         "state": "not_evaluated"
       },
       "notes": "Scope-aware library tests for ci-scope selected crates"
+    },
+    {
+      "surface_id": "gate:unsafe_prod_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unsafe_prod_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Fail when a production unsafe block lacks // SAFETY: reasoning or the unsafe-prod baseline rises"
     },
     {
       "surface_id": "gate:v2_bundle_sync",

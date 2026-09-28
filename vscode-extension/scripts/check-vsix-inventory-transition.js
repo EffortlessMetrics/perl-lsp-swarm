@@ -226,7 +226,7 @@ const VSIX_PAYLOAD_PREFIX = 'extension/';
  * Packaging hooks, archive metadata, or a post-package worktree mutation can
  * make the two disagree; only the archive is the artifact that ships.
  *
- * @param {string} vsixPath
+ * @param {string|Buffer} vsixPath
  * @returns {Promise<{
  *   inventory: { schema_version: number, total_files: number, total_bytes: number, files: Record<string, number> },
  *   archive_sha256: string,
@@ -234,7 +234,7 @@ const VSIX_PAYLOAD_PREFIX = 'extension/';
  * }>}
  */
 async function collectArchiveInventory(vsixPath) {
-  const archiveBytes = fs.readFileSync(vsixPath);
+  const archiveBytes = Buffer.isBuffer(vsixPath) ? vsixPath : fs.readFileSync(vsixPath);
 
   let zip;
   try {
@@ -245,7 +245,7 @@ async function collectArchiveInventory(vsixPath) {
     });
   } catch (error) {
     throw new Error(
-      `unable to read VSIX archive ${vsixPath}: ${error instanceof Error ? error.message : String(error)}`,
+      `unable to read VSIX archive ${Buffer.isBuffer(vsixPath) ? '<supplied snapshot>' : vsixPath}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 

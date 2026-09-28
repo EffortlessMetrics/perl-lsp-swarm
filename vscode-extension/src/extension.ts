@@ -1992,7 +1992,16 @@ function createLanguageClientLifecycle(
       }
       await finalizeStartedLanguageClient(context, startedClient, generation);
     },
+    onServerPathOverrideConsumed: () => {
+      // A queued reinstall path bypasses resolveServerPath (and its
+      // beginBinaryResolution clearing), so drop the previous generation's
+      // failure here or a healthy replacement reports a stale error (#15592).
+      languageClientStartupMetrics.recordStartupError(null);
+    },
     onFailed: (snapshot) => {
+      // Carry the settling error on the metrics surface so a terminal failed
+      // state is diagnosable from the snapshot alone (#15592).
+      languageClientStartupMetrics.recordStartupError(snapshot.error);
       languageClientStartupMetrics.finishServerStart('error');
       languageClientStartupMetrics.finishInitialize('error');
       const message =

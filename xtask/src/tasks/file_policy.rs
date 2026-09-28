@@ -1212,7 +1212,9 @@ pub fn non_rust_exact_tree(
     );
     if let Err(error) = &result {
         let error_text = error.to_string();
-        let failure_stage = if error_text.contains("allowlist") || error_text.contains("parsing") {
+        let failure_stage = if error_text.contains("missing required input") {
+            "identity"
+        } else if error_text.contains("allowlist") || error_text.contains("parsing") {
             "policy"
         } else if error_text.contains("writing") || error_text.contains("output") {
             "projection"
@@ -1287,6 +1289,16 @@ fn non_rust_exact_tree_inner(
     event_name: Option<&str>,
     repository: Option<&str>,
 ) -> Result<()> {
+    // #15636: an absent or empty SHA must be refused as a typed identity
+    // failure naming the missing input. The evaluator never evaluates an
+    // unbound subject; the workflow's fail_bind normally closes this first,
+    // this guard is the evaluator-side backstop.
+    if base_sha.trim().is_empty() {
+        bail!("missing required input: --base-sha; refusing to evaluate against an empty base SHA");
+    }
+    if subject_sha.trim().is_empty() {
+        bail!("missing required input: --subject-sha; refusing to evaluate an unbound subject");
+    }
     let base_ref = format!("{base_sha}^{{commit}}");
     let subject_ref = format!("{subject_sha}^{{commit}}");
     let base_commit = String::from_utf8(git_object(root, &["rev-parse", "--verify", &base_ref])?)?
