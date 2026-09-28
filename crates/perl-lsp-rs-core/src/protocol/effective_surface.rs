@@ -1705,9 +1705,9 @@ const SEMANTIC_TOKEN_MODIFIERS: &[&str] = &[
 ];
 
 /// Completion trigger characters; multi-character Perl operators advertise
-/// their component characters.
+/// their final characters so a partial `-` does not request completion.
 const COMPLETION_TRIGGER_CHARACTERS: &[&str] =
-    &["$", "@", "%", "-", ">", ":", ".", "/", "\\", "\"", "'"];
+    &["$", "@", "%", ">", ":", ".", "/", "\\", "\"", "'"];
 
 #[cfg(test)]
 mod tests;
