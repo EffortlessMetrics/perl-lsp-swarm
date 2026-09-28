@@ -5539,6 +5539,10 @@ our $single_root_var;
             "my $obj; $obj->api",
             "my $hash; $hash{",
             "my $hash; $hash{api",
+            // The hashref form is the same hash-key role (#5159): enrichment
+            // must stay out of it too.
+            "my $ref; $ref->{",
+            "my $ref; $ref->{api",
         ] {
             let items = run_workspace_pass_over_secrets_module(uri, source, None);
             assert!(items.is_empty(), "runtime fallback leaked into {source:?}: {items:?}");

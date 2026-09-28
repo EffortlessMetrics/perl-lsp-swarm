@@ -1183,8 +1183,9 @@ impl CompletionProvider {
 
     /// Detect the syntactic hash-key role at `$varname{prefix` or `$ref->{prefix`.
     ///
-    /// This scan does not classify comments, strings, or regexes. The core
-    /// dispatcher applies those lexical guards before calling it.
+    /// The scan is syntactic, but the anchoring `{` must be live Perl syntax:
+    /// a brace inside a comment, string, or regex never opens a hash-key role,
+    /// whatever a later line looks like (#9816).
     ///
     /// Identify the same hash-key shape used by the core completion dispatcher.
     /// Runtime enrichment uses the same decision to avoid adding unrelated
@@ -1222,6 +1223,16 @@ impl CompletionProvider {
             found?
         };
 
+        // The anchor must be live Perl syntax. A brace inside a comment,
+        // string, or regex is not a subscript, and accepting it would let a
+        // later ordinary line be misread as a hash-key role (#9816).
+        if lexical_context::is_in_comment(source, brace_pos)
+            || lexical_context::is_in_string(source, brace_pos)
+            || lexical_context::is_in_regex(source, brace_pos)
+        {
+            return None;
+        }
+
         // Extract typed prefix after the `{` (alphanumeric + `_` chars)
         let key_prefix = {
             let after_brace = &before[brace_pos + 1..];
@@ -1243,17 +1254,20 @@ impl CompletionProvider {
             return None;
         }
 
-        // Check for `->` immediately before the `{` — hashref deref form ($ref->{key}).
-        // Unlike the direct hash form ($hash{key}), the hashref form accesses via a
-        // scalar reference. We handle this by treating `$ref->{` the same as
-        // `$ref{` for key collection — collect_hash_keys_from_source scans both
-        // `%ref = (...)` and `$ref->{key} =` patterns. (#5074)
-        // Previously this returned None (bail-out) when `->` was present. That
-        // bail-out is gone, so there is deliberately no `->` test here — both
-        // forms fall through to the same key-collection path below.
+        // The hashref form ($ref->{key}) accesses via a scalar reference rather
+        // than a named hash, but it is the same key-completion role: #5074 has
+        // collect_hash_keys_from_source scan both `%ref = (...)` literals and
+        // `$ref->{key} =` assignments, and #5159 removed the explicit `->`
+        // bail-out so both spellings classify alike.
 
         // Extract the variable name: scan backward from `{` looking for `$word`.
-        let before_brace = before[..brace_pos].trim_end();
+        // The hashref arrow (`$ref->{`) would otherwise terminate that scan on
+        // `>` and yield an empty name, so strip it first: #5159 removed the
+        // explicit `->` bail-out so both subscript spellings classify alike.
+        let before_brace = match before[..brace_pos].trim_end().strip_suffix("->") {
+            Some(deref_receiver) => deref_receiver.trim_end(),
+            None => before[..brace_pos].trim_end(),
+        };
         if before_brace.is_empty() {
             return None;
         }
