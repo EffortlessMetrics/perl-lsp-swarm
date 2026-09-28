@@ -153,6 +153,7 @@ fn admission_is_not_an_allowlist_of_the_reported_keywords() {
     assert_has_keyword_slot("has or => 1;", "or");
     assert_has_keyword_slot("has not => 1;", "not");
     assert_has_keyword_slot("has xor => 1;", "xor");
+    assert_has_keyword_slot("has undef => 1;", "undef");
 }
 
 #[test]
@@ -290,6 +291,30 @@ fn has_or_die_is_not_an_attribute_slot() {
     assert!(
         find_kind(&ast, |kind| matches!(kind, NodeKind::Identifier { name } if name == "has")),
         "has or die must leave `has` as the left operand:\n{}",
+        ast.to_sexp()
+    );
+}
+
+#[test]
+fn has_undef_without_fat_arrow_stays_the_undef_value() {
+    let source = "has undef;";
+    let ast = parse_source(source);
+    assert!(
+        find_named_call(&ast, "has").is_none(),
+        "has undef without => must not parse `has` as a list-operator call:\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        find_kind(&ast, |kind| matches!(kind, NodeKind::Identifier { name } if name == "has")),
+        "has undef without => must leave `has` as an identifier:\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        !find_kind(
+            &ast,
+            |kind| matches!(kind, NodeKind::String { value, interpolated: false } if value == "undef")
+        ),
+        "has undef without => must not autoquote `undef` into a string key:\n{}",
         ast.to_sexp()
     );
 }
