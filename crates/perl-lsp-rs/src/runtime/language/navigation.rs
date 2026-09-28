@@ -1620,24 +1620,33 @@ impl LspServer {
                             // Core pragma — not on disk in the user's workspace, so no file jump
                             // is possible.  Log an info message to the LSP output channel
                             // (visible in the VSCode Output panel) so users can discover that
-                            // hover (K) shows documentation for core modules. Once per session:
-                            // repeated F12 on `use strict` must not append an identical
-                            // output-panel line on every request (#16551). Instance-level flag
-                            // so each `LspServer` session warns independently, matching
-                            // `root_undetected_shown`.
-                            if !self
-                                .core_module_goto_def_notice_shown
-                                .fetch_or(true, std::sync::atomic::Ordering::SeqCst)
-                            {
-                                let _ = self.log_message(
-                                    crate::runtime::window::MessageType::Info,
-                                    &format!(
-                                        "'{module_name}' is a Perl core module. \
-                                         No source file is available for goto-definition. \
-                                         Use hover (K) to view documentation."
-                                    ),
-                                );
-                            }
+                            // hover (K) shows documentation for core modules. Once per session
+                            // per module: repeated F12 on `use strict` must not append an
+                            // identical output-panel line on every request (#16551). The
+                            // notice text names the requested module, so the dedup identity
+                            // is per module — distinct core modules each keep their first
+                            // notice — and a failed enqueue rolls the retention back so the
+                            // next request can retry (#16551 review).
+                            let notice = format!(
+                                "'{module_name}' is a Perl core module. \
+                                 No source file is available for goto-definition. \
+                                 Use hover (K) to view documentation."
+                            );
+                            let _ = self.session_warning_dedup.emit_once_with(
+                                crate::runtime::session_warning_dedup::SessionWarningFamily::CoreModuleNotice,
+                                crate::runtime::session_warning_dedup::SessionWarningIdentity::fingerprinted(
+                                    crate::runtime::session_warning_dedup::SessionWarningCode::CoreModuleGotoDefNotice,
+                                    crate::runtime::session_warning_dedup::SessionWarningSubjectTag::CoreModuleName,
+                                    &module_name,
+                                ),
+                                || {
+                                    self.log_message(
+                                        crate::runtime::window::MessageType::Info,
+                                        &notice,
+                                    )
+                                    .is_ok()
+                                },
+                            );
                             tracing::debug!(
                                 module = %module_name,
                                 "core pragma requested via goto-def — no file target"
@@ -3215,6 +3224,63 @@ mod tests {
             output.matches("is a Perl core module").count(),
             1,
             "the core-module notice must be emitted once per session: {output}"
+        );
+        Ok(())
+    }
+
+    /// #16551 review: the notice names the requested module, so the once-per-
+    /// session dedup must be per module. F12 on `use strict` then F12 on
+    /// `use warnings` are different output-panel lines; the second must not be
+    /// suppressed by the first, while a repeat of either stays suppressed.
+    #[test]
+    fn core_module_notice_is_per_module_not_session_wide() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let server = LspServer::with_io(
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            Box::new(CoreModuleNoticeWriter { inner: std::sync::Arc::clone(&buffer) }),
+        );
+        server.publish_position_encoding_session_context();
+
+        let uri = "file:///core_module_notice_per_module.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "use strict;
+use warnings;
+"}
+        })))?;
+
+        let f12 = |line: u32| {
+            server.test_handle_definition(Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": 5 }
+            })))
+        };
+        f12(0)?;
+        f12(1)?;
+        // Repeats of either module stay suppressed.
+        f12(0)?;
+        f12(1)?;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let output = loop {
+            let current = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if current.matches("is a Perl core module").count() >= 2
+                || std::time::Instant::now() >= deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                break String::from_utf8_lossy(&buffer.lock()).into_owned();
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            output.matches("'strict' is a Perl core module").count(),
+            1,
+            "the strict notice must emit exactly once: {output}"
+        );
+        assert_eq!(
+            output.matches("'warnings' is a Perl core module").count(),
+            1,
+            "the warnings notice must not be suppressed by the strict notice: {output}"
         );
         Ok(())
     }

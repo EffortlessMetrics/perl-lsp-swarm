@@ -191,11 +191,12 @@ impl LspServer {
         // Discover before taking the workspace-folder lock because discovery
         // takes the documents lock. This keeps lock acquisition ordered as
         // documents -> workspace_folders for diagnostic/reload snapshots.
-        let single_file_config = if self.workspace_folders.lock().is_empty() {
-            self.discover_single_file_config()
-        } else {
-            Ok(None)
-        };
+        let (single_file_config, single_file_config_authority) =
+            if self.workspace_folders.lock().is_empty() {
+                self.discover_single_file_config()
+            } else {
+                (Ok(None), None)
+            };
         let mut complete = true;
         let mut folders = self.workspace_folders.lock();
 
@@ -211,14 +212,22 @@ impl LspServer {
                     // Single-file mode re-runs discovery on every didOpen, so
                     // the identical warning must emit at most once per session
                     // for the same TOML error (#16548). A failed send rolls the
-                    // retention back so the next occurrence can retry.
+                    // retention back so the next occurrence can retry. The
+                    // identity fingerprints the discovered authority path so
+                    // two single-file projects with the same TOML error each
+                    // keep their first warning (#16548 review); only the
+                    // store's fixed-size fingerprint is retained.
+                    let identity_subject = match &single_file_config_authority {
+                        Some(path) => format!("{msg}\u{0}{}", path.display()),
+                        None => msg.clone(),
+                    };
                     let user_msg = format!(
                         "Perl LSP: {msg} Fix the error in .perl-lsp.toml and reload the window."
                     );
                     self.emit_once_per_session(
                         SessionWarningCode::ProjectConfigLoadFailure,
                         SessionWarningSubjectTag::ProjectTomlSingleFile,
-                        &msg,
+                        &identity_subject,
                         || {
                             if let Err(error) = self.show_message(MessageType::Warning, &user_msg) {
                                 tracing::warn!(%error, "Failed to send single-file config warning");
@@ -236,7 +245,10 @@ impl LspServer {
                 if let Some(raw_version) = config.perl.version.as_deref()
                     && perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(raw_version).is_none()
                 {
-                    self.emit_single_file_invalid_version_warning_once(raw_version);
+                    self.emit_single_file_invalid_version_warning_once(
+                        raw_version,
+                        single_file_config_authority.as_deref(),
+                    );
                 }
                 let mut server_config = self.config.lock();
                 config.apply_to_server_config(&mut server_config);
@@ -443,20 +455,30 @@ impl LspServer {
     /// directory of the first open document. (#UX15)
     fn discover_single_file_config(
         &self,
-    ) -> Result<Option<perl_lsp_rs_core::config::ProjectConfig>, String> {
+    ) -> (Result<Option<perl_lsp_rs_core::config::ProjectConfig>, String>, Option<std::path::PathBuf>)
+    {
         let documents = self.documents.lock();
         let Some(uri) = documents.keys().next().map(ToString::to_string) else {
-            return Ok(None);
+            return (Ok(None), None);
         };
         drop(documents);
 
         let Some(path) = super::super::source_path_from_uri(&uri) else {
-            return Ok(None);
+            return (Ok(None), None);
         };
         let Some(dir) = std::path::Path::new(&path).parent() else {
-            return Ok(None);
+            return (Ok(None), None);
         };
-        perl_lsp_rs_core::config::load_project_config(dir).map_err(|error| error.to_string())
+        // Resolve the discovered authority alongside the load so the
+        // session-warning identities can fingerprint it (#16548 review):
+        // the loader's error text never names the file, so without the path
+        // two single-file projects with the same TOML error would share one
+        // identity and suppress each other's first warning.
+        let authority = perl_lsp_rs_core::config::discover_project_config_path(dir);
+        (
+            perl_lsp_rs_core::config::load_project_config(dir).map_err(|error| error.to_string()),
+            authority,
+        )
     }
 
     /// Re-run single-file project discovery after a document install.
@@ -476,8 +498,10 @@ impl LspServer {
 
     /// Emit the `window/showMessage` Warning for an invalid `[perl].version`.
     ///
-    /// Returns whether the notification was delivered, so the deduplicating
-    /// single-file wrapper can roll its retention back on a failed send. The
+    /// Returns whether the notification was accepted for delivery (enqueued
+    /// to the outbound transport; the writer thread performs the actual
+    /// send), so the deduplicating single-file wrapper can roll its retention
+    /// back on a failed send. The
     /// folder-mode call site ignores the result: folder reloads are explicit
     /// and stay allowed to re-warn (#16548).
     fn emit_invalid_project_version_warning(&self, raw_version: &str, authority: &str) -> bool {
@@ -502,8 +526,9 @@ impl LspServer {
     /// per open. Folder mode is intentionally NOT routed through here: its
     /// reloads are explicit (initialize or a watched-file change) and stay
     /// allowed to re-warn. `emit` must report whether the notification was
-    /// actually delivered; a failed send rolls the retention back so the next
-    /// occurrence can retry.
+    /// accepted for delivery (enqueued to the outbound transport; actual wire
+    /// delivery happens on the writer thread); a failed send rolls the
+    /// retention back so the next occurrence can retry.
     fn emit_once_per_session(
         &self,
         code: SessionWarningCode,
@@ -521,15 +546,24 @@ impl LspServer {
 
     /// [`Self::emit_once_per_session`] wrapper for the single-file invalid
     /// `[perl].version` warning (#16548): one emission per session per raw
-    /// version value.
-    fn emit_single_file_invalid_version_warning_once(&self, raw_version: &str) {
-        let authority = "single-file project";
-        let subject = format!("{raw_version}\u{0}{authority}");
+    /// version value per discovered authority, so two single-file projects
+    /// with the same invalid version each keep their first warning (#16548
+    /// review). When the authority path cannot be resolved the identity falls
+    /// back to the version plus the generic authority label.
+    fn emit_single_file_invalid_version_warning_once(
+        &self,
+        raw_version: &str,
+        authority: Option<&std::path::Path>,
+    ) {
+        let subject = match authority {
+            Some(path) => format!("{raw_version}\u{0}{}", path.display()),
+            None => format!("{raw_version}\u{0}single-file project"),
+        };
         self.emit_once_per_session(
             SessionWarningCode::ProjectConfigInvalidPerlVersion,
             SessionWarningSubjectTag::ProjectPerlVersion,
             &subject,
-            || self.emit_invalid_project_version_warning(raw_version, authority),
+            || self.emit_invalid_project_version_warning(raw_version, "single-file project"),
         );
     }
 
@@ -1564,6 +1598,44 @@ perlcritic_severity = 2
         assert_eq!(counters.inserted, 1, "the broken-config identity must be retained once");
         assert!(counters.suppressed >= 1, "the repeated refresh must be suppressed");
         assert_eq!(counters.emitted_without_retaining, 0);
+        Ok(())
+    }
+
+    /// #16548 review: the warning identity fingerprints the discovered config
+    /// authority path, so two single-file projects whose TOML files carry the
+    /// same error must each keep their first warning — the second project's
+    /// first broken-config warning must not be suppressed by the first's.
+    #[test]
+    fn single_file_broken_config_warning_is_per_project_not_per_error_text() -> anyhow::Result<()> {
+        let (server, buffer) = server_with_captured_notifications();
+        let project_a = tempfile::tempdir()?;
+        let project_b = tempfile::tempdir()?;
+        // Identical broken TOML in both projects: the loader error text is the
+        // same string, so only the authority fingerprint distinguishes them.
+        std::fs::write(project_a.path().join(".perl-lsp.toml"), "this is not [valid toml")?;
+        std::fs::write(project_b.path().join(".perl-lsp.toml"), "this is not [valid toml")?;
+        let uri_a = single_file_project_uri(project_a.path())?;
+        let uri_b = single_file_project_uri(project_b.path())?;
+
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri_a, "languageId": "perl", "version": 1, "text": "print 1;
+        "}
+        })))?;
+        server.test_apply_did_close(&uri_a)?;
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri_b, "languageId": "perl", "version": 1, "text": "print 2;
+        "}
+        })))?;
+
+        let output =
+            wait_for_output(&buffer, "Fix the error in .perl-lsp.toml and reload the window.");
+        assert_eq!(
+            output.matches("Fix the error in .perl-lsp.toml and reload the window.").count(),
+            2,
+            "each single-file project must keep its own broken-config warning: {output}"
+        );
+        let counters = server.session_warning_dedup_snapshot().project_config;
+        assert_eq!(counters.inserted, 2, "the two projects must retain distinct identities");
         Ok(())
     }
 

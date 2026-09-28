@@ -489,16 +489,6 @@ pub struct LspServer {
     /// process-level `Once`) so that each `LspServer` instance tracks its own
     /// session independently.
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
-    /// One-time guard for the core-module goto-definition `window/logMessage`
-    /// notice (#16551).
-    ///
-    /// Set to `true` after the first goto-definition on a Perl core module
-    /// emits its output-channel notice, so repeated F12 on e.g. `use strict`
-    /// does not append an identical line to the client output panel on every
-    /// request. Uses an instance-level flag (not a process-level `Once`) so
-    /// that each `LspServer` instance tracks its own session independently,
-    /// matching [`Self::root_undetected_shown`].
-    pub(crate) core_module_goto_def_notice_shown: Arc<AtomicBool>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:
@@ -506,7 +496,8 @@ pub struct LspServer {
     /// Typed, bounded dedup state for user-facing session warnings (#9769).
     ///
     /// Governs whether a repeated Perl::Critic, invalid-client-setting, AI
-    /// backend, or `.perl-lsp.toml` warning should be suppressed for the same
+    /// backend, `.perl-lsp.toml`, or core-module-notice emission should be
+    /// suppressed for the same
     /// reviewed subject. Retains only fixed-size fingerprint identities under
     /// an explicit per-family hard cap; it never holds semantic state and
     /// never influences configuration, diagnostics, provider, or readiness

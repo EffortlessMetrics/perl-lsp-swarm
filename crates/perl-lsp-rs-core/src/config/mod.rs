@@ -2510,7 +2510,13 @@ pub struct ProjectFormattingConfig {
 ///
 /// Returns the path to the first `.perl-lsp.toml` found, or `None` if no
 /// candidate exists in any ancestor directory.
-fn discover_project_config_path(start_dir: &Path) -> Option<PathBuf> {
+///
+/// Public so the language-server runtime can fingerprint the discovered
+/// authority path into single-file session-warning identities (#16548
+/// review): two single-file projects with identical TOML errors must not
+/// suppress each other's first warning. Only the store's fixed-size
+/// fingerprint of the path is retained, never the raw path.
+pub fn discover_project_config_path(start_dir: &Path) -> Option<PathBuf> {
     let mut current = Some(start_dir);
     while let Some(dir) = current {
         let candidate = dir.join(".perl-lsp.toml");

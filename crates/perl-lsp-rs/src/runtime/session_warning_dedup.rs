@@ -1,7 +1,8 @@
 //! Typed, bounded session-warning dedup state (#9769).
 //!
 //! The server occasionally suppresses a repeated user-facing
-//! `window/showMessage` warning so a persistent condition (a missing
+//! `window/showMessage` warning (or `window/logMessage` notice) so a
+//! persistent condition (a missing
 //! `perlcritic` binary, an invalid editor setting value, an AI authentication
 //! failure) does not spam the editor on every diagnostic cycle. Before #9769
 //! each family kept an unbounded `HashSet<String>` of raw key strings for the
@@ -72,6 +73,8 @@ pub(crate) enum SessionWarningFamily {
     AiBackend,
     /// `.perl-lsp.toml` load/validation warnings (#16548).
     ProjectConfig,
+    /// Core-module goto-definition notices (#16551 review).
+    CoreModuleNotice,
 }
 
 /// Stable internal reason/category for a session warning.
@@ -92,6 +95,9 @@ pub(crate) enum SessionWarningCode {
     /// A `[perl].version` value failed target validation
     /// (subject: raw version + config authority, #16548).
     ProjectConfigInvalidPerlVersion,
+    /// A core-module goto-definition notice was emitted
+    /// (subject: the requested module name, #16551 review).
+    CoreModuleGotoDefNotice,
 }
 
 /// Closed set of static dimensions that distinguish identities inside one
@@ -114,6 +120,10 @@ pub(crate) enum SessionWarningSubjectTag {
     ProjectTomlSingleFile,
     /// Invalid `[perl].version` in a single-file project authority (#16548).
     ProjectPerlVersion,
+    /// The module a core-module goto-definition notice names (#16551 review).
+    /// The notice text embeds the module, so per-module identities keep two
+    /// distinct core modules from suppressing each other.
+    CoreModuleName,
 }
 
 impl SessionWarningSubjectTag {
@@ -258,6 +268,7 @@ pub(crate) struct SessionWarningDedupStore {
     client_setting: FamilyStore,
     ai_backend: FamilyStore,
     project_config: FamilyStore,
+    core_module_notice: FamilyStore,
 }
 
 impl SessionWarningDedupStore {
@@ -268,6 +279,7 @@ impl SessionWarningDedupStore {
             SessionWarningFamily::ClientSetting => &self.client_setting,
             SessionWarningFamily::AiBackend => &self.ai_backend,
             SessionWarningFamily::ProjectConfig => &self.project_config,
+            SessionWarningFamily::CoreModuleNotice => &self.core_module_notice,
         }
     }
 
@@ -288,7 +300,9 @@ impl SessionWarningDedupStore {
     }
 
     /// Decide and emit under one family-lock hold, rolling the retention back
-    /// when `emit` reports the warning was not delivered.
+    /// when `emit` reports the notification was not accepted for delivery
+    /// (enqueued to the outbound transport; the writer thread performs the
+    /// actual send).
     ///
     /// This preserves the pre-#9769 `notify_ai_auth_failure` atomicity: a
     /// concurrent caller of the same family either observes the retained
@@ -386,6 +400,8 @@ pub struct SessionWarningDedupSnapshot {
     pub ai_backend: SessionWarningFamilyCounters,
     /// Project-config family counters (#16548).
     pub project_config: SessionWarningFamilyCounters,
+    /// Core-module notice family counters (#16551 review).
+    pub core_module_notice: SessionWarningFamilyCounters,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -398,6 +414,7 @@ impl SessionWarningDedupStore {
             client_setting: self.client_setting.counters(),
             ai_backend: self.ai_backend.counters(),
             project_config: self.project_config.counters(),
+            core_module_notice: self.core_module_notice.counters(),
         }
     }
 }
