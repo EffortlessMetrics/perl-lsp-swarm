@@ -159,6 +159,17 @@ else
 fi
 assert_lacks_unpublished_packet_pointer "clone-local success does not print the unpublished-packet pointer"
 
+NO_CURL_BIN="$TMP/no-curl-bin"
+mkdir -p "$NO_CURL_BIN"
+ln -s /bin/bash "$NO_CURL_BIN/bash"
+run_remote "$NO_CURL_BIN"
+assert_identity_dead_end_is_actionable "missing curl is a piped-bootstrap dead end" "curl is required"
+if [ ! -e "$CURL_LOG" ] && [ ! -e "$SENTINEL" ]; then
+    pass "missing curl fails before network or execution"
+else
+    fail_case "missing curl fails before network or execution" "curl or installer was reached"
+fi
+
 run_remote "$FAKE_BIN:$PATH"
 assert_identity_dead_end_is_actionable "remote bootstrap requires an explicit ref" "requires PERL_LSP_INSTALLER_REF"
 if [ ! -e "$CURL_LOG" ] && [ ! -e "$SENTINEL" ]; then
@@ -222,6 +233,26 @@ else
     fail_case "digest mismatch fails before installer execution" "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
+FAILING_CURL_BIN="$TMP/failing-curl-bin"
+mkdir -p "$FAILING_CURL_BIN"
+cat > "$FAILING_CURL_BIN/curl" <<'CURL'
+#!/bin/bash
+echo "fake curl: transport failed" >&2
+exit 22
+CURL
+chmod +x "$FAILING_CURL_BIN/curl"
+run_remote "$FAILING_CURL_BIN:$PATH" \
+    "PERL_LSP_INSTALLER_REF=$COMMIT_REF" \
+    "PERL_LSP_INSTALLER_SHA256=$DIGEST"
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" == *"failed to fetch the canonical installer"* ]] \
+    && has_unpublished_packet_pointer "$LAST_OUTPUT" \
+    && [ ! -e "$SENTINEL" ]; then
+    pass "curl transport failure keeps the unpublished-packet pointer"
+else
+    fail_case "curl transport failure keeps the unpublished-packet pointer" "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
 run_remote "$FAKE_BIN:$PATH" \
     "PERL_LSP_INSTALLER_REF=$COMMIT_REF" \
     "PERL_LSP_INSTALLER_SHA256=$DIGEST" \
@@ -263,6 +294,8 @@ else
     fail_case "fake curl rejects --location before any installer bytes are copied" "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
+# PATH contains no sha256 tool and no cat. The remedy must still print via
+# shell builtins; a cat-heredoc pointer dies with 127 on this path.
 NO_SHA_BIN="$TMP/no-sha-bin"
 mkdir -p "$NO_SHA_BIN"
 ln -s /bin/bash "$NO_SHA_BIN/bash"
