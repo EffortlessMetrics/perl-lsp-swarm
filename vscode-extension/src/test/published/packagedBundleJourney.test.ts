@@ -521,10 +521,8 @@ suite('Packaged VSIX bundled-server journey', function () {
       'print $value;',
       '',
     ].join('\n');
-    fs.writeFileSync(workspaceFile, fixtureText, { flag: 'wx' });
     let fixtureDocument: vscode.TextDocument | undefined;
     const diagnosticFile = path.join(workspacePath, `packaged_diagnostic_${randomUUID()}.pl`);
-    fs.writeFileSync(diagnosticFile, "use warnings;\nprint 'probe';\n", { flag: 'wx' });
     let diagnosticDocument: vscode.TextDocument | undefined;
 
     const config = vscode.workspace.getConfiguration('perl-lsp');
@@ -546,8 +544,11 @@ suite('Packaged VSIX bundled-server journey', function () {
         value: config.inspect<unknown>(key)?.globalValue,
       }));
     const criticSettingRegistered = registeredConfigurationKeys.has('perl-lsp.critic.enabled');
+    let primaryFailure: unknown;
 
     try {
+      fs.writeFileSync(workspaceFile, fixtureText, { flag: 'wx' });
+      fs.writeFileSync(diagnosticFile, "use warnings;\nprint 'probe';\n", { flag: 'wx' });
       if (registeredConfigurationKeys.has('perl-lsp.autoDownload')) {
         await config.update('autoDownload', false, vscode.ConfigurationTarget.Global);
       }
@@ -743,12 +744,23 @@ suite('Packaged VSIX bundled-server journey', function () {
       const diagnosticVersionBefore = diagnosticDocument.version;
       const strictClear = waitForDiagnostic(
         diagnosticUri,
-        (items) => !items.some((item) => item.code === 'PL100'),
-        'diagnostic PL100 clearing after edit',
+        (items) =>
+          !items.some((item) => item.code === 'PL100') &&
+          items.some(
+            (item) =>
+              item.code === 'PL102' &&
+              item.source === 'perl-lsp' &&
+              item.message.includes('$fresh_unused'),
+          ),
+        'diagnostic PL100 clearing and new PL102 for $fresh_unused after edit',
         true,
       );
       const strictEdit = new vscode.WorkspaceEdit();
-      strictEdit.insert(diagnosticUri, new vscode.Position(0, 0), 'use strict;\n');
+      strictEdit.insert(
+        diagnosticUri,
+        new vscode.Position(0, 0),
+        'use strict;\nmy $fresh_unused = 1;\n',
+      );
       assert.ok(
         await vscode.workspace.applyEdit(strictEdit),
         `diagnostic edit rejected for ${diagnosticUri}`,
@@ -771,6 +783,9 @@ suite('Packaged VSIX bundled-server journey', function () {
           range: item.range,
         })),
         after_code_count: strictAfter.filter((item) => item.code === 'PL100').length,
+        after_fresh_code_count: strictAfter.filter(
+          (item) => item.code === 'PL102' && item.message.includes('$fresh_unused'),
+        ).length,
       };
 
       const diagnostics = vscode.languages.getDiagnostics(document.uri);
@@ -1011,31 +1026,54 @@ suite('Packaged VSIX bundled-server journey', function () {
       if (readinessReady) {
         assert.equal(rename.status, 'applied_text_edits_verified', JSON.stringify(rename));
       }
+    } catch (error: unknown) {
+      primaryFailure = error;
+      throw error;
     } finally {
-      try {
-        for (const ownedDocument of [diagnosticDocument, fixtureDocument]) {
-          if (ownedDocument && !ownedDocument.isClosed) {
+      const cleanupErrors: unknown[] = [];
+      for (const ownedDocument of [diagnosticDocument, fixtureDocument]) {
+        if (ownedDocument && !ownedDocument.isClosed) {
+          try {
             await vscode.window.showTextDocument(ownedDocument);
             await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+          } catch (error: unknown) {
+            cleanupErrors.push(error);
           }
         }
-        assert.equal(fs.readFileSync(workspaceFile, 'utf8'), fixtureText);
-        const cleanup = new vscode.WorkspaceEdit();
-        cleanup.deleteFile(vscode.Uri.file(workspaceFile));
-        assert.ok(await vscode.workspace.applyEdit(cleanup), 'fixture deletion was rejected');
-        assert.ok(!fs.existsSync(workspaceFile), 'owned fixture remains after cleanup');
-        const diagnosticCleanup = new vscode.WorkspaceEdit();
-        diagnosticCleanup.deleteFile(vscode.Uri.file(diagnosticFile));
-        assert.ok(
-          await vscode.workspace.applyEdit(diagnosticCleanup),
-          'diagnostic fixture deletion was rejected',
-        );
-        assert.ok(!fs.existsSync(diagnosticFile), 'owned diagnostic fixture remains after cleanup');
-      } finally {
-        await Promise.all(
-          inspectedSettings.map(({ key, value }) =>
-            config.update(key, value, vscode.ConfigurationTarget.Global),
-          ),
+      }
+      if (fs.existsSync(workspaceFile)) {
+        try {
+          assert.equal(fs.readFileSync(workspaceFile, 'utf8'), fixtureText);
+        } catch (error: unknown) {
+          cleanupErrors.push(error);
+        }
+      }
+      for (const ownedFile of [workspaceFile, diagnosticFile]) {
+        if (!fs.existsSync(ownedFile)) continue;
+        try {
+          const cleanup = new vscode.WorkspaceEdit();
+          cleanup.deleteFile(vscode.Uri.file(ownedFile));
+          assert.ok(
+            await vscode.workspace.applyEdit(cleanup),
+            `fixture deletion was rejected: ${ownedFile}`,
+          );
+          assert.ok(!fs.existsSync(ownedFile), `owned fixture remains after cleanup: ${ownedFile}`);
+        } catch (error: unknown) {
+          cleanupErrors.push(error);
+        }
+      }
+      const settingsResults = await Promise.allSettled(
+        inspectedSettings.map(({ key, value }) =>
+          config.update(key, value, vscode.ConfigurationTarget.Global),
+        ),
+      );
+      for (const result of settingsResults) {
+        if (result.status === 'rejected') cleanupErrors.push(result.reason);
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          primaryFailure === undefined ? cleanupErrors : [primaryFailure, ...cleanupErrors],
+          'packaged journey cleanup failed',
         );
       }
     }
