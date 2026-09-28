@@ -70,10 +70,10 @@ fn digit_led_first_segment_is_not_a_package_name() {
     // A wrong implementation that admits any digit-led identifier would
     // accept this as a name.
     let source = "package 2022_KR;";
-    assert_ne!(
-        package_name(source).as_deref(),
-        Some("2022_KR"),
-        "first package segment must not become a digit-led identifier"
+    let name = package_name(source);
+    assert!(
+        name.as_deref().is_none_or(|name| !name.contains("2022")),
+        "first package segment must not become a digit-led identifier, got {name:?}"
     );
 }
 
@@ -82,9 +82,9 @@ fn dotted_versionish_tail_is_not_folded_into_the_package_name() {
     // perl -ce 'package Foo::1.2;' → Invalid version format (0 before decimal
     // required). The name stops at Foo::1; `.2` must not join the name.
     let source = "package Foo::1.2;";
-    assert_ne!(
+    assert_eq!(
         package_name(source).as_deref(),
-        Some("Foo::1.2"),
-        "dot-tail after a digit segment is not a package name"
+        Some("Foo::1"),
+        "dot-tail after a digit segment must remain outside the package name"
     );
 }
