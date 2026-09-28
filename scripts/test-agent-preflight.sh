@@ -505,7 +505,9 @@ test_stash_error_message() {
 
     if [[ "$output" == *"Identify the owner of each stash entry"* ]] &&
        [[ "$output" == *"Do not edit until ownership and salvage are known"* ]] &&
-       [[ "$output" != *"git stash clear"* ]]; then
+       [[ "$output" != *"git stash clear"* ]] &&
+       [[ "$output" != *"git stash pop"* ]] &&
+       [[ "$output" != *"git stash drop"* ]]; then
         pass "stash error requires owner handoff without destructive recovery"
     else
         fail "stash error gives unsafe or missing recovery guidance — got: $output"
