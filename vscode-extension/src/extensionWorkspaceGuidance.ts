@@ -819,6 +819,40 @@ export async function runDiscoveredIncludePathGuidance(
   return reports;
 }
 
+/**
+ * Whether the server can actually *arm* its AI backend, as opposed to merely
+ * accepting inline completions.
+ *
+ * `inlineCompletionProvider` is advertised by every shipped profile
+ * (`features/flags.rs` `production()`/`ga_lock()`), so it cannot select a server
+ * that can deliver AI completions. The server also rejects `aiCompletion.enabled`
+ * on every generic settings channel (#4997) and fails closed on remote backend
+ * construction until a server-owned trusted activation adapter lands (#10817), so
+ * offering this journey on `inlineCompletionProvider` alone writes a setting that
+ * cannot do what the success message claims.
+ *
+ * Gated on the activation capability instead, following the same experimental
+ * capability convention as the streaming route
+ * (`streamingCompletion.ts` `perlInlineCompletionStream`). Fails closed: an absent
+ * or not-yet-populated `initializeResult` stays silent, so the journey returns on
+ * its own once a server advertises that it can honour the setting.
+ *
+ * Server side: the trusted activation adapter tracked by #10817.
+ */
+function serverAdvertisesAiActivation(client: {
+  initializeResult?: { capabilities?: unknown | undefined } | undefined;
+}): boolean {
+  const capabilities = client.initializeResult?.capabilities;
+  if (!capabilities || typeof capabilities !== 'object') {
+    return false;
+  }
+  const experimental = (capabilities as Record<string, unknown>).experimental;
+  if (!experimental || typeof experimental !== 'object') {
+    return false;
+  }
+  return (experimental as Record<string, unknown>).perlAiCompletionActivation === true;
+}
+
 export async function suggestAiCompletionIfSupported(
   context: vscode.ExtensionContext,
   client: { initializeResult?: { capabilities?: unknown | undefined } | undefined } | undefined,
@@ -832,12 +866,7 @@ export async function suggestAiCompletionIfSupported(
     return;
   }
 
-  const capabilities = client.initializeResult?.capabilities;
-  const inlineProvider =
-    !!capabilities && typeof capabilities === 'object'
-      ? (capabilities as Record<string, unknown>).inlineCompletionProvider
-      : undefined;
-  if (inlineProvider === undefined || inlineProvider === false || inlineProvider === null) {
+  if (!serverAdvertisesAiActivation(client)) {
     return;
   }
 
