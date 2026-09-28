@@ -271,6 +271,16 @@ function runNode(script, args) {
   return true;
 }
 
+/**
+ * Build and validate the packaged VSIX.
+ *
+ * Returns `true` only when every stage succeeded. A stage that fails throws
+ * with a reason naming the stage and the artifact, so the CLI's `catch` branch
+ * can report it on stderr. This path used to return a bare `false`, which the
+ * CLI turned into `exit code 1` with no output at all (#16570).
+ *
+ * @returns {boolean} `true` when packaging and every validation stage passed.
+ */
 function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
   const staged = preparePrebuiltPayload(fileSystem, env, extensionRoot);
   const restorePrebuiltPayload = staged.cleanup;
@@ -287,7 +297,7 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
       packageArgs.push('--out', vsixName);
     }
     if (!run(vsceEntry, packageArgs)) {
-      return false;
+      throw new Error(`vsce package failed: ${vsixName} was not produced`);
     }
     let artifact;
     try {
@@ -322,7 +332,7 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
             payload.sha256,
           ])
         ) {
-          return false;
+          throw new Error(`prebuilt payload verification failed for ${payload.member}`);
         }
       }
       if (
@@ -333,10 +343,16 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
           manifest.package.inventorySha256,
         ])
       ) {
-        return false;
+        throw new Error(`prebuilt payload inventory SHA verification failed for ${vsixName}`);
       }
     }
-    return run(path.join(__dirname, 'check-vsix-inventory.js'), ['--vsix', vsixName]);
+    if (!run(path.join(__dirname, 'check-vsix-inventory.js'), ['--vsix', vsixName])) {
+      throw new Error(
+        `VSIX inventory check failed: ${vsixName} violates the packaging baseline; ` +
+          'the offending files are listed above',
+      );
+    }
+    return true;
   } finally {
     restorePrebuiltPayload();
   }
@@ -344,9 +360,7 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
 
 if (require.main === module) {
   try {
-    if (!packageVsix()) {
-      process.exitCode ||= 1;
-    }
+    packageVsix();
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

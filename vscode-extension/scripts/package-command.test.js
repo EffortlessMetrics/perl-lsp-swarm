@@ -566,7 +566,7 @@ void test(
   },
 );
 
-void test('packaging failure prevents archive validation', () => {
+void test('packaging failure names the stage instead of returning a bare false', () => {
   const calls = [];
   /** @type {any} */
   const fileSystem = {
@@ -578,7 +578,9 @@ void test('packaging failure prevents archive validation', () => {
     return false;
   };
 
-  assert.equal(packageVsix(run, fileSystem), false);
+  // A bare `false` here became `exit code 1` with no output at all, which is
+  // what cost the #16570 origin investigation its afternoon (#16570).
+  assert.throws(() => packageVsix(run, fileSystem), /vsce package failed/);
   assert.equal(calls.length, 2);
   assert.equal(calls[1].script, vsceEntry);
 });
@@ -621,6 +623,8 @@ void test('archive validation failure propagates after packaging', () => {
     return calls.length === 1;
   };
 
-  assert.equal(packageVsix(run, fileSystem), false);
+  // The inventory ratchet is the stage that must name itself: a caller that
+  // only learns "false" cannot tell a size ceiling from a missing member.
+  assert.throws(() => packageVsix(run, fileSystem), /VSIX inventory check failed/);
   assert.equal(calls.length, 2);
 });
