@@ -85,7 +85,7 @@ hover, and go-to-definition.
 - **Breakpoints** -- Set breakpoints with conditional support
 - **Step Debugging** -- Step into, over, and out of function calls
 - **Variable Inspection** -- View variables, watch expressions, and call stack
-- **TCP Attach** (transport-only preview) -- The transport handshake to a Perl debugger peer exists, and attaching by PID is not supported. Interactive attach is **not** supported: ordinary control and inspection requests are not routed through an attached session yet. See [DEBUGGING.md](../docs/how-to/DEBUGGING.md#current-status-native-adapter) for the current status.
+- **TCP Attach** (preview) -- transport only; interactive attach not supported
 
 Debugging is optional and powered by the managed `perl-dap` adapter shipped
 alongside the `perl-lsp` release artifacts -- the extension downloads it for you,
