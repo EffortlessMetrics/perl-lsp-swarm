@@ -380,7 +380,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
         // not explicitly requested. This ensures warnings and errors are
         // captured to stderr for troubleshooting, instead of silently
         // discarded (#5013).
-        init_logging("warn,perl_lsp=info");
+        init_logging("warn");
     }
     startup_timer.checkpoint("logging_init");
 
