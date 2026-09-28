@@ -3535,14 +3535,13 @@ fn assert_no_location_points_to(response: &Value, needle: &str) {
 }
 
 /// A declined receiver must carry no location at all: any unrelated target
-/// would make the negative control vacuous.
+/// would make the negative control vacuous, in every location shape (a
+/// `uri` Location or a `targetUri` LocationLink).
 fn assert_carries_no_location(response: &Value) {
-    if let Some(locations) = response.as_array() {
-        assert!(
-            locations.iter().all(|loc| loc.get("uri").is_none()),
-            "goto-definition must decline the receiver with no location: {response:?}"
-        );
-    }
+    assert!(
+        response.is_null() || response.as_array().is_some_and(Vec::is_empty),
+        "goto-definition must decline the receiver with no location: {response:?}"
+    );
 }
 
 #[test]
