@@ -263,7 +263,10 @@ impl ReportFailure {
     }
 
     /// The one-line human verdict, pointing at `--doctor --json` only when
-    /// this failure actually hides child output.
+    /// this failure actually hides child output. The pointer says to add
+    /// `--json` to the same invocation because repeating `--doctor` alone
+    /// would drop an explicit workspace argument and probe a different
+    /// Perl (#16525).
     fn summary(&self) -> String {
         match self {
             Self::VersionProbe { status, stderr, .. } => {
@@ -271,7 +274,7 @@ impl ReportFailure {
                 if stderr.is_empty() {
                     verdict
                 } else {
-                    format!("{verdict}; use --doctor --json for probe detail")
+                    format!("{verdict}; re-run with --json added for probe detail")
                 }
             }
             Self::Message(message) => message.clone(),
@@ -295,8 +298,10 @@ impl ReportFailure {
     }
 }
 
-/// The `error` field keeps its JSON string shape, so machine consumers see
-/// the full detail exactly as before.
+/// The `error` field keeps its JSON string shape and still carries the full
+/// stderr, but the status wording inside it is normalized exactly like the
+/// human line (#16525): consumers comparing the old doubled phrasing
+/// (`exited with status exit code: N`) see the new single clause.
 impl Serialize for ReportFailure {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.detail())
@@ -3353,7 +3358,7 @@ mod tests {
         let summary = failure.summary();
         assert_eq!(
             summary,
-            "version probe failed (exit code 1); use --doctor --json for probe detail"
+            "version probe failed (exit code 1); re-run with --json added for probe detail"
         );
         assert!(
             !summary.contains("Strawberry"),
@@ -3517,7 +3522,7 @@ mod tests {
         );
         assert!(!line.contains("Can't find"), "the child's denial must not be echoed: {line}");
         assert!(!line.contains("stderr"), "raw child stderr must not reach the summary: {line}");
-        assert!(line.ends_with("use --doctor --json for probe detail"), "{line}");
+        assert!(line.ends_with("re-run with --json added for probe detail"), "{line}");
     }
 
     #[test]
