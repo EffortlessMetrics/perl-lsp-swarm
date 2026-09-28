@@ -760,7 +760,11 @@ impl LspServer {
     /// so a client could not tell which rule set produced the verdict. The
     /// wording and install remediation stay here; suppression identity is the
     /// subjectless critic code (the condition is environment-global for the
-    /// session), retained in the bounded session-warning dedup store (#9769).
+    /// session), retained in the bounded session-warning dedup store (#9769)
+    /// under the dedicated availability family: the subject is the
+    /// environment's engine availability, not a critic setting, so a
+    /// critic-configuration transition's `clear_family(Critic)` must not
+    /// resurrect this once-per-session warning (#16550 review).
     pub(crate) fn notify_critic_external_unavailable(&self) {
         let identity = session_warning_dedup::SessionWarningIdentity::subjectless(
             session_warning_dedup::SessionWarningCode::CriticExternalUnavailable,
@@ -768,7 +772,7 @@ impl LspServer {
         // Decide + send + rollback under one family-lock hold (#9769), the
         // same guarded emission the AI auth failure path uses.
         let decision = self.session_warning_dedup.emit_once_with(
-            session_warning_dedup::SessionWarningFamily::Critic,
+            session_warning_dedup::SessionWarningFamily::CriticEngineAvailability,
             identity,
             || {
                 self.show_message(

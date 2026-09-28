@@ -193,6 +193,37 @@ fn lifecycle_clear_releases_only_its_own_family() {
     );
 }
 
+/// #16550 review: the external-engine availability warning is once per
+/// session because the condition (engine missing on PATH) is environment
+/// state, not critic configuration. A critic-configuration transition clears
+/// only the `Critic` family; the availability identity must survive it.
+#[test]
+fn critic_configuration_clear_preserves_the_engine_availability_identity() {
+    let server = LspServer::new();
+    let availability =
+        SessionWarningIdentity::subjectless(SessionWarningCode::CriticExternalUnavailable);
+    note_critic(&server, profile_identity("/cfg/before-move"));
+    assert_eq!(
+        server
+            .session_warning_dedup
+            .note(SessionWarningFamily::CriticEngineAvailability, availability),
+        SessionWarningDecision::EmitFirst
+    );
+
+    // Critic configuration movement clears only the critic family.
+    server.session_warning_dedup.clear_family(SessionWarningFamily::Critic);
+
+    assert_eq!(server.session_warning_dedup_snapshot().critic.entries, 0);
+    assert_eq!(
+        server
+            .session_warning_dedup
+            .note(SessionWarningFamily::CriticEngineAvailability, availability),
+        SessionWarningDecision::Suppress,
+        "engine availability has not changed, so the once-per-session warning must stay suppressed"
+    );
+    assert_eq!(server.session_warning_dedup_snapshot().critic_engine_availability.entries, 1);
+}
+
 #[test]
 fn forget_releases_an_identity_so_a_failed_send_can_retry() {
     let server = LspServer::new();
@@ -504,9 +535,16 @@ fn critic_fallback_warning_fires_once_across_two_requests() -> Result<(), Box<dy
     server.note_critic_command_fallback(&fallback_result, CriticEngine::Legacy);
 
     let snapshot = server.session_warning_dedup_snapshot();
-    assert_eq!(snapshot.critic.entries, 1, "exactly one identity is retained");
-    assert_eq!(snapshot.critic.inserted, 1);
-    assert_eq!(snapshot.critic.suppressed, 1);
+    // #16550 review: the availability identity lives in its own family so a
+    // critic-configuration transition's `clear_family(Critic)` cannot
+    // resurrect this once-per-session warning.
+    assert_eq!(
+        snapshot.critic_engine_availability.entries, 1,
+        "exactly one identity is retained, outside the resettable critic family"
+    );
+    assert_eq!(snapshot.critic_engine_availability.inserted, 1);
+    assert_eq!(snapshot.critic_engine_availability.suppressed, 1);
+    assert_eq!(snapshot.critic.entries, 0, "the critic family must stay untouched");
 
     drop(server);
     let texts = warning_texts(&output.messages()?);

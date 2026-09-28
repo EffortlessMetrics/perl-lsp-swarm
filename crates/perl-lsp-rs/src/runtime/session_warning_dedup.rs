@@ -70,6 +70,11 @@ pub(crate) enum SessionWarningFamily {
     ClientSetting,
     /// AI backend warnings (authentication failures).
     AiBackend,
+    /// External `perlcritic` engine availability (#16550 review). Never
+    /// cleared by critic-configuration transitions: the subject is the
+    /// environment's engine availability for the session, not a critic
+    /// setting, so `clear_family(Critic)` does not touch it.
+    CriticEngineAvailability,
 }
 
 /// Stable internal reason/category for a session warning.
@@ -248,6 +253,7 @@ pub(crate) struct SessionWarningDedupStore {
     critic: FamilyStore,
     client_setting: FamilyStore,
     ai_backend: FamilyStore,
+    critic_engine_availability: FamilyStore,
 }
 
 impl SessionWarningDedupStore {
@@ -257,6 +263,7 @@ impl SessionWarningDedupStore {
             SessionWarningFamily::Critic => &self.critic,
             SessionWarningFamily::ClientSetting => &self.client_setting,
             SessionWarningFamily::AiBackend => &self.ai_backend,
+            SessionWarningFamily::CriticEngineAvailability => &self.critic_engine_availability,
         }
     }
 
@@ -373,6 +380,8 @@ pub struct SessionWarningDedupSnapshot {
     pub client_setting: SessionWarningFamilyCounters,
     /// AI-backend family counters.
     pub ai_backend: SessionWarningFamilyCounters,
+    /// Critic engine-availability family counters (#16550 review).
+    pub critic_engine_availability: SessionWarningFamilyCounters,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -384,6 +393,7 @@ impl SessionWarningDedupStore {
             critic: self.critic.counters(),
             client_setting: self.client_setting.counters(),
             ai_backend: self.ai_backend.counters(),
+            critic_engine_availability: self.critic_engine_availability.counters(),
         }
     }
 }

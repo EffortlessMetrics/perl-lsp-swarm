@@ -287,16 +287,28 @@ fn decode_perlcritic_output(output: &[u8]) -> String {
     decode_windows_1252(output)
 }
 
+/// Hard character cap on the stderr excerpt carried in the bounded failure
+/// text. One line of a broken or custom executable's stderr can itself be the
+/// whole payload (no newline at all), so the line cap alone would not bound
+/// the client-facing error (#16550 review).
+const MAX_STDERR_EXCERPT_CHARS: usize = 512;
+
 /// Bounded failure text for a non-zero `perlcritic` exit that yielded no
 /// parsable violations (#16550).
 ///
 /// The dominant real cause is an unparsable `.perlcriticrc` profile, so the
-/// remediation names the profile; only the first stderr line is retained so
-/// the error text stays bounded no matter how much diagnostic output the
-/// subprocess produced.
+/// remediation names the profile; only the first stderr line is retained, and
+/// that line is itself truncated, so the error text stays bounded no matter
+/// how much diagnostic output the subprocess produced.
 fn perlcritic_exit_failure(status_code: i32, stderr: &[u8]) -> String {
-    let first_stderr_line =
-        decode_perlcritic_output(stderr).lines().next().unwrap_or_default().trim().to_string();
+    let first_stderr_line = decode_perlcritic_output(stderr)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(MAX_STDERR_EXCERPT_CHARS)
+        .collect::<String>();
     if first_stderr_line.is_empty() {
         return format!("perlcritic failed (exit {status_code}); check .perlcriticrc");
     }
@@ -412,6 +424,27 @@ mod tests {
                  .perlcriticrc: syntax error at line 3"
             )),
             "the error must pin the exit code and only the first stderr line"
+        );
+    }
+
+    #[test]
+    fn newline_free_stderr_payload_stays_within_the_error_bound() {
+        // A broken or custom executable can exit nonzero after writing one
+        // newline-free stderr payload; `lines()` would then return the whole
+        // payload as the "first line", so the excerpt itself must be capped
+        // to keep the client-facing error bounded (#16550 review).
+        let huge = "x".repeat(MAX_STDERR_EXCERPT_CHARS * 4);
+        let error = perlcritic_exit_failure(2, huge.as_bytes());
+        assert!(
+            error.chars().count() < MAX_STDERR_EXCERPT_CHARS * 2,
+            "a single-line stderr payload must not escape the excerpt bound: {} chars",
+            error.chars().count()
+        );
+        assert!(error.starts_with("perlcritic failed (exit 2); check .perlcriticrc: "));
+        assert_eq!(
+            error.chars().count(),
+            "perlcritic failed (exit 2); check .perlcriticrc: ".chars().count()
+                + MAX_STDERR_EXCERPT_CHARS
         );
     }
 
