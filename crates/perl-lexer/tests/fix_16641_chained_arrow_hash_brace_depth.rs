@@ -122,14 +122,35 @@ fn chained_hash_after_arrow_array_deref_is_not_transliteration() {
 #[test]
 fn computed_arrow_key_substitution_matches_direct_subscript() {
     // Direct `$h{scalar s/foo/bar/r}` already uses hash_brace_depth. Arrow
-    // `->{...}` now uses the same opener; both should agree.
+    // `->{...}` now uses the same opener. Quote-ops with a real delimiter are
+    // computed-key expressions, not `$h{s}`-style bare keys.
     let direct = significant("$h{scalar s/foo/bar/r}");
     let arrow = significant("$h->{scalar s/foo/bar/r}");
-    assert_eq!(
-        has_substitution(&direct),
-        has_substitution(&arrow),
-        "arrow computed key must match direct `$h{{...}}` quote-op policy; direct={direct:?} arrow={arrow:?}"
+    assert!(has_substitution(&direct), "direct computed key must keep s///, got {direct:?}");
+    assert!(has_substitution(&arrow), "arrow computed key must keep s///, got {arrow:?}");
+}
+
+#[test]
+fn computed_match_in_arrow_key_is_not_bareword() {
+    let toks = significant("$h->{scalar m/foo/}");
+    assert!(has_regex_match(&toks), "computed m// in ->{{...}} must stay a match, got {toks:?}");
+}
+
+#[test]
+fn hash_slice_regex_op_keys_stay_barewords() {
+    let toks = significant("@h{m, s}");
+    assert!(
+        !has_regex_match(&toks) && !has_substitution(&toks),
+        "slice keys m, s must stay barewords, got {toks:?}"
     );
+}
+
+#[test]
+fn missing_closer_after_quote_op_key_is_not_transliteration() {
+    // `$h->{a}{y;` must stay a key so parser recovery can insert `}`.
+    // `;` is a legal y/// delimiter in other contexts, not inside this subscript.
+    let toks = significant("$h->{a}{y;");
+    assert!(!has_transliteration(&toks), "unclosed chained {{y; must not start y///, got {toks:?}");
 }
 
 #[test]

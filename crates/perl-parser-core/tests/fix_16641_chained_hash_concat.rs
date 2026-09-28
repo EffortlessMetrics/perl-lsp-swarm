@@ -291,9 +291,8 @@ fn arrow_call_hashref_arg_keeps_substitution() {
 
 #[test]
 fn computed_hash_key_substitution_does_not_infer_missing_closer() {
-    // Direct and arrow computed keys share hash_brace_depth. This claim
-    // does not invent a new quote-op-in-key policy; it only requires that
-    // `->{...}` not fabricate HashSubscript InsertedCloser.
+    // Computed keys with a real delimiter are quote expressions, not missing `}`.
     assert_no_hash_subscript_inserted_closer(r#"my $v = $h{scalar s/foo/bar/r};"#);
     assert_no_hash_subscript_inserted_closer(r#"my $v = $h->{scalar s/foo/bar/r};"#);
+    assert_clean_parse(r#"my $v = $h->{scalar s/foo/bar/r};"#);
 }

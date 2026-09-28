@@ -1897,6 +1897,29 @@ impl<'a> PerlLexer<'a> {
         self.after_var_subscript || self.after_arrow
     }
 
+    /// Bareword hash keys end at `,` / `}` / `;` (`$h{s}`, `@h{m, s}`,
+    /// and the missing-closer shape `$h->{a}{y;`). A following quote
+    /// delimiter (`/`, paired, quotes) is a computed-key expression:
+    /// `$h->{scalar s/foo/bar/r}`.
+    #[inline]
+    fn hash_subscript_bare_key_boundary(&self, next: char) -> bool {
+        self.hash_brace_depth > 0 && matches!(next, ',' | '}' | ';')
+    }
+
+    /// q-family quote words still open inside subscripts (`@h{qw/a b/}`).
+    /// `m` opens only when the next char is a real delimiter, not a key
+    /// boundary (`$h{m}` vs `$h->{scalar m/foo/}`). `s`/`tr`/`y` use the
+    /// dedicated identifier path above this keyword match.
+    #[inline]
+    fn quote_operator_word_opens_here(&self, op: &str) -> bool {
+        if self.hash_brace_depth == 0 {
+            return true;
+        }
+        matches!(op, "q" | "qq" | "qw" | "qr" | "qx")
+            || (op == "m"
+                && self.current_char().is_some_and(|ch| !self.hash_subscript_bare_key_boundary(ch)))
+    }
+
     #[inline]
     fn try_identifier_or_keyword(&mut self) -> Option<Token> {
         let start = self.position;
@@ -1911,7 +1934,6 @@ impl<'a> PerlLexer<'a> {
             let follows_sigil_prefix = self.immediately_follows_sigil_prefix(start);
             if !follows_sigil_prefix
                 && !self.after_arrow
-                && self.hash_brace_depth == 0
                 && ch == 's'
                 && self.peek_char(1) == Some('\'')
             {
@@ -1919,7 +1941,6 @@ impl<'a> PerlLexer<'a> {
                 return self.parse_substitution(start);
             } else if !follows_sigil_prefix
                 && !self.after_arrow
-                && self.hash_brace_depth == 0
                 && ch == 'y'
                 && self.peek_char(1) == Some('\'')
             {
@@ -1927,7 +1948,6 @@ impl<'a> PerlLexer<'a> {
                 return self.parse_transliteration(start);
             } else if !follows_sigil_prefix
                 && !self.after_arrow
-                && self.hash_brace_depth == 0
                 && ch == 't'
                 && self.peek_char(1) == Some('r')
                 && self.peek_char(2) == Some('\'')
@@ -2066,7 +2086,6 @@ impl<'a> PerlLexer<'a> {
             if !self.after_sub
                 && !self.after_arrow
                 && !follows_sigil_prefix
-                && self.hash_brace_depth == 0
                 && matches!(text, "s" | "tr" | "y")
             {
                 let (candidate, char_after_next, has_gap) =
@@ -2084,6 +2103,7 @@ impl<'a> PerlLexer<'a> {
                     let is_valid_delim = Self::is_quote_delim(next)
                         && !is_fat_arrow
                         && !is_filetest_s
+                        && !self.hash_subscript_bare_key_boundary(next)
                         && !substitution_disallows_whitespace
                         && (!has_gap
                             || is_paired_delim
@@ -2131,15 +2151,15 @@ impl<'a> PerlLexer<'a> {
                     }
                     // Quote operators expect a delimiter next.
                     // Skip if after '->' -- these are method names, not operators.
-                    // Inside hash subscript braces, regex-like operators stay bareword
-                    // keys (`@h{m, s}`), but q-family operators can still introduce real
-                    // quote expressions in slices (`@h{qw/a b/}`).
+                    // Inside hash subscript braces, `,` / `}` / `;` keep regex-like
+                    // words as keys (`$h{s}`, `@h{m, s}`, `$h->{a}{y;`); a real
+                    // delimiter is a computed-key quote expression
+                    // (`$h->{scalar s/foo/bar/r}`, `@h{qw/a b/}`).
                     op if !self.after_sub
                         && !self.after_arrow
                         && !follows_sigil_prefix
                         && quote_handler::is_quote_operator(op)
-                        && (self.hash_brace_depth == 0
-                            || matches!(op, "q" | "qq" | "qw" | "qr" | "qx")) =>
+                        && self.quote_operator_word_opens_here(op) =>
                     {
                         // Perl allows whitespace between a quote-like operator and its delimiter,
                         // but ONLY for paired delimiters (s { ... } { ... }g).
@@ -2180,7 +2200,7 @@ impl<'a> PerlLexer<'a> {
                             let is_quote_char = matches!(next, '\'' | '"') && op != "s";
                             let is_spaced_slash_delim = next == '/' && op != "s";
                             let is_hash_subscript_bare_key_boundary =
-                                self.hash_brace_depth > 0 && matches!(next, ',' | '}');
+                                self.hash_subscript_bare_key_boundary(next);
                             let is_valid_delim = Self::is_quote_delim(next)
                                 && !is_fat_arrow
                                 && !is_filetest_s
