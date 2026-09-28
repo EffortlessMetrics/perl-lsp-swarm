@@ -271,6 +271,16 @@ function runNode(script, args) {
   return true;
 }
 
+/**
+ * Build and validate the packaged VSIX.
+ *
+ * Returns `true` only when every stage succeeded. A stage that fails throws
+ * with a reason naming the stage and the artifact, so the CLI's `catch` branch
+ * can report it on stderr. This path used to return a bare `false`, which the
+ * CLI turned into `exit code 1` with no output at all (#16570).
+ *
+ * @returns {boolean} `true` when packaging and every validation stage passed.
+ */
 function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
   const staged = preparePrebuiltPayload(fileSystem, env, extensionRoot);
   const restorePrebuiltPayload = staged.cleanup;
@@ -287,7 +297,7 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
       packageArgs.push('--out', vsixName);
     }
     if (!run(vsceEntry, packageArgs)) {
-      return false;
+      throw new Error(`vsce package failed: ${vsixName} was not produced`);
     }
     let artifact;
     try {
@@ -322,7 +332,7 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
             payload.sha256,
           ])
         ) {
-          return false;
+          throw new Error(`prebuilt payload verification failed for ${payload.member}`);
         }
       }
       if (
@@ -333,28 +343,58 @@ function packageVsix(run = runNode, fileSystem = fs, env = process.env) {
           manifest.package.inventorySha256,
         ])
       ) {
-        return false;
+        throw new Error(`prebuilt payload inventory SHA verification failed for ${vsixName}`);
       }
     }
-    return run(path.join(__dirname, 'check-vsix-inventory.js'), ['--vsix', vsixName]);
+    if (!run(path.join(__dirname, 'check-vsix-inventory.js'), ['--vsix', vsixName])) {
+      // Exit status 2 is the checker's precheck-failure code: the archive
+      // could not be read, the candidate manifest could not be validated, or
+      // the candidate SHA mismatched — all before any baseline comparison
+      // ran, so a baseline-violation claim with an offending-files list would
+      // be false (#16570 review).
+      if (process.exitCode === 2) {
+        throw new Error(
+          `VSIX inventory check failed for ${vsixName} before any baseline ` +
+            'comparison ran: the checker error above names the cause',
+        );
+      }
+      throw new Error(
+        `VSIX inventory check failed: ${vsixName} violates the packaging baseline; ` +
+          'the offending files are listed above',
+      );
+    }
+    return true;
   } finally {
     restorePrebuiltPayload();
   }
 }
 
+/**
+ * Report a packaging failure on stderr and set the CLI exit status.
+ *
+ * A subprocess status recorded by `runNode` (any nonzero value) is preserved:
+ * automation reads the failing stage's own exit code (#16570 review). Only a
+ * failure with no recorded status — a throw from this script's own logic —
+ * defaults to 1.
+ *
+ * @param {unknown} error the thrown failure.
+ */
+function reportPackageFailure(error) {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode ||= 1;
+}
+
 if (require.main === module) {
   try {
-    if (!packageVsix()) {
-      process.exitCode ||= 1;
-    }
+    packageVsix();
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
+    reportPackageFailure(error);
   }
 }
 
 module.exports = {
   packageVsix,
+  reportPackageFailure,
   preparePrebuiltPayload,
   validateProjectionManifest,
   validatePrebuiltPayload,

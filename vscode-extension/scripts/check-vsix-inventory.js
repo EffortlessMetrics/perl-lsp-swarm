@@ -133,6 +133,18 @@ function classifyInventoryViolations(violations) {
   return sizeOnly ? 'size_only' : 'structural';
 }
 
+/**
+ * Render violations as human-readable lines that name the offending file and
+ * its baseline/actual values. The JSON receipt on stdout is machine-readable
+ * but easy to lose in a long CI log; this is what a reader needs at a glance
+ * to know which file to shorten (#16570).
+ * @param {string[]} violations
+ * @returns {string}
+ */
+function formatViolations(violations) {
+  return violations.map((violation) => `  - ${violation}`).join('\n');
+}
+
 function currentSourceBundleFile(platform = process.platform, arch = process.arch) {
   const binaryName = platform === 'win32' ? 'perllsp.exe' : 'perllsp';
   return `bin/${platform}-${arch}/${binaryName}`;
@@ -255,6 +267,13 @@ async function main() {
     )}\n`,
   );
   if (violations.length > 0) {
+    // stderr, not just the stdout receipt: a red packaging step that only
+    // writes a JSON blob to stdout is what made this a 10-second fix turn
+    // into an afternoon of attribution (#16570).
+    process.stderr.write(
+      `VSIX inventory check failed (${classification}) for ${path.basename(vsixPath)}:\n` +
+        `${formatViolations(violations)}\n`,
+    );
     process.exitCode = 1;
   }
 }
@@ -266,14 +285,20 @@ module.exports = {
   currentSourceBundleFile,
   currentSourceBundleFiles,
   bundleTargetForPackagedFile,
+  formatViolations,
   platformForPackagedFile,
   parseArgs,
   summarizeInventory,
 };
 
 if (require.main === module) {
+  // Exit-status contract: 1 = the VSIX compared against the baseline and
+  // violated it (the offending files are listed); 2 = a precheck error
+  // (unreadable archive, invalid candidate manifest, candidate SHA mismatch)
+  // that ended the run before any comparison (#16570 review). The packaging
+  // wrapper words its failure by this status.
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
+    process.exitCode = 2;
   });
 }

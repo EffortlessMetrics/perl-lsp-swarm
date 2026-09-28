@@ -5,6 +5,7 @@ const path = require('node:path');
 const { test } = require('node:test');
 const {
   packageVsix,
+  reportPackageFailure,
   preparePrebuiltPayload,
   validateProjectionManifest,
   validatePrebuiltPayload,
@@ -566,7 +567,7 @@ void test(
   },
 );
 
-void test('packaging failure prevents archive validation', () => {
+void test('packaging failure names the stage instead of returning a bare false', () => {
   const calls = [];
   /** @type {any} */
   const fileSystem = {
@@ -578,7 +579,9 @@ void test('packaging failure prevents archive validation', () => {
     return false;
   };
 
-  assert.equal(packageVsix(run, fileSystem), false);
+  // A bare `false` here became `exit code 1` with no output at all, which is
+  // what cost the #16570 origin investigation its afternoon (#16570).
+  assert.throws(() => packageVsix(run, fileSystem), /vsce package failed/);
   assert.equal(calls.length, 2);
   assert.equal(calls[1].script, vsceEntry);
 });
@@ -608,6 +611,50 @@ void test('a successful packager without a fresh archive cannot validate a stale
   assert.equal(calls.length, 1);
 });
 
+void test('a precheck exit status 2 is not reported as a baseline violation (#16570 review)', () => {
+  /** @type {any} */
+  const fileSystem = {
+    existsSync: () => false,
+    rmSync: () => {},
+    statSync: () => ({ isFile: () => true, size: 1 }),
+  };
+  const calls = [];
+  const run = (script, args) => {
+    calls.push({ script, args });
+    if (calls.length > 1) {
+      // Simulate runNode's recording of the checker's precheck exit status
+      // on the inventory stage.
+      process.exitCode = 2;
+    }
+    return calls.length === 1;
+  };
+
+  assert.throws(
+    () => packageVsix(run, fileSystem),
+    /before any baseline comparison ran/,
+    'a precheck failure must not claim a baseline violation',
+  );
+  process.exitCode = 0;
+});
+
+void test('reportPackageFailure preserves a recorded subprocess status (#16570 review)', () => {
+  const original = process.exitCode;
+  try {
+    // A stage child exited 2: runNode recorded it, so the CLI must not
+    // collapse the status to 1.
+    process.exitCode = 2;
+    reportPackageFailure(new Error('stage failed'));
+    assert.equal(process.exitCode, 2, 'a recorded nonzero status must be preserved');
+
+    // A throw with no recorded status defaults to 1.
+    process.exitCode = 0;
+    reportPackageFailure(new Error('unrecorded failure'));
+    assert.equal(process.exitCode, 1, 'an unrecorded failure must default to 1');
+  } finally {
+    process.exitCode = original;
+  }
+});
+
 void test('archive validation failure propagates after packaging', () => {
   const calls = [];
   /** @type {any} */
@@ -621,6 +668,8 @@ void test('archive validation failure propagates after packaging', () => {
     return calls.length === 1;
   };
 
-  assert.equal(packageVsix(run, fileSystem), false);
+  // The inventory ratchet is the stage that must name itself: a caller that
+  // only learns "false" cannot tell a size ceiling from a missing member.
+  assert.throws(() => packageVsix(run, fileSystem), /VSIX inventory check failed/);
   assert.equal(calls.length, 2);
 });
