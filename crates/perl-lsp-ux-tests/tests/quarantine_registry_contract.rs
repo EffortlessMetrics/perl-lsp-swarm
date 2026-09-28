@@ -195,7 +195,9 @@ fn scenario_14_quarantine_rows_have_terminal_executable_dispositions() -> TestRe
                     "{test} is unverified without a named reason; got `{reason}`"
                 );
             }
-            other => panic!("{test} has unknown verification_state `{other}`"),
+            other => {
+                return Err(format!("{test} has unknown verification_state `{other}`").into());
+            }
         }
 
         if entry["state"] == "resolved" {
@@ -296,20 +298,24 @@ fn verified_bindings_reverify_without_drift() -> TestResult {
     let history_available = !root.join(&common_dir).join("shallow").exists();
 
     let mut sampled = 0usize;
-    for entry in ledger["entries"].as_array().expect("entries array") {
+    for entry in ledger["entries"]
+        .as_array()
+        .ok_or_else(|| invalid_data("ux-flakes entries must be an array"))?
+    {
         if entry["evidence"]["verification_state"] != "verified" {
             continue;
         }
-        let test = entry["test"].as_str().expect("test name");
-        let verified_sha = entry["evidence"]["verified_sha"].as_str().expect("verified sha");
-        let recorded_blob =
-            entry["evidence"]["verified_artifact_blob"].as_str().expect("recorded blob");
+        let test =
+            entry["test"].as_str().ok_or_else(|| invalid_data("verified row missing test name"))?;
+        let verified_sha = entry["evidence"]["verified_sha"]
+            .as_str()
+            .ok_or_else(|| invalid_data("verified row missing verified_sha"))?;
+        let recorded_blob = entry["evidence"]["verified_artifact_blob"]
+            .as_str()
+            .ok_or_else(|| invalid_data("verified row missing verified_artifact_blob"))?;
 
         let blob_at_sha =
-            match git(&root, &["rev-parse", &format!("{verified_sha}:{SCENARIO_SOURCE}")])? {
-                Ok(blob) => Some(blob),
-                Err(_) => None,
-            };
+            git(&root, &["rev-parse", &format!("{verified_sha}:{SCENARIO_SOURCE}")])?.ok();
 
         check_verified_binding(
             test,
@@ -328,7 +334,7 @@ fn verified_bindings_reverify_without_drift() -> TestResult {
 }
 
 #[test]
-fn drift_negative_control_fails_on_tampered_bindings() {
+fn drift_negative_control_fails_on_tampered_bindings() -> TestResult {
     // Drift negative control (fault-injection half): the detector must fail on
     // each stale/fabricated shape, not just pass on the healthy ledger.
     const SHA: &str = "65f34b9061c0aab996e7f48e0efba43186d7db96";
@@ -346,12 +352,14 @@ fn drift_negative_control_fails_on_tampered_bindings() {
         Some(BLOB),
         true,
     )
-    .expect_err("drifted artifact must fail");
+    .err()
+    .ok_or_else(|| invalid_data("drifted artifact must fail"))?;
     assert!(err.contains("drifted"), "{err}");
 
     // 3. Fabricated sha in a full-history clone fails.
     let err = check_verified_binding("t", SHA, BLOB, BLOB, None, true)
-        .expect_err("unresolvable sha in full history must fail");
+        .err()
+        .ok_or_else(|| invalid_data("unresolvable sha in full history must fail"))?;
     assert!(err.contains("not resolvable"), "{err}");
 
     // 4. sha that does not carry the recorded blob fails.
@@ -363,12 +371,14 @@ fn drift_negative_control_fails_on_tampered_bindings() {
         Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
         true,
     )
-    .expect_err("sha-blob mismatch must fail");
+    .err()
+    .ok_or_else(|| invalid_data("sha-blob mismatch must fail"))?;
     assert!(err.contains("mis-bound") || err.contains("fabricated"), "{err}");
 
     // 5. Null/classification escapes fail the format gate.
     let err = check_verified_binding("t", "null", BLOB, BLOB, Some(BLOB), true)
-        .expect_err("non-40-hex sha must fail");
+        .err()
+        .ok_or_else(|| invalid_data("non-40-hex sha must fail"))?;
     assert!(err.contains("40-hex"), "{err}");
 
     // 6. Shallow clones legitimately skip only the deep cross-check; drift
@@ -382,26 +392,35 @@ fn drift_negative_control_fails_on_tampered_bindings() {
         None,
         false,
     )
-    .expect_err("shallow clones must still detect artifact drift");
+    .err()
+    .ok_or_else(|| invalid_data("shallow clones must still detect artifact drift"))?;
     assert!(err.contains("drifted"), "{err}");
+
+    Ok(())
 }
 
 #[test]
-fn verification_pr_negative_control_fails_on_tampered_identity() {
+fn verification_pr_negative_control_fails_on_tampered_identity() -> TestResult {
     // Provenance negative control (fault-injection half): the detector must
     // fail on each tampered verification_pr shape, not just pass on the
     // healthy ledger. Dropping or blurring the PR identity must fail even
     // while the sha↔blob drift checks still pass.
     assert!(check_verification_pr("t", &Value::from(14393)).is_ok());
 
-    let err = check_verification_pr("t", &Value::Null).expect_err("null verification_pr must fail");
+    let err = check_verification_pr("t", &Value::Null)
+        .err()
+        .ok_or_else(|| invalid_data("null verification_pr must fail"))?;
     assert!(err.contains("verification_pr"), "{err}");
 
     let err = check_verification_pr("t", &Value::from(0))
-        .expect_err("placeholder verification_pr must fail");
+        .err()
+        .ok_or_else(|| invalid_data("placeholder verification_pr must fail"))?;
     assert!(err.contains("verification_pr"), "{err}");
 
     let err = check_verification_pr("t", &Value::from("14393"))
-        .expect_err("string verification_pr must fail");
+        .err()
+        .ok_or_else(|| invalid_data("string verification_pr must fail"))?;
     assert!(err.contains("verification_pr"), "{err}");
+
+    Ok(())
 }
