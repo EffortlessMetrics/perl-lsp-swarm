@@ -1098,6 +1098,32 @@ fn fqn_component_in_document(
     Ok(fqn_component_at_cursor(get_fqn_regex()?, line_text, cursor_in_line))
 }
 
+/// Whether the goto-definition `Prefix` refusal applies at this cursor.
+///
+/// The refusal exists so a cursor on a prefix component (`Foo` in `Foo::bar`)
+/// cannot resolve to the trailing callable's wrong target: the resolver always
+/// extracts the *last* component of a qualified name wherever the cursor sits.
+/// A sigiled qualified name (`$My::Long::value`) is one variable symbol at
+/// every component, so its middle components must keep falling through to the
+/// variable lookup below — `references.rs` already scopes the same refusal to
+/// unsigiled sub keys for exactly this reason (#14618). When no symbol can be
+/// resolved at all the refusal stays: the fall-through has nothing to find
+/// either.
+#[cfg(feature = "workspace")]
+fn definition_prefix_refusal_applies(doc: &DocumentState, offset: usize) -> bool {
+    let parsed = doc.current_parsed();
+    let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) else {
+        return true;
+    };
+    let current_package = crate::declaration::current_package_at(ast, offset);
+    let Some(symbol_key) =
+        crate::declaration::symbol_at_cursor_with_source(ast, offset, current_package, &doc.text)
+    else {
+        return true;
+    };
+    super::to_workspace_symbol_key(&symbol_key).sigil.is_none()
+}
+
 /// Whether the cursor at `offset` sits *off* the token that names `symbol_name`.
 ///
 /// Rename and find-references both need this before acting on a resolved symbol:
@@ -1894,7 +1920,16 @@ impl LspServer {
                                     return Ok(Some(result));
                                 }
                             }
-                            FqnCursorComponent::Prefix => return Ok(Some(Value::Null)),
+                            FqnCursorComponent::Prefix => {
+                                // A sigiled qualified name is one variable
+                                // symbol at every component, so only a bare
+                                // sub key is refused here — a variable's
+                                // middle component must keep falling through
+                                // to the variable lookup below (#14618).
+                                if definition_prefix_refusal_applies(doc, offset) {
+                                    return Ok(Some(Value::Null));
+                                }
+                            }
                         }
                     }
                 }
@@ -2249,9 +2284,9 @@ impl LspServer {
     fn definition_semantic_shadow_receipt(&self, params: &Value) -> Option<Value> {
         let uri = req_uri(params).ok()?;
         let (line, character) = req_position(params).ok()?;
-        let (symbol, byte_offset, component, document_generation) =
+        let (symbol, byte_offset, prefix_refusal, document_generation) =
             self.navigation_runtime_snapshot(uri, line, character)?;
-        if matches!(component, Some(FqnCursorComponent::Prefix)) {
+        if prefix_refusal {
             return None;
         }
         let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
@@ -2393,7 +2428,7 @@ impl LspServer {
 
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
-            let Some((symbol, byte_offset, component, _)) =
+            let Some((symbol, byte_offset, prefix_refusal, _)) =
                 self.navigation_runtime_snapshot(uri, line, character)
             else {
                 return Ok(Some(json!({
@@ -2409,7 +2444,7 @@ impl LspServer {
             // The source-backed comparison must respect the same cursor refusal
             // as the live provider; the symbol resolver can otherwise report the
             // trailing callable from a package component.
-            if matches!(component, Some(FqnCursorComponent::Prefix)) {
+            if prefix_refusal {
                 return Ok(Some(json!({
                     "provider": "definition",
                     "symbol": symbol,
@@ -2477,7 +2512,7 @@ impl LspServer {
         uri: &str,
         line: u32,
         character: u32,
-    ) -> Option<(String, u32, Option<FqnCursorComponent>, u32)> {
+    ) -> Option<(String, u32, bool, u32)> {
         let documents = self.documents_guard();
         let doc = self.get_document(&documents, uri)?;
         let document_generation = doc.current_generation();
@@ -2485,7 +2520,12 @@ impl LspServer {
         let (symbol, byte_offset) =
             self.navigation_runtime_symbol_from_document(doc, line, character, offset)?;
         let component = fqn_component_in_document(&doc.text, offset).ok()?;
-        Some((symbol, byte_offset, component, document_generation))
+        // The shadow paths must gate exactly like the live provider: a sigiled
+        // qualified name is one variable symbol, so only a bare sub key is
+        // refused (#14618).
+        let prefix_refusal = matches!(component, Some(FqnCursorComponent::Prefix))
+            && definition_prefix_refusal_applies(doc, offset);
+        Some((symbol, byte_offset, prefix_refusal, document_generation))
     }
 
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -3389,10 +3429,7 @@ mod tests {
                 name: clipped[4..].to_owned(),
             })
         );
-        assert_eq!(
-            fqn_component_in_document(text, offset)?,
-            Some(FqnCursorComponent::Prefix)
-        );
+        assert_eq!(fqn_component_in_document(text, offset)?, Some(FqnCursorComponent::Prefix));
         let expected_package = "My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff";
         assert_eq!(
             fqn_component_in_document(text, text.find("::process").ok_or("missing sub")? + 2)?,
@@ -3400,6 +3437,62 @@ mod tests {
                 package: expected_package.to_owned(),
                 name: "process".to_owned(),
             })
+        );
+        Ok(())
+    }
+
+    /// A sigiled qualified name is one variable symbol at every component, so
+    /// the complete-line `Prefix` classification must not null out its middle
+    /// components: the refusal is scoped to bare sub keys, as in
+    /// `references.rs` (#14618).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn definition_prefix_refusal_skips_sigiled_qualified_variables()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let long_component = "A".repeat(60);
+        let source = format!(
+            "package main;\nmy $Var = $My::{long_component}::value;\nsub process {{ }}\nMy::process();\n"
+        );
+        let mut doc = DocumentState::new(&source, 1);
+        let mut parser = perl_parser::Parser::new(&source);
+        let (ast, errors) = match parser.parse() {
+            Ok(ast) => (Some(ast), parser.errors().to_vec()),
+            Err(e) => (None, vec![e]),
+        };
+        let snapshot = crate::state::ParsedSnapshot::from_parse_result(
+            doc.current_generation(),
+            &source,
+            ast.map(std::sync::Arc::new),
+            errors,
+        );
+        assert!(
+            doc.publish_parsed_if_current(doc.current_generation(), std::sync::Arc::new(snapshot)),
+            "the fixture must publish a parsed snapshot at the document's generation"
+        );
+
+        // The cursor sits inside the long middle component, and the complete
+        // line classifies it as a prefix — the shape that used to clip to
+        // `Final` under the radius window.
+        let variable_offset = source.find(&long_component).ok_or("missing component")? + 5;
+        assert_eq!(
+            fqn_component_in_document(&source, variable_offset)?,
+            Some(FqnCursorComponent::Prefix)
+        );
+        assert!(
+            !definition_prefix_refusal_applies(&doc, variable_offset),
+            "a sigiled variable's middle component must keep the variable lookup reachable"
+        );
+
+        // A bare sub key's prefix stays refused: `My` must not resolve to
+        // the trailing `process` callable.
+        let sub_prefix_offset = source.rfind("My::process").ok_or("missing call")?;
+        assert_eq!(
+            fqn_component_in_document(&source, sub_prefix_offset)?,
+            Some(FqnCursorComponent::Prefix)
+        );
+        assert!(
+            definition_prefix_refusal_applies(&doc, sub_prefix_offset),
+            "a bare sub key's prefix component must stay refused"
         );
         Ok(())
     }
