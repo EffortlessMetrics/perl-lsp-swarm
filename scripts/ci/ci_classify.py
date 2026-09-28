@@ -412,6 +412,44 @@ def format_results(results: list[tuple[dict[str, Any], str, str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _json_text(value: object) -> str:
+    """Coerce a JSON record field to text; missing/null become empty strings."""
+    if value is None:
+        return ""
+    return str(value)
+
+
+def classification_record(
+    check: dict[str, Any], cls: str, rationale: str
+) -> dict[str, Any]:
+    """One ``--json`` classification record. Keys are the v1 wire shape."""
+    return {
+        "name": _json_text(check.get("name")),
+        "conclusion": _json_text(check.get("conclusion")),
+        "class": cls,
+        "rationale": rationale,
+        "routing": ROUTING.get(cls, ""),
+    }
+
+
+def json_envelope(
+    results: list[tuple[dict[str, Any], str, str]],
+) -> dict[str, Any]:
+    """Versioned ``--json`` stdout object.
+
+    Always an object with ``schema_version`` and ``classifications``. Empty
+    input still wraps an empty list so a consumer can check the version
+    before iterating records.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "classifications": [
+            classification_record(check, cls, rationale)
+            for check, cls, rationale in results
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -441,21 +479,7 @@ def run(args: argparse.Namespace) -> int:
         results.append((check, cls, rationale))
 
     if args.json:
-        envelope = {
-            "schema_version": SCHEMA_VERSION,
-            "classifications": [
-                {
-                    "name": c.get("name", ""),
-                    "conclusion": c.get("conclusion", ""),
-                    "class": cls,
-                    "rationale": rationale,
-                    "routing": ROUTING.get(cls, ""),
-                }
-                for c, cls, rationale in results
-            ],
-        }
-        output = json.dumps(envelope, indent=2)
-        print(output)
+        print(json.dumps(json_envelope(results), indent=2))
     else:
         print(format_results(results), end="")
 
