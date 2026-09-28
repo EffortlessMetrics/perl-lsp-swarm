@@ -387,6 +387,33 @@ struct IndexingResources {
     client_max_indexed_files: usize,
 }
 
+/// Client-configured cap on indexed workspace files
+/// (`perl.limits.maxIndexedFiles`).
+///
+/// `LSP_LIMITS` and `LspLimits::max_indexed_files` are already public, so a
+/// single consumer reads them here rather than widening the published surface
+/// of `perl-lsp-rs-core` for one call site (#16652). A poisoned lock means
+/// "no client constraint"; [`effective_indexed_file_cap`] turns that into the
+/// pre-existing backstop behavior rather than a new failure mode.
+#[cfg(feature = "workspace")]
+fn client_max_indexed_files() -> usize {
+    perl_lsp_rs_core::runtime::limits::LSP_LIMITS
+        .read()
+        .map_or(usize::MAX, |limits| limits.max_indexed_files)
+}
+
+/// Effective cap for one discovery scan: the client setting bounded by the
+/// coordinator's resource backstop.
+///
+/// The backstop is a hard ceiling, so a client can lower how many files are
+/// indexed but never raise it past what the resource limits allow. At the
+/// documented default both sides are 10,000 and the effective cap is
+/// unchanged (#16652).
+#[cfg(feature = "workspace")]
+fn effective_indexed_file_cap(resource_max_files: usize, client_cap: usize) -> usize {
+    resource_max_files.min(client_cap)
+}
+
 #[cfg(feature = "workspace")]
 struct WorkspaceIndexCancellationGuard {
     progress_tokens: Arc<Mutex<HashSet<String>>>,
@@ -2724,10 +2751,9 @@ impl LspServer {
             return;
         };
 
-        Self::start_workspace_indexing_with_resources(self.indexing_resources(
-            coordinator,
-            perl_lsp_rs_core::runtime::limits::max_indexed_files(),
-        ));
+        Self::start_workspace_indexing_with_resources(
+            self.indexing_resources(coordinator, client_max_indexed_files()),
+        );
     }
 
     /// Collect the scan inputs. `client_max_indexed_files` is the caller's
@@ -2836,10 +2862,10 @@ impl LspServer {
         let limits = coordinator.limits().clone();
         let caps = coordinator.performance_caps().clone();
         // `perl.limits.maxIndexedFiles` is the client-facing cap on how many
-        // files the scan admits. The coordinator's resource bound stays a hard
-        // backstop, so the effective cap is the lower of the two: the client
-        // can lower it, and never raises it past the backstop (#16652).
-        let max_indexed_files = limits.max_files.min(resources.client_max_indexed_files);
+        // files the scan admits; the coordinator's resource bound stays a hard
+        // backstop. The client can lower the cap and never raises it (#16652).
+        let max_indexed_files =
+            effective_indexed_file_cap(limits.max_files, resources.client_max_indexed_files);
         // Generate a request ID for the workDoneProgress/create call. Atomically
         // increment so it doesn't collide with IDs from other server-to-client requests.
         let progress_create_id = next_indexing_progress_request_id(&resources.next_request_id);
@@ -5356,6 +5382,32 @@ mod tests {
             )?;
         }
         Ok(())
+    }
+
+    /// #16652: the cap composition is what makes the documented client knob
+    /// real without letting a client raise a bound past the resource backstop.
+    #[test]
+    #[cfg(feature = "workspace")]
+    fn effective_indexed_file_cap_is_the_lower_of_backstop_and_client_setting() {
+        // A client lowering the cap is honored.
+        assert_eq!(super::effective_indexed_file_cap(10_000, 2), 2);
+        // The backstop still wins when the client asks for more.
+        assert_eq!(super::effective_indexed_file_cap(2, 10_000), 2);
+        // Equal values are unchanged.
+        assert_eq!(super::effective_indexed_file_cap(10_000, 10_000), 10_000);
+        // An unconstrained client (a poisoned LSP_LIMITS lock reads as
+        // usize::MAX) leaves the backstop in charge rather than failing open.
+        assert_eq!(super::effective_indexed_file_cap(10_000, usize::MAX), 10_000);
+        // A client may not raise the effective cap above the backstop for any
+        // pair of inputs, which is the governed surface's first falsifier.
+        for backstop in [0usize, 1, 7, 500, 10_000, 100_000] {
+            for client in [0usize, 1, 7, 500, 10_000, 100_000, usize::MAX] {
+                assert!(
+                    super::effective_indexed_file_cap(backstop, client) <= backstop,
+                    "client cap {client} raised the backstop {backstop}"
+                );
+            }
+        }
     }
 
     /// #16652: `perl.limits.maxIndexedFiles` was parsed and stored but read by
