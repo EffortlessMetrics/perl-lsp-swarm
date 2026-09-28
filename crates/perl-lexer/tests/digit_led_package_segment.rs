@@ -150,13 +150,30 @@ fn whitespace_after_colon_colon_does_not_promote_a_number() -> TestResult {
     // whitespace.
     let source = "package Foo:: 2022_KR;";
     assert!(
-        has_number_text(source, "2022_") || has_number_text(source, "2022"),
-        "digits after `::` + space must stay numeric, tokens={:?}",
+        has_number_text(source, "2022_"),
+        "digits after `::` + space must stay Number(\"2022_\"), tokens={:?}",
         significant_tokens(source).iter().map(|token| token.text.to_string()).collect::<Vec<_>>()
     );
     assert!(
         !identifier_texts(source).iter().any(|text| text.contains("2022_KR")),
         "must not fold a spaced digit run into the package name"
+    );
+    Ok(())
+}
+
+#[test]
+fn sigil_qualified_digit_segment_stays_one_variable() -> TestResult {
+    // Retention: try_variable already used identifier-continue after `::`.
+    // Pin that this claim's motivating spelling survives that path.
+    let tokens = significant_tokens("$Encode::KR::2022_KR");
+    assert_eq!(tokens.len(), 1, "expected one variable token, got {tokens:?}");
+    assert!(
+        matches!(
+            &tokens[0].token_type,
+            TokenType::Identifier(text) if text.as_ref() == "$Encode::KR::2022_KR"
+        ),
+        "digit-led package segment after :: must stay inside the variable, got {:?}",
+        tokens[0].token_type
     );
     Ok(())
 }
