@@ -2897,3 +2897,151 @@ mod tests_uninitialized_warning_gate {
         );
     }
 }
+
+// ============================================================================
+// #16670 — call-observation for `is_require_module_operand`.
+// Integration tests drive `analyze()`; these `--lib` tests invoke the
+// production predicate directly so RIPR can grip the first-arg / paren
+// discriminators at the exact seam lines.
+// ============================================================================
+#[cfg(test)]
+mod tests_require_module_operand {
+    use super::{Node, NodeKind, ScopeAnalyzer};
+    use crate::Parser;
+    use perl_tdd_support::{must, must_some_with};
+
+    fn parse(code: &str) -> Node {
+        let mut parser = Parser::new(code);
+        must(parser.parse())
+    }
+
+    fn identifier_hits<'a>(root: &'a Node, name: &str) -> Vec<(&'a Node, Vec<&'a Node>)> {
+        let mut found = Vec::new();
+        collect_identifiers(root, name, &mut Vec::new(), &mut found);
+        found
+    }
+
+    fn collect_identifiers<'a>(
+        node: &'a Node,
+        name: &str,
+        ancestors: &mut Vec<&'a Node>,
+        found: &mut Vec<(&'a Node, Vec<&'a Node>)>,
+    ) {
+        if let NodeKind::Identifier { name: ident } = &node.kind
+            && ident == name
+        {
+            found.push((node, ancestors.clone()));
+        }
+        ancestors.push(node);
+        node.for_each_child(|child| collect_identifiers(child, name, ancestors, found));
+        ancestors.pop();
+    }
+
+    fn first_named<'a>(root: &'a Node, name: &str) -> (&'a Node, Vec<&'a Node>) {
+        must_some_with(
+            identifier_hits(root, name).into_iter().next(),
+            "expected Identifier with that spelling",
+        )
+    }
+
+    #[test]
+    fn unparenthesized_require_first_identifier_is_module_operand() {
+        let code = "require DBI;";
+        let ast = parse(code);
+        let analyzer = ScopeAnalyzer::new();
+        let (node, ancestors) = first_named(&ast, "DBI");
+        assert!(
+            analyzer.is_require_module_operand(node, &ancestors, code),
+            "direct first-arg Identifier of unparenthesized require must match"
+        );
+        let parent = must_some_with(ancestors.last().copied(), "require FunctionCall parent");
+        assert!(
+            !ScopeAnalyzer::require_call_parenthesizes_operand(parent, node, code),
+            "no '(' between require and DBI"
+        );
+    }
+
+    #[test]
+    fn parenthesized_require_first_identifier_is_not_module_operand() {
+        let code = "require(DBI);";
+        let ast = parse(code);
+        let analyzer = ScopeAnalyzer::new();
+        let (node, ancestors) = first_named(&ast, "DBI");
+        assert!(
+            !analyzer.is_require_module_operand(node, &ancestors, code),
+            "parenthesized require operand stays an expression bareword"
+        );
+        let parent = must_some_with(ancestors.last().copied(), "require FunctionCall parent");
+        assert!(
+            ScopeAnalyzer::require_call_parenthesizes_operand(parent, node, code),
+            "'(' between require and DBI must be observed"
+        );
+    }
+
+    #[test]
+    fn spaced_parenthesized_require_is_not_module_operand() {
+        let code = "require (DBI);";
+        let ast = parse(code);
+        let analyzer = ScopeAnalyzer::new();
+        let (node, ancestors) = first_named(&ast, "DBI");
+        assert!(
+            !analyzer.is_require_module_operand(node, &ancestors, code),
+            "require (DBI) is still parenthesized"
+        );
+        let parent = must_some_with(ancestors.last().copied(), "require FunctionCall parent");
+        assert!(ScopeAnalyzer::require_call_parenthesizes_operand(parent, node, code));
+    }
+
+    #[test]
+    fn expression_identifier_is_not_module_operand() {
+        let code = "my $x = DBI;";
+        let ast = parse(code);
+        let analyzer = ScopeAnalyzer::new();
+        let (node, ancestors) = first_named(&ast, "DBI");
+        assert!(
+            !analyzer.is_require_module_operand(node, &ancestors, code),
+            "expression-position DBI must take the non-require match arm"
+        );
+    }
+
+    #[test]
+    fn identifier_without_ancestors_is_not_module_operand() {
+        let code = "require DBI;";
+        let ast = parse(code);
+        let analyzer = ScopeAnalyzer::new();
+        let (node, _) = first_named(&ast, "DBI");
+        assert!(
+            !analyzer.is_require_module_operand(node, &[], code),
+            "empty ancestor chain is not a require operand"
+        );
+    }
+
+    #[test]
+    fn pointer_inequality_rejects_foreign_identifier_under_require_parent() {
+        let code = "require DBI; my $x = Foo;";
+        let ast = parse(code);
+        let analyzer = ScopeAnalyzer::new();
+        let (dbi, require_ancestors) = first_named(&ast, "DBI");
+        let (foo, _) = first_named(&ast, "Foo");
+        assert!(
+            analyzer.is_require_module_operand(dbi, &require_ancestors, code),
+            "control: DBI is the require first arg"
+        );
+        assert!(
+            !analyzer.is_require_module_operand(foo, &require_ancestors, code),
+            "Foo is not ptr-eq to require's first argument"
+        );
+    }
+
+    #[test]
+    fn nested_identifier_in_computed_require_is_not_first_arg() {
+        let code = r#"require(Foo . "/Bar.pm");"#;
+        let ast = parse(code);
+        let analyzer = ScopeAnalyzer::new();
+        let (node, ancestors) = first_named(&ast, "Foo");
+        assert!(
+            !analyzer.is_require_module_operand(node, &ancestors, code),
+            "Foo inside a computed first argument is not the require operand"
+        );
+    }
+}
