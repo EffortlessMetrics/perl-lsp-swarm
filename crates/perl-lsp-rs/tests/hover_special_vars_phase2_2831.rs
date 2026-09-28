@@ -8,15 +8,10 @@
 //!   $\ (output record separator), $, (output field separator),
 //!   %ENV, %SIG, @INC, @ARGV, %INC, $^W (warnings flag), $^O (OS name).
 //!
-//! Implementation note on cursor position: `extract_special_variable` and
-//! `get_token_at_position` both require the cursor to be on a character that
-//! is part of the variable name (not just the sigil `$` when the next char is
-//! alphanumeric, since the tokenizer end-scan only advances over alphanumeric
-//! chars).  For punctuation variables like `$,` and `$/`, the cursor can be on
-//! the sigil or the punctuation character.  For variables like `$0` and `@_`,
-//! the cursor must be on the alphanumeric/underscore character after the sigil.
-//! Using expression contexts (not `local`/`my`/`our` declaration contexts)
-//! avoids the semantic analyzer claiming the variable as a user-declared symbol.
+//! Cursor tests cover the sigil and following character for `@_` and `$|`.
+//! Other cases target a character within the variable name. Declaration
+//! contexts need explicit coverage because a containing subroutine can mask
+//! the special-variable card when no variable declaration is found.
 
 mod support;
 
@@ -76,7 +71,7 @@ fn test_hover_subroutine_args_array_p2() -> TestResult {
     // "sub f { return @_; }\n"
     //  0         1         2
     //  01234567890123456789012
-    // @_ at offset 16; cursor on '_' at offset 17 to get the token "@_"
+    // @_ at offset 15; cursor on '_' at offset 16 to get the token "@_"
     let doc = "sub f { return @_; }\n";
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
@@ -86,16 +81,92 @@ fn test_hover_subroutine_args_array_p2() -> TestResult {
             "textDocument/hover",
             json!({
                 "textDocument": {"uri": "file:///subroutine_args_p2.pl"},
-                "position": {"line": 0, "character": 17}
+                "position": {"line": 0, "character": 16}
             }),
         )
         .unwrap_or(json!(null));
     let val = hover_value(&result).ok_or("Expected hover content for @_")?;
-    let lower = val.to_lowercase();
-    assert!(
-        lower.contains("argument") || lower.contains("subroutine") || lower.contains("@_"),
-        "@_ hover should describe subroutine arguments, got: {val}"
-    );
+    if !val.contains("**`@_` — Subroutine Arguments**") || val.contains("**Subroutine**") {
+        return Err(format!("@_ must use the special-variable card, got: {val}").into());
+    }
+    Ok(())
+}
+
+/// Special variables inside a sub must retain their own identity for hover and
+/// must not navigate to the containing sub's declaration.
+#[test]
+fn test_special_variables_in_sub_do_not_resolve_to_containing_sub() -> TestResult {
+    let uri = "file:///special_variable_identity.pl";
+    let doc = "sub demo {\n    my $a = 1;\n    my ($x) = @_;\n    local $| = 1;\n    # $| @_\n    my $literal = '$| @_';\n    return $a;\n}\ndemo();\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document(uri, doc)?;
+
+    for (line, character, heading) in [
+        (2, 14, "**`@_` — Subroutine Arguments**"),
+        (2, 15, "**`@_` — Subroutine Arguments**"),
+        (3, 10, "**`$|` — Output Autoflush**"),
+        (3, 11, "**`$|` — Output Autoflush**"),
+    ] {
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character}
+        });
+        let hover = harness.request("textDocument/hover", params.clone())?;
+        let value = hover_value(&hover).ok_or("Expected special-variable hover")?;
+        if !value.contains(heading) || value.contains("**Subroutine**") {
+            return Err(
+                format!("expected {heading} instead of enclosing-sub card, got: {value}").into()
+            );
+        }
+
+        let definition = harness.request("textDocument/definition", params)?;
+        if !definition.is_null()
+            && !definition.as_array().is_some_and(|locations| locations.is_empty())
+        {
+            return Err(format!(
+                "special variable must not navigate to the containing sub: {definition}"
+            )
+            .into());
+        }
+    }
+
+    for (line, character, expected_line) in [(6, 12, 1), (8, 2, 0)] {
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character}
+            }),
+        )?;
+        if definition.pointer("/0/range/start/line").and_then(|line| line.as_u64())
+            != Some(expected_line)
+        {
+            return Err(
+                format!("control should navigate to line {expected_line}: {definition}").into()
+            );
+        }
+    }
+
+    for (line, character) in [(4, 7), (4, 10), (5, 20), (5, 23)] {
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character}
+        });
+        let hover = harness.request("textDocument/hover", params.clone())?;
+        if hover_value(&hover).is_some() {
+            return Err(format!("comment/string gained hover: {hover}").into());
+        }
+        // String definition routing is tracked separately in #16714.
+        if line == 4 {
+            let definition = harness.request("textDocument/definition", params)?;
+            if !definition.is_null()
+                && !definition.as_array().is_some_and(|locations| locations.is_empty())
+            {
+                return Err(format!("comment at ({line}, {character}) navigated to an unrelated declaration: {definition}").into());
+            }
+        }
+    }
     Ok(())
 }
 

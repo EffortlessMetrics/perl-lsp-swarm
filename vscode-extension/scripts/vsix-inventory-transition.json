@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 16547,
-  "reason": "PR #16684 corrects the shipped VS Code README's TCP Attach claim for issue #16547. Linux current-source smoke run 36420483783 measured VSIX readme.md growth from 26678 to 26915 bytes (+237) and total growth from 1879902 to 1880139 bytes with the same 29 files at head 4a3418348b03fb684b7d51546dcd97c429f226ea. Windows managed-binary smoke run 36420483888 measured the same README size but a platform-specific total of 1880076 bytes; its inventory gate is an upper-bound check. Linux installed behavior smoke passed, but exact inventory policy required this declared size-only transition. No bundled code or package membership changed.",
-  "base_baseline_file_sha256": "7bf66646d8f58c1cec3aceba617b8dbb84f74c0b830d74f602d9b76713d66c69",
-  "candidate_baseline_file_sha256": "76a99ca91bf8c81cf0a91ed5b199f479290fd27f0dd3ba01542a9b6f6ea3888f",
-  "base_inventory_sha256": "45546f0e01d868f33536e00ad41e635bd8a740edf498e784274e73d1a622a221",
-  "candidate_inventory_sha256": "fbe8bf795dddc99f028c258e528cadeec767dcc68332dcbb6748a1d69b6a2c28"
+  "reason": "PR #16684 corrects the installed VS Code README's TCP Attach support claim for issue #16547. Against the accepted #16725 mainline package baseline, readme.md grows from 26678 to 26915 bytes (+237). An exact Windows VSIX produced from the integrated candidate with Node 26.5.0 and npm 11.18.0 measures 29 unchanged package members and total bytes 1879959 to 1880196; package.json remains 60674 bytes and out/extension.js remains 1698756 bytes. This transition owns only the README content and retains the package growth gate and independent installed smoke.",
+  "base_baseline_file_sha256": "e43553142ff285227c0de61b076a3a5bc3c6a13dd037cbf9496012d5ff7130a1",
+  "candidate_baseline_file_sha256": "f4a384cdb3de3533ae7e0d09db0199fba876a3dd7a5dba85f91d615b3eb5089a",
+  "base_inventory_sha256": "55f4af7b401b0bb1691c53350a5618e665432eb360aa548d0e7a1c0e858536c3",
+  "candidate_inventory_sha256": "e098ffdba1b9daacfa50f7bb1c518ac3b6456d64599b27e8331ed86e8ce975ee"
 }
