@@ -198,3 +198,81 @@ fn pod_with_multibyte_utf8_content() -> R {
     assert_eq!(my_count, 2, "Should have two 'my' keywords: {texts:?}");
     Ok(())
 }
+
+// ===========================================================================
+// 10. A stray line-initial `=cut` opens POD (#16607)
+// ===========================================================================
+
+#[test]
+fn stray_cut_between_prints_opens_pod_to_eof() -> R {
+    // Fixture shape from #16607: with no POD block open, a line-initial
+    // `=cut` opens POD that runs to EOF (perl -c accepts this file), so the
+    // second print is documentation, not code.
+    let code = "use strict;\nuse warnings;\n\nprint \"a\n\";\n=cut\nprint \"b\n\";\n";
+    let toks = significant(code);
+    let texts: Vec<&str> = toks.iter().map(|t| t.text.as_ref()).collect();
+    let print_count = texts.iter().filter(|&&t| t == "print").count();
+    assert_eq!(print_count, 1, "Only the pre-=cut print is code: {texts:?}");
+    assert!(
+        !texts.iter().any(|t| t.starts_with('=')),
+        "The stray =cut must not surface as a token: {texts:?}"
+    );
+    assert!(!texts.contains(&"b"), "Content after a stray =cut stays POD: {texts:?}");
+    Ok(())
+}
+
+#[test]
+fn stray_cut_closes_at_next_line_initial_cut() -> R {
+    // `=cut` with no POD open starts a block; the next line-initial `=cut`
+    // closes it, so code on both sides of the pair survives.
+    let code = "print \"a\";\n=cut\npod text here\n=cut\nprint \"b\";\n";
+    let toks = significant(code);
+    let texts: Vec<&str> = toks.iter().map(|t| t.text.as_ref()).collect();
+    let print_count = texts.iter().filter(|&&t| t == "print").count();
+    assert_eq!(print_count, 2, "Code on both sides of the =cut pair runs: {texts:?}");
+    assert!(
+        !texts.iter().any(|t| t.starts_with('=')),
+        "Neither =cut surfaces as a token: {texts:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn single_letter_directive_opens_pod() -> R {
+    // Any alphabetic-led command word opens POD — not just the previously
+    // enumerated list (oracle: `=x` opens a block that `=cut` closes).
+    let code = "print \"a\";\n=x\npod text here\n=cut\nprint \"b\";\n";
+    let toks = significant(code);
+    let texts: Vec<&str> = toks.iter().map(|t| t.text.as_ref()).collect();
+    let print_count = texts.iter().filter(|&&t| t == "print").count();
+    assert_eq!(print_count, 2, "`=x` opens POD and `=cut` closes it: {texts:?}");
+    Ok(())
+}
+
+// ===========================================================================
+// 11. Non-POD `=` shapes the generic opener must leave as code
+// ===========================================================================
+
+#[test]
+fn digit_led_equals_at_line_start_stays_code() -> R {
+    // `my $x\n=1;` is an assignment continuation in perl (oracle: syntax OK,
+    // RHS evaluated), so the digit-led line-initial `=` must not open POD.
+    let code = "my $x\n=1;";
+    let toks = significant(code);
+    let texts: Vec<&str> = toks.iter().map(|t| t.text.as_ref()).collect();
+    assert!(texts.contains(&"="), "Digit-led '=' must lex as an operator: {texts:?}");
+    assert!(texts.contains(&"1"), "The operand must survive: {texts:?}");
+    Ok(())
+}
+
+#[test]
+fn underscore_led_equals_at_line_start_stays_code() -> R {
+    // perl treats `=_foo` as the operator with bareword `_foo` (oracle:
+    // syntax error at the following line, not POD-to-EOF), so it stays code.
+    let code = "$x\n=_foo;";
+    let toks = significant(code);
+    let texts: Vec<&str> = toks.iter().map(|t| t.text.as_ref()).collect();
+    assert!(texts.contains(&"="), "Underscore-led '=' must lex as an operator: {texts:?}");
+    assert!(texts.contains(&"_foo"), "The bareword must survive: {texts:?}");
+    Ok(())
+}

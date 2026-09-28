@@ -275,11 +275,12 @@ fn starts_pod(line: &str) -> bool {
     let Some(command) = pod_command(line) else {
         return false;
     };
-    matches!(command, "pod" | "over" | "item" | "back" | "begin" | "end" | "for" | "encoding")
-        || command == "head"
-        || command.strip_prefix("head").is_some_and(|suffix| {
-            !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
-        })
+    // perlpodspec: any line-initial `=` followed by an ASCII-alphabetic
+    // command word opens a POD block — including `=cut` itself when no block
+    // is open (#16607). A digit-, underscore-, or punctuation-led `=` stays
+    // code so assignment continuations like `my $x\n=1;` classify as code,
+    // matching the trivia skipper in lib.rs.
+    command.as_bytes().first().is_some_and(|byte| byte.is_ascii_alphabetic())
 }
 
 fn is_pod_cut(line: &str) -> bool {
@@ -1184,6 +1185,34 @@ mod tests {
 
         assert!(table.is_known_sub("real"));
         assert!(!table.is_known_sub("documented"));
+    }
+
+    #[test]
+    fn stray_cut_opens_pod_so_later_subs_stay_hidden() {
+        // #16607: with no POD open, a line-initial `=cut` opens POD that runs
+        // to EOF, so everything after it is documentation.
+        let source = "print 'a';\n=cut\nsub phantom { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(!table.is_known_sub("phantom"), "post-=cut subs stay POD");
+    }
+
+    #[test]
+    fn stray_cut_closes_at_next_cut_so_later_subs_are_visible() {
+        let source = "print 'a';\n=cut\npod text\n=cut\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("real"));
+    }
+
+    #[test]
+    fn digit_led_equals_line_is_not_pod_in_prepass() {
+        // `my $x\n=1;` is an assignment continuation in perl, so the
+        // digit-led `=` must not flip the prepass into POD state.
+        let source = "my $x\n=1;\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("real"));
     }
 
     #[test]
