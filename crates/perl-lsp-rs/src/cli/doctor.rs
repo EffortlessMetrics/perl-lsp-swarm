@@ -3492,7 +3492,13 @@ mod tests {
                 .ok_or("a .bat shim should get a corrected PATH")?;
 
         let entries: Vec<_> = std::env::split_paths(&path).collect();
-        assert_eq!(entries, vec![shim_dir, first, second]);
+        let expected = vec![shim_dir, first, second];
+        if entries != expected {
+            return Err(format!(
+                "inherited PATH entries changed: expected {expected:?}, got {entries:?}"
+            )
+            .into());
+        }
         Ok(())
     }
 
@@ -3503,7 +3509,13 @@ mod tests {
             .ok_or("a .cmd shim should get its owning directory on PATH")?;
 
         let entries: Vec<_> = std::env::split_paths(&path).collect();
-        assert_eq!(entries, vec![shim_dir]);
+        let expected = vec![shim_dir];
+        if entries != expected {
+            return Err(format!(
+                "unset PATH must contain only the owner: expected {expected:?}, got {entries:?}"
+            )
+            .into());
+        }
         Ok(())
     }
 
