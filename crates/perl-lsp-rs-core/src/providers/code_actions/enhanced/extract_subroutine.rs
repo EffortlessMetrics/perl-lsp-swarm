@@ -9,40 +9,72 @@ use super::helpers::Helpers;
 
 /// Create extract subroutine action.
 ///
-/// Returns `None` when no trustworthy edit can be produced — see
-/// `detect_parameters` for the capture shape this generator cannot express
-/// correctly.
+/// Returns `None` unless the block, scalar captures, lexical declarations,
+/// insertion context, and emitted name fit this generator's narrow calling
+/// convention. Unsupported control flow, writes, pragmas, and scope changes
+/// are refused before an edit is offered.
 pub fn create_extract_subroutine_action(
     node: &Node,
     source: &str,
     helpers: &Helpers<'_>,
 ) -> Option<CodeAction> {
-    let body_text = &source[node.location.start..node.location.end];
+    let body_text = source.get(node.location.start..node.location.end)?;
+    if !admissible_block(node, true) {
+        return None;
+    }
+    let insert_pos = helpers.find_subroutine_insert_position(node.location.start);
+    let first_sub = source.find("sub ").unwrap_or(node.location.start);
+    let strict_context = source
+        .get(..node.location.start.min(insert_pos).min(first_sub))?
+        .lines()
+        .any(|line| line.trim() == "use strict;");
+    // The text-only insertion helper cannot distinguish package boundaries or
+    // trailing data from Perl source. Refuse those files until insertion has an
+    // AST-owned position.
+    if !strict_context
+        || has_unsafe_scope_directive(source, node.location.start.min(insert_pos))
+        || source.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with("__DATA__") || line.starts_with("__END__")
+        })
+    {
+        return None;
+    }
     // Strip surrounding block braces to avoid double-brace corruption.
     // A Block node's location spans `{ ... }` inclusive; the generated sub
     // already adds its own `sub NAME {`, so the inner braces must be removed.
-    let body_text = body_text.trim_start_matches('{').trim_end_matches('}');
-    let sub_name = suggest_subroutine_name(node);
+    let body_text = body_text.strip_prefix('{')?.strip_suffix('}')?;
+    let sub_name = suggest_subroutine_name(source)?;
     // `None` when a capture cannot be passed through this calling convention.
     let params = detect_parameters(node)?;
-    let returns = detect_return_values(node);
+    if params.iter().any(|param| {
+        !has_simple_lexical_declaration(source, insert_pos, node.location.start, param)
+    }) {
+        return None;
+    }
+    let newline = if source.contains("\r\n") { "\r\n" } else { "\n" };
 
     // Generate function signature
     let signature = if params.is_empty() {
-        format!("sub {} {{\n", sub_name)
+        format!("sub {sub_name} {{{newline}")
     } else {
-        format!("sub {} {{\n    my ({}) = @_;\n", sub_name, params.join(", "))
+        format!("sub {sub_name} {{{newline}    my ({}) = @_;{newline}", params.join(", "))
     };
 
     // Find insertion position (before current sub or at end)
-    let insert_pos = helpers.find_subroutine_insert_position(node.location.start);
+    if insert_pos != source.len() {
+        let line_start = source[..insert_pos].rfind('\n').map_or(0, |idx| idx + 1);
+        if !source[line_start..insert_pos].trim().is_empty()
+            || !source[insert_pos..].starts_with("sub ")
+        {
+            return None;
+        }
+    }
 
     // Generate function call
-    let call = if returns.is_empty() {
-        format!("{}({});", sub_name, params.join(", "))
-    } else {
-        format!("my {} = {}({});", returns.join(", "), sub_name, params.join(", "))
-    };
+    // Preserve the original lexical scope. A caller-side `my $x = ...` can
+    // shadow an enclosing `$x`, while a bare call cannot.
+    let call = format!("{{{newline}    {sub_name}({});{newline}}}", params.join(", "));
 
     Some(CodeAction {
         title: "Extract to subroutine".to_string(),
@@ -53,7 +85,7 @@ pub fn create_extract_subroutine_action(
                 // Insert function definition
                 TextEdit {
                     location: SourceLocation { start: insert_pos, end: insert_pos },
-                    new_text: format!("{}{}\n}}\n\n", signature, body_text),
+                    new_text: format!("{signature}{body_text}{newline}}}{newline}{newline}"),
                 },
                 // Replace block with function call
                 TextEdit { location: node.location, new_text: call },
@@ -63,15 +95,98 @@ pub fn create_extract_subroutine_action(
     })
 }
 
+fn has_unsafe_scope_directive(source: &str, allowed_end: usize) -> bool {
+    let Some(allowed_prefix) = source.get(..allowed_end) else { return true };
+    let Some(remainder) = source.get(allowed_end..) else { return true };
+    // Only pragmas preceding the insertion point apply equally to the new
+    // subroutine and the original block. A later `use warnings;`, for example,
+    // changes the original block's lexical behavior but not the extracted sub.
+    let remaining = format!(
+        "{}{}",
+        allowed_prefix.replace("use strict;", "").replace("use warnings;", ""),
+        remainder
+    );
+    ["use", "no", "package", "our", "state", "local"].into_iter().any(|keyword| {
+        remaining.match_indices(keyword).any(|(start, _)| {
+            let before = remaining[..start].chars().next_back();
+            let after = remaining[start + keyword.len()..].chars().next();
+            before.is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+                && after.is_some_and(char::is_whitespace)
+        })
+    })
+}
+
 /// Suggest a subroutine name
-pub fn suggest_subroutine_name(_node: &Node) -> String {
-    // Could analyze the code to suggest better names
-    "process_data".to_string()
+pub fn suggest_subroutine_name(source: &str) -> Option<String> {
+    for suffix in 1..=1000 {
+        let name =
+            if suffix == 1 { "process_data".to_string() } else { format!("process_data_{suffix}") };
+        if !source.match_indices(&name).any(|(start, _)| {
+            let before = source[..start].chars().next_back();
+            let after = source[start + name.len()..].chars().next();
+            before.is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+                && after.is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+        }) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// True when `token` names a plain scalar variable such as `$base`.
 fn is_scalar_variable(token: &str) -> bool {
-    token.starts_with('$')
+    token.strip_prefix('$').is_some_and(|name| {
+        let mut chars = name.chars();
+        chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    })
+}
+
+fn has_simple_lexical_declaration(
+    source: &str,
+    scope_start: usize,
+    before: usize,
+    token: &str,
+) -> bool {
+    let Some(prefix) = source.get(scope_start..before) else { return false };
+    let needle = format!("my {token}");
+    prefix.match_indices(&needle).any(|(start, _)| {
+        let preceding = prefix[..start].chars().next_back();
+        let line_start = prefix[..start].rfind('\n').map_or(0, |idx| idx + 1);
+        let in_comment = prefix[line_start..start].contains('#');
+        !in_comment
+            && preceding.is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+            && prefix[start + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+    })
+}
+
+/// Admit only syntax for which the capture walk and call-site replacement have
+/// a known meaning. In particular, assignment, control transfer, implicit
+/// caller bindings, and forms with hidden child reads cannot be moved safely.
+fn admissible_block(node: &Node, root: bool) -> bool {
+    match &node.kind {
+        NodeKind::Block { .. } if root => {}
+        NodeKind::ExpressionStatement { .. } => {}
+        NodeKind::VariableDeclaration { declarator, attributes, .. }
+            if declarator == "my" && attributes.is_empty() => {}
+        NodeKind::Variable { sigil, name } => {
+            if !is_scalar_variable(&format!("{sigil}{name}")) {
+                return false;
+            }
+        }
+        NodeKind::Binary { op, .. }
+            if matches!(
+                op.as_str(),
+                "+" | "-" | "*" | "/" | "." | "==" | "!=" | "<" | ">" | "<=" | ">="
+            ) => {}
+        NodeKind::Number { .. } | NodeKind::Undef => {}
+        NodeKind::String { value, .. } if !value.contains('$') && !value.contains('@') => {}
+        _ => return false,
+    }
+    node.children().into_iter().all(|child| admissible_block(child, false))
 }
 
 /// Detect the variables a block captures from the enclosing scope.
@@ -92,88 +207,6 @@ pub fn detect_parameters(node: &Node) -> Option<Vec<String>> {
     let mut params = Vec::new();
     collect_variables(node, &mut params);
     if params.iter().all(|param| is_scalar_variable(param)) { Some(params) } else { None }
-}
-
-/// Detect return values in a block.
-///
-/// Uses a heuristic: if the last non-empty statement in the block is a bare
-/// variable expression (implicit return convention in Perl), and that variable
-/// was declared inside the block, treat it as the return value.
-///
-/// Returns a vec of sigil-bearing variable tokens (e.g. `["$result"]`) so the
-/// emitted `my $result = process_data(...);` matches the declaration it came
-/// from. Dropping the sigil here reproduces the sibling defect this module
-/// already had for parameters: `my x = ...` is a bareword assignment, not a
-/// lexical declaration.
-pub fn detect_return_values(node: &Node) -> Vec<String> {
-    let statements = match &node.kind {
-        NodeKind::Block { statements } => statements.as_slice(),
-        _ => return Vec::new(),
-    };
-
-    // Collect all variables declared inside the block, each with its sigil.
-    let mut declared_inside: HashSet<String> = HashSet::new();
-    for stmt in statements {
-        collect_declared_variables(stmt, &mut declared_inside);
-    }
-
-    // Look at the last non-empty statement for implicit or explicit return.
-    let last = statements
-        .iter()
-        .rev()
-        .find(|s| !matches!(&s.kind, NodeKind::Block { statements } if statements.is_empty()));
-
-    if let Some(last_stmt) = last
-        && let Some(var_name) = extract_last_expression_variable(last_stmt)
-        && declared_inside.contains(&var_name)
-    {
-        return vec![var_name];
-    }
-
-    Vec::new()
-}
-
-/// Collect the sigil-bearing tokens of all variables declared via `my` in a node.
-fn collect_declared_variables(node: &Node, declared: &mut HashSet<String>) {
-    match &node.kind {
-        NodeKind::VariableDeclaration { variable, .. } => {
-            if let NodeKind::Variable { sigil, name } = &variable.kind {
-                declared.insert(format!("{sigil}{name}"));
-            }
-        }
-        NodeKind::VariableListDeclaration { variables, .. } => {
-            for v in variables {
-                if let NodeKind::Variable { sigil, name } = &v.kind {
-                    declared.insert(format!("{sigil}{name}"));
-                }
-            }
-        }
-        NodeKind::Block { statements } => {
-            for stmt in statements {
-                collect_declared_variables(stmt, declared);
-            }
-        }
-        NodeKind::ExpressionStatement { expression } => {
-            collect_declared_variables(expression, declared);
-        }
-        _ => {}
-    }
-}
-
-/// If a statement is a bare variable expression or an explicit return, return the
-/// sigil-bearing variable token (e.g. `$result`). Used to detect the implicit
-/// return value.
-fn extract_last_expression_variable(node: &Node) -> Option<String> {
-    match &node.kind {
-        NodeKind::ExpressionStatement { expression } => {
-            extract_last_expression_variable(expression)
-        }
-        NodeKind::Variable { sigil, name } => Some(format!("{sigil}{name}")),
-        NodeKind::Return { value } => {
-            value.as_ref().and_then(|v| extract_last_expression_variable(v))
-        }
-        _ => None,
-    }
 }
 
 /// Collect the variables a node reads from outside itself, each as a
@@ -198,7 +231,7 @@ fn collect_variables_inner(
     seen: &mut HashSet<String>,
 ) {
     match &node.kind {
-        NodeKind::Variable { sigil, name } if !locals.contains(name.as_str()) => {
+        NodeKind::Variable { sigil, name } if !locals.contains(&format!("{sigil}{name}")) => {
             let token = format!("{sigil}{name}");
             if seen.insert(token.clone()) {
                 vars.push(token);
@@ -218,8 +251,8 @@ fn collect_variables_inner(
                 collect_variables_inner(init, vars, locals, seen);
             }
             // The declared variable is local to this block — do not treat it as a parameter.
-            if let NodeKind::Variable { name, .. } = &variable.kind {
-                locals.insert(name.clone());
+            if let NodeKind::Variable { sigil, name } = &variable.kind {
+                locals.insert(format!("{sigil}{name}"));
             }
         }
         NodeKind::VariableListDeclaration { variables, initializer, .. } => {
@@ -229,8 +262,8 @@ fn collect_variables_inner(
             }
             // All declared variables are local to the block.
             for v in variables {
-                if let NodeKind::Variable { name, .. } = &v.kind {
-                    locals.insert(name.clone());
+                if let NodeKind::Variable { sigil, name } = &v.kind {
+                    locals.insert(format!("{sigil}{name}"));
                 }
             }
         }
@@ -290,6 +323,8 @@ mod tests {
     use super::*;
     use perl_parser_core::Parser;
     use perl_tdd_support::{must, must_some};
+    use std::io::Write;
+    use std::process::{Command, Stdio};
 
     const TITLE: &str = "Extract to subroutine";
 
@@ -300,6 +335,41 @@ mod tests {
     fn parses_as_perl(source: &str) -> bool {
         let mut parser = Parser::new(source);
         parser.parse().is_ok()
+    }
+
+    fn perl_compiles(source: &str) -> bool {
+        let mut child = must(
+            Command::new("perl")
+                .args(["-c", "-"])
+                .stdin(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn(),
+        );
+        if let Some(mut stdin) = child.stdin.take() {
+            must(stdin.write_all(source.as_bytes()));
+        }
+        must(child.wait_with_output()).status.success()
+    }
+
+    fn perl_stdout(source: &str) -> Vec<u8> {
+        let mut child = must(
+            Command::new("perl")
+                .arg("-")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn(),
+        );
+        if let Some(mut stdin) = child.stdin.take() {
+            must(stdin.write_all(source.as_bytes()));
+        }
+        let output = must(child.wait_with_output());
+        assert!(
+            output.status.success(),
+            "Perl execution failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
     }
 
     fn var(name: &str, start: usize) -> Node {
@@ -411,17 +481,18 @@ mod tests {
             !edited.contains("(base) = @_") && !edited.contains("process_data(base)"),
             "a bare name survived into the generated code:\n{edited}"
         );
-        assert!(parses_as_perl(&edited), "the edit did not leave parseable Perl:\n{edited}");
+        assert!(perl_compiles(&edited), "the applied edit did not compile with Perl:\n{edited}");
     }
 
-    /// A block whose last statement is a bare declared variable takes the
-    /// implicit-return path, where the sigil was also lost (`my x = ...`).
+    /// The call remains inside the original braces, and the selected block's
+    /// final value still reaches the enclosing subroutine's return context.
     #[test]
-    fn an_implicit_return_variable_keeps_its_sigil() {
+    fn block_scope_and_final_value_are_preserved() {
         let source = "use strict;\n\
                       use warnings;\n\
                       sub worker {\n\
                       \x20   my $base = 10;\n\
+                      \x20   my $x = 7;\n\
                       \x20   {\n\
                       \x20       my $x = $base * 2;\n\
                       \x20       $x;\n\
@@ -432,11 +503,13 @@ mod tests {
         let action = must_some(extract_action(source));
         let edited = apply(source, &action);
 
-        assert!(
-            edited.contains("my $x = process_data($base);"),
-            "the implicit-return assignment lost a sigil:\n{edited}"
-        );
-        assert!(parses_as_perl(&edited), "the edit did not leave parseable Perl:\n{edited}");
+        assert!(edited.contains("process_data($base);"), "the call lost a sigil:\n{edited}");
+        assert!(!edited.contains("my $x = process_data"), "a local escaped its block:\n{edited}");
+        assert!(perl_compiles(&edited), "the applied edit did not compile with Perl:\n{edited}");
+        let before = perl_stdout(source);
+        let after = perl_stdout(&edited);
+        assert_eq!(String::from_utf8_lossy(&before).trim(), "20");
+        assert_eq!(after, before, "the edit changed the final value");
     }
 
     /// A captured array cannot travel through the generated `my (...) = @_;`
@@ -480,6 +553,59 @@ mod tests {
             parses_as_perl("sub process_data {\n    my (base) = @_;\n}\n"),
             "the parser now rejects the sigil-less signature; a parse-based gate is viable again"
         );
+        assert!(!perl_compiles("sub process_data {\n    my (base) = @_;\n}\n"));
+    }
+
+    #[test]
+    fn action_is_withheld_for_unsupported_capture_and_control_flow() {
+        for body in [
+            "print $Foo::bar;",
+            "print $_;",
+            "print $1;",
+            "my $items = 3; print scalar @items;",
+            "$base = $base + 1;",
+            "return $base;",
+            "my $x = $base[0];",
+            "my $x = -$base; $x;",
+        ] {
+            let source = format!(
+                "use strict;\nuse warnings;\nsub worker {{ my $base = 1; my @items = (1, 2); {{ {body} }} }}\n"
+            );
+            assert!(extract_action(&source).is_none(), "unsafe body was offered: {body}");
+        }
+    }
+
+    #[test]
+    fn name_collision_uses_stable_unused_suffix() {
+        let source = "use strict;\nsub process_data { 1 }\nsub worker { my $base = 2; { my $x = $base + 1; $x; } }\n";
+        let edited = apply(source, &must_some(extract_action(source)));
+        assert!(edited.contains("sub process_data_2 {"), "name collision survived:\n{edited}");
+        assert!(perl_compiles(&edited), "renamed action did not compile:\n{edited}");
+    }
+
+    #[test]
+    fn action_is_withheld_without_simple_lexical_ownership_or_matching_pragmas() {
+        for source in [
+            "use strict;\nour $base = 2;\nsub worker { { my $x = $base + 1; $x; } }\n",
+            "use strict;\nsub worker { our $base = 2; { my $x = $base + 1; $x; } }\n",
+            "use strict;\nmy $base = 2;\nour\t$base;\nsub worker { { my $x = $base + 1; $x; } }\n",
+            "sub worker { my $base = 2; { my $x = $base + 1; $x; } }\nuse strict;\n",
+            "sub earlier {\n  use strict;\n  1;\n}\nsub worker { my $base = 2; { my $x = $base + 1; $x; } }\n",
+            "use strict;\nsub unrelated { my $base = 2; }\nsub worker { { my $x = $base + 1; $x; } }\n",
+            "use strict;\nsub worker { use integer; my $base = 5; { my $x = $base / 2; $x; } }\n",
+            "use strict;\nsub worker {\n  use\tinteger;\n  my $base = 5;\n  { my $x = $base / 2; $x; }\n}\nprint worker(), \"\\n\";\n",
+            "use strict;\nsub worker { use warnings; my $base; { my $x = $base + 1; $x; } }\nprint worker(), \"\\n\";\n",
+            "use strict;\nsub worker {\n  package\tFoo;\n  my $base = 5;\n  { my $x = $base / 2; $x; }\n}\n",
+            "use strict;\nsub worker { my $base = 2; no strict; { my $x = $base + 1; $x; } }\n",
+        ] {
+            assert!(
+                extract_action(source).is_none(),
+                "ambiguous lexical context was offered: {source}"
+            );
+        }
+        assert!(has_unsafe_scope_directive("use\ninteger;", 0));
+        assert!(has_unsafe_scope_directive("package\tFoo;", 0));
+        assert!(has_unsafe_scope_directive("our\t$base;", 0));
     }
 
     /// `HashSet` iteration order varies per instance, so an unordered
@@ -489,7 +615,9 @@ mod tests {
         let source = "use strict;\n\
                       use warnings;\n\
                       sub worker {\n\
-                      \x20   my ($a, $b, $c) = @_;\n\
+                      \x20   my $a = 1;\n\
+                      \x20   my $b = 2;\n\
+                      \x20   my $c = 3;\n\
                       \x20   {\n\
                       \x20       my $t = $c + $a + $b;\n\
                       \x20       $t + 1;\n\

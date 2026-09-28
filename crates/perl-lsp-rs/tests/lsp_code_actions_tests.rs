@@ -1,6 +1,8 @@
 /// Comprehensive tests for LSP code actions and refactorings
 use perl_diagnostics::codes::DiagnosticCode;
 use serde_json::json;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 mod common;
 use common::{
@@ -514,6 +516,7 @@ fn test_extract_subroutine() -> Result<(), Box<dyn std::error::Error>> {
     initialize_lsp(&server);
 
     let uri = "file:///test.pl";
+    let source = "use strict;\r\n# café 🍀\r\nuse warnings;\r\nsub worker {\r\n    my $base = 10;\r\n    {\r\n        my $x = $base * 2;\r\n        $x + 1;\r\n    }\r\n}\r\nprint worker(), \"\\n\";\r\n";
     send_notification(
         &server,
         json!({
@@ -524,16 +527,7 @@ fn test_extract_subroutine() -> Result<(), Box<dyn std::error::Error>> {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
-                    "text": r#"
-my $x = 10;
-my $y = 20;
-{
-    my $sum = $x + $y;
-    print "Sum: $sum\n";
-    my $product = $x * $y;
-    print "Product: $product\n";
-}
-"#
+                    "text": source
                 }
             }
         }),
@@ -549,8 +543,8 @@ my $y = 20;
             "params": {
                 "textDocument": { "uri": uri },
                 "range": {
-                    "start": { "line": 3, "character": 0 },
-                    "end": { "line": 8, "character": 1 }
+                    "start": { "line": 5, "character": 4 },
+                    "end": { "line": 8, "character": 5 }
                 },
                 "context": {
                     "diagnostics": []
@@ -560,7 +554,69 @@ my $y = 20;
     );
 
     let actions = response["result"].as_array().ok_or("Expected result to be an array")?;
-    assert!(actions.iter().any(|a| a["title"].as_str().unwrap_or("").contains("subroutine")));
+    let action = actions
+        .iter()
+        .find(|a| a["title"] == "Extract to subroutine")
+        .ok_or("Expected extract subroutine action")?;
+    let edits =
+        action["edit"]["changes"][uri].as_array().ok_or("Expected WorkspaceEdit changes")?;
+    assert_eq!(edits.len(), 2, "extraction must serialize insertion and replacement");
+    let offset = |point: &serde_json::Value| -> Result<usize, Box<dyn std::error::Error>> {
+        let line = point["line"].as_u64().ok_or("Missing line")? as usize;
+        let character = point["character"].as_u64().ok_or("Missing character")? as usize;
+        let line_text = source.split_inclusive('\n').nth(line).ok_or("Line outside document")?;
+        let prefix: usize = source.split_inclusive('\n').take(line).map(str::len).sum();
+        let mut units = 0;
+        let mut bytes = 0;
+        for ch in line_text.chars() {
+            if units == character {
+                break;
+            }
+            units += ch.len_utf16();
+            bytes += ch.len_utf8();
+        }
+        if units != character {
+            return Err("UTF-16 column outside line".into());
+        }
+        Ok(prefix + bytes)
+    };
+    let mut changes = edits
+        .iter()
+        .map(|edit| {
+            Ok((
+                offset(&edit["range"]["start"])?,
+                offset(&edit["range"]["end"])?,
+                edit["newText"].as_str().ok_or("Missing newText")?.to_string(),
+            ))
+        })
+        .collect::<Result<Vec<(usize, usize, String)>, Box<dyn std::error::Error>>>()?;
+    let sub_start = source.find("sub worker").ok_or("Missing sub")?;
+    assert!(changes.iter().any(|(start, end, _)| start == end && *start == sub_start));
+    assert!(changes.iter().any(|(start, end, _)| {
+        source.get(*start..*end).is_some_and(|text| text.starts_with('{') && text.ends_with('}'))
+    }));
+    changes.sort_by_key(|change| std::cmp::Reverse(change.0));
+    let mut edited = source.to_string();
+    for (start, end, replacement) in changes {
+        edited.replace_range(start..end, &replacement);
+    }
+    assert!(edited.contains("my ($base) = @_;"));
+    assert!(edited.contains("process_data($base);"));
+    assert!(edited.contains("# café 🍀\r\nuse warnings;"), "untouched UTF-8 prefix changed");
+    assert!(!edited.replace("\r\n", "").contains('\n'), "edit introduced LF-only lines");
+    assert!(edited.ends_with("print worker(), \"\\n\";\r\n"), "untouched suffix changed");
+    let mut perl = Command::new("perl")
+        .args(["-c", "-"])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    perl.stdin.take().ok_or("Missing perl stdin")?.write_all(edited.as_bytes())?;
+    let output = perl.wait_with_output()?;
+    assert!(
+        output.status.success(),
+        "applied WorkspaceEdit failed perl -c:\n{}\n{edited}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     shutdown_and_exit(&server);
     Ok(())
 }
