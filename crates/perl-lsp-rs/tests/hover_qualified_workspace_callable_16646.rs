@@ -9,6 +9,8 @@
 
 mod support;
 
+use std::time::Duration;
+
 use serde_json::{Value, json};
 use support::lsp_harness::LspHarness;
 
@@ -56,12 +58,15 @@ fn hover_at(
     line: u32,
     character: u32,
 ) -> Result<Value, Box<dyn std::error::Error>> {
-    Ok(harness.request(
+    // Missing-module hover walks configured include roots; 600ms (the two-thread
+    // default) is too tight for that retention case on this proof file.
+    Ok(harness.request_with_timeout(
         "textDocument/hover",
         json!({
             "textDocument": {"uri": uri},
             "position": {"line": line, "character": character}
         }),
+        Duration::from_secs(3),
     )?)
 }
 
