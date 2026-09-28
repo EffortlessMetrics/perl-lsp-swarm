@@ -87,6 +87,7 @@ interface DownloaderPrivateSurface {
 
 interface TestDownloader extends DownloaderPrivateSurface {
   getLocalBinaryPath(): string;
+  getLastErrorMessage(): string | undefined;
   ensureBinary(forceDownload?: boolean): Promise<string | null>;
   checkForUpdateSilent(force?: boolean): Promise<void>;
   downloadFile(url: string, dest: string, timeoutMs?: number): Promise<void>;
@@ -1246,6 +1247,30 @@ describe('Singleflight managed install', () => {
     expect(runSpy).toHaveBeenCalledTimes(1);
     expect(r1).toBe('/path/from/force');
     expect(r2).toBe('/path/from/force');
+  });
+
+  test('a force joiner receives the owning cancellation reason', async () => {
+    const owner = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    const joiner = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    const deferred = makeDeferred<string | null>();
+    jest.spyOn(owner, 'runEnsureBinary').mockReturnValue(deferred.promise);
+    const joinRun = jest.spyOn(joiner, 'runEnsureBinary');
+
+    const first = owner.ensureBinary(true);
+    const second = joiner.ensureBinary(true);
+    (owner as unknown as { lastErrorMessage: string }).lastErrorMessage = 'Download cancelled';
+    deferred.resolve(null);
+
+    expect(await first).toBeNull();
+    expect(await second).toBeNull();
+    expect(joiner.getLastErrorMessage()).toBe('Download cancelled');
+    expect(joinRun).not.toHaveBeenCalled();
   });
 
   test('force during ensure waits for ensure to finish then runs its own install', async () => {
@@ -3056,6 +3081,42 @@ describe('checkForUpdateSilent', () => {
     );
   });
 
+  test('failed forced release fetch reports failure without delaying background checks', async () => {
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockRejectedValue(new Error('offline'));
+    const vscode = require('vscode');
+    vscode.window.showWarningMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(ctx.globalState._store.has(scopedKey)).toBe(false);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('failed'),
+      'View Logs',
+    );
+  });
+
+  test.each([
+    ['configured server path', { serverPath: '/custom/perllsp' }, 'serverPath'],
+    ['missing managed binary', { serverPath: '' }, 'missing'],
+  ])('forced check explains %s instead of silently returning', async (_label, config, reason) => {
+    mockConfig(config);
+    if (reason === 'missing') fs.rmSync(tmpBinary);
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent(true);
+
+    const notices = [
+      ...vscode.window.showInformationMessage.mock.calls,
+      ...vscode.window.showWarningMessage.mock.calls,
+    ];
+    expect(
+      notices.some((call: unknown[]) => typeof call[0] === 'string' && call[0].includes(reason)),
+    ).toBe(true);
+  });
+
   test('background check stays silent when up to date even after a forced check ran', async () => {
     // The no-prompt contract of the background path is unchanged by the
     // forced reporting above.
@@ -3547,7 +3608,7 @@ describe('ensureBinary error classification', () => {
   });
 
   // #16532: the checksum banner said "Please retry" with no retry affordance.
-  test('checksum failure offers a Retry Download button wired to a forced re-download', async () => {
+  test('checksum retry uses the reinstall command that owns health and startup', async () => {
     const downloadSpy = setupDownloadError(
       'Security check failed: Checksum verification failed (file may be corrupted or tampered with).',
     );
@@ -3557,14 +3618,14 @@ describe('ensureBinary error classification', () => {
       .mockResolvedValue(undefined);
 
     await downloader.ensureBinary();
-    // Let the fire-and-forget dialog handler run the forced re-entry.
+    // Let the dialog handler dispatch the registered workflow.
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const call = vscode.window.showErrorMessage.mock.calls[0];
     const buttons: string[] = call.slice(1);
     expect(buttons).toContain('Retry Download');
-    // The first run plus the retry triggered by the button click.
-    expect(downloadSpy.mock.calls.length).toBe(2);
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.reinstall');
+    expect(downloadSpy.mock.calls.length).toBe(1);
   });
 
   test('missing SHA256SUMS metadata names the manifest and mirror setting without claiming corruption (#16532)', async () => {
@@ -3603,6 +3664,22 @@ describe('ensureBinary error classification', () => {
     expect(message).toMatch(/perl-lsp\.serverPath/);
   });
 
+  test.each([
+    'Security check failed: Conflicting checksum entries for perllsp.tar.gz',
+    'Security check failed: Malformed checksum entry for perllsp.tar.gz',
+  ])('invalid manifest metadata never claims archive corruption: %s', async (error) => {
+    setupDownloadError(error);
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/SHA256SUMS/);
+    expect(message).toMatch(/metadata is missing or invalid/);
+    expect(message).not.toMatch(/corrupt/i);
+  });
+
   test('a digest mismatch still reports possible corruption with retry guidance', async () => {
     // The genuine verification-failure branch keeps its corruption verdict.
     setupDownloadError(
@@ -3634,7 +3711,7 @@ describe('ensureBinary error classification', () => {
       expect(result).toBeNull();
       expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
       expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-        'Perl LSP download cancelled — will retry on next startup.',
+        'Perl LSP download cancelled.',
       );
     },
   );

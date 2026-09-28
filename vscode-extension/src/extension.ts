@@ -17,7 +17,7 @@ import type {
 } from 'vscode-languageclient/node';
 import { PerlTestAdapter } from './testAdapter';
 import { activateDebugger, rewriteTestLensCommand } from './debugAdapter';
-import { BinaryDownloader, parseLocalVersion } from './downloader';
+import { BinaryDownloader, isDownloadCancellationMessage, parseLocalVersion } from './downloader';
 import {
   isPerlLanguageId,
   isSupportedPerlUriScheme,
@@ -3347,22 +3347,25 @@ async function reinstallServerBinary(
   const downloadedPath = await downloader.ensureBinary(true);
 
   if (!downloadedPath) {
-    vscode.window
-      .showErrorMessage(
-        'Could not reinstall perl-lsp. Check your internet connection and proxy settings, then try again.',
-        'Show Output',
-        'Open Settings',
-      )
-      .then((selection) => {
-        if (selection === 'Show Output') {
-          outputChannel.show();
-        }
-        if (selection === 'Open Settings') {
-          void vscode.commands.executeCommand('workbench.action.openSettings', 'http.proxy');
-        }
-      });
+    const cancelled = isDownloadCancellationMessage(downloader.getLastErrorMessage() ?? '');
+    if (!cancelled) {
+      vscode.window
+        .showErrorMessage(
+          'Could not reinstall perl-lsp. Check your internet connection and proxy settings, then try again.',
+          'Show Output',
+          'Open Settings',
+        )
+        .then((selection) => {
+          if (selection === 'Show Output') {
+            outputChannel.show();
+          }
+          if (selection === 'Open Settings') {
+            void vscode.commands.executeCommand('workbench.action.openSettings', 'http.proxy');
+          }
+        });
+    }
     if (wasRunning && previousServerPath) {
-      outputChannel.error('[reinstall] restoring previous binary after failed download');
+      outputChannel.info('[reinstall] restoring previous binary after incomplete download');
       languageClientLifecycle?.setServerPathOverride(previousServerPath);
       try {
         await restartServer(context);
@@ -3428,7 +3431,20 @@ async function reinstallServerBinary(
       // restartServer surfaces its own dialog/log.
     }
   } else {
-    vscode.window.showInformationMessage('perl-lsp was reinstalled successfully.', 'OK');
+    // A retry after first-install failure has no running client to restart,
+    // but still must resume the dormant lifecycle after health verification.
+    await restartServer(context);
+    if (languageClientLifecycle?.snapshot.state !== 'running') {
+      return {
+        ok: false,
+        serverPath: downloadedPath,
+        target,
+        source,
+        version,
+        checksumVerified: true,
+        error: 'server did not start after reinstall',
+      };
+    }
   }
 
   return {

@@ -223,6 +223,7 @@ type ManagedInstallReason = 'force' | 'ensure';
 interface ActiveManagedInstall {
   promise: Promise<string | null>;
   reason: ManagedInstallReason;
+  owner: BinaryDownloader;
 }
 let activeManagedInstall: ActiveManagedInstall | undefined;
 
@@ -859,12 +860,14 @@ export class BinaryDownloader {
     // that arrives while an ensure is in flight waits for it then runs
     // its own to honor the explicit reinstall intent.
     if (activeManagedInstall) {
-      const activeReason = activeManagedInstall.reason;
+      const active = activeManagedInstall;
+      const activeReason = active.reason;
       this.outputChannel.appendLine(
         `Managed install already in progress (${activeReason}); ${myReason} call will join.`,
       );
-      const joined = await activeManagedInstall.promise.catch(() => null);
+      const joined = await active.promise.catch(() => null);
       if (!forceDownload || activeReason === 'force') {
+        this.lastErrorMessage = active.owner.getLastErrorMessage();
         return joined;
       }
       this.outputChannel.appendLine(
@@ -878,7 +881,7 @@ export class BinaryDownloader {
     // value into this run's remedy and wipe the in-flight run's own record.
     this.releaseMetadata403Disposition = undefined;
     const promise = this.runEnsureBinary(forceDownload);
-    activeManagedInstall = { promise, reason: myReason };
+    activeManagedInstall = { promise, reason: myReason, owner: this };
     try {
       return await promise;
     } finally {
@@ -935,21 +938,16 @@ export class BinaryDownloader {
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.lastErrorMessage = errorMsg;
+      if (isDownloadCancellationMessage(errorMsg)) {
+        this.outputChannel.appendLine(`Download cancelled: ${errorMsg}`);
+        void vscode.window.showInformationMessage('Perl LSP download cancelled.');
+        return null;
+      }
       this.outputChannel.appendLine(`Failed to download binary: ${errorMsg}`);
 
       const manualInstallUrl = 'https://github.com/EffortlessMetrics/perl-lsp#install';
       const manualInstallNote =
         'To use a manually installed binary, set the "perl-lsp.serverPath" setting to its path.';
-
-      // Cancellation is a user choice, not a failure (#16532): no error
-      // dialog, just a one-line confirmation that nothing is broken.
-      if (isDownloadCancellationMessage(errorMsg)) {
-        this.outputChannel.appendLine(`Download cancelled: ${errorMsg}`);
-        vscode.window.showInformationMessage(
-          'Perl LSP download cancelled — will retry on next startup.',
-        );
-        return null;
-      }
 
       let message: string;
       let buttons: string[];
@@ -1001,13 +999,15 @@ export class BinaryDownloader {
         buttons = ['Install Manually', 'View Logs'];
       } else if (
         errorMsg.includes('No SHA256SUMS file found') ||
-        errorMsg.includes('not found in SHA256SUMS')
+        errorMsg.includes('not found in SHA256SUMS') ||
+        errorMsg.includes('Conflicting checksum entries') ||
+        errorMsg.includes('Malformed checksum entry')
       ) {
-        // Checksum metadata is absent, not wrong (#16532): the downloaded
+        // Checksum metadata is absent or invalid (#16532): the downloaded
         // bytes were never judged, so do not imply corruption. Name the
         // manifest and the mirror setting that usually owns the gap.
         message =
-          'perl-lsp: Download blocked — checksum metadata is missing. ' +
+          'perl-lsp: Download blocked — checksum metadata is missing or invalid. ' +
           'The release (or the "perl-lsp.downloadBaseUrl" mirror) does not provide a usable SHA256SUMS manifest entry for this archive. ' +
           'Fix the mirror configuration, wait for the release to be completed, or install manually. ' +
           manualInstallNote;
@@ -1047,9 +1047,9 @@ export class BinaryDownloader {
         } else if (choice === 'View Logs') {
           this.outputChannel.show();
         } else if (choice === 'Retry Download') {
-          // Force re-entry. The singleflight has already been released by the
-          // failed run, so this starts a fresh download.
-          void this.ensureBinary(true);
+          // Reinstall owns the health check and lifecycle restart. A detached
+          // ensureBinary call can install bytes after its caller has stopped.
+          void vscode.commands.executeCommand('perl-lsp.reinstall');
         }
       });
 
@@ -2111,7 +2111,8 @@ export class BinaryDownloader {
    * pinned-channel explanation when checks are disabled, and the update
    * prompt even when automatic prompts were suppressed.
    *
-   * All errors are logged to the output channel; none are shown to the user.
+   * Background errors stay in the output channel; a manual check reports
+   * skips and failures so the command never silently appears to do nothing.
    */
   async checkForUpdateSilent(force = false): Promise<void> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
@@ -2135,6 +2136,11 @@ export class BinaryDownloader {
     // Guard: skip if user manages their own binary
     const userPath = config.get<string>('serverPath', '');
     if (userPath) {
+      if (force) {
+        void vscode.window.showInformationMessage(
+          'Binary update checks are unavailable while perl-lsp.serverPath is configured.',
+        );
+      }
       return;
     }
 
@@ -2142,9 +2148,19 @@ export class BinaryDownloader {
     const binaryPath = this.getLocalBinaryPath();
     const storagePath = this.context.globalStorageUri.fsPath;
     if (!binaryPath.startsWith(storagePath)) {
+      if (force) {
+        void vscode.window.showInformationMessage(
+          'Binary update checks are unavailable because this binary is not managed by perl-lsp.',
+        );
+      }
       return;
     }
     if (!fs.existsSync(binaryPath)) {
+      if (force) {
+        void vscode.window.showWarningMessage(
+          'Binary update check could not run because the managed binary is missing. Run Perl: Reinstall Server Binary.',
+        );
+      }
       return;
     }
 
@@ -2173,20 +2189,36 @@ export class BinaryDownloader {
       }
     }
 
-    // Record that we checked (even if the check fails) to avoid hammering
+    // Background failures retain the ordinary throttle to avoid hammering.
+    // A failed manual attempt must not delay the next background check.
     const stateKey =
       managedUpdateCheckStateKey(this.getHostCompatibilityKey()) ?? LEGACY_UPDATE_CHECK_STATE_KEY;
-    await this.context.globalState.update(stateKey, Date.now());
+    if (!force) {
+      await this.context.globalState.update(stateKey, Date.now());
+    }
 
     try {
       const localVersion = await this.getLocalVersion(binaryPath);
       if (!localVersion) {
         this.outputChannel.appendLine('[update-check] Could not read local version — skipping');
+        if (force) {
+          void vscode.window
+            .showWarningMessage(
+              'Binary update check failed: could not read the installed version.',
+              'View Logs',
+            )
+            .then((choice) => {
+              if (choice === 'View Logs') this.outputChannel.show();
+            });
+        }
         return;
       }
 
       const release = await this.getLatestRelease();
       const remoteVersion = release.tag_name.replace(/^v/, '');
+      if (force) {
+        await this.context.globalState.update(stateKey, Date.now());
+      }
 
       if (compareVersions(localVersion, remoteVersion) >= 0) {
         this.outputChannel.appendLine(`[update-check] Up to date (${localVersion})`);
@@ -2205,7 +2237,10 @@ export class BinaryDownloader {
       const autoUpdate = config.get<boolean>('autoUpdate', false);
       if (autoUpdate) {
         this.outputChannel.appendLine(`[update-check] Auto-updating to ${remoteVersion}`);
-        await this.ensureBinary(true);
+        const installed = await this.ensureBinary(true);
+        if (force && installed) {
+          void vscode.window.showInformationMessage(`Perl LSP ${remoteVersion} was downloaded.`);
+        }
         return;
       }
 
@@ -2244,6 +2279,16 @@ export class BinaryDownloader {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.outputChannel.appendLine(`[update-check] Skipping: ${msg}`);
+      if (force) {
+        void vscode.window
+          .showWarningMessage(
+            'Binary update check failed. See Perl LSP output for details.',
+            'View Logs',
+          )
+          .then((choice) => {
+            if (choice === 'View Logs') this.outputChannel.show();
+          });
+      }
     }
   }
 
