@@ -130,10 +130,17 @@ be computed — prints a warning and continues without verification. Download
 it, inspect it, then run it from PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/866d83285b69c7a80276735cbdc2b20d66694d86/install.ps1 -OutFile install.ps1
 # Review install.ps1, then:
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+This fetches the exact audited revision pinned in the
+[installation guide](docs/how-to/INSTALLATION.md#published-powershell-script).
+Note that the `install.ps1` in a development checkout is the stricter
+revision: it fails closed on missing or malformed checksum evidence and
+promotes `perllsp.exe` and `perl-dap.exe` as one atomic product unit
+([details](docs/how-to/INSTALLATION.md#development-checkout-installer)).
 
 Windows 10 ARM64 and unsupported architectures must build from source. On
 x86_64 Windows the manual archive above remains available as an alternative to

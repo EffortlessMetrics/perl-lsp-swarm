@@ -33,10 +33,6 @@ export function unlinkPartialDownloadDest(dest: string): void {
   }
 }
 
-async function defaultRemovePartialFile(dest: string): Promise<void> {
-  unlinkPartialDownloadDest(dest);
-}
-
 function destinationDirectoryEntryExists(dest: string): boolean {
   try {
     fs.lstatSync(dest);
@@ -49,35 +45,44 @@ function destinationDirectoryEntryExists(dest: string): boolean {
   }
 }
 
+/** Default injected remover. Native `ensurePartialDownloadDestGone` owns unlink. */
+async function noopRemovePartialFile(_dest: string): Promise<void> {}
+
 /**
- * Run the injected remover, then the native unlink. Succeeds only when the
- * directory entry is gone. Injected failures are ignored so the native
- * fallback remains authoritative.
+ * Native fail-closed dest removal. No-op when the directory entry is already
+ * gone, so a successful injected remover is the only unlink for that dest.
+ */
+function ensurePartialDownloadDestGone(dest: string): void {
+  if (!destinationDirectoryEntryExists(dest)) {
+    return;
+  }
+  unlinkPartialDownloadDest(dest);
+  if (destinationDirectoryEntryExists(dest)) {
+    throw new Error('destination remains');
+  }
+}
+
+/**
+ * Run the injected remover, then native unlink only if dest still exists.
+ * Succeeds only when the directory entry is gone. Injected failures are
+ * ignored so the native fallback remains authoritative.
  */
 export async function cleanupPartialDownloadDest(
   dest: string,
-  removePartialFile: (dest: string) => Promise<void> = defaultRemovePartialFile,
+  removePartialFile: (dest: string) => Promise<void> = noopRemovePartialFile,
 ): Promise<void> {
   try {
     await removePartialFile(dest);
   } catch {
     // The native fallback below is authoritative for the cleanup result.
   }
-  let cleanupFailure: unknown;
   try {
-    unlinkPartialDownloadDest(dest);
-  } catch (fallbackError) {
-    cleanupFailure = fallbackError;
-  }
-  let destinationRemains = false;
-  try {
-    destinationRemains = destinationDirectoryEntryExists(dest);
-  } catch (existsError) {
-    cleanupFailure ??= existsError;
-  }
-  if (cleanupFailure !== undefined || destinationRemains) {
-    const reason = cleanupFailure instanceof Error ? cleanupFailure.message : 'destination remains';
-    throw new Error(reason);
+    ensurePartialDownloadDestGone(dest);
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('destination remains');
   }
 }
 
@@ -121,7 +126,7 @@ export function downloadBoundedFile(options: BoundedFileDownloadOptions): Promis
     maxRedirects = 5,
     followRedirect,
     createWriteStream = (path) => fs.createWriteStream(path),
-    removePartialFile = defaultRemovePartialFile,
+    removePartialFile = noopRemovePartialFile,
   } = options;
 
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
