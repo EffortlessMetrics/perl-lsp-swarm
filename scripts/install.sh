@@ -336,6 +336,23 @@ https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTAL
 
 # ── Version resolution ─────────────────────────────────────────────────────────
 
+# #8367 semver core, single-sourced so source-mode and release-mode validation
+# cannot drift: X.Y.Z with no leading zeroes, plus an optional prerelease/build
+# suffix (-alpha.1, +build.7) with its restricted alphabet.
+PLSP_SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+
+# #16541: release mode builds download URLs from VERSION, so an invalid pin
+# must be rejected before any request is built. #8367 validated the
+# source-mode spec only; a truncated tag ("0.12") or typo ("0.17.o") used to
+# survive resolution and die later as a bare 404. Same semver core as source
+# mode, with one optional leading "v".
+validate_release_version_spec() {
+    local _spec="${1#v}"
+    if [[ ! "$_spec" =~ $PLSP_SEMVER_RE ]]; then
+        err "invalid VERSION=$1 for release mode: expected a full X.Y.Z semver (v0.12.0) with optional prerelease/build metadata; check https://github.com/${REPO}/releases for an existing tag"
+    fi
+}
+
 resolve_version() {
     if [ "$VERSION" = "latest" ]; then
         info "fetching latest release..."
@@ -352,6 +369,11 @@ Check your internet connection or set VERSION=v<x.y.z> to pin a version."
             err "could not parse tag_name from GitHub API response"
         fi
     else
+        # #16541: reject an invalid pin before any URL is built; previously
+        # anything non-"latest" was accepted and survived to a dead-end 404.
+        if [ "$INSTALL_MODE" = "release" ]; then
+            validate_release_version_spec "$VERSION"
+        fi
         # Accept "0.12.0" or "v0.12.0"
         case "$VERSION" in
             v*) TAG="$VERSION" ;;
@@ -466,9 +488,9 @@ download_and_verify() {
         err "download failed: $ASSET_URL
 
 If this version does not have a pre-built binary for your platform, try:
-  cargo install perllsp
+  cargo install perllsp --version $VERSION_NUM
   # or
-  cargo install perllsp --target $TARGET"
+  cargo install perllsp --version $VERSION_NUM --target $TARGET"
     fi
 
     if ! _actual="$(calculate_sha256 "$_sha_tool" "$_archive")"; then
@@ -1092,7 +1114,7 @@ The release archive may have an unexpected layout."
 # (-alpha.1, +build.7) is accepted with its restricted alphabet.
 validate_source_version_spec() {
     local _spec="$1"
-    if [[ ! "$_spec" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+    if [[ ! "$_spec" =~ $PLSP_SEMVER_RE ]]; then
         err "invalid VERSION=$_spec for source mode: expected a full X.Y.Z semver (v0.12.0) with optional prerelease/build metadata"
     fi
 }
