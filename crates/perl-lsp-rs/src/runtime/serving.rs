@@ -96,6 +96,21 @@ impl LspServer {
             let method = request.method.clone();
             tracing::trace!(method = %method, "Received request");
 
+            // After shutdown, a ReadOnly hop can lose the race with lifecycle
+            // `exit`, which closes admission on the mutation worker (#16655).
+            // Admit the required `-32600` on this thread before the next
+            // lifecycle message is dequeued.
+            if Self::should_inline_after_shutdown(
+                &method,
+                self.shutdown_received.load(Ordering::Acquire),
+            ) {
+                if self.admit_handler_response(request).is_err() {
+                    response_delivery_failed = true;
+                    break;
+                }
+                continue;
+            }
+
             match classify(&method) {
                 RequestClass::Control => {
                     // Process inline — no queue, no spawn.
@@ -228,6 +243,21 @@ impl LspServer {
     pub(crate) fn register_progress_request(&self, token: &str, request_id: JsonRpcId) {
         self.progress_token_to_request.lock().insert(token.to_string(), request_id);
     }
+
+    /// Post-shutdown requests except `shutdown`/`exit` must not hop through
+    /// the scheduler: `exit` settles outbound admission on the mutation
+    /// worker and can outrun that hop (#16655).
+    fn should_inline_after_shutdown(method: &str, shutdown_received: bool) -> bool {
+        shutdown_received && method != "exit" && method != "shutdown"
+    }
+
+    fn admit_handler_response(&self, request: JsonRpcRequest) -> io::Result<()> {
+        if let Some(response) = self.handle_request(request) {
+            log_response(&response);
+            self.outbound.send_response(response)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -285,6 +315,105 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Err(io::Error::new(io::ErrorKind::BrokenPipe, "controlled response flush failure"))
         }
+    }
+
+    #[test]
+    fn post_shutdown_readonly_is_inlined_and_lifecycle_is_not() {
+        assert!(
+            LspServer::should_inline_after_shutdown("textDocument/hover", true),
+            "post-shutdown hover must not hop through the read pool"
+        );
+        assert!(
+            LspServer::should_inline_after_shutdown("textDocument/didOpen", true),
+            "post-shutdown notifications are also inlined so they cannot mutate after shutdown"
+        );
+        assert!(
+            !LspServer::should_inline_after_shutdown("textDocument/hover", false),
+            "pre-shutdown hover stays on the read pool"
+        );
+        assert!(
+            !LspServer::should_inline_after_shutdown("exit", true),
+            "exit must remain on the lifecycle worker"
+        );
+        assert!(
+            !LspServer::should_inline_after_shutdown("shutdown", true),
+            "a second shutdown must remain on the lifecycle worker"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedBuffer {
+        inner: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl SharedBuffer {
+        fn bytes(&self) -> Vec<u8> {
+            self.inner.lock().clone()
+        }
+    }
+
+    impl Write for SharedBuffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.inner.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn post_shutdown_hover_is_admitted_on_the_ingress_thread()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let captured = SharedBuffer::default();
+        let output = Arc::new(Mutex::new(Box::new(captured.clone()) as Box<dyn Write + Send>));
+        let server = LspServer::with_output(output);
+        let shutdown = server.handle_request(request(2, "shutdown"));
+        if shutdown.as_ref().is_none_or(|response| response.error.is_some()) {
+            return Err(format!("first shutdown must succeed: {shutdown:?}").into());
+        }
+
+        server.admit_handler_response(request(3, "textDocument/hover"))?;
+        server
+            .outbound
+            .close_and_wait(std::time::Duration::from_secs(1))
+            .ok_or("writer did not settle after admitting the post-shutdown response")?;
+
+        let wire = String::from_utf8(captured.bytes())?;
+        if !wire.contains("\"id\":3") && !wire.contains("\"id\": 3") {
+            return Err(format!("post-shutdown hover must reach the writer, got: {wire}").into());
+        }
+        if !wire.contains("Server has been shutdown") {
+            return Err(format!("expected the post-shutdown InvalidRequest, got: {wire}").into());
+        }
+        if !wire.contains("-32600") {
+            return Err(format!("expected JSON-RPC -32600, got: {wire}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn post_shutdown_notification_does_not_invent_a_response()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let captured = SharedBuffer::default();
+        let output = Arc::new(Mutex::new(Box::new(captured.clone()) as Box<dyn Write + Send>));
+        let server = LspServer::with_output(output);
+        let _ = server.handle_request(request(2, "shutdown"));
+        server.admit_handler_response(JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/didOpen".to_string(),
+            params: None,
+        })?;
+        server
+            .outbound
+            .close_and_wait(std::time::Duration::from_secs(1))
+            .ok_or("writer did not settle after the post-shutdown notification")?;
+        if !captured.bytes().is_empty() {
+            return Err("a post-shutdown notification must not invent a response".into());
+        }
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

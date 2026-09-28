@@ -737,6 +737,65 @@ fn preinitialize_duplicate_initialize_and_post_shutdown_are_deterministic() -> R
     client.assert_transport_clean()
 }
 
+/// #16655: a post-shutdown request that is still in flight when `exit`
+/// arrives must still deliver its `-32600`. Waiting for that response
+/// *before* sending `exit` cannot discriminate the race.
+#[test]
+fn post_shutdown_request_racing_exit_is_delivered() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!(1))?;
+
+    let shutdown = client.request(json!(2), "shutdown", Value::Null, timeout())?;
+    ensure!(shutdown.get("result").is_some_and(Value::is_null), "shutdown failed: {shutdown}");
+
+    let hover = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": "file:///after-shutdown.pl" },
+            "position": { "line": 0, "character": 0 }
+        }
+    });
+    let second_shutdown = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "shutdown",
+        "params": null
+    });
+    let exit = json!({ "jsonrpc": "2.0", "method": "exit", "params": null });
+    let mut burst = RealProcessClient::encode_message(&hover);
+    burst.extend_from_slice(&RealProcessClient::encode_message(&second_shutdown));
+    burst.extend_from_slice(&RealProcessClient::encode_message(&exit));
+    client.send_raw_bytes(&burst)?;
+
+    let hover_response = client.receive_response(&json!(3), timeout())?;
+    assert_response_id(&hover_response, &json!(3))?;
+    ensure!(
+        hover_response.pointer("/error/code") == Some(&json!(-32600)),
+        "post-shutdown hover must return InvalidRequest: {hover_response}"
+    );
+    ensure!(
+        hover_response
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("Server has been shutdown")),
+        "post-shutdown hover must name the shutdown gate: {hover_response}"
+    );
+
+    let second = client.receive_response(&json!(4), timeout())?;
+    assert_response_id(&second, &json!(4))?;
+    ensure!(
+        second.pointer("/error/code") == Some(&json!(-32600)),
+        "second shutdown must remain InvalidRequest: {second}"
+    );
+
+    let status = client.wait_for_exit(timeout())?;
+    ensure!(status.success(), "shutdown then exit failed: {status}");
+    Ok(())
+}
+
 #[test]
 fn public_candidate_preserves_fragmented_coalesced_and_utf8_frames() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
