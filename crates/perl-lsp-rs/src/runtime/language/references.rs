@@ -14,7 +14,7 @@ use crate::runtime::window::RequestProgressGuard;
 use crate::state::{reference_search_deadline, references_cap};
 use crate::util::{is_word_boundary, token_under_cursor};
 use std::collections::BinaryHeap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -266,6 +266,27 @@ struct ReferenceTextFallbackBudget {
     max_documents: usize,
     max_bytes: usize,
     deadline: Instant,
+}
+
+impl ReferenceTextFallbackBudget {
+    fn new(search_window: Duration) -> Self {
+        Self {
+            max_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: Instant::now() + search_window,
+        }
+    }
+
+    /// Begin the search/fallback window now. Index warm-up is a separate budget
+    /// so a wait longer than `reference_search_deadline` does not skip
+    /// open-document text fallback (#16650).
+    fn restart_search_window(&mut self, search_window: Duration) {
+        self.deadline = Instant::now() + search_window;
+    }
+
+    fn is_exhausted(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
 }
 
 impl ReferencesAnsweringTier {
@@ -812,7 +833,7 @@ impl LspServer {
         JsonRpcError,
     > {
         let start = Instant::now();
-        let deadline = reference_search_deadline();
+        let search_window = reference_search_deadline();
         let cap = references_cap();
         let mut source_backed_attempt: Option<SourceBackedReferenceAttempt> = None;
         let mut fallback_receipt = ReferenceTextFallbackReceipt::default();
@@ -826,11 +847,7 @@ impl LspServer {
         let mut observed_index_state: &'static str = "none";
         #[cfg(not(feature = "workspace"))]
         let observed_index_state: &'static str = "none";
-        let fallback_budget = ReferenceTextFallbackBudget {
-            max_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
-            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
-            deadline: start + deadline,
-        };
+        let mut fallback_budget = ReferenceTextFallbackBudget::new(search_window);
         let typed_request_id = request_id.and_then(JsonRpcId::try_from_value);
         self.check_references_cancellation(typed_request_id.as_ref(), &mut fallback_receipt)?;
 
@@ -923,6 +940,9 @@ impl LspServer {
                     let _ = self.check_index_readiness(
                         crate::runtime::readiness::references_index_readiness_policy(),
                     );
+                    // Warm-up has its own wait budget. Search/fallback time starts here
+                    // so a >2s hold does not skip open-document text fallback (#16650).
+                    fallback_budget.restart_search_window(search_window);
 
                     // Sample after the readiness wait and before index/semantic use; do
                     // not call while holding `documents_guard()` (#5016 / #6199 deadlock lesson).
@@ -1113,7 +1133,7 @@ impl LspServer {
                                     }
 
                                     // Check deadline before text search
-                                    if start.elapsed() >= deadline {
+                                    if fallback_budget.is_exhausted() {
                                         tracing::debug!(
                                             "References: deadline exceeded, returning partial results"
                                         );
@@ -1175,7 +1195,7 @@ impl LspServer {
                                             &mut fallback_receipt,
                                         )?;
                                         // Check deadline between patterns
-                                        if start.elapsed() >= deadline {
+                                        if fallback_budget.is_exhausted() {
                                             fallback_receipt.deadline_exhausted = true;
                                             fallback_receipt.fallback_completeness = "partial";
                                             fallback_receipt.fallback_reason = Some(
@@ -1434,7 +1454,7 @@ impl LspServer {
                                                         &mut fallback_receipt,
                                                     )?;
                                                     // Check deadline
-                                                    if start.elapsed() >= deadline {
+                                                    if fallback_budget.is_exhausted() {
                                                         fallback_receipt.deadline_exhausted = true;
                                                         fallback_receipt.fallback_completeness =
                                                             "partial";
@@ -1672,7 +1692,7 @@ impl LspServer {
         receipt.scan_budget_bytes = budget.max_bytes;
 
         self.check_references_cancellation(request_id, receipt)?;
-        if Instant::now() >= budget.deadline {
+        if budget.is_exhausted() {
             receipt.deadline_exhausted = true;
             receipt.fallback_reason = Some("reference_scan_deadline_before_snapshot".to_owned());
             return Ok(Vec::new());
@@ -1699,7 +1719,7 @@ impl LspServer {
                     continue;
                 }
                 self.check_references_cancellation(request_id, receipt)?;
-                if Instant::now() >= budget.deadline {
+                if budget.is_exhausted() {
                     receipt.deadline_exhausted = true;
                     receipt.fallback_reason =
                         Some("reference_scan_deadline_during_snapshot".to_owned());
@@ -1734,7 +1754,7 @@ impl LspServer {
 
         for document_uri in candidates {
             self.check_references_cancellation(request_id, receipt)?;
-            if Instant::now() >= budget.deadline {
+            if budget.is_exhausted() {
                 receipt.deadline_exhausted = true;
                 receipt.fallback_reason =
                     Some("reference_scan_deadline_during_snapshot".to_owned());
@@ -2280,12 +2300,7 @@ impl LspServer {
             return Ok(serde_json::json!([]));
         }
 
-        let start = Instant::now();
-        let budget = ReferenceTextFallbackBudget {
-            max_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
-            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
-            deadline: start + reference_search_deadline(),
-        };
+        let budget = ReferenceTextFallbackBudget::new(reference_search_deadline());
         let typed_request_id = request_id.and_then(JsonRpcId::try_from_value);
         let mut receipt = ReferenceTextFallbackReceipt::default();
         let docs_snapshot = self.bounded_open_document_snapshot(
@@ -4171,45 +4186,56 @@ mod tests {
     }
 
     #[cfg(feature = "workspace")]
-    fn seed_open_documents_into_building_coordinator(
+    fn install_building_coordinator(
         server: &mut crate::runtime::LspServer,
     ) -> Result<(), Box<dyn Error>> {
-        use perl_workspace::workspace_index::{IndexCoordinator, SourceCommit};
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
 
         let coordinator = Arc::new(IndexCoordinator::new());
         coordinator.transition_to_scanning();
         coordinator.transition_to_indexing(10);
-        {
-            let documents = server.documents.lock();
-            for (normalized_uri, doc) in documents.iter() {
-                let Some(commit_gen) = std::num::NonZeroU32::new(doc.current_generation()) else {
-                    continue;
-                };
-                let url = url::Url::parse(normalized_uri)?;
-                match coordinator.index().index_live_file(
-                    url,
-                    doc.text_str().to_string(),
-                    SourceCommit::new(commit_gen),
-                ) {
-                    perl_workspace::workspace_index::SourceCommitOutcome::Accepted
-                    | perl_workspace::workspace_index::SourceCommitOutcome::NoOp => {}
-                    perl_workspace::workspace_index::SourceCommitOutcome::RejectedStale => {
-                        return Err(format!(
-                            "failed to seed {normalized_uri} into building index: rejected stale"
-                        )
-                        .into());
-                    }
-                    perl_workspace::workspace_index::SourceCommitOutcome::Failed(msg) => {
-                        return Err(format!(
-                            "failed to seed {normalized_uri} into building index: {msg}"
-                        )
-                        .into());
-                    }
+        server.index_coordinator = Some(coordinator);
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn seed_open_documents_into_building_coordinator(
+        server: &mut crate::runtime::LspServer,
+    ) -> Result<(), Box<dyn Error>> {
+        use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
+
+        install_building_coordinator(server)?;
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .ok_or("building coordinator must exist after install")?;
+        let documents = server.documents.lock();
+        for (normalized_uri, doc) in documents.iter() {
+            let Some(commit_gen) = std::num::NonZeroU32::new(doc.current_generation()) else {
+                continue;
+            };
+            let url = url::Url::parse(normalized_uri)?;
+            match coordinator.index().index_live_file(
+                url,
+                doc.text_str().to_string(),
+                SourceCommit::new(commit_gen),
+            ) {
+                SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp => {}
+                SourceCommitOutcome::RejectedStale => {
+                    return Err(format!(
+                        "failed to seed {normalized_uri} into building index: rejected stale"
+                    )
+                    .into());
+                }
+                SourceCommitOutcome::Failed(msg) => {
+                    return Err(format!(
+                        "failed to seed {normalized_uri} into building index: {msg}"
+                    )
+                    .into());
                 }
             }
         }
-        server.index_coordinator = Some(coordinator);
         Ok(())
     }
 
@@ -4310,6 +4336,75 @@ mod tests {
             .ok_or("textDocument/references must return an array")?;
         if locations.is_empty() {
             return Err("idle Building same-file references should still answer locally".into());
+        }
+        Ok(())
+    }
+
+    /// After a warm-up longer than `reference_search_deadline`, a Ready index
+    /// that does not contain the symbol must still search open-document text
+    /// instead of returning the empty index hit set (#16650).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_references_search_budget_starts_after_warmup_for_text_only_symbol()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use crate::state::reference_search_deadline;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let _serial = crate::runtime::readiness::readiness_wait_path_test_lock();
+        let mut server = LspServer::new();
+        let uri = "file:///warmup16650-search/dyn.pl";
+        let text = "dyn_only();\n";
+        let character = u32::try_from(text.find("dyn_only").ok_or("fixture missing dyn_only")?)?;
+
+        server.test_apply_did_open(uri, text, 1)?;
+        install_building_coordinator(&mut server)?;
+        let generation = {
+            let documents = server.documents.lock();
+            documents
+                .get(uri)
+                .map(|doc| doc.current_generation())
+                .ok_or("open document missing after didOpen")?
+        };
+        // Same generation as the buffer so the index is not stale, but the
+        // committed text has no `dyn_only` entry — only open-document text
+        // search can answer.
+        server.test_index_live_file(uri, "1;\n", generation)?;
+        server.test_simulate_indexing_start();
+
+        let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
+        server.test_notify_index_ready_wait_entered(wait_entered_tx);
+
+        let server = Arc::new(server);
+        let server_req = Arc::clone(&server);
+        let request = std::thread::spawn(move || {
+            server_req.test_handle_references(Some(serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": character },
+                "context": { "includeDeclaration": true }
+            })))
+        });
+
+        wait_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|e| format!("references wait loop did not start: {e}"))?;
+        std::thread::sleep(reference_search_deadline() + Duration::from_millis(250));
+        server.test_simulate_indexing_complete();
+
+        let result = request.join().map_err(|_| "references thread panicked")??;
+        let locations = result
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .ok_or("textDocument/references must return an array")?;
+        let saw_text_hit = locations
+            .iter()
+            .any(|location| location.get("uri").and_then(serde_json::Value::as_str) == Some(uri));
+        if !saw_text_hit {
+            return Err(format!(
+                "post-warmup search budget must still reach open-document text fallback; got {locations:?}"
+            )
+            .into());
         }
         Ok(())
     }
