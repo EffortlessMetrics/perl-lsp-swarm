@@ -66,10 +66,16 @@ fn consume_identifier_segment_tail_call_presence_observer() {
 #[test]
 fn consume_trailing_package_segments_rejects_non_start_after_colon_colon() {
     let combining = significant("Foo::\u{0301}Bar");
-    let texts: Vec<String> = combining.iter().map(|token| token.text.to_string()).collect();
     assert!(
-        texts.iter().all(|text| !text.contains('\u{0301}')),
-        "combining mark after :: must take the !segment-start break, got {texts:?}"
+        matches!(
+            combining.first().map(|token| &token.token_type),
+            Some(TokenType::Identifier(text)) if text.as_ref() == "Foo::"
+        ),
+        "combining mark after :: must take the !segment-start break, got {combining:?}"
+    );
+    assert!(
+        combining.iter().any(|token| token.text.as_ref() == "\u{0301}"),
+        "rejected combining mark must remain a separate token, got {combining:?}"
     );
 
     let spaced = significant("Foo:: 2022_KR");
