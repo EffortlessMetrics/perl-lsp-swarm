@@ -29,7 +29,7 @@
 
 use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 /// Workspace size matches the wire reproduction scale (~2,000 Perl files) so
