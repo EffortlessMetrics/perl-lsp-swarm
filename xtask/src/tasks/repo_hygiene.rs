@@ -29,6 +29,15 @@ const TAPLO_CONFIG_ENV: &str = "TAPLO_CONFIG";
 pub enum ResultClass {
     Pass,
     PolicyFinding,
+    /// The tool could not be obtained or interrogated at all, so no content
+    /// verdict exists for the checked files.
+    ///
+    /// This is deliberately distinct from `NotProven`: a missing binary must
+    /// not be readable as a dirty candidate (#15235). It still aggregates to
+    /// `NotProven` in `overall_status`, so a missing tool never becomes a clean
+    /// result and never weakens a gate — the difference is confined to the
+    /// reason a consumer reads, not to whether the check failed.
+    ToolUnavailable,
     NotProven,
     NotApplicable,
 }
@@ -251,7 +260,7 @@ fn run_aqua(root: &Path, tool: &str, args: &[String]) -> ToolResult {
         Ok(output) => output,
         Err(error) => {
             return ToolResult {
-                result: ResultClass::NotProven,
+                result: ResultClass::ToolUnavailable,
                 command: rendered,
                 detail: format!("could not start Aqua: {error}"),
             };
@@ -261,7 +270,10 @@ fn run_aqua(root: &Path, tool: &str, args: &[String]) -> ToolResult {
     let result = if output.status.success() {
         ResultClass::Pass
     } else if args.len() == 1 && args[0] == "--version" {
-        ResultClass::NotProven
+        // Aqua ran but the tool is not usable (missing download, checksum
+        // failure, unsupported platform). That is an absent tool, not a
+        // finding about the changed files (#15235).
+        ResultClass::ToolUnavailable
     } else {
         ResultClass::PolicyFinding
     };
@@ -277,7 +289,13 @@ fn overall_status(taplo: &[ToolResult], typos: Option<&ToolResult>) -> ResultCla
             applicable = true;
         }
         match result.result {
-            ResultClass::NotProven => return ResultClass::NotProven,
+            // An absent tool is not proven work, so the aggregate verdict stays
+            // exactly what it was before `ToolUnavailable` existed. The reason
+            // survives on the individual `ToolResult`; the gate outcome does not
+            // change (#15235).
+            ResultClass::NotProven | ResultClass::ToolUnavailable => {
+                return ResultClass::NotProven;
+            }
             ResultClass::PolicyFinding => finding = true,
             ResultClass::Pass | ResultClass::NotApplicable => {}
         }
@@ -514,14 +532,69 @@ mod tests {
     }
 
     #[test]
-    fn missing_tool_result_is_not_proven() -> Result<()> {
+    fn missing_tool_is_reported_as_unavailable_and_still_not_proven() -> Result<()> {
         let result = ToolResult {
-            result: ResultClass::NotProven,
+            result: ResultClass::ToolUnavailable,
             command: "aqua exec -- taplo --version".to_string(),
             detail: "could not start Aqua".to_string(),
         };
-        ensure!(result.result == ResultClass::NotProven);
+        // The reason is carried, not inferred: an absent binary is not a
+        // finding about the changed files (#15235).
+        ensure!(result.result == ResultClass::ToolUnavailable);
+        // …and the gate outcome is unchanged. A missing tool is still unproven
+        // work, never a clean result.
         ensure!(overall_status(std::slice::from_ref(&result), None) == ResultClass::NotProven);
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_tool_is_distinguishable_from_a_dirty_candidate() -> Result<()> {
+        let unavailable = ToolResult {
+            result: ResultClass::ToolUnavailable,
+            command: "aqua exec -- typos --version".to_string(),
+            detail: "could not start Aqua".to_string(),
+        };
+        let dirty = ToolResult {
+            result: ResultClass::PolicyFinding,
+            command: "aqua exec -- typos -- a.toml".to_string(),
+            detail: "typos: 1 finding".to_string(),
+        };
+
+        // The two causes are different classes, so a consumer reading the
+        // receipt can tell an absent tool from a content failure.
+        ensure!(unavailable.result != dirty.result);
+        // And they do not collapse into one another in the aggregate: the
+        // absent tool stays unproven while a real finding stays a finding.
+        ensure!(overall_status(std::slice::from_ref(&unavailable), None) == ResultClass::NotProven);
+        ensure!(overall_status(std::slice::from_ref(&dirty), None) == ResultClass::PolicyFinding);
+        // A missing tool is never promoted to a pass, even when every other
+        // check is green (#15235, docs/how-to/PORTABLE_CONTRACT_TOOLS.md).
+        let clean = ToolResult {
+            result: ResultClass::Pass,
+            command: "aqua exec -- taplo fmt --check -- a.toml".to_string(),
+            detail: "formatted".to_string(),
+        };
+        ensure!(
+            overall_status(&[clean.clone()], Some(&unavailable)) == ResultClass::NotProven,
+            "a green tool run must not mask an absent one"
+        );
+        ensure!(overall_status(std::slice::from_ref(&clean), None) == ResultClass::Pass);
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_tool_survives_the_receipt_as_its_own_class() -> Result<()> {
+        // The discrimination has to reach the published receipt
+        // (target/receipts/repo-hygiene.json), not just the in-memory enum, or
+        // a reader of the artifact still cannot tell the two causes apart.
+        let receipt = ToolResult {
+            result: ResultClass::ToolUnavailable,
+            command: "aqua exec -- typos --version".to_string(),
+            detail: "could not start Aqua".to_string(),
+        };
+        let json = serde_json::to_value(&receipt)?;
+        ensure!(json["result"] == "TOOL_UNAVAILABLE", "unexpected receipt class: {json}");
+        ensure!(json["result"] != "POLICY_FINDING");
         Ok(())
     }
 
