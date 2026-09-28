@@ -40,6 +40,8 @@ impl Default for RiprFactsCli {
     clippy::print_stderr,
     reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
 )]
+/// Entry point for the `perl-ripr-facts` binary. Parses argv, runs the requested
+/// packet generation, and returns a process exit code.
 pub fn run_cli<I, S>(args: I) -> i32
 where
     I: IntoIterator<Item = S>,
@@ -150,6 +152,9 @@ pub fn run_ripr_facts(
     clippy::print_stderr,
     reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
 )]
+/// Run the packet generator with an explicit diff input. Used by tests and
+/// library callers that already have the diff bytes; the binary routes here
+/// after CLI parsing.
 pub fn run_ripr_facts_with_diff(
     schema: &str,
     root: &str,
@@ -330,6 +335,7 @@ fn stage_temp_sibling(temp: &std::path::Path, bytes: &[u8]) -> std::io::Result<(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::packet::build_unavailable_packet;
@@ -779,6 +785,7 @@ mod tests {
     // bytes, no leftover scratch, and an untouched destination on failure.
 
     /// Build a Perl fixture root that yields real `files[]`/`owners[]` facts.
+    #[cfg(unix)]
     fn perl_fixture(root: &str, body: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(format!("{root}/lib"))?;
         std::fs::write(format!("{root}/lib/App.pm"), body)

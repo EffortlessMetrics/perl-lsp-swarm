@@ -71,7 +71,7 @@ persist-credentials: false"#,
     ),
     (
         "Install Rust toolchain",
-        "dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772",
+        "dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de",
         "toolchain: 1.95.0",
     ),
     (
