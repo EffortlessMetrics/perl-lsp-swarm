@@ -346,7 +346,14 @@ blocking = true
             "--json-out", str(output),
             "--summary", str(summary),
         ]
-        if history_text is not None:
+        if history_text is None:
+            # Name the absent path explicitly. Omitting --history falls back to
+            # main()'s default, `.ci/metrics/ci-lane-history.json`, which is
+            # relative to the *repository root*: the real file is checked in, so
+            # a cwd-dependent read resolves to `accepted` on the CI runner and
+            # to `absent` when the suite is run from scripts/ci.
+            argv += ["--history", str(root / "no-such-history.json")]
+        else:
             history = self._write_history(root, history_text)
             argv += ["--history", str(history)]
 
