@@ -4,14 +4,10 @@ import * as fs from 'fs';
 import { execFile } from 'child_process';
 import {
   CloseAction,
-  DidChangeTextDocumentNotification,
-  DidOpenTextDocumentNotification,
-  DocumentDiagnosticRequest,
   ErrorAction,
   State as LanguageClientState,
   TransportKind,
   Trace,
-  vsdiag,
 } from 'vscode-languageclient/node';
 import type {
   LanguageClient,
@@ -171,15 +167,6 @@ import {
 } from './languageClientConfiguration';
 export { buildDisabledFeaturesFromConfig } from './languageClientConfiguration';
 import { perlConfigurationMiddleware } from './configurationPull';
-import {
-  diagnosticTraceCodes,
-  installedDiagnosticTraceSnapshot,
-  nextOwnedRawDiagnosticOrdinal,
-  rawDiagnosticTraceSummary,
-  recordInstalledDiagnosticTrace,
-  startInstalledDiagnosticTrace,
-  stopInstalledDiagnosticTrace,
-} from './installedDiagnosticTrace';
 import {
   classifyStartupError,
   formatStartupFailureDialog,
@@ -1425,9 +1412,6 @@ async function runExtensionActivation(
     outputChannel.warn('[extension-test] Skipping automatic server startup.');
     languageClientStartupMetrics.markMilestone('activate_returned');
     return {
-      startInstalledDiagnosticTrace,
-      installedDiagnosticTraceSnapshot,
-      stopInstalledDiagnosticTrace,
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
       getActiveDocumentReadiness,
@@ -1479,9 +1463,6 @@ async function runExtensionActivation(
   scheduleServerDemandEvaluation(context, whatsNewManager);
   languageClientStartupMetrics.markMilestone('activate_returned');
   return {
-    startInstalledDiagnosticTrace,
-    installedDiagnosticTraceSnapshot,
-    stopInstalledDiagnosticTrace,
     getLanguageClientStartupMetrics,
     getFeatureActivationMetrics,
     getActiveDocumentReadiness,
@@ -2329,154 +2310,6 @@ export function createLanguageClient(serverPath: string): LanguageClient {
     outputChannel,
     traceOutputChannel: outputChannel,
     middleware: {
-      sendRequest: async (type, param, token, next) => {
-        const method = typeof type === 'string' ? type : type.method;
-        const request = param as
-          | { textDocument?: { uri?: unknown }; previousResultId?: unknown }
-          | undefined;
-        const uri = request?.textDocument?.uri;
-        const ordinal =
-          method === DocumentDiagnosticRequest.method && typeof uri === 'string'
-            ? nextOwnedRawDiagnosticOrdinal(uri)
-            : undefined;
-        if (ordinal === undefined || typeof uri !== 'string') {
-          return next(type, param, token);
-        }
-        const version = vscode.workspace.textDocuments.find(
-          (open) => open.uri.toString() === uri,
-        )?.version;
-        recordInstalledDiagnosticTrace(uri, {
-          step: 'raw_pull_request',
-          ordinal,
-          version,
-          previous_result_id_present: typeof request?.previousResultId === 'string',
-        });
-        try {
-          const result = await next(type, param, token);
-          recordInstalledDiagnosticTrace(uri, {
-            step: 'raw_pull_response',
-            ordinal,
-            version,
-            ...rawDiagnosticTraceSummary(result),
-          });
-          return result;
-        } catch (error: unknown) {
-          const code =
-            error && typeof error === 'object' && 'code' in error
-              ? (error as { code?: unknown }).code
-              : undefined;
-          recordInstalledDiagnosticTrace(uri, {
-            step: 'raw_pull_error',
-            ordinal,
-            version,
-            error_code: typeof code === 'number' ? code : undefined,
-          });
-          throw error;
-        }
-      },
-      didOpen: async (document, next) => {
-        const version = document.version;
-        recordInstalledDiagnosticTrace(document.uri, {
-          step: 'didOpen_called',
-          version,
-        });
-        try {
-          await next(document);
-          recordInstalledDiagnosticTrace(document.uri, {
-            step: 'didOpen_client_processed',
-            version,
-          });
-        } catch (error) {
-          recordInstalledDiagnosticTrace(document.uri, {
-            step: 'didOpen_client_error',
-            version,
-            outcome: 'error',
-          });
-          throw error;
-        }
-      },
-      didChange: async (event, next) => {
-        const document = event.document;
-        const version = document.version;
-        recordInstalledDiagnosticTrace(document.uri, {
-          step: 'didChange_called',
-          version,
-        });
-        try {
-          await next(event);
-          recordInstalledDiagnosticTrace(document.uri, {
-            step: 'didChange_client_processed',
-            version,
-          });
-        } catch (error) {
-          recordInstalledDiagnosticTrace(document.uri, {
-            step: 'didChange_client_error',
-            version,
-            outcome: 'error',
-          });
-          throw error;
-        }
-      },
-      provideDiagnostics: async (document, previousResultId, token, next) => {
-        const uri = document instanceof vscode.Uri ? document : document.uri;
-        const version =
-          document instanceof vscode.Uri
-            ? vscode.workspace.textDocuments.find((open) => open.uri.toString() === uri.toString())
-                ?.version
-            : document.version;
-        recordInstalledDiagnosticTrace(uri, {
-          step: 'pull_provider_called',
-          version,
-          active: vscode.window.activeTextEditor?.document.uri.toString() === uri.toString(),
-          visible: vscode.window.visibleTextEditors.some(
-            (editor) => editor.document.uri.toString() === uri.toString(),
-          ),
-        });
-        try {
-          const report = await next(document, previousResultId, token);
-          recordInstalledDiagnosticTrace(uri, {
-            step: 'pull_converted_result',
-            version,
-            outcome: token.isCancellationRequested
-              ? 'cancelled'
-              : report?.kind === vsdiag.DocumentDiagnosticReportKind.unChanged
-                ? 'unchanged'
-                : 'ok',
-            count:
-              report?.kind === vsdiag.DocumentDiagnosticReportKind.full
-                ? report.items.length
-                : undefined,
-            codes:
-              report?.kind === vsdiag.DocumentDiagnosticReportKind.full
-                ? diagnosticTraceCodes(report.items)
-                : undefined,
-            active: vscode.window.activeTextEditor?.document.uri.toString() === uri.toString(),
-            visible: vscode.window.visibleTextEditors.some(
-              (editor) => editor.document.uri.toString() === uri.toString(),
-            ),
-          });
-          return report;
-        } catch (error) {
-          recordInstalledDiagnosticTrace(uri, {
-            step: 'pull_client_error',
-            version,
-            outcome: 'error',
-          });
-          throw error;
-        }
-      },
-      handleDiagnostics: (uri, diagnostics, next) => {
-        recordInstalledDiagnosticTrace(uri, {
-          step: 'push_converted_received',
-          count: diagnostics.length,
-          codes: diagnosticTraceCodes(diagnostics),
-          active: vscode.window.activeTextEditor?.document.uri.toString() === uri.toString(),
-          visible: vscode.window.visibleTextEditors.some(
-            (editor) => editor.document.uri.toString() === uri.toString(),
-          ),
-        });
-        next(uri, diagnostics);
-      },
       // The server pulls `section: "perl"` once unscoped and once per workspace
       // folder. Without this adapter the language client would resolve those
       // against the `perl.*` namespace, which this extension does not
@@ -2803,29 +2636,6 @@ export function createLanguageClient(serverPath: string): LanguageClient {
     serverOptions,
     clientOptions,
   );
-  const openSent = lc
-    .getFeature(DidOpenTextDocumentNotification.method)
-    .onNotificationSent(({ params }) => {
-      recordInstalledDiagnosticTrace(params.textDocument.uri, {
-        step: 'didOpen_notification_sent',
-        version: params.textDocument.version,
-      });
-    });
-  const changeSent = lc
-    .getFeature(DidChangeTextDocumentNotification.method)
-    .onNotificationSent(({ params }) => {
-      recordInstalledDiagnosticTrace(params.textDocument.uri, {
-        step: 'didChange_notification_sent',
-        version: params.textDocument.version,
-      });
-    });
-  const sentTraceLifecycle = lc.onDidChangeState((event) => {
-    if (event.newState === LanguageClientState.Stopped) {
-      openSent.dispose();
-      changeSent.dispose();
-      sentTraceLifecycle.dispose();
-    }
-  });
   lc.onNotification('perl-lsp/active-document-ready', (params: { uri?: string }) => {
     if (params?.uri) {
       activeDocumentReadiness.markReady(params.uri, generation);
