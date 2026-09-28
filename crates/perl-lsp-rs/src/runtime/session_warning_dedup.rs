@@ -70,6 +70,8 @@ pub(crate) enum SessionWarningFamily {
     ClientSetting,
     /// AI backend warnings (authentication failures).
     AiBackend,
+    /// `.perl-lsp.toml` load/validation warnings (#16548).
+    ProjectConfig,
 }
 
 /// Stable internal reason/category for a session warning.
@@ -84,6 +86,12 @@ pub(crate) enum SessionWarningCode {
     /// AI inline-completion backend authentication failed
     /// (no variable subject).
     AiBackendAuthFailure,
+    /// A `.perl-lsp.toml` failed to load
+    /// (subject: the loader/parser error text, #16548).
+    ProjectConfigLoadFailure,
+    /// A `[perl].version` value failed target validation
+    /// (subject: raw version + config authority, #16548).
+    ProjectConfigInvalidPerlVersion,
 }
 
 /// Closed set of static dimensions that distinguish identities inside one
@@ -100,6 +108,12 @@ pub(crate) enum SessionWarningSubjectTag {
     ClientCriticProfile,
     /// `formatting.engine` client setting.
     ClientFormattingEngine,
+    /// Broken `.perl-lsp.toml` found by the single-file discovery path
+    /// (#16548). The folder-mode emitter is intentionally not deduplicated
+    /// (its reloads are explicit), so no folder tag exists.
+    ProjectTomlSingleFile,
+    /// Invalid `[perl].version` in a single-file project authority (#16548).
+    ProjectPerlVersion,
 }
 
 impl SessionWarningSubjectTag {
@@ -233,7 +247,7 @@ impl FamilyStore {
     }
 }
 
-/// Session-scoped warning-dedup store for the three governed families.
+/// Session-scoped warning-dedup store for the governed families.
 ///
 /// Presentation/operational state only (#9769): classification
 /// `provider_or_presentation`, semantic authority none, persistence never.
@@ -243,6 +257,7 @@ pub(crate) struct SessionWarningDedupStore {
     critic: FamilyStore,
     client_setting: FamilyStore,
     ai_backend: FamilyStore,
+    project_config: FamilyStore,
 }
 
 impl SessionWarningDedupStore {
@@ -252,6 +267,7 @@ impl SessionWarningDedupStore {
             SessionWarningFamily::Critic => &self.critic,
             SessionWarningFamily::ClientSetting => &self.client_setting,
             SessionWarningFamily::AiBackend => &self.ai_backend,
+            SessionWarningFamily::ProjectConfig => &self.project_config,
         }
     }
 
@@ -368,6 +384,8 @@ pub struct SessionWarningDedupSnapshot {
     pub client_setting: SessionWarningFamilyCounters,
     /// AI-backend family counters.
     pub ai_backend: SessionWarningFamilyCounters,
+    /// Project-config family counters (#16548).
+    pub project_config: SessionWarningFamilyCounters,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -379,6 +397,7 @@ impl SessionWarningDedupStore {
             critic: self.critic.counters(),
             client_setting: self.client_setting.counters(),
             ai_backend: self.ai_backend.counters(),
+            project_config: self.project_config.counters(),
         }
     }
 }

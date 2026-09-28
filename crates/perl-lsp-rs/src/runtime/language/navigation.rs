@@ -1620,15 +1620,24 @@ impl LspServer {
                             // Core pragma — not on disk in the user's workspace, so no file jump
                             // is possible.  Log an info message to the LSP output channel
                             // (visible in the VSCode Output panel) so users can discover that
-                            // hover (K) shows documentation for core modules.
-                            let _ = self.log_message(
-                                crate::runtime::window::MessageType::Info,
-                                &format!(
-                                    "'{module_name}' is a Perl core module. \
-                                     No source file is available for goto-definition. \
-                                     Use hover (K) to view documentation."
-                                ),
-                            );
+                            // hover (K) shows documentation for core modules. Once per session:
+                            // repeated F12 on `use strict` must not append an identical
+                            // output-panel line on every request (#16551). Instance-level flag
+                            // so each `LspServer` session warns independently, matching
+                            // `root_undetected_shown`.
+                            if !self
+                                .core_module_goto_def_notice_shown
+                                .fetch_or(true, std::sync::atomic::Ordering::SeqCst)
+                            {
+                                let _ = self.log_message(
+                                    crate::runtime::window::MessageType::Info,
+                                    &format!(
+                                        "'{module_name}' is a Perl core module. \
+                                         No source file is available for goto-definition. \
+                                         Use hover (K) to view documentation."
+                                    ),
+                                );
+                            }
                             tracing::debug!(
                                 module = %module_name,
                                 "core pragma requested via goto-def — no file target"
@@ -3145,6 +3154,69 @@ mod tests {
         let receipt =
             explanation.get("request_receipt").cloned().ok_or("missing request_receipt")?;
         Ok((result, receipt))
+    }
+
+    /// Shared-buffer writer for capturing outbound LSP notifications in tests
+    /// (same fixture pattern as the diagnostics tests).
+    struct CoreModuleNoticeWriter {
+        inner: std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+    }
+    impl std::io::Write for CoreModuleNoticeWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// #16551: the core-module goto-definition notice must be emitted at most
+    /// once per server session. Repeated F12 on `use strict` used to append an
+    /// identical `window/logMessage` line to the client output panel on every
+    /// request.
+    #[test]
+    fn core_module_goto_def_notice_emits_once_across_two_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let server = LspServer::with_io(
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            Box::new(CoreModuleNoticeWriter { inner: std::sync::Arc::clone(&buffer) }),
+        );
+        server.publish_position_encoding_session_context();
+
+        let uri = "file:///core_module_notice.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "use strict;\n"}
+        })))?;
+
+        for _ in 0..2 {
+            server.test_handle_definition(Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 5 }
+            })))?;
+        }
+
+        // Outbound notifications are flushed by the dedicated writer thread,
+        // so poll for arrival instead of reading the buffer once (same fixture
+        // pattern as the diagnostics tests' `capture_until`).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let output = loop {
+            let current = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if current.contains("is a Perl core module") || std::time::Instant::now() >= deadline {
+                // Final drain window: a duplicate queued behind the first
+                // frame must be counted by the exact-count assertion below.
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                break String::from_utf8_lossy(&buffer.lock()).into_owned();
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            output.matches("is a Perl core module").count(),
+            1,
+            "the core-module notice must be emitted once per session: {output}"
+        );
+        Ok(())
     }
 
     /// Cross-file definition must not consume predecessor workspace facts while

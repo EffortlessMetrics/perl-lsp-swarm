@@ -5,6 +5,9 @@
 #[cfg(test)]
 use super::super::*;
 use super::super::{LspServer, MessageType};
+use crate::runtime::session_warning_dedup::{
+    SessionWarningCode, SessionWarningFamily, SessionWarningIdentity, SessionWarningSubjectTag,
+};
 use perl_dap::platform::{PerlInterpreterResult, find_perl_interpreter_cached};
 use perl_lsp_rs_core::config::WorkspaceConfig;
 use perl_uri::uri_to_fs_path;
@@ -205,14 +208,26 @@ impl LspServer {
                 Err(msg) => {
                     complete = false;
                     tracing::warn!(message = %msg, "Single-file project config warning");
-                    if let Err(error) = self.show_message(
-                        MessageType::Warning,
-                        &format!(
-                            "Perl LSP: {msg} Fix the error in .perl-lsp.toml and reload the window."
-                        ),
-                    ) {
-                        tracing::warn!(%error, "Failed to send single-file config warning");
-                    }
+                    // Single-file mode re-runs discovery on every didOpen, so
+                    // the identical warning must emit at most once per session
+                    // for the same TOML error (#16548). A failed send rolls the
+                    // retention back so the next occurrence can retry.
+                    let user_msg = format!(
+                        "Perl LSP: {msg} Fix the error in .perl-lsp.toml and reload the window."
+                    );
+                    self.emit_once_per_session(
+                        SessionWarningCode::ProjectConfigLoadFailure,
+                        SessionWarningSubjectTag::ProjectTomlSingleFile,
+                        &msg,
+                        || {
+                            if let Err(error) = self.show_message(MessageType::Warning, &user_msg) {
+                                tracing::warn!(%error, "Failed to send single-file config warning");
+                                false
+                            } else {
+                                true
+                            }
+                        },
+                    );
                     None
                 }
             };
@@ -221,7 +236,7 @@ impl LspServer {
                 if let Some(raw_version) = config.perl.version.as_deref()
                     && perl_lsp_rs_core::providers::diagnostics::version_compat::parse_configured_project_version(raw_version).is_none()
                 {
-                    self.emit_invalid_project_version_warning(raw_version, "single-file project");
+                    self.emit_single_file_invalid_version_warning_once(raw_version);
                 }
                 let mut server_config = self.config.lock();
                 config.apply_to_server_config(&mut server_config);
@@ -459,14 +474,63 @@ impl LspServer {
         }
     }
 
-    fn emit_invalid_project_version_warning(&self, raw_version: &str, authority: &str) {
+    /// Emit the `window/showMessage` Warning for an invalid `[perl].version`.
+    ///
+    /// Returns whether the notification was delivered, so the deduplicating
+    /// single-file wrapper can roll its retention back on a failed send. The
+    /// folder-mode call site ignores the result: folder reloads are explicit
+    /// and stay allowed to re-warn (#16548).
+    fn emit_invalid_project_version_warning(&self, raw_version: &str, authority: &str) -> bool {
         let user_msg = format!(
             "Perl LSP: invalid [perl].version {raw_version:?} in {authority}; expected a major.minor target such as 5.20 or v5.20. The project fallback is disabled until it is corrected."
         );
         tracing::warn!(message = %user_msg, "Invalid project Perl version");
-        if let Err(error) = self.show_message(MessageType::Warning, &user_msg) {
-            tracing::warn!(%error, "Failed to send invalid project version warning");
+        match self.show_message(MessageType::Warning, &user_msg) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, "Failed to send invalid project version warning");
+                false
+            }
         }
+    }
+
+    /// Emit a single-file project-config warning at most once per session for
+    /// the same subject (#16548).
+    ///
+    /// Single-file mode re-runs `.perl-lsp.toml` discovery on every didOpen,
+    /// so without dedup an unchanged broken file produced an identical popup
+    /// per open. Folder mode is intentionally NOT routed through here: its
+    /// reloads are explicit (initialize or a watched-file change) and stay
+    /// allowed to re-warn. `emit` must report whether the notification was
+    /// actually delivered; a failed send rolls the retention back so the next
+    /// occurrence can retry.
+    fn emit_once_per_session(
+        &self,
+        code: SessionWarningCode,
+        tag: SessionWarningSubjectTag,
+        subject: &str,
+        emit: impl FnOnce() -> bool,
+    ) {
+        let identity = SessionWarningIdentity::fingerprinted(code, tag, subject);
+        self.session_warning_dedup.emit_once_with(
+            SessionWarningFamily::ProjectConfig,
+            identity,
+            emit,
+        );
+    }
+
+    /// [`Self::emit_once_per_session`] wrapper for the single-file invalid
+    /// `[perl].version` warning (#16548): one emission per session per raw
+    /// version value.
+    fn emit_single_file_invalid_version_warning_once(&self, raw_version: &str) {
+        let authority = "single-file project";
+        let subject = format!("{raw_version}\u{0}{authority}");
+        self.emit_once_per_session(
+            SessionWarningCode::ProjectConfigInvalidPerlVersion,
+            SessionWarningSubjectTag::ProjectPerlVersion,
+            &subject,
+            || self.emit_invalid_project_version_warning(raw_version, authority),
+        );
     }
 
     /// Emit a `window/showMessage` Warning describing the conflicting
@@ -475,6 +539,11 @@ impl LspServer {
     /// The warning names each conflicting key and the per-folder values, and
     /// states the first-folder-wins resolution, so a silently overwritten
     /// folder setting becomes visible. See `docs/reference/CONFIG.md`.
+    ///
+    /// The user-facing message deliberately carries no docs pointer: the
+    /// former `docs/reference/CONFIG.md` reference is a repo-relative path a
+    /// user of the installed binary does not have (#16551), and no published
+    /// config URL exists to substitute.
     fn emit_multi_root_config_conflict_warning(
         &self,
         conflicts: &[perl_lsp_rs_core::config::MultiRootConfigConflict],
@@ -486,8 +555,7 @@ impl LspServer {
             .join("; ");
         let user_msg = format!(
             "Perl LSP: multi-root workspace has conflicting .perl-lsp.toml settings across \
-             folders. The first folder wins for each key; others were ignored: {rendered}. \
-             See docs/reference/CONFIG.md (Multi-root workspaces) for details."
+             folders. The first folder wins for each key; others were ignored: {rendered}."
         );
         tracing::warn!(conflicts = %rendered, "Multi-root config conflict; first folder wins");
         if let Err(e) = self.show_message(MessageType::Warning, &user_msg) {
@@ -1410,6 +1478,153 @@ perlcritic_severity = 2
             "critic-moving reload must drop retained critic identities",
         );
         Ok(())
+    }
+
+    /// Shared-buffer writer for capturing outbound LSP notifications in tests
+    /// (same fixture pattern as the diagnostics tests).
+    struct SharedNotificationWriter {
+        inner: std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+    }
+    impl std::io::Write for SharedNotificationWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn server_with_captured_notifications()
+    -> (LspServer, std::sync::Arc<parking_lot::Mutex<Vec<u8>>>) {
+        let buffer = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        let writer = SharedNotificationWriter { inner: std::sync::Arc::clone(&buffer) };
+        let server =
+            LspServer::with_io(Box::new(std::io::Cursor::new(Vec::<u8>::new())), Box::new(writer));
+        (server, buffer)
+    }
+
+    /// Poll the captured output until `needle` appears or the deadline passes.
+    ///
+    /// Outbound notifications are queued through the bounded outbound channel
+    /// and flushed by the dedicated writer thread, so arrival is asynchronous;
+    /// same fixture pattern as the diagnostics tests' `capture_until`.
+    fn wait_for_output(
+        buffer: &std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+        needle: &str,
+    ) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
+            if output.contains(needle) || std::time::Instant::now() >= deadline {
+                // Final drain window: an erroneous duplicate emission queued
+                // right behind the first frame must be counted by the caller's
+                // exact-count assertion, not still sitting in the channel.
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                return String::from_utf8_lossy(&buffer.lock()).into_owned();
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    fn single_file_project_uri(dir: &std::path::Path) -> anyhow::Result<String> {
+        Ok(url::Url::from_file_path(dir.join("main.pl"))
+            .map_err(|()| anyhow::anyhow!("failed to create file URI"))?
+            .to_string())
+    }
+
+    /// #16548: single-file mode re-runs project discovery on every didOpen,
+    /// so an unchanged broken `.perl-lsp.toml` must produce exactly one
+    /// `window/showMessage` per session — not one per open.
+    #[test]
+    fn single_file_broken_config_warning_emits_once_across_two_refreshes() -> anyhow::Result<()> {
+        let (server, buffer) = server_with_captured_notifications();
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "this is not [valid toml")?;
+        let uri = single_file_project_uri(temp.path())?;
+
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "print 1;\n"}
+        })))?;
+        server.refresh_single_file_project_config_if_unowned();
+        server.refresh_single_file_project_config_if_unowned();
+
+        let output =
+            wait_for_output(&buffer, "Fix the error in .perl-lsp.toml and reload the window.");
+        assert_eq!(
+            output.matches("Fix the error in .perl-lsp.toml and reload the window.").count(),
+            1,
+            "the identical broken-config warning must emit once per session: {output}"
+        );
+        // The didOpen pipeline itself refreshes once before the two explicit
+        // refreshes, so more than one repeat may already be suppressed here;
+        // the load-bearing pins are: retained once, wire output once, and no
+        // saturation escape.
+        let counters = server.session_warning_dedup_snapshot().project_config;
+        assert_eq!(counters.inserted, 1, "the broken-config identity must be retained once");
+        assert!(counters.suppressed >= 1, "the repeated refresh must be suppressed");
+        assert_eq!(counters.emitted_without_retaining, 0);
+        Ok(())
+    }
+
+    /// #16548: same once-per-session guarantee for the invalid `[perl].version`
+    /// warning on the single-file path.
+    #[test]
+    fn single_file_invalid_version_warning_emits_once_across_two_refreshes() -> anyhow::Result<()> {
+        let (server, buffer) = server_with_captured_notifications();
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl]\nversion = \"5.20.1\"\n")?;
+        let uri = single_file_project_uri(temp.path())?;
+
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "print 1;\n"}
+        })))?;
+        server.refresh_single_file_project_config_if_unowned();
+        server.refresh_single_file_project_config_if_unowned();
+
+        let output = wait_for_output(&buffer, "invalid [perl].version");
+        assert_eq!(
+            output.matches("invalid [perl].version").count(),
+            1,
+            "the identical invalid-version warning must emit once per session: {output}"
+        );
+        // As above: didOpen refreshes once before the two explicit refreshes.
+        let counters = server.session_warning_dedup_snapshot().project_config;
+        assert_eq!(counters.inserted, 1, "the invalid-version identity must be retained once");
+        assert!(counters.suppressed >= 1, "the repeated refresh must be suppressed");
+        assert_eq!(counters.emitted_without_retaining, 0);
+        Ok(())
+    }
+
+    /// #16551: the multi-root conflict warning describes the resolution itself
+    /// and must not point at `docs/reference/CONFIG.md`, a repo-relative path
+    /// an installed binary's user does not have. The conflict computation
+    /// itself is covered by the `perl-lsp-rs-core` merge tests; this pins the
+    /// user-facing wording at the emitter.
+    #[test]
+    fn multi_root_conflict_warning_does_not_point_into_the_source_checkout() {
+        let (server, buffer) = server_with_captured_notifications();
+        let conflicts = [perl_lsp_rs_core::config::MultiRootConfigConflict {
+            key: "formatting.enabled",
+            folders: vec!["folder1".to_string(), "folder2".to_string()],
+            values: vec!["Some(true)".to_string(), "Some(false)".to_string()],
+        }];
+        server.emit_multi_root_config_conflict_warning(&conflicts);
+
+        let output =
+            wait_for_output(&buffer, "multi-root workspace has conflicting .perl-lsp.toml");
+        assert!(
+            output.contains("multi-root workspace has conflicting .perl-lsp.toml settings"),
+            "the conflict warning must still name the conflicting settings: {output}"
+        );
+        assert!(
+            output.contains("formatting.enabled (folder1=Some(true), folder2=Some(false))"),
+            "the conflict warning must name the folders and values: {output}"
+        );
+        assert!(
+            !output.contains("docs/reference/CONFIG.md"),
+            "the user-facing warning must not point into the source checkout: {output}"
+        );
     }
 
     #[test]
