@@ -381,6 +381,10 @@ struct IndexingResources {
         Arc<std::sync::Mutex<Option<crate::runtime::readiness::WorkspaceIndexingStartGate>>>,
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     readiness_observer_id: u64,
+    /// Client-configured cap on indexed workspace files
+    /// (`perl.limits.maxIndexedFiles`), resolved once at the start of the scan
+    /// so a later settings change cannot move the bound mid-walk (#16652).
+    client_max_indexed_files: usize,
 }
 
 #[cfg(feature = "workspace")]
@@ -2720,7 +2724,23 @@ impl LspServer {
             return;
         };
 
-        Self::start_workspace_indexing_with_resources(IndexingResources {
+        Self::start_workspace_indexing_with_resources(self.indexing_resources(
+            coordinator,
+            perl_lsp_rs_core::runtime::limits::max_indexed_files(),
+        ));
+    }
+
+    /// Collect the scan inputs. `client_max_indexed_files` is the caller's
+    /// resolved `perl.limits.maxIndexedFiles` value: production reads the live
+    /// global, and a test supplies an explicit cap so the scan's behavior at a
+    /// given client cap is observable without mutating that global (#16652).
+    #[cfg(feature = "workspace")]
+    fn indexing_resources(
+        &self,
+        coordinator: Arc<IndexCoordinator>,
+        client_max_indexed_files: usize,
+    ) -> IndexingResources {
+        IndexingResources {
             coordinator,
             workspace_folders: Arc::clone(&self.workspace_folders),
             documents: OpenDocumentsHandle { documents: Arc::clone(&self.documents) },
@@ -2745,7 +2765,8 @@ impl LspServer {
             readiness_observer_id: self
                 .readiness_receipt_observer_id
                 .load(std::sync::atomic::Ordering::Relaxed),
-        });
+            client_max_indexed_files,
+        }
     }
 
     #[cfg(all(test, feature = "workspace"))]
@@ -2814,6 +2835,11 @@ impl LspServer {
 
         let limits = coordinator.limits().clone();
         let caps = coordinator.performance_caps().clone();
+        // `perl.limits.maxIndexedFiles` is the client-facing cap on how many
+        // files the scan admits. The coordinator's resource bound stays a hard
+        // backstop, so the effective cap is the lower of the two: the client
+        // can lower it, and never raises it past the backstop (#16652).
+        let max_indexed_files = limits.max_files.min(resources.client_max_indexed_files);
         // Generate a request ID for the workDoneProgress/create call. Atomically
         // increment so it doesn't collide with IDs from other server-to-client requests.
         let progress_create_id = next_indexing_progress_request_id(&resources.next_request_id);
@@ -2958,7 +2984,7 @@ impl LspServer {
                     }
 
                     let elapsed_ms = budget_start.elapsed().as_millis() as u64;
-                    if total_files >= limits.max_files {
+                    if total_files >= max_indexed_files {
                         early_exit = Some((EarlyExitReason::FileLimit, elapsed_ms, 0, total_files));
                         break 'scan;
                     }
@@ -3650,6 +3676,7 @@ mod tests {
     #[cfg(feature = "workspace")]
     use perl_workspace::workspace_index::{
         DegradationReason, IndexCoordinator, IndexPerformanceCaps, IndexResourceLimits, IndexState,
+        ResourceKind,
     };
     use serde_json::{Value, json};
     use std::io::{self, Write};
@@ -5295,6 +5322,135 @@ mod tests {
                 return Err("indexing thread did not finish before timeout".into());
             }
             std::thread::yield_now();
+        }
+        Ok(())
+    }
+
+    /// Run a scan with an explicit client-configured
+    /// `perl.limits.maxIndexedFiles` value. Supplying the cap here rather than
+    /// mutating the process-global `LSP_LIMITS` keeps this test from leaking a
+    /// lowered cap into the sibling scan tests that run in parallel (#16652).
+    #[cfg(feature = "workspace")]
+    fn start_scan_with_client_cap(
+        server: &LspServer,
+        client_max_indexed_files: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let coordinator =
+            server.coordinator().map(Arc::clone).ok_or("server has no index coordinator")?;
+        LspServer::start_workspace_indexing_with_resources(
+            server.indexing_resources(coordinator, client_max_indexed_files),
+        );
+        wait_for_indexing_completion(server)
+    }
+
+    /// Write `count` trivially parseable Perl modules into `dir`.
+    #[cfg(feature = "workspace")]
+    fn write_perl_modules(
+        dir: &tempfile::TempDir,
+        count: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for i in 0..count {
+            std::fs::write(
+                dir.path().join(format!("module{i}.pl")),
+                format!("package Module{i};\nsub module_symbol_{i} {{ 1 }}\n1;\n"),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// #16652: `perl.limits.maxIndexedFiles` was parsed and stored but read by
+    /// no discovery or admission path, so a client tuning the documented cap got
+    /// a silently ignored setting. With the client cap below the coordinator's
+    /// resource backstop, the scan must stop at the *client* cap and report the
+    /// existing `MaxFiles` degradation.
+    #[test]
+    #[cfg(feature = "workspace")]
+    fn client_max_indexed_files_bounds_workspace_discovery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        write_perl_modules(&dir, 5)?;
+        let server = gated_scan_server(&dir)?;
+
+        // Client cap 2 against the harness coordinator's 10,000-file backstop.
+        start_scan_with_client_cap(&server, 2)?;
+
+        let state =
+            server.coordinator().map(|c| c.state()).ok_or("server has no index coordinator")?;
+        match state {
+            IndexState::Degraded { reason: DegradationReason::ResourceLimit { kind }, .. } => {
+                assert_eq!(
+                    kind,
+                    ResourceKind::MaxFiles,
+                    "a lowered client cap must degrade as MaxFiles"
+                );
+            }
+            other => {
+                return Err(format!(
+                    "expected MaxFiles degradation when the client cap is below the backstop, got {other:?}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Control for the test above: the same workspace and harness scan to
+    /// completion when the client cap does not bind, so the degradation above is
+    /// attributable to the cap rather than to the scan failing for any reason.
+    #[test]
+    #[cfg(feature = "workspace")]
+    fn unbound_client_max_indexed_files_leaves_discovery_complete()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        write_perl_modules(&dir, 5)?;
+        let server = gated_scan_server(&dir)?;
+
+        // Client cap 10,000 (the documented default) is above the 5 discovered
+        // files, so every module must be indexed.
+        start_scan_with_client_cap(&server, 10_000)?;
+
+        let coordinator =
+            server.coordinator().map(Arc::clone).ok_or("server has no index coordinator")?;
+        assert_eq!(
+            coordinator.index().file_count(),
+            5,
+            "an unbound client cap must not truncate discovery"
+        );
+        Ok(())
+    }
+
+    /// The effective cap is the lower of the client setting and the coordinator
+    /// backstop, so a client cannot raise the bound past the resource ceiling.
+    #[test]
+    #[cfg(feature = "workspace")]
+    fn client_cap_cannot_raise_the_resource_backstop() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        write_perl_modules(&dir, 5)?;
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+        let mut server = LspServer::new();
+        server.index_coordinator = Some(Arc::new(IndexCoordinator::with_limits_and_caps(
+            IndexResourceLimits { max_files: 2, ..IndexResourceLimits::default() },
+            IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+        )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf()),
+        );
+
+        // Client asks for 10,000; the backstop of 2 still wins.
+        start_scan_with_client_cap(&server, 10_000)?;
+
+        let state =
+            server.coordinator().map(|c| c.state()).ok_or("server has no index coordinator")?;
+        match state {
+            IndexState::Degraded { reason: DegradationReason::ResourceLimit { kind }, .. } => {
+                assert_eq!(kind, ResourceKind::MaxFiles);
+            }
+            other => {
+                return Err(format!("expected the 2-file backstop to bind, got {other:?}").into());
+            }
         }
         Ok(())
     }

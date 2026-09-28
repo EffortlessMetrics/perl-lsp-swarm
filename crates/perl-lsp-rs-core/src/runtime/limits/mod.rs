@@ -528,6 +528,16 @@ pub fn max_file_size_bytes() -> usize {
     LSP_LIMITS.read().map(|l| l.max_file_size_bytes).unwrap_or(1_024 * 1_024)
 }
 
+/// Get current client-configured cap on indexed workspace files
+///
+/// Backs `perl.limits.maxIndexedFiles`. The workspace scan consults this so a
+/// client that tunes the documented cap actually bounds discovery instead of
+/// storing a value nothing reads (#16652).
+#[inline]
+pub fn max_indexed_files() -> usize {
+    LSP_LIMITS.read().map(|l| l.max_indexed_files).unwrap_or(10_000)
+}
+
 /// Get current memory warning threshold in bytes
 #[inline]
 pub fn memory_warning_threshold_bytes() -> usize {
@@ -574,6 +584,31 @@ mod tests {
         let limits = LspLimits::constrained();
         assert_eq!(limits.max_indexed_files, 5_000);
         assert_eq!(limits.ast_cache_max_entries, 50);
+    }
+
+    /// #16652: the accessor the workspace scan consults must observe the
+    /// client-configured value rather than a frozen default. Restores the
+    /// process-global so a sibling test cannot observe the lowered cap.
+    #[test]
+    fn max_indexed_files_accessor_tracks_client_settings() {
+        let previous = LSP_LIMITS.read().map(|limits| limits.max_indexed_files).ok();
+        if let Ok(mut limits) = LSP_LIMITS.write() {
+            limits.max_indexed_files = 4_321;
+        }
+        assert_eq!(max_indexed_files(), 4_321);
+
+        let mut applied = LspLimits::default();
+        applied.update_from_value(&serde_json::json!({ "limits": { "maxIndexedFiles": 777 } }));
+        if let Ok(mut limits) = LSP_LIMITS.write() {
+            *limits = applied;
+        }
+        assert_eq!(max_indexed_files(), 777);
+
+        if let Some(previous) = previous
+            && let Ok(mut limits) = LSP_LIMITS.write()
+        {
+            limits.max_indexed_files = previous;
+        }
     }
 
     #[test]
