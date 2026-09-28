@@ -38,7 +38,7 @@ describe('gherkin step definition support', () => {
 
   test('builds conservative generated regex patterns', () => {
     expect(buildGeneratedStepPattern('a user exists with name "alice"')).toBe(
-      '^a user exists with name "([^"]*)"$',
+      '^a user exists with name "([^"]+)"$',
     );
     expect(buildGeneratedStepPattern('a user exists with name ""')).toBe(
       '^a user exists with name "([^"]*)"$',
@@ -48,6 +48,15 @@ describe('gherkin step definition support', () => {
       '^I add ([^\\r\\n]+) to the cart$',
     );
     expect(buildGeneratedStepPattern('the total is 19.99')).toBe('^the total is 19\\.99$');
+  });
+
+  test('a nonempty quoted origin keeps a nonempty capture so an empty-only definition stays unambiguous', () => {
+    // A pre-existing `^user ""$` definition owns the empty step. A stub
+    // generated from the nonempty step must not widen to `*`, or both
+    // definitions would match `user ""`.
+    const pattern = buildGeneratedStepPattern('a user exists with name "alice"');
+    expect(new RegExp(pattern).test('a user exists with name ""')).toBe(false);
+    expect(new RegExp(pattern).test('a user exists with name "alice"')).toBe(true);
   });
 
   test('generated stub matches an empty quoted argument in its originating step', () => {

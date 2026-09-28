@@ -143,9 +143,12 @@ export function buildGeneratedStepPattern(stepText: string): string {
     QUOTED_CAPTURE_RE.lastIndex = cursor;
     const quoted = QUOTED_CAPTURE_RE.exec(stepText);
     if (quoted && quoted.index === cursor) {
-      // Quoted arguments can be empty. The generated stub must match its
-      // originating step or the Quick Fix keeps offering a duplicate.
-      pattern += '"([^"]*)"';
+      // Quoted arguments can be empty. An empty origin needs the `*` capture,
+      // because `+` would not match the very step that produced the Quick Fix.
+      // A nonempty origin keeps `+` so the generated stub cannot also swallow
+      // the empty step when a narrower definition such as `^user ""$` already
+      // owns it.
+      pattern += quoted[0].length === 2 ? '"([^"]*)"' : '"([^"]+)"';
       cursor += quoted[0].length;
       continue;
     }
