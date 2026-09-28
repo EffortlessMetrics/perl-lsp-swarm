@@ -98,8 +98,13 @@ where
                 print!("{}", render_shell_completion(script, &command_name));
                 0
             } else {
-                // Fallback list must mirror the InvalidShell supported-shell list in launcher/mod.rs.
-                eprintln!("Unknown shell: {shell}. Supported: bash, zsh, fish, powershell, pwsh");
+                // Single-sourced from the launcher's InvalidShell wording, so
+                // this fallback can never drift from the parse-time gate's
+                // supported list again (#16603).
+                eprintln!(
+                    "{}",
+                    LaunchParseError::InvalidShell { raw_shell: shell.clone() }
+                );
                 1
             }
         }
@@ -769,9 +774,26 @@ mod tests {
 
     #[test]
     fn run_cli_rejects_unknown_shell_before_completion_dispatch() {
-        // Unknown shells must fail in parse_args (InvalidShell), never reach
-        // the Completion fallback — the "pwsh"-less list there is unreachable.
+        // Unknown shells must fail in parse_args (InvalidShell) before any
+        // completion dispatch; the completion arm's fallback only guards a
+        // shell name that slips past both lists.
         assert_eq!(run_cli(["perllsp", "--completion", "nushell"]), 1);
+    }
+
+    #[test]
+    fn unknown_shell_fallback_names_every_supported_shell_including_pwsh() {
+        // #16603: the fallback text is single-sourced from the launcher's
+        // InvalidShell wording, so dropping pwsh from the supported list — the
+        // regression this text fix closed — now fails here instead of passing
+        // silently.
+        let message = perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidShell {
+            raw_shell: "nushell".to_string(),
+        }
+        .to_string();
+        assert!(message.contains("nushell"), "the message names the rejected shell: {message}");
+        for shell in ["bash", "zsh", "fish", "powershell", "pwsh"] {
+            assert!(message.contains(shell), "supported list must name {shell}: {message}");
+        }
     }
 
     #[test]
