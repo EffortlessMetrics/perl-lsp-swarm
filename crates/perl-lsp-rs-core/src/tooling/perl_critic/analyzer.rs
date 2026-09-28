@@ -124,7 +124,26 @@ impl CriticAnalyzer {
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output =
             self.runtime.run_command("perlcritic", &args_refs, stdin).map_err(|e| e.message)?;
-        self.parse_output(&output.stdout, path_str)
+        let violations = self.parse_output(&output.stdout, path_str)?;
+        // `perlcritic` exits non-zero when it *finds* violations, so a non-zero
+        // status is only a tool failure once nothing parsed. A `.perlcriticrc`
+        // that does not compile exits non-zero with empty stdout, which without
+        // this check reported the file as clean - a false all-clear, strictly
+        // worse than no message (#16550).
+        if !output.success() && violations.is_empty() {
+            let detail = output
+                .stderr_lossy()
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("no diagnostic on stderr")
+                .to_string();
+            return Err(format!(
+                "perlcritic failed (exit {}); check .perlcriticrc: {detail}",
+                output.status_code
+            ));
+        }
+        Ok(violations)
     }
 
     /// Insert a new entry, evicting the LRU entry when the cache is full.
@@ -320,7 +339,7 @@ fn windows_1252_codepoint(byte: u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_subprocess_runtime::mock::MockSubprocessRuntime;
+    use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
 
     fn make_analyzer(max_cache_entries: usize) -> CriticAnalyzer {
         let config = CriticConfig { max_cache_entries, ..Default::default() };
@@ -334,6 +353,76 @@ mod tests {
         // which parses as zero violations — sufficient for cache behaviour tests.
         let runtime = Arc::new(MockSubprocessRuntime::new());
         CriticAnalyzer::new(config, runtime)
+    }
+
+    // ── a non-zero exit is a tool failure only when nothing parsed (#16550) ──
+
+    /// An analyzer whose every `perlcritic` call returns `response`.
+    fn analyzer_returning(response: MockResponse) -> CriticAnalyzer {
+        let mut runtime = MockSubprocessRuntime::new();
+        runtime.set_default_response(response);
+        CriticAnalyzer::new(CriticConfig::default(), Arc::new(runtime))
+    }
+
+    /// Run the analyzer over a one-line buffer at a path that need not exist:
+    /// `doc_text` is piped to perlcritic via stdin, so no file is read.
+    fn analyze_with(
+        analyzer: &mut CriticAnalyzer,
+        path: &str,
+        text: &str,
+    ) -> Result<Vec<Violation>, String> {
+        analyzer.analyze_file_with_hash(Path::new(path), super::hash_content(text), Some(text))
+    }
+
+    #[test]
+    fn a_broken_profile_is_an_error_not_a_clean_report() {
+        // `.perlcriticrc` that does not compile: non-zero exit, empty stdout,
+        // the diagnosis on stderr. Before the fix this surfaced as
+        // `status: success, violationCount: 0` - telling the user their file is
+        // clean because the tool never ran.
+        let mut analyzer = analyzer_returning(MockResponse::failure(
+            b"Cannot load perlcritic config from .perlcriticrc at line 3\n".to_vec(),
+            2,
+        ));
+        let error = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect_err("a perlcritic that failed must not report a clean file");
+        assert!(
+            error.contains("perlcritic failed (exit 2)"),
+            "the message must carry the exit status, got: {error}"
+        );
+        assert!(
+            error.contains(".perlcriticrc"),
+            "the message must name the likely cause, got: {error}"
+        );
+        assert!(
+            error.contains("line 3"),
+            "the message must surface the tool's own diagnostic, got: {error}"
+        );
+    }
+
+    #[test]
+    fn violations_with_a_non_zero_exit_are_still_violations() {
+        // The control that keeps the guard from over-firing: `perlcritic` exits
+        // non-zero *because* it found violations. Treating any non-zero status
+        // as failure would convert every finding into an error.
+        let mut analyzer = analyzer_returning(MockResponse {
+            // `path:line:col:severity:policy:message` - the three consecutive
+            // numerics are what `parse_perlcritic_line` looks for.
+            stdout: b"t.pl:1:1:3:Subroutines::ReopenPackage:msg\n".to_vec(),
+            stderr: Vec::new(),
+            status_code: 1,
+        });
+        let violations = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect("violations reported with a non-zero exit are not a tool failure");
+        assert_eq!(violations.len(), 1, "the violation must survive the guard");
+    }
+
+    #[test]
+    fn a_clean_success_is_unaffected() {
+        let mut analyzer = analyzer_returning(MockResponse::success(b"t.pl: 1: ok\n".to_vec()));
+        let violations = analyze_with(&mut analyzer, "t.pl", "1;\n")
+            .expect("a successful run must not become an error");
+        assert!(violations.is_empty(), "expected no violations, got {violations:?}");
     }
 
     #[test]
