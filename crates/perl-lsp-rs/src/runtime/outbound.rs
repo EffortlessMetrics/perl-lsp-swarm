@@ -242,10 +242,6 @@ impl OutboundSender {
         }
     }
 
-    pub(crate) fn rejected_required_after_close(&self) -> usize {
-        self.completion.rejected_required()
-    }
-
     /// Stop producers before the scheduler begins its cooperative drain.
     ///
     /// This is intentionally separate from [`Self::close_and_wait`]: a
@@ -488,10 +484,11 @@ impl ExitSettlement {
     }
 
     pub(crate) fn report(&self) {
+        if self.is_clean_delivery() {
+            tracing::debug!("outbound writer settled: normal channel close, no I/O failure");
+            return;
+        }
         match self.writer.as_ref() {
-            Some(WriterTerminalOutcome::NormalClose) if self.rejected_required == 0 => {
-                tracing::debug!("outbound writer settled: normal channel close, no I/O failure");
-            }
             Some(WriterTerminalOutcome::NormalClose) => {
                 tracing::error!(
                     rejected_required = self.rejected_required,
@@ -947,11 +944,6 @@ pub(crate) mod tests {
             .err()
             .ok_or("late required response must be refused after admission close")?;
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
-        assert_eq!(
-            sender.rejected_required_after_close(),
-            1,
-            "the refused required response must be counted on the sender"
-        );
 
         let settlement = sender.settle_for_exit(Duration::from_secs(1));
         handle.join().map_err(|_| "writer thread panicked")?;
