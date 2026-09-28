@@ -85,6 +85,31 @@ fn quoted_import_list_symbol(
     {
         return false;
     }
+    let region_index = snapshot.source_region_index();
+    let Some(region) = region_index.regions().iter().find(|region| {
+        region.kind == perl_parser_core::SourceRegionKind::StringLiteral
+            && region.contains_offset(offset)
+            && source.as_bytes().get(region.start) == Some(&b'\'')
+            && source.as_bytes().get(region.end.saturating_sub(1)) == Some(&b'\'')
+    }) else {
+        return false;
+    };
+    let Some(argument_text) = source.get(region.start + 1..region.end - 1) else {
+        return false;
+    };
+    // The parser records tokens from expressions in `use` arguments
+    // separately. A literal followed by concatenation is only part of one
+    // argument, even when its text matches an imported symbol elsewhere.
+    let Some(before) = source.get(owner.location.start..region.start) else { return false };
+    let before = before.trim_end();
+    if !(before.ends_with('(') || before.ends_with(',') || before.ends_with(module)) {
+        return false;
+    }
+    let Some(after) = source.get(region.end..owner.location.end) else { return false };
+    if !after.trim_start().as_bytes().first().is_none_or(|byte| matches!(byte, b',' | b')' | b';'))
+    {
+        return false;
+    }
     crate::declaration::symbol_at_cursor_with_source(
         ast,
         offset,
@@ -94,6 +119,7 @@ fn quoted_import_list_symbol(
     .is_some_and(|key| {
         key.kind == perl_semantic_analyzer::workspace_index::SymKind::Sub
             && key.pkg.as_ref() == module
+            && key.name.as_ref() == argument_text
     })
 }
 
