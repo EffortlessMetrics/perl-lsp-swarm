@@ -112,7 +112,8 @@ fn native_formatter_formats_clean_prefix_before_heredoc_without_touching_literal
 fn native_formatter_formats_both_sides_of_heredoc_with_scoped_edits()
 -> Result<(), Box<dyn std::error::Error>> {
     let formatter = NativeFormatter::new();
-    let source = "my$before=1;\r\nmy $text = <<'EOF';\r\nraw 😀 { text }  \r\nEOF\r\nmy$after=2;\r\n";
+    let source =
+        "my$before=1;\r\nmy $text = <<'EOF';\r\nraw 😀 { text }  \r\nEOF\r\nmy$after=2;\r\n";
     let literal = "my $text = <<'EOF';\r\nraw 😀 { text }  \r\nEOF\r\n";
 
     let result = formatter.format_document(source, &FormatConfig::default());
@@ -318,6 +319,25 @@ fn native_formatter_does_not_edit_code_looking_format_body_lines() {
     assert_eq!(result.formatted, source);
     assert!(result.edits.is_empty());
     assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
+}
+
+#[test]
+fn native_formatter_refuses_commented_format_declaration_and_body() {
+    let formatter = NativeFormatter::new();
+    for declaration in [
+        "format STDOUT = # note",
+        "format STDOUT =  ",
+        "LABEL: format STDOUT =",
+        "my $x=1; format STDOUT =",
+    ] {
+        let source = format!("my$before=1;\n{declaration}\nmy$x=2;\n.\nmy$after=3;\n");
+        let result = formatter.format_document(&source, &FormatConfig::default());
+
+        assert!(!result.changed, "format body must not be treated as safe code: {result:?}");
+        assert_eq!(result.formatted, source);
+        assert!(result.edits.is_empty());
+        assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
+    }
 }
 
 #[test]

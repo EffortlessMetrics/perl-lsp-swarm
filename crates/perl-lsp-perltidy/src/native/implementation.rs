@@ -263,9 +263,10 @@ impl PerlFormatter for NativeFormatter {
         }
 
         // The source-region index does not currently carry `format` bodies.
-        // A body line may look like ordinary Perl code, so keep the historical
-        // whole-document refusal until that source-owned exclusion exists.
-        if source.lines().any(|line| is_format_declaration_start(line.trim_start())) {
+        // A body line may look like ordinary Perl code, and declarations need
+        // not begin or end on a physical line. Keep whole-document refusal
+        // for the keyword token until a source-owned body exclusion exists.
+        if contains_format_keyword(source) {
             return FormatResult::unsafe_to_format(
                 source,
                 LITERAL_PRESERVE_CODE,
@@ -2031,14 +2032,34 @@ fn contains_likely_heredoc_start(line: &str) -> bool {
 }
 
 fn is_format_declaration_start(trimmed_line: &str) -> bool {
-    if !trimmed_line.ends_with('=') {
-        return false;
-    }
-
     let Some(rest) = trimmed_line.strip_prefix("format") else {
         return false;
     };
-    rest.is_empty() || rest.starts_with(char::is_whitespace)
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let Some((_, after_equals)) = rest.split_once('=') else {
+        return false;
+    };
+    let trailing = after_equals.trim_start();
+    trailing.is_empty() || trailing.starts_with('#')
+}
+
+fn contains_format_keyword(source: &str) -> bool {
+    use perl_parser_core::TokenKind;
+
+    let mut stream = perl_parser_core::TokenStream::new(source);
+    loop {
+        let Ok(token) = stream.next() else {
+            // A lexer failure cannot establish that format bodies are absent.
+            return true;
+        };
+        match token.kind() {
+            TokenKind::Format => return true,
+            TokenKind::Eof => return false,
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
