@@ -43,6 +43,7 @@ perl-parser = { workspace = true, features = ["incremental"] }
 perl-lexer = { workspace = true }
 perl-parser-core = { workspace = true }
 perl-position-tracking = { workspace = true }
+perl-position-fixtures = { path = "../crates/perl-position-fixtures" }
 perl-corpus = { workspace = true }
 perl-lsp-ux-tests = { workspace = true }
 perl-parser-pest = { workspace = true, optional = true }
