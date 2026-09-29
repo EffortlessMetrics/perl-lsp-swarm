@@ -372,6 +372,19 @@ fn index_initial_file_default_and_empty_imports_stay_distinct() -> TestResult {
 
 #[test]
 fn later_generation_replaces_import_rows_and_stale_generation_does_not() -> TestResult {
+    fn require_outcome(
+        generation: u32,
+        actual: SourceCommitOutcome,
+        expected: SourceCommitOutcome,
+    ) -> TestResult {
+        if actual != expected {
+            return Err(
+                format!("generation {generation}: expected {expected:?}, got {actual:?}").into()
+            );
+        }
+        Ok(())
+    }
+
     let index = WorkspaceIndex::new();
     index.index_initial_file_str("file:///lib/M.pm", "package M;\nour @EXPORT = qw(foo);\n1;\n")?;
     let uri = Url::parse("file:///script.pl")?;
@@ -380,55 +393,62 @@ fn later_generation_replaces_import_rows_and_stale_generation_does_not() -> Test
             .map(SourceCommit::new)
             .ok_or_else(|| format!("live fixture generation {generation} must be nonzero"))
     };
-    assert!(commit(0).is_err(), "zero cannot mint a live source commit");
-    assert_eq!(
+    if commit(0).is_ok() {
+        return Err("zero minted a live source commit".into());
+    }
+    require_outcome(
+        2,
         index.index_live_file(
             uri.clone(),
             "package Main;\nuse M;\nfoo();\n1;\n".to_string(),
             commit(2)?,
         ),
-        SourceCommitOutcome::Accepted
-    );
-    assert_eq!(
+        SourceCommitOutcome::Accepted,
+    )?;
+    require_outcome(
+        1,
         index.index_live_file(
             uri.clone(),
             "package Main;\nuse M ();\nfoo();\n1;\n".to_string(),
             commit(1)?,
         ),
-        SourceCommitOutcome::RejectedStale
-    );
+        SourceCommitOutcome::RejectedStale,
+    )?;
 
     let after_stale = index
         .with_semantic_queries_for_uri(uri.as_str(), |file_id, queries| {
             queries.visible_symbols_at(file_id, 30, None)
         })
         .ok_or("importer missing after stale generation")?;
-    assert!(
-        after_stale.iter().any(|symbol| {
-            symbol.name == "foo" && symbol.source == VisibleSymbolSource::DefaultExport
-        }),
-        "generation 1 must not replace generation 2 facts; got {after_stale:?}"
-    );
+    if !after_stale
+        .iter()
+        .any(|symbol| symbol.name == "foo" && symbol.source == VisibleSymbolSource::DefaultExport)
+    {
+        return Err(format!("generation 1 replaced generation 2 facts: {after_stale:?}").into());
+    }
 
-    assert_eq!(
+    require_outcome(
+        3,
         index.index_live_file(
             uri,
             "package Main;\nuse M ();\nfoo();\n1;\n".to_string(),
             commit(3)?,
         ),
-        SourceCommitOutcome::Accepted
-    );
+        SourceCommitOutcome::Accepted,
+    )?;
     let after_newer = index
         .with_semantic_queries_for_uri("file:///script.pl", |file_id, queries| {
             queries.visible_symbols_at(file_id, 32, None)
         })
         .ok_or("importer missing after newer generation")?;
-    assert!(
-        after_newer.iter().all(|symbol| {
-            !(symbol.name == "foo" && symbol.source == VisibleSymbolSource::DefaultExport)
-        }),
-        "generation 3 empty import must replace generation 2 default import; got {after_newer:?}"
-    );
+    if !after_newer.iter().all(|symbol| {
+        !(symbol.name == "foo" && symbol.source == VisibleSymbolSource::DefaultExport)
+    }) {
+        return Err(format!(
+            "generation 3 empty import did not replace generation 2 default import: {after_newer:?}"
+        )
+        .into());
+    }
     Ok(())
 }
 
