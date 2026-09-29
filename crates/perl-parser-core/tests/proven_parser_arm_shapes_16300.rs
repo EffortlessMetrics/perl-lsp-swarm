@@ -59,6 +59,41 @@ fn diagnostic_texts(parser: &Parser) -> Vec<String> {
     parser.errors().iter().map(ToString::to_string).collect()
 }
 
+fn call_kind(kind: &NodeKind) -> &NodeKind {
+    match kind {
+        NodeKind::ExpressionStatement { expression } => &expression.kind,
+        other => other,
+    }
+}
+
+fn assert_variable(kind: &NodeKind, sigil: &str, name: &str) -> Result<(), String> {
+    match kind {
+        NodeKind::Variable { sigil: got_sigil, name: got_name }
+            if got_sigil == sigil && got_name == name =>
+        {
+            Ok(())
+        }
+        other => Err(format!("expected Variable {sigil}{name}, got {}", other.kind_name())),
+    }
+}
+
+fn assert_named_call(kind: &NodeKind, expected: &str) -> Result<(), String> {
+    match call_kind(kind) {
+        NodeKind::FunctionCall { name, .. } if name == expected => Ok(()),
+        other => Err(format!("expected FunctionCall {expected}(), got {}", other.kind_name())),
+    }
+}
+
+fn assert_block_named_call(block: &Node, expected: &str) -> Result<(), String> {
+    let NodeKind::Block { statements } = &block.kind else {
+        return Err(format!("expected Block, got {}", block.kind.kind_name()));
+    };
+    let stmt = statements
+        .first()
+        .ok_or_else(|| format!("expected a statement in preserved {expected}() block"))?;
+    assert_named_call(&stmt.kind, expected)
+}
+
 /// `else { fallback(); }` — perl -c: syntax error. Recovery must record the
 /// orphaned-else diagnostic, wrap the block in a synthetic `If` whose
 /// condition is the literal `1`, and leave no ERROR nodes.
@@ -91,12 +126,7 @@ fn orphaned_else_recovers_synthetic_if_without_error_nodes() -> Result<(), Strin
             ));
         }
     }
-    if !matches!(then_branch.kind, NodeKind::Block { .. }) {
-        return Err(format!(
-            "expected else block preserved as then_branch, got {}",
-            then_branch.kind.kind_name()
-        ));
-    }
+    assert_block_named_call(then_branch, "fallback")?;
     if !elsif_branches.is_empty() {
         return Err("orphaned else must not grow an elsif chain".to_string());
     }
@@ -132,26 +162,15 @@ fn orphaned_elsif_chain_recovers_condition_and_else_without_error_nodes() -> Res
             ast.to_sexp()
         ));
     };
-    if matches!(&condition.kind, NodeKind::Number { value } if value == "1") {
-        return Err(
-            "elsif condition must not be replaced by the synthetic true constant".to_string()
-        );
-    }
-    if !matches!(then_branch.kind, NodeKind::Block { .. }) {
-        return Err(format!(
-            "expected elsif block preserved as then_branch, got {}",
-            then_branch.kind.kind_name()
-        ));
-    }
+    assert_variable(&condition.kind, "$", "flag")?;
+    assert_block_named_call(then_branch, "work")?;
     if !elsif_branches.is_empty() {
         return Err("a single recovered elsif should occupy the If condition, not elsif_branches"
             .to_string());
     }
     let else_branch =
         must_some_with(else_branch.as_deref(), "trailing else folded into recovered If");
-    if !matches!(else_branch.kind, NodeKind::Block { .. }) {
-        return Err(format!("expected else block preserved, got {}", else_branch.kind.kind_name()));
-    }
+    assert_block_named_call(else_branch, "last_resort")?;
     if keyword.is_some() {
         return Err(format!("expected no loop/unless keyword tag, got {keyword:?}"));
     }
@@ -186,6 +205,7 @@ fn try_paren_call_is_function_call_not_try_block() -> Result<(), String> {
     if args.len() != 1 {
         return Err(format!("expected one argument $x, got {}", args.len()));
     }
+    assert_variable(&args[0].kind, "$", "x")?;
     if ast.to_sexp().contains("Try") {
         return Err(format!("try($x) must not parse as Try, got {}", ast.to_sexp()));
     }
