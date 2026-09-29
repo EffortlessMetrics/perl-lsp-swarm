@@ -72,7 +72,8 @@ fn interpolation_filters_prefix_among_multiple_lexicals() {
 #[test]
 fn interpolation_prefers_inner_shadowed_binding() {
     let source = "my $name = 1;\n{\n    my $name = 2;\n    my $namer = 3;\n    my $text = \"Hello $na\";\n}\n";
-    let position = must_some(source.find("$na")) + 3;
+    let needle = "Hello $na";
+    let position = must_some(source.find(needle)) + needle.len();
     let items = completions_at(source, position);
     let name_count = items.iter().filter(|item| item.label == "$name").count();
     assert_eq!(name_count, 1, "shadowing must emit one $name: {:?}", labels(&items));
