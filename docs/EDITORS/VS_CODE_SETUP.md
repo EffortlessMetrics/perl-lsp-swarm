@@ -28,7 +28,7 @@ server installation is only required for offline/pinned deployments or when
 
 ### Optional but Recommended
 
-- **Perl** 5.10 or later (for syntax validation)
+- **Perl** runtime if you want to run Perl programs; the language server itself does not require one
 - **perltidy** only if you select explicit external formatting compatibility
 
 ---
@@ -112,13 +112,6 @@ code --install-extension EffortlessMetrics.perl-lsp-rs
 # 3. Click "Install"
 ```
 
-### Option 2: Generic LSP Client
-
-If you prefer using a generic LSP client extension:
-
-1. Install the [Generic LSP Client](https://marketplace.visualstudio.com/items?itemName=matthewbystrom.genericlspclient) extension
-2. Configure as shown below
-
 ---
 
 ## Configuration
@@ -140,7 +133,7 @@ Add to your workspace `.vscode/settings.json`:
   "perl-lsp.enableSemanticTokens": true,
   "perl-lsp.enableFormatting": true,
   "perl-lsp.formatOnSave": false,
-  "perl-lsp.includePaths": ["lib", ".", "local/lib/perl5"],
+  "perl-lsp.includePaths": ["lib", "local/lib/perl5"],
   "perl-lsp.enableTestIntegration": true
 }
 ```
@@ -187,13 +180,14 @@ settings.
 |---------|------|---------|-------------|
 | `perl-lsp.serverPath` | string | `""` | Absolute path to the `perllsp` binary. Leave empty to auto-download. |
 | `perl-lsp.autoDownload` | boolean | `true` | Auto-download `perllsp` binary if not found locally. |
-| `perl-lsp.includePaths` | array | `["lib", ".", "local/lib/perl5"]` | Additional library paths to search for Perl modules. |
+| `perl-lsp.includePaths` | array | `["lib", "local/lib/perl5"]` | Additional library paths to search for Perl modules. |
 | `perl-lsp.enableSemanticTokens` | boolean | `true` | Enable semantic syntax highlighting. |
 | `perl-lsp.perltidyConfig` | string | `""` | Path to `.perltidyrc` compatibility file. Native formatting is the default path. |
 | `perl-lsp.enableFormatting` | boolean | `true` | Enable native document formatting. |
 | `perl-lsp.formatOnSave` | boolean | `false` | Format document on save. |
 | `perl-lsp.enableTestIntegration` | boolean | `true` | Enable `Test::More` and `Test2` integration. |
-| `perl-lsp.perlcritic.enabled` | boolean | `true` | Enable native critic diagnostics. |
+| `perl-lsp.critic.enabled` | boolean | `true` | Enable native critic diagnostics; this built-in engine needs no external tool. |
+| `perl-lsp.perlcritic.enabled` | boolean | `false` (deprecated) | Legacy external `perlcritic` compatibility alias. Use `perl-lsp.critic.enabled`; this alias only takes effect when `[critic].engine = "legacy"` is set in `.perl-lsp.toml`. |
 | `perl-lsp.perlcritic.severity` | number | `3` | Critic minimum severity, from `1` to `5`. |
 | `perl-lsp.perlcritic.profile` | string | `""` | Path to `.perlcriticrc` compatibility profile file. |
 | `perl-lsp.featureProfile` | string | `"auto"` | Runtime capability profile. Keep `auto` unless you need a specific compatibility profile. |
@@ -201,7 +195,7 @@ settings.
 | `perl-lsp.autoUpdate` | boolean | `false` | Automatically download and install a new `perllsp` binary when available. |
 | `perl-lsp.updateCheckInterval` | number | `24` | Hours between automatic update checks. |
 | `perl-lsp.trace.server` | string | `"off"` | LSP traffic logging: `off`, `messages`, `verbose`. |
-| `perl-lsp.channel` | string | `"latest"` | `latest` uses GitHub's latest non-prerelease endpoint; `stable` selects the first non-prerelease from the release list (falling back to its first entry if none exists); `tag` pins an arbitrary release tag. |
+| `perl-lsp.channel` | string | `"latest"` | `latest` considers public releases including prereleases; `stable` excludes prereleases. Both sort by strict semantic version and require proven compatibility and target availability. Unproven metadata or no compatible release returns an error; there is no first-entry fallback. `tag` selects the exact configured tag only when compatible. |
 | `perl-lsp.versionTag` | string | `""` | Specific release tag when channel is `tag`. |
 | `perl-lsp.downloadBaseUrl` | string | `""` | Internal base URL for hosting `perllsp` archives and SHA256SUMS. |
 
@@ -560,9 +554,13 @@ Pin to a specific release or use a different download channel:
 }
 ```
 
-Use `latest` for GitHub's latest non-prerelease endpoint. `stable` selects the
-first non-prerelease from the release list and falls back to its first entry if
-none exists. Use `tag` when you need an arbitrary pinned release tag.
+The `latest` and `stable` channels use the same public release list, sorted by
+strict semantic version. `latest` includes prereleases; `stable` filters them
+out. A release is selected only when compatibility and target availability are
+proven. If a newer release has unresolved compatibility or target evidence, or
+no compatible release is available, selection returns an error instead of
+falling back to the first list entry. Use `tag` to pin one exact release tag;
+the selector still requires that tag to be public and proven compatible.
 
 ### Internal Deployment
 
