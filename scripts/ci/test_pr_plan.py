@@ -313,6 +313,74 @@ class PrPlanTests(unittest.TestCase):
         self.assertEqual(1, pr_plan.HISTORY_SCHEMA_VERSION)
         self.assertNotIn("SCHEMA_VERSION", vars(pr_plan))
 
+    def _invoke_main_with_history(self, root: Path, history_payload: object) -> Path:
+        """Drive `main()` the way `pr-plan.yml` does: policy files + `--history`.
+
+        Returns the `--json-out` path. Caller owns status / `SystemExit`.
+        `--history` is always explicit so the case does not depend on cwd
+        resolving the checked-in `.ci/metrics/ci-lane-history.json`.
+        """
+        budget = root / "ci-budget.toml"
+        budget.write_text(
+            """
+[budget]
+default_limit_lem = 35
+elevated_limit_lem = 75
+hard_limit_lem = 125
+linux_minute_rate_usd = 0.008
+""",
+            encoding="utf-8",
+        )
+        lanes = root / "ci-lanes.toml"
+        lanes.write_text(
+            """
+[lane.rust_small]
+default_pr = true
+base_lem = 10
+blocking = true
+""",
+            encoding="utf-8",
+        )
+        (root / "ci-risk-packs.toml").write_text("", encoding="utf-8")
+        (root / "trust-lanes.toml").write_text("", encoding="utf-8")
+        history = self._write_history(root, history_payload)
+        output = root / "ci-plan.json"
+        old_argv = sys.argv
+        old_discover = pr_plan.discover_changed_files
+        try:
+            pr_plan.discover_changed_files = lambda _base, _head: {
+                "status": "known",
+                "files": ["scripts/ci/pr_plan.py"],
+                "digest": "test-digest-history-envelope",
+            }
+            sys.argv = [
+                "pr_plan.py",
+                "--base",
+                "origin/main",
+                "--head",
+                "HEAD",
+                "--labels-json",
+                "[]",
+                "--budget",
+                str(budget),
+                "--lanes",
+                str(lanes),
+                "--risk-packs",
+                str(root / "ci-risk-packs.toml"),
+                "--trust-lanes",
+                str(root / "trust-lanes.toml"),
+                "--history",
+                str(history),
+                "--json-out",
+                str(output),
+            ]
+            with redirect_stdout(io.StringIO()):
+                pr_plan.main()
+        finally:
+            sys.argv = old_argv
+            pr_plan.discover_changed_files = old_discover
+        return output
+
     def test_main_fail_closes_on_unsupported_history_schema_before_applying_estimates(
         self,
     ) -> None:
@@ -323,84 +391,50 @@ class PrPlanTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            budget = root / "ci-budget.toml"
-            budget.write_text(
-                """
-[budget]
-default_limit_lem = 35
-elevated_limit_lem = 75
-hard_limit_lem = 125
-linux_minute_rate_usd = 0.008
-""",
-                encoding="utf-8",
+            with self.assertRaises(SystemExit) as raised:
+                self._invoke_main_with_history(
+                    root,
+                    {
+                        "schema_version": 2,
+                        "lanes": {
+                            "rust_small": {
+                                "learned": True,
+                                "p50": 20.0,
+                                "static_floor": 999.0,
+                            }
+                        },
+                    },
+                )
+
+            self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+            self.assertFalse(
+                (root / "ci-plan.json").exists(), "fail-closed must not emit a plan"
             )
-            lanes = root / "ci-lanes.toml"
-            lanes.write_text(
-                """
-[lane.rust_small]
-default_pr = true
-base_lem = 10
-blocking = true
-""",
-                encoding="utf-8",
-            )
-            risk_packs = root / "ci-risk-packs.toml"
-            risk_packs.write_text("", encoding="utf-8")
-            trust_lanes = root / "trust-lanes.toml"
-            trust_lanes.write_text("", encoding="utf-8")
-            history = self._write_history(
-                root,
+
+    def test_main_applies_v1_history_estimates_to_the_emitted_plan(self) -> None:
+        """Opposite-direction control: a supported envelope still reaches the
+        plan. rust_small static 10 → p50 20 * 1.15 = 23, so the emitted
+        estimate moving is proof `main()` consumed the loader output.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            output = self._invoke_main_with_history(
+                Path(tmp),
                 {
-                    "schema_version": 2,
+                    "schema_version": 1,
                     "lanes": {
                         "rust_small": {
                             "learned": True,
                             "p50": 20.0,
-                            "static_floor": 999.0,
+                            "static_floor": 2.0,
                         }
                     },
                 },
             )
-            output = root / "ci-plan.json"
+            plan = json.loads(output.read_text(encoding="utf-8"))
 
-            old_argv = sys.argv
-            old_discover = pr_plan.discover_changed_files
-            try:
-                pr_plan.discover_changed_files = lambda _base, _head: {
-                    "status": "known",
-                    "files": ["scripts/ci/pr_plan.py"],
-                    "digest": "test-digest-history-envelope",
-                }
-                sys.argv = [
-                    "pr_plan.py",
-                    "--base",
-                    "origin/main",
-                    "--head",
-                    "HEAD",
-                    "--labels-json",
-                    "[]",
-                    "--budget",
-                    str(budget),
-                    "--lanes",
-                    str(lanes),
-                    "--risk-packs",
-                    str(risk_packs),
-                    "--trust-lanes",
-                    str(trust_lanes),
-                    "--history",
-                    str(history),
-                    "--json-out",
-                    str(output),
-                ]
-                with redirect_stdout(io.StringIO()):
-                    with self.assertRaises(SystemExit) as raised:
-                        pr_plan.main()
-            finally:
-                sys.argv = old_argv
-                pr_plan.discover_changed_files = old_discover
-
-            self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
-            self.assertFalse(output.exists(), "fail-closed must not emit a plan")
+        self.assertEqual(23.0, plan["budget"]["estimated_lem"])
+        self.assertEqual(1, plan["learned"]["lanes_using_learned"])
+        self.assertEqual(13.0, plan["learned"]["delta_lem_vs_static"])
 
     def test_main_writes_plan_summary_and_trust_lane_for_pr_plan_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
