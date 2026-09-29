@@ -125,6 +125,8 @@ void test('proposes exact archive transition, retaining unobserved target baseli
     arch: 'x64',
   });
   assert.equal(proposal.state, 'transition_candidate');
+  assert.ok(proposal.baseline);
+  assert.ok(proposal.declaration);
   assert.equal(proposal.baseline.files['bin/win32-x64/perllsp.exe'], 7);
   assert.equal(proposal.baseline.files['out/extension.js'], 4);
   assert.equal(proposal.declaration.base_baseline_file_sha256, baseDocument.file_sha256);
