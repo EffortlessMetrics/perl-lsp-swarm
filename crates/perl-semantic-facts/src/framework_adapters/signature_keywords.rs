@@ -1132,9 +1132,8 @@ mod tests {
         assert!(ms.is_detected());
     }
 
-    #[test]
-    fn minting_requires_detection() {
-        let declaration = SignatureKeywordDeclaration {
+    fn sample_fun_declaration(generation: &str) -> SignatureKeywordDeclaration {
+        SignatureKeywordDeclaration {
             package: Some("App".to_string()),
             file_id: FileId(1),
             declaration_index: 0,
@@ -1147,8 +1146,12 @@ mod tests {
             body_anchor: None,
             parameters: Vec::new(),
             parameter_limitations: Vec::new(),
-            source_generation: SourceGeneration::known("gen-1"),
-        };
+            source_generation: SourceGeneration::known(generation),
+        }
+    }
+
+    #[test]
+    fn minting_requires_detection() {
         let absent = detect_function_parameters(&input(
             SignatureKeywordFamily::FunctionParameters,
             vec![ModuleSelectorEvaluation::absent("Function::Parameters")],
@@ -1159,7 +1162,7 @@ mod tests {
                 &absent,
                 SignatureKeywordFamily::FunctionParameters,
                 Some("App"),
-                &[declaration],
+                &[sample_fun_declaration("gen-1")],
             )
             .is_empty()
         );
@@ -1167,21 +1170,6 @@ mod tests {
 
     #[test]
     fn minting_requires_matching_family_descriptor() {
-        let declaration = SignatureKeywordDeclaration {
-            package: Some("App".to_string()),
-            file_id: FileId(1),
-            declaration_index: 0,
-            family: SignatureKeywordFamily::FunctionParameters,
-            keyword: SignatureKeyword::Fun,
-            name: "add".to_string(),
-            name_anchor: signature_keyword_anchor(FileId(1), 4, 7),
-            declaration_anchor: signature_keyword_anchor(FileId(1), 0, 20),
-            signature_anchor: None,
-            body_anchor: None,
-            parameters: Vec::new(),
-            parameter_limitations: Vec::new(),
-            source_generation: SourceGeneration::known("gen-1"),
-        };
         let ms = detect_method_signatures(&input(
             SignatureKeywordFamily::MethodSignatures,
             vec![matched(SignatureKeywordFamily::MethodSignatures, "20170211", "gen-1")],
@@ -1193,9 +1181,39 @@ mod tests {
                 &ms,
                 SignatureKeywordFamily::FunctionParameters,
                 Some("App"),
-                &[declaration],
+                &[sample_fun_declaration("gen-1")],
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn minting_rejects_stale_declaration_generation() {
+        let current = detect_function_parameters(&input(
+            SignatureKeywordFamily::FunctionParameters,
+            vec![matched(SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-2")],
+            "gen-2",
+        ));
+        assert!(current.is_detected());
+        assert!(
+            signature_keyword_callable_facts(
+                &current,
+                SignatureKeywordFamily::FunctionParameters,
+                Some("App"),
+                &[sample_fun_declaration("gen-1")],
+            )
+            .is_empty(),
+            "gen-1 declarations must not mint under gen-2 detection"
+        );
+        assert_eq!(
+            signature_keyword_callable_facts(
+                &current,
+                SignatureKeywordFamily::FunctionParameters,
+                Some("App"),
+                &[sample_fun_declaration("gen-2")],
+            )
+            .len(),
+            1
         );
     }
 
