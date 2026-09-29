@@ -4,9 +4,7 @@
 
 use super::types::{CodeAction, CodeActionEdit, CodeActionKind};
 use crate::providers::rename::TextEdit;
-use perl_parser::ast_utils::{
-    find_function_insert_position, find_node_at_range, find_statement_start,
-};
+use perl_parser::ast_utils::{find_node_at_range, find_statement_start};
 use perl_parser_core::{Node, NodeKind, SourceLocation};
 
 /// Get refactoring actions for a selection
@@ -27,17 +25,6 @@ pub fn get_refactoring_actions(source: &str, ast: &Node, range: (usize, usize)) 
                     kind: CodeActionKind::RefactorExtract,
                     diagnostics: Vec::new(),
                     edit: extract_variable(source, node, range),
-                    is_preferred: false,
-                });
-            }
-
-            // Extract function (basic version)
-            NodeKind::Block { .. } if actions.is_empty() => {
-                actions.push(CodeAction {
-                    title: "Extract to function".to_string(),
-                    kind: CodeActionKind::RefactorExtract,
-                    diagnostics: Vec::new(),
-                    edit: extract_function(source, node, range),
                     is_preferred: false,
                 });
             }
@@ -70,23 +57,48 @@ fn extract_variable(source: &str, node: &Node, _range: (usize, usize)) -> CodeAc
     }
 }
 
-/// Extract statements to function
-fn extract_function(source: &str, node: &Node, _range: (usize, usize)) -> CodeActionEdit {
-    let body_text = &source[node.location.start..node.location.end];
-    let func_name = "extracted_function";
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_parser_core::Parser;
+    use perl_tdd_support::{must, must_some};
 
-    // Find a good place to insert the function
-    let insert_pos = find_function_insert_position(source);
+    fn block_actions(source: &str, selection: &str) -> Vec<CodeAction> {
+        let start = must_some(source.find(selection));
+        let end = start + selection.len();
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        get_refactoring_actions(source, &ast, (start, end))
+    }
 
-    CodeActionEdit {
-        changes: vec![
-            // Insert function definition
-            TextEdit {
-                location: SourceLocation { start: insert_pos, end: insert_pos },
-                new_text: format!("\nsub {} {{\n{}\n}}\n", func_name, body_text),
-            },
-            // Replace statements with function call
-            TextEdit { location: node.location, new_text: format!("{}();", func_name) },
-        ],
+    #[test]
+    fn if_body_with_outer_lexical_does_not_offer_basic_function_extraction() {
+        let source =
+            "use strict; use warnings; { my $x = 1; if (1) { warn $x; } else { warn 0; } }";
+        let actions = block_actions(source, "{ warn $x; }");
+        assert!(
+            actions.is_empty(),
+            "basic fallback cannot preserve the captured lexical: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn if_body_without_capture_does_not_offer_basic_function_extraction() {
+        let source = "use strict; use warnings; if (1) { warn 1; } else { warn 0; }";
+        let actions = block_actions(source, "{ warn 1; }");
+        assert!(
+            actions.is_empty(),
+            "basic fallback breaks the if-body braces even without a capture: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_noncapturing_block_keeps_enhanced_extraction() {
+        let source = "use strict;\nuse warnings;\nsub worker {\n    {\n        my $x = 1;\n        $x + 1;\n    }\n}\n";
+        let actions = block_actions(source, "{\n        my $x = 1;\n        $x + 1;\n    }");
+        assert!(
+            actions.iter().any(|action| action.title == "Extract to subroutine"),
+            "safe enhanced extraction must remain available: {actions:?}"
+        );
     }
 }

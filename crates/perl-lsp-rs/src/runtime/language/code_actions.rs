@@ -3246,6 +3246,56 @@ print $result;
     }
 
     #[test]
+    fn code_action_runtime_refuses_unproven_block_extraction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///extract_capture.pl";
+        let text = "use strict;\nuse warnings;\n{\n    my $x = 1;\n    if (1) { warn $x; } else { warn 0; }\n}\n";
+        open_test_document(&server, uri, text);
+
+        let response = server
+            .handle_code_action(Some(json!({
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 4, "character": 11 },
+                    "end": { "line": 4, "character": 23 }
+                },
+                "context": { "diagnostics": [], "only": ["refactor.extract"] }
+            })))?
+            .ok_or("missing code action response")?;
+        let actions = response.as_array().ok_or("code action response must be an array")?;
+        assert!(
+            actions.iter().all(|action| action["title"] != "Extract to function"),
+            "unsafe basic extract-function fallback was published: {actions:?}"
+        );
+
+        let safe_uri = "file:///extract_safe.pl";
+        let safe_text = "use strict;\nuse warnings;\nsub worker {\n    {\n        my $x = 1;\n        $x + 1;\n    }\n}\n";
+        open_test_document(&server, safe_uri, safe_text);
+        let safe_response = server
+            .handle_code_action(Some(json!({
+                "textDocument": { "uri": safe_uri },
+                "range": {
+                    "start": { "line": 3, "character": 4 },
+                    "end": { "line": 6, "character": 5 }
+                },
+                "context": { "diagnostics": [], "only": ["refactor.extract"] }
+            })))?
+            .ok_or("missing safe code action response")?;
+        let safe_actions = safe_response.as_array().ok_or("safe response must be an array")?;
+        assert!(
+            safe_actions.iter().any(|action| {
+                action["title"] == "Extract to subroutine"
+                    && action["kind"].as_str().is_some_and(|kind| {
+                        kind == "refactor.extract" || kind.starts_with("refactor.extract.")
+                    })
+            }),
+            "safe enhanced extraction was lost: {safe_actions:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn code_action_runtime_emits_source_fix_all_when_multiple_quick_fixes_exist() {
         // A script with no pragmas and an undefined variable triggers at
         // least two quick fixes (add `use strict`, add `use warnings`).
