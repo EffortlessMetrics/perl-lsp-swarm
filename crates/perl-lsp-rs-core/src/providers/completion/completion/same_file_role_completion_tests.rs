@@ -97,6 +97,18 @@ package main;
 my $user = bless {}, 'User';
 $user->"#;
 
+const LEXICAL_ROLE_SOURCE: &str = r#"package HelperRole;
+use Moo::Role;
+my sub helper { 1 }
+
+package User;
+use Moo;
+with 'HelperRole';
+
+package main;
+my $user = bless {}, 'User';
+$user->"#;
+
 const UNRELATED_SOURCE: &str = r#"package Other;
 sub other_method { 1 }
 
@@ -239,6 +251,21 @@ fn dynamic_role_expression_does_not_fabricate_exact_method() {
     assert!(
         composed_role_item(&completions, "stringify", "Printable").is_none(),
         "dynamic role composition must stay fail-closed; got {:?}",
+        labels(&completions)
+    );
+}
+
+#[test]
+fn lexical_role_sub_is_not_offered_as_composed_method() {
+    let completions = completions_for(LEXICAL_ROLE_SOURCE, empty_index());
+    assert!(
+        composed_role_item(&completions, "helper", "HelperRole").is_none(),
+        "lexical role sub must not be rebound as an exact composed method; got {:?}",
+        labels(&completions)
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "helper"),
+        "lexical role sub must not be offered as a package method; got {:?}",
         labels(&completions)
     );
 }

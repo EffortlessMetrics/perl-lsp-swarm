@@ -2938,6 +2938,9 @@ fn current_document_method_symbol(
     package: &str,
     method: &perl_semantic_analyzer::class_model::MethodInfo,
 ) -> Option<WorkspaceSymbol> {
+    if matches!(method.declarator.as_deref(), Some("my") | Some("state")) {
+        return None;
+    }
     current_document_method_symbol_from_parts(
         package,
         &method.name,
