@@ -17,6 +17,7 @@ use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
 mod checking_guidance;
 mod debounce;
+mod offending_value;
 mod port;
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
@@ -682,7 +683,7 @@ impl fmt::Display for LaunchParseError {
                 write!(f, "Invalid feature profile: {raw_profile}. Supported: {supported}")
             }
             Self::InvalidPort { raw_port, reason } => {
-                write!(f, "Invalid port value: {raw_port}. {reason}")
+                f.write_str(&port::render_port_rejection(raw_port, reason))
             }
             Self::InvalidShell { raw_shell } => {
                 write!(

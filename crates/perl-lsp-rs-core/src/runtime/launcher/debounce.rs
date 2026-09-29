@@ -9,6 +9,7 @@
 //! number at all, decided by shape rather than by a wider re-parse.
 
 use super::LaunchParseError;
+use super::offending_value::{has_surrounding_whitespace, render_offending_value};
 
 /// Upper bound of the accepted range, spelled out for the user-facing message.
 ///
@@ -17,14 +18,13 @@ use super::LaunchParseError;
 /// `accepted_upper_bound_matches_u64_max` pins the constant to the type.
 const DEBOUNCE_MAX_MS_TEXT: &str = "18446744073709551615";
 
-/// Echo stand-in for an offending token that is not safe to write to a terminal.
+/// Rejection reason for a token padded with surrounding whitespace.
 ///
-/// The contract asks for the offending value "where safely renderable"; a token
-/// carrying control characters (notably a newline) would otherwise let the
-/// rejected value forge extra rendered lines. This is a rendering guard only —
-/// it does not classify, and it deliberately does not re-quote whitespace, which
-/// stays with #16561.
-const UNRENDERABLE_TOKEN: &str = "<unprintable>";
+/// Same disposition as the `--port` sibling, and for the same reason: the
+/// padding is rejected rather than trimmed, and it is named before the range
+/// so that a padded in-range value is not reported as a malformed number
+/// (#16561).
+const DEBOUNCE_HAS_SURROUNDING_WHITESPACE: &str = "Remove the leading or trailing whitespace.";
 
 /// Rejection reason for a token that is a number outside `0..=u64::MAX`.
 fn debounce_out_of_range_reason() -> String {
@@ -65,11 +65,16 @@ pub(super) fn validate_debounce_token(raw_value: &str) -> Result<(), LaunchParse
 /// is written in one place rather than split between the classifier and
 /// `Display`.
 pub(super) fn render_debounce_rejection(raw_value: &str, reason: &str) -> String {
-    format!("Invalid --diagnostic-debounce-ms value: {}. {reason}", echoable_token(raw_value))
+    format!(
+        "Invalid --diagnostic-debounce-ms value: {}. {reason}",
+        render_offending_value(raw_value)
+    )
 }
 
 fn debounce_rejection_reason(raw_value: &str) -> String {
-    if is_numeric_out_of_range(raw_value) {
+    if has_surrounding_whitespace(raw_value) {
+        DEBOUNCE_HAS_SURROUNDING_WHITESPACE.to_string()
+    } else if is_numeric_out_of_range(raw_value) {
         debounce_out_of_range_reason()
     } else {
         debounce_not_a_number_reason()
@@ -88,20 +93,12 @@ fn is_numeric_out_of_range(raw_value: &str) -> bool {
     !(raw_value.starts_with('-') && digits.bytes().all(|byte| byte == b'0'))
 }
 
-fn echoable_token(raw_value: &str) -> &str {
-    if raw_value.bytes().any(|byte| byte.is_ascii_control()) {
-        UNRENDERABLE_TOKEN
-    } else {
-        raw_value
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        DEBOUNCE_MAX_MS_TEXT, UNRENDERABLE_TOKEN, debounce_not_a_number_reason,
-        debounce_out_of_range_reason, debounce_rejection_reason, echoable_token,
-        render_debounce_rejection, validate_debounce_token,
+        DEBOUNCE_HAS_SURROUNDING_WHITESPACE, DEBOUNCE_MAX_MS_TEXT, debounce_not_a_number_reason,
+        debounce_out_of_range_reason, debounce_rejection_reason, render_debounce_rejection,
+        validate_debounce_token,
     };
     use crate::runtime::launcher::{LaunchParseError, parse_args};
     use perl_tdd_support::{must, must_err};
@@ -137,12 +134,58 @@ mod tests {
         assert!(!rendered.ends_with(". "), "trailing blank reason: {rendered}");
     }
 
+    /// A value carrying control characters must not be echoed verbatim, or the
+    /// rejected value could forge extra rendered lines. Asserted through the
+    /// real render path, so this stays pinned to what a user actually sees
+    /// rather than to the helper the renderer happens to call.
     #[test]
-    fn unprintable_tokens_are_not_echoed_verbatim() {
-        assert_eq!(echoable_token("abc"), "abc");
-        assert_eq!(echoable_token("line\nInjected: fake"), UNRENDERABLE_TOKEN);
-        assert_eq!(echoable_token("tab\there"), UNRENDERABLE_TOKEN);
-        assert_eq!(echoable_token(""), "");
+    fn unprintable_values_are_not_echoed_verbatim() {
+        let unrenderable = super::super::offending_value::UNRENDERABLE_TOKEN;
+
+        for raw in ["line\nInjected: fake", "tab\there", "\u{7}bell"] {
+            let rendered = render_debounce_rejection(raw, &debounce_rejection_reason(raw));
+            assert!(rendered.contains(unrenderable), "must stand in for {raw:?}: {rendered}");
+            assert!(!rendered.contains(raw), "control characters must not survive into {rendered}");
+        }
+    }
+
+    /// A padded value is rejected for the padding, and the padding is visible
+    /// in the rendered rejection. Before #16561 the message classified `" 250"`
+    /// as a malformed number, which is false — it is a whole number of
+    /// milliseconds, wrapped in spaces.
+    #[test]
+    fn padded_values_are_rejected_for_the_padding_and_show_it() {
+        for raw in [" 250", "250 ", " 250 "] {
+            assert_eq!(debounce_rejection_reason(raw), DEBOUNCE_HAS_SURROUNDING_WHITESPACE);
+        }
+
+        let rendered = render_debounce_rejection(" 250", &debounce_rejection_reason(" 250"));
+        assert!(
+            rendered.starts_with("Invalid --diagnostic-debounce-ms value: \" 250\"."),
+            "the padding must be visible: {rendered}"
+        );
+        assert!(
+            !rendered.contains("whole number of milliseconds"),
+            "a padded in-range value must not be called a malformed number: {rendered}"
+        );
+    }
+
+    /// The accepted set is unchanged: a padded value is still a rejection, not
+    /// a silently trimmed success. Widening the accepted set here would make
+    /// the CLI accept a spelling the documented grammar does not allow.
+    #[test]
+    fn padded_values_are_still_rejected_rather_than_trimmed() {
+        for token in [" 0", "0 ", " 250", "250 ", " 18446744073709551615"] {
+            assert!(
+                validate_debounce_token(token).is_err(),
+                "padded token {token:?} must stay rejected, not be trimmed"
+            );
+            assert_eq!(
+                validate_debounce_token(token).is_ok(),
+                token.parse::<u64>().is_ok(),
+                "the accepted set must still be exactly what u64 accepts, for {token:?}"
+            );
+        }
     }
 
     /// Change-detector only: the prevalidate accept set is exactly the set
