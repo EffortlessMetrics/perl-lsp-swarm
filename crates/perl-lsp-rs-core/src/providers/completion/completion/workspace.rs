@@ -1840,9 +1840,11 @@ pub(super) fn collect_all_package_members(
 /// for persisted members and inherited packages.
 ///
 /// Current-document class models are parsed once and preferred over persisted
-/// index members for packages declared in the open buffer (#16809). This adapter
-/// retires when [`WorkspaceSemanticQueries`] can consume a source-only shard
-/// for the accepted document generation.
+/// index members for packages declared in the open buffer (#16809). Indexed
+/// parents and roles are still unioned so an unsaved buffer that omits
+/// `use parent` / `with` does not drop the persisted ISA or role graph.
+/// This adapter retires when [`WorkspaceSemanticQueries`] can consume a
+/// source-only shard for the accepted document generation.
 fn collect_all_package_members_with_source(
     index: &WorkspaceIndex,
     package_name: &str,
@@ -2046,23 +2048,38 @@ fn load_source_package_facts(
                 .filter_map(|method| current_document_method_symbol(&model.name, method))
                 .collect()
         });
+        let indexed = load_indexed_source_package_facts(pkg, index);
         return SourcePackageFacts {
-            parents: model.parents.clone(),
-            roles: model.roles.clone(),
+            parents: merge_named_edges(model.parents.clone(), indexed.parents),
+            roles: merge_named_edges(model.roles.clone(), indexed.roles),
             methods,
             from_current_document: true,
         };
     }
 
     if let Some(methods) = current_methods.get(pkg) {
+        let indexed = load_indexed_source_package_facts(pkg, index);
         return SourcePackageFacts {
-            parents: Vec::new(),
-            roles: Vec::new(),
+            parents: indexed.parents,
+            roles: indexed.roles,
             methods: methods.clone(),
             from_current_document: true,
         };
     }
 
+    load_indexed_source_package_facts(pkg, index)
+}
+
+fn merge_named_edges(mut preferred: Vec<String>, extra: Vec<String>) -> Vec<String> {
+    for name in extra {
+        if !preferred.iter().any(|existing| existing == &name) {
+            preferred.push(name);
+        }
+    }
+    preferred
+}
+
+fn load_indexed_source_package_facts(pkg: &str, index: &WorkspaceIndex) -> SourcePackageFacts {
     let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
         index.document_store().get_text(&pkg_location.uri).or_else(|| {
             perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
@@ -2175,6 +2192,31 @@ has 'status' => (
             ),
         );
         index
+    }
+
+    #[test]
+    fn collect_all_keeps_indexed_parents_when_current_document_omits_isa() {
+        let index = Arc::new(WorkspaceIndex::new());
+        must(index.index_file(
+            must(Url::parse("file:///workspace/Parent.pm")),
+            "package Parent;\nsub parent_method { 1 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            must(Url::parse("file:///workspace/Child.pm")),
+            "package Child;\nuse parent 'Parent';\nsub child_method { 1 }\n1;\n".to_string(),
+        ));
+        let child_source = "package Child;\nsub do_thing {\n    my ($obj) = @_;\n    $obj->\n";
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "Child", child_source);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"child_method"),
+            "current-document Child method must remain, got {names:?}"
+        );
+        assert!(
+            names.contains(&"parent_method"),
+            "indexed Child ISA must survive an open buffer that omits use parent, got {names:?}"
+        );
     }
 
     #[test]
