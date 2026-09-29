@@ -337,11 +337,46 @@ fn actions(server: &LspServer, uri: &str) -> Result<Value> {
 
 fn workspace_unavailable(report: &Value, uri: &str) -> Result<()> {
     let items = report.get("items").and_then(Value::as_array).context("workspace items missing")?;
+    // The final aggregate guard may withhold the entire report. A nonempty
+    // report must still identify the requested document before proving refusal.
+    if items.is_empty() {
+        return Ok(());
+    }
+    let mut target_present = false;
     for item in items {
         if item.get("uri").and_then(Value::as_str) == Some(uri) {
+            target_present = true;
             unavailable(item, "workspace")?;
         }
     }
+    ensure!(target_present, "nonempty workspace report omitted target {uri}: {report}");
+    Ok(())
+}
+
+#[test]
+fn workspace_unavailable_requires_target_in_nonempty_reports() -> Result<()> {
+    let target = "file:///target.pl";
+    workspace_unavailable(&json!({ "items": [] }), target)?;
+    workspace_unavailable(
+        &json!({ "items": [{ "uri": target, "kind": "full", "items": [] }] }),
+        target,
+    )?;
+    ensure!(
+        workspace_unavailable(
+            &json!({ "items": [{ "uri": "file:///other.pl", "kind": "full", "items": [] }] }),
+            target,
+        )
+        .is_err(),
+        "nonempty unrelated workspace report must not prove target refusal"
+    );
+    ensure!(
+        workspace_unavailable(
+            &json!({ "items": [{ "uri": target, "kind": "full", "items": [], "resultId": "old" }] }),
+            target,
+        )
+        .is_err(),
+        "target reuse authority must not prove refusal"
+    );
     Ok(())
 }
 
