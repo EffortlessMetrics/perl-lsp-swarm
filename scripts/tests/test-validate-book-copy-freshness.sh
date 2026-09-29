@@ -53,19 +53,33 @@ fi
 
 # 2. A stale committed projection fails.
 book_target="$REPO_ROOT/book/src/reference/editor-setup-canonical.md"
-book_backup="$(mktemp)"
-cp "$book_target" "$book_backup"
 # 3. A non-link canonical edit fails until the projection is regenerated.
 source_target="$REPO_ROOT/docs/how-to/EDITOR_SETUP.md"
-source_backup="$(mktemp)"
-cp "$source_target" "$source_backup"
+book_backup=""
+source_backup=""
+book_saved=0
+source_saved=0
 restore() {
-    cp "$book_backup" "$book_target"
-    cp "$source_backup" "$source_target"
-    rm -f "$book_backup" "$source_backup"
-    cleanup_generated
+    local result=0
+    if [ "$book_saved" -eq 1 ]; then
+        cp "$book_backup" "$book_target" || result=1
+    fi
+    if [ "$source_saved" -eq 1 ]; then
+        cp "$source_backup" "$source_target" || result=1
+    fi
+    if [ -n "$book_backup" ]; then rm -f "$book_backup" || result=1; fi
+    if [ -n "$source_backup" ]; then rm -f "$source_backup" || result=1; fi
+    cleanup_generated || result=1
+    return "$result"
 }
 trap restore EXIT
+
+book_backup="$(mktemp)" || { echo "FAIL: cannot create book backup" >&2; exit 1; }
+cp "$book_target" "$book_backup"
+book_saved=1
+source_backup="$(mktemp)" || { echo "FAIL: cannot create canonical backup" >&2; exit 1; }
+cp "$source_target" "$source_backup"
+source_saved=1
 
 printf '\nArtificial drift for the freshness-check self-test.\n' >> "$book_target"
 if bash "$CHECKER" > /dev/null 2>&1; then
