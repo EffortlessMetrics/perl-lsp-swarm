@@ -458,7 +458,7 @@ jobs:
         run: |
           set +e
           mkdir -p "$RUNNER_TEMP/bin"
-          GOBIN="$RUNNER_TEMP/bin" go install github.com/aquaproj/aqua/v2/cmd/aqua@v2.57.0
+          bash scripts/tools/install-aqua.sh --dest "$RUNNER_TEMP/bin"
           export PATH="$RUNNER_TEMP/bin:$PATH"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           bash scripts/tools/aqua-doctor.sh
