@@ -6,7 +6,7 @@
 
 use color_eyre::eyre::{Context, Result, eyre};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::tempdir;
@@ -163,6 +163,23 @@ fn run_git_bytes(directory: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+/// Write a patch to `git apply` stdin.
+///
+/// `git apply` may reject input and exit before draining stdin. The remaining
+/// `write_all` then returns `ErrorKind::BrokenPipe`. Treat that EPIPE as a
+/// non-error so the child's exit status and stderr remain the rejection
+/// authority. Every other write error still propagates.
+fn write_git_apply_stdin(mut stdin: impl Write, patch: &[u8]) -> Result<()> {
+    let write_result = stdin.write_all(patch);
+    // Close stdin so the child sees EOF even when the write stopped early.
+    drop(stdin);
+    match write_result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error).context("writing PR net patch to git apply"),
+    }
+}
+
 fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
     let mut child = Command::new("git")
         .args(["apply", "--index", "--3way", "--whitespace=nowarn"])
@@ -172,15 +189,8 @@ fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
         .stderr(Stdio::piped())
         .spawn()
         .context("spawning git apply")?;
-    // Capture the write result without short-circuiting: `git apply` may exit
-    // early on malformed input, closing its stdin pipe before we finish writing.
-    // In that case `write_all` returns a BrokenPipe error, but the authoritative
-    // failure reason comes from the process exit status collected below.
-    let write_result = child
-        .stdin
-        .take()
-        .ok_or_else(|| eyre!("git apply stdin was unavailable"))?
-        .write_all(patch);
+    let stdin = child.stdin.take().ok_or_else(|| eyre!("git apply stdin was unavailable"))?;
+    write_git_apply_stdin(stdin, patch)?;
     let output = child.wait_with_output().context("waiting for git apply")?;
     if !output.status.success() {
         return Err(eyre!(
@@ -189,9 +199,6 @@ fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    // Surface a write error only when git apply itself succeeded — a BrokenPipe
-    // during a failed apply is expected and already reported above.
-    write_result.context("writing PR net patch to git apply")?;
     Ok(())
 }
 
@@ -299,6 +306,7 @@ fn is_git_object_id(identity: &str) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::{self, Write};
 
     fn input(observation: SyntheticObservation) -> SyntheticSquashInput {
         SyntheticSquashInput {
@@ -515,14 +523,63 @@ mod tests {
         Ok(())
     }
 
+    struct InjectedWriteError {
+        kind: io::ErrorKind,
+    }
+
+    impl Write for InjectedWriteError {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(self.kind, "injected stdin write failure"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stdin_write_treats_broken_pipe_as_non_error() -> Result<()> {
+        write_git_apply_stdin(InjectedWriteError { kind: io::ErrorKind::BrokenPipe }, b"unused")
+    }
+
+    #[test]
+    fn stdin_write_accepts_completed_write() -> Result<()> {
+        write_git_apply_stdin(io::sink(), b"patch bytes")
+    }
+
+    #[test]
+    fn stdin_write_propagates_non_epipe_errors() -> Result<()> {
+        let error = write_git_apply_stdin(
+            InjectedWriteError { kind: io::ErrorKind::PermissionDenied },
+            b"unused",
+        )
+        .err()
+        .ok_or_else(|| eyre!("expected write error"))?;
+        let message = format!("{error:?}");
+        assert!(
+            message.contains("writing PR net patch to git apply"),
+            "unexpected error: {message}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn apply_patch_reports_rejected_input() -> Result<()> {
         let scratch = tempdir()?;
-        let result = apply_patch(scratch.path(), b"not a git patch\n");
+        // Pad after the invalid header so `git apply` can reject and close stdin
+        // before `write_all` finishes. EPIPE on that remaining write is a
+        // non-error; the child's exit/stderr remain rejection authority.
+        let mut patch = b"not a git patch\n".to_vec();
+        patch.resize(patch.len().saturating_add(256 * 1024), b'x');
+        let result = apply_patch(scratch.path(), &patch);
         let error = result.err().ok_or_else(|| eyre!("expected git apply failure"))?;
 
         let message = format!("{error:?}");
         assert!(message.contains("git apply failed"), "unexpected error: {message}");
+        assert!(
+            !message.contains("writing PR net patch to git apply"),
+            "EPIPE on early git apply exit must not replace rejection: {message}"
+        );
         Ok(())
     }
 
