@@ -27,13 +27,13 @@ use super::model::{
     HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind,
     IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr,
     MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus,
-    PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect,
-    PragmaStateFact, PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource,
-    RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind,
-    StashConfidence, StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
-    StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
-    TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
-    glob_pattern_interpolates,
+    NativeMethodInvocantBoundary, NativeMethodOwner, PackageDecl, PackageInheritanceEdge,
+    PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable,
+    ReadlineMigrationAdapter, ReadlineSource, RecoveryConfidence, RegexExpr, RegexTargetKind,
+    RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
+    StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
+    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr,
+    UseDecl, VariableBinding, VariableDecl, glob_pattern_interpolates,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -90,7 +90,9 @@ struct Lowerer {
     /// here lets that arm open a [`ScopeKind::Class`] frame instead, which is
     /// what owns field visibility. Registration happens in the `Class` arm,
     /// which the traversal reaches before the body block it names (#13817).
-    class_body_spans: BTreeSet<(usize, usize)>,
+    class_body_items: BTreeMap<(usize, usize), HirId>,
+    /// Transient lowering join from a class body frame to its declaration.
+    class_scope_items: BTreeMap<HirScopeId, HirId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +130,8 @@ impl Lowerer {
             scope_stack: vec![file_scope],
             pending_label: None,
             class_field_decls: BTreeSet::new(),
-            class_body_spans: BTreeSet::new(),
+            class_body_items: BTreeMap::new(),
+            class_scope_items: BTreeMap::new(),
         }
     }
 
@@ -166,14 +169,15 @@ impl Lowerer {
                 // The body of a `class` is an ordinary `Block` node; the
                 // `Class` arm registered its span so this frame can be the
                 // class frame that owns field visibility (#13817).
+                let class_item =
+                    self.class_body_items.get(&(node.location.start, node.location.end)).copied();
                 let scope_kind =
-                    if self.class_body_spans.contains(&(node.location.start, node.location.end)) {
-                        ScopeKind::Class
-                    } else {
-                        ScopeKind::Block
-                    };
+                    if class_item.is_some() { ScopeKind::Class } else { ScopeKind::Block };
                 let scope_id =
                     self.enter_scope(scope_kind, node.location, self.package_context.clone());
+                if let Some(class_item) = class_item {
+                    self.class_scope_items.insert(scope_id, class_item);
+                }
                 self.push_item(
                     node,
                     None,
@@ -318,20 +322,72 @@ impl Lowerer {
                 }
                 self.exit_scope();
             }
-            NodeKind::Method { name, name_span: _, signature, attributes, body } => {
+            NodeKind::Method { name, name_span, signature, attributes, body } => {
+                let native_owner = if name_span.is_none() {
+                    Err(NativeMethodInvocantBoundary::MissingNameAnchor)
+                } else if confidence != RecoveryConfidence::Parsed
+                    || signature.as_deref().is_some_and(has_recovery_node)
+                    || !matches!(&body.kind, NodeKind::Block { .. })
+                {
+                    Err(NativeMethodInvocantBoundary::RecoveredSyntax)
+                } else if !attributes.is_empty() {
+                    Err(NativeMethodInvocantBoundary::MethodAttributes)
+                } else if self.has_ambiguous_class_import(node.location.start) {
+                    Err(NativeMethodInvocantBoundary::AmbiguousClassProfile)
+                } else if !self
+                    .pragma_environment
+                    .snapshot_at(node.location.start)
+                    .has_feature("class")
+                {
+                    Err(NativeMethodInvocantBoundary::ClassFeatureDisabled)
+                } else if let Some(class_item) = self.class_scope_items.get(&self.current_scope()) {
+                    let class = self.items.get(class_item.index() as usize);
+                    if class.is_some_and(|item| {
+                        item.recovery_confidence == RecoveryConfidence::Parsed
+                            && self
+                                .pragma_environment
+                                .snapshot_at(item.range.start)
+                                .has_feature("class")
+                            && item.anchor.name_range.is_some()
+                    }) {
+                        Ok((*class_item, self.current_scope()))
+                    } else {
+                        Err(NativeMethodInvocantBoundary::RecoveredSyntax)
+                    }
+                } else {
+                    Err(NativeMethodInvocantBoundary::NoBlockClassOwner)
+                };
                 let method_scope = self.enter_scope(
                     ScopeKind::Method,
                     node.location,
                     self.package_context.clone(),
                 );
+                // The method name token anchors the implicit binding. Reserve
+                // its item ID for the binding's declaration link.
+                let method_item = HirId::from_index(self.next_id);
+                let native_owner = match (native_owner, name_span) {
+                    (Ok((class_item, class_scope)), Some(name_range)) => {
+                        let invocant_binding = self.record_implicit_method_invocant(
+                            *name_range,
+                            method_scope,
+                            method_item,
+                        );
+                        NativeMethodOwner::Exact { class_item, class_scope, invocant_binding }
+                    }
+                    (Err(reason), _) => NativeMethodOwner::Partial(reason),
+                    _ => {
+                        NativeMethodOwner::Partial(NativeMethodInvocantBoundary::MissingNameAnchor)
+                    }
+                };
                 let item_id = self.push_item(
                     node,
-                    None,
+                    *name_span,
                     confidence,
                     HirKind::MethodDecl(MethodDecl {
                         name: name.clone(),
                         has_signature: signature.is_some(),
                         attribute_count: attributes.len(),
+                        native_owner,
                     }),
                     self.package_context.clone(),
                     Some(method_scope),
@@ -1037,7 +1093,7 @@ impl Lowerer {
                 // a Perl 5.38+ class body does not fully share (methods and
                 // fields, not arbitrary package globals). The class *scope*
                 // frame is modeled — see the body-span registration below.
-                self.push_item(
+                let class_item = self.push_item(
                     node,
                     *name_span,
                     confidence,
@@ -1079,7 +1135,7 @@ impl Lowerer {
                 // The block arm turns this span into a `ScopeKind::Class`
                 // frame, which is where the field bindings above will land and
                 // what decides who can see them.
-                self.class_body_spans.insert((body.location.start, body.location.end));
+                self.class_body_items.insert((body.location.start, body.location.end), class_item);
                 self.visit_children(node, confidence);
             }
             NodeKind::Defer { .. } => {
@@ -1469,6 +1525,45 @@ impl Lowerer {
         self.scope_stack.last().copied().unwrap_or_else(|| HirScopeId::from_index(0))
     }
 
+    /// A lexical keyword provider can give the same AST shape different
+    /// invocant semantics. In particular Object::Pad's `:common` method has
+    /// `$class` instead of native `$self`; an overlapping import leaves the
+    /// grammar owner ambiguous even if the core feature is also enabled.
+    fn has_ambiguous_class_import(&self, offset: usize) -> bool {
+        self.items.iter().any(|item| {
+            let HirKind::UseDecl(decl) = &item.kind else { return false };
+            if item.range.start >= offset {
+                return false;
+            }
+            // The parser appends a version to direct names. It drops the
+            // argument boundaries of conditional `use if/unless`; HIR cannot
+            // prove that a dynamic or statically named target leaves the core
+            // keyword owner untouched, so this first cohort fails closed for
+            // any earlier conditional import in lexical view.
+            let module = decl.module.split_whitespace().next();
+            let has_provider = matches!(module, Some("if" | "unless"))
+                || matches!(
+                    module,
+                    Some("Object::Pad" | "Feature::Compat::Class" | "Syntax::Keyword::Class")
+                );
+            if !has_provider {
+                return false;
+            }
+            let mut scope = Some(self.current_scope());
+            while let Some(scope_id) = scope {
+                if item.scope_context == Some(scope_id) {
+                    return true;
+                }
+                scope = self
+                    .scope_graph
+                    .scopes
+                    .get(scope_id.index() as usize)
+                    .and_then(|frame| frame.parent);
+            }
+            false
+        })
+    }
+
     fn visit_identifier_with_bareword_context(
         &mut self,
         node: &Node,
@@ -1659,6 +1754,29 @@ impl Lowerer {
             declaration_item,
             shadows,
         });
+        id
+    }
+
+    fn record_implicit_method_invocant(
+        &mut self,
+        name_range: SourceLocation,
+        method_scope: HirScopeId,
+        method_item: HirId,
+    ) -> HirBindingId {
+        let id = self.record_binding(
+            "$".to_string(),
+            "self".to_string(),
+            name_range,
+            StorageClass::MethodInvocant,
+            method_scope,
+            Some(method_item),
+        );
+        // Unlike an explicit declaration, the implicit lexical is available
+        // throughout the callable body. Keep this independent of whether the
+        // method item is pushed before or after its binding in a future pass.
+        if let Some(binding) = self.scope_graph.bindings.get_mut(id.index() as usize) {
+            binding.visible_from = name_range.end;
+        }
         id
     }
 
@@ -3596,6 +3714,26 @@ fn lower_bodies_into_file(ast: &Node, file: &mut HirFile) {
     collect_sub_bodies(ast, file, &mut 0u32, &mut 0u32);
 }
 
+/// A recovered declaration header cannot authorize an exact method owner.
+/// Body expression recovery is intentionally separate: completion commonly
+/// asks for a receiver fact while `$self->` is still incomplete.
+fn has_recovery_node(node: &Node) -> bool {
+    if matches!(
+        &node.kind,
+        NodeKind::Error { .. }
+            | NodeKind::MissingExpression
+            | NodeKind::MissingStatement
+            | NodeKind::MissingIdentifier
+            | NodeKind::MissingBlock
+            | NodeKind::UnknownRest
+    ) {
+        return true;
+    }
+    let mut recovered = false;
+    node.for_each_child(|child| recovered |= has_recovery_node(child));
+    recovered
+}
+
 /// Walk `node` looking for `Subroutine` and `Method` AST nodes and lower their bodies.
 fn collect_sub_bodies(
     node: &Node,
@@ -3950,14 +4088,16 @@ impl<'a> BodyBuilder2<'a> {
     fn kind_of(binding: Option<&Binding>) -> VariableKind {
         match binding.map(|binding| binding.storage) {
             Some(
-                StorageClass::LexicalMy | StorageClass::LexicalState | StorageClass::Parameter,
+                StorageClass::LexicalMy
+                | StorageClass::LexicalState
+                | StorageClass::Parameter
+                | StorageClass::MethodInvocant,
             ) => VariableKind::Lexical,
             Some(StorageClass::ClassField) => VariableKind::Field,
             Some(
                 StorageClass::PackageOur
                 | StorageClass::LocalizedPackage
                 | StorageClass::PackageGlobal
-                | StorageClass::MethodInvocant
                 | StorageClass::Implicit,
             ) => VariableKind::Package,
             None => VariableKind::Package,

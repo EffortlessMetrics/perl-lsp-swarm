@@ -162,6 +162,70 @@ impl HirFile {
         self.bodies.first()
     }
 
+    /// Resolve a `$self` source reference to its native block-class method owner.
+    ///
+    /// The generic scope graph can still see an outer lexical through a named
+    /// nested sub. This query refuses that path: it does not make the nested
+    /// callable's receiver an exact instance of the enclosing class.
+    #[must_use]
+    pub fn native_method_invocant_at(&self, offset: usize) -> NativeMethodInvocantLookup {
+        let Some(reference) = self.scope_graph.references.iter().find(|reference| {
+            reference.sigil == "$"
+                && reference.name == "self"
+                && reference.range.start <= offset
+                && offset < reference.range.end
+        }) else {
+            return NativeMethodInvocantLookup::Unavailable;
+        };
+
+        let mut scope = Some(reference.scope_id);
+        let mut crossed_named_sub = false;
+        while let Some(scope_id) = scope {
+            let Some(frame) = self.scope_graph.scopes.get(scope_id.index() as usize) else {
+                return NativeMethodInvocantLookup::Unavailable;
+            };
+            if frame.kind == ScopeKind::Subroutine {
+                crossed_named_sub = true;
+            }
+            if frame.kind == ScopeKind::Method {
+                let Some(item) = self.items.iter().find(|item| {
+                    item.scope_context == Some(scope_id)
+                        && matches!(&item.kind, HirKind::MethodDecl(_))
+                }) else {
+                    return NativeMethodInvocantLookup::Unavailable;
+                };
+                let HirKind::MethodDecl(method) = &item.kind else {
+                    return NativeMethodInvocantLookup::Unavailable;
+                };
+                return match method.native_owner {
+                    NativeMethodOwner::Exact { class_item, class_scope, invocant_binding }
+                        if reference.resolved_binding == Some(invocant_binding) =>
+                    {
+                        if crossed_named_sub {
+                            NativeMethodInvocantLookup::Partial(
+                                NativeMethodInvocantBoundary::NamedSubroutine,
+                            )
+                        } else {
+                            NativeMethodInvocantLookup::Exact {
+                                binding: invocant_binding,
+                                method_item: item.id,
+                                method_scope: scope_id,
+                                class_item,
+                                class_scope,
+                            }
+                        }
+                    }
+                    NativeMethodOwner::Partial(reason) if reference.resolved_binding.is_none() => {
+                        NativeMethodInvocantLookup::Partial(reason)
+                    }
+                    _ => NativeMethodInvocantLookup::Unavailable,
+                };
+            }
+            scope = frame.parent;
+        }
+        NativeMethodInvocantLookup::Unavailable
+    }
+
     /// Project compile-time effects using the default model metadata.
     ///
     /// This is a compiler-substrate proof surface only. It links existing HIR
@@ -3201,6 +3265,71 @@ pub struct MethodDecl {
     pub has_signature: bool,
     /// Number of parsed attributes.
     pub attribute_count: usize,
+    /// Source-backed native class owner and implicit invocant, when admitted.
+    pub native_owner: NativeMethodOwner,
+}
+
+/// Native method ownership is carried by the method item, not a name table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativeMethodOwner {
+    /// Named method directly in a feature-enabled block class. Consumers can
+    /// rejoin the class/method anchors to
+    /// [`CompileEnvironment::pragma_state_at`] for effective feature evidence;
+    /// this relation alone carries no workspace root or accepted generation.
+    Exact {
+        /// Owning class declaration item.
+        class_item: HirId,
+        /// Owning class body scope.
+        class_scope: HirScopeId,
+        /// Implicit lexical `$self` binding in this method scope.
+        invocant_binding: HirBindingId,
+    },
+    /// The parser exposed a method shape without enough native class authority.
+    Partial(NativeMethodInvocantBoundary),
+}
+
+/// Why a method or reference cannot carry an exact native invocant fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativeMethodInvocantBoundary {
+    /// No named method source token (including an ADJUST phaser).
+    MissingNameAnchor,
+    /// Not a direct member of a block-form native class.
+    NoBlockClassOwner,
+    /// The core class feature is not active at this declaration.
+    ClassFeatureDisabled,
+    /// Another class-keyword provider is in lexical view at the declaration.
+    AmbiguousClassProfile,
+    /// Method attributes have no accepted core-native invocant contract.
+    MethodAttributes,
+    /// Parser recovery affects the method or its class declaration.
+    RecoveredSyntax,
+    /// The reference crossed a named nested subroutine pad.
+    NamedSubroutine,
+}
+
+/// HIR-local result for one `$self` source reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativeMethodInvocantLookup {
+    /// The reference resolves to the implicit binding and its source class.
+    Exact {
+        /// Canonical binding ID of implicit `$self`.
+        binding: HirBindingId,
+        /// Named method declaration item.
+        method_item: HirId,
+        /// Method pad scope.
+        method_scope: HirScopeId,
+        /// Owning class declaration item.
+        class_item: HirId,
+        /// Owning class body scope.
+        class_scope: HirScopeId,
+    },
+    /// A plausible native method reference with a typed authority boundary.
+    Partial(NativeMethodInvocantBoundary),
+    /// No implicit native method invocant applies at this source position.
+    Unavailable,
 }
 
 /// Use declaration HIR payload.
@@ -3570,9 +3699,9 @@ pub struct TryExpr {
 /// 5.38+ with `use feature 'class'`).
 ///
 /// The class body is traversed via `visit_children`, so methods/fields inside
-/// it still lower to their own HIR items. First slice only: no dedicated
-/// `Class` scope frame or package-stash slot is recorded yet (unlike
-/// [`PackageDecl`]); see the lowerer arm for follow-up notes.
+/// it still lower to their own HIR items. The block body owns a
+/// [`ScopeKind::Class`] frame. This does not imply a package-stash slot or
+/// statement-form class ownership.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ClassDecl {
