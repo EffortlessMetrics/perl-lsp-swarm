@@ -18,7 +18,14 @@
 //! |--------------------------------|----------------------------|
 //! | unset / empty / `0` / `off`    | disabled (zero overhead)   |
 //! | `1` / `stderr` / `true`        | JSONL to stderr            |
+//! | `json`                         | JSONL to stderr (same sink)|
+//! | `spans`                        | not implemented; warns, then JSONL to stderr |
 //! | any other value                | JSONL appended to that path |
+//!
+//! `json` is not a distinct format: [`format_span_json`] is the only renderer,
+//! so "machine-readable JSON" and the stderr sink are the same thing. `spans`
+//! is accepted for backward compatibility with documentation that promised
+//! human-readable spans; no such formatter exists (#16599).
 //!
 //! The env var is read **once** (cached in a `OnceLock`); when disabled the
 //! only per-call cost is a single `OnceLock` deref plus, in test builds, one
@@ -109,7 +116,8 @@ struct ParsedMode {
 ///
 /// Pure and side-effect free so it can be unit-tested without touching global
 /// state or the environment — which is why the operator notice travels back as
-/// data instead of being printed here. [`mode`] prints it once, at startup.
+/// data instead of being printed here. [`mode`] prints it once, on first use
+/// (the first document event, not process start: `mode()` is initialized lazily).
 ///
 /// # Recognized values
 ///
@@ -164,12 +172,20 @@ fn mode() -> &'static TimingMode {
     MODE.get_or_init(|| match std::env::var("PERL_LSP_TIMING") {
         Ok(value) => {
             let parsed = parse_mode(&value);
-            // stderr, not `tracing`: the server installs no global subscriber on
-            // the `--stdio` path, so a `tracing::warn!` here would be invisible —
-            // and a startup-configuration complaint the operator cannot see is
-            // the same class of bug as the one being fixed.
+            // `tracing::warn!`, and this DOES reach the operator:
+            // `run_server` calls `init_logging("warn")` unconditionally on the
+            // `--stdio` path (`cli.rs`), whose writer is `io::stderr`.
+            //
+            // `eprintln!` is not an option here regardless of visibility: the
+            // crate lints direct stderr writes out of library code, and this
+            // module is library code.
+            //
+            // Residual tradeoff, stated rather than hidden: an operator who
+            // lowers the default filter below `warn` stops seeing this once.
+            // That is the correct behavior for a diagnostic, and unlike the
+            // defect it replaces the notice is emitted at all.
             if let Some(notice) = parsed.notice {
-                eprintln!("perl-lsp: {notice}");
+                tracing::warn!("{notice}");
             }
             parsed.mode
         }
@@ -480,21 +496,38 @@ mod tests {
     }
 
     /// The regression this whole change exists for, asserted at the level the
-    /// user observes: none of the documented tokens may select a bare relative
-    /// path, because that is the sink that silently created mystery files.
+    /// user observes: no documented token may select a file sink at all, and
+    /// least of all a path derived from the token.
+    ///
+    /// Asserting the *mode* rather than "the path differs from the token" is
+    /// deliberate: a `File("json.jsonl")` implementation would satisfy a
+    /// `path != raw` check while still creating a mystery file on every
+    /// documented value.
     #[test]
-    fn no_documented_token_becomes_a_bare_relative_file_path() {
+    fn no_documented_token_selects_a_file_sink() {
         for raw in ["off", "0", "false", "stderr", "1", "true", "json", "spans"] {
             let parsed = parse_mode(raw);
-            if let TimingMode::File(path) = &parsed.mode {
-                let rendered = path.display().to_string();
-                assert!(
-                    !(rendered == raw || rendered.eq_ignore_ascii_case(raw)),
-                    "documented value {raw:?} was taken as the file path {rendered:?} instead of a \
-                     sink; the server would create a file with that name"
-                );
+            assert!(
+                !matches!(parsed.mode, TimingMode::File(_)),
+                "documented value {raw:?} selected a file sink; the server would create a file \
+                 for a value the documentation says is a mode"
+            );
+        }
+    }
+
+    /// A genuine path still selects the file sink -- the fix must not have
+    /// turned every unrecognized value into a mode and broken the feature.
+    #[test]
+    fn an_explicit_path_still_selects_the_file_sink() -> Result<(), String> {
+        for raw in ["timing.jsonl", "./timing.jsonl", "/tmp/t.jsonl"] {
+            match parse_mode(raw).mode {
+                TimingMode::File(path) => {
+                    assert_eq!(path, PathBuf::from(raw), "path must be passed through verbatim");
+                }
+                _ => return Err(format!("{raw:?} is a file path and must stay one")),
             }
         }
+        Ok(())
     }
 
     #[test]
