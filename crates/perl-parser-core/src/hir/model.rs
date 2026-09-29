@@ -2,6 +2,7 @@
 
 use crate::SourceLocation;
 use crate::hir::body::{BodyOwner, HirBody, HirBodyId};
+use crate::prototype_shape::PrototypeShape;
 use perl_semantic_facts::{
     AnchorId, Confidence, ExportSet, ExportTag, FileId, ImportKind, ImportSpec, ImportSymbols,
     Provenance, ScopeId, VisibleSymbol, VisibleSymbolContext, VisibleSymbolSource,
@@ -215,6 +216,9 @@ pub struct PrototypeFact {
     pub package_context: Option<String>,
     /// Prototype content without the surrounding parentheses.
     pub content: String,
+    /// Canonical parsed shape for this prototype. Raw `content` remains a
+    /// compatibility projection and is not a second semantic parser.
+    pub shape: PrototypeShape,
     /// Precise source range for the prototype node.
     pub range: SourceLocation,
     /// Full declaration source range.

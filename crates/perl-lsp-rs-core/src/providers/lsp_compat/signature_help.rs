@@ -7,6 +7,7 @@ use perl_parser_core::ast::{Node, NodeKind};
 use perl_parser_core::builtins::builtin_signatures::{
     BuiltinSignature as ImportedBuiltinSignature, create_builtin_signatures,
 };
+use perl_parser_core::prototype_shape::{PrototypeShape, PrototypeSlotKind};
 use perl_semantic_analyzer::symbol::{Symbol, SymbolExtractor, SymbolKind, SymbolTable};
 use std::collections::HashMap;
 
@@ -322,34 +323,10 @@ impl SignatureHelpProvider {
 
             if let Some(proto) = prototype {
                 label.push_str(proto);
-
-                // Attribute bodies retain source trivia and separators. Count
-                // emitted parameters without changing the original label text.
-                for ch in proto.chars() {
-                    match ch {
-                        '$' => {
-                            let number = params.len() + 1;
-                            params.push(ParameterInfo {
-                                label: format!("$arg{number}"),
-                                documentation: Some(format!("Scalar parameter {number}")),
-                            });
-                        }
-                        '@' => params.push(ParameterInfo {
-                            label: "@args".to_string(),
-                            documentation: Some("Array (slurps remaining arguments)".to_string()),
-                        }),
-                        '%' => params.push(ParameterInfo {
-                            label: "%args".to_string(),
-                            documentation: Some(
-                                "Hash (slurps remaining named arguments)".to_string(),
-                            ),
-                        }),
-                        '&' => params.push(ParameterInfo {
-                            label: "&code".to_string(),
-                            documentation: Some("Code reference parameter".to_string()),
-                        }),
-                        _ => {}
-                    }
+                // Slot classification is owned by the canonical projector (#16810).
+                let shape = PrototypeShape::project(proto);
+                for slot in shape.slots() {
+                    params.push(parameter_info_from_prototype_slot(slot.kind(), params.len()));
                 }
             }
         }
@@ -403,6 +380,47 @@ impl SignatureHelpProvider {
         }
 
         actual_comma_count
+    }
+}
+
+fn parameter_info_from_prototype_slot(
+    kind: &PrototypeSlotKind,
+    existing_params: usize,
+) -> ParameterInfo {
+    match kind {
+        PrototypeSlotKind::Scalar | PrototypeSlotKind::TopicDefaultScalar => {
+            let number = existing_params + 1;
+            ParameterInfo {
+                label: format!("$arg{number}"),
+                documentation: Some(format!("Scalar parameter {number}")),
+            }
+        }
+        PrototypeSlotKind::ArraySlurpy => ParameterInfo {
+            label: "@args".to_string(),
+            documentation: Some("Array (slurps remaining arguments)".to_string()),
+        },
+        PrototypeSlotKind::HashSlurpy => ParameterInfo {
+            label: "%args".to_string(),
+            documentation: Some("Hash (slurps remaining named arguments)".to_string()),
+        },
+        PrototypeSlotKind::Code => ParameterInfo {
+            label: "&code".to_string(),
+            documentation: Some("Code reference parameter".to_string()),
+        },
+        PrototypeSlotKind::Glob => ParameterInfo {
+            label: "*glob".to_string(),
+            documentation: Some("Typeglob parameter".to_string()),
+        },
+        PrototypeSlotKind::ScalarOrReference => ParameterInfo {
+            label: "+arg".to_string(),
+            documentation: Some("Scalar or array/hash reference parameter".to_string()),
+        },
+        PrototypeSlotKind::ReferenceTo(_) | PrototypeSlotKind::GroupedReference(_) => {
+            ParameterInfo {
+                label: "\\ref".to_string(),
+                documentation: Some("Reference parameter".to_string()),
+            }
+        }
     }
 }
 

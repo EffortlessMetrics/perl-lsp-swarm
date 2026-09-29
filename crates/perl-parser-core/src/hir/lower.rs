@@ -248,18 +248,20 @@ impl Lowerer {
                     Some(sub_scope),
                 );
                 if let Some(name) = name {
-                    if let Some(prototype) = prototype
-                        && let NodeKind::Prototype { content } = &prototype.kind
+                    if let Some((content, range)) =
+                        prototype_payload(prototype.as_deref(), attributes, node.location)
                     {
+                        let shape = crate::prototype_shape::PrototypeShape::project(&content);
                         self.prototype_table.facts.push(PrototypeFact {
                             sub_name: name.clone(),
                             package_context: self.package_context.clone(),
-                            content: content.clone(),
-                            range: prototype.location,
+                            content,
+                            shape,
+                            range,
                             declaration_range: node.location,
                             declaration_item: item_id,
                             scope_id: Some(sub_scope),
-                            anchor_id: AnchorId(prototype.location.start as u64),
+                            anchor_id: AnchorId(range.start as u64),
                             provenance: CompileProvenance::ExactAst,
                             confidence: CompileConfidence::High,
                         });
@@ -3029,6 +3031,28 @@ fn package_and_symbol(name: &str, package_context: Option<&str>) -> (String, Str
 // Only an explicit empty prototype marks a sub as constant-like.
 fn has_empty_prototype(node: Option<&Node>) -> bool {
     matches!(node.map(|node| &node.kind), Some(NodeKind::Prototype { content }) if content.trim().is_empty())
+}
+
+/// Raw prototype text plus the best available source range.
+///
+/// The AST `Prototype` node is preferred. `:prototype(...)` attributes fill
+/// the same table so compiler consumers do not reparse attribute strings.
+fn prototype_payload(
+    prototype: Option<&Node>,
+    attributes: &[String],
+    declaration_range: SourceLocation,
+) -> Option<(String, SourceLocation)> {
+    if let Some(node) = prototype
+        && let NodeKind::Prototype { content } = &node.kind
+    {
+        return Some((content.clone(), node.location));
+    }
+    for attr in attributes {
+        if let Some(raw) = crate::prototype_shape::raw_from_attribute(attr) {
+            return Some((raw.to_string(), declaration_range));
+        }
+    }
+    None
 }
 
 fn static_glob_alias_target(node: &Node) -> Option<(GlobSlotKind, String)> {
