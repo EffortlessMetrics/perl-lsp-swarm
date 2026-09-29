@@ -30,7 +30,7 @@ function checkSyntaxFailureMessage(error: Error, output: string): string {
   if (processError.code === 'ENOENT') {
     return 'Could not check syntax: Perl was not found on PATH. Install Perl and add it to PATH.';
   }
-  if (processError.killed && processError.code == null) {
+  if (processError.killed && (processError.code === null || processError.code === undefined)) {
     return 'Could not check syntax: perl -c timed out after 10 seconds.';
   }
   if (typeof processError.code === 'number') {
