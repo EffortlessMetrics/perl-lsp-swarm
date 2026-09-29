@@ -9589,12 +9589,15 @@ fn test_ancestor_file_lexical_visible_in_nested_block() {
     );
 }
 
-/// `our` package globals keep their bounded always-visible behavior
-/// (declaration role distinct from lexicals), including after the cursor.
+/// `our` aliases follow the same declaration-order gate as lexicals: visible
+/// after the declaring statement, rejected before it. A previous version of
+/// this test used `rfind("$pk")`, which landed inside `our $pkg_after` and
+/// could not falsify after-cursor admission.
 #[test]
 fn test_our_package_global_keeps_bounded_visibility() {
-    let code = concat!("our $pkg_before;\n", "$pk\n", "our $pkg_after;\n");
-    let trigger = code.rfind("$pk").unwrap_or(0) + 3;
+    let code = concat!("our $pkg_before = 1;\n", "# cursor\n", "$pk\n", "our $pkg_after = 2;\n",);
+    let needle = "# cursor\n$pk";
+    let trigger = must_some(code.find(needle)) + needle.len();
 
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
@@ -9607,8 +9610,8 @@ fn test_our_package_global_keeps_bounded_visibility() {
         "our declared before cursor must stay visible; got {labels:?}"
     );
     assert!(
-        labels.iter().any(|l| l.contains("pkg_after")),
-        "our declared after cursor keeps package-global visibility (bounded behavior); got {labels:?}"
+        !labels.iter().any(|l| l.contains("pkg_after")),
+        "our declared after cursor must not be admitted; got {labels:?}"
     );
 }
 
@@ -9772,5 +9775,195 @@ fn test_incomplete_block_keeps_ancestor_and_excludes_closed_sibling() {
     assert!(
         !labels.iter().any(|l| l.contains("closed_block_only")),
         "ended sibling block must not reactivate during recovery; got {labels:?}"
+    );
+}
+
+fn completions_after_needle(code: &str, needle: &str) -> Vec<CompletionItem> {
+    let trigger = must_some_with(code.find(needle), "fixture needle must exist") + needle.len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    provider.get_completions(code, trigger)
+}
+
+/// Bare `$` must project currently visible scalars rather than an empty set
+/// or a prefix-stripped fall-through into workspace package names (#16860).
+#[test]
+fn test_bare_sigil_offers_local_scalar_not_workspace_package()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        must(Url::parse("file:///lib/Animal.pm")),
+        "package Animal;\nsub speak { 1 }\n1;\n".to_string(),
+    )?;
+
+    let code = "my $count = 1;\n$";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+    assert!(labels.contains(&"$count"), "bare `$` must offer the in-scope lexical; got {labels:?}");
+    assert!(
+        !labels.iter().any(|l| *l == "Animal" || l.ends_with("::Animal")),
+        "bare `$` must not fall through to workspace package names; got {labels:?}"
+    );
+    Ok(())
+}
+
+/// `$`, `@`, and `%` isolate exact sigil class even when the local names collide.
+#[test]
+fn test_sigil_class_isolates_colliding_local_names() {
+    let code = concat!("my $slot = 1;\n", "my @slot = (1);\n", "my %slot = (a => 1);\n", "$slot\n");
+
+    let scalar = variable_labels(&completions_after_needle(code, "\n$slot"));
+    assert!(
+        scalar.iter().any(|l| *l == "$slot"),
+        "`$` must offer the scalar binding; got {scalar:?}"
+    );
+    assert!(
+        !scalar.iter().any(|l| *l == "@slot" || *l == "%slot"),
+        "`$` must not emit array/hash homonyms; got {scalar:?}"
+    );
+
+    let array_code =
+        concat!("my $slot = 1;\n", "my @slot = (1);\n", "my %slot = (a => 1);\n", "@slot\n");
+    let array = variable_labels(&completions_after_needle(array_code, "\n@slot"));
+    assert!(array.iter().any(|l| *l == "@slot"), "`@` must offer the array binding; got {array:?}");
+    assert!(
+        !array.iter().any(|l| *l == "$slot" || *l == "%slot"),
+        "`@` must not emit scalar/hash homonyms; got {array:?}"
+    );
+
+    let hash_code =
+        concat!("my $slot = 1;\n", "my @slot = (1);\n", "my %slot = (a => 1);\n", "%slot\n");
+    let hash = variable_labels(&completions_after_needle(hash_code, "\n%slot"));
+    assert!(hash.iter().any(|l| *l == "%slot"), "`%` must offer the hash binding; got {hash:?}");
+    assert!(
+        !hash.iter().any(|l| *l == "$slot" || *l == "@slot"),
+        "`%` must not emit scalar/array homonyms; got {hash:?}"
+    );
+}
+
+/// `state` follows lexical admission on the production sigil path, including
+/// sibling-callable exclusion.
+#[test]
+fn test_state_binding_visible_in_own_sub_only() {
+    let body = concat!("sub once {\n", "    state $once_val = 1;\n", "    $once\n", "}\n");
+    let labels = variable_labels(&completions_after_needle(body, "    $once"));
+    assert!(
+        labels.iter().any(|l| l.contains("once_val")),
+        "state binding must be visible in its declaring sub; got {labels:?}"
+    );
+
+    let sibling = concat!(
+        "sub once {\n",
+        "    state $once_val = 1;\n",
+        "}\n",
+        "sub other {\n",
+        "    $once\n",
+        "}\n"
+    );
+    let sibling_labels = variable_labels(&completions_after_needle(sibling, "    $once"));
+    assert!(
+        !sibling_labels.iter().any(|l| l.contains("once_val")),
+        "state binding must not leak into a sibling sub; got {sibling_labels:?}"
+    );
+}
+
+/// Signature parameter + inner `my` of the same name: the inner binding wins
+/// and the outer parameter is not emitted as a second exact local candidate.
+#[test]
+fn test_signature_param_shadowed_by_inner_lexical() {
+    let code = concat!(
+        "sub sized ($shadowed) {\n",
+        "    # inner documentation marker\n",
+        "    my $shadowed = 2;\n",
+        "    $shad\n",
+        "}\n"
+    );
+    let completions = completions_after_needle(code, "    $shad");
+    let items: Vec<&CompletionItem> =
+        completions.iter().filter(|c| c.label == "$shadowed").collect();
+    assert_eq!(
+        items.len(),
+        1,
+        "inner lexical must shadow the signature parameter; got {} items {items:?}",
+        items.len()
+    );
+    let doc = items[0].documentation.as_deref().unwrap_or("");
+    assert!(
+        doc.contains("inner documentation marker"),
+        "surviving $shadowed must be the inner lexical, got doc: {doc:?}"
+    );
+}
+
+/// Two package blocks in one file are distinct extents: a lexical declared in
+/// one package must not appear as the other package's exact local candidate.
+#[test]
+fn test_package_block_lexical_does_not_leak_to_sibling_package() {
+    let code = concat!(
+        "package FirstPkg {\n",
+        "    my $first_only = 1;\n",
+        "}\n",
+        "package SecondPkg {\n",
+        "    my $second_only = 2;\n",
+        "    $fi\n",
+        "}\n"
+    );
+    let labels = variable_labels(&completions_after_needle(code, "    $fi"));
+    assert!(
+        !labels.iter().any(|l| l.contains("first_only")),
+        "FirstPkg lexical must not be offered inside SecondPkg; got {labels:?}"
+    );
+
+    let own = concat!(
+        "package FirstPkg {\n",
+        "    my $first_only = 1;\n",
+        "}\n",
+        "package SecondPkg {\n",
+        "    my $second_only = 2;\n",
+        "    $se\n",
+        "}\n"
+    );
+    let own_labels = variable_labels(&completions_after_needle(own, "    $se"));
+    assert!(
+        own_labels.iter().any(|l| l.contains("second_only")),
+        "SecondPkg must still offer its own lexical; got {own_labels:?}"
+    );
+
+    let first_code = concat!(
+        "package FirstPkg {\n",
+        "    my $first_only = 1;\n",
+        "    $se\n",
+        "}\n",
+        "package SecondPkg {\n",
+        "    my $second_only = 2;\n",
+        "}\n"
+    );
+    let first_labels = variable_labels(&completions_after_needle(first_code, "    $se"));
+    assert!(
+        !first_labels.iter().any(|l| l.contains("second_only")),
+        "SecondPkg lexical must not be offered inside FirstPkg; got {first_labels:?}"
+    );
+}
+
+/// A later snapshot that removes a declaration must not keep offering it.
+/// This is provider-generation requery, not document close/reopen lifecycle.
+#[test]
+fn test_removed_lexical_is_absent_on_requery() {
+    let before = "my $gone_now = 1;\n$go";
+    let before_labels = variable_labels(&completions_after_needle(before, "$go"));
+    assert!(
+        before_labels.iter().any(|l| l.contains("gone_now")),
+        "control: the lexical must be offered before the edit; got {before_labels:?}"
+    );
+
+    let after = "my $stays = 1;\n$go";
+    let after_labels = variable_labels(&completions_after_needle(after, "$go"));
+    assert!(
+        !after_labels.iter().any(|l| l.contains("gone_now")),
+        "requery after removing the declaration must drop it; got {after_labels:?}"
     );
 }

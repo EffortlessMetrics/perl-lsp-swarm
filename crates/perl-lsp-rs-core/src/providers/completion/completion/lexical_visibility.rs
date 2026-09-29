@@ -45,6 +45,7 @@
 //! perl-lsp-rs-core and owns any cross-crate projection requiring generation
 //! handles.
 
+use super::scope_distance::ancestor_ids;
 use perl_semantic_analyzer::symbol::{ScopeId, Symbol, SymbolKind, SymbolTable};
 use std::collections::HashMap;
 
@@ -166,29 +167,7 @@ fn scope_chain_contains(
     if !symbol_table.scopes.contains_key(&cursor_scope) {
         return false;
     }
-    let mut current = cursor_scope;
-    let mut hops = 0u32;
-
-    loop {
-        if current == target {
-            return true;
-        }
-
-        let Some(scope) = symbol_table.scopes.get(&current) else {
-            break;
-        };
-        let Some(parent) = scope.parent else {
-            break;
-        };
-
-        hops = hops.saturating_add(1);
-        if hops > 100 {
-            break;
-        }
-        current = parent;
-    }
-
-    false
+    ancestor_ids(symbol_table, cursor_scope).contains(&target)
 }
 
 /// Resolve exact identity among admitted bindings sharing one resolved slot.
@@ -489,5 +468,27 @@ mod tests {
         assert_eq!(selected.len(), 2);
         assert!(std::ptr::eq(selected[0], &second_scope_sym));
         assert!(std::ptr::eq(selected[1], &first_scope_sym));
+    }
+
+    #[test]
+    fn lexical_visible_through_deep_finite_ancestor_chain() {
+        let mut table = SymbolTable::new();
+        for id in 0usize..=40 {
+            table.scopes.insert(
+                id,
+                Scope {
+                    id,
+                    parent: id.checked_sub(1),
+                    kind: if id == 0 { ScopeKind::Global } else { ScopeKind::Block },
+                    location: SourceLocation { start: id, end: 1000 },
+                    symbols: std::collections::HashSet::new(),
+                },
+            );
+        }
+        let s = symbol("deep", SymbolKind::scalar(), "my", 0, 1);
+        assert_eq!(
+            admit(&table, 40, 500, &s),
+            Admission::Visible(VisibilityReason::LexicalActiveAtCursor)
+        );
     }
 }

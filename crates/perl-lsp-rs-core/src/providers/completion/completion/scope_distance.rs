@@ -10,6 +10,38 @@
 
 use perl_semantic_analyzer::symbol::{ScopeId, ScopeKind, SymbolTable};
 
+/// Shared parent-walk bound for admission, identity selection, and ranking.
+/// Malformed cyclic trees stop here instead of looping.
+pub(crate) const MAX_SCOPE_PARENT_HOPS: u32 = 100;
+
+/// Inclusive walk from `start` toward the root: `start`, then each parent.
+///
+/// Stops at the root, a missing scope record, or [`MAX_SCOPE_PARENT_HOPS`]
+/// parent steps. A missing `start` still yields that id once so callers can
+/// distinguish "equal missing ids" from a proven ancestor chain.
+pub(crate) fn ancestor_ids(symbol_table: &SymbolTable, start: ScopeId) -> Vec<ScopeId> {
+    let mut chain = Vec::new();
+    let mut current = start;
+    let mut hops = 0u32;
+
+    loop {
+        chain.push(current);
+        let Some(scope) = symbol_table.scopes.get(&current) else {
+            break;
+        };
+        let Some(parent) = scope.parent else {
+            break;
+        };
+        hops = hops.saturating_add(1);
+        if hops > MAX_SCOPE_PARENT_HOPS {
+            break;
+        }
+        current = parent;
+    }
+
+    chain
+}
+
 /// Scope-distance tier for sorting completions.
 ///
 /// Variants are ordered from closest (highest priority) to farthest.
@@ -45,30 +77,10 @@ fn parent_hops_to_scope(
     cursor_scope: ScopeId,
     symbol_scope: ScopeId,
 ) -> Option<u32> {
-    if cursor_scope == symbol_scope {
-        return Some(0);
-    }
-
-    let mut current = cursor_scope;
-    let mut hops = 0u32;
-
-    while let Some(scope) = symbol_table.scopes.get(&current) {
-        let Some(parent_id) = scope.parent else {
-            break;
-        };
-
-        hops = hops.saturating_add(1);
-        if parent_id == symbol_scope {
-            return Some(hops);
-        }
-
-        current = parent_id;
-        if hops > 100 {
-            break;
-        }
-    }
-
-    None
+    ancestor_ids(symbol_table, cursor_scope)
+        .iter()
+        .position(|&id| id == symbol_scope)
+        .map(|index| index as u32)
 }
 
 fn last_unmatched_open_brace(source: &str) -> Option<usize> {
@@ -129,18 +141,7 @@ fn last_unmatched_open_brace(source: &str) -> Option<usize> {
 /// ranking and by lexical-visibility identity selection (#8941) to order
 /// same-name bindings by declaring-scope nesting.
 pub(crate) fn scope_depth(symbol_table: &SymbolTable, scope_id: ScopeId) -> usize {
-    let mut depth = 0usize;
-    let mut current = scope_id;
-
-    while let Some(scope) = symbol_table.scopes.get(&current) {
-        let Some(parent) = scope.parent else {
-            break;
-        };
-        depth += 1;
-        current = parent;
-    }
-
-    depth
+    ancestor_ids(symbol_table, scope_id).len().saturating_sub(1)
 }
 
 /// Find the innermost scope relevant to `position`.
@@ -207,38 +208,15 @@ pub fn compute_scope_distance(
         return ScopeDistance::Immediate;
     }
 
-    // Walk up from cursor scope looking for the symbol's scope
-    let mut current = cursor_scope;
-    let mut hops = 0u32;
-
-    while let Some(scope) = symbol_table.scopes.get(&current) {
-        if let Some(parent_id) = scope.parent {
-            hops += 1;
-
-            if parent_id == symbol_scope {
-                // Check if the symbol scope is a package/global scope
-                if let Some(parent_scope) = symbol_table.scopes.get(&parent_id)
-                    && matches!(parent_scope.kind, ScopeKind::Global | ScopeKind::Package)
-                {
-                    return ScopeDistance::PackageLevel;
-                }
-                return ScopeDistance::Parent;
-            }
-
-            current = parent_id;
-        } else {
-            // Reached the root without finding the symbol scope
-            break;
+    if parent_hops_to_scope(symbol_table, cursor_scope, symbol_scope).is_some() {
+        if let Some(sym_scope) = symbol_table.scopes.get(&symbol_scope)
+            && matches!(sym_scope.kind, ScopeKind::Global | ScopeKind::Package)
+        {
+            return ScopeDistance::PackageLevel;
         }
-
-        // Safety limit to prevent infinite loops on malformed scope trees
-        if hops > 100 {
-            break;
-        }
+        return ScopeDistance::Parent;
     }
 
-    // The symbol scope was not found in our parent chain.
-    // Check if the symbol is at package/global level.
     if let Some(sym_scope) = symbol_table.scopes.get(&symbol_scope)
         && matches!(sym_scope.kind, ScopeKind::Global | ScopeKind::Package)
     {
@@ -548,5 +526,31 @@ mod tests {
         assert!(nine_hops < ten_hops, "9-hop key must sort before 10-hop key");
         assert_eq!(nine_hops, "b09");
         assert_eq!(ten_hops, "b10");
+    }
+
+    #[test]
+    fn ancestor_ids_include_start_and_stop_at_hop_guard() {
+        let mut table = SymbolTable::new();
+        for i in 0usize..=120 {
+            table.scopes.insert(
+                i,
+                Scope {
+                    id: i,
+                    parent: i.checked_sub(1),
+                    kind: ScopeKind::Block,
+                    location: SourceLocation { start: i, end: 200 },
+                    symbols: HashSet::new(),
+                },
+            );
+        }
+
+        let chain = ancestor_ids(&table, 120);
+        assert_eq!(chain.first().copied(), Some(120));
+        assert!(
+            chain.len() <= MAX_SCOPE_PARENT_HOPS as usize + 1,
+            "hop guard must bound the walk, got {}",
+            chain.len()
+        );
+        assert!(!chain.contains(&0), "root must sit beyond the hop guard from scope 120");
     }
 }
