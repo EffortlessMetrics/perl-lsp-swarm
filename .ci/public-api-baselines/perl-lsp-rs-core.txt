@@ -1458,6 +1458,16 @@ pub perl_lsp_rs_core::product_identity::IdentityOutputFormat::Json
 pub fn perl_lsp_rs_core::product_identity::IdentityOutputFormat::clone(&self) -> perl_lsp_rs_core::product_identity::IdentityOutputFormat
 pub fn perl_lsp_rs_core::product_identity::IdentityOutputFormat::eq(&self, other: &perl_lsp_rs_core::product_identity::IdentityOutputFormat) -> bool
 pub fn perl_lsp_rs_core::product_identity::IdentityOutputFormat::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::product_identity::IdentityRequest
+pub perl_lsp_rs_core::product_identity::IdentityRequest::MixedOperands
+pub perl_lsp_rs_core::product_identity::IdentityRequest::MixedOperands::flag: alloc::string::String
+pub perl_lsp_rs_core::product_identity::IdentityRequest::None
+pub perl_lsp_rs_core::product_identity::IdentityRequest::Output(perl_lsp_rs_core::product_identity::IdentityOutputFormat)
+pub fn perl_lsp_rs_core::product_identity::IdentityRequest::rejection_message(&self) -> core::option::Option<alloc::string::String>
+pub fn perl_lsp_rs_core::product_identity::IdentityRequest::rejection_message_for(&self, binary: &str) -> core::option::Option<alloc::string::String>
+pub fn perl_lsp_rs_core::product_identity::IdentityRequest::clone(&self) -> perl_lsp_rs_core::product_identity::IdentityRequest
+pub fn perl_lsp_rs_core::product_identity::IdentityRequest::eq(&self, other: &perl_lsp_rs_core::product_identity::IdentityRequest) -> bool
+pub fn perl_lsp_rs_core::product_identity::IdentityRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::product_identity::ArtifactIdentity
 pub perl_lsp_rs_core::product_identity::ArtifactIdentity::candidate_identity: core::option::Option<alloc::string::String>
 pub perl_lsp_rs_core::product_identity::ArtifactIdentity::digest: core::option::Option<alloc::string::String>
@@ -1538,10 +1548,12 @@ pub fn perl_lsp_rs_core::product_identity::ProductIdentity::serialize<__S>(&self
 pub fn perl_lsp_rs_core::product_identity::ProductIdentity::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp_rs_core::product_identity::ProductIdentity, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub const perl_lsp_rs_core::product_identity::BINARY_IDENTITY_SCHEMA_V1: &str
 pub const perl_lsp_rs_core::product_identity::DEVELOPMENT_REPOSITORY: &str
+pub const perl_lsp_rs_core::product_identity::IDENTITY_FLAG: &str
+pub const perl_lsp_rs_core::product_identity::IDENTITY_JSON_FLAG: &str
 pub const perl_lsp_rs_core::product_identity::PRODUCT_IDENTITY_VERSION: u32
 pub const perl_lsp_rs_core::product_identity::PRODUCT_NAME: &str
 pub const perl_lsp_rs_core::product_identity::PUBLIC_REPOSITORY: &str
-pub fn perl_lsp_rs_core::product_identity::requested_identity_output(args: &[alloc::string::String]) -> core::option::Option<perl_lsp_rs_core::product_identity::IdentityOutputFormat>
+pub fn perl_lsp_rs_core::product_identity::requested_identity(args: &[alloc::string::String]) -> perl_lsp_rs_core::product_identity::IdentityRequest
 pub mod perl_lsp_rs_core::protocol
 pub mod perl_lsp_rs_core::protocol::binary_identity
 pub enum perl_lsp_rs_core::protocol::binary_identity::BinaryCompatibilityReason
@@ -3147,6 +3159,7 @@ pub perl_lsp_rs_core::providers::completion::CompletionItem::text_edit_range: co
 pub fn perl_lsp_rs_core::providers::CompletionItem::clone(&self) -> perl_lsp_rs_core::providers::CompletionItem
 pub fn perl_lsp_rs_core::providers::CompletionItem::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::completion::CompletionProvider
+pub fn perl_lsp_rs_core::providers::CompletionProvider::detect_hash_key_context(source: &str, position: usize) -> core::option::Option<(alloc::string::String, alloc::string::String)>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions(&self, source: &str, position: usize) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions_with_path(&self, source: &str, position: usize, filepath: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions_with_path_cancellable(&self, source: &str, position: usize, filepath: core::option::Option<&str>, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
@@ -8492,6 +8505,7 @@ pub fn perl_lsp_rs_core::providers::CompletionItemLabelDetails::clone(&self) -> 
 pub fn perl_lsp_rs_core::providers::CompletionItemLabelDetails::default() -> perl_lsp_rs_core::providers::CompletionItemLabelDetails
 pub fn perl_lsp_rs_core::providers::CompletionItemLabelDetails::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::CompletionProvider
+pub fn perl_lsp_rs_core::providers::CompletionProvider::detect_hash_key_context(source: &str, position: usize) -> core::option::Option<(alloc::string::String, alloc::string::String)>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions(&self, source: &str, position: usize) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions_with_path(&self, source: &str, position: usize, filepath: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions_with_path_cancellable(&self, source: &str, position: usize, filepath: core::option::Option<&str>, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
