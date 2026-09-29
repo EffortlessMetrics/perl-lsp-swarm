@@ -521,12 +521,14 @@ fi
 #
 #    Consequently a non-zero human count here does NOT prove that all
 #    submitted human reviews are visible to this script, and a zero count
-#    does NOT prove that no human review was ever submitted. It means the
-#    projection this script reads is empty. Authoritative review-history
-#    questions belong to a caller that reads the full `reviews` connection.
-#    Nothing here changes that choice: `latestReviews` remains correct for
-#    its purpose, because superseded pre-push reviews must not count as
-#    finished.
+#    does NOT prove that no human review was ever submitted: the projection
+#    may have been empty, or every entry it returned may have been filtered
+#    out by the counts above (a bot author, a DISMISSED state, or a commit
+#    older than HEAD). The count measures the filtered projection, not
+#    review history. Authoritative review-history questions belong to a
+#    caller that reads the full `reviews` connection. Nothing here changes
+#    that choice: `latestReviews` remains correct for its purpose, because
+#    superseded pre-push reviews must not count as finished.
 LATEST_REVIEWS="$(paginate_pr_connection "latestReviews" "author { login __typename } state commit { oid }")"
 
 HUMAN_REVIEWS="$(printf '%s' "$LATEST_REVIEWS" | jq -c '[.[] | select((.author.__typename // "User") != "Bot")]')"

@@ -30,10 +30,20 @@ CORE_EXIT=0
 REVIEW_PROTOCOL_ENFORCE= bash "$CORE" "$@" >"$TMP_DIR/core.out" 2>"$TMP_DIR/core.err" || CORE_EXIT=$?
 CORE_JSON="$(sed -n '/^{/,$p' "$TMP_DIR/core.out")"
 
+# Envelope version for THIS wrapper's classification payload, distinct from the
+# core fact payload's "convergence_core.v1": the core contract treats any
+# field-set change as a breaking change that must be loudly versioned
+# (check-pr-review-convergence-core output section, #15278). This PR adds
+# non_dismissed_latest_nonbot_review_count to the wrapper envelope, so the
+# envelope carries its own bumped version and an old shape can never be
+# mistaken for this one (#15035 review).
+WRAPPER_SCHEMA_VERSION="pr_review_convergence.v2"
+
 not_proven() {
     local reason="$1"
     echo "NOT_PROVEN PR #$PR: $reason" >&2
-    jq -n --arg pr "$PR" --arg reason "$reason" '{
+    jq -n --arg pr "$PR" --arg reason "$reason" --arg v "$WRAPPER_SCHEMA_VERSION" '{
+      wrapper_schema_version: $v,
       pr: ($pr | tonumber? // $pr),
       converged: false,
       native_review_facts_converged: false,
@@ -190,7 +200,8 @@ jq -n \
     --arg status "$FORMAL_STATUS" \
     --arg reason "$FORMAL_REASON" \
     --argjson submittedReviews "$NON_DISMISSED_LATEST_NONBOT_REVIEW_COUNT" \
-    '$core + {
+    --arg wrapperVersion "$WRAPPER_SCHEMA_VERSION"     '$core + {
+      wrapper_schema_version: $wrapperVersion,
       converged: $converged,
       native_review_facts_converged: $converged,
       review_currentness: "NOT_PROVEN",
