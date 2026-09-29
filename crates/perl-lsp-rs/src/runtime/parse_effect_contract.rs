@@ -1075,7 +1075,9 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/workspace.rs",
         needle: "textDocument/publishDiagnostics",
-        expected_count: 1,
+        // One production publication site and three assertions in the
+        // scoped-configuration regression test below it.
+        expected_count: 4,
         effect_id: "diagnostics.parser-outbound-publication",
     },
     // Coordinator module-level lifecycle routes. Comment-stripped counting:
