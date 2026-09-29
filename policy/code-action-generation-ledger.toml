@@ -415,10 +415,10 @@ proof_gap = "Inherits the canonical row's gap: no corpus fixture reaches subrout
 generation = "provider_original"
 family = "refactor.extract:basic_fallback"
 disposition = "shadow_only_candidate"
-notes = "The literal 'Extract to variable' / 'Extract to function' arms in refactors.rs are guarded by `actions.is_empty()`, so they can only run when the nested enhanced generation returned nothing. They are not an independent production authority."
+notes = "The literal 'Extract to variable' arm in refactors.rs is guarded by `actions.is_empty()`, so it can only run when the nested enhanced generation returned nothing. Basic extract-function is withheld (#16779): it cannot carry surrounding lexical captures or prove brace-preserving replacement, so the proven enhanced extract-subroutine path or no-edit is used instead."
 retirement_blockers = []
 parity_fixtures = []
-proof_gap = "Unreachable by construction from any fixture that also reaches the enhanced generation: the guard runs only when the nested enhanced call returned nothing, and on every selection that produces an extract action the enhanced generation answers first. Proving this arm needs a node shape the enhanced provider declines but refactors.rs accepts, which no corpus fixture has found. Being shadow_only_candidate, #9190 can delete it without parity evidence."
+proof_gap = "The generation-parity corpus still has no cac-parity fixture for this family. #16779 proves the extract-function withhold on the core producer and a textDocument/codeAction wire test; the remaining extract-variable arm is still only reachable when enhanced generation returns nothing."
 
 [[route]]
 generation = "disabled_extract_placeholder"
