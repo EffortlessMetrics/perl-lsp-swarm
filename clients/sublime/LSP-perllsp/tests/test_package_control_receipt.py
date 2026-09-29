@@ -3,8 +3,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import io
 import json
+import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 
@@ -49,7 +52,7 @@ def listed_subject() -> dict:
     subject["package"]["tree_sha256"] = fill_digest("a")
     subject["package"]["installed_digest"] = fill_digest("b")
     subject["perllsp_asset"]["release"] = "v0.17.0"
-    subject["perllsp_asset"]["target"] = "x86_64-unknown-linux-musl"
+    subject["perllsp_asset"]["target"] = "x86_64-unknown-linux-gnu"
     subject["perllsp_asset"]["asset_name"] = "perllsp"
     subject["perllsp_asset"]["asset_url"] = "https://example.test/perllsp"
     subject["perllsp_asset"]["asset_sha256"] = fill_digest("d")
@@ -88,10 +91,10 @@ def passing_receipt(subject: dict, subject_digest: str) -> dict:
     )
     receipt["binary"] = {
         "path": "/tmp/perllsp",
-        "sha256": subject["perllsp_asset"]["asset_sha256"],
+        "sha256": fill_digest("e"),
         "command": ["/tmp/perllsp", "--stdio"],
         "release": subject["perllsp_asset"]["release"],
-        "archive_sha256": fill_digest("e"),
+        "archive_sha256": subject["perllsp_asset"]["asset_sha256"],
     }
     receipt["resolution_route"] = "managed_download"
     receipt["compatibility"] = copy.deepcopy(subject["compatibility"])
@@ -284,10 +287,38 @@ class PackageControlReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "compatibility result must be compatible"):
             validator.validate_pass(guessed, subject_bytes)
 
+        subject_incompatible = listed_subject()
+        subject_incompatible["compatibility"]["result"] = "incompatible"
+        incompatible_bytes = json.dumps(subject_incompatible, sort_keys=True).encode("utf-8")
+        claimed = passing_receipt(subject_incompatible, sha256_bytes(incompatible_bytes))
+        claimed["compatibility"]["result"] = "compatible"
+        with self.assertRaisesRegex(ValueError, "bound public subject is not compatible"):
+            validator.validate_pass(claimed, incompatible_bytes)
+
         mismatch = passing_receipt(subject, digest)
         mismatch["helper_package"]["tag"] = "v9.9.9"
         with self.assertRaisesRegex(ValueError, "identities disagree"):
             validator.validate_pass(mismatch, subject_bytes)
+
+        archive = passing_receipt(subject, digest)
+        archive["binary"]["archive_sha256"] = fill_digest("0")
+        with self.assertRaisesRegex(ValueError, "identities disagree"):
+            validator.validate_pass(archive, subject_bytes)
+
+        windows = passing_receipt(subject, digest)
+        windows["host"]["platform"] = "windows"
+        windows["host"]["arch"] = "x64"
+        with self.assertRaisesRegex(ValueError, "asset target does not match the recorded host"):
+            validator.validate_pass(windows, subject_bytes)
+
+    def test_missing_subject_file_fails_closed_from_cli(self) -> None:
+        validator = load_validator()
+        with tempfile.TemporaryDirectory() as directory:
+            receipt_path = Path(directory) / "receipt.json"
+            receipt_path.write_text(json.dumps(validator.not_run_template()), encoding="utf-8")
+            missing = Path(directory) / "missing-subject.json"
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(validator.main(["validate", str(receipt_path), str(missing)]), 1)
 
     def test_stale_diagnostics_unapplied_edit_and_orphan_fail_closed(self) -> None:
         validator = load_validator()

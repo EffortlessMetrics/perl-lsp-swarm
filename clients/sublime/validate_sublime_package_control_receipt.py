@@ -21,6 +21,13 @@ PASS_INSTALL_ROUTE = "package_control_default_channel"
 PASS_HELPER_SOURCE = "package_control_default_channel"
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+HOST_TARGETS = {
+    ("linux", "x64"): "x86_64-unknown-linux-gnu",
+    ("linux", "arm64"): "aarch64-unknown-linux-gnu",
+    ("osx", "x64"): "x86_64-apple-darwin",
+    ("osx", "arm64"): "aarch64-apple-darwin",
+    ("windows", "x64"): "x86_64-pc-windows-msvc",
+}
 RECEIPT_RESULTS = {"pass", "fail", "not_proven", "not_run"}
 CELL_RESULTS = {"pass", "fail", "not_proven", "not_run"}
 ACTIVATION_CELLS = ("pl", "pm", "t")
@@ -229,6 +236,12 @@ def _validate_pass_identities(payload: dict[str, Any], subject: dict[str, Any]) 
     require(str(host.get("version", "")).isdigit(), "host.version must be a Sublime build number")
     require(host.get("platform") in {"linux", "osx", "windows"}, "unsupported host.platform")
     require(host.get("arch") in {"x64", "arm64"}, "unsupported host.arch")
+    expected_target = HOST_TARGETS.get((host.get("platform"), host.get("arch")))
+    require(expected_target is not None, "unsupported host.platform/arch for managed perllsp")
+    require(
+        subject.get("perllsp_asset", {}).get("target") == expected_target,
+        "managed perllsp asset target does not match the recorded host",
+    )
     lsp = _mapping(payload.get("lsp_package"), "lsp_package")
     require(lsp.get("repository") == "sublimelsp/LSP", "unexpected LSP repository")
     require(FULL_SHA.fullmatch(str(lsp.get("ref", ""))), "lsp_package.ref must be a full commit SHA")
@@ -249,17 +262,21 @@ def _validate_pass_identities(payload: dict[str, Any], subject: dict[str, Any]) 
     )
     require(SHA256.fullmatch(str(binary.get("sha256", ""))), "binary.sha256 must be a lowercase SHA-256 digest")
     require(
-        binary.get("sha256") == subject["perllsp_asset"]["asset_sha256"],
-        "public receipt identities disagree with the bound public subject",
-    )
-    require(binary.get("release") == subject["perllsp_asset"]["release"], "public receipt identities disagree with the bound public subject")
-    require(
         SHA256.fullmatch(str(binary.get("archive_sha256", ""))),
         "binary.archive_sha256 must be a lowercase SHA-256 digest",
     )
+    require(
+        binary.get("archive_sha256") == subject["perllsp_asset"]["asset_sha256"],
+        "public receipt identities disagree with the bound public subject",
+    )
+    require(binary.get("release") == subject["perllsp_asset"]["release"], "public receipt identities disagree with the bound public subject")
     require(payload.get("resolution_route") == "managed_download", "managed perllsp resolution_route must be managed_download")
     compatibility = _mapping(payload.get("compatibility"), "compatibility")
     require(compatibility.get("result") == "compatible", "compatibility result must be compatible")
+    require(
+        subject.get("compatibility", {}).get("result") == "compatible",
+        "bound public subject is not compatible",
+    )
     require(
         compatibility.get("record_id") == subject["compatibility"]["record_id"],
         "public receipt identities disagree with the bound public subject",
@@ -358,8 +375,8 @@ def main(argv: list[str]) -> int:
         )
         return 2
     path = Path(argv[1])
-    subject_bytes = Path(argv[2]).read_bytes() if len(argv) == 3 else None
     try:
+        subject_bytes = Path(argv[2]).read_bytes() if len(argv) == 3 else None
         payload = json.loads(path.read_text(encoding="utf-8"))
         require(isinstance(payload, dict), "receipt root must be an object")
         validate(payload, subject_bytes)
