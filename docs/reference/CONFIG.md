@@ -974,12 +974,29 @@ PERL_LSP_FILE_WATCHERS=false perllsp --stdio
 
 ### `PERL_LSP_TIMING`
 
-Enable phase-1 latency instrumentation. Values: `off` (default), `spans`
-(human-readable timing spans), `json` (machine-readable JSON).
+Enable phase-1 latency instrumentation. Every sink writes JSONL — one JSON
+object per line.
+
+| Value | Effect |
+|---|---|
+| unset, empty, `off`, `0`, `false` | disabled (default) |
+| `stderr`, `1`, `true` | JSONL to stderr |
+| `json` | JSONL to stderr (the same sink; there is no separate JSON format) |
+| a file path | JSONL appended to that file |
 
 ```bash
-PERL_LSP_TIMING=spans perllsp --stdio
+PERL_LSP_TIMING=stderr perllsp --stdio
+PERL_LSP_TIMING=./timing.jsonl perllsp --stdio
 ```
+
+Any value that is not one of the listed modes is treated as a **file path** and
+created if it does not exist, so quote it if it contains spaces or shell
+metacharacters.
+
+`spans` was previously documented here as "human-readable timing spans". That
+output does not exist; there is no human-readable span formatter in the server.
+`PERL_LSP_TIMING=spans` is accepted, warns once on stderr, and behaves as
+`json`.
 
 ### `PERL_LSP_INCREMENTAL`
 

@@ -98,25 +98,63 @@ impl TimingSpan {
     }
 }
 
-/// Parse a `PERL_LSP_TIMING` value into a [`TimingMode`].
+/// A parsed `PERL_LSP_TIMING` value: the sink to use, plus an operator notice to
+/// print once when the value asked for something that is not implemented.
+struct ParsedMode {
+    mode: TimingMode,
+    notice: Option<String>,
+}
+
+/// Parse a `PERL_LSP_TIMING` value.
 ///
 /// Pure and side-effect free so it can be unit-tested without touching global
-/// state or the environment.
-fn parse_mode(raw: &str) -> TimingMode {
+/// state or the environment — which is why the operator notice travels back as
+/// data instead of being printed here. [`mode`] prints it once, at startup.
+///
+/// # Recognized values
+///
+/// * `off` / `0` / `false` / empty — emit nothing.
+/// * `stderr` / `1` / `true` / `json` — JSONL to stderr. `json` is not a separate
+///   format: every sink renders through [`format_span_json`], so "machine-readable
+///   JSON" and the stderr sink are the same thing.
+/// * `spans` — **not implemented**; see the branch below.
+/// * anything else — a file path, appended to as JSONL.
+///
+/// `json` and `spans` are documented in `docs/reference/CONFIG.md`. Before this
+/// existed they were not matched at all, so both fell through to the file-path
+/// catch-all and the server silently created a file named `json` or `spans` in
+/// whatever its working directory happened to be (#16599).
+fn parse_mode(raw: &str) -> ParsedMode {
     let trimmed = raw.trim();
     if trimmed.is_empty()
         || trimmed == "0"
         || trimmed.eq_ignore_ascii_case("off")
         || trimmed.eq_ignore_ascii_case("false")
     {
-        TimingMode::Off
+        ParsedMode { mode: TimingMode::Off, notice: None }
     } else if trimmed == "1"
         || trimmed.eq_ignore_ascii_case("stderr")
         || trimmed.eq_ignore_ascii_case("true")
+        || trimmed.eq_ignore_ascii_case("json")
     {
-        TimingMode::Stderr
+        ParsedMode { mode: TimingMode::Stderr, notice: None }
+    } else if trimmed.eq_ignore_ascii_case("spans") {
+        // Documented as "human-readable timing spans". There is no such
+        // formatter: `format_span_json` is the only renderer, so every sink
+        // emits JSONL. Rather than invent a format in a bug fix, say once what
+        // is not there and emit the JSONL we can actually produce.
+        ParsedMode {
+            mode: TimingMode::Stderr,
+            notice: Some(
+                "PERL_LSP_TIMING=spans is not implemented and is being treated as \
+                 `json` (one JSON object per line). Human-readable span output does \
+                 not exist; to write spans to a file, set PERL_LSP_TIMING to a file \
+                 path."
+                    .to_string(),
+            ),
+        }
     } else {
-        TimingMode::File(PathBuf::from(trimmed))
+        ParsedMode { mode: TimingMode::File(PathBuf::from(trimmed)), notice: None }
     }
 }
 
@@ -124,7 +162,17 @@ fn parse_mode(raw: &str) -> TimingMode {
 fn mode() -> &'static TimingMode {
     static MODE: OnceLock<TimingMode> = OnceLock::new();
     MODE.get_or_init(|| match std::env::var("PERL_LSP_TIMING") {
-        Ok(value) => parse_mode(&value),
+        Ok(value) => {
+            let parsed = parse_mode(&value);
+            // stderr, not `tracing`: the server installs no global subscriber on
+            // the `--stdio` path, so a `tracing::warn!` here would be invisible —
+            // and a startup-configuration complaint the operator cannot see is
+            // the same class of bug as the one being fixed.
+            if let Some(notice) = parsed.notice {
+                eprintln!("perl-lsp: {notice}");
+            }
+            parsed.mode
+        }
         Err(_) => TimingMode::Off,
     })
 }
@@ -361,30 +409,91 @@ mod tests {
 
     #[test]
     fn parse_mode_off_variants() {
-        assert!(matches!(parse_mode(""), TimingMode::Off));
-        assert!(matches!(parse_mode("   "), TimingMode::Off));
-        assert!(matches!(parse_mode("0"), TimingMode::Off));
-        assert!(matches!(parse_mode("off"), TimingMode::Off));
-        assert!(matches!(parse_mode("OFF"), TimingMode::Off));
-        assert!(matches!(parse_mode("false"), TimingMode::Off));
+        assert!(matches!(parse_mode("").mode, TimingMode::Off));
+        assert!(matches!(parse_mode("   ").mode, TimingMode::Off));
+        assert!(matches!(parse_mode("0").mode, TimingMode::Off));
+        assert!(matches!(parse_mode("off").mode, TimingMode::Off));
+        assert!(matches!(parse_mode("OFF").mode, TimingMode::Off));
+        assert!(matches!(parse_mode("false").mode, TimingMode::Off));
     }
 
     #[test]
     fn parse_mode_stderr_variants() {
-        assert!(matches!(parse_mode("1"), TimingMode::Stderr));
-        assert!(matches!(parse_mode("stderr"), TimingMode::Stderr));
-        assert!(matches!(parse_mode("STDERR"), TimingMode::Stderr));
-        assert!(matches!(parse_mode("true"), TimingMode::Stderr));
+        assert!(matches!(parse_mode("1").mode, TimingMode::Stderr));
+        assert!(matches!(parse_mode("stderr").mode, TimingMode::Stderr));
+        assert!(matches!(parse_mode("STDERR").mode, TimingMode::Stderr));
+        assert!(matches!(parse_mode("true").mode, TimingMode::Stderr));
     }
 
     #[test]
     fn parse_mode_file_path() -> Result<(), Box<dyn std::error::Error>> {
-        match parse_mode("/tmp/perl-lsp-timing.jsonl") {
+        match parse_mode("/tmp/perl-lsp-timing.jsonl").mode {
             TimingMode::File(path) => {
                 assert_eq!(path, PathBuf::from("/tmp/perl-lsp-timing.jsonl"));
                 Ok(())
             }
             _ => Err("expected File mode for a path value".into()),
+        }
+    }
+
+    /// `json` is documented as "machine-readable JSON", and every sink renders
+    /// through `format_span_json` — so it is the stderr sink, not a file path.
+    /// Before this it fell into the catch-all and opened a file literally named
+    /// `json` in the server's working directory (#16599).
+    #[test]
+    fn parse_mode_documented_json_is_the_stderr_sink_and_never_a_file() {
+        for raw in ["json", "JSON", "Json"] {
+            let parsed = parse_mode(raw);
+            assert!(
+                matches!(parsed.mode, TimingMode::Stderr),
+                "{raw:?} is documented as machine-readable JSON, which is what the stderr sink \
+                 emits; it must not select File mode"
+            );
+            assert!(
+                !matches!(parsed.mode, TimingMode::File(_)),
+                "{raw:?} must never become a file path (it would create a file named `json`)"
+            );
+            assert!(parsed.notice.is_none(), "{raw:?} is implemented, so it needs no notice");
+        }
+    }
+
+    /// `spans` is documented as human-readable span output, which does not
+    /// exist. It must not become a file named `spans`, and it must say so.
+    #[test]
+    fn parse_mode_documented_spans_is_not_a_file_and_carries_a_notice() {
+        let parsed = parse_mode("spans");
+        assert!(
+            matches!(parsed.mode, TimingMode::Stderr),
+            "`spans` must not select File mode (that created a file named `spans`)"
+        );
+        let notice = parsed
+            .notice
+            .expect("`spans` asks for an unimplemented format and must warn the operator");
+        assert!(
+            notice.contains("not implemented"),
+            "the notice must say the format is absent, not imply it worked: {notice}"
+        );
+        assert!(
+            notice.contains("file path"),
+            "the notice must offer the action that does work: {notice}"
+        );
+    }
+
+    /// The regression this whole change exists for, asserted at the level the
+    /// user observes: none of the documented tokens may select a bare relative
+    /// path, because that is the sink that silently created mystery files.
+    #[test]
+    fn no_documented_token_becomes_a_bare_relative_file_path() {
+        for raw in ["off", "0", "false", "stderr", "1", "true", "json", "spans"] {
+            let parsed = parse_mode(raw);
+            if let TimingMode::File(path) = &parsed.mode {
+                let rendered = path.display().to_string();
+                assert!(
+                    !(rendered == raw || rendered.eq_ignore_ascii_case(raw)),
+                    "documented value {raw:?} was taken as the file path {rendered:?} instead of a \
+                     sink; the server would create a file with that name"
+                );
+            }
         }
     }
 
