@@ -13,6 +13,10 @@ const PROVIDER_SKILLS: &[(&str, &str)] = &[
     ("Codex", ".agents/skills/publish-pr/SKILL.md"),
     ("Claude", ".claude/skills/publish-pr/SKILL.md"),
 ];
+const REVIEWER_SKILLS: &[(&str, &str)] = &[
+    ("Codex", ".agents/skills/review-pr/SKILL.md"),
+    ("Claude", ".claude/skills/review-pr/SKILL.md"),
+];
 const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     TEMPLATE_PATH,
     ".agents/skills/**",
@@ -414,6 +418,22 @@ fn validate_provider_skill(provider: &str, skill: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_reviewer_skill(provider: &str, skill: &str) -> Result<(), String> {
+    require_phrases(
+        section(skill, "## Required review procedure")?,
+        provider,
+        &[
+            "missing proof is not broken proof",
+            "cancelled is not broken",
+            "author marked hosted-only",
+            "local rust proof not run",
+            "hosted-only only when the author marked",
+            "candidate-attributable",
+        ],
+    )?;
+    Ok(())
+}
+
 #[test]
 fn publication_contract_is_current() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
@@ -426,6 +446,10 @@ fn publication_contract_is_current() -> Result<(), Box<dyn std::error::Error>> {
     for &(provider, path) in PROVIDER_SKILLS {
         let skill = read(&root, path)?;
         validate_provider_skill(provider, &skill).map_err(contract_error)?;
+    }
+    for &(provider, path) in REVIEWER_SKILLS {
+        let skill = read(&root, path)?;
+        validate_reviewer_skill(provider, &skill).map_err(contract_error)?;
     }
     Ok(())
 }
@@ -593,6 +617,15 @@ fn ratchet_rejects_collapsing_missing_and_broken_hosted_proof()
     assert!(
         validate_provider_skill("Codex", &skill_collapsed).is_err(),
         "dropping named hosted checks from the publication skill must fail"
+    );
+
+    let reviewer = read(&root, ".agents/skills/review-pr/SKILL.md")?;
+    let reviewer_collapsed =
+        reviewer.replacen("missing proof is not broken proof", "treat unrun cargo as blocking", 1);
+    assert_ne!(reviewer_collapsed, reviewer, "reviewer taxonomy mutation fixture must apply");
+    assert!(
+        validate_reviewer_skill("Codex", &reviewer_collapsed).is_err(),
+        "dropping missing-vs-broken classification from review-pr must fail"
     );
     Ok(())
 }
