@@ -18,13 +18,31 @@
 mod support;
 
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn error_code(response: &Value) -> Option<i64> {
     response.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64)
+}
+
+fn wait_for_message_containing(
+    harness: &mut LspHarness,
+    method: &str,
+    fragment: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("{method} containing {fragment:?} was not received").into());
+        }
+        let params = harness.wait_for_notification(method, remaining)?;
+        if params["message"].as_str().is_some_and(|message| message.contains(fragment)) {
+            return Ok(params);
+        }
+    }
 }
 
 /// A refused first didOpen has no stored document or response envelope. The
@@ -53,6 +71,25 @@ fn refused_first_did_open_notifies_the_client() -> TestResult {
     assert!(message.contains("was not opened"), "refusal must name the lost didOpen: {notice}");
     assert!(message.len() < 1_024, "refusal UI message must be bounded: {} bytes", message.len());
 
+    // The client may keep editing after the first open failed. Each refused
+    // change remains visible in its log without raising another popup.
+    harness.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": uri, "version": 2},
+            "contentChanges": [{"text": "x".repeat(ceiling + 1)}],
+        }),
+    );
+    let logged = wait_for_message_containing(&mut harness, "window/logMessage", uri)?;
+    assert!(
+        logged["message"].as_str().is_some_and(|message| message.contains(uri)),
+        "unassociated change refusal must reach the client log: {logged}"
+    );
+    assert!(
+        harness.drain_notifications(Some("window/showMessage"), 50).is_empty(),
+        "a refused change after an unopened document must not raise another popup"
+    );
+
     // Missing URI still gets a generic refusal; there is no response to a
     // notification, and no document identity can safely be inferred.
     harness
@@ -61,6 +98,19 @@ fn refused_first_did_open_notifies_the_client() -> TestResult {
     assert!(
         unknown["message"].as_str().is_some_and(|message| message.contains("could be identified")),
         "missing-URI refusal must still be visible: {unknown}"
+    );
+
+    harness.notify(
+        "textDocument/didChange",
+        json!({"contentChanges": [{"text": "x".repeat(ceiling + 1)}]}),
+    );
+    let unknown_change =
+        wait_for_message_containing(&mut harness, "window/logMessage", "could be identified")?;
+    assert!(
+        unknown_change["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("could be identified")),
+        "missing-URI change refusal must reach the client log: {unknown_change}"
     );
 
     // The URI itself can be the oversize input. It must identify the file

@@ -29,6 +29,8 @@
 //!
 //! A rejected first `didOpen` has no stored document and therefore no episode
 //! latch. It produces a bounded warning for that distinct open attempt (#16653).
+//! Later unassociated sync refusals go to `window/logMessage`, avoiding one
+//! popup per keystroke while still leaving a client-visible refusal.
 //!
 //! "Once per episode" for stored documents is derived from the document's own
 //! `full_sync_required` transition — no separate latch to miss a recovery
@@ -109,8 +111,8 @@ impl LspServer {
                 "Text-sync admission rejected without a textDocument.uri; nothing to invalidate"
             );
             if notify_client {
-                self.show_message_or_log(
-                    MessageType::Warning,
+                self.report_unstored_sync_refusal(
+                    method,
                     &format!("{method} was rejected before its document could be identified; no text was synchronized"),
                 );
             }
@@ -176,8 +178,8 @@ impl LspServer {
                 );
                 if notify_client {
                     let ceiling = text_sync_params_ceiling();
-                    self.show_message_or_log(
-                        MessageType::Warning,
+                    self.report_unstored_sync_refusal(
+                        method,
                         &format!(
                             "{method} for {} was rejected at the {ceiling}-byte text-sync limit; \
                              the document was not opened. Reopen or resend it below the limit",
@@ -209,6 +211,17 @@ impl LspServer {
                 mib(ceiling)
             ),
         );
+    }
+
+    /// First-open refusal needs user attention. Later notifications for a
+    /// document we never opened can repeat on every edit, so log those to the
+    /// client without repeating a popup.
+    fn report_unstored_sync_refusal(&self, method: &str, message: &str) {
+        if method == "textDocument/didOpen" {
+            self.show_message_or_log(MessageType::Warning, message);
+        } else if let Err(error) = self.log_message(MessageType::Warning, message) {
+            tracing::warn!(%error, %message, "Failed to report refused text sync to client log");
+        }
     }
 }
 
