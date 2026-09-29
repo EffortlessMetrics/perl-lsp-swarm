@@ -813,6 +813,58 @@ mod tests {
     }
 
     #[test]
+    fn run_returns_output_for_the_caller_to_report() -> anyhow::Result<()> {
+        // `run` must not print (#16906): it returns which presentation the
+        // CLI caller owes, and `Display` is the exact string both CLIs emit.
+        let dir =
+            std::env::temp_dir().join(format!("ux-receipt-run-contract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        let input = dir.join("ux.log");
+        std::fs::write(&input, "test result: ok. 1 passed; 0 failed\n")?;
+
+        let receipt_path = dir.join("out").join("receipt.json");
+        let output = super::run(UxRegressionReceiptConfig {
+            input: input.clone(),
+            receipt: Some(receipt_path.clone()),
+            sha: Some("abc123".to_string()),
+            exit_status_file: None,
+        })?;
+        assert!(
+            matches!(&output, super::UxRegressionReceiptOutput::Written(path) if path == &receipt_path),
+            "written path should round-trip through the output"
+        );
+        assert_eq!(
+            output.to_string(),
+            format!("Wrote UX regression receipt: {}", receipt_path.display())
+        );
+        let written = std::fs::read_to_string(&receipt_path)?;
+        assert!(
+            written.contains("ux_regression_receipt"),
+            "receipt file should hold the receipt JSON"
+        );
+
+        let output = super::run(UxRegressionReceiptConfig {
+            input,
+            receipt: None,
+            sha: Some("abc123".to_string()),
+            exit_status_file: None,
+        })?;
+        match &output {
+            super::UxRegressionReceiptOutput::Payload(payload) => {
+                assert!(!payload.is_empty());
+                assert_eq!(output.to_string(), *payload);
+            }
+            super::UxRegressionReceiptOutput::Written(_) => {
+                panic!("expected Payload when no receipt path is configured")
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
     fn classify_extracts_structured_fields() {
         // Uses the Rust 1.73+ panic format: "panicked at path:row:col:" (no quoted message).
         // The project toolchain is 1.95, so this is the format actual test output uses.
