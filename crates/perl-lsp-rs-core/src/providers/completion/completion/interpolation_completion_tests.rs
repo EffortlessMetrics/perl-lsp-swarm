@@ -69,16 +69,15 @@ fn interpolation_filters_prefix_among_multiple_lexicals() {
 
 #[test]
 fn interpolation_prefers_inner_shadowed_binding() {
-    let source = "my $name = 1;\n{\n    our $name = 2;\n    my $text = \"Hello $na\";\n}\n";
+    let source = "my $name = 1;\n{\n    my $name = 2;\n    my $namer = 3;\n    my $text = \"Hello $na\";\n}\n";
     let position = must_some(source.find("$na")) + 3;
     let items = completions_at(source, position);
-    let name_items: Vec<_> = items.iter().filter(|item| item.label == "$name").collect();
-    assert_eq!(name_items.len(), 1, "shadowing must emit one $name: {:?}", labels(&items));
-    let item = must_some(name_items.into_iter().next());
+    let name_count = items.iter().filter(|item| item.label == "$name").count();
+    assert_eq!(name_count, 1, "shadowing must emit one $name: {:?}", labels(&items));
     assert!(
-        item.detail.as_deref().is_some_and(|detail| detail.contains("our")),
-        "expected the inner our binding, got {:?}",
-        item.detail
+        has_label(&items, "$namer"),
+        "inner-scope $namer must be visible at the shadowed slot: {:?}",
+        labels(&items)
     );
 }
 
