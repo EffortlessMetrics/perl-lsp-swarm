@@ -131,8 +131,7 @@
           "digest": "3333333333333333333333333333333333333333333333333333333333333333",
           "size": 128,
           "candidate_id": "rehearsal-fixture",
-          "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "members": []
+          "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       ],
       "installed": [
@@ -181,5 +180,5 @@
   "published_channels": [],
   "release_cut": false,
   "status": "pass",
-  "receipt_digest": "1d0c53b30aae5bede52633116c6a0fbbbc6804ed913daff1e819e9f6c0a0d8a9"
+  "receipt_digest": "29ec02509b93ab2dbb09654f233ae18f432c90e43bf9b2286e853a1f721cfb73"
 }

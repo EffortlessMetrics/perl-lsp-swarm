@@ -125,14 +125,27 @@
       },
       "artifacts": [
         {
-          "role": "server_archive",
+          "role": "archive",
           "name": "perllsp-rehearsal-x86_64-unknown-linux-gnu.tar.gz",
           "kind": "artifact_bytes",
           "digest": "3333333333333333333333333333333333333333333333333333333333333333",
           "size": 128,
           "candidate_id": "rehearsal-fixture",
           "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "members": []
+          "members": [
+            {
+              "name": "perllsp",
+              "digest": "4444444444444444444444444444444444444444444444444444444444444444",
+              "size": 16,
+              "checksum": "4444444444444444444444444444444444444444444444444444444444444444"
+            },
+            {
+              "name": "perl-dap",
+              "digest": "5555555555555555555555555555555555555555555555555555555555555555",
+              "size": 16,
+              "checksum": "5555555555555555555555555555555555555555555555555555555555555555"
+            }
+          ]
         }
       ],
       "installed": [
@@ -174,12 +187,14 @@
     "status": "pass"
   },
   "mutations": [],
-  "limitations": [],
+  "limitations": [
+    "wrote /tmp/run-123/output"
+  ],
   "owning_issues": [
     "#16785"
   ],
   "published_channels": [],
   "release_cut": false,
   "status": "pass",
-  "receipt_digest": "1d0c53b30aae5bede52633116c6a0fbbbc6804ed913daff1e819e9f6c0a0d8a9"
+  "receipt_digest": "c0758ce1dc5d6613ea12f762ce89676499f36612dd359dfa451c825b61e9d73a"
 }

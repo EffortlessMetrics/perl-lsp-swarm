@@ -6,8 +6,8 @@ use std::path::Path;
 use serde_json::Value;
 
 use super::model::{
-    Availability, PathRole, ReasonCode, RehearsalError, RehearsalReceipt, SCHEMA_PATH, Status,
-    compute_receipt_digest,
+    Availability, Cleanup, CleanupDisposition, PathRole, ReasonCode, RehearsalError,
+    RehearsalReceipt, SCHEMA_PATH, Status, TreeStatus, compute_receipt_digest,
 };
 
 const MAX_DURABLE_STRING: usize = 512;
@@ -109,6 +109,14 @@ fn reject_identities(receipt: &RehearsalReceipt) -> Result<(), RehearsalError> {
             ),
         ));
     }
+    if matches!(receipt.status, Status::Pass)
+        && !matches!(receipt.repository.tree_status, TreeStatus::Clean)
+    {
+        return Err(RehearsalError::new(
+            ReasonCode::UncleanTreePass,
+            "overall pass requires a clean tree before artifacts may claim exact-HEAD provenance",
+        ));
+    }
     for stage in &receipt.stages {
         for artifact in &stage.artifacts {
             if artifact.candidate_id != receipt.candidate_id {
@@ -162,6 +170,19 @@ fn reject_instruments(receipt: &RehearsalReceipt) -> Result<(), RehearsalError> 
                 format!("stage {} records {} as pass", stage.id, instrument.outcome.as_str()),
             ));
         }
+        if matches!(stage.status, Status::Pass) && instrument.exit_code != Some(0) {
+            return Err(RehearsalError::new(
+                ReasonCode::NonzeroExitPass,
+                format!(
+                    "stage {} records pass without a successful exit (exit_code={})",
+                    stage.id,
+                    match instrument.exit_code {
+                        Some(code) => code.to_string(),
+                        None => "none".to_string(),
+                    }
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -169,13 +190,8 @@ fn reject_instruments(receipt: &RehearsalReceipt) -> Result<(), RehearsalError> 
 fn reject_artifacts(receipt: &RehearsalReceipt) -> Result<(), RehearsalError> {
     for stage in &receipt.stages {
         for artifact in &stage.artifacts {
+            // Archive-ness is `members` presence, not the producer-chosen role string.
             let Some(members) = artifact.members.as_deref() else {
-                if artifact.role == "archive" {
-                    return Err(RehearsalError::new(
-                        ReasonCode::MissingArchiveMember,
-                        format!("archive {} declares no members", artifact.name),
-                    ));
-                }
                 continue;
             };
             if members.is_empty() {
@@ -224,6 +240,13 @@ fn reject_artifacts(receipt: &RehearsalReceipt) -> Result<(), RehearsalError> {
 
 fn reject_installed(receipt: &RehearsalReceipt) -> Result<(), RehearsalError> {
     for stage in &receipt.stages {
+        let member_digests: BTreeSet<&str> = stage
+            .artifacts
+            .iter()
+            .filter_map(|artifact| artifact.members.as_deref())
+            .flatten()
+            .map(|member| member.digest.as_str())
+            .collect();
         for installed in &stage.installed {
             if matches!(stage.status, Status::Pass) && !installed.path_role.is_rehearsal_install() {
                 return Err(RehearsalError::new(
@@ -233,6 +256,18 @@ fn reject_installed(receipt: &RehearsalReceipt) -> Result<(), RehearsalError> {
                         stage.id,
                         installed.role,
                         installed.path_role.as_str()
+                    ),
+                ));
+            }
+            if matches!(stage.status, Status::Pass)
+                && matches!(installed.path_role, PathRole::ArchiveExtracted)
+                && !member_digests.contains(installed.digest.as_str())
+            {
+                return Err(RehearsalError::new(
+                    ReasonCode::InstalledMemberMismatch,
+                    format!(
+                        "stage {} installed {} digest {} is not a member of the inspected archive",
+                        stage.id, installed.role, installed.digest
                     ),
                 ));
             }
@@ -271,14 +306,26 @@ fn reject_installed(receipt: &RehearsalReceipt) -> Result<(), RehearsalError> {
     Ok(())
 }
 
+fn cleanup_is_complete(cleanup: &Cleanup) -> bool {
+    matches!(cleanup.disposition, CleanupDisposition::Cleaned)
+        && matches!(cleanup.status, Status::Pass)
+}
+
+fn cleanup_aggregate_status(cleanup: &Cleanup) -> Status {
+    match cleanup.disposition {
+        CleanupDisposition::Cleaned => cleanup.status,
+        CleanupDisposition::Failed => Status::Failed,
+        CleanupDisposition::Skipped | CleanupDisposition::NotProven => {
+            cleanup.status.worse(Status::NotProven)
+        }
+    }
+}
+
 fn reject_cleanup_and_mutations(receipt: &RehearsalReceipt) -> Result<(), RehearsalError> {
-    if matches!(receipt.status, Status::Pass)
-        && (matches!(receipt.cleanup.status, Status::Failed)
-            || matches!(receipt.cleanup.disposition, super::model::CleanupDisposition::Failed))
-    {
+    if matches!(receipt.status, Status::Pass) && !cleanup_is_complete(&receipt.cleanup) {
         return Err(RehearsalError::new(
             ReasonCode::FailedCleanupHidden,
-            "failed cleanup cannot be hidden by an otherwise successful journey",
+            "incomplete or unproven cleanup cannot be hidden by an otherwise successful journey",
         ));
     }
     if !receipt.mutations.is_empty() {
@@ -316,10 +363,7 @@ fn reject_status_aggregation(receipt: &RehearsalReceipt) -> Result<(), Rehearsal
             ));
         }
     }
-    aggregate = aggregate.worse(receipt.cleanup.status);
-    if matches!(receipt.cleanup.disposition, super::model::CleanupDisposition::Failed) {
-        aggregate = aggregate.worse(Status::Failed);
-    }
+    aggregate = aggregate.worse(cleanup_aggregate_status(&receipt.cleanup));
     if receipt.status.rank() < aggregate.rank() {
         if first_blocking.is_some() && matches!(receipt.status, Status::Pass) {
             return Err(RehearsalError::new(
@@ -370,6 +414,21 @@ fn scan_privacy(value: &Value, path: &str) -> Result<(), RehearsalError> {
         }
         Value::Object(map) => {
             for (key, item) in map {
+                if key.len() > MAX_DURABLE_STRING {
+                    return Err(RehearsalError::new(
+                        ReasonCode::PrivacyLeak,
+                        format!(
+                            "{path} object key is unbounded durable text ({} bytes)",
+                            key.len()
+                        ),
+                    ));
+                }
+                if let Some(reason) = privacy_hit(key) {
+                    return Err(RehearsalError::new(
+                        ReasonCode::PrivacyLeak,
+                        format!("{path} object key contains {reason}"),
+                    ));
+                }
                 scan_privacy(item, &format!("{path}.{key}"))?;
             }
             Ok(())
@@ -384,8 +443,11 @@ fn privacy_hit(text: &str) -> Option<&'static str> {
         || lower.contains("/users/")
         || lower.contains("\\users\\")
         || lower.contains("/root/")
+        || lower.contains("/tmp")
+        || lower.contains("\\temp\\")
+        || lower.contains("/var/folders/")
     {
-        return Some("a home or private filesystem path");
+        return Some("a home, temporary, or private filesystem path");
     }
     if lower.contains("ghp_")
         || lower.contains("gho_")

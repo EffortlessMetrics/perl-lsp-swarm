@@ -68,15 +68,34 @@ pub(crate) fn fixture_cases() -> Vec<FixtureCase> {
         reject("skipped_stage_pass.json", ReasonCode::NonTerminalStagePass, skipped_stage_pass),
         reject("malformed_stage_pass.json", ReasonCode::NonTerminalStagePass, malformed_stage_pass),
         reject("stale_stage_pass.json", ReasonCode::NonTerminalStagePass, stale_stage_pass),
+        reject("nonzero_exit_pass.json", ReasonCode::NonzeroExitPass, nonzero_exit_pass),
+        reject("unclean_tree_pass.json", ReasonCode::UncleanTreePass, unclean_tree_pass),
+        reject(
+            "installed_member_mismatch.json",
+            ReasonCode::InstalledMemberMismatch,
+            installed_member_mismatch,
+        ),
+        reject(
+            "omitted_archive_members.json",
+            ReasonCode::InstalledMemberMismatch,
+            omitted_archive_members,
+        ),
         reject(
             "failed_cleanup_hidden.json",
             ReasonCode::FailedCleanupHidden,
             failed_cleanup_hidden,
         ),
+        reject(
+            "unproven_cleanup_pass.json",
+            ReasonCode::FailedCleanupHidden,
+            unproven_cleanup_pass,
+        ),
         reject("mutation_tag.json", ReasonCode::MutationAttempted, mutation_tag),
         reject("privacy_home_path.json", ReasonCode::PrivacyLeak, privacy_home_path),
         reject("privacy_credential.json", ReasonCode::PrivacyLeak, privacy_credential),
         reject("privacy_unbounded_log.json", ReasonCode::PrivacyLeak, privacy_unbounded_log),
+        reject("privacy_tmp_path.json", ReasonCode::PrivacyLeak, privacy_tmp_path),
+        reject("privacy_object_key.json", ReasonCode::PrivacyLeak, privacy_object_key),
         reject("compensating_stage.json", ReasonCode::CompensatingStage, compensating_stage),
         reject(
             "published_channels_non_empty.json",
@@ -505,6 +524,7 @@ fn missing_archive_member() -> Result<RehearsalReceipt, RehearsalError> {
         if let Some(archive) = receipt.stages.iter_mut().find(|stage| stage.id == "archive_members")
             && let Some(artifact) = archive.artifacts.first_mut()
         {
+            artifact.role = "server_archive".to_string();
             artifact.members = Some(Vec::new());
         }
     })
@@ -619,10 +639,58 @@ fn stale_stage_pass() -> Result<RehearsalReceipt, RehearsalError> {
     non_terminal_pass(Outcome::Stale)
 }
 
+fn nonzero_exit_pass() -> Result<RehearsalReceipt, RehearsalError> {
+    mutate_pass(|receipt| {
+        if let Some(package) = receipt.stages.iter_mut().find(|stage| stage.id == "package_install")
+        {
+            package.instrument.exit_code = Some(1);
+        }
+    })
+}
+
+fn unclean_tree_pass() -> Result<RehearsalReceipt, RehearsalError> {
+    mutate_pass(|receipt| {
+        receipt.repository.tree_status = TreeStatus::Dirty;
+    })
+}
+
+fn installed_member_mismatch() -> Result<RehearsalReceipt, RehearsalError> {
+    mutate_pass(|receipt| {
+        if let Some(archive) = receipt.stages.iter_mut().find(|stage| stage.id == "archive_members")
+            && let Some(artifact) = archive.artifacts.first_mut()
+        {
+            artifact.members = Some(vec![ArchiveMember {
+                name: "unrelated.txt".to_string(),
+                digest: sha(0x99),
+                size: 4,
+                checksum: Some(sha(0x99)),
+            }]);
+        }
+    })
+}
+
+fn omitted_archive_members() -> Result<RehearsalReceipt, RehearsalError> {
+    mutate_pass(|receipt| {
+        if let Some(archive) = receipt.stages.iter_mut().find(|stage| stage.id == "archive_members")
+            && let Some(artifact) = archive.artifacts.first_mut()
+        {
+            artifact.role = "server_archive".to_string();
+            artifact.members = None;
+        }
+    })
+}
+
 fn failed_cleanup_hidden() -> Result<RehearsalReceipt, RehearsalError> {
     mutate_pass(|receipt| {
         receipt.cleanup.disposition = CleanupDisposition::Failed;
         receipt.cleanup.status = Status::Failed;
+    })
+}
+
+fn unproven_cleanup_pass() -> Result<RehearsalReceipt, RehearsalError> {
+    mutate_pass(|receipt| {
+        receipt.cleanup.disposition = CleanupDisposition::NotProven;
+        receipt.cleanup.status = Status::Pass;
     })
 }
 
@@ -647,6 +715,21 @@ fn privacy_credential() -> Result<RehearsalReceipt, RehearsalError> {
 fn privacy_unbounded_log() -> Result<RehearsalReceipt, RehearsalError> {
     mutate_pass(|receipt| {
         receipt.limitations.push("x".repeat(600));
+    })
+}
+
+fn privacy_tmp_path() -> Result<RehearsalReceipt, RehearsalError> {
+    mutate_pass(|receipt| {
+        receipt.limitations.push("wrote /tmp/run-123/output".to_string());
+    })
+}
+
+fn privacy_object_key() -> Result<RehearsalReceipt, RehearsalError> {
+    mutate_pass(|receipt| {
+        receipt
+            .repository
+            .toolchains
+            .insert("token=ghp_exampleleaknotarealsecret".to_string(), "1.95.0".to_string());
     })
 }
 

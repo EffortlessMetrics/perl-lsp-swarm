@@ -244,6 +244,7 @@
         "source_sha": { "$ref": "#/$defs/git_sha" },
         "members": {
           "type": "array",
+          "description": "Presence of this field, not artifact.role, identifies an archive. Empty member lists are rejected. ArchiveExtracted installed digests must match a member.",
           "items": { "$ref": "#/$defs/archive_member" }
         },
         "declared_server_identity": {
