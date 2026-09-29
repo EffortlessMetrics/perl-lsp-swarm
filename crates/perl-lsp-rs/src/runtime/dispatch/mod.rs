@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn refused_oversize_did_save_leaves_an_in_sync_document_synchronized()
+    fn refused_oversize_did_save_text_desynchronizes_the_open_document()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = initialized_server();
         let uri = "file:///oversize-did-save.pl";
@@ -561,10 +561,52 @@ mod tests {
 
         assert!(response.is_none(), "a refused notification must not answer: {response:?}");
         assert!(
-            !is_desynchronized(&server, uri),
-            "didSave carries no document version authority, so refusing it does not put the \
-             client's buffer and the server's copy in disagreement"
+            is_desynchronized(&server, uri),
+            "didSave with text is an authoritative replacement and must fail closed"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn refused_stale_did_change_does_not_desynchronize_current_text()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = initialized_server();
+        let uri = "file:///oversize-stale-change.pl";
+        server.test_apply_did_open(uri, "my $x = 2;\n", 2)?;
+        let _response = server.handle_request(notification(
+            "textDocument/didChange",
+            Some(json!({
+                "textDocument": {"uri": uri, "version": 1},
+                "contentChanges": [{"text": oversize_payload()}],
+            })),
+        ));
+        assert!(!is_desynchronized(&server, uri), "obsolete change must not pause current text");
+        Ok(())
+    }
+
+    #[test]
+    fn refused_change_version_blocks_older_full_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = initialized_server();
+        let uri = "file:///oversize-version-watermark.pl";
+        server.test_apply_did_open(uri, "my $x = 1;\n", 1)?;
+        let _response = server.handle_request(notification(
+            "textDocument/didChange",
+            Some(json!({
+                "textDocument": {"uri": uri, "version": 3},
+                "contentChanges": [{"text": oversize_payload()}],
+            })),
+        ));
+        assert!(is_desynchronized(&server, uri));
+        server.handle_did_change(Some(json!({
+            "textDocument": {"uri": uri, "version": 2},
+            "contentChanges": [{"text": "my $x = 2;\n"}],
+        })))?;
+        assert!(is_desynchronized(&server, uri), "older replacement must not recover refused v3");
+        let documents = server.documents.lock();
+        let document = server.get_document(&documents, uri).ok_or("open document")?;
+        assert_eq!(document.version, 3);
+        assert_eq!(document.text, "my $x = 1;\n");
         Ok(())
     }
 

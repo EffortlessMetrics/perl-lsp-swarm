@@ -16,6 +16,10 @@ use super::super::{
 use super::request_cancellation::{handle_cancel_notification, register_request_cancellation};
 use crate::runtime::window::MessageType;
 use crate::security::{is_text_sync_method, refusal_desynchronizes_document};
+use crate::runtime::diagnostics_sink::{PushDiagnosticIdentity, PushDiagnosticsDisposition};
+use crate::runtime::document_symbols_sink::DocumentSymbolIdentity;
+use crate::runtime::readiness::ParserAcceptanceClass;
+use serde_json::json;
 
 pub(super) struct RequestContext {
     pub(super) id: Option<Value>,
@@ -145,15 +149,15 @@ fn report_refused_text_sync_notification(
         return;
     };
 
-    let disposition = if refusal_desynchronizes_document(method) {
-        desynchronize_open_document(server, uri)
+    let disposition = if refusal_desynchronizes_document(method, params) {
+        desynchronize_open_document(server, uri, method, params)
     } else {
         RefusalDisposition::NothingToDesynchronize
     };
 
     let recovery = match disposition {
         RefusalDisposition::NothingToDesynchronize => "",
-        RefusalDisposition::EnteredDesync => " Analysis is paused until the document is reopened.",
+        RefusalDisposition::EnteredDesync => " Analysis is paused until an accepted full replacement or reopen.",
         RefusalDisposition::AlreadyDesynchronized => return,
     };
 
@@ -164,11 +168,22 @@ fn report_refused_text_sync_notification(
 }
 
 /// Enter full-sync desynchronization for `uri` when this server holds it open.
-fn desynchronize_open_document(server: &LspServer, uri: &str) -> RefusalDisposition {
+fn desynchronize_open_document(server: &LspServer, uri: &str, method: &str, params: &Value) -> RefusalDisposition {
     let mut documents = server.documents.lock();
     let Some(document) = server.get_document_mut(&mut documents, uri) else {
         return RefusalDisposition::NothingToDesynchronize;
     };
+    if method == "textDocument/didChange" {
+        let incoming_version = params.pointer("/textDocument/version")
+            .and_then(Value::as_i64)
+            .and_then(|version| i32::try_from(version).ok());
+        if let Some(version) = incoming_version {
+            if version <= document.version {
+                return RefusalDisposition::NothingToDesynchronize;
+            }
+            document.observe_change_version(version);
+        }
+    }
     if document.full_sync_required() {
         return RefusalDisposition::AlreadyDesynchronized;
     }
@@ -178,6 +193,24 @@ fn desynchronize_open_document(server: &LspServer, uri: &str) -> RefusalDisposit
     // (`CONTENT_MODIFIED`), so a stale snapshot can no longer be returned as
     // edits against a buffer holding different bytes.
     document.mark_full_sync_required();
+    let normalized_uri = server.normalize_uri_key(uri);
+    let generation = document.current_generation();
+    let instance = document.generation.clone();
+    server.install_active_document_pending(&normalized_uri, uri, &instance, generation);
+    server.mark_active_document_parser_accepted(
+        &normalized_uri, &instance, generation, ParserAcceptanceClass::Failed,
+        Some("full_sync_required".to_string()),
+    );
+    let symbols = DocumentSymbolIdentity::for_document(&normalized_uri, &instance, generation);
+    let diagnostics = PushDiagnosticIdentity::for_document(
+        &normalized_uri, &instance, generation,
+        server.workspace_identity_generation.load(Ordering::SeqCst),
+    ).with_folder_config_generation(server.project_config_generation_for_uri(&normalized_uri));
+    drop(documents);
+    let _outcome = server.commit_push_diagnostics(
+        &diagnostics, json!({"uri": uri, "diagnostics": []}), PushDiagnosticsDisposition::Clear,
+    );
+    server.clear_document_symbols_for_identity(&symbols);
     RefusalDisposition::EnteredDesync
 }
 

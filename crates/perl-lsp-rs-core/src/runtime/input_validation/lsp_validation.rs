@@ -45,13 +45,12 @@ pub fn is_text_sync_method(method: &str) -> bool {
 /// so every later fact computed from the stored text is computed from different
 /// bytes than the client holds.
 ///
-/// `didSave` is deliberately excluded. LSP defines it as a best-effort "the file
-/// was written" event that carries no document version authority, so refusing
-/// it does not put the two copies in disagreement. Marking such a document
-/// desynchronized would pause analysis of a document that is still in sync.
+/// A `didSave` carrying `text` is also a full replacement in this server. A
+/// save without text does not change our stored buffer.
 #[must_use]
-pub fn refusal_desynchronizes_document(method: &str) -> bool {
+pub fn refusal_desynchronizes_document(method: &str, params: &serde_json::Value) -> bool {
     matches!(method, "textDocument/didOpen" | "textDocument/didChange")
+        || (method == "textDocument/didSave" && params.get("text").and_then(serde_json::Value::as_str).is_some())
 }
 
 /// Serialized-params ceiling for `method`.
