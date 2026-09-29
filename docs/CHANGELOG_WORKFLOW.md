@@ -317,13 +317,13 @@ cargo xtask release-turnkey <0.x.y>
 ### Alternative Manual Release Process
 
 ```bash
-# 1. Generate changelog content
-# Use the same canonical flow entrypoint:
-cargo xtask release-turnkey <0.x.y> --no-auto-merge --no-wait-release
+# 1. Generate the version-bump PR and stop at a typed manual-merge handoff.
+#    This does not dispatch Release Orchestration.
+cargo xtask release-turnkey <0.x.y> --no-auto-merge
 
-# 2. Manually review and merge the generated version bump PR.
+# 2. Manually review and merge the generated version bump PR at the expected head.
 
-# 3. Dispatch Release Orchestration manually
+# 3. Dispatch Release Orchestration only after that preparation has landed.
 gh workflow run "Release Orchestration" \
   --ref master \
   --field version=<0.x.y> \
