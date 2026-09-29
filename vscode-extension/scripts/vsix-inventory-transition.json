@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16737,
-  "reason": "Account for formatter README growth and inherited current-main bundle growth after the prior accepted baseline",
-  "base_baseline_file_sha256": "3772422ae6a8dc6bd74d46c8b963e017a74dfe9513cd44a44ac12922150d27cb",
-  "candidate_baseline_file_sha256": "bd08b29724da375f83d31e1920f8692a7ce57b89fc17f6b60381cfa0213eda9d",
-  "base_inventory_sha256": "d893827a555e6cff2da2d5bee6329797def48684844fdd8543b5635aa7574ee9",
-  "candidate_inventory_sha256": "a6f6d503be4931ed4ec9741312227e3a53a60160a577811d8e6b73f882159e18"
+  "owner_issue": 16744,
+  "reason": "Reconcile exact Linux VSIX member growth from #16515/#16513 manifest, localization and README edits, #16573 bundled update integration, and #16618 debug trusted-roots manifest, changelog and bundle edits; 29 members, 1891758 bytes. Preserve the package growth ratchet and independent installed smoke.",
+  "base_baseline_file_sha256": "dee29a3954eae8a0a8f3d7591190077b0ff0d31539c13801c53c4d4e5551c2ef",
+  "candidate_baseline_file_sha256": "3772422ae6a8dc6bd74d46c8b963e017a74dfe9513cd44a44ac12922150d27cb",
+  "base_inventory_sha256": "b787680cca6862709a99f04b8844141527e55e3347ef3da97df2502ffb951bd8",
+  "candidate_inventory_sha256": "d893827a555e6cff2da2d5bee6329797def48684844fdd8543b5635aa7574ee9"
 }
