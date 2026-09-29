@@ -23,7 +23,7 @@ schema_version = 1
 policy = "code-action-generation-ledger"
 owner = "perl-lsp maintainers"
 status = "advisory"
-updated = "2026-09-07"
+updated = "2026-09-29"
 
 convergence_controller = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8393"
 provider_contract = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8068"
@@ -415,10 +415,10 @@ proof_gap = "Inherits the canonical row's gap: no corpus fixture reaches subrout
 generation = "provider_original"
 family = "refactor.extract:basic_fallback"
 disposition = "shadow_only_candidate"
-notes = "The literal 'Extract to variable' / 'Extract to function' arms in refactors.rs are guarded by `actions.is_empty()`, so they can only run when the nested enhanced generation returned nothing. They are not an independent production authority."
+notes = "Only the literal 'Extract to variable' arm remains in refactors.rs. It is guarded by `actions.is_empty()`, so it can run only when the nested enhanced generation returned nothing. #16779 removed the unsafe basic Block 'Extract to function' arm; the enhanced subroutine extractor remains separate."
 retirement_blockers = []
 parity_fixtures = []
-proof_gap = "Unreachable by construction from any fixture that also reaches the enhanced generation: the guard runs only when the nested enhanced call returned nothing, and on every selection that produces an extract action the enhanced generation answers first. Proving this arm needs a node shape the enhanced provider declines but refactors.rs accepts, which no corpus fixture has found. Being shadow_only_candidate, #9190 can delete it without parity evidence."
+proof_gap = "No parity corpus fixture isolates the remaining basic variable arm after the enhanced provider declines. #16779's real code-action regression reached the former basic function arm before its removal; it does not prove variable fallback parity. Being shadow_only_candidate, #9190 can delete the remaining arm without parity evidence."
 
 [[route]]
 generation = "disabled_extract_placeholder"
