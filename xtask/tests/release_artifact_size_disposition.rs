@@ -15,7 +15,7 @@ mod policy;
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Result, anyhow, ensure};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -261,7 +261,8 @@ fn a_serialized_waiting_borderline_receipt_confirms_after_reload() -> Result<()>
         })
         .to_string(),
     )?;
-    let loaded = load_prior_receipt(&path).context("reload a full-shaped prior receipt")?;
+    let loaded = load_prior_receipt(&path)
+        .map_err(|error| anyhow!("reload a full-shaped prior receipt: {error}"))?;
     ensure!(
         confirm(ARM, SHA_A, LOCK_A, &loaded).is_ok(),
         "a same-subject waiting borderline must confirm after JSON round-trip"
