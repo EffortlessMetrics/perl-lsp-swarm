@@ -53,6 +53,8 @@ pub mod env;
 pub mod observation;
 pub mod project_fixture;
 pub mod recorder;
+/// Structured evidence for an exact-subject UX regression run.
+pub mod regression_receipt;
 pub mod reverse_request_fixture;
 pub mod scorecard;
 pub mod server_request_fixture;

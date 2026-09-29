@@ -353,6 +353,48 @@ fn unavailable_harness_has_no_executed_test_receipt() -> Result<()> {
             .ok_or_else(|| anyhow!("{name} needs an availability condition"))?;
         assert!(condition.contains("harness_available == 'true'"), "{name}: {condition}");
     }
+    let fail = named_step(job_steps, "Fail UX regression gate when harness is unavailable")?;
+    let condition = fail.get("if").and_then(Value::as_str).unwrap_or_default();
+    assert!(condition.contains("harness_available != 'true'"));
+    assert_eq!(fail.get("run").and_then(Value::as_str).map(str::trim), Some("exit 1"));
+    Ok(())
+}
+
+#[test]
+fn critical_path_receipt_uses_existing_ux_crate_build() -> Result<()> {
+    let wf = workflow("ux-regression-gate.yml")?;
+    let run = run_step(steps(&wf, "ux-regression-gate")?, "Emit structured UX regression receipt")?;
+    assert!(
+        run.contains("cargo run -p perl-lsp-ux-tests --bin ux-regression-receipt --locked --"),
+        "gate receipt must use the already-built UX crate"
+    );
+    assert!(run.contains("--exit-status-file target/receipts/ux-regression.exit"));
+    assert!(run.contains("--sha \"$TESTED_SHA\""));
+    Ok(())
+}
+
+#[test]
+fn foreign_or_malformed_receipt_sha_is_rejected_by_both_verifiers() -> Result<()> {
+    for (file, job) in WORKFLOWS {
+        let wf = workflow(file)?;
+        let verifier = run_step(steps(&wf, job)?, "Verify receipt subject identity")?;
+        let temp = tempfile::tempdir()?;
+        let receipt = receipt_path(temp.path(), "json");
+        fs::create_dir_all(receipt.parent().ok_or_else(|| anyhow!("receipt parent"))?)?;
+        fs::write(receipt_path(temp.path(), "instrumentation.exit"), "0\n")?;
+        for subject in ["foreign-candidate", "not-a-sha"] {
+            fs::write(
+                &receipt,
+                serde_json::json!({ "sha": subject, "result": "pass" }).to_string(),
+            )?;
+            let output = execute_verifier(verifier, temp.path())?;
+            assert!(!output.status.success(), "{file} accepted subject {subject}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("does not match"),
+                "{file} must identify the foreign or malformed subject"
+            );
+        }
+    }
     Ok(())
 }
 
