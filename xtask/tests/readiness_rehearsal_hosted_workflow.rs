@@ -121,8 +121,16 @@ fn yaml_invokes_repository_command_and_does_not_reimplement_verdicts() -> Result
         "row job must invoke hosted-row"
     );
     ensure!(
-        bodies.contains("cargo run --locked -p xtask -- readiness-rehearsal hosted-fanin"),
-        "fan-in job must invoke hosted-fanin"
+        bodies.contains("--head \"$GITHUB_SHA\""),
+        "fan-in must bind rows to the current GITHUB_SHA"
+    );
+    ensure!(
+        bodies.contains("--run-id \"$GITHUB_RUN_ID\""),
+        "fan-in must bind rows to the current GITHUB_RUN_ID"
+    );
+    ensure!(
+        bodies.contains("--attempt \"$GITHUB_RUN_ATTEMPT\""),
+        "fan-in must bind rows to the current GITHUB_RUN_ATTEMPT"
     );
     for forbidden in [
         "cargo package",
@@ -202,6 +210,33 @@ fn fan_in_runs_when_producers_fail_or_are_cancelled() -> Result<()> {
     ensure!(
         text(upload, "if")? == "always()",
         "row upload must run after a failed hosted-row so fan-in sees not_proven instead of missing"
+    );
+
+    let fanin_steps =
+        get(fanin, "steps")?.as_sequence().ok_or_else(|| anyhow!("fanin steps missing"))?;
+    ensure!(
+        fanin_steps
+            .iter()
+            .all(|step| text(step, "name").map_or(true, |name| name != "Download plan")),
+        "fan-in must regenerate the admitted plan locally so a failed-job rerun is not blocked by a missing attempt-scoped plan artifact"
+    );
+    let fanin_run = fanin_steps
+        .iter()
+        .find(|step| text(step, "name").is_ok_and(|name| name == "Fan-in exact producers"))
+        .and_then(|step| text(step, "run").ok())
+        .ok_or_else(|| anyhow!("missing fan-in run step"))?;
+    ensure!(
+        fanin_run.contains("status=$?") && fanin_run.contains("GITHUB_STEP_SUMMARY"),
+        "fan-in must keep the step summary when the command exits non-green"
+    );
+    let admit = fanin_steps
+        .iter()
+        .find(|step| text(step, "name").is_ok_and(|name| name == "Admit hosted matrix"))
+        .and_then(|step| text(step, "run").ok())
+        .ok_or_else(|| anyhow!("fan-in must admit the matrix from source"))?;
+    ensure!(
+        admit.contains("readiness-rehearsal hosted-plan"),
+        "fan-in must invoke hosted-plan from the current checkout"
     );
     Ok(())
 }

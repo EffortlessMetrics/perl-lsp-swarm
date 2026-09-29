@@ -145,6 +145,15 @@ pub enum ReadinessRehearsalCommand {
         /// Directory tree containing downloaded row artifacts.
         #[arg(long)]
         rows_dir: PathBuf,
+        /// Exact repository SHA this run claims.
+        #[arg(long)]
+        head: String,
+        /// GitHub Actions run id this fan-in claims.
+        #[arg(long)]
+        run_id: String,
+        /// GitHub Actions run attempt this fan-in claims.
+        #[arg(long)]
+        attempt: u32,
         /// Fan-in JSON receipt.
         #[arg(long)]
         out: PathBuf,
@@ -199,9 +208,19 @@ pub fn run(command: ReadinessRehearsalCommand) -> Result<()> {
                 )
             }
         }
-        ReadinessRehearsalCommand::HostedFanin { plan, rows_dir, out, summary } => {
+        ReadinessRehearsalCommand::HostedFanin {
+            plan,
+            rows_dir,
+            head,
+            run_id,
+            attempt,
+            out,
+            summary,
+        } => {
             let plan = read_plan(&plan)?;
-            let fanin = compile_hosted_fanin(&plan, &rows_dir)?;
+            let expected =
+                FaninExpectedIdentity { repository_sha: head, run_id, run_attempt: attempt };
+            let fanin = compile_hosted_fanin(&plan, &rows_dir, &expected)?;
             write_json(&out, &fanin)?;
             if let Some(summary) = summary {
                 fs::write(&summary, render_fanin_markdown(&fanin))
@@ -399,15 +418,14 @@ impl HostedRowReceipt {
 
 /// Opaque-plus-guard view of a sibling rehearsal receipt. Unknown fields are
 /// ignored so #16785 can grow the product schema without a hosted-layer fork.
-#[derive(Debug, Clone, Default, Deserialize)]
+///
+/// Publication and cleanup guards are `Option` with no serde default: omitted
+/// fields stay `None` and cannot be treated as empty/`false`/`pass`.
+#[derive(Debug, Clone, Deserialize)]
 struct RehearsalReceiptView {
-    #[serde(default)]
-    published_channels: Vec<String>,
-    #[serde(default)]
-    release_cut: bool,
-    #[serde(default)]
+    published_channels: Option<Vec<String>>,
+    release_cut: Option<bool>,
     status: Option<String>,
-    #[serde(default)]
     cleanup: Option<String>,
 }
 
@@ -667,29 +685,61 @@ pub fn compile_hosted_row(request: &HostedRowRequest) -> Result<HostedRowReceipt
             }
             InnerReceiptInspect::Usable { digest, view } => {
                 rehearsal_receipt_digest = Some(digest);
-                published_channels = view.published_channels;
-                release_cut = view.release_cut;
                 rehearsal_status = view.status.clone();
-                if !published_channels.is_empty() {
-                    limitations.push(Limitation {
-                        code: "published_channels_not_empty".to_string(),
+                match view.published_channels {
+                    Some(channels) => {
+                        published_channels = channels;
+                        if !published_channels.is_empty() {
+                            limitations.push(Limitation {
+                                code: "published_channels_not_empty".to_string(),
+                                owning_issue: CONTROLLING_ISSUE,
+                                message: format!(
+                                    "inner receipt published_channels={published_channels:?}"
+                                ),
+                            });
+                        }
+                    }
+                    None => limitations.push(Limitation {
+                        code: "omitted_published_channels".to_string(),
                         owning_issue: CONTROLLING_ISSUE,
-                        message: format!("inner receipt published_channels={published_channels:?}"),
-                    });
+                        message: "inner receipt omitted published_channels; absence is not proof of no publication".to_string(),
+                    }),
                 }
-                if release_cut {
-                    limitations.push(Limitation {
-                        code: "release_cut_true".to_string(),
+                match view.release_cut {
+                    Some(cut) => {
+                        release_cut = cut;
+                        if release_cut {
+                            limitations.push(Limitation {
+                                code: "release_cut_true".to_string(),
+                                owning_issue: CONTROLLING_ISSUE,
+                                message: "inner receipt set release_cut=true".to_string(),
+                            });
+                        }
+                    }
+                    None => limitations.push(Limitation {
+                        code: "omitted_release_cut".to_string(),
                         owning_issue: CONTROLLING_ISSUE,
-                        message: "inner receipt set release_cut=true".to_string(),
-                    });
+                        message: "inner receipt omitted release_cut; absence is not proof that no release was cut".to_string(),
+                    }),
                 }
-                if view.cleanup.as_deref() == Some("failed") {
-                    limitations.push(Limitation {
+                match view.cleanup.as_deref() {
+                    Some("pass") => {}
+                    Some("failed") => limitations.push(Limitation {
                         code: "inner_cleanup_failed".to_string(),
                         owning_issue: RECEIPT_SCHEMA_ISSUE,
                         message: "inner rehearsal cleanup failed".to_string(),
-                    });
+                    }),
+                    Some(other) => limitations.push(Limitation {
+                        code: "unknown_inner_cleanup".to_string(),
+                        owning_issue: RECEIPT_SCHEMA_ISSUE,
+                        message: format!("inner cleanup `{other}` is not an explicit pass"),
+                    }),
+                    None => limitations.push(Limitation {
+                        code: "omitted_inner_cleanup".to_string(),
+                        owning_issue: RECEIPT_SCHEMA_ISSUE,
+                        message: "inner receipt omitted cleanup; absence is not an explicit pass"
+                            .to_string(),
+                    }),
                 }
                 match view.status.as_deref() {
                     Some("pass") | Some("limited") | Some("failed") | Some("not_proven") => {}
@@ -770,7 +820,11 @@ fn decide_row_status(
     if limitations.iter().any(|item| {
         matches!(
             item.code.as_str(),
-            "malformed_rehearsal_receipt" | "unreadable_rehearsal_receipt" | "inner_cleanup_failed"
+            "malformed_rehearsal_receipt"
+                | "unreadable_rehearsal_receipt"
+                | "inner_cleanup_failed"
+                | "published_channels_not_empty"
+                | "release_cut_true"
         )
     }) {
         return RowStatus::Failed;
@@ -781,14 +835,24 @@ fn decide_row_status(
     if request.rehearsal_receipt.is_none() {
         return RowStatus::NotProven;
     }
+    if rehearsal_status == Some("failed") {
+        return RowStatus::Failed;
+    }
+    if limitations.iter().any(|item| {
+        matches!(
+            item.code.as_str(),
+            "omitted_published_channels"
+                | "omitted_release_cut"
+                | "omitted_inner_cleanup"
+                | "unknown_inner_cleanup"
+                | "unknown_inner_status"
+                | "missing_inner_status"
+        )
+    }) {
+        return RowStatus::NotProven;
+    }
     match rehearsal_status {
-        Some("pass")
-            if limitations.iter().all(|item| {
-                item.code != "inner_cleanup_failed" && item.code != "unknown_inner_status"
-            }) =>
-        {
-            RowStatus::Pass
-        }
+        Some("pass") if limitations.is_empty() => RowStatus::Pass,
         Some("limited") => RowStatus::Limited,
         Some("failed") => RowStatus::Failed,
         Some("not_proven") | None => RowStatus::NotProven,
@@ -823,13 +887,26 @@ fn failed_row(
     }
 }
 
+/// Identity the current hosted run claims. Rows from another SHA/run/attempt
+/// cannot satisfy this identity merely by agreeing with each other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FaninExpectedIdentity {
+    /// Exact repository SHA for this fan-in.
+    pub repository_sha: String,
+    /// GitHub run id for this fan-in.
+    pub run_id: String,
+    /// GitHub run attempt for this fan-in.
+    pub run_attempt: u32,
+}
+
 /// Compile fan-in from an admitted plan and a directory of row receipts.
-pub fn compile_hosted_fanin(plan: &HostedPlan, rows_dir: &Path) -> Result<HostedFaninReceipt> {
-    if plan.required_pr_gate {
-        bail!("admitted plan must not set required_pr_gate");
-    }
-    if plan.frequency != ADMITTED_FREQUENCY {
-        bail!("admitted plan frequency must remain {ADMITTED_FREQUENCY}");
+pub fn compile_hosted_fanin(
+    plan: &HostedPlan,
+    rows_dir: &Path,
+    expected: &FaninExpectedIdentity,
+) -> Result<HostedFaninReceipt> {
+    if plan != &admitted_plan() {
+        bail!("hosted plan does not match the admitted #16788 plan from source");
     }
 
     let found = collect_row_receipts(rows_dir)?;
@@ -844,8 +921,8 @@ pub fn compile_hosted_fanin(plan: &HostedPlan, rows_dir: &Path) -> Result<Hosted
         by_subject.entry(receipt.matrix_subject.clone()).or_default().push(receipt);
     }
 
-    let expected: Vec<String> = plan.rows.iter().map(|row| row.subject.clone()).collect();
-    let expected_set: BTreeSet<String> = expected.iter().cloned().collect();
+    let expected_subjects: Vec<String> = plan.rows.iter().map(|row| row.subject.clone()).collect();
+    let expected_set: BTreeSet<String> = expected_subjects.iter().cloned().collect();
     let unexpected_subjects: Vec<String> =
         by_subject.keys().filter(|subject| !expected_set.contains(*subject)).cloned().collect();
 
@@ -864,13 +941,10 @@ pub fn compile_hosted_fanin(plan: &HostedPlan, rows_dir: &Path) -> Result<Hosted
         }
     }
 
-    let mut shared_sha: Option<String> = None;
-    let mut shared_run: Option<String> = None;
-    let mut shared_attempt: Option<u32> = None;
     let mut observations = Vec::new();
     let mut limitations = Vec::new();
 
-    for subject in &expected {
+    for subject in &expected_subjects {
         match by_subject.get(subject) {
             None => {
                 observations.push(FaninRowObservation {
@@ -888,35 +962,23 @@ pub fn compile_hosted_fanin(plan: &HostedPlan, rows_dir: &Path) -> Result<Hosted
             }
             Some(rows) => {
                 let row = &rows[0];
-                if let Some(sha) = &shared_sha {
-                    if sha != &row.repository_sha {
-                        collisions.push(format!(
-                            "subject `{subject}` SHA {} mixed with {sha}",
-                            row.repository_sha
-                        ));
-                    }
-                } else {
-                    shared_sha = Some(row.repository_sha.clone());
+                if row.repository_sha != expected.repository_sha {
+                    collisions.push(format!(
+                        "subject `{subject}` SHA {} is not the expected fan-in SHA {}",
+                        row.repository_sha, expected.repository_sha
+                    ));
                 }
-                if let Some(run) = &shared_run {
-                    if run != &row.run_id {
-                        collisions.push(format!(
-                            "subject `{subject}` run {} mixed with {run}",
-                            row.run_id
-                        ));
-                    }
-                } else {
-                    shared_run = Some(row.run_id.clone());
+                if row.run_id != expected.run_id {
+                    collisions.push(format!(
+                        "subject `{subject}` run {} is not the expected fan-in run {}",
+                        row.run_id, expected.run_id
+                    ));
                 }
-                if let Some(attempt) = shared_attempt {
-                    if attempt != row.run_attempt {
-                        collisions.push(format!(
-                            "subject `{subject}` attempt {} mixed with {attempt}",
-                            row.run_attempt
-                        ));
-                    }
-                } else {
-                    shared_attempt = Some(row.run_attempt);
+                if row.run_attempt != expected.run_attempt {
+                    collisions.push(format!(
+                        "subject `{subject}` attempt {} is not the expected fan-in attempt {}",
+                        row.run_attempt, expected.run_attempt
+                    ));
                 }
 
                 let mut detail = None;
@@ -974,9 +1036,9 @@ pub fn compile_hosted_fanin(plan: &HostedPlan, rows_dir: &Path) -> Result<Hosted
 
     Ok(HostedFaninReceipt {
         schema: HOSTED_FANIN_SCHEMA.to_string(),
-        repository_sha: shared_sha,
-        run_id: shared_run,
-        run_attempt: shared_attempt,
+        repository_sha: Some(expected.repository_sha.clone()),
+        run_id: Some(expected.run_id.clone()),
+        run_attempt: Some(expected.run_attempt),
         verdict: if any_non_green { FaninVerdict::NonGreen } else { FaninVerdict::Green },
         rows: observations,
         unexpected_subjects,
@@ -1201,6 +1263,18 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn expected_identity() -> FaninExpectedIdentity {
+        FaninExpectedIdentity {
+            repository_sha: "abc123".to_string(),
+            run_id: "44".to_string(),
+            run_attempt: 1,
+        }
+    }
+
+    fn compile_fanin(inbox: &Path) -> HostedFaninReceipt {
+        compile_hosted_fanin(&admitted_plan(), inbox, &expected_identity()).expect("fanin")
+    }
+
     fn native_linux_request(dir: &Path) -> HostedRowRequest {
         HostedRowRequest {
             head: "abc123".to_string(),
@@ -1277,12 +1351,77 @@ mod tests {
     }
 
     #[test]
+    fn status_only_inner_receipt_is_not_proven() {
+        let dir = tempdir().expect("tempdir");
+        let mut request = native_linux_request(dir.path());
+        request.rehearsal_receipt = Some(write_inner(dir.path(), r#"{"status":"pass"}"#));
+        let receipt = compile_hosted_row(&request).expect("compile");
+        assert_eq!(receipt.row_status, RowStatus::NotProven);
+        assert!(!receipt.fan_in_green());
+        assert!(receipt.limitations.iter().any(|item| item.code == "omitted_published_channels"));
+        assert!(receipt.limitations.iter().any(|item| item.code == "omitted_release_cut"));
+        assert!(receipt.limitations.iter().any(|item| item.code == "omitted_inner_cleanup"));
+    }
+
+    #[test]
+    fn omitted_published_channels_are_not_proven() {
+        let dir = tempdir().expect("tempdir");
+        let mut request = native_linux_request(dir.path());
+        request.rehearsal_receipt = Some(write_inner(
+            dir.path(),
+            r#"{"release_cut":false,"status":"pass","cleanup":"pass"}"#,
+        ));
+        let receipt = compile_hosted_row(&request).expect("compile");
+        assert_eq!(receipt.row_status, RowStatus::NotProven);
+        assert!(receipt.limitations.iter().any(|item| item.code == "omitted_published_channels"));
+    }
+
+    #[test]
+    fn omitted_release_cut_is_not_proven() {
+        let dir = tempdir().expect("tempdir");
+        let mut request = native_linux_request(dir.path());
+        request.rehearsal_receipt = Some(write_inner(
+            dir.path(),
+            r#"{"published_channels":[],"status":"pass","cleanup":"pass"}"#,
+        ));
+        let receipt = compile_hosted_row(&request).expect("compile");
+        assert_eq!(receipt.row_status, RowStatus::NotProven);
+        assert!(receipt.limitations.iter().any(|item| item.code == "omitted_release_cut"));
+    }
+
+    #[test]
+    fn omitted_inner_cleanup_is_not_proven() {
+        let dir = tempdir().expect("tempdir");
+        let mut request = native_linux_request(dir.path());
+        request.rehearsal_receipt = Some(write_inner(
+            dir.path(),
+            r#"{"published_channels":[],"release_cut":false,"status":"pass"}"#,
+        ));
+        let receipt = compile_hosted_row(&request).expect("compile");
+        assert_eq!(receipt.row_status, RowStatus::NotProven);
+        assert!(receipt.limitations.iter().any(|item| item.code == "omitted_inner_cleanup"));
+    }
+
+    #[test]
+    fn unknown_inner_cleanup_is_not_proven() {
+        let dir = tempdir().expect("tempdir");
+        let mut request = native_linux_request(dir.path());
+        request.rehearsal_receipt = Some(write_inner(
+            dir.path(),
+            r#"{"published_channels":[],"release_cut":false,"status":"pass","cleanup":"not_proven"}"#,
+        ));
+        let receipt = compile_hosted_row(&request).expect("compile");
+        assert_eq!(receipt.row_status, RowStatus::NotProven);
+        assert!(receipt.limitations.iter().any(|item| item.code == "unknown_inner_cleanup"));
+    }
+
+    #[test]
     fn published_channels_fail_the_row() {
         let dir = tempdir().expect("tempdir");
         let mut request = native_linux_request(dir.path());
         request.rehearsal_receipt = Some(write_inner(
             dir.path(),
-            r#"{"published_channels":["crates.io"],"release_cut":false,"status":"pass"}"#,
+            r#"{"published_channels":["crates.io"],"release_cut":false,"status":"pass","cleanup":"pass"}"#,
         ));
         let receipt = compile_hosted_row(&request).expect("compile");
         assert_eq!(receipt.row_status, RowStatus::Failed);
@@ -1295,7 +1434,7 @@ mod tests {
         let mut request = native_linux_request(dir.path());
         request.rehearsal_receipt = Some(write_inner(
             dir.path(),
-            r#"{"published_channels":[],"release_cut":true,"status":"pass"}"#,
+            r#"{"published_channels":[],"release_cut":true,"status":"pass","cleanup":"pass"}"#,
         ));
         let receipt = compile_hosted_row(&request).expect("compile");
         assert_eq!(receipt.row_status, RowStatus::Failed);
@@ -1370,7 +1509,7 @@ mod tests {
     fn fan_in_missing_producer_is_non_green() {
         let dir = tempdir().expect("tempdir");
         let plan = admitted_plan();
-        let fanin = compile_hosted_fanin(&plan, dir.path()).expect("fanin");
+        let fanin = compile_hosted_fanin(&plan, dir.path(), &expected_identity()).expect("fanin");
         assert_eq!(fanin.verdict, FaninVerdict::NonGreen);
         assert_eq!(fanin.rows.len(), 3);
         assert!(fanin.rows.iter().all(|row| row.outcome == "missing"));
@@ -1391,7 +1530,7 @@ mod tests {
         write_row_receipt(&inbox.join("stale"), &other_attempt).expect("write stale");
         write_windows_and_macos_pass(&inbox, "44", 1, "abc123");
 
-        let fanin = compile_hosted_fanin(&admitted_plan(), &inbox).expect("fanin");
+        let fanin = compile_fanin(&inbox);
         assert_eq!(fanin.verdict, FaninVerdict::NonGreen);
         assert!(fanin.collisions.iter().any(|item| item.contains("attempt")));
     }
@@ -1410,7 +1549,7 @@ mod tests {
         write_row_receipt(&inbox.join("windows"), &stolen).expect("write stolen");
         write_macos_pass(&inbox, "44", 1, "abc123");
 
-        let fanin = compile_hosted_fanin(&admitted_plan(), &inbox).expect("fanin");
+        let fanin = compile_fanin(&inbox);
         assert_eq!(fanin.verdict, FaninVerdict::NonGreen);
         assert!(fanin.collisions.iter().any(|item| item.contains("artifact_id")));
     }
@@ -1445,9 +1584,40 @@ mod tests {
             limitations: Vec::new(),
         };
         write_row_receipt(&inbox.join("extra"), &extra).expect("extra");
-        let fanin = compile_hosted_fanin(&admitted_plan(), &inbox).expect("fanin");
+        let fanin = compile_fanin(&inbox);
         assert_eq!(fanin.verdict, FaninVerdict::NonGreen);
         assert_eq!(fanin.unexpected_subjects, vec!["qemu-s390x".to_string()]);
+    }
+
+    #[test]
+    fn fan_in_all_admitted_not_proven_rows_are_non_green() {
+        let dir = tempdir().expect("tempdir");
+        let inbox = dir.path().join("inbox");
+        let linux = compile_hosted_row(&native_linux_request(dir.path())).expect("linux");
+        write_row_receipt(&inbox.join("linux"), &linux).expect("linux");
+        write_native_status(
+            &inbox,
+            "windows-latest",
+            "Windows",
+            "x86_64-pc-windows-msvc",
+            "44",
+            1,
+            "abc123",
+            RowStatus::NotProven,
+        );
+        write_native_status(
+            &inbox,
+            "macos-latest",
+            "macOS",
+            "aarch64-apple-darwin",
+            "44",
+            1,
+            "abc123",
+            RowStatus::NotProven,
+        );
+        let fanin = compile_fanin(&inbox);
+        assert_eq!(fanin.verdict, FaninVerdict::NonGreen, "{fanin:?}");
+        assert!(fanin.rows.iter().all(|row| row.row_status == Some(RowStatus::NotProven)));
     }
 
     #[test]
@@ -1459,8 +1629,41 @@ mod tests {
         write_row_receipt(&inbox.join("linux"), &compile_hosted_row(&linux).expect("linux"))
             .expect("linux");
         write_windows_and_macos_pass(&inbox, "44", 1, "abc123");
-        let fanin = compile_hosted_fanin(&admitted_plan(), &inbox).expect("fanin");
+        let fanin = compile_fanin(&inbox);
         assert_eq!(fanin.verdict, FaninVerdict::Green, "{fanin:?}");
+    }
+
+    #[test]
+    fn fan_in_rejects_foreign_run_identity() {
+        let dir = tempdir().expect("tempdir");
+        let inbox = dir.path().join("inbox");
+        let mut linux = native_linux_request(dir.path());
+        linux.rehearsal_receipt = Some(green_inner(dir.path()));
+        write_row_receipt(&inbox.join("linux"), &compile_hosted_row(&linux).expect("linux"))
+            .expect("linux");
+        write_windows_and_macos_pass(&inbox, "44", 1, "abc123");
+        let foreign = FaninExpectedIdentity {
+            repository_sha: "abc123".to_string(),
+            run_id: "45".to_string(),
+            run_attempt: 2,
+        };
+        let fanin = compile_hosted_fanin(&admitted_plan(), &inbox, &foreign).expect("fanin");
+        assert_eq!(fanin.verdict, FaninVerdict::NonGreen, "{fanin:?}");
+        assert!(
+            fanin.collisions.iter().any(|item| item.contains("is not the expected fan-in run"))
+        );
+        assert_eq!(fanin.run_id.as_deref(), Some("45"));
+        assert_eq!(fanin.run_attempt, Some(2));
+    }
+
+    #[test]
+    fn fan_in_rejects_plan_that_is_not_admitted() {
+        let dir = tempdir().expect("tempdir");
+        let mut plan = admitted_plan();
+        plan.rows.pop();
+        let error = compile_hosted_fanin(&plan, dir.path(), &expected_identity())
+            .expect_err("shrunk plan must not compile");
+        assert!(error.to_string().contains("does not match the admitted"));
     }
 
     fn write_windows_and_macos_pass(inbox: &Path, run_id: &str, attempt: u32, sha: &str) {
@@ -1497,6 +1700,28 @@ mod tests {
         attempt: u32,
         sha: &str,
     ) {
+        write_native_status(
+            inbox,
+            subject,
+            runner_os,
+            rustc_host,
+            run_id,
+            attempt,
+            sha,
+            RowStatus::Pass,
+        );
+    }
+
+    fn write_native_status(
+        inbox: &Path,
+        subject: &str,
+        runner_os: &str,
+        rustc_host: &str,
+        run_id: &str,
+        attempt: u32,
+        sha: &str,
+        row_status: RowStatus,
+    ) {
         let receipt = HostedRowReceipt {
             schema: HOSTED_ROW_SCHEMA.to_string(),
             repository_sha: sha.to_string(),
@@ -1508,16 +1733,16 @@ mod tests {
             rustc_host: rustc_host.to_string(),
             lockfile_digest: "lock".to_string(),
             job_conclusion: JobConclusion::Success,
-            row_status: RowStatus::Pass,
+            row_status,
             cleanup: CleanupDisposition::Pass,
             published_channels: Vec::new(),
             release_cut: false,
             native_host: true,
             rehearsal_receipt_digest: Some("abc".to_string()),
-            rehearsal_status: Some("pass".to_string()),
+            rehearsal_status: Some(row_status.as_str().to_string()),
             limitations: Vec::new(),
         };
-        write_row_receipt(&inbox.join(subject), &receipt).expect("write native pass");
+        write_row_receipt(&inbox.join(subject), &receipt).expect("write native row");
     }
 
     impl HostedRowReceipt {

@@ -133,13 +133,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: No-publication guard
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "hosted row writes only local receipts; this workflow has contents:read and no publisher secrets"
-
   fanin:
     name: Fan-in hosted rehearsal
     needs: [plan, rehearse]
@@ -159,11 +152,18 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Download plan
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: readiness-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}-plan
-          path: target/readiness/hosted/plan-artifact
+      - name: Admit hosted matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD="$(git rev-parse HEAD)"
+          if [ "$HEAD" != "$GITHUB_SHA" ]; then
+            echo "checkout $HEAD is not the dispatched commit $GITHUB_SHA" >&2
+            exit 1
+          fi
+          cargo run --locked -p xtask -- readiness-rehearsal hosted-plan \
+            --out target/readiness/hosted/plan.json \
+            --summary target/readiness/hosted/plan.md
 
       - name: Download row receipts
         continue-on-error: true
@@ -177,14 +177,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set +e
           cargo run --locked -p xtask -- readiness-rehearsal hosted-fanin \
-            --plan target/readiness/hosted/plan-artifact/plan.json \
+            --plan target/readiness/hosted/plan.json \
             --rows-dir target/readiness/hosted/inbox \
+            --head "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
             --out target/readiness/hosted/fanin.json \
             --summary target/readiness/hosted/fanin.md
+          status=$?
+          set -e
           if [ -f target/readiness/hosted/fanin.md ]; then
             cat target/readiness/hosted/fanin.md >> "$GITHUB_STEP_SUMMARY"
           fi
+          exit "$status"
 
       - name: Upload fan-in
         if: always()
