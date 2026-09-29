@@ -15,7 +15,7 @@
 use perl_parser_core::{Node, NodeKind, Parser};
 use perl_tdd_support::{must, must_some_with};
 
-fn parse_ast(source: &str) -> (Node, Parser) {
+fn parse_ast(source: &str) -> (Node, Parser<'_>) {
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
     (ast, parser)
