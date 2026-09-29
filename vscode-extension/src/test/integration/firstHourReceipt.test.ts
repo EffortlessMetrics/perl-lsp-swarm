@@ -2,6 +2,12 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import {
+  observeArtifact,
+  requireSameArtifact,
+  requireSameBytes,
+  type ArtifactObservation,
+} from '../installedArtifactObservation';
 import { describeWorkspaceTopology } from '../../workspaceTopology';
 
 interface MomentResult {
@@ -408,6 +414,7 @@ suite('First-hour VS Code receipt', function () {
         extension_id: 'EffortlessMetrics.perl-lsp-rs',
         extension_version: extension.packageJSON?.version ?? null,
         extension_path: extension.extensionPath,
+        health_probe_server_path: serverPath,
         server_path: serverPath,
         source_revision: process.env.PERL_LSP_CURRENT_SOURCE_SHA ?? null,
         server_source_revision: process.env.PERL_LSP_SERVER_SOURCE_SHA ?? null,
@@ -574,9 +581,69 @@ suite('First-hour VS Code receipt', function () {
         moments,
         lifecycle,
         diagnostics_probe: null,
+        installed_byte_identity: installedByteIdentity,
         failures: [{ phase, ...failure }],
       });
     };
+
+    // Current leaf observations are actual filesystem snapshots, never copied environment digests.
+    let installedByteIdentity: Record<string, unknown> | undefined;
+    let initialInstalled: ArtifactObservation | undefined;
+    let inputServer: ArtifactObservation | undefined;
+    let selectedVsix: ArtifactObservation | undefined;
+    const observeSelectedInstalled = (metrics: Record<string, unknown>): ArtifactObservation => {
+      assertSuccessfulStartupMetrics(metrics, 'installed identity');
+      assert.equal(
+        metrics.binary_resolution_source,
+        'bundled',
+        'installed leaf requires bundled server selection',
+      );
+      const selected = metrics.binary_resolution_path;
+      assert.equal(typeof selected, 'string', 'actual installed selection path is required');
+      const installed = observeArtifact(selected as string, extension.extensionPath);
+      if (inputServer) requireSameBytes(inputServer, installed);
+      return installed;
+    };
+    if (currentSourceSmoke) {
+      try {
+        assert.equal(typeof extensionApi?.waitForActiveDocumentReady, 'function');
+        await withTimeout(
+          'initial installed readiness',
+          extensionApi!.waitForActiveDocumentReady!(probeDocument.uri.toString(), 30_000),
+          30_000,
+        );
+        inputServer = observeArtifact(path.resolve(serverPath));
+        selectedVsix = observeArtifact(process.env.PERL_LSP_PUBLISHED_VSIX_PATH ?? '');
+        // Canonical containment also catches parent-directory junction escapes.
+        const extensionRoot = fs.realpathSync(extension.extensionPath);
+        const extensionsRoot = fs.realpathSync(process.env.PERL_LSP_PUBLISHED_EXTENSIONS_DIR ?? '');
+        const relative = path.relative(extensionsRoot, extensionRoot);
+        assert.ok(
+          relative &&
+            !path.isAbsolute(relative) &&
+            relative !== '..' &&
+            !relative.startsWith(`..${path.sep}`),
+        );
+        initialInstalled = observeSelectedInstalled(
+          extensionApi?.getLanguageClientStartupMetrics?.() ?? {},
+        );
+        installedByteIdentity = {
+          schema_version: 'installed_lsp_vsix_bytes.v1',
+          extension_root: extensionRoot,
+          extensions_root: extensionsRoot,
+          before_provider: initialInstalled,
+          vsix_before: selectedVsix,
+          source_provenance: 'declared_build_source_not_authenticated',
+        };
+      } catch (error: unknown) {
+        writeFailureReceipt(
+          'installed_identity_before_provider',
+          { message: error instanceof Error ? error.message : String(error) },
+          {},
+        );
+        throw error;
+      }
+    }
 
     const immediate = await collectProviderMoment(
       'immediate',
@@ -655,6 +722,18 @@ suite('First-hour VS Code receipt', function () {
         );
         throw error;
       }
+      try {
+        const restartedObservation = observeSelectedInstalled(restartMetrics);
+        requireSameArtifact(initialInstalled!, restartedObservation);
+        installedByteIdentity!.after_restart = restartedObservation;
+      } catch (error: unknown) {
+        writeFailureReceipt(
+          'installed_identity_after_restart',
+          { message: error instanceof Error ? error.message : String(error) },
+          { immediate },
+        );
+        throw error;
+      }
       const restarted = await collectProviderMoment(
         'after_restart',
         'post_restart',
@@ -728,6 +807,25 @@ suite('First-hour VS Code receipt', function () {
           typeof (shutdownMilestones as Record<string, unknown>).shutdown === 'number',
         'shutdown should record the shutdown milestone',
       );
+      try {
+        const shutdownObservation = observeArtifact(
+          initialInstalled!.path,
+          extension.extensionPath,
+        );
+        requireSameArtifact(initialInstalled!, shutdownObservation);
+        requireSameBytes(inputServer!, shutdownObservation);
+        const vsixAfter = observeArtifact(selectedVsix!.path);
+        requireSameArtifact(selectedVsix!, vsixAfter);
+        installedByteIdentity!.after_shutdown = shutdownObservation;
+        installedByteIdentity!.vsix_after = vsixAfter;
+      } catch (error: unknown) {
+        writeFailureReceipt(
+          'installed_identity_after_shutdown',
+          { message: error instanceof Error ? error.message : String(error) },
+          { immediate },
+        );
+        throw error;
+      }
       lifecycle = {
         restart: {
           status: restartStatus,
@@ -778,6 +876,7 @@ suite('First-hour VS Code receipt', function () {
     const receipt = {
       ...baseReceipt,
       outcome: 'completed',
+      installed_byte_identity: installedByteIdentity,
       startup: {
         extension_activation_status: 'ok',
         extension_activation_ms: activationMs,
