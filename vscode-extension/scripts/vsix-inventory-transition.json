@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 16591,
-  "reason": "Issue #16591 adds the first-run walkthrough to the installed demo project. The VSIX now includes assets/demo-project/README.md (842 bytes), with .vscodeignore narrowly re-including that file. Both demo copies are byte-identical and the Perl content removes unused routines. The measured Windows package moves from 29 to 30 files and from 1879902 to 1880543 bytes. The package also measures out/extension.js at 1698756 bytes, 99 above the previous baseline, although this PR changes no runtime extension TypeScript; the candidate baseline records the exact produced archive rather than attributing that bundle delta to the demo. The installed editor journey remains a separate proof boundary.",
-  "base_baseline_file_sha256": "7bf66646d8f58c1cec3aceba617b8dbb84f74c0b830d74f602d9b76713d66c69",
-  "candidate_baseline_file_sha256": "10aacc30d040c5f92c973f1c17a41e4376741d4a87662445e7e66ce049992212",
-  "base_inventory_sha256": "45546f0e01d868f33536e00ad41e635bd8a740edf498e784274e73d1a622a221",
-  "candidate_inventory_sha256": "657202f331e19914dc681250fb7086a40a793daacbcaa1167fb9ea9fb8d0f8a1"
+  "reason": "Heal merge with main: union of main's #16744 reconciled Linux measurement (manifest, localization, README, changelog and bundle growth) with this claim's demo-project additions (assets/demo-project/README.md newly packaged via .vscodeignore re-include, plus rewritten demo main.pl/Utils.pm/Database.pm). Regenerated from the exact merge-tip archive; totals and digests recomputed by propose-vsix-inventory-transition.",
+  "base_baseline_file_sha256": "3772422ae6a8dc6bd74d46c8b963e017a74dfe9513cd44a44ac12922150d27cb",
+  "candidate_baseline_file_sha256": "d41ed817a5b282aec1462b2a1a2538bd630480d4c24ea2c0c9fab9f4c4fd5d23",
+  "base_inventory_sha256": "d893827a555e6cff2da2d5bee6329797def48684844fdd8543b5635aa7574ee9",
+  "candidate_inventory_sha256": "97969d09252414a76a27e62b3351b8739c353d46fe44fdb0f6ae99e781e51d33"
 }
