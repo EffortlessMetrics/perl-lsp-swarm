@@ -186,22 +186,27 @@ use Sub::Exporter -setup => { exports => [qw(foo bar)] };\n\
 }
 
 #[test]
-fn version_tokens_are_not_imported_symbols() -> TestResult {
+fn version_tokens_agree_with_hir_and_numeric_versions_are_not_symbols() -> TestResult {
     let source = "use M 1.23;\nuse N v1.23;\n";
     assert_hir_identity_survives(source)?;
     let specs = workspace_specs(source)?;
-    for spec in &specs {
-        match &spec.symbols {
-            ImportSymbols::Explicit(names) | ImportSymbols::Mixed { names, .. } => {
-                assert!(
-                    names.iter().all(|name| name != "1.23" && name != "v1.23"),
-                    "version tokens leaked as imported names in {}: {names:?}",
-                    spec.module
-                );
-            }
-            _ => {}
+    let numeric = spec_named(&specs, "M")?;
+    match &numeric.symbols {
+        ImportSymbols::Explicit(names) | ImportSymbols::Mixed { names, .. } => {
+            assert!(
+                !names.iter().any(|name| name == "1.23"),
+                "numeric version leaked as an imported name: {names:?}"
+            );
         }
+        _ => {}
     }
+    let vstring = spec_named(&specs, "N")?;
+    let hir = lower_ast(&parse_ast(source)?);
+    let hir_vstring = spec_named(&hir.compile_environment.import_specs(FILE_ID), "N")?;
+    assert_eq!(
+        vstring.symbols, hir_vstring.symbols,
+        "workspace must not invent a stricter version classifier than HIR"
+    );
     Ok(())
 }
 
@@ -345,25 +350,68 @@ fn later_generation_replaces_import_rows_and_stale_generation_does_not() -> Test
 }
 
 #[test]
-fn same_module_spelling_in_another_root_does_not_contribute_rows() -> TestResult {
-    let index = WorkspaceIndex::new();
-    index
-        .index_file_str("file:///root-a/lib/M.pm", "package M;\nour @EXPORT = qw(alpha);\n1;\n")?;
-    index.index_file_str("file:///root-b/lib/M.pm", "package M;\nour @EXPORT = qw(beta);\n1;\n")?;
-    index.index_file_str("file:///root-a/script.pl", "package Main;\nuse M;\nalpha();\n1;\n")?;
+fn same_module_spelling_keeps_per_file_import_rows() -> TestResult {
+    let a_source = "package Main;\nuse M qw(alpha);\nalpha();\n1;\n";
+    let b_source = "package Main;\nuse M qw(beta);\nbeta();\n1;\n";
+    assert_hir_identity_survives(a_source)?;
+    assert_hir_identity_survives(b_source)?;
 
-    let visible = index
+    let a_specs = workspace_specs(a_source)?;
+    let b_specs = workspace_specs(b_source)?;
+    assert_eq!(
+        spec_named(&a_specs, "M")?.symbols,
+        ImportSymbols::Explicit(vec!["alpha".to_string()])
+    );
+    assert_eq!(
+        spec_named(&b_specs, "M")?.symbols,
+        ImportSymbols::Explicit(vec!["beta".to_string()])
+    );
+
+    // ImportExportIndex keys exports by module name, so this claim does not
+    // prove multi-root export isolation. Per-file import rows must still keep
+    // each importer's own explicit list.
+    let index = WorkspaceIndex::new();
+    index.index_file_str(
+        "file:///root-a/lib/M.pm",
+        "package M;\nour @EXPORT_OK = qw(alpha beta);\n1;\n",
+    )?;
+    index.index_file_str("file:///root-a/script.pl", a_source)?;
+    index.index_file_str("file:///root-b/script.pl", b_source)?;
+
+    let a_visible = index
         .with_semantic_queries_for_uri("file:///root-a/script.pl", |file_id, queries| {
-            queries.visible_symbols_at(file_id, 30, None)
+            queries.visible_symbols_at(file_id, 40, None)
         })
         .ok_or("root-a importer was not indexed")?;
     assert!(
-        visible.iter().any(|symbol| symbol.name == "alpha"),
-        "root-a importer should see alpha; got {visible:?}"
+        a_visible.iter().any(|symbol| {
+            symbol.name == "alpha" && symbol.source == VisibleSymbolSource::ExplicitImport
+        }),
+        "root-a must keep its own explicit import; got {a_visible:?}"
     );
     assert!(
-        visible.iter().all(|symbol| symbol.name != "beta"),
-        "root-b exporter must not contribute rows into root-a; got {visible:?}"
+        a_visible.iter().all(|symbol| {
+            !(symbol.name == "beta" && symbol.source == VisibleSymbolSource::ExplicitImport)
+        }),
+        "root-b's explicit names must not appear in root-a rows; got {a_visible:?}"
+    );
+
+    let b_visible = index
+        .with_semantic_queries_for_uri("file:///root-b/script.pl", |file_id, queries| {
+            queries.visible_symbols_at(file_id, 40, None)
+        })
+        .ok_or("root-b importer was not indexed")?;
+    assert!(
+        b_visible.iter().any(|symbol| {
+            symbol.name == "beta" && symbol.source == VisibleSymbolSource::ExplicitImport
+        }),
+        "root-b must keep its own explicit import; got {b_visible:?}"
+    );
+    assert!(
+        b_visible.iter().all(|symbol| {
+            !(symbol.name == "alpha" && symbol.source == VisibleSymbolSource::ExplicitImport)
+        }),
+        "root-a's explicit names must not appear in root-b rows; got {b_visible:?}"
     );
     Ok(())
 }
@@ -371,13 +419,36 @@ fn same_module_spelling_in_another_root_does_not_contribute_rows() -> TestResult
 #[test]
 fn delete_and_readd_rebuilds_current_import_rows() -> TestResult {
     let index = WorkspaceIndex::new();
+    index.index_file_str(
+        "file:///lib/First.pm",
+        "package First;\nour @EXPORT = qw(first_sym);\n1;\n",
+    )?;
+    index.index_file_str(
+        "file:///lib/Second.pm",
+        "package Second;\nour @EXPORT = qw(second_sym);\n1;\n",
+    )?;
     let uri = "file:///script.pl";
-    index.index_file_str(uri, "use First;\n")?;
+    index.index_file_str(uri, "package Main;\nuse First;\nfirst_sym();\n1;\n")?;
     index.remove_file(uri);
-    index.index_file_str(uri, "use Second;\n")?;
-    let specs = workspace_specs("use Second;\n")?;
-    assert!(spec_named(&specs, "Second").is_ok());
-    assert!(specs.iter().all(|spec| spec.module != "First"));
+    index.index_file_str(uri, "package Main;\nuse Second;\nsecond_sym();\n1;\n")?;
+
+    let visible = index
+        .with_semantic_queries_for_uri(uri, |file_id, queries| {
+            queries.visible_symbols_at(file_id, 40, None)
+        })
+        .ok_or("importer missing after delete/re-add")?;
+    assert!(
+        visible.iter().any(|symbol| {
+            symbol.name == "second_sym" && symbol.source == VisibleSymbolSource::DefaultExport
+        }),
+        "re-add must publish the current import rows; got {visible:?}"
+    );
+    assert!(
+        visible.iter().all(|symbol| {
+            !(symbol.name == "first_sym" && symbol.source == VisibleSymbolSource::DefaultExport)
+        }),
+        "removed generation must not leave First's default exports; got {visible:?}"
+    );
     Ok(())
 }
 
@@ -400,6 +471,10 @@ fn recurrence_guard_rejects_a_workspace_local_use_arg_classifier() {
     assert!(
         semantic_src.contains("extract_import_specs_from_hir"),
         "production wrapper must keep the HIR adapter entry"
+    );
+    assert!(
+        semantic_src.contains("workspace_import_extractor_core::extract_import_specs("),
+        "AST-only public entry must call the HIR core extractor rather than reclassify Use.args"
     );
 }
 

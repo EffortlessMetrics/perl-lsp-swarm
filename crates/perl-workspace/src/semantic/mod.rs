@@ -92,7 +92,9 @@ pub mod workspace_import_extractor {
     /// Extract import facts from canonical HIR projection and apply bounded
     /// framework-specific import semantics.
     pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
-        extract_import_specs_from_hir(&perl_parser_core::hir::lower_ast(ast), ast, file_id, None)
+        let mut specs = super::workspace_import_extractor_core::extract_import_specs(ast, file_id);
+        super::quickorm::normalize_import_specs(ast, &mut specs);
+        specs
     }
 
     /// Extract import facts from an already-lowered HIR file.
