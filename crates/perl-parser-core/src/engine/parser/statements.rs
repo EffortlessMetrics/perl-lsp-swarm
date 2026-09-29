@@ -1393,11 +1393,9 @@ impl<'a> Parser<'a> {
         // Identifier tokens, so `is_binary_operator` won't catch them. When a
         // nullary builtin like `ref` is followed by one of these, don't consume
         // the operator as an argument -- let it become a binary operator instead.
-        let next_is_str_cmp_op = self.peek_kind() == Some(TokenKind::Identifier)
-            && self
-                .tokens
-                .peek()
-                .is_ok_and(|t| matches!(t.text.as_ref(), "eq" | "ne" | "lt" | "le" | "gt" | "ge"));
+        // Before `=>` they are autoquoted arguments (`ref eq => 1`, #16691).
+        let next_is_str_cmp_op =
+            self.peek_is_identifier_string_comparison() && !self.is_keyword_before_fat_arrow();
 
         let args = if self.is_at_statement_end() || omit_optional_arg || next_is_str_cmp_op {
             vec![]

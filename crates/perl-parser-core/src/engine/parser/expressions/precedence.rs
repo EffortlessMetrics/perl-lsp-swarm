@@ -246,10 +246,7 @@ impl<'a> Parser<'a> {
         // still run after `parse_word_not_expr` returns. The
         // `parse_unary` WordNot arm remains the single entry point.
         if let Some(kind) = self.peek_kind()
-            && matches!(
-                kind,
-                TokenKind::WordNot | TokenKind::WordAnd | TokenKind::WordOr | TokenKind::WordXor
-            )
+            && kind.is_word_operator()
             && self.is_keyword_before_fat_arrow()
         {
             let token = self.advance_token()?;

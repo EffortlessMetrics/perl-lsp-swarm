@@ -85,22 +85,44 @@ impl<'a> Parser<'a> {
     ///
     /// Perl permits `func { ... } @list` and DSL-style named args such as
     /// `func { ... } foreach => $items` without a comma after the block. We
-    /// still stop at real statement boundaries and at postfix modifiers / low-
-    /// precedence word operators unless that token is being autoquoted before
-    /// `=>` (`has { 1 } or => 2`, #16639).
+    /// still stop at real statement boundaries and at postfix modifiers / word
+    /// operators unless that token is being autoquoted before `=>`
+    /// (`has { 1 } or => 2`, #16639; `has { 1 } cmp => 2`, #16691).
     fn should_continue_bare_call_after_block(&mut self) -> bool {
         match self.peek_kind() {
             Some(kind) if kind.is_recovery_boundary() => false,
             None => false,
             // `?` begins a ternary on the block-call result, not an argument to it.
             Some(TokenKind::Question) => false,
-            Some(kind)
-                if kind.is_low_precedence_word_operator() || Self::is_stmt_modifier_kind(kind) =>
-            {
+            Some(kind) if self.stops_bare_call_unless_autoquoted(kind) => {
                 self.is_keyword_before_fat_arrow()
             }
             _ => true,
         }
+    }
+
+    /// Word operators, statement modifiers, and Identifier comparison words
+    /// end a bare call unless they are the autoquoted left-hand side of `=>`.
+    fn stops_bare_call_unless_autoquoted(&mut self, kind: TokenKind) -> bool {
+        kind.is_word_operator()
+            || Self::is_stmt_modifier_kind(kind)
+            || self.peek_is_identifier_string_comparison()
+    }
+
+    /// Identifier spellings that Perl treats as infix string comparisons.
+    /// `cmp` is normally `TokenKind::StringCompare`; keep the Identifier
+    /// spelling so a reclassified token still terminates like `eq`.
+    fn is_identifier_string_comparison(text: &str) -> bool {
+        matches!(text, "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "cmp")
+    }
+
+    fn peek_is_identifier_string_comparison(&mut self) -> bool {
+        self.peek_kind() == Some(TokenKind::Identifier)
+            && self
+                .tokens
+                .peek()
+                .ok()
+                .is_some_and(|token| Self::is_identifier_string_comparison(token.text.as_ref()))
     }
 
     /// Enter production recursion depth through the live operation context.
@@ -387,11 +409,9 @@ impl<'a> Parser<'a> {
     }
 
     /// Barewords Perl autoquotes before `=>`: identifiers, reserved-word
-    /// tokens, and low-precedence word operators (`and`/`or`/`not`/`xor`).
+    /// tokens, and word-operator tokens (`and`/`or`/`not`/`xor`/`cmp`).
     fn is_autoquoted_bareword_kind(kind: TokenKind) -> bool {
-        kind == TokenKind::Identifier
-            || Self::is_keyword_token(kind)
-            || kind.is_low_precedence_word_operator()
+        kind == TokenKind::Identifier || Self::is_keyword_token(kind) || kind.is_word_operator()
     }
 
     /// Check if a token kind is a binary operator that couldn't start an expression argument.
@@ -1461,7 +1481,8 @@ impl<'a> Parser<'a> {
         // 'rw')` (#16639). This check must precede the statement-end / binary-
         // operator refusal: `and`/`or` are logical operators, and `if` is a
         // statement-end token, but `has and => 1` / `has if => 1` are still
-        // autoquoted list-operator arguments. The Identifier match below used
+        // autoquoted list-operator arguments, including comparison-word tokens
+        // (`has cmp =>`, `has eq =>`, #16691). The Identifier match below used
         // to return early for builtins without consulting `=>`, and keyword
         // tokens fell through to `_ => false`.
         if Self::is_autoquoted_bareword_kind(next_kind) && self.is_keyword_before_fat_arrow() {
