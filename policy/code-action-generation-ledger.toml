@@ -23,7 +23,7 @@ schema_version = 1
 policy = "code-action-generation-ledger"
 owner = "perl-lsp maintainers"
 status = "advisory"
-updated = "2026-09-07"
+updated = "2026-09-29"
 
 convergence_controller = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8393"
 provider_contract = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8068"
