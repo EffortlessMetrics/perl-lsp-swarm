@@ -1743,6 +1743,8 @@ impl CompletionProvider {
 }
 
 #[cfg(test)]
+mod interpolation_completion_tests;
+#[cfg(test)]
 mod keyword_role_tests;
 #[cfg(test)]
 mod tests;

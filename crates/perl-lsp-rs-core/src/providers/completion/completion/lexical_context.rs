@@ -39,10 +39,77 @@ fn advance_pod_state(state: &mut PodState, line: &str) -> bool {
     }
 }
 
+/// Named interpolation-admission result for completion (#16863).
+///
+/// This is a deletion-owned compatibility projection of the existing local
+/// string/heredoc scan. It does not grow a second quote parser and is not the
+/// #13244 `SourceRegionIndex` migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum InterpolationAdmission {
+    /// Code, regex, POD, comments, or other non-owned surfaces.
+    NotOwned,
+    /// Exact simple `$name` / `${name}` / `@array` / `%hash` slot in an
+    /// interpolating string or interpolating heredoc.
+    VariableSlot { braced: bool },
+    /// String-like or heredoc region that must not emit interpolation lexicals:
+    /// non-interpolating quotes/`q`/`qw`, literal heredocs, escaped sigils,
+    /// and interpolating literal segments.
+    Quiet,
+}
+
+/// Classify whether `position` is an interpolation-variable slot.
+pub(super) fn interpolation_admission(source: &str, position: usize) -> InterpolationAdmission {
+    match string_like_region_at(source, position) {
+        StringLikeRegion::InterpolatingString | StringLikeRegion::InterpolatingHeredoc => {
+            match interpolation_slot_geometry(source, position) {
+                Some(geometry) if !geometry.escaped => {
+                    InterpolationAdmission::VariableSlot { braced: geometry.braced }
+                }
+                Some(_) | None => InterpolationAdmission::Quiet,
+            }
+        }
+        StringLikeRegion::NonInterpolatingString | StringLikeRegion::LiteralHeredoc => {
+            InterpolationAdmission::Quiet
+        }
+        StringLikeRegion::None | StringLikeRegion::RegexReplacement => {
+            InterpolationAdmission::NotOwned
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StringLikeRegion {
+    None,
+    InterpolatingString,
+    NonInterpolatingString,
+    InterpolatingHeredoc,
+    LiteralHeredoc,
+    RegexReplacement,
+}
+
+/// Geometry of a simple interpolating variable slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct InterpolationSlotGeometry {
+    pub prefix: String,
+    pub prefix_start: usize,
+    pub name_start: usize,
+    pub braced: bool,
+    pub escaped: bool,
+}
+
 /// Simple heuristic to check if position is in a string.
 pub(super) fn is_in_string(source: &str, position: usize) -> bool {
+    matches!(
+        string_like_region_at(source, position),
+        StringLikeRegion::InterpolatingString
+            | StringLikeRegion::NonInterpolatingString
+            | StringLikeRegion::RegexReplacement
+    )
+}
+
+fn string_like_region_at(source: &str, position: usize) -> StringLikeRegion {
     if invalid_string_position(source, position) {
-        return false;
+        return StringLikeRegion::None;
     }
 
     let mut active_delimiters: std::collections::VecDeque<HeredocDelimiter> =
@@ -58,11 +125,15 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
         if let Some(delimiter) = active_delimiters.front() {
             if delimiter.matches_close(line) {
                 if position_within_line(position, line_start, line_end) {
-                    return false;
+                    return StringLikeRegion::None;
                 }
                 active_delimiters.pop_front();
             } else if position_within_line(position, line_start, line_end) {
-                return false;
+                return if delimiter.interpolates {
+                    StringLikeRegion::InterpolatingHeredoc
+                } else {
+                    StringLikeRegion::LiteralHeredoc
+                };
             }
             line_start = line_end;
             continue;
@@ -70,7 +141,7 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
 
         if !matches!(pod_state, PodState::Code) {
             if position_within_line(position, line_start, line_end) {
-                return false;
+                return StringLikeRegion::None;
             }
             advance_pod_state(&mut pod_state, line);
             line_start = line_end;
@@ -79,7 +150,7 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
 
         if !literal_state.is_active() && advance_pod_state(&mut pod_state, line) {
             if position_within_line(position, line_start, line_end) {
-                return false;
+                return StringLikeRegion::None;
             }
             line_start = line_end;
             continue;
@@ -87,15 +158,7 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
 
         if position_within_line(position, line_start, line_end) {
             literal_state.scan_segment(source.as_bytes(), line_start, position);
-            return literal_state.in_single_quote
-                || literal_state.in_double_quote
-                || literal_state.in_backtick
-                || literal_state.literal.as_ref().is_some_and(|literal| {
-                    // The replacement section of `s///`/`tr///` is string-like:
-                    // it stays completion-eligible but must not read as
-                    // executable constructor evidence.
-                    literal.is_string_like() || !literal.in_pattern_section()
-                });
+            return literal_state_region(&literal_state);
         }
 
         let started_in_literal = literal_state.is_active();
@@ -118,7 +181,93 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
         line_start = line_end;
     }
 
-    false
+    StringLikeRegion::None
+}
+
+fn literal_state_region(literal_state: &LiteralScanState) -> StringLikeRegion {
+    if literal_state.in_single_quote {
+        return StringLikeRegion::NonInterpolatingString;
+    }
+    if literal_state.in_double_quote || literal_state.in_backtick {
+        return StringLikeRegion::InterpolatingString;
+    }
+    match literal_state.literal.as_ref() {
+        Some(literal) if literal.is_string_like() => {
+            if literal.interpolates {
+                StringLikeRegion::InterpolatingString
+            } else {
+                StringLikeRegion::NonInterpolatingString
+            }
+        }
+        Some(literal) if !literal.in_pattern_section() => StringLikeRegion::RegexReplacement,
+        Some(_) | None => StringLikeRegion::None,
+    }
+}
+
+pub(super) fn interpolation_slot_geometry(
+    source: &str,
+    position: usize,
+) -> Option<InterpolationSlotGeometry> {
+    if position == 0 || position > source.len() || !source.is_char_boundary(position) {
+        return None;
+    }
+
+    let bytes = source.as_bytes();
+    let mut name_end = position;
+    while name_end > 0 {
+        let Some(previous) = source.get(..name_end).and_then(|prefix| prefix.chars().next_back())
+        else {
+            break;
+        };
+        if previous.is_alphanumeric() || previous == '_' {
+            name_end -= previous.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    let (sigil_start, name_start, braced) = interpolation_sigil_before(bytes, name_end)
+        .or_else(|| interpolation_sigil_before(bytes, position))?;
+
+    if name_start > position {
+        return None;
+    }
+
+    let prefix = format!(
+        "{}{}",
+        source.get(sigil_start..sigil_start + 1)?,
+        source.get(name_start..position).unwrap_or("")
+    );
+    Some(InterpolationSlotGeometry {
+        prefix,
+        prefix_start: sigil_start,
+        name_start,
+        braced,
+        escaped: sigil_is_escaped(bytes, sigil_start),
+    })
+}
+
+fn interpolation_sigil_before(bytes: &[u8], index: usize) -> Option<(usize, usize, bool)> {
+    if index == 0 {
+        return None;
+    }
+    match bytes.get(index - 1).copied() {
+        Some(b'{') if index >= 2 && bytes.get(index - 2) == Some(&b'$') => {
+            Some((index - 2, index, true))
+        }
+        Some(b'$' | b'@' | b'%') => Some((index - 1, index, false)),
+        _ => None,
+    }
+}
+
+fn sigil_is_escaped(bytes: &[u8], sigil_start: usize) -> bool {
+    let mut backslashes = 0usize;
+    let mut index = sigil_start;
+    while index > 0 && bytes.get(index - 1) == Some(&b'\\') {
+        backslashes += 1;
+        index -= 1;
+    }
+    backslashes % 2 == 1
 }
 
 fn invalid_string_position(source: &str, position: usize) -> bool {
@@ -794,6 +943,7 @@ struct QuoteLikeLiteral {
     sections: usize,
     consumed: usize,
     kind: QuoteLikeLiteralKind,
+    interpolates: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -812,6 +962,7 @@ struct ActiveLiteral {
     depth: usize,
     awaiting_section_opener: bool,
     kind: QuoteLikeLiteralKind,
+    interpolates: bool,
 }
 
 impl ActiveLiteral {
@@ -824,6 +975,7 @@ impl ActiveLiteral {
             depth: 1,
             awaiting_section_opener: false,
             kind: literal.kind,
+            interpolates: literal.interpolates,
         }
     }
 
@@ -1017,7 +1169,7 @@ fn quote_like_literal_start(bytes: &[u8], index: usize) -> Option<QuoteLikeLiter
         return None;
     }
 
-    let (delimiter_offset, sections, allow_space, kind) =
+    let (delimiter_offset, sections, allow_space, kind, interpolates) =
         quote_like_operator_parameters(bytes.get(index).copied()?, bytes.get(index + 1).copied())?;
 
     let delimiter_index = index + delimiter_offset;
@@ -1032,20 +1184,29 @@ fn quote_like_literal_start(bytes: &[u8], index: usize) -> Option<QuoteLikeLiter
 
     let opener = bytes.get(delimiter_index).copied()?;
     let closer = quote_like_closer(opener)?;
-    Some(QuoteLikeLiteral { opener, closer, sections, consumed: delimiter_index + 1 - index, kind })
+    Some(QuoteLikeLiteral {
+        opener,
+        closer,
+        sections,
+        consumed: delimiter_index + 1 - index,
+        kind,
+        interpolates,
+    })
 }
 
 fn quote_like_operator_parameters(
     byte: u8,
     next: Option<u8>,
-) -> Option<(usize, usize, bool, QuoteLikeLiteralKind)> {
+) -> Option<(usize, usize, bool, QuoteLikeLiteralKind, bool)> {
     match (byte, next) {
-        (b'q', Some(b'r')) => Some((2, 1, true, QuoteLikeLiteralKind::Regex)),
-        (b'q', Some(b'q' | b'w' | b'x')) => Some((2, 1, true, QuoteLikeLiteralKind::String)),
-        (b't', Some(b'r')) => Some((2, 2, true, QuoteLikeLiteralKind::Regex)),
-        (b'q', _) => Some((1, 1, true, QuoteLikeLiteralKind::String)),
-        (b'm', _) => Some((1, 1, true, QuoteLikeLiteralKind::Regex)),
-        (b's' | b'y', _) => Some((1, 2, true, QuoteLikeLiteralKind::Regex)),
+        (b'q', Some(b'r')) => Some((2, 1, true, QuoteLikeLiteralKind::Regex, false)),
+        (b'q', Some(b'q')) => Some((2, 1, true, QuoteLikeLiteralKind::String, true)),
+        (b'q', Some(b'w')) => Some((2, 1, true, QuoteLikeLiteralKind::String, false)),
+        (b'q', Some(b'x')) => Some((2, 1, true, QuoteLikeLiteralKind::String, true)),
+        (b't', Some(b'r')) => Some((2, 2, true, QuoteLikeLiteralKind::Regex, false)),
+        (b'q', _) => Some((1, 1, true, QuoteLikeLiteralKind::String, false)),
+        (b'm', _) => Some((1, 1, true, QuoteLikeLiteralKind::Regex, false)),
+        (b's' | b'y', _) => Some((1, 2, true, QuoteLikeLiteralKind::Regex, false)),
         _ => None,
     }
 }
@@ -1121,6 +1282,7 @@ fn slash_regex_literal_start(bytes: &[u8], index: usize) -> Option<QuoteLikeLite
         sections: 1,
         consumed: 1,
         kind: QuoteLikeLiteralKind::Regex,
+        interpolates: false,
     })
 }
 
@@ -1231,7 +1393,7 @@ pub(super) fn quote_like_literal_span(bytes: &[u8], operator_index: usize) -> Op
     {
         return None;
     }
-    let (delimiter_offset, sections, allow_space, _) = quote_like_operator_parameters(
+    let (delimiter_offset, sections, allow_space, _, _) = quote_like_operator_parameters(
         bytes.get(operator_index).copied()?,
         bytes.get(operator_index + 1).copied(),
     )?;
@@ -1306,6 +1468,7 @@ struct HeredocDelimiter {
     requires_future_close: bool,
     ignore_future_body_heredocs: bool,
     constant_probe_bareword: Option<String>,
+    interpolates: bool,
 }
 
 impl HeredocDelimiter {
@@ -1331,6 +1494,10 @@ fn extract_heredoc_delimiter(text: &str) -> Option<HeredocDelimiter> {
     };
     let first_char = text.chars().next()?;
 
+    let interpolates = match first_char {
+        '\'' | '\\' => false,
+        _ => true,
+    };
     let label = match first_char {
         // Quoted forms: <<'EOF', <<"EOF", <<`EOF`, etc.
         '\'' | '"' | '`' => parse_quoted_heredoc_label(text, first_char)?,
@@ -1362,6 +1529,7 @@ fn extract_heredoc_delimiter(text: &str) -> Option<HeredocDelimiter> {
         requires_future_close: false,
         ignore_future_body_heredocs: false,
         constant_probe_bareword: None,
+        interpolates,
     })
 }
 
@@ -1588,6 +1756,7 @@ mod tests {
             requires_future_close: true,
             ignore_future_body_heredocs: false,
             constant_probe_bareword: None,
+            interpolates: true,
         };
 
         assert!(!has_future_heredoc_close("<<EOF", 99, &delimiter));
@@ -1817,6 +1986,7 @@ my $after = "op"#;
             requires_future_close: true,
             ignore_future_body_heredocs: false,
             constant_probe_bareword: None,
+            interpolates: true,
         };
         let source = "return foo <<bar;\n=pod\nbar\n=cut\n";
         let line_end = "return foo <<bar;\n".len();
@@ -1901,6 +2071,7 @@ my $after = "op"#;
             requires_future_close: true,
             ignore_future_body_heredocs: false,
             constant_probe_bareword: None,
+            interpolates: true,
         };
         let source = "return foo <<bar;\nmy $h = <<EOF;\nbar\nEOF\nbar\n";
         let line_end = "return foo <<bar;\n".len();
@@ -1916,6 +2087,7 @@ my $after = "op"#;
             requires_future_close: true,
             ignore_future_body_heredocs: false,
             constant_probe_bareword: None,
+            interpolates: true,
         };
         let source = "return foo <<bar;\nmy $literal = '\ntext'; my $h = <<EOF;\nbar\nEOF\nbar\n";
         let line_end = "return foo <<bar;\n".len();
@@ -1954,6 +2126,7 @@ my $after = "op"#;
             sections: 1,
             consumed: 2,
             kind: QuoteLikeLiteralKind::String,
+            interpolates: true,
         };
         let mut active = ActiveLiteral::new(literal);
         let mut escaped = true;
@@ -2035,7 +2208,7 @@ my $after = "op"#;
         assert_eq!(Some(&b'r'), b"qr{abc}".get(1));
         assert_eq!(
             quote_like_operator_parameters(b'q', Some(b'r')),
-            Some((2, 1, true, QuoteLikeLiteralKind::Regex))
+            Some((2, 1, true, QuoteLikeLiteralKind::Regex, false))
         );
 
         let qr_literal = quote_like_literal_start(b"qr{abc}", 0);
@@ -2054,15 +2227,15 @@ my $after = "op"#;
     fn quote_like_literal_start_discriminates_q_string_variants() {
         assert_eq!(
             quote_like_operator_parameters(b'q', Some(b'q')),
-            Some((2, 1, true, QuoteLikeLiteralKind::String))
+            Some((2, 1, true, QuoteLikeLiteralKind::String, true))
         );
         assert_eq!(
             quote_like_operator_parameters(b'q', Some(b'w')),
-            Some((2, 1, true, QuoteLikeLiteralKind::String))
+            Some((2, 1, true, QuoteLikeLiteralKind::String, false))
         );
         assert_eq!(
             quote_like_operator_parameters(b'q', Some(b'x')),
-            Some((2, 1, true, QuoteLikeLiteralKind::String))
+            Some((2, 1, true, QuoteLikeLiteralKind::String, true))
         );
 
         assert_quote_like_start(b"qq{abc}", 0, 3, 1, QuoteLikeLiteralKind::String);
@@ -2076,7 +2249,7 @@ my $after = "op"#;
         assert_eq!(Some(&b'r'), b"tr/a/b".get(1));
         assert_eq!(
             quote_like_operator_parameters(b't', Some(b'r')),
-            Some((2, 2, true, QuoteLikeLiteralKind::Regex))
+            Some((2, 2, true, QuoteLikeLiteralKind::Regex, false))
         );
         assert_eq!(quote_like_operator_parameters(b't', Some(b'/')), None);
 
@@ -2230,6 +2403,49 @@ my $after = "op"#;
         assert!(
             !is_in_regex(pod, pod.find("my $code").unwrap()),
             "regex-like text inside a POD body must not leave literal state active"
+        );
+    }
+
+    #[test]
+    fn interpolation_admission_discriminates_owned_slots_from_quiet_and_unowned() {
+        let interpolating = r#"my $name = "hi"; my $text = "Hello $na"#;
+        assert_eq!(
+            interpolation_admission(interpolating, interpolating.len()),
+            InterpolationAdmission::VariableSlot { braced: false }
+        );
+
+        let braced = r#"my $name = "hi"; my $text = "Hello ${na"#;
+        assert_eq!(
+            interpolation_admission(braced, braced.len()),
+            InterpolationAdmission::VariableSlot { braced: true }
+        );
+
+        let single = r#"my $name = "hi"; my $text = 'Hello $na"#;
+        assert_eq!(interpolation_admission(single, single.len()), InterpolationAdmission::Quiet);
+
+        let escaped = r#"my $name = "hi"; my $text = "Hello \$na"#;
+        assert_eq!(interpolation_admission(escaped, escaped.len()), InterpolationAdmission::Quiet);
+
+        let interpolating_heredoc = "my $name = 1;\nmy $text = <<EOF;\nHello $na";
+        assert_eq!(
+            interpolation_admission(interpolating_heredoc, interpolating_heredoc.len()),
+            InterpolationAdmission::VariableSlot { braced: false }
+        );
+
+        let literal_heredoc = "my $name = 1;\nmy $text = <<'EOF';\nHello $na";
+        assert_eq!(
+            interpolation_admission(literal_heredoc, literal_heredoc.len()),
+            InterpolationAdmission::Quiet
+        );
+
+        let code = "my $name = 1;\n$na";
+        assert_eq!(interpolation_admission(code, code.len()), InterpolationAdmission::NotOwned);
+
+        let replacement = "my $name = 1;\nmy $x = s;foo;$na;";
+        let slot = replacement.find("$na").expect("$na in replacement");
+        assert_eq!(
+            interpolation_admission(replacement, slot + 3),
+            InterpolationAdmission::NotOwned
         );
     }
 }

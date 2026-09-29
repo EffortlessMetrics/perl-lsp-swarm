@@ -28,10 +28,9 @@ pub(super) fn complete_dispatch(
         return CompletionFlow::SortAndReturn;
     }
 
-    // If the prefix starts with a sigil inside a string, this is variable
-    // interpolation (e.g. "Hello $na|me"). Run sigil completion first so
-    // variable candidates are offered, then fall through to file-path context
-    // only if the prefix doesn't look like a variable. (COMPOSE-1d)
+    // Remaining in-string work is file-path completion and regex-replacement
+    // sigil completion. Exact interpolating variable slots are admitted before
+    // dispatch (#16863).
     let prefix_starts_with_sigil =
         context.prefix.chars().next().is_some_and(|c| c == '$' || c == '@' || c == '%');
 
@@ -41,11 +40,6 @@ pub(super) fn complete_dispatch(
     }
 
     if let Some(flow) = complete_sigil_context(provider, completions, context, is_cancelled) {
-        // If we were in a string and sigil completion matched, we're done.
-        // Otherwise fall through to file-path for string context.
-        if context.in_string {
-            return flow;
-        }
         return flow;
     }
 
