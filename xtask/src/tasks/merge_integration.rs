@@ -190,7 +190,10 @@ fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
         .spawn()
         .context("spawning git apply")?;
     let stdin = child.stdin.take().ok_or_else(|| eyre!("git apply stdin was unavailable"))?;
-    write_git_apply_stdin(stdin, patch)?;
+    // Capture the write result without returning yet: the child must always be
+    // reaped. EPIPE is classified as a non-error; other write errors wait until
+    // after a successful apply so a rejected child remains rejection authority.
+    let write_result = write_git_apply_stdin(stdin, patch);
     let output = child.wait_with_output().context("waiting for git apply")?;
     if !output.status.success() {
         return Err(eyre!(
@@ -199,7 +202,7 @@ fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    Ok(())
+    write_result
 }
 
 #[allow(dead_code)]
