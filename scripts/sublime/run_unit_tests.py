@@ -379,6 +379,8 @@ def main() -> int:
         return 1
     if success is not True:
         _diagnose(package)
+    else:
+        _dump("launcher log", os.path.expanduser("~/perllsp_sublime_host_ci.log"))
     _remove(SCHEDULE_RUNNER_TARGET)
     _kill_sublime_text()
     return 0 if success is True else 1

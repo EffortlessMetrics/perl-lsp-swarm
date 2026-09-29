@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+import importlib
 
 import sublime
 
@@ -50,13 +51,24 @@ def _probe_host(delay_ms: int) -> None:
             f"sublime={sublime.version()} expected={os.environ.get('PERLLSP_EXPECTED_SUBLIME_BUILD')} "
             f"window_id={window.id() if window else None} "
             f"window_valid={window.is_valid() if window else None} "
-            f"lsp_loaded={'LSP.plugin' in sys.modules} registry_loaded={registry is not None} "
+            f"lsp_loaded={'LSP.plugin' in sys.modules} boot_loaded={'LSP.boot' in sys.modules} "
+            f"registry_loaded={registry is not None} "
             f"registry_fields={fields!r} "
             f"enabled={getattr(windows, '_enabled', None)!r} "
             f"registered_window_ids={list(getattr(windows, '_windows', {}))!r}"
         )
     except Exception:
         _log(f"host probe {delay_ms}ms failed\n{traceback.format_exc()}")
+
+
+def _probe_boot_import() -> None:
+    """After the passive probes, identify any LSP boot import exception."""
+    try:
+        module = importlib.import_module("LSP.boot")
+        _log(f"LSP.boot import: success, plugin_loaded={callable(getattr(module, 'plugin_loaded', None))}")
+    except Exception:
+        _log("LSP.boot import failed\n" + traceback.format_exc())
+    _probe_host(20000)
 
 
 def plugin_loaded() -> None:
@@ -72,6 +84,7 @@ def plugin_loaded() -> None:
     _log(f"launcher: schedule found at {schedule}")
     for delay_ms in (0, 1000, 5000, 15000):
         sublime.set_timeout(lambda delay_ms=delay_ms: _probe_host(delay_ms), delay_ms)
+    sublime.set_timeout(_probe_boot_import, 20000)
     try:
         from UnitTesting.unittesting import run_scheduler
     except Exception:
