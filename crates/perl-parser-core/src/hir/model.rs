@@ -162,6 +162,126 @@ impl HirFile {
         self.bodies.first()
     }
 
+    /// Return the exact native-class owner of a lowered `method` item.
+    ///
+    /// `None` means the method is not a named method of an admitted core
+    /// block-form class; ask
+    /// [`HirFile::method_owner_limitation`] for the specific reason rather than
+    /// treating absence as "no class". #16969.
+    #[must_use]
+    pub fn native_class_owner(&self, method_item: HirId) -> Option<&NativeClassOwner> {
+        self.method_owner(method_item)?.as_ref().ok()
+    }
+
+    /// Return the owner relation of a lowered `method` item, exact or limited.
+    #[must_use]
+    pub fn method_owner(
+        &self,
+        method_item: HirId,
+    ) -> Option<&Result<NativeClassOwner, NativeMethodOwnerLimitation>> {
+        let index = usize::try_from(method_item.index()).ok()?;
+        let item = self.items.get(index)?;
+        match &item.kind {
+            HirKind::MethodDecl(decl) => Some(&decl.class_owner),
+            _ => None,
+        }
+    }
+
+    /// Return why a lowered `method` item has no exact native-class owner.
+    #[must_use]
+    pub fn method_owner_limitation(
+        &self,
+        method_item: HirId,
+    ) -> Option<NativeMethodOwnerLimitation> {
+        match self.method_owner(method_item)? {
+            Ok(_) => None,
+            Err(limitation) => Some(*limitation),
+        }
+    }
+
+    /// Resolve the exact native-method invocant in effect for `scope_id`.
+    ///
+    /// Walks the scope chain and stops at the first *callable* frame, asking
+    /// [`ScopeKind::is_callable`] rather than matching a single variant:
+    ///
+    /// - a [`ScopeKind::Method`] pad with an exact owner returns that owner;
+    /// - a [`ScopeKind::AnonymousSubroutine`] is transparent, so a closure
+    ///   keeps the enclosing invocant's identity;
+    /// - a [`ScopeKind::Subroutine`] pad is a boundary, because a named `sub`
+    ///   is a package-level declaration compiled once rather than code running
+    ///   inside that method's invocant.
+    ///
+    /// Plain blocks, `if`/`while` bodies, and the class body itself are walked
+    /// through. This is deliberately *not* a lexical name walk: a named nested
+    /// `sub` still resolves `$self` to the outer binding id through
+    /// [`ScopeGraph`] lookup, and returning that id here would be a guess.
+    /// #16969.
+    pub fn exact_invocant_owner(
+        &self,
+        scope_id: HirScopeId,
+    ) -> Result<&NativeClassOwner, NativeInvocantLimitation> {
+        let mut current = Some(scope_id);
+        while let Some(id) = current {
+            let Some(frame) = self.scope_frame(id) else {
+                return Err(NativeInvocantLimitation::NotInMethod);
+            };
+            if !frame.kind.is_callable() {
+                current = frame.parent;
+                continue;
+            }
+            match frame.kind {
+                // A closure keeps the enclosing invocant's identity, so keep
+                // walking past it rather than reporting a boundary.
+                ScopeKind::AnonymousSubroutine => current = frame.parent,
+                ScopeKind::Method => {
+                    return match self.scope_owner_for_scope(id) {
+                        Some(Ok(owner)) => Ok(owner),
+                        Some(Err(limitation)) => {
+                            Err(NativeInvocantLimitation::OwnerUnavailable(*limitation))
+                        }
+                        None => Err(NativeInvocantLimitation::OwnerUnavailable(
+                            NativeMethodOwnerLimitation::NotInBlockFormClass,
+                        )),
+                    };
+                }
+                _ => return Err(NativeInvocantLimitation::NamedSubroutineBoundary),
+            }
+        }
+        Err(NativeInvocantLimitation::NotInMethod)
+    }
+
+    /// Return the scope frame for `id`, when it is one this file lowered.
+    fn scope_frame(&self, id: HirScopeId) -> Option<&ScopeFrame> {
+        self.scope_graph.scopes.get(usize::try_from(id.index()).ok()?)
+    }
+
+    /// Return the invocant binding of `owner` from this file's scope graph.
+    #[must_use]
+    pub fn invocant_binding(&self, owner: &NativeClassOwner) -> Option<&Binding> {
+        let index = usize::try_from(owner.invocant.index()).ok()?;
+        self.scope_graph.bindings.get(index)
+    }
+
+    /// Find the owner relation recorded for a method pad scope.
+    ///
+    /// Scans the lowered method items rather than keeping a second method
+    /// table: the relation already lives on the method's own payload, and a
+    /// parallel index would be a second source of truth for it. Matches on the
+    /// item's own scope context so a *limited* relation is found too — a method
+    /// that failed admission must still report why when a consumer asks from
+    /// inside its pad.
+    fn scope_owner_for_scope(
+        &self,
+        method_scope: HirScopeId,
+    ) -> Option<&Result<NativeClassOwner, NativeMethodOwnerLimitation>> {
+        self.items.iter().find_map(|item| match &item.kind {
+            HirKind::MethodDecl(decl) if item.scope_context == Some(method_scope) => {
+                Some(&decl.class_owner)
+            }
+            _ => None,
+        })
+    }
+
     /// Project compile-time effects using the default model metadata.
     ///
     /// This is a compiler-substrate proof surface only. It links existing HIR
@@ -3201,6 +3321,107 @@ pub struct MethodDecl {
     pub has_signature: bool,
     /// Number of parsed attributes.
     pub attribute_count: usize,
+    /// Source-backed owner of this method's implicit `$self` invocant.
+    ///
+    /// `Ok` only for a *named* method whose pad is a direct member of an
+    /// admitted core block-form `class` body. Everything else — an `ADJUST`
+    /// phaser, an anonymous method form, a dialect or package-level method, a
+    /// recovered class declaration, or a method inside a form whose effective
+    /// feature set is dynamic — is `Err` with the specific reason, never a
+    /// name-based guess. #16969.
+    pub class_owner: Result<NativeClassOwner, NativeMethodOwnerLimitation>,
+}
+
+/// Source-backed owner of one named method inside a block-form native class.
+///
+/// Every field is derived from a source anchor or an id minted while lowering
+/// that exact `class` declaration, so two same-spelled methods in sibling
+/// classes cannot share an owner: they carry different `class_item` and
+/// `class_scope` values. #16969.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NativeClassOwner {
+    /// HIR item of the enclosing `class` declaration.
+    pub class_item: HirId,
+    /// Class name as written in the declaration.
+    pub class_name: String,
+    /// Source range of the class-name token.
+    pub class_name_range: SourceLocation,
+    /// Class-body scope frame that directly contains the method pad.
+    pub class_scope: HirScopeId,
+    /// HIR item of this `method` declaration.
+    pub method_item: HirId,
+    /// Method name as written.
+    pub method_name: String,
+    /// Source range of the method-name token.
+    ///
+    /// Absent only when the method has no name anchor, which is one of the
+    /// [`NativeMethodOwnerLimitation`] cases rather than an exact owner.
+    pub method_name_range: Option<SourceLocation>,
+    /// Method pad scope that owns the implicit invocant binding.
+    pub method_scope: HirScopeId,
+    /// Implicit `$self` [`StorageClass::MethodInvocant`] binding minted for
+    /// this method.
+    pub invocant: HirBindingId,
+}
+
+/// Why a method has no exact native-class owner.
+///
+/// A missing, recovered, non-core-profile, ambiguous, statement-form, or
+/// package-level method owner is *unavailable*, never an exact class guess
+/// recovered from a name. #16969.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum NativeMethodOwnerLimitation {
+    /// The method has no name anchor.
+    ///
+    /// The parser also represents the `ADJUST` phaser (and other anonymous
+    /// method forms) as [`NodeKind::Method`][method] with `name_span: None`.
+    /// A phaser is not a named callable and must not gain an invocant-owner
+    /// relation.
+    ///
+    /// [method]: ../../../perl_ast/ast/enum.NodeKind.html#variant.Method
+    UnnamedMethodAnchor,
+    /// The method pad is not a direct member of a block-form class body.
+    ///
+    /// Covers statement-form class membership (pending #10346) and any
+    /// package-level or dialect method that the parser still shapes as
+    /// `NodeKind::Method`.
+    NotInBlockFormClass,
+    /// The enclosing class body is not admitted by an effective `class`
+    /// feature at its declaration offset.
+    ClassFeatureNotAdmitted,
+    /// A `use`/`no` declaration with non-static arguments precedes the class,
+    /// so its effective feature set is not statically known.
+    DynamicPragmaEnvironment,
+    /// The class declaration carries no source name anchor.
+    UnanchoredClassName,
+    /// The class declaration was lowered from parser recovery.
+    RecoveredClass,
+    /// The method declaration itself was lowered from parser recovery.
+    RecoveredMethod,
+}
+
+/// Result of asking "is this scope inside an exact native-method invocant?".
+///
+/// The distinction from a generic lexical scope walk is the point: a named
+/// nested `sub` still sees the outer `$self` binding id through ordinary
+/// lexical lookup, but Perl compiles a named `sub` as a package-level
+/// declaration callable from anywhere, so it is **not** inside that method's
+/// invocant. An anonymous closure, by contrast, keeps the enclosing
+/// invocant's identity. #16969.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum NativeInvocantLimitation {
+    /// The scope is not inside any method pad.
+    NotInMethod,
+    /// The innermost callable is a *named* subroutine, not a method.
+    ///
+    /// The outer invocant binding may still be lexically visible here, but its
+    /// identity is not this construct's current invocant.
+    NamedSubroutineBoundary,
+    /// The method has no exact native-class owner.
+    OwnerUnavailable(NativeMethodOwnerLimitation),
 }
 
 /// Use declaration HIR payload.

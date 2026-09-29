@@ -27,13 +27,13 @@ use super::model::{
     HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind,
     IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr,
     MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus,
-    PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect,
-    PragmaStateFact, PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource,
-    RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind,
-    StashConfidence, StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
-    StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
-    TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
-    glob_pattern_interpolates,
+    NativeClassOwner, NativeMethodOwnerLimitation, PackageDecl, PackageInheritanceEdge,
+    PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable,
+    ReadlineMigrationAdapter, ReadlineSource, RecoveryConfidence, RegexExpr, RegexTargetKind,
+    RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence, StashDynamicBoundary,
+    StashDynamicBoundaryKind, StashGraph, StashProvenance, StatementModifierKind,
+    StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr, TransliterationExpr, TryExpr,
+    UseDecl, VariableBinding, VariableDecl, glob_pattern_interpolates,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -83,14 +83,65 @@ struct Lowerer {
     /// class. Membership here, not subtree depth, gates class-field storage
     /// (#13817).
     class_field_decls: BTreeSet<(usize, usize)>,
-    /// Source spans of the body blocks of Perl 5.38+ `class` declarations.
+    /// Block-form `class` declarations keyed by their body-block span, claimed
+    /// by the body `Block` arm.
     ///
     /// The body of a `class` is an ordinary `Block` node, so the block arm
     /// cannot tell a class body from any other block. Registering the span
-    /// here lets that arm open a [`ScopeKind::Class`] frame instead, which is
-    /// what owns field visibility. Registration happens in the `Class` arm,
-    /// which the traversal reaches before the body block it names (#13817).
-    class_body_spans: BTreeSet<(usize, usize)>,
+    /// here is what makes that arm open a [`ScopeKind::Class`] frame instead of
+    /// a plain one — the frame that owns field visibility (#13817) and, since
+    /// #16969, the source-backed class owner for a named method's implicit
+    /// invocant. Registration happens in the `Class` arm, which the traversal
+    /// reaches before the body block it names.
+    ///
+    /// The declaration travels *with* the span rather than alongside it in a
+    /// second span-keyed set: a class frame and its owner declaration are one
+    /// decision, and two independently maintained maps could disagree.
+    pending_class_decls: BTreeMap<(usize, usize), PendingClassDecl>,
+    /// Block-form `class` declarations already bound to their class frame,
+    /// keyed by that frame's scope index.
+    ///
+    /// Keying by the frame rather than by name or `package_context` is what
+    /// makes sibling classes incapable of sharing an owner. #16969.
+    class_scope_owners: BTreeMap<u32, PendingClassDecl>,
+}
+
+/// Source-backed facts about one block-form `class` declaration.
+#[derive(Debug, Clone)]
+struct PendingClassDecl {
+    /// HIR item of the `class` declaration.
+    item: HirId,
+    /// Class name as written.
+    name: String,
+    /// Source range of the class-name token, when the parser exposed one.
+    name_range: Option<SourceLocation>,
+    /// Recovery quality inherited from the declaration node.
+    confidence: RecoveryConfidence,
+    /// Source offset the class declaration starts at, used to query the
+    /// effective feature set in effect where the class is written.
+    declared_at: usize,
+}
+
+/// Sigil of the implicit invocant Perl injects into every named native method.
+const IMPLICIT_INVOCANT_SIGIL: &str = "$";
+/// Name of the implicit invocant Perl injects into every named native method.
+const IMPLICIT_INVOCANT_NAME: &str = "self";
+
+/// Admitted block-form class facts for one method pad.
+///
+/// Resolved *before* the invocant binding is minted so the owner relation and
+/// the binding can be built from a single decision rather than two lookups
+/// that could disagree. #16969.
+#[derive(Debug, Clone)]
+struct NativeClassContext {
+    /// The enclosing `class` declaration.
+    declaration: PendingClassDecl,
+    /// Source range of the class-name token.
+    class_name_range: SourceLocation,
+    /// Class-body frame that directly contains the method pad.
+    class_scope: HirScopeId,
+    /// Offset at which the implicit invocant becomes visible.
+    invocant_offset: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +179,8 @@ impl Lowerer {
             scope_stack: vec![file_scope],
             pending_label: None,
             class_field_decls: BTreeSet::new(),
-            class_body_spans: BTreeSet::new(),
+            pending_class_decls: BTreeMap::new(),
+            class_scope_owners: BTreeMap::new(),
         }
     }
 
@@ -165,15 +217,21 @@ impl Lowerer {
                 let _ = self.pending_label.take();
                 // The body of a `class` is an ordinary `Block` node; the
                 // `Class` arm registered its span so this frame can be the
-                // class frame that owns field visibility (#13817).
+                // class frame that owns field visibility (#13817) and the
+                // source-backed class owner for a named method's implicit
+                // invocant (#16969).
+                let body_span = (node.location.start, node.location.end);
+                // One lookup decides both things: a registered class body
+                // becomes a `ScopeKind::Class` frame, and the same entry carries
+                // the declaration that frame will own. They cannot drift.
+                let pending_class = self.pending_class_decls.remove(&body_span);
                 let scope_kind =
-                    if self.class_body_spans.contains(&(node.location.start, node.location.end)) {
-                        ScopeKind::Class
-                    } else {
-                        ScopeKind::Block
-                    };
+                    if pending_class.is_some() { ScopeKind::Class } else { ScopeKind::Block };
                 let scope_id =
                     self.enter_scope(scope_kind, node.location, self.package_context.clone());
+                if let Some(declaration) = pending_class {
+                    self.class_scope_owners.insert(scope_id.index(), declaration);
+                }
                 self.push_item(
                     node,
                     None,
@@ -318,23 +376,68 @@ impl Lowerer {
                 }
                 self.exit_scope();
             }
-            NodeKind::Method { name, name_span: _, signature, attributes, body } => {
+            NodeKind::Method { name, name_span, signature, attributes, body } => {
                 let method_scope = self.enter_scope(
                     ScopeKind::Method,
                     node.location,
                     self.package_context.clone(),
                 );
-                let item_id = self.push_item(
+                // `push_item` mints `next_id` for this item, so the owner
+                // relation can name its own `method_item` before the payload
+                // that carries it is built.
+                let item_id = HirId::from_index(self.next_id);
+                let class_context = self.native_class_context(method_scope, *name_span, confidence);
+                // Perl injects the invocant at the method declaration, before
+                // any explicit parameter, so a same-name signature parameter or
+                // a `my $self` shadows the implicit binding instead of
+                // replacing it (#16969).
+                let class_owner = match class_context {
+                    Err(limitation) => Err(limitation),
+                    Ok(context) => {
+                        let invocant = self.record_binding(
+                            IMPLICIT_INVOCANT_SIGIL.to_string(),
+                            IMPLICIT_INVOCANT_NAME.to_string(),
+                            // The invocant has no token of its own. Anchor it at
+                            // the offset Perl injects it — the method name —
+                            // rather than borrowing an unrelated range.
+                            SourceLocation::new(context.invocant_offset, context.invocant_offset),
+                            StorageClass::MethodInvocant,
+                            method_scope,
+                            Some(item_id),
+                        );
+                        Ok(NativeClassOwner {
+                            class_item: context.declaration.item,
+                            class_name: context.declaration.name,
+                            class_name_range: context.class_name_range,
+                            class_scope: context.class_scope,
+                            method_item: item_id,
+                            method_name: name.clone(),
+                            method_name_range: *name_span,
+                            method_scope,
+                            invocant,
+                        })
+                    }
+                };
+                let pushed = self.push_item(
                     node,
-                    None,
+                    *name_span,
                     confidence,
                     HirKind::MethodDecl(MethodDecl {
                         name: name.clone(),
                         has_signature: signature.is_some(),
                         attribute_count: attributes.len(),
+                        class_owner,
                     }),
                     self.package_context.clone(),
                     Some(method_scope),
+                );
+                // The owner relation above had to name its own item before the
+                // payload carrying it existed. `push_item` mints `next_id` for
+                // this item and `record_binding` does not consume one, so the
+                // prediction holds; assert it rather than leave it invisible.
+                debug_assert_eq!(
+                    pushed, item_id,
+                    "the predicted method item id must match the pushed one"
                 );
                 self.record_slot(
                     self.current_package_name(),
@@ -1037,7 +1140,7 @@ impl Lowerer {
                 // a Perl 5.38+ class body does not fully share (methods and
                 // fields, not arbitrary package globals). The class *scope*
                 // frame is modeled — see the body-span registration below.
-                self.push_item(
+                let class_item = self.push_item(
                     node,
                     *name_span,
                     confidence,
@@ -1078,8 +1181,20 @@ impl Lowerer {
                 self.class_field_decls.extend(direct_field_decls);
                 // The block arm turns this span into a `ScopeKind::Class`
                 // frame, which is where the field bindings above will land and
-                // what decides who can see them.
-                self.class_body_spans.insert((body.location.start, body.location.end));
+                // what decides who can see them. Park the declaration against
+                // that span so the frame can be bound to *this* class, rather
+                // than to a name or a `package_context` that a sibling class
+                // could share (#16969).
+                self.pending_class_decls.insert(
+                    (body.location.start, body.location.end),
+                    PendingClassDecl {
+                        item: class_item,
+                        name: name.clone(),
+                        name_range: *name_span,
+                        confidence,
+                        declared_at: node.location.start,
+                    },
+                );
                 self.visit_children(node, confidence);
             }
             NodeKind::Defer { .. } => {
@@ -1528,6 +1643,84 @@ impl Lowerer {
     fn exit_scope(&mut self) {
         if self.scope_stack.len() > 1 {
             self.scope_stack.pop();
+        }
+    }
+
+    /// Return the scope frame for `id`, when it is one this file lowered.
+    fn frame(&self, id: HirScopeId) -> Option<&ScopeFrame> {
+        self.scope_graph.scopes.get(usize::try_from(id.index()).ok()?)
+    }
+
+    /// Resolve the admitted block-form class that directly owns `method_scope`.
+    ///
+    /// Every rejection is a typed [`NativeMethodOwnerLimitation`] rather than a
+    /// name match: an unnamed method anchor (the `ADJUST` phaser and other
+    /// anonymous forms reach this arm as `NodeKind::Method` with no name span),
+    /// a method that is not a direct member of a class frame (statement-form
+    /// class membership, or any package-level or dialect method the parser
+    /// still shapes this way), a recovered or unanchored class declaration, a
+    /// dynamic pragma environment, or a class feature that is not in effect
+    /// where the class is written.
+    ///
+    /// Requiring the class frame to be the method pad's *direct* parent is what
+    /// keeps statement-form membership and package context out: neither can
+    /// produce a class frame, and a sibling class produces a different frame.
+    fn native_class_context(
+        &self,
+        method_scope: HirScopeId,
+        name_span: Option<SourceLocation>,
+        method_confidence: RecoveryConfidence,
+    ) -> Result<NativeClassContext, NativeMethodOwnerLimitation> {
+        let Some(name_range) = name_span else {
+            return Err(NativeMethodOwnerLimitation::UnnamedMethodAnchor);
+        };
+        if method_confidence != RecoveryConfidence::Parsed {
+            return Err(NativeMethodOwnerLimitation::RecoveredMethod);
+        }
+        let Some(class_frame) = self
+            .frame(method_scope)
+            .and_then(|frame| frame.parent)
+            .and_then(|parent| self.frame(parent))
+        else {
+            return Err(NativeMethodOwnerLimitation::NotInBlockFormClass);
+        };
+        if class_frame.kind != ScopeKind::Class {
+            return Err(NativeMethodOwnerLimitation::NotInBlockFormClass);
+        }
+        let Some(declaration) = self.class_scope_owners.get(&class_frame.id.index()) else {
+            return Err(NativeMethodOwnerLimitation::NotInBlockFormClass);
+        };
+        if declaration.confidence != RecoveryConfidence::Parsed {
+            return Err(NativeMethodOwnerLimitation::RecoveredClass);
+        }
+        let Some(class_name_range) = declaration.name_range else {
+            return Err(NativeMethodOwnerLimitation::UnanchoredClassName);
+        };
+        self.class_feature_admission(declaration.declared_at)?;
+        Ok(NativeClassContext {
+            declaration: declaration.clone(),
+            class_name_range,
+            class_scope: class_frame.id,
+            invocant_offset: name_range.start,
+        })
+    }
+
+    /// Whether the core `class` feature is in effect where a class is written.
+    ///
+    /// A dynamic pragma argument anywhere before the class leaves the effective
+    /// feature set undecidable, so it is reported as its own limitation rather
+    /// than folded into "not admitted".
+    fn class_feature_admission(&self, offset: usize) -> Result<(), NativeMethodOwnerLimitation> {
+        if self.compile_environment.dynamic_boundaries.iter().any(|boundary| {
+            boundary.kind == CompileEnvironmentBoundaryKind::DynamicPragmaArgs
+                && boundary.range.start < offset
+        }) {
+            return Err(NativeMethodOwnerLimitation::DynamicPragmaEnvironment);
+        }
+        if self.pragma_environment.snapshot_at(offset).state().has_feature("class") {
+            Ok(())
+        } else {
+            Err(NativeMethodOwnerLimitation::ClassFeatureNotAdmitted)
         }
     }
 
