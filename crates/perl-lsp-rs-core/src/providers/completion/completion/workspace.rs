@@ -2175,7 +2175,7 @@ mod collect_all_tests {
         let index = Arc::new(WorkspaceIndex::new());
         let parent_uri = must(Url::parse("file:///workspace/Parent.pm"));
         must(
-            index.index_file(
+            index.index_initial_file(
                 parent_uri,
                 r#"package Parent;
 use Moo;
@@ -2197,11 +2197,11 @@ has 'status' => (
     #[test]
     fn collect_all_keeps_indexed_parents_when_current_document_omits_isa() {
         let index = Arc::new(WorkspaceIndex::new());
-        must(index.index_file(
+        must(index.index_initial_file(
             must(Url::parse("file:///workspace/Parent.pm")),
             "package Parent;\nsub parent_method { 1 }\n1;\n".to_string(),
         ));
-        must(index.index_file(
+        must(index.index_initial_file(
             must(Url::parse("file:///workspace/Child.pm")),
             "package Child;\nuse parent 'Parent';\nsub child_method { 1 }\n1;\n".to_string(),
         ));
@@ -2308,7 +2308,10 @@ sub own_method { "current" }
 sub consume { 1 }
 "#;
         let index = Arc::new(WorkspaceIndex::new());
-        must(index.index_file(must(Url::parse("file:///workspace/User.pm")), indexed.to_string()));
+        must(index.index_initial_file(
+            must(Url::parse("file:///workspace/User.pm")),
+            indexed.to_string(),
+        ));
         let members = collect_all_package_members_with_source(index.as_ref(), "User", current);
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
         assert!(
