@@ -127,7 +127,16 @@ pub struct UxRegressionReceipt {
     platform: Option<String>,
 }
 
-pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
+/// What `run` produced, for the caller to report.
+#[derive(Debug, Clone)]
+pub struct UxRegressionReceiptOutput {
+    /// Pretty-printed receipt JSON, also written to `written_path` when set.
+    pub payload: String,
+    /// Where the payload was written, when the config requested a file.
+    pub written_path: Option<PathBuf>,
+}
+
+pub fn run(config: UxRegressionReceiptConfig) -> Result<UxRegressionReceiptOutput> {
     validate_patterns()?;
     let raw = fs::read_to_string(&config.input)
         .with_context(|| format!("reading {}", config.input.display()))?;
@@ -145,18 +154,20 @@ pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
     let receipt = classify_with_exit_status(&raw, config.sha, exit_status);
     let payload = serde_json::to_string_pretty(&receipt)?;
 
-    if let Some(path) = config.receipt {
+    // A library function must not print (#16906): return the output and let
+    // the CLI caller (xtask shim or this crate's bin) report it.
+    let written_path = if let Some(path) = config.receipt {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         fs::write(&path, format!("{payload}\n"))
             .with_context(|| format!("writing {}", path.display()))?;
-        println!("Wrote UX regression receipt: {}", path.display());
+        Some(path)
     } else {
-        println!("{payload}");
-    }
+        None
+    };
 
-    Ok(())
+    Ok(UxRegressionReceiptOutput { payload, written_path })
 }
 
 fn validate_patterns() -> Result<()> {
@@ -794,6 +805,45 @@ mod tests {
         assert!(PANIC_RE.is_ok());
         assert!(FAILURE_BLOCK_RE.is_ok());
         assert!(PASSING_TEST_RE.is_ok());
+    }
+
+    #[test]
+    fn run_returns_output_for_the_caller_to_report() -> anyhow::Result<()> {
+        // `run` must not print (#16906): it returns the payload and the
+        // written path so the CLI caller reports them.
+        let dir =
+            std::env::temp_dir().join(format!("ux-receipt-run-contract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        let input = dir.join("ux.log");
+        std::fs::write(&input, "test result: ok. 1 passed; 0 failed\n")?;
+
+        let receipt_path = dir.join("out").join("receipt.json");
+        let output = super::run(UxRegressionReceiptConfig {
+            input: input.clone(),
+            receipt: Some(receipt_path.clone()),
+            sha: Some("abc123".to_string()),
+            exit_status_file: None,
+        })?;
+        assert_eq!(output.written_path.as_deref(), Some(receipt_path.as_path()));
+        assert!(
+            output.payload.contains("ux_regression_receipt"),
+            "payload should be the receipt JSON"
+        );
+        let written = std::fs::read_to_string(&receipt_path)?;
+        assert_eq!(written, format!("{}\n", output.payload));
+
+        let output = super::run(UxRegressionReceiptConfig {
+            input,
+            receipt: None,
+            sha: Some("abc123".to_string()),
+            exit_status_file: None,
+        })?;
+        assert!(output.written_path.is_none());
+        assert!(!output.payload.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]

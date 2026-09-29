@@ -1,5 +1,6 @@
 //! Small receipt emitter for the UX gate after the harness has already built.
 
+use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
@@ -26,10 +27,19 @@ fn main() -> Result<()> {
     let Some(input) = input else { bail!("--input is required") };
     let Some(sha) = sha else { bail!("--sha is required") };
     let Some(exit_status_file) = exit_status_file else { bail!("--exit-status-file is required") };
-    run(UxRegressionReceiptConfig {
+    let output = run(UxRegressionReceiptConfig {
         input,
         receipt,
         sha: Some(sha),
         exit_status_file: Some(exit_status_file),
-    })
+    })?;
+    // This binary is the CLI emitter, so reporting lives here. The package
+    // denies print_stdout on every target (#16906), hence explicit writes.
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    match &output.written_path {
+        Some(path) => writeln!(stdout, "Wrote UX regression receipt: {}", path.display())?,
+        None => writeln!(stdout, "{}", output.payload)?,
+    }
+    Ok(())
 }
