@@ -5,8 +5,8 @@
 //! scope, anchor, and span must match. Overlay rows that HIR does not emit
 //! (`RequireThenImport`, standalone `ManualImport`) are allowed extras.
 
-use perl_parser_core::hir::lower_ast;
 use perl_parser_core::Parser;
+use perl_parser_core::hir::lower_ast;
 use perl_semantic_facts::{
     Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance, VisibleSymbolSource,
 };

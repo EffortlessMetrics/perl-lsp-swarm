@@ -77,11 +77,27 @@ outcome_owner = "#10230"
 # producer identities, entry routes, and finalizer route are unchanged. The
 # existing workspace producer emits fewer candidates in those roles; this is
 # a source re-audit, not a claim that completion behavior is unchanged.
+# Re-audit 2026-09-29 (#16937): #16850 added a test-only completion module,
+# now excluded from the production scan, and changed workspace method
+# completion to admit exact current-document class and method facts while the
+# persisted index is empty. Unknown-receiver fallback still requires indexed
+# symbols. The 42 shipped-source files, entry routes, delegations, and
+# finalizer route are unchanged. A new candidate-channel helper removes
+# generic local rows before composed-role methods are appended, so it has
+# its own disposition below. The workspace method row now records mixed
+# current-document/index authority and its remaining stale-index risk.
+# Re-anchor 2026-09-29 (#16938): source-commit fixture repair changed only
+# test setup in scanned completion/workspace.rs, and a test-only module already
+# excluded above. The 42-file product scan, discovered producer population,
+# authored dispositions, entry routes, delegations, and finalizer are unchanged.
 # Re-anchor 2026-09-29 (#16861): extracted `completion/receiver.rs` (classifier,
-# not a producer) and excluded two test modules under the scan roots
-# (`defining_class_invocant_tests.rs`, `same_file_role_completion_tests.rs`).
-# No producer add/remove/re-channel; scanned product files become 43.
-source_digest = "sha256:c97638d855d457ea6db3916a7598bc957c6b6ca22c1284e55b1e780af8d185e4"
+# not a producer) and excluded `defining_class_invocant_tests.rs` from the
+# production scan. Combined with #16937/#16938, scanned product files become 43.
+# Combined-tree re-anchor: #16938 workspace source-commit fixture repair plus
+# this branch's collector/unknown-fallback edits changed scanned workspace.rs,
+# so the 43-file digest moves; producer identities, entry routes, delegations,
+# and finalizer remain unchanged.
+source_digest = "sha256:0e53699d5624afb8bbe3bb46821a84871053300cd2417be8451dcfee5c38d47b"
 
 [[delegations]]
 module = "dancer2"
@@ -898,8 +914,8 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#8958"
-limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
-note = "Method candidates from the workspace index."
+limitations = "Current-document class and method facts are read from the request source, but indexed methods and generated members can still contribute without freshness bound to this document generation. A candidate from that persisted branch can describe source the user has changed."
+note = "Method candidates from current-document class facts and workspace index members; exact source facts can run with an empty index, while unknown-receiver fallback remains index-gated."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::workspace::drop_generic_local_methods_rebound_from_composition"
@@ -908,15 +924,15 @@ candidate_class = "method"
 tier = "core_provider"
 identity = "legacy_label_compatibility"
 insertion_plan = "legacy_compatibility"
-evidence = "current_document_generation"
+evidence = "bounded_fallback"
 rank = "compatibility_with_exit"
 source_completeness = "legacy_unreported"
 finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
-migration_owner = "#16809"
-limitations = "This seam removes generic local method labels that composition later rebinds; it does not mint new candidates. Identity remains the leftover label."
-note = "Drops current-document generic `method` items whose names are rebound from composed roles or inherited members."
+migration_owner = "#8958"
+limitations = "This helper only removes generic local method items before workspace methods are appended; it creates no candidate. The removal matches a method label, generic detail, and sort tier rather than a carried semantic identity."
+note = "Filters generic local method rows when current-document or indexed role and ancestor members will rebind the same method name."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_workspace_symbol_completions"
