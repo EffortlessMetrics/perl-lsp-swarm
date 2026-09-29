@@ -2877,8 +2877,15 @@ describe('checkForUpdateSilent', () => {
     // #9847's defect class, still live for the prompt row: the suppression is
     // attributed to one compatibility key, so a second target sharing the same
     // global state object must still be offered the update.
-    const gnuKey = 'x86_64-unknown-linux-gnu';
-    ctx.globalState._store.set(managedUpdatePromptSuppressionStateKey(gnuKey)!, true);
+    //
+    // The suppressed key must be genuinely foreign to *this* host, or on a
+    // Linux runner the "foreign" key is the host's own and the test passes for
+    // the wrong reason.
+    const foreignHostKey = HOST_COMPATIBILITY_KEY.endsWith('-musl')
+      ? 'x86_64-unknown-linux-gnu'
+      : 'x86_64-unknown-linux-musl';
+    expect(foreignHostKey).not.toBe(HOST_COMPATIBILITY_KEY);
+    ctx.globalState._store.set(managedUpdatePromptSuppressionStateKey(foreignHostKey)!, true);
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
