@@ -277,6 +277,64 @@ pub struct ClassModel {
     pub exporter_metadata: Option<ExporterMetadata>,
 }
 
+/// Combine the per-segment class models of one source file into one model per
+/// package name.
+///
+/// Perl has one package per name. A file may declare the same package more than
+/// once, and each declaration produces its own [`ClassModel`], so keying a
+/// lookup straight off a per-segment list lets a later segment hide an earlier
+/// one's parents, roles, and methods. Callers that answer a whole-file question
+/// — hover, navigation, completion — must combine the segments first.
+///
+/// The merge is deliberately conservative and never guesses:
+///
+/// - `extends`, `use parent`, `use base`, and `@ISA` describe the package's
+///   current ancestry, so a later declaration supersedes an earlier one. Blindly
+///   unioning the lists would invent parents Perl no longer dispatches through.
+///   A segment that declares no ancestry carries no decision and leaves the prior
+///   value intact.
+/// - The same rule applies to `with`: a segment that consumes no role leaves the
+///   prior composition alone, and an explicit later `with` replaces it.
+/// - A reopen may redefine a method, so declaration order stays authoritative and
+///   the later definition wins.
+/// - An explicit `use mro` can reset an earlier one; a silent reopen cannot.
+///
+/// This is the single owner of reopened-package merge rules. Consumers must not
+/// restate them locally.
+pub fn merge_reopened_class_models(models: &[ClassModel]) -> Vec<ClassModel> {
+    let mut merged: Vec<ClassModel> = Vec::new();
+    for model in models {
+        let Some(existing) = merged.iter_mut().find(|candidate| candidate.name == model.name)
+        else {
+            merged.push(model.clone());
+            continue;
+        };
+
+        if model.parents_explicit {
+            if model.parents_replaces_prior {
+                existing.parents = model.parents.clone();
+            } else if model.parents_additive {
+                existing.parents.extend(model.parents.iter().cloned());
+            } else {
+                existing.parents = model.parents.clone();
+            }
+        }
+        if !model.roles.is_empty() {
+            existing.roles = model.roles.clone();
+        }
+
+        for method in &model.methods {
+            existing.methods.retain(|candidate| candidate.name != method.name);
+            existing.methods.push(method.clone());
+        }
+        existing.modifiers.extend(model.modifiers.iter().cloned());
+        if model.mro_explicit {
+            existing.mro = model.mro;
+        }
+    }
+    merged
+}
+
 /// Exporter-derived metadata captured for a package in a single file.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -2187,8 +2245,78 @@ mod tests {
     )]
     use super::*;
     use crate::parser::Parser;
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must, must_some, must_some_with};
     use std::collections::HashSet;
+
+    fn merged_model(models: &[ClassModel], package: &str) -> ClassModel {
+        let merged = merge_reopened_class_models(models);
+        let found: Vec<&ClassModel> = merged.iter().filter(|model| model.name == package).collect();
+        must_some_with(
+            found.first().copied(),
+            format!("exactly one merged model for {package}, found {}", found.len()),
+        )
+        .clone()
+    }
+
+    #[test]
+    fn merge_reopened_class_models_keeps_role_after_silent_reopen() {
+        let source = "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n\
+                     \npackage User;\nuse Moo;\nwith 'Printable';\nsub own_method { 1 }\n\
+                     \npackage User;\nsub extra_method { 2 }\n";
+        let ast = must(Parser::new(source).parse());
+        let models = ClassModelBuilder::new().build(&ast);
+
+        let user = merged_model(&models, "User");
+        assert_eq!(
+            user.roles,
+            vec!["Printable".to_string()],
+            "a reopen that declares no ancestry must not erase the composed role"
+        );
+        let method_names: HashSet<&str> = user.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            method_names.contains("own_method") && method_names.contains("extra_method"),
+            "both segments' methods must survive the merge; got {method_names:?}"
+        );
+    }
+
+    #[test]
+    fn merge_reopened_class_models_later_explicit_role_replaces_earlier() {
+        let source = "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n\
+                     \npackage Other;\nuse Moo::Role;\nsub other_method { 1 }\n\
+                     \npackage User;\nuse Moo;\nwith 'Printable';\n\
+                     \npackage User;\nuse Moo;\nwith 'Other';\n";
+        let ast = must(Parser::new(source).parse());
+        let models = ClassModelBuilder::new().build(&ast);
+
+        let user = merged_model(&models, "User");
+        assert_eq!(
+            user.roles,
+            vec!["Other".to_string()],
+            "a later explicit `with` must supersede the earlier role, not union with it"
+        );
+    }
+
+    #[test]
+    fn merge_reopened_class_models_does_not_merge_across_packages() {
+        // A plain package with no OO indicator never becomes a `ClassModel`, so
+        // the sibling here is a real Moo class: the point is that the merge is
+        // keyed by package name, not that it invents models.
+        let source = "package Printable;\nuse Moo::Role;\nsub stringify { 1 }\n\
+                     \npackage User;\nuse Moo;\nwith 'Printable';\n\
+                     \npackage User;\nsub extra_method { 2 }\n\
+                     \npackage Sibling;\nuse Moo;\nsub sibling_method { 1 }\n";
+        let ast = must(Parser::new(source).parse());
+        let models = ClassModelBuilder::new().build(&ast);
+
+        let sibling = merged_model(&models, "Sibling");
+        assert!(
+            sibling.roles.is_empty() && sibling.parents.is_empty(),
+            "a sibling package must not inherit the consumer's role or ancestry; \
+             got roles={:?} parents={:?}",
+            sibling.roles,
+            sibling.parents
+        );
+    }
 
     #[test]
     fn expand_arg_to_names_handles_multibyte_qw_delimiters_without_panic() {
