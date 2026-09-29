@@ -816,3 +816,310 @@ fn editing_an_ordinary_perl_file_does_not_refresh_metadata_facts() {
     );
     assert_eq!(declared_modules(&server), vec!["On::Disk".to_string()]);
 }
+
+const MAKEFILE_HINTS: &str = r#"
+WriteMakefile(
+    INC => '-Ixs/make_inc',
+    LIBS => ['-L/opt/make/lib', '-lmake'],
+    DEFINE => '-DMAKE_HINT',
+    OBJECT => 'make.o',
+    MYEXTLIB => 'make/libmake.a',
+);
+"#;
+const BUILD_HINTS: &str = r#"
+Module::Build->new(
+    include_dirs => ['xs/build_inc'],
+    extra_compiler_flags => '-Ixs/build_extra',
+    LIBS => '-lbuild',
+    DEFINE => '-DBUILD_HINT',
+    OBJECT => 'build.obj',
+    MYEXTLIB => 'build/libbuild.lib',
+);
+"#;
+const STAGED_MAKEFILE_HINTS: &str =
+    "WriteMakefile(INC => '-Ixs/staged', LIBS => '-lstaged', DEFINE => '-DSTAGED');\n";
+
+fn native_hints(server: &LspServer) -> perl_lsp_rs_core::config::NativeBuildHints {
+    folder_native_hints(server, &dir_uri_from_first(server))
+}
+
+fn dir_uri_from_first(server: &LspServer) -> String {
+    server.all_workspace_folders().first().map(|folder| folder.uri.clone()).unwrap_or_default()
+}
+
+fn folder_native_hints(
+    server: &LspServer,
+    folder_uri: &str,
+) -> perl_lsp_rs_core::config::NativeBuildHints {
+    server
+        .all_workspace_folders()
+        .iter()
+        .find(|folder| folder.uri == folder_uri)
+        .map(|folder| folder.effective_workspace_config.native_build_hints.clone())
+        .unwrap_or_default()
+}
+
+/// Folder initialization reaches the native-hint authority, not just declared
+/// dependencies (#16826).
+#[test]
+fn folder_initialization_exposes_native_hints_on_effective_config() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "Makefile.PL", MAKEFILE_HINTS);
+    let server = workspace_server(&dir);
+    let hints = native_hints(&server);
+
+    assert_eq!(hints.include_dirs, vec!["xs/make_inc".to_string()]);
+    assert_eq!(hints.libs_flags, vec!["-L/opt/make/lib".to_string(), "-lmake".to_string()]);
+    assert_eq!(hints.define_flags, vec!["-DMAKE_HINT".to_string()]);
+    assert_eq!(hints.object_files, vec!["make.o".to_string()]);
+    assert_eq!(hints.myextlib_files, vec!["make/libmake.a".to_string()]);
+    assert!(hints.diagnostics.is_empty());
+    assert!(hints.limitations.is_empty());
+}
+
+/// An unsaved Makefile.PL buffer outranks disagreeing disk bytes with no
+/// watched-file event.
+#[test]
+fn editing_an_open_makefile_pl_refreshes_native_hints_without_a_watched_event() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "Makefile.PL", MAKEFILE_HINTS);
+    let server = workspace_server(&dir);
+    let uri = file_uri(&dir, "Makefile.PL");
+    let include_paths_before = include_paths(&server);
+
+    server
+        .handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": STAGED_MAKEFILE_HINTS
+            }
+        })))
+        .expect("didOpen params are valid");
+
+    let hints = native_hints(&server);
+    assert_eq!(hints.include_dirs, vec!["xs/staged".to_string()]);
+    assert_eq!(hints.libs_flags, vec!["-lstaged".to_string()]);
+    assert_eq!(hints.define_flags, vec!["-DSTAGED".to_string()]);
+    assert_eq!(include_paths(&server), include_paths_before);
+
+    server
+        .handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "text": "WriteMakefile(INC => '-Ixs/edited', OBJECT => 'edited.o');\n"
+            }]
+        })))
+        .expect("didChange params are valid");
+
+    let hints = native_hints(&server);
+    assert_eq!(hints.include_dirs, vec!["xs/edited".to_string()]);
+    assert_eq!(hints.object_files, vec!["edited.o".to_string()]);
+    assert!(hints.libs_flags.is_empty());
+}
+
+#[test]
+fn creating_changing_and_deleting_makefile_pl_refreshes_native_hints() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "Build.PL", BUILD_HINTS);
+    let server = workspace_server(&dir);
+    assert_eq!(
+        native_hints(&server).include_dirs,
+        vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()]
+    );
+
+    write_file(&dir, "Makefile.PL", MAKEFILE_HINTS);
+    server
+        .handle_did_create_files(Some(json!({
+            "files": [{ "uri": file_uri(&dir, "Makefile.PL") }]
+        })))
+        .expect("didCreateFiles params are valid");
+    assert_eq!(
+        native_hints(&server).include_dirs,
+        vec!["xs/make_inc".to_string(), "xs/build_inc".to_string(), "xs/build_extra".to_string(),]
+    );
+
+    write_file(&dir, "Makefile.PL", "WriteMakefile(INC => '-Ixs/changed');\n");
+    watched(&server, &[(&file_uri(&dir, "Makefile.PL"), CHANGED)]);
+    assert_eq!(
+        native_hints(&server).include_dirs,
+        vec!["xs/changed".to_string(), "xs/build_inc".to_string(), "xs/build_extra".to_string(),]
+    );
+
+    std::fs::remove_file(dir.path().join("Makefile.PL")).expect("remove Makefile.PL");
+    watched(&server, &[(&file_uri(&dir, "Makefile.PL"), DELETED)]);
+    assert_eq!(
+        native_hints(&server).include_dirs,
+        vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()],
+        "deleting Makefile.PL must keep Build.PL's contribution"
+    );
+}
+
+#[test]
+fn renaming_makefile_pl_away_drops_only_that_script() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "Makefile.PL", MAKEFILE_HINTS);
+    write_file(&dir, "Build.PL", BUILD_HINTS);
+    let server = workspace_server(&dir);
+
+    std::fs::rename(dir.path().join("Makefile.PL"), dir.path().join("Makefile.PL.bak"))
+        .expect("rename Makefile.PL");
+    server
+        .handle_did_rename_files(Some(json!({
+            "files": [{
+                "oldUri": file_uri(&dir, "Makefile.PL"),
+                "newUri": file_uri(&dir, "Makefile.PL.bak")
+            }]
+        })))
+        .expect("didRenameFiles params are valid");
+
+    assert_eq!(
+        native_hints(&server).include_dirs,
+        vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()]
+    );
+    assert!(
+        !native_hints(&server).include_dirs.contains(&"xs/make_inc".to_string()),
+        "moving Makefile.PL out of the workspace root must drop its hints"
+    );
+}
+
+#[test]
+fn unreadable_makefile_pl_retains_its_hints_and_marks_the_folder_stale() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "Makefile.PL", MAKEFILE_HINTS);
+    write_file(&dir, "Build.PL", BUILD_HINTS);
+    let server = workspace_server(&dir);
+
+    std::fs::write(dir.path().join("Makefile.PL"), [0xff_u8, 0xfe, 0xfd])
+        .expect("write invalid UTF-8 Makefile.PL");
+    write_file(&dir, "Build.PL", "Module::Build->new(include_dirs => ['xs/fresh']);\n");
+    watched(&server, &[(&file_uri(&dir, "Makefile.PL"), CHANGED)]);
+
+    let hints = native_hints(&server);
+    assert_eq!(hints.include_dirs, vec!["xs/make_inc".to_string(), "xs/fresh".to_string()]);
+    assert_eq!(hints.libs_flags, vec!["-L/opt/make/lib".to_string(), "-lmake".to_string()]);
+    assert_eq!(
+        hints.limitations,
+        vec![perl_lsp_rs_core::config::NativeBuildHintLimitation {
+            script: perl_lsp_rs_core::config::NativeBuildScript::MakefilePl,
+            reason: perl_lsp_rs_core::config::NativeBuildHintLimitationReason::Unreadable,
+        }]
+    );
+    assert!(
+        server.dependency_facts_are_stale(&dir_uri(&dir)),
+        "unreadability must be visible as folder staleness, not silent emptiness"
+    );
+}
+
+#[test]
+fn unrelated_cpanfile_event_does_not_change_native_hints() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "Makefile.PL", MAKEFILE_HINTS);
+    write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    let server = workspace_server(&dir);
+    let before = native_hints(&server);
+
+    write_file(&dir, "cpanfile", "requires 'YAML::XS';\n");
+    watched(&server, &[(&file_uri(&dir, "cpanfile"), CHANGED)]);
+
+    assert_eq!(native_hints(&server), before);
+    assert_eq!(declared_modules(&server), vec!["YAML::XS".to_string()]);
+}
+
+#[test]
+fn two_workspace_roots_keep_distinct_native_hints() {
+    let dir = TempDir::new().expect("tempdir");
+    let other = TempDir::new().expect("other tempdir");
+    write_file(&dir, "Makefile.PL", MAKEFILE_HINTS);
+    write_file(&other, "Build.PL", BUILD_HINTS);
+
+    let server = workspace_server(&dir);
+    let mut other_folder =
+        WorkspaceFolderState::new(dir_uri(&other)).with_path(other.path().to_path_buf());
+    other_folder.refresh_workspace_metadata();
+    server.workspace_folders.lock().push(other_folder);
+
+    assert_eq!(
+        folder_native_hints(&server, &dir_uri(&dir)).include_dirs,
+        vec!["xs/make_inc".to_string()]
+    );
+    assert_eq!(
+        folder_native_hints(&server, &dir_uri(&other)).include_dirs,
+        vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()]
+    );
+
+    write_file(&dir, "Makefile.PL", "WriteMakefile(INC => '-Ixs/changed');\n");
+    watched(&server, &[(&file_uri(&dir, "Makefile.PL"), CHANGED)]);
+
+    assert_eq!(
+        folder_native_hints(&server, &dir_uri(&dir)).include_dirs,
+        vec!["xs/changed".to_string()]
+    );
+    assert_eq!(
+        folder_native_hints(&server, &dir_uri(&other)).include_dirs,
+        vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()],
+        "a folder the events do not name must keep its own native hints"
+    );
+}
+
+#[test]
+fn readded_folder_loads_current_native_hints_not_the_previous_incarnation() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "Makefile.PL", MAKEFILE_HINTS);
+    let server = workspace_server(&dir);
+    let uri = dir_uri(&dir);
+    assert_eq!(folder_native_hints(&server, &uri).include_dirs, vec!["xs/make_inc".to_string()]);
+
+    server
+        .handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [], "removed": [{ "uri": uri, "name": "ws" }] }
+        })))
+        .expect("didChangeWorkspaceFolders params are valid");
+
+    write_file(&dir, "Makefile.PL", "WriteMakefile(INC => '-Ixs/readded');\n");
+    server
+        .handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [{ "uri": uri, "name": "ws" }], "removed": [] }
+        })))
+        .expect("didChangeWorkspaceFolders params are valid");
+
+    // Re-add does not itself disk-refresh native hints until metadata refresh.
+    // Drive the same initialize-time route used for a new folder.
+    watched(&server, &[(&file_uri(&dir, "Makefile.PL"), CHANGED)]);
+    assert_eq!(
+        folder_native_hints(&server, &uri).include_dirs,
+        vec!["xs/readded".to_string()],
+        "the re-added folder must observe current disk hints, not the prior incarnation"
+    );
+}
+
+#[test]
+fn native_hint_burst_advances_the_fact_generation_once() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "Makefile.PL", MAKEFILE_HINTS);
+    write_file(&dir, "Build.PL", BUILD_HINTS);
+    write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    let server = workspace_server(&dir);
+    let before = server.dependency_facts_generation();
+
+    write_file(&dir, "Makefile.PL", "WriteMakefile(INC => '-Ixs/burst');\n");
+    watched(
+        &server,
+        &[
+            (&file_uri(&dir, "Makefile.PL"), CHANGED),
+            (&file_uri(&dir, "Build.PL"), CHANGED),
+            (&file_uri(&dir, "cpanfile"), CHANGED),
+        ],
+    );
+
+    assert_eq!(
+        server.dependency_facts_generation(),
+        before + 1,
+        "a coalesced metadata burst must advance the generation exactly once"
+    );
+    assert_eq!(
+        native_hints(&server).include_dirs,
+        vec!["xs/burst".to_string(), "xs/build_inc".to_string(), "xs/build_extra".to_string()]
+    );
+}

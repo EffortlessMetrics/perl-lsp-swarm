@@ -23,6 +23,8 @@
 use std::fs;
 use std::path::Path;
 
+use super::metadata_dependencies::MetadataSourceRead;
+
 /// Native build hints derived from workspace-root build scripts.
 ///
 /// Every vector holds de-duplicated entries in deterministic scan order
@@ -51,6 +53,12 @@ pub struct NativeBuildHints {
     /// Malformed literals recorded while failing closed. Empty when every
     /// scanned assignment was either supported or off-type.
     pub diagnostics: Vec<NativeBuildHintDiagnostic>,
+    /// Source-specific limitations that kept a previous contribution instead
+    /// of treating unreadability as exact emptiness.
+    pub limitations: Vec<NativeBuildHintLimitation>,
+    /// Last successful per-script contribution, used only to retain that
+    /// script's facts across a transient unreadable refresh.
+    contributions: [Option<Box<NativeBuildHintContribution>>; 2],
 }
 
 /// Named diagnostic for a build-script literal that could not be parsed.
@@ -75,11 +83,21 @@ pub enum NativeBuildScript {
 }
 
 impl NativeBuildScript {
+    /// Workspace-root build scripts in detection order (`Makefile.PL` first).
+    pub const ALL: [Self; 2] = [Self::MakefilePl, Self::BuildPl];
+
     /// Workspace-root-relative file name of this build script.
     pub fn file_name(self) -> &'static str {
         match self {
             Self::MakefilePl => "Makefile.PL",
             Self::BuildPl => "Build.PL",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::MakefilePl => 0,
+            Self::BuildPl => 1,
         }
     }
 }
@@ -98,19 +116,131 @@ pub enum NativeBuildHintParseReason {
     MalformedArrayLiteral,
 }
 
+/// Named limitation recorded while retaining a previous script contribution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeBuildHintLimitation {
+    /// Build script whose current read could not replace its previous facts.
+    pub script: NativeBuildScript,
+    /// Why the previous contribution was retained.
+    pub reason: NativeBuildHintLimitationReason,
+}
+
+/// Why a native-hint source kept its previous contribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeBuildHintLimitationReason {
+    /// The script exists but could not be read as text. Previous facts for
+    /// this script stay; they are not replaced with a fabricated empty result.
+    Unreadable,
+}
+
+/// One script's last successful hint contribution.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct NativeBuildHintContribution {
+    include_dirs: Vec<String>,
+    libs_flags: Vec<String>,
+    libs_alternatives: Vec<Vec<String>>,
+    define_flags: Vec<String>,
+    object_files: Vec<String>,
+    myextlib_files: Vec<String>,
+    diagnostics: Vec<NativeBuildHintDiagnostic>,
+}
+
 /// Detect literal native build hints from workspace-root `Makefile.PL` /
 /// `Build.PL`.
 pub fn detect_native_build_hints(workspace_root: &Path) -> NativeBuildHints {
-    let mut hints = NativeBuildHints::default();
-
-    for script in [NativeBuildScript::MakefilePl, NativeBuildScript::BuildPl] {
+    let mut contributions = [None, None];
+    for script in NativeBuildScript::ALL {
         let script_path = workspace_root.join(script.file_name());
         if let Ok(source) = fs::read_to_string(&script_path) {
-            merge_script_hints(&mut hints, script, &source);
+            contributions[script.index()] = Some(contribution_from_source(script, &source));
+        }
+    }
+    compose_native_build_hints(contributions, Vec::new())
+}
+
+/// Compose native build hints from per-script captured reads.
+///
+/// Sources are consumed in [`NativeBuildScript::ALL`] order. An
+/// [`MetadataSourceRead::Unreadable`] script keeps only its own previous
+/// contribution and records a limitation; [`MetadataSourceRead::Absent`]
+/// drops that script. A source the slice does not mention is unknown, not
+/// absent, and retains its previous contribution exactly as an unreadable
+/// one does — without a limitation, because nothing was observed.
+#[must_use]
+pub fn native_build_hints_from_reads(
+    reads: &[(NativeBuildScript, MetadataSourceRead)],
+    previous: &NativeBuildHints,
+) -> NativeBuildHints {
+    let mut contributions = previous.unboxed_contributions();
+    let mut limitations = Vec::new();
+
+    for script in NativeBuildScript::ALL {
+        let Some((_, read)) = reads.iter().find(|(candidate, _)| *candidate == script) else {
+            continue;
+        };
+        match read {
+            MetadataSourceRead::Text(source) => {
+                contributions[script.index()] = Some(contribution_from_source(script, source));
+            }
+            MetadataSourceRead::Absent => {
+                contributions[script.index()] = None;
+            }
+            MetadataSourceRead::Unreadable => {
+                limitations.push(NativeBuildHintLimitation {
+                    script,
+                    reason: NativeBuildHintLimitationReason::Unreadable,
+                });
+            }
         }
     }
 
+    compose_native_build_hints(contributions, limitations)
+}
+
+fn contribution_from_source(
+    script: NativeBuildScript,
+    source: &str,
+) -> NativeBuildHintContribution {
+    let mut scratch = NativeBuildHints::default();
+    merge_script_hints(&mut scratch, script, source);
+    NativeBuildHintContribution {
+        include_dirs: scratch.include_dirs,
+        libs_flags: scratch.libs_flags,
+        libs_alternatives: scratch.libs_alternatives,
+        define_flags: scratch.define_flags,
+        object_files: scratch.object_files,
+        myextlib_files: scratch.myextlib_files,
+        diagnostics: scratch.diagnostics,
+    }
+}
+
+fn compose_native_build_hints(
+    contributions: [Option<NativeBuildHintContribution>; 2],
+    limitations: Vec<NativeBuildHintLimitation>,
+) -> NativeBuildHints {
+    let mut hints = NativeBuildHints {
+        limitations,
+        contributions: contributions.map(|contribution| contribution.map(Box::new)),
+        ..NativeBuildHints::default()
+    };
+
+    for contribution in hints.contributions.iter().flatten() {
+        collect_unique(&mut hints.include_dirs, contribution.include_dirs.iter().cloned());
+        collect_unique(&mut hints.libs_flags, contribution.libs_flags.iter().cloned());
+        hints.libs_alternatives.extend(contribution.libs_alternatives.iter().cloned());
+        collect_unique(&mut hints.define_flags, contribution.define_flags.iter().cloned());
+        collect_unique(&mut hints.object_files, contribution.object_files.iter().cloned());
+        collect_unique(&mut hints.myextlib_files, contribution.myextlib_files.iter().cloned());
+        hints.diagnostics.extend(contribution.diagnostics.iter().cloned());
+    }
+
     hints
+}
+
+impl NativeBuildHints {
+    fn unboxed_contributions(&self) -> [Option<NativeBuildHintContribution>; 2] {
+        [self.contributions[0].as_deref().cloned(), self.contributions[1].as_deref().cloned()]
+    }
 }
 
 fn merge_script_hints(hints: &mut NativeBuildHints, script: NativeBuildScript, source: &str) {
@@ -1273,5 +1403,265 @@ Module::Build->new(
         ensure_eq(rejected_value_len(source, 7), 1, "relative value length")?;
         ensure_eq(rejected_value_len(source, 0), 8, "full-prefix value length")?;
         Ok(())
+    }
+
+    const MAKEFILE_HINTS: &str = r#"
+WriteMakefile(
+    INC => '-Ixs/make_inc',
+    LIBS => ['-L/opt/make/lib', '-lmake'],
+    DEFINE => '-DMAKE_HINT',
+    OBJECT => 'make.o',
+    MYEXTLIB => 'make/libmake.a',
+);
+"#;
+    const BUILD_HINTS: &str = r#"
+Module::Build->new(
+    include_dirs => ['xs/build_inc'],
+    extra_compiler_flags => '-Ixs/build_extra',
+    LIBS => '-lbuild',
+    DEFINE => '-DBUILD_HINT',
+    OBJECT => 'build.obj',
+    MYEXTLIB => 'build/libbuild.lib',
+);
+"#;
+    const MALFORMED_LIBS: &str = "WriteMakefile(LIBS => q(-lfoo));\n";
+
+    fn text(script: NativeBuildScript, source: &str) -> (NativeBuildScript, MetadataSourceRead) {
+        (script, MetadataSourceRead::Text(source.to_string()))
+    }
+
+    fn absent(script: NativeBuildScript) -> (NativeBuildScript, MetadataSourceRead) {
+        (script, MetadataSourceRead::Absent)
+    }
+
+    fn unreadable(script: NativeBuildScript) -> (NativeBuildScript, MetadataSourceRead) {
+        (script, MetadataSourceRead::Unreadable)
+    }
+
+    fn unreadable_limitation(script: NativeBuildScript) -> NativeBuildHintLimitation {
+        NativeBuildHintLimitation { script, reason: NativeBuildHintLimitationReason::Unreadable }
+    }
+
+    #[test]
+    fn captured_makefile_only_populates_every_typed_field() {
+        let hints = native_build_hints_from_reads(
+            &[
+                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
+                absent(NativeBuildScript::BuildPl),
+            ],
+            &NativeBuildHints::default(),
+        );
+
+        assert_eq!(hints.include_dirs, vec!["xs/make_inc".to_string()]);
+        assert_eq!(hints.libs_flags, vec!["-L/opt/make/lib".to_string(), "-lmake".to_string()]);
+        assert_eq!(
+            hints.libs_alternatives,
+            vec![vec!["-L/opt/make/lib".to_string()], vec!["-lmake".to_string()]]
+        );
+        assert_eq!(hints.define_flags, vec!["-DMAKE_HINT".to_string()]);
+        assert_eq!(hints.object_files, vec!["make.o".to_string()]);
+        assert_eq!(hints.myextlib_files, vec!["make/libmake.a".to_string()]);
+        assert!(hints.diagnostics.is_empty());
+        assert!(hints.limitations.is_empty());
+    }
+
+    #[test]
+    fn captured_build_pl_only_populates_every_typed_field() {
+        let hints = native_build_hints_from_reads(
+            &[absent(NativeBuildScript::MakefilePl), text(NativeBuildScript::BuildPl, BUILD_HINTS)],
+            &NativeBuildHints::default(),
+        );
+
+        assert_eq!(
+            hints.include_dirs,
+            vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()]
+        );
+        assert_eq!(hints.libs_flags, vec!["-lbuild".to_string()]);
+        assert_eq!(hints.libs_alternatives, vec![vec!["-lbuild".to_string()]]);
+        assert_eq!(hints.define_flags, vec!["-DBUILD_HINT".to_string()]);
+        assert_eq!(hints.object_files, vec!["build.obj".to_string()]);
+        assert_eq!(hints.myextlib_files, vec!["build/libbuild.lib".to_string()]);
+        assert!(hints.diagnostics.is_empty());
+        assert!(hints.limitations.is_empty());
+    }
+
+    #[test]
+    fn captured_merge_is_makefile_then_build_regardless_of_slice_order() {
+        let canonical = native_build_hints_from_reads(
+            &[
+                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
+                text(NativeBuildScript::BuildPl, BUILD_HINTS),
+            ],
+            &NativeBuildHints::default(),
+        );
+        let reversed = native_build_hints_from_reads(
+            &[
+                text(NativeBuildScript::BuildPl, BUILD_HINTS),
+                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
+            ],
+            &NativeBuildHints::default(),
+        );
+
+        assert_eq!(canonical, reversed);
+        assert_eq!(
+            canonical.include_dirs,
+            vec![
+                "xs/make_inc".to_string(),
+                "xs/build_inc".to_string(),
+                "xs/build_extra".to_string(),
+            ]
+        );
+        assert_eq!(
+            canonical.libs_flags,
+            vec!["-L/opt/make/lib".to_string(), "-lmake".to_string(), "-lbuild".to_string(),]
+        );
+        assert_eq!(
+            canonical.define_flags,
+            vec!["-DMAKE_HINT".to_string(), "-DBUILD_HINT".to_string()]
+        );
+        assert_eq!(canonical.object_files, vec!["make.o".to_string(), "build.obj".to_string()]);
+        assert_eq!(
+            canonical.myextlib_files,
+            vec!["make/libmake.a".to_string(), "build/libbuild.lib".to_string()]
+        );
+        assert!(canonical.diagnostics.is_empty());
+        assert!(canonical.limitations.is_empty());
+    }
+
+    #[test]
+    fn malformed_makefile_keeps_valid_build_pl_and_records_diagnostics() {
+        let hints = native_build_hints_from_reads(
+            &[
+                text(NativeBuildScript::MakefilePl, MALFORMED_LIBS),
+                text(NativeBuildScript::BuildPl, BUILD_HINTS),
+            ],
+            &NativeBuildHints::default(),
+        );
+
+        assert_eq!(
+            hints.include_dirs,
+            vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()]
+        );
+        assert_eq!(hints.libs_flags, vec!["-lbuild".to_string()]);
+        assert_eq!(
+            hints.diagnostics,
+            vec![diagnostic(
+                NativeBuildScript::MakefilePl,
+                "LIBS",
+                NativeBuildHintParseReason::UnsupportedValueForm
+            )]
+        );
+        assert!(hints.limitations.is_empty());
+    }
+
+    #[test]
+    fn unreadable_makefile_retains_only_its_previous_contribution() {
+        let previous = native_build_hints_from_reads(
+            &[
+                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
+                text(NativeBuildScript::BuildPl, BUILD_HINTS),
+            ],
+            &NativeBuildHints::default(),
+        );
+        let hints = native_build_hints_from_reads(
+            &[
+                unreadable(NativeBuildScript::MakefilePl),
+                text(
+                    NativeBuildScript::BuildPl,
+                    "Module::Build->new(include_dirs => ['xs/fresh']);\n",
+                ),
+            ],
+            &previous,
+        );
+
+        assert_eq!(hints.include_dirs, vec!["xs/make_inc".to_string(), "xs/fresh".to_string()]);
+        assert_eq!(hints.libs_flags, vec!["-L/opt/make/lib".to_string(), "-lmake".to_string()]);
+        assert_eq!(hints.define_flags, vec!["-DMAKE_HINT".to_string()]);
+        assert_eq!(hints.object_files, vec!["make.o".to_string()]);
+        assert_eq!(hints.myextlib_files, vec!["make/libmake.a".to_string()]);
+        assert!(hints.diagnostics.is_empty());
+        assert_eq!(hints.limitations, vec![unreadable_limitation(NativeBuildScript::MakefilePl)]);
+        assert!(
+            !hints.include_dirs.contains(&"xs/build_inc".to_string()),
+            "the readable script must not retain its superseded contribution"
+        );
+    }
+
+    #[test]
+    fn absent_makefile_drops_only_that_script() {
+        let previous = native_build_hints_from_reads(
+            &[
+                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
+                text(NativeBuildScript::BuildPl, BUILD_HINTS),
+            ],
+            &NativeBuildHints::default(),
+        );
+        let hints = native_build_hints_from_reads(
+            &[absent(NativeBuildScript::MakefilePl), text(NativeBuildScript::BuildPl, BUILD_HINTS)],
+            &previous,
+        );
+
+        assert_eq!(
+            hints.include_dirs,
+            vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()]
+        );
+        assert_eq!(hints.libs_flags, vec!["-lbuild".to_string()]);
+        assert!(hints.limitations.is_empty());
+        assert!(
+            !hints.include_dirs.contains(&"xs/make_inc".to_string()),
+            "deleting Makefile.PL must not keep its include dirs"
+        );
+    }
+
+    #[test]
+    fn omitted_script_is_unknown_and_retains_without_a_limitation() {
+        let previous = native_build_hints_from_reads(
+            &[
+                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
+                absent(NativeBuildScript::BuildPl),
+            ],
+            &NativeBuildHints::default(),
+        );
+        let hints = native_build_hints_from_reads(
+            &[text(NativeBuildScript::BuildPl, BUILD_HINTS)],
+            &previous,
+        );
+
+        assert_eq!(
+            hints.include_dirs,
+            vec![
+                "xs/make_inc".to_string(),
+                "xs/build_inc".to_string(),
+                "xs/build_extra".to_string(),
+            ]
+        );
+        assert!(hints.limitations.is_empty(), "omission is unknown, not unreadability");
+    }
+
+    #[test]
+    fn unreadability_is_not_exact_emptiness() {
+        let previous = native_build_hints_from_reads(
+            &[
+                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
+                absent(NativeBuildScript::BuildPl),
+            ],
+            &NativeBuildHints::default(),
+        );
+        let empty = native_build_hints_from_reads(
+            &[absent(NativeBuildScript::MakefilePl), absent(NativeBuildScript::BuildPl)],
+            &previous,
+        );
+        let retained = native_build_hints_from_reads(
+            &[unreadable(NativeBuildScript::MakefilePl), absent(NativeBuildScript::BuildPl)],
+            &previous,
+        );
+
+        assert_eq!(empty, NativeBuildHints::default());
+        assert_eq!(retained.include_dirs, vec!["xs/make_inc".to_string()]);
+        assert_ne!(retained, empty);
+        assert_eq!(
+            retained.limitations,
+            vec![unreadable_limitation(NativeBuildScript::MakefilePl)]
+        );
     }
 }
