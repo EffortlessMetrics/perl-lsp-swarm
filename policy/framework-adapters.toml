@@ -494,6 +494,7 @@ safe_delete_policy = "blocked_without_class_specific_edit_proof"
 provider_surfaces = []
 supported_forms = [
   "use Method::Signatures",
+  "use Method::Signatures qw(func|method)",
   "func NAME SIGNATURE? BLOCK",
   "method NAME SIGNATURE? BLOCK",
 ]

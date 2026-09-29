@@ -390,6 +390,7 @@ fun add { 1 }
     let add = query(&facts, Some("App"), "add");
     assert_eq!(add.keyword, SignatureKeyword::Fun);
     assert!(add.body_anchor.is_some());
+    assert!(add.signature_anchor.is_none(), "bare fun NAME BLOCK has no signature range");
 }
 
 #[test]
@@ -493,7 +494,7 @@ fun named (:$x) { $x }
 "#;
     let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
     assert!(
-        facts.iter().all(|fact| {
+        lookup_signature_keyword_callable(&facts, Some("App"), "named").is_none_or(|fact| {
             fact.parameters.is_empty()
                 && fact.envelope.boundary.is_some()
                 && fact.envelope.reason_code == SemanticReasonCode::GeneratedFromSource
@@ -523,6 +524,33 @@ fun add ($x) { $x }
     let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
     assert!(lookup_signature_keyword_callable(&facts, Some("Other"), "add").is_none());
     assert!(lookup_signature_keyword_callable(&facts, Some("App"), "missing").is_none());
+}
+
+#[test]
+fn qw_method_on_method_signatures_does_not_mint_func() {
+    let code = r#"
+package App;
+use Method::Signatures qw(method);
+func helper ($value) { $value }
+method run ($arg) { $arg }
+"#;
+    let facts = minted(code, SignatureKeywordFamily::MethodSignatures, "20170211", "gen-1");
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "helper").is_none());
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "run").is_some());
+}
+
+#[test]
+fn no_qw_fun_disables_only_fun() {
+    let code = r#"
+package App;
+use Function::Parameters;
+no Function::Parameters qw(fun);
+fun add ($x) { $x }
+method run ($arg) { $arg }
+"#;
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "add").is_none());
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "run").is_some());
 }
 
 trait DeclarationPackage {
