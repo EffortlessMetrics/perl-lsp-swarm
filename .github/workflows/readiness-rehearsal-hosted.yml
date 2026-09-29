@@ -103,6 +103,7 @@ jobs:
         shell: bash
         env:
           REHEARSAL_RECEIPT_PATH: ${{ inputs.rehearsal_receipt_path }}
+          MATRIX_SUBJECT: ${{ matrix.subject }}
         run: |
           set -euo pipefail
           HEAD="$(git rev-parse HEAD)"
@@ -120,7 +121,7 @@ jobs:
             --head "$GITHUB_SHA" \
             --run-id "$GITHUB_RUN_ID" \
             --attempt "$GITHUB_RUN_ATTEMPT" \
-            --matrix-subject "${{ matrix.subject }}" \
+            --matrix-subject "$MATRIX_SUBJECT" \
             --out "$OUT" \
             "${extra[@]}"
 

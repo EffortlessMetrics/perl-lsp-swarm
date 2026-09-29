@@ -132,6 +132,18 @@ fn yaml_invokes_repository_command_and_does_not_reimplement_verdicts() -> Result
         bodies.contains("--attempt \"$GITHUB_RUN_ATTEMPT\""),
         "fan-in must bind rows to the current GITHUB_RUN_ATTEMPT"
     );
+    ensure!(
+        bodies.contains("--matrix-subject \"$MATRIX_SUBJECT\""),
+        "row job must bind matrix subject through MATRIX_SUBJECT env"
+    );
+    ensure!(
+        !bodies.contains("${{ matrix.subject }}"),
+        "matrix.subject must not be interpolated into interpreter source"
+    );
+    ensure!(
+        content.contains("MATRIX_SUBJECT: ${{ matrix.subject }}"),
+        "Bind hosted row must pass matrix.subject through env as data"
+    );
     for forbidden in [
         "cargo package",
         "cargo publish",
@@ -291,6 +303,18 @@ fn routing_ledgers_keep_the_lane_explicit_and_non_required() -> Result<()> {
     ensure!(
         !required.contains("readiness-rehearsal-hosted"),
         "hosted rehearsal must not enter required-checks.toml"
+    );
+
+    let history = fs::read_to_string(root.join(".ci/metrics/ci-lane-history.json"))?;
+    ensure!(
+        history.contains("\"readiness_rehearsal_hosted\""),
+        "lane-history payload must include the hosted rehearsal lane id"
+    );
+
+    let economics = fs::read_to_string(root.join("docs/ci/gate-policy-economics.md"))?;
+    ensure!(
+        economics.contains("`readiness_rehearsal_hosted`"),
+        "gate-policy-economics unmapped list must name the hosted rehearsal lane"
     );
     Ok(())
 }
