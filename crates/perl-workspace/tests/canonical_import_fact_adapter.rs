@@ -202,7 +202,8 @@ fn version_tokens_agree_with_hir_and_numeric_versions_are_not_symbols() -> TestR
     }
     let vstring = spec_named(&specs, "N")?;
     let hir = lower_ast(&parse_ast(source)?);
-    let hir_vstring = spec_named(&hir.compile_environment.import_specs(FILE_ID), "N")?;
+    let hir_specs = hir.compile_environment.import_specs(FILE_ID);
+    let hir_vstring = spec_named(&hir_specs, "N")?;
     assert_eq!(
         vstring.symbols, hir_vstring.symbols,
         "workspace must not invent a stricter version classifier than HIR"
