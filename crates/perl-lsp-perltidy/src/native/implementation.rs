@@ -316,9 +316,9 @@ impl PerlFormatter for NativeFormatter {
             return FormatResult::unchanged(source);
         }
 
-        let has_format_keyword = contains_format_keyword(source);
+        let has_format_declaration = contains_format_declaration(source);
         let literal_kind = literal_preserve_region(source);
-        let source_gate = if has_format_keyword || literal_kind.is_some() {
+        let source_gate = if has_format_declaration || literal_kind.is_some() {
             Self::validate_parse_only(source, counters::ParseGateKind::Source)
         } else {
             Self::validate_clean_parse(source, counters::ParseGateKind::Source)
@@ -332,8 +332,8 @@ impl PerlFormatter for NativeFormatter {
         // The source-region index does not currently carry `format` bodies.
         // A body line may look like ordinary Perl code, and declarations need
         // not begin or end on a physical line. Keep whole-document refusal
-        // for the keyword token until a source-owned body exclusion exists.
-        if has_format_keyword {
+        // for declaration-shaped tokens until a source-owned body exclusion exists.
+        if has_format_declaration {
             return FormatResult::unsafe_to_format(
                 source,
                 LITERAL_PRESERVE_CODE,
@@ -2126,7 +2126,7 @@ fn is_format_declaration_start(trimmed_line: &str) -> bool {
     trailing.is_empty() || trailing.starts_with('#')
 }
 
-fn contains_format_keyword(source: &str) -> bool {
+fn contains_format_declaration(source: &str) -> bool {
     use perl_parser_core::TokenKind;
 
     let mut stream = perl_parser_core::TokenStream::new(source);
@@ -2136,7 +2136,64 @@ fn contains_format_keyword(source: &str) -> bool {
             return true;
         };
         match token.kind() {
-            TokenKind::Format => return true,
+            TokenKind::Format => {
+                // The lexer also marks ordinary `format` keys and method names
+                // as Format. The parser's declarations instead have an optional
+                // name followed by a plain assignment token.
+                if source
+                    .get(token.start()..)
+                    .and_then(|tail| tail.lines().next())
+                    .is_some_and(is_format_declaration_start)
+                {
+                    return true;
+                }
+                let Ok(next) = stream.peek() else {
+                    return true;
+                };
+                let next_kind = next.kind();
+                let next_text = next.text.to_string();
+                if next_kind == TokenKind::Assign {
+                    return true;
+                }
+                // The parser also accepts a quoted name and `=` inside one
+                // token, including after a label or another statement.
+                if matches!(next_kind, TokenKind::String | TokenKind::Unknown)
+                    && next_text.starts_with('\'')
+                    && next_text.contains('=')
+                {
+                    return true;
+                }
+                if matches!(next_kind, TokenKind::Identifier | TokenKind::String)
+                    || next_kind == TokenKind::Unknown && next_text.starts_with('\'')
+                {
+                    let Ok(second) = stream.peek_second() else {
+                        return true;
+                    };
+                    if second.kind() == TokenKind::Assign {
+                        return true;
+                    }
+                }
+                if next_text == "'" {
+                    let Ok(third) = stream.peek_third() else {
+                        return true;
+                    };
+                    if third.kind() == TokenKind::Assign {
+                        return true;
+                    }
+                }
+                if next_kind == TokenKind::DoubleColon {
+                    let Ok(second) = stream.peek_second() else {
+                        return true;
+                    };
+                    let second_kind = second.kind();
+                    let Ok(third) = stream.peek_third() else {
+                        return true;
+                    };
+                    if second_kind == TokenKind::Identifier && third.kind() == TokenKind::Assign {
+                        return true;
+                    }
+                }
+            }
             TokenKind::Eof => return false,
             _ => {}
         }
@@ -2147,10 +2204,53 @@ fn contains_format_keyword(source: &str) -> bool {
 mod tests {
     use super::{
         FormatConfig, NativeFormatter, PerlFormatter, TextPosition, TextRange,
-        byte_span_for_line_range, literal_preserve_region, literal_preserve_region_for_range,
-        range_includes_line, split_line_ending, split_trailing_comment,
-        token_literal_preserve_region_overlapping,
+        byte_span_for_line_range, contains_format_declaration, literal_preserve_region,
+        literal_preserve_region_for_range, range_includes_line, split_line_ending,
+        split_trailing_comment, token_literal_preserve_region_overlapping,
     };
+
+    #[test]
+    fn format_keyword_gate_distinguishes_declarations_from_ordinary_words() {
+        for source in
+            ["my $record = { format => 1 };\n", "$object->format();\n", "my $format = 1;\n"]
+        {
+            assert!(!contains_format_declaration(source), "ordinary word in {source:?}");
+        }
+        for source in [
+            "format STDOUT =\n@<<<\n$x\n.\n",
+            "format =\n@<<<\n$x\n.\n",
+            "LABEL: format STDOUT =\n@<<<\n$x\n.\n",
+            "LABEL: format 'one =\n@<<<\n$x\n.\n",
+            "my $x=1; format 'one =\n@<<<\n$x\n.\n",
+        ] {
+            assert!(contains_format_declaration(source), "declaration in {source:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_format_words_do_not_refuse_document_formatting() {
+        for ordinary in ["$object->format();", "my $record = { format => 1 };"] {
+            let source = format!("my$before=1;\n{ordinary}\n");
+            let result = NativeFormatter::new().format_document(&source, &FormatConfig::default());
+
+            assert!(result.changed, "ordinary word must not block safe formatting: {result:?}");
+            assert!(result.formatted.starts_with("my $before = 1;\n"));
+            assert!(result.diagnostics.is_empty(), "ordinary word must not warn: {result:?}");
+        }
+    }
+
+    #[test]
+    fn prefixed_quoted_format_declaration_preserves_body_bytes() {
+        let source = "my$before=1; format 'one =\nmy$x=2;\n.\n";
+        let result = NativeFormatter::new().format_document(source, &FormatConfig::default());
+
+        assert_eq!(result.formatted, source, "format body must remain opaque");
+        assert!(result.edits.is_empty(), "format body must not acquire edits: {result:?}");
+        assert_eq!(
+            result.diagnostics.first().map(|diagnostic| diagnostic.code.as_str()),
+            Some("native.format.literal_preserve_region")
+        );
+    }
 
     #[test]
     fn split_trailing_comment_ignores_hash_inside_backticks()

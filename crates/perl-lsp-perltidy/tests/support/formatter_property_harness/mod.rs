@@ -722,17 +722,17 @@ pub fn generate_invalidation_case(seed: u64, index: usize) -> GeneratedCase {
             true,
         ),
         2 => (
-            format!("{base}\nmy$re=qr{{x}};\n"),
+            format!("{base}\nmy$re=qr{{x;\n"),
             Family::PlainAssignment,
             TargetRequest::Document,
-            "mutator.invalidation.regex_injection",
+            "mutator.invalidation.unterminated_regex",
             false,
         ),
         3 => (
-            format!("{base}\n__END__\n"),
+            format!("{base}\nmy $x = ;\n__END__\n"),
             Family::ModuleSurface,
             TargetRequest::Document,
-            "mutator.invalidation.data_marker",
+            "mutator.invalidation.error_before_data_marker",
             false,
         ),
         _ => {
