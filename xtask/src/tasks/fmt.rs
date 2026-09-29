@@ -1,1 +1,2566 @@
 //! Format task implementation
+
+use color_eyre::eyre::{Context, Result, eyre};
+use duct::cmd;
+use fmt_plan::{
+    FORMATTER_SPAWN_BUDGET, FormatRoot, FormatterBatch, FormatterPlanArgs, plan_formatter_batches,
+};
+use indicatif::{ProgressBar, ProgressStyle};
+use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+#[path = "fmt_plan.rs"]
+mod fmt_plan;
+
+#[derive(Deserialize)]
+struct CargoMetadata {
+    packages: Vec<CargoPackage>,
+    workspace_members: Vec<String>,
+    #[serde(default)]
+    workspace_root: String,
+}
+
+#[derive(Deserialize)]
+struct CargoPackage {
+    id: String,
+    name: String,
+    manifest_path: String,
+    edition: String,
+    #[serde(default)]
+    targets: Vec<CargoTarget>,
+}
+
+#[derive(Deserialize)]
+struct CargoTarget {
+    #[serde(default)]
+    src_path: String,
+    #[serde(default)]
+    edition: String,
+}
+
+/// One workspace member, reduced to what staged formatting needs.
+///
+/// `dir` is repository-relative so it can be prefix-matched against
+/// `git diff --name-only` output. `edition` is carried because `rustfmt`
+/// defaults to edition 2015 when invoked directly, which is *not* what
+/// `cargo fmt` does — see [`run_staged`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspacePackage {
+    pub(crate) name: String,
+    pub(crate) dir: PathBuf,
+    pub(crate) edition: String,
+}
+
+/// One crate's failure record collected during the per-crate iteration.
+///
+/// `unformatted_files` is populated in `--check` mode by parsing rustfmt's
+/// `Diff in <path>` lines from stdout; in apply mode it stays empty (cargo
+/// fmt without `--check` is expected to mutate files and exit zero unless
+/// rustfmt itself errored, which we still report as a per-crate failure).
+#[derive(Debug)]
+struct CrateFailure {
+    manifest_path: String,
+    unformatted_files: Vec<String>,
+    spawn_error: Option<String>,
+}
+
+/// Classification of one staged Rust file for `--staged` formatting.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StagedFormatAction {
+    /// Fully staged: safe to format in the worktree and re-stage, because the
+    /// worktree content and the index content are the same bytes.
+    FormatAndRestage(PathBuf),
+    /// Staged *and* separately modified in the worktree. Deliberately left
+    /// alone: formatting the file would rewrite unstaged work, and `git add`
+    /// would then sweep those unrelated changes into this commit. Reported so
+    /// the author fixes it deliberately rather than discovering a widened
+    /// commit afterwards.
+    SkipPartiallyStaged(PathBuf),
+}
+
+/// Splits staged Rust paths into the ones `--staged` may safely rewrite and
+/// the ones it must not touch.
+///
+/// Pure so the safety rule — never rewrite a partially staged file — is
+/// testable without a git fixture.
+pub(crate) fn classify_staged_paths(
+    staged: &[PathBuf],
+    unstaged: &HashSet<PathBuf>,
+) -> Vec<StagedFormatAction> {
+    staged
+        .iter()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .map(|path| {
+            if unstaged.contains(path) {
+                StagedFormatAction::SkipPartiallyStaged(path.clone())
+            } else {
+                StagedFormatAction::FormatAndRestage(path.clone())
+            }
+        })
+        .collect()
+}
+
+/// Runs git and returns its NUL-delimited output as paths.
+///
+/// `-z` rather than newline-delimited output, and raw bytes rather than text,
+/// because git guarantees neither a newline-free nor a UTF-8 filename:
+///
+/// - a filename may legally contain `\n` on Unix, so splitting on lines turns
+///   one staged path into two paths that do not exist;
+/// - a Unix filename is an arbitrary byte string, so `from_utf8_lossy` would
+///   replace the offending bytes and yield a path naming a different file (or
+///   none), silently formatting and staging the wrong thing.
+///
+/// `core.quotePath=false` keeps git from quoting and octal-escaping non-ASCII
+/// paths; combined with `-z` the output is the exact bytes, NUL-separated.
+fn git_paths(args: &[&str]) -> Result<Vec<PathBuf>> {
+    let mut full: Vec<&str> = vec!["-c", "core.quotePath=false"];
+    full.extend_from_slice(args);
+    let out = cmd("git", &full)
+        .stdout_capture()
+        .unchecked()
+        .run()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if !out.status.success() {
+        return Err(eyre!("git {} failed", args.join(" ")));
+    }
+    split_nul_paths(&out.stdout)
+}
+
+/// Splits NUL-delimited git output into paths, preserving the original bytes.
+///
+/// Separate from the process call so the delimiter handling is testable without
+/// creating a repository containing a newline-bearing filename.
+fn split_nul_paths(stdout: &[u8]) -> Result<Vec<PathBuf>> {
+    stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()).map(bytes_to_path).collect()
+}
+
+/// A git path record as a `PathBuf`, without lossy conversion.
+#[cfg(unix)]
+fn bytes_to_path(bytes: &[u8]) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec())))
+}
+
+/// On Windows a path is UTF-16 and git reports it as UTF-8, so invalid UTF-8
+/// here is a genuine anomaly. Reported rather than replaced: a mangled path
+/// would name a different file, and formatting the wrong file is worse than
+/// refusing.
+#[cfg(not(unix))]
+fn bytes_to_path(bytes: &[u8]) -> Result<PathBuf> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        eyre!("git reported a non-UTF-8 path this platform cannot represent: {error}")
+    })?;
+    Ok(PathBuf::from(text))
+}
+
+/// Maps a repository-relative file path to the workspace package that owns it.
+///
+/// Longest-prefix wins so a crate nested inside another crate's directory is
+/// attributed to the inner one.
+///
+/// A package whose directory is the workspace root has an empty relative
+/// directory, for which `"{dir}/"` would be `"/"` and match nothing. It is
+/// treated as matching every path; longest-prefix then still prefers a more
+/// specific subdirectory package when one exists. This workspace is a virtual
+/// manifest today, so that case is latent rather than live — but a helper that
+/// silently attributed root-package files to no package would skip formatting
+/// them, which is the failure this whole task exists to prevent.
+pub(crate) fn owning_package<'a>(
+    path: &Path,
+    packages: &'a [WorkspacePackage],
+) -> Option<&'a WorkspacePackage> {
+    packages
+        .iter()
+        // `Path::starts_with` matches whole components, so "crates/perl-parser"
+        // cannot capture "crates/perl-parser-core/src/lib.rs" the way a string
+        // prefix would. An empty dir (a workspace-root package) prefixes every
+        // path, which is the intended "owns anything unclaimed" behaviour.
+        .filter(|package| path.starts_with(&package.dir))
+        .max_by_key(|package| package.dir.as_os_str().len())
+}
+
+/// Whether a staged path may be rewritten in place by the staged formatter.
+///
+/// Both sides have to agree, and for different reasons. `read_to_string`
+/// follows a symlink, while [`commit_formatted`] renames a regular temp file
+/// over the path — so formatting a staged `foo.rs` symlink replaces the link
+/// with a regular file holding its target's bytes, content that can originate
+/// outside the repository entirely. The index is what actually gets committed,
+/// so an entry git records as a symlink is refused even when the worktree copy
+/// currently looks regular, and the reverse. Measured before the refusal
+/// existed: `git add` recorded a `120000 -> 100644` type *and* content change
+/// inside the author's own commit.
+///
+/// `index_mode` is the staged mode from `git ls-files --stage`. Only the two
+/// regular blob modes are rewritable: `120000` (symlink) and `160000`
+/// (gitlink/submodule) are refused, as is any mode git may add later — the
+/// rule fails closed on anything unrecognised.
+///
+/// `None` means "the index says nothing that contradicts the worktree", not
+/// "safe to rewrite". It is a fallback, never a permission: the worktree check
+/// still has to pass on its own, so an absent entry cannot admit a *worktree*
+/// symlink. It can still admit a path the index calls `120000` whose worktree
+/// copy looks regular, so `None` must mean "this path genuinely has no index
+/// entry" and never "we could not read one" — [`parse_staged_index_modes`]
+/// refuses rather than dropping a record precisely to keep that true.
+/// [`run_staged`] never reaches it — it takes staged paths from
+/// [`classify_staged_paths`] and modes from [`staged_index_modes`], both read
+/// off the same index, so every path it passes here has an entry. The case
+/// exists for a future caller that derives `index_mode` some other way.
+pub(crate) fn is_rewritable_staged_file(
+    worktree_is_regular: bool,
+    index_mode: Option<&str>,
+) -> bool {
+    worktree_is_regular && index_mode.is_none_or(|mode| mode == "100644" || mode == "100755")
+}
+
+/// Formats the staged Rust diff and re-stages it.
+///
+/// This is the apply half of the `rustfmt_staged` commit gate: that check
+/// blocks a commit whose staged Rust would be reformatted and tells the author
+/// to run `cargo xtask fmt`, which reformats the entire workspace. `--staged`
+/// narrows that to the packages actually being committed, which is what makes
+/// it cheap enough to run from the pre-commit hook on every commit.
+///
+/// Staged content is fed to `rustfmt` over stdin, one file at a time. Neither
+/// `cargo fmt -p <package>` nor path-mode `rustfmt <file>` is usable here, and
+/// both for the same reason — each writes files the author did not stage:
+///
+/// - `cargo fmt -p` formats every file in the package against the live
+///   worktree, so an unstaged sibling gets rewritten.
+/// - path-mode `rustfmt` resolves the file's out-of-line `mod child;`
+///   declarations and rewrites those children too, so a staged `lib.rs` or
+///   `mod.rs` reaches an unstaged child module. That path bypasses
+///   [`classify_staged_paths`] entirely, since the child was never staged.
+///
+/// Re-staging only the staged paths bounds the *commit* but cannot undo either
+/// worktree mutation. See [`rustfmt_text`] for the stdin contract and the
+/// measurements behind it.
+///
+/// The run is transactional in two stages. Every file is formatted in memory
+/// first, so a rustfmt failure writes nothing at all. The commit stage then
+/// writes and re-stages under [`commit_formatted`], which restores the original
+/// bytes if any write or the `git add` fails. Both matter for the same reason:
+/// a file rewritten in the worktree but absent from the index is classified as
+/// partially staged by the *next* run and skipped, so the author's formatting
+/// silently stops happening.
+///
+/// The one case that is not fully recoverable is a rollback that itself fails;
+/// that leaves the file formatted-but-unstaged and is reported by name rather
+/// than swallowed.
+///
+/// Only fully staged files are re-staged — see [`StagedFormatAction`].
+pub fn run_staged() -> Result<()> {
+    let staged = git_paths(&["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"])?;
+    let unstaged: HashSet<PathBuf> =
+        git_paths(&["diff", "--name-only", "-z", "--diff-filter=ACMR"])?.into_iter().collect();
+    let actions = classify_staged_paths(&staged, &unstaged);
+
+    if actions.is_empty() {
+        println!("No staged Rust files — nothing to format.");
+        return Ok(());
+    }
+
+    let to_format: Vec<&PathBuf> = actions
+        .iter()
+        .filter_map(|action| match action {
+            StagedFormatAction::FormatAndRestage(path) => Some(path),
+            StagedFormatAction::SkipPartiallyStaged(_) => None,
+        })
+        .collect();
+    let skipped: Vec<&PathBuf> = actions
+        .iter()
+        .filter_map(|action| match action {
+            StagedFormatAction::SkipPartiallyStaged(path) => Some(path),
+            StagedFormatAction::FormatAndRestage(_) => None,
+        })
+        .collect();
+
+    if !to_format.is_empty() {
+        let root = repo_root()?;
+        let metadata = load_workspace_metadata()?;
+        let packages = workspace_packages(&metadata, &root);
+        // The config actually being committed — see `staged_rustfmt_config`.
+        let config_text = staged_rustfmt_config()?;
+
+        // Index modes, so a staged symlink is recognised before it is read.
+        let index_modes = staged_index_modes()?;
+
+        // Phase 1 — format in memory. Nothing on disk is touched yet.
+        let mut pending: Vec<FormattedFile> = Vec::new();
+        let mut unowned: Vec<&Path> = Vec::new();
+        let mut irregular: Vec<&Path> = Vec::new();
+        for path in &to_format {
+            let Some(package) = owning_package(path, &packages) else {
+                // No package means no edition, and guessing one would format
+                // against the wrong language rules. Leave it to the gate.
+                unowned.push(path.as_path());
+                continue;
+            };
+            // git paths are repository-relative and this may run from a
+            // subdirectory, so resolve against the git root.
+            let absolute = root.join(path);
+
+            // Only ever rewrite a regular file, checked on both sides — see
+            // [`is_rewritable_staged_file`] for why the index mode is consulted
+            // as well as the worktree type.
+            let worktree_regular = std::fs::symlink_metadata(&absolute)
+                .with_context(|| format!("failed to stat staged file {}", path.display()))?
+                .file_type()
+                .is_file();
+            if !is_rewritable_staged_file(
+                worktree_regular,
+                index_modes.get(path.as_path()).map(String::as_str),
+            ) {
+                irregular.push(path.as_path());
+                continue;
+            }
+
+            let original = std::fs::read_to_string(&absolute)
+                .with_context(|| format!("failed to read staged file {}", path.display()))?;
+            let formatted = rustfmt_text(
+                config_text.as_deref(),
+                &package.edition,
+                &original,
+                &path.display().to_string(),
+            )?;
+            if formatted != original {
+                pending.push(FormattedFile { path: absolute, original, formatted });
+            }
+        }
+
+        // Phase 2 — commit the results, with rollback. See `commit_formatted`.
+        if pending.is_empty() {
+            println!("Staged Rust files are already formatted.");
+        } else {
+            commit_formatted(&pending, &mut write_file_atomically, &mut git_add_paths)?;
+            println!("Formatted and re-staged {} staged Rust file(s).", pending.len());
+        }
+
+        if !unowned.is_empty() {
+            println!(
+                "Left {} staged Rust file(s) outside every workspace package to the gate.",
+                unowned.len()
+            );
+        }
+
+        if !irregular.is_empty() {
+            println!();
+            println!(
+                "Left {} staged path(s) untouched — they are not regular files, and formatting",
+                irregular.len()
+            );
+            println!("one would replace it with a regular file holding its target's bytes:");
+            for path in &irregular {
+                println!("   {}", path.display());
+            }
+        }
+    }
+
+    if !skipped.is_empty() {
+        println!();
+        println!(
+            "Left {} partially staged file(s) untouched — they have unstaged changes,",
+            skipped.len()
+        );
+        println!("and re-staging them would pull that unstaged work into this commit:");
+        for path in &skipped {
+            println!("   {}", path.display());
+        }
+        println!();
+        println!("   Stage or stash the rest, then re-run: cargo xtask fmt --staged");
+    }
+
+    Ok(())
+}
+
+pub fn run(check: bool, package_filters: Option<Vec<String>>) -> Result<()> {
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {wide_msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+    );
+
+    let action = if check { "Checking" } else { "Formatting" };
+    spinner.set_message(format!("{} code", action));
+
+    let metadata = load_workspace_metadata()?;
+    let program = rustfmt_program();
+    let program_for_plan = program.to_string_lossy().into_owned();
+    let config_path = rustfmt_config_path_from_metadata(&metadata);
+    let plan_args = FormatterPlanArgs {
+        program: &program_for_plan,
+        config_path: config_path.as_deref(),
+        check,
+        budget: FORMATTER_SPAWN_BUDGET,
+    };
+
+    // Plan every package before spawning anything. A command-size failure is
+    // not formatting drift, and apply mode must not mutate after a planning
+    // instrument failure.
+    let plans = plan_workspace_format(&metadata, package_filters.as_deref(), &plan_args)?;
+
+    let mut failures: Vec<CrateFailure> = Vec::new();
+    for plan in &plans {
+        spinner.set_message(format!("{} {}", action, plan.manifest_path));
+        if let Some(failure) = execute_package_plan(plan, check, &program, config_path.as_deref()) {
+            failures.push(failure);
+        }
+    }
+
+    if failures.is_empty() {
+        spinner.finish_with_message(format!(
+            "✅ Code {} successfully",
+            if check { "check passed" } else { "formatted" }
+        ));
+        return Ok(());
+    }
+
+    spinner.finish_with_message(format!(
+        "❌ Code {} failed in {} crate(s)",
+        if check { "check" } else { "formatting" },
+        failures.len()
+    ));
+    Err(eyre!("{}", format_failure_report(check, &failures)))
+}
+
+/// Parse rustfmt's `Diff in <path>` lines from captured stdout.
+///
+/// rustfmt emits one of these two header shapes per unformatted file:
+///   * `Diff in <path> at line N:`  (older / verbose-diff)
+///   * `Diff in <path>:<N>:`        (current default on recent toolchains)
+///
+/// Pulling the path out lets the aggregate error name every offending file,
+/// not just the crate that contains them. Returns a deduplicated,
+/// insertion-ordered list (rustfmt may repeat a path across multiple hunks).
+fn parse_unformatted_files(stdout: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut seen = HashSet::new();
+    let mut files = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Diff in ") {
+            let path = extract_diff_path(rest);
+            if !path.is_empty() && seen.insert(path.to_string()) {
+                files.push(path.to_string());
+            }
+        }
+    }
+    files
+}
+
+/// Extract the file path from a rustfmt `Diff in ...` line tail.
+///
+/// Handles both the `<path> at line N:` and `<path>:<N>:` shapes, plus
+/// Windows paths like `\\?\C:\...\lib.rs:11:` where the trailing `:line:`
+/// must not be confused with the drive-letter colon earlier in the path.
+fn extract_diff_path(rest: &str) -> &str {
+    // Verbose-diff shape: `<path> at line N:` — split on the literal marker
+    // and ignore the trailing line/column completely.
+    if let Some(idx) = rest.rfind(" at line ") {
+        return rest[..idx].trim();
+    }
+    // Default shape: `<path>:<line>:` — strip the trailing `:`, then strip the
+    // trailing digit run (line number), then strip the separator `:`. Keeping
+    // this lexical (rather than regex) matches the rest of the xtask style.
+    let mut s = rest.trim().trim_end_matches(':');
+    let stripped = s.trim_end_matches(|c: char| c.is_ascii_digit());
+    if stripped.len() < s.len() && stripped.ends_with(':') {
+        s = stripped.trim_end_matches(':');
+    }
+    s.trim()
+}
+
+/// Build the aggregate error message that lists every failing crate.
+///
+/// In `--check` mode the report names each unformatted file under the crate
+/// that owns it, replacing the historical generic "Failed to format
+/// Cargo.toml" message that masked per-PR drift as a master cascade.
+fn format_failure_report(check: bool, failures: &[CrateFailure]) -> String {
+    let mut report = String::new();
+    let header = if check {
+        format!("cargo fmt --check found unformatted files in {} crate(s):", failures.len())
+    } else {
+        format!("cargo fmt failed in {} crate(s):", failures.len())
+    };
+    report.push_str(&header);
+    for failure in failures {
+        report.push_str("\n  - ");
+        report.push_str(&failure.manifest_path);
+        if let Some(spawn_error) = &failure.spawn_error {
+            report.push_str(" (spawn failed: ");
+            report.push_str(spawn_error);
+            report.push(')');
+        }
+        for file in &failure.unformatted_files {
+            report.push_str("\n      ");
+            report.push_str(file);
+        }
+    }
+    report
+}
+
+/// One member's planned rustfmt batches. Empty `batches` means the package
+/// contributed no unique target roots after workspace-wide dedup.
+#[derive(Debug)]
+struct PackageFormatterPlan {
+    manifest_path: String,
+    batches: Vec<FormatterBatch>,
+}
+
+struct BatchRunResult {
+    success: bool,
+    stdout: Vec<u8>,
+    spawn_error: Option<String>,
+}
+
+fn rustfmt_program() -> PathBuf {
+    match std::env::var_os("RUSTFMT") {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => PathBuf::from("rustfmt"),
+    }
+}
+
+fn rustfmt_config_path_from_metadata(metadata: &CargoMetadata) -> Option<PathBuf> {
+    if metadata.workspace_root.is_empty() {
+        return None;
+    }
+    let path = Path::new(&metadata.workspace_root).join("rustfmt.toml");
+    path.is_file().then_some(path)
+}
+
+/// Target roots cargo-fmt would put on one rustfmt argv for this package.
+///
+/// This is the governed denominator: `src/lib.rs`, bins, `tests/*.rs`,
+/// benches, examples, and `build.rs`. rustfmt still walks out-of-line `mod`
+/// children from those roots. Non-`.rs` targets are skipped; nothing here
+/// walks the package directory, so fixtures that are not cargo targets stay
+/// out of the gate.
+fn collect_package_format_roots(package: &CargoPackage) -> Vec<FormatRoot> {
+    let mut seen = HashSet::new();
+    let mut roots = Vec::with_capacity(package.targets.len());
+    for target in &package.targets {
+        let path = PathBuf::from(&target.src_path);
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let edition = if target.edition.is_empty() {
+            package.edition.clone()
+        } else {
+            target.edition.clone()
+        };
+        roots.push(FormatRoot { edition, path });
+    }
+    roots
+}
+
+fn plan_workspace_format(
+    metadata: &CargoMetadata,
+    package_filters: Option<&[String]>,
+    args: &FormatterPlanArgs<'_>,
+) -> Result<Vec<PackageFormatterPlan>> {
+    let manifests = collect_workspace_manifest_paths(metadata, package_filters)?;
+    let mut by_manifest: HashMap<&str, &CargoPackage> = HashMap::new();
+    for package in &metadata.packages {
+        if metadata.workspace_members.iter().any(|member| member == &package.id) {
+            by_manifest.insert(package.manifest_path.as_str(), package);
+        }
+    }
+
+    let mut seen_files: HashSet<PathBuf> = HashSet::new();
+    let mut plans = Vec::with_capacity(manifests.len());
+    for manifest_path in manifests {
+        let package = by_manifest.get(manifest_path.as_str()).ok_or_else(|| {
+            eyre!("Workspace member not found in cargo metadata: {manifest_path}")
+        })?;
+        let mut roots = collect_package_format_roots(package);
+        roots.retain(|root| seen_files.insert(root.path.clone()));
+        let batches = plan_formatter_batches(&roots, args)
+            .map_err(|error| eyre!("formatter planning failed for {manifest_path}: {error}"))?;
+        plans.push(PackageFormatterPlan { manifest_path, batches });
+    }
+    Ok(plans)
+}
+
+fn execute_package_plan(
+    plan: &PackageFormatterPlan,
+    check: bool,
+    program: &Path,
+    config_path: Option<&Path>,
+) -> Option<CrateFailure> {
+    execute_package_plan_with(plan, check, |batch| {
+        run_rustfmt_batch(program, check, &batch.edition, config_path, &batch.files)
+    })
+}
+
+fn execute_package_plan_with(
+    plan: &PackageFormatterPlan,
+    check: bool,
+    mut run_batch: impl FnMut(&FormatterBatch) -> BatchRunResult,
+) -> Option<CrateFailure> {
+    let mut unformatted_files = Vec::new();
+    let mut spawn_errors: Vec<String> = Vec::new();
+    let mut apply_failed = false;
+    let mut check_failed = false;
+
+    for batch in &plan.batches {
+        let outcome = run_batch(batch);
+        if let Some(error) = outcome.spawn_error {
+            spawn_errors.push(error);
+            continue;
+        }
+        if outcome.success {
+            continue;
+        }
+        if check {
+            if !outcome.stdout.is_empty() {
+                print!("{}", String::from_utf8_lossy(&outcome.stdout));
+            }
+            for file in parse_unformatted_files(&outcome.stdout) {
+                if !unformatted_files.iter().any(|seen| seen == &file) {
+                    unformatted_files.push(file);
+                }
+            }
+            check_failed = true;
+        } else {
+            apply_failed = true;
+        }
+    }
+
+    if spawn_errors.is_empty() && unformatted_files.is_empty() && !apply_failed && !check_failed {
+        return None;
+    }
+
+    Some(CrateFailure {
+        manifest_path: plan.manifest_path.clone(),
+        unformatted_files,
+        spawn_error: if spawn_errors.is_empty() { None } else { Some(spawn_errors.join("; ")) },
+    })
+}
+
+fn run_rustfmt_batch(
+    program: &Path,
+    check: bool,
+    edition: &str,
+    config_path: Option<&Path>,
+    files: &[PathBuf],
+) -> BatchRunResult {
+    let mut command = Command::new(program);
+    command.arg("--edition").arg(edition);
+    if let Some(config) = config_path {
+        command.arg("--config-path").arg(config);
+    }
+    if check {
+        command.arg("--check");
+        command.stdout(Stdio::piped());
+    }
+    command.stderr(Stdio::inherit());
+    for file in files {
+        command.arg(file);
+    }
+
+    if check {
+        match command.output() {
+            Ok(output) => BatchRunResult {
+                success: output.status.success(),
+                stdout: output.stdout,
+                spawn_error: None,
+            },
+            Err(err) => BatchRunResult {
+                success: false,
+                stdout: Vec::new(),
+                spawn_error: Some(err.to_string()),
+            },
+        }
+    } else {
+        match command.status() {
+            Ok(status) => {
+                BatchRunResult { success: status.success(), stdout: Vec::new(), spawn_error: None }
+            }
+            Err(err) => BatchRunResult {
+                success: false,
+                stdout: Vec::new(),
+                spawn_error: Some(err.to_string()),
+            },
+        }
+    }
+}
+
+fn load_workspace_metadata() -> Result<CargoMetadata> {
+    let metadata_json = cmd("cargo", ["metadata", "--format-version", "1", "--no-deps"])
+        .read()
+        .context("Failed to query cargo metadata for workspace formatting")?;
+    serde_json::from_str(&metadata_json).context("Failed to parse cargo metadata JSON")
+}
+
+/// Workspace members reduced to name, repository-relative directory, and edition.
+///
+/// `repo_root` must be the git top level, **not** the process working
+/// directory. `git diff --name-only` reports repository-relative paths wherever
+/// it is invoked from (verified: run inside `xtask/`, it still prints
+/// `xtask/src/main.rs`). Anchoring on the working directory breaks as soon as
+/// the command runs from a subdirectory: every manifest outside it keeps its
+/// absolute path and matches nothing, while that subdirectory's own package
+/// strips to `""`, which [`owning_package`] treats as a workspace-root package
+/// owning *every* path — so files get formatted at the wrong edition and
+/// rustfmt is handed paths that do not resolve.
+fn workspace_packages(metadata: &CargoMetadata, repo_root: &Path) -> Vec<WorkspacePackage> {
+    metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.iter().any(|member| member == &package.id))
+        .filter_map(|package| {
+            let manifest = Path::new(&package.manifest_path);
+            let dir = manifest.parent()?;
+            // A package outside the repository cannot own a git-reported path;
+            // leaving it absolute makes it match nothing, so its files fall
+            // through to the gate instead of being misattributed.
+            let relative = dir.strip_prefix(repo_root).unwrap_or(dir);
+            Some(WorkspacePackage {
+                name: package.name.clone(),
+                dir: relative.to_path_buf(),
+                edition: package.edition.clone(),
+            })
+        })
+        .collect()
+}
+
+/// One staged file that rustfmt changed, with the bytes needed to roll back.
+pub(crate) struct FormattedFile {
+    pub(crate) path: PathBuf,
+    pub(crate) original: String,
+    pub(crate) formatted: String,
+}
+
+/// Writes every formatted file and re-stages them, restoring the worktree if
+/// any step fails.
+///
+/// Formatting in memory first (phase 1) only makes rustfmt failures safe. The
+/// commit phase has its own partial-failure modes, and both were real:
+///
+/// - a later `write` failing leaves earlier files rewritten while the index
+///   still holds the old bytes;
+/// - every `write` succeeding but `git add` failing leaves the whole set
+///   rewritten and unstaged.
+///
+/// Either way the next run sees worktree ≠ index, classifies those files as
+/// partially staged, and skips them — the author's formatting silently stops
+/// happening. So on any failure this restores the original bytes of everything
+/// it had already written, leaving the worktree as it found it.
+///
+/// Rollback is best-effort by nature: if restoring a file *also* fails, that
+/// file genuinely is left modified, and the returned error names it explicitly
+/// rather than implying a clean state.
+///
+/// `write` and `stage` are injected so the failure paths are testable without
+/// a read-only filesystem or a broken git.
+pub(crate) fn commit_formatted(
+    files: &[FormattedFile],
+    write: &mut dyn FnMut(&Path, &str) -> Result<()>,
+    stage: &mut dyn FnMut(&[&Path]) -> Result<()>,
+) -> Result<()> {
+    let mut written: Vec<&FormattedFile> = Vec::with_capacity(files.len());
+
+    for file in files {
+        if let Err(error) = write(&file.path, &file.formatted) {
+            let context = format!("failed to write formatted {}", file.path.display());
+            return Err(rollback(&written, write, error, context));
+        }
+        written.push(file);
+    }
+
+    let paths: Vec<&Path> = written.iter().map(|file| file.path.as_path()).collect();
+    if let Err(error) = stage(&paths) {
+        return Err(rollback(&written, write, error, "failed to re-stage formatted files".into()));
+    }
+    Ok(())
+}
+
+/// Restores `written` to their original bytes and builds the reported error.
+fn rollback(
+    written: &[&FormattedFile],
+    write: &mut dyn FnMut(&Path, &str) -> Result<()>,
+    cause: color_eyre::Report,
+    context: String,
+) -> color_eyre::Report {
+    let mut unrestored: Vec<String> = Vec::new();
+    for file in written {
+        if write(&file.path, &file.original).is_err() {
+            unrestored.push(file.path.display().to_string());
+        }
+    }
+
+    if unrestored.is_empty() {
+        return cause.wrap_err(format!("{context}; the worktree was restored, nothing re-staged"));
+    }
+    cause.wrap_err(format!(
+        "{context}; rollback also failed, so these file(s) are left formatted in the worktree but \
+         not staged — re-run `cargo xtask fmt --staged` or `git checkout --` them: {}",
+        unrestored.join(", ")
+    ))
+}
+
+/// Replaces `path`'s contents via a same-directory temp file and a rename, so
+/// a crash or a full disk cannot leave a half-written source file behind.
+fn write_file_atomically(path: &Path, text: &str) -> Result<()> {
+    use std::io::Write;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| eyre!("cannot write {} — it has no parent directory", path.display()))?;
+
+    // The destination's mode must be carried onto the replacement. `persist`
+    // renames, so the file the author ends up with is the *temp* file, and
+    // `NamedTempFile` creates at 0600. Without this, every formatted file
+    // silently became owner-only — and an executable `.rs` lost its exec bit,
+    // which `git add` then recorded as a real 100755 -> 100644 index change.
+    // Measured before the fix: 644 -> 600, and 755/100755 -> 600/100644.
+    //
+    // Read before writing anything, so a mode we cannot determine aborts the
+    // write instead of silently downgrading the file.
+    let permissions = std::fs::metadata(path)
+        .with_context(|| format!("failed to read the current mode of {}", path.display()))?
+        .permissions();
+
+    // Same directory, because a rename across filesystems is not atomic (and
+    // on many systems simply fails).
+    let mut file = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("failed to create a temp file beside {}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .with_context(|| format!("failed to write formatted bytes for {}", path.display()))?;
+    file.as_file().set_permissions(permissions).with_context(|| {
+        format!("failed to carry the mode of {} onto its replacement", path.display())
+    })?;
+    file.persist(path).map_err(|error| eyre!("failed to replace {}: {error}", path.display()))?;
+    Ok(())
+}
+
+/// Staged entries as `path -> index mode`, e.g. `100644`, `100755`, `120000`.
+///
+/// `git ls-files -s -z` emits `<mode> <object> <stage>\t<path>\0`, so the mode
+/// is the leading field and the path is everything past the first tab —
+/// NUL-terminated, and therefore safe for paths containing newlines.
+fn staged_index_modes() -> Result<HashMap<PathBuf, String>> {
+    let out = cmd("git", ["-c", "core.quotePath=false", "ls-files", "-s", "-z"])
+        .stdout_capture()
+        .unchecked()
+        .run()
+        .context("failed to run git ls-files -s -z")?;
+    if !out.status.success() {
+        return Err(eyre!("git ls-files -s -z failed"));
+    }
+
+    parse_staged_index_modes(&out.stdout)
+}
+
+/// Parses `git ls-files -s -z` output into `path -> index mode`.
+///
+/// Refuses the whole run on any record it cannot parse, rather than skipping
+/// it. Skipping is not neutral here: a dropped record leaves its path with no
+/// entry, and [`is_rewritable_staged_file`] reads an absent mode as "no
+/// objection". An index entry we failed to parse would therefore become
+/// permission to rewrite — turning an unreadable `120000` into exactly the
+/// symlink rewrite the mode check exists to prevent. Refusing matches
+/// [`bytes_to_path`]: formatting the wrong file is worse than refusing.
+fn parse_staged_index_modes(stdout: &[u8]) -> Result<HashMap<PathBuf, String>> {
+    let mut modes = HashMap::new();
+    for record in stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
+        let Some(tab) = record.iter().position(|byte| *byte == b'\t') else {
+            return Err(eyre!(
+                "git ls-files -s -z produced a record with no tab separator; refusing to \
+                 rewrite staged files against an index entry that cannot be read"
+            ));
+        };
+        let (meta, path) = record.split_at(tab);
+        let Some(mode) = String::from_utf8_lossy(meta).split_whitespace().next().map(String::from)
+        else {
+            return Err(eyre!(
+                "git ls-files -s -z produced a record with no mode field; refusing to \
+                 rewrite staged files against an index entry that cannot be read"
+            ));
+        };
+        modes.insert(bytes_to_path(&path[1..])?, mode);
+    }
+    Ok(modes)
+}
+
+fn git_add_paths(paths: &[&Path]) -> Result<()> {
+    let mut args: Vec<&std::ffi::OsStr> = vec!["add".as_ref(), "--".as_ref()];
+    args.extend(paths.iter().map(|path| path.as_os_str()));
+    cmd("git", &args).run().context("git add failed")?;
+    Ok(())
+}
+
+/// Formats `text` with rustfmt and returns the result, writing no files.
+///
+/// Content goes in over **stdin**, never as a file path, and that is a safety
+/// property rather than a convenience: given a path, rustfmt resolves the
+/// file's out-of-line `mod child;` declarations and rewrites those children
+/// too. Verified — `rustfmt --edition 2024 src/lib.rs` on a crate whose
+/// `lib.rs` declares `mod child;` rewrites `src/child.rs`; the same content
+/// piped over stdin leaves it byte-identical.
+///
+/// The check half of this same gate pipes stdin for this reason already, so
+/// apply and check now agree on both mechanism and bytes — see
+/// `commit_checks::rustfmt_would_reformat`.
+///
+/// stdin mode has no file location to search upward from, so `--config-path`
+/// must be supplied explicitly; `config_text` carries the **staged**
+/// `rustfmt.toml`. `None` means the tree has no config and rustfmt's defaults
+/// apply.
+///
+/// Equivalence to `cargo fmt` was measured, not assumed: over 80 gate-clean
+/// files this path reproduced each file byte-for-byte in all 80 cases, whereas
+/// bare `rustfmt` (edition 2015 by default) rewrote 29 of them.
+fn rustfmt_text(
+    config_text: Option<&str>,
+    edition: &str,
+    text: &str,
+    path_for_errors: &str,
+) -> Result<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut command = Command::new("rustfmt");
+    command.args(["--edition", edition, "--emit", "stdout", "--quiet"]);
+
+    // Keep the temp file alive until rustfmt exits, or --config-path dangles.
+    let _config_guard = match config_text {
+        Some(content) => {
+            let mut file = tempfile::NamedTempFile::new()
+                .context("failed to create a temp file for the staged rustfmt.toml")?;
+            file.write_all(content.as_bytes())
+                .context("failed to write the staged rustfmt.toml to a temp file")?;
+            command.arg("--config-path").arg(file.path());
+            Some(file)
+        }
+        None => None,
+    };
+
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn rustfmt")?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| eyre!("rustfmt stdin was not piped"))?
+        .write_all(text.as_bytes())
+        .context("failed to write staged content to rustfmt stdin")?;
+    let output = child.wait_with_output().context("failed to wait for rustfmt")?;
+
+    // A syntax error in the staged content, or a bad config, must surface as a
+    // real error rather than silently yielding empty or partial output.
+    if !output.status.success() || !output.stderr.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("rustfmt failed on staged {path_for_errors}: {stderr}"));
+    }
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("rustfmt returned non-UTF-8 output for {path_for_errors}"))
+}
+
+/// The `rustfmt.toml` content as staged, or `None` when the index has none.
+///
+/// Deliberately the index copy, not the working tree's. The check half reads
+/// the staged config; if the apply half read the worktree copy instead, a
+/// staged `rustfmt.toml` policy change with an unrelated unstaged edit on top
+/// would have the author's staged Rust rewritten under settings that are not
+/// the ones being committed — and the gate would then reject the very index
+/// this step produced.
+fn staged_rustfmt_config() -> Result<Option<String>> {
+    let out = cmd("git", ["show", ":rustfmt.toml"])
+        .stdout_capture()
+        .stderr_capture()
+        .unchecked()
+        .run()
+        .context("failed to read the staged rustfmt.toml")?;
+    if !out.status.success() {
+        // Not in the index at all — rustfmt defaults apply, matching the
+        // check half's `config_text: None` fallback.
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+/// The git top level, which is what `git diff --name-only` paths are relative to.
+///
+/// Propagates rather than falling back: without a usable root every package
+/// directory stays absolute, no staged path matches any package, and staged
+/// formatting silently becomes a no-op.
+fn repo_root() -> Result<PathBuf> {
+    // Not `git_paths`: `git rev-parse` has no `-z`, and passing one makes it
+    // echo "-z" back as a second output line (verified). Its output is a single
+    // path terminated by exactly one newline, so strip that and keep the rest of
+    // the bytes verbatim — a repository path may itself contain a newline.
+    let out = cmd("git", ["rev-parse", "--show-toplevel"])
+        .stdout_capture()
+        .unchecked()
+        .run()
+        .context("failed to run git rev-parse --show-toplevel")?;
+    if !out.status.success() {
+        return Err(eyre!("git rev-parse --show-toplevel failed"));
+    }
+    let mut bytes = out.stdout;
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+    }
+    if bytes.is_empty() {
+        return Err(eyre!("git rev-parse --show-toplevel returned no path"));
+    }
+    bytes_to_path(&bytes)
+}
+
+fn collect_workspace_manifest_paths(
+    metadata: &CargoMetadata,
+    package_filters: Option<&[String]>,
+) -> Result<Vec<String>> {
+    let package_by_id: HashMap<_, _> = metadata
+        .packages
+        .iter()
+        .map(|package| (package.id.as_str(), package.manifest_path.clone()))
+        .collect();
+    let member_name_to_manifest: HashMap<_, _> = metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.iter().any(|member| member == &package.id))
+        .map(|package| (package.name.as_str(), package.manifest_path.clone()))
+        .collect();
+
+    if let Some(filters) = package_filters {
+        let mut selected = Vec::with_capacity(filters.len());
+        for package_name in filters {
+            if let Some(manifest_path) = member_name_to_manifest.get(package_name.as_str()) {
+                selected.push(manifest_path.clone());
+            } else {
+                // Sort the available list so the error message is stable across runs.
+                let mut available: Vec<_> = member_name_to_manifest.keys().copied().collect();
+                available.sort_unstable();
+                return Err(eyre!(
+                    "Unknown package `{package_name}`. Available workspace packages: {}",
+                    available.join(", ")
+                ));
+            }
+        }
+        return Ok(dedup_preserve_order(selected));
+    }
+
+    metadata
+        .workspace_members
+        .iter()
+        .map(|member_id| {
+            package_by_id
+                .get(member_id.as_str())
+                .cloned()
+                .ok_or_else(|| eyre!("Workspace member not found in cargo metadata: {member_id}"))
+        })
+        .collect()
+}
+
+fn dedup_preserve_order(paths: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::with_capacity(paths.len());
+    let mut deduped = Vec::with_capacity(paths.len());
+    for path in paths {
+        if seen.insert(path.clone()) {
+            deduped.push(path);
+        }
+    }
+    deduped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BatchRunResult, CargoMetadata, CargoPackage, CargoTarget, CrateFailure,
+        FORMATTER_SPAWN_BUDGET, PackageFormatterPlan, StagedFormatAction, WorkspacePackage,
+        classify_staged_paths, collect_package_format_roots, collect_workspace_manifest_paths,
+        execute_package_plan_with, format_failure_report, is_rewritable_staged_file,
+        parse_unformatted_files, plan_workspace_format,
+    };
+    use color_eyre::eyre::Result;
+    use std::collections::HashSet;
+    use std::fs;
+    use std::process::{Command, Stdio};
+
+    fn unstaged(paths: &[&str]) -> HashSet<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    }
+
+    fn staged(paths: &[&str]) -> Vec<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn staged_only_rust_files_are_formatted_and_restaged() {
+        let paths = staged(&["crates/a/src/lib.rs", "docs/readme.md"]);
+        let actions = classify_staged_paths(&paths, &unstaged(&[]));
+        assert_eq!(
+            actions,
+            vec![StagedFormatAction::FormatAndRestage(PathBuf::from("crates/a/src/lib.rs"))],
+            "non-Rust staged paths must not be handed to rustfmt"
+        );
+    }
+
+    #[test]
+    fn a_partially_staged_file_is_never_rewritten() {
+        // The footgun this guards: formatting the worktree copy would rewrite
+        // the author's unstaged work, and the follow-up `git add` would sweep
+        // it into the commit. Skipping is the only safe action.
+        let paths = staged(&["crates/a/src/lib.rs"]);
+        let actions = classify_staged_paths(&paths, &unstaged(&["crates/a/src/lib.rs"]));
+        assert_eq!(
+            actions,
+            vec![StagedFormatAction::SkipPartiallyStaged(PathBuf::from("crates/a/src/lib.rs"))],
+        );
+    }
+
+    #[test]
+    fn unrelated_unstaged_files_do_not_block_a_fully_staged_one() {
+        // Only an overlap between the staged and unstaged sets is dangerous.
+        let paths = staged(&["crates/a/src/lib.rs"]);
+        let actions = classify_staged_paths(&paths, &unstaged(&["crates/b/src/other.rs"]));
+        assert_eq!(
+            actions,
+            vec![StagedFormatAction::FormatAndRestage(PathBuf::from("crates/a/src/lib.rs"))],
+        );
+    }
+
+    fn package(name: &str, dir: &str, edition: &str) -> WorkspacePackage {
+        WorkspacePackage {
+            name: name.to_string(),
+            dir: PathBuf::from(dir),
+            edition: edition.to_string(),
+        }
+    }
+
+    fn package_dirs() -> Vec<WorkspacePackage> {
+        vec![
+            package("perl-parser", "crates/perl-parser", "2024"),
+            package("perl-parser-core", "crates/perl-parser-core", "2024"),
+            package("xtask", "xtask", "2024"),
+        ]
+    }
+
+    fn owner_name(path: &str, packages: &[WorkspacePackage]) -> Option<String> {
+        super::owning_package(Path::new(path), packages).map(|package| package.name.clone())
+    }
+
+    #[test]
+    fn a_staged_path_maps_to_its_owning_package() {
+        assert_eq!(
+            owner_name("crates/perl-parser-core/src/lib.rs", &package_dirs()).as_deref(),
+            Some("perl-parser-core")
+        );
+        assert_eq!(owner_name("xtask/src/main.rs", &package_dirs()).as_deref(), Some("xtask"));
+    }
+
+    #[test]
+    fn a_similar_prefix_does_not_capture_a_sibling_package() {
+        // "crates/perl-parser" is a prefix of "crates/perl-parser-core" as a
+        // string; only a full path-segment match may win.
+        assert_eq!(
+            owner_name("crates/perl-parser-core/src/lib.rs", &package_dirs()).as_deref(),
+            Some("perl-parser-core"),
+        );
+        assert_eq!(
+            owner_name("crates/perl-parser/src/lib.rs", &package_dirs()).as_deref(),
+            Some("perl-parser"),
+        );
+    }
+
+    #[test]
+    fn a_workspace_root_package_owns_paths_no_subpackage_claims() {
+        // A root package's relative directory is "", for which "{dir}/" would
+        // be "/" and match nothing. It must still own its own files.
+        let dirs = vec![package("root-crate", "", "2024"), package("xtask", "xtask", "2024")];
+        assert_eq!(owner_name("src/lib.rs", &dirs).as_deref(), Some("root-crate"));
+        // ...and must not shadow a more specific package.
+        assert_eq!(owner_name("xtask/src/main.rs", &dirs).as_deref(), Some("xtask"));
+    }
+
+    // `is_rewritable_staged_file` — the staged symlink / irregular index-mode
+    // refusal (#9555). Formatting a staged symlink replaces it with a regular
+    // file holding its target's bytes, so every case below that returns `false`
+    // is a file the formatter must leave alone. These are the pure-function
+    // half of the rule applied in `run_staged`; deleting either side of the
+    // `&&` there turns one of these red.
+
+    #[test]
+    fn a_staged_symlink_is_never_rewritten() {
+        // The index says symlink; the worktree agrees. The original defect.
+        assert!(!is_rewritable_staged_file(false, Some("120000")));
+    }
+
+    #[test]
+    fn a_worktree_symlink_is_refused_even_when_the_index_calls_it_regular() {
+        // The worktree is what `read_to_string` follows, so a link here is
+        // refused whatever the index currently records.
+        assert!(!is_rewritable_staged_file(false, Some("100644")));
+    }
+
+    #[test]
+    fn a_regular_worktree_file_the_index_calls_a_symlink_is_refused() {
+        // The index is what gets committed, so its mode is decisive even when
+        // the worktree copy looks safe to rewrite.
+        assert!(!is_rewritable_staged_file(true, Some("120000")));
+    }
+
+    #[test]
+    fn a_staged_gitlink_is_never_rewritten() {
+        // 160000 is a submodule pointer, not a blob the formatter can rewrite.
+        assert!(!is_rewritable_staged_file(true, Some("160000")));
+    }
+
+    #[test]
+    fn an_unrecognised_index_mode_fails_closed() {
+        // The rule admits two modes by name rather than excluding known-bad
+        // ones, so a mode git adds later is refused rather than rewritten.
+        // Both inputs are well-formed six-digit modes `git ls-files --stage`
+        // does not currently emit, which is the shape a future mode would
+        // arrive in — a malformed mode is not reachable through
+        // `staged_index_modes` and would prove nothing about this rule.
+        assert!(!is_rewritable_staged_file(true, Some("100600")));
+        assert!(!is_rewritable_staged_file(true, Some("100000")));
+    }
+
+    #[test]
+    fn a_regular_staged_blob_is_rewritable_in_both_modes() {
+        assert!(is_rewritable_staged_file(true, Some("100644")));
+        assert!(is_rewritable_staged_file(true, Some("100755")));
+    }
+
+    #[test]
+    fn a_regular_file_with_no_index_entry_is_rewritable() {
+        // No index entry means nothing contradicts the worktree type.
+        assert!(is_rewritable_staged_file(true, None));
+    }
+
+    #[test]
+    fn a_worktree_symlink_with_no_index_entry_is_refused() {
+        // The absent-entry case must not become a blanket accept.
+        assert!(!is_rewritable_staged_file(false, None));
+    }
+
+    // `parse_staged_index_modes` — the parser half of the symlink refusal
+    // (#9555 review). `is_rewritable_staged_file` reads an absent mode as "no
+    // objection", so a record this parser drops becomes permission to rewrite.
+    // These pin that an unreadable record refuses the run instead.
+
+    fn record(meta: &str, path: &str) -> Vec<u8> {
+        format!("{meta}\t{path}\0").into_bytes()
+    }
+
+    #[test]
+    fn well_formed_index_records_parse_to_their_modes() {
+        let mut input = record("100644 abc123 0", "src/lib.rs");
+        input.extend(record("120000 def456 0", "src/link.rs"));
+        let modes = super::parse_staged_index_modes(&input).expect("well-formed input parses");
+        assert_eq!(modes.get(Path::new("src/lib.rs")).map(String::as_str), Some("100644"));
+        assert_eq!(modes.get(Path::new("src/link.rs")).map(String::as_str), Some("120000"));
+    }
+
+    #[test]
+    fn a_record_with_no_tab_refuses_rather_than_dropping_the_path() {
+        // Dropping it would leave the path with no mode, which the predicate
+        // reads as permission — the exact bypass this refusal closes.
+        let input = b"100644 abc123 0 src/lib.rs\0".to_vec();
+        let error = super::parse_staged_index_modes(&input).expect_err("must refuse");
+        assert!(format!("{error}").contains("no tab separator"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn a_record_with_no_mode_field_refuses_rather_than_dropping_the_path() {
+        let input = record("", "src/lib.rs");
+        let error = super::parse_staged_index_modes(&input).expect_err("must refuse");
+        assert!(format!("{error}").contains("no mode field"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn an_unreadable_index_record_never_reaches_the_predicate_as_none() {
+        // End-to-end of the reported bypass: a staged symlink whose record is
+        // malformed must not arrive at `is_rewritable_staged_file` as `None`
+        // (which, with a regular-looking worktree file, would return true).
+        let input = b"120000 def456 0 src/link.rs\0".to_vec();
+        assert!(super::parse_staged_index_modes(&input).is_err());
+        assert!(is_rewritable_staged_file(true, None), "None is permissive by design");
+    }
+
+    #[test]
+    fn empty_index_output_is_an_empty_map_not_an_error() {
+        let modes = super::parse_staged_index_modes(b"").expect("empty input is not an anomaly");
+        assert!(modes.is_empty());
+    }
+
+    #[test]
+    fn a_path_outside_every_package_maps_to_nothing() {
+        // Falls through to the gate rather than guessing a package.
+        assert_eq!(owner_name("docs/notes.rs", &package_dirs()), None);
+    }
+
+    #[test]
+    fn the_owning_package_carries_the_edition_rustfmt_must_be_given() {
+        // The whole reason `owning_package` returns the package rather than its
+        // name: bare `rustfmt` defaults to edition 2015 and reformats
+        // gate-clean edition-2024 files. Measured on this workspace over 80
+        // gate-clean files: `rustfmt --check` rewrote 29, `rustfmt --edition
+        // 2024 --check` rewrote 0.
+        let packages = vec![package("legacy-crate", "crates/legacy", "2021")];
+        let owner = super::owning_package(Path::new("crates/legacy/src/lib.rs"), &packages)
+            .expect("legacy path must resolve to its package");
+        assert_eq!(owner.edition, "2021", "each file must be formatted at its own package edition");
+    }
+
+    #[test]
+    fn nothing_staged_yields_no_actions() {
+        assert!(classify_staged_paths(&[], &unstaged(&["crates/a/src/lib.rs"])).is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn writing_a_file_preserves_its_mode_including_the_executable_bit() -> Result<()> {
+        // `persist` renames, so the file the author keeps is the *temp* file,
+        // and NamedTempFile creates at 0600. Measured before this was fixed:
+        // 644 -> 600, and an executable 755/100755 -> 600/100644, which `git
+        // add` recorded as a real index-mode change in the commit.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        for mode in [0o644, 0o755] {
+            let path = dir.path().join(format!("probe{mode:o}.rs"));
+            std::fs::write(&path, "fn a() {}\n")?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+
+            super::write_file_atomically(&path, "fn b() {}\n")?;
+
+            let after = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+            assert_eq!(after, mode, "mode {mode:o} must survive the atomic replace, got {after:o}");
+            assert_eq!(std::fs::read_to_string(&path)?, "fn b() {}\n");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_newline_in_a_filename_stays_one_path() -> Result<()> {
+        // A Unix filename may legally contain a newline. Splitting git output on
+        // lines would turn this single staged file into two paths that do not
+        // exist, and the run would fail trying to read them. `-z` plus NUL
+        // splitting is what makes that impossible.
+        let stdout = b"crates/a/src/we\nird.rs\0crates/a/src/lib.rs\0";
+        let paths = super::split_nul_paths(stdout)?;
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("crates/a/src/we\nird.rs"), PathBuf::from("crates/a/src/lib.rs"),],
+            "a newline inside a filename must not split it into two paths"
+        );
+
+        // ...and such a file is still classified normally.
+        let actions = classify_staged_paths(&paths, &unstaged(&[]));
+        assert_eq!(actions.len(), 2, "both .rs paths must be classified");
+        Ok(())
+    }
+
+    use std::path::{Path, PathBuf};
+
+    fn sample_metadata() -> CargoMetadata {
+        CargoMetadata {
+            packages: vec![
+                CargoPackage {
+                    id: "path+file:///repo/xtask#0.1.0".to_string(),
+                    name: "xtask".to_string(),
+                    manifest_path: "/repo/xtask/Cargo.toml".to_string(),
+                    edition: "2024".to_string(),
+                    targets: vec![],
+                },
+                CargoPackage {
+                    id: "path+file:///repo/crates/perl-parser#0.1.0".to_string(),
+                    name: "perl-parser".to_string(),
+                    manifest_path: "/repo/crates/perl-parser/Cargo.toml".to_string(),
+                    edition: "2024".to_string(),
+                    targets: vec![],
+                },
+            ],
+            workspace_members: vec![
+                "path+file:///repo/xtask#0.1.0".to_string(),
+                "path+file:///repo/crates/perl-parser#0.1.0".to_string(),
+            ],
+            workspace_root: String::new(),
+        }
+    }
+
+    #[test]
+    fn package_filters_select_requested_manifest_paths() -> Result<()> {
+        let metadata = sample_metadata();
+        let filters = vec!["perl-parser".to_string()];
+        let manifests = collect_workspace_manifest_paths(&metadata, Some(&filters))?;
+        assert_eq!(manifests, vec!["/repo/crates/perl-parser/Cargo.toml".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn package_filters_are_deduplicated() -> Result<()> {
+        let metadata = sample_metadata();
+        let filters = vec!["xtask".to_string(), "xtask".to_string()];
+        let manifests = collect_workspace_manifest_paths(&metadata, Some(&filters))?;
+        assert_eq!(manifests, vec!["/repo/xtask/Cargo.toml".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn package_filters_report_unknown_package() -> Result<()> {
+        let metadata = sample_metadata();
+        let filters = vec!["missing-package".to_string()];
+        let message = match collect_workspace_manifest_paths(&metadata, Some(&filters)) {
+            Ok(paths) => {
+                return Err(color_eyre::eyre::eyre!("expected error, got paths: {paths:?}"));
+            }
+            Err(err) => format!("{err}"),
+        };
+        assert!(message.contains("missing-package"));
+        assert!(message.contains("Available workspace packages"));
+        Ok(())
+    }
+
+    #[test]
+    fn package_filters_error_lists_packages_in_stable_sorted_order() -> Result<()> {
+        let metadata = sample_metadata();
+        let filters = vec!["nonexistent".to_string()];
+        let message = match collect_workspace_manifest_paths(&metadata, Some(&filters)) {
+            Ok(paths) => {
+                return Err(color_eyre::eyre::eyre!("expected error, got paths: {paths:?}"));
+            }
+            Err(err) => format!("{err}"),
+        };
+        // The available list must be sorted — both packages appear in alphabetical order.
+        let perl_pos = message.find("perl-parser").expect("perl-parser in error");
+        let xtask_pos = message.find("xtask").expect("xtask in error");
+        assert!(perl_pos < xtask_pos, "available packages must be listed in sorted order");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_unformatted_files_extracts_paths_from_verbose_diff_lines() {
+        // Older rustfmt and verbose-diff modes emit `<path> at line N:`.
+        let stdout = b"Diff in /repo/crates/foo/src/lib.rs at line 12:\n\
+             -    let x = 1;\n\
+             +    let x = 1;\n\
+             Diff in /repo/crates/bar/src/main.rs at line 3:\n\
+             -fn main(){}\n";
+        let files = parse_unformatted_files(stdout);
+        assert_eq!(
+            files,
+            vec![
+                "/repo/crates/foo/src/lib.rs".to_string(),
+                "/repo/crates/bar/src/main.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_unformatted_files_extracts_paths_from_default_diff_lines() {
+        // Current default rustfmt output: `<path>:<line>:` — must not chop the
+        // drive-letter colon out of `\\?\C:\...` style Windows paths.
+        let stdout = b"Diff in /repo/crates/foo/src/lib.rs:11:\n\
+             -    let x = 1;\n\
+             Diff in \\\\?\\C:\\repo\\crates\\bar\\src\\main.rs:42:\n\
+             -fn main(){}\n";
+        let files = parse_unformatted_files(stdout);
+        assert_eq!(
+            files,
+            vec![
+                "/repo/crates/foo/src/lib.rs".to_string(),
+                "\\\\?\\C:\\repo\\crates\\bar\\src\\main.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_unformatted_files_deduplicates_repeated_paths() {
+        let stdout = b"Diff in /repo/a/src/lib.rs at line 1:\n\
+             Diff in /repo/a/src/lib.rs at line 42:\n";
+        let files = parse_unformatted_files(stdout);
+        assert_eq!(files, vec!["/repo/a/src/lib.rs".to_string()]);
+    }
+
+    #[test]
+    fn parse_unformatted_files_returns_empty_for_clean_output() {
+        let files = parse_unformatted_files(b"");
+        assert!(files.is_empty());
+        let files = parse_unformatted_files(b"some unrelated cargo output\n");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn format_failure_report_lists_every_failing_crate_in_check_mode() {
+        let failures = vec![
+            CrateFailure {
+                manifest_path: "crates/foo/Cargo.toml".to_string(),
+                unformatted_files: vec!["crates/foo/src/lib.rs".to_string()],
+                spawn_error: None,
+            },
+            CrateFailure {
+                manifest_path: "crates/bar/Cargo.toml".to_string(),
+                unformatted_files: vec![
+                    "crates/bar/src/lib.rs".to_string(),
+                    "crates/bar/src/util.rs".to_string(),
+                ],
+                spawn_error: None,
+            },
+        ];
+        let report = format_failure_report(true, &failures);
+        // Both crates and every unformatted file must appear so operators can
+        // distinguish per-PR drift from a shared master cascade in one read.
+        assert!(report.contains("2 crate(s)"));
+        assert!(report.contains("crates/foo/Cargo.toml"));
+        assert!(report.contains("crates/bar/Cargo.toml"));
+        assert!(report.contains("crates/foo/src/lib.rs"));
+        assert!(report.contains("crates/bar/src/lib.rs"));
+        assert!(report.contains("crates/bar/src/util.rs"));
+        // Regression: never emit the original misleading generic message.
+        assert!(!report.contains("Failed to format Cargo.toml"));
+    }
+
+    #[test]
+    fn format_failure_report_surfaces_spawn_errors_inline() {
+        let failures = vec![CrateFailure {
+            manifest_path: "crates/foo/Cargo.toml".to_string(),
+            unformatted_files: Vec::new(),
+            spawn_error: Some("rustfmt not found".to_string()),
+        }];
+        let report = format_failure_report(false, &failures);
+        assert!(report.contains("cargo fmt failed"));
+        assert!(report.contains("crates/foo/Cargo.toml"));
+        assert!(report.contains("rustfmt not found"));
+    }
+
+    fn rust_target(src_path: &str, edition: &str) -> CargoTarget {
+        CargoTarget { src_path: src_path.to_string(), edition: edition.to_string() }
+    }
+
+    fn plan_args(check: bool, budget: usize) -> super::FormatterPlanArgs<'static> {
+        super::FormatterPlanArgs { program: "rustfmt", config_path: None, check, budget }
+    }
+
+    #[test]
+    fn package_roots_are_cargo_targets_not_a_directory_walk() {
+        let package = CargoPackage {
+            id: "path+file:///repo/crates/pkg#0.1.0".to_string(),
+            name: "pkg".to_string(),
+            manifest_path: "/repo/crates/pkg/Cargo.toml".to_string(),
+            edition: "2024".to_string(),
+            targets: vec![
+                rust_target("/repo/crates/pkg/src/lib.rs", "2024"),
+                rust_target("/repo/crates/pkg/src/bin/tool.rs", "2024"),
+                rust_target("/repo/crates/pkg/tests/case.rs", "2024"),
+                rust_target("/repo/crates/pkg/benches/hot.rs", "2024"),
+                rust_target("/repo/crates/pkg/examples/demo.rs", "2024"),
+                rust_target("/repo/crates/pkg/build.rs", "2024"),
+                rust_target("/repo/crates/pkg/README.md", "2024"),
+                rust_target("/repo/crates/pkg/src/lib.rs", "2024"),
+            ],
+        };
+        let roots = collect_package_format_roots(&package);
+        let paths: Vec<String> = roots.iter().map(|root| root.path.display().to_string()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "/repo/crates/pkg/src/lib.rs",
+                "/repo/crates/pkg/src/bin/tool.rs",
+                "/repo/crates/pkg/tests/case.rs",
+                "/repo/crates/pkg/benches/hot.rs",
+                "/repo/crates/pkg/examples/demo.rs",
+                "/repo/crates/pkg/build.rs",
+            ]
+        );
+        assert!(
+            !paths.iter().any(|path| path.contains("fixtures")),
+            "non-target fixture files must not enter the formatter denominator"
+        );
+    }
+
+    #[test]
+    fn overlapping_package_roots_are_formatted_exactly_once() -> Result<()> {
+        let shared = "/repo/crates/shared/src/lib.rs";
+        let mut metadata = sample_metadata();
+        metadata.packages[0].targets =
+            vec![rust_target(shared, "2024"), rust_target("/repo/xtask/src/main.rs", "2024")];
+        metadata.packages[1].targets = vec![
+            rust_target(shared, "2024"),
+            rust_target("/repo/crates/perl-parser/src/lib.rs", "2024"),
+        ];
+        let plans =
+            plan_workspace_format(&metadata, None, &plan_args(true, FORMATTER_SPAWN_BUDGET))?;
+        let mut files = Vec::new();
+        for plan in &plans {
+            for batch in &plan.batches {
+                files.extend(batch.files.iter().map(|path| path.display().to_string()));
+            }
+        }
+        let shared_hits = files.iter().filter(|path| path.as_str() == shared).count();
+        assert_eq!(shared_hits, 1, "overlapping package/root logic must not select a file twice");
+        assert!(files.iter().any(|path| path.ends_with("xtask/src/main.rs")));
+        assert!(files.iter().any(|path| path.ends_with("perl-parser/src/lib.rs")));
+        Ok(())
+    }
+
+    #[test]
+    fn an_over_budget_root_fails_planning_without_a_partial_plan() {
+        let huge = format!("{}.rs", "x".repeat(FORMATTER_SPAWN_BUDGET));
+        let mut metadata = sample_metadata();
+        metadata.packages[0].targets = vec![rust_target(&huge, "2024")];
+        let error =
+            plan_workspace_format(&metadata, None, &plan_args(true, FORMATTER_SPAWN_BUDGET))
+                .expect_err("command-size uncertainty must not be a successful plan");
+        let rendered = format!("{error}");
+        assert!(rendered.contains("process-spawn limit"), "{rendered}");
+        assert!(rendered.contains("not formatting drift"), "{rendered}");
+    }
+
+    fn batch(edition: &str, files: &[&str]) -> super::FormatterBatch {
+        super::FormatterBatch {
+            edition: edition.to_string(),
+            files: files.iter().map(PathBuf::from).collect(),
+            estimated_command_len: 1,
+        }
+    }
+
+    fn drift(path: &str) -> BatchRunResult {
+        BatchRunResult {
+            success: false,
+            stdout: format!("Diff in {path} at line 1:\n").into_bytes(),
+            spawn_error: None,
+        }
+    }
+
+    fn clean() -> BatchRunResult {
+        BatchRunResult { success: true, stdout: Vec::new(), spawn_error: None }
+    }
+
+    #[test]
+    fn a_later_batch_failure_is_not_hidden_by_an_earlier_pass() {
+        let plan = PackageFormatterPlan {
+            manifest_path: "crates/pkg/Cargo.toml".to_string(),
+            batches: vec![
+                batch("2024", &["first.rs"]),
+                batch("2024", &["middle.rs"]),
+                batch("2024", &["last.rs"]),
+            ],
+        };
+        let failure = execute_package_plan_with(&plan, true, |current| {
+            let name = current.files[0].display().to_string();
+            if name == "first.rs" { clean() } else { drift(&name) }
+        })
+        .expect("aggregate must fail");
+        assert!(failure.spawn_error.is_none());
+        assert_eq!(failure.unformatted_files, vec!["middle.rs".to_string(), "last.rs".to_string()]);
+    }
+
+    #[test]
+    fn a_child_formatter_failure_makes_the_aggregate_fail() {
+        let plan = PackageFormatterPlan {
+            manifest_path: "crates/pkg/Cargo.toml".to_string(),
+            batches: vec![batch("2024", &["first.rs"]), batch("2024", &["last.rs"])],
+        };
+        let failure = execute_package_plan_with(&plan, true, |current| {
+            if current.files[0].display().to_string() == "last.rs" {
+                BatchRunResult { success: false, stdout: Vec::new(), spawn_error: None }
+            } else {
+                clean()
+            }
+        })
+        .expect("a child non-zero without Diff lines must still fail the crate");
+        assert!(failure.unformatted_files.is_empty());
+        assert!(failure.spawn_error.is_none());
+    }
+
+    #[test]
+    fn a_spawn_failure_stays_distinct_from_formatting_drift() {
+        let plan = PackageFormatterPlan {
+            manifest_path: "crates/pkg/Cargo.toml".to_string(),
+            batches: vec![batch("2024", &["clean.rs"]), batch("2024", &["drift.rs"])],
+        };
+        let failure = execute_package_plan_with(&plan, true, |current| {
+            if current.files[0].display().to_string() == "clean.rs" {
+                BatchRunResult {
+                    success: false,
+                    stdout: Vec::new(),
+                    spawn_error: Some(
+                        "The filename or extension is too long. (os error 206)".into(),
+                    ),
+                }
+            } else {
+                drift("drift.rs")
+            }
+        })
+        .expect("both spawn and drift must surface");
+        let spawn = failure.spawn_error.expect("spawn error must be retained");
+        assert!(spawn.contains("os error 206"), "{spawn}");
+        assert_eq!(failure.unformatted_files, vec!["drift.rs".to_string()]);
+    }
+
+    #[test]
+    fn check_mode_does_not_ask_the_runner_to_apply() {
+        let plan = PackageFormatterPlan {
+            manifest_path: "crates/pkg/Cargo.toml".to_string(),
+            batches: vec![batch("2024", &["a.rs"])],
+        };
+        let mut saw_check_style_call = false;
+        let _ = execute_package_plan_with(&plan, true, |_| {
+            saw_check_style_call = true;
+            clean()
+        });
+        assert!(saw_check_style_call);
+        // execute_package_plan_with itself does not write files; mutation is
+        // the rustfmt child's job. The production check path always passes
+        // `--check` (see run_rustfmt_batch). Guarded at the source below.
+    }
+
+    #[test]
+    fn check_mode_detects_first_middle_and_final_drift_without_mutating() -> Result<()> {
+        let rustfmt = Command::new("rustfmt")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if !rustfmt.as_ref().is_ok_and(std::process::ExitStatus::success) {
+            return Err(color_eyre::eyre::eyre!(
+                "rustfmt is required for the check-mode mutation/drift fixture"
+            ));
+        }
+
+        let dir = tempfile::tempdir()?;
+        let mut files = Vec::new();
+        for name in ["first.rs", "middle.rs", "last.rs"] {
+            let path = dir.path().join(name);
+            fs::write(&path, "fn probe(){ let x=1; }\n")?;
+            files.push(path);
+        }
+        let original: Vec<Vec<u8>> =
+            files.iter().map(|path| fs::read(path)).collect::<std::io::Result<_>>()?;
+
+        let plan = PackageFormatterPlan {
+            manifest_path: "Cargo.toml".to_string(),
+            batches: files
+                .iter()
+                .map(|path| super::FormatterBatch {
+                    edition: "2024".to_string(),
+                    files: vec![path.clone()],
+                    estimated_command_len: 1,
+                })
+                .collect(),
+        };
+        let failure = super::execute_package_plan(&plan, true, Path::new("rustfmt"), None)
+            .expect("unformatted first/middle/last batches must fail check");
+        assert_eq!(failure.unformatted_files.len(), 3, "{:?}", failure.unformatted_files);
+        for (path, bytes) in files.iter().zip(&original) {
+            assert_eq!(&fs::read(path)?, bytes, "check mode must not mutate {}", path.display());
+        }
+
+        let apply = super::execute_package_plan(&plan, false, Path::new("rustfmt"), None);
+        assert!(apply.is_none(), "apply of the same denominator must succeed: {apply:?}");
+        for path in &files {
+            let after = fs::read_to_string(path)?;
+            assert_ne!(after, "fn probe(){ let x=1; }\n", "apply must rewrite {}", path.display());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_formatter_plans_before_it_spawns_and_never_uses_cargo_fmt_all() -> Result<()> {
+        let fmt_source = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("tasks").join("fmt.rs"),
+        )?;
+        let body = fmt_source
+            .split_once("pub fn run(")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once("\n/// Parse rustfmt's"))
+            .map(|(body, _)| body)
+            .ok_or_else(|| color_eyre::eyre::eyre!("could not isolate run() body"))?;
+        let plan_at = body.find("plan_workspace_format").ok_or_else(|| {
+            color_eyre::eyre::eyre!("run() must plan bounded rustfmt batches before spawning")
+        })?;
+        let exec_at = body
+            .find("execute_package_plan")
+            .ok_or_else(|| color_eyre::eyre::eyre!("run() must execute the planned batches"))?;
+        assert!(plan_at < exec_at, "planning must precede any rustfmt spawn");
+        assert!(
+            !body.contains("\"fmt\""),
+            "run() must not spawn cargo fmt; cargo-fmt rebuilds one unbounded rustfmt argv"
+        );
+        assert!(
+            !body.contains("--all"),
+            "run() must not fall back to workspace-wide cargo fmt --all"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn staged_formatting_never_delegates_to_the_package_wide_formatter() -> Result<()> {
+        // The safety property, guarded at the source because the hazard is in
+        // *which process gets spawned*, not in any value this module returns.
+        //
+        // `cargo fmt -p <package>` formats every file in the package against
+        // the live worktree. With a staged file and a separately modified
+        // sibling in the same package, it rewrites the sibling's uncommitted
+        // work; re-staging only the staged paths keeps the commit narrow but
+        // cannot undo that. So `run_staged` must format the staged paths
+        // themselves, at their package's edition.
+        //
+        // End-to-end verification of both halves of that claim (sibling bytes
+        // preserved, staged file formatted in the index) is recorded on the PR;
+        // this test keeps the implementation from quietly reverting to the
+        // package-wide call.
+        let fmt_source = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("tasks").join("fmt.rs"),
+        )?;
+        let body = fmt_source
+            .split_once("pub fn run_staged()")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once("\npub fn run("))
+            .map(|(body, _)| body)
+            .ok_or_else(|| color_eyre::eyre::eyre!("could not isolate run_staged body"))?;
+
+        assert!(
+            !body.contains("run(false"),
+            "run_staged must not call the package-wide formatter: it would rewrite unstaged \
+             siblings in the same package"
+        );
+        // The internal call is not the only spelling of the hazard: a direct
+        // `cmd("cargo", &["fmt", "-p", name])` or `--manifest-path` spawn
+        // reintroduces it exactly.
+        assert!(
+            !body.contains("\"fmt\""),
+            "run_staged must not spawn `cargo fmt` in any form: every package- or \
+             manifest-scoped invocation rewrites unstaged siblings"
+        );
+        // Path-mode rustfmt resolves `mod child;` and rewrites unstaged child
+        // modules, bypassing classify_staged_paths entirely.
+        assert!(
+            body.contains("rustfmt_text("),
+            "run_staged must format through rustfmt_text (stdin), never by handing rustfmt a \
+             file path: path mode traverses into unstaged child modules"
+        );
+        assert!(
+            body.contains("package.edition"),
+            "run_staged must pass each file's own package edition through to rustfmt"
+        );
+
+        // The edition and stdin contracts live in rustfmt_text.
+        let formatter = fmt_source
+            .split_once("fn rustfmt_text(")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once("\n/// The `rustfmt.toml` content"))
+            .map(|(body, _)| body)
+            .ok_or_else(|| color_eyre::eyre::eyre!("could not isolate rustfmt_text body"))?;
+        assert!(
+            formatter.contains("\"--edition\""),
+            "rustfmt_text must pass --edition; bare rustfmt defaults to edition 2015 and \
+             reformats gate-clean edition-2024 files"
+        );
+        assert!(
+            formatter.contains("Stdio::piped()"),
+            "rustfmt_text must pipe content over stdin so rustfmt has no path to resolve \
+             out-of-line child modules from"
+        );
+        Ok(())
+    }
+
+    fn formatted(name: &str) -> super::FormattedFile {
+        super::FormattedFile {
+            path: PathBuf::from(name),
+            original: format!("original {name}"),
+            formatted: format!("formatted {name}"),
+        }
+    }
+
+    /// Records every write so a test can assert the final on-"disk" state.
+    #[derive(Default)]
+    struct FakeFs {
+        writes: Vec<(String, String)>,
+    }
+
+    impl FakeFs {
+        fn state(&self) -> std::collections::BTreeMap<String, String> {
+            self.writes.iter().cloned().collect()
+        }
+    }
+
+    #[test]
+    fn a_successful_commit_writes_every_file_and_stages_exactly_those_paths() -> Result<()> {
+        let files = vec![formatted("a.rs"), formatted("b.rs")];
+        let mut fs = FakeFs::default();
+        let mut staged: Vec<String> = Vec::new();
+
+        super::commit_formatted(
+            &files,
+            &mut |path, text| {
+                fs.writes.push((path.display().to_string(), text.to_string()));
+                Ok(())
+            },
+            &mut |paths| {
+                staged = paths.iter().map(|path| path.display().to_string()).collect();
+                Ok(())
+            },
+        )?;
+
+        assert_eq!(
+            fs.state(),
+            [
+                ("a.rs".to_string(), "formatted a.rs".to_string()),
+                ("b.rs".to_string(), "formatted b.rs".to_string()),
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(staged, vec!["a.rs".to_string(), "b.rs".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_write_restores_the_files_already_written_and_stages_nothing() {
+        // The divergence this prevents: `a.rs` rewritten in the worktree while
+        // the index still holds the old bytes. The next run would classify it
+        // as partially staged and skip it, so formatting silently stops.
+        let files = vec![formatted("a.rs"), formatted("b.rs")];
+        let mut fs = FakeFs::default();
+        let mut stage_called = false;
+
+        let error = super::commit_formatted(
+            &files,
+            &mut |path, text| {
+                if path.display().to_string() == "b.rs" && text.starts_with("formatted") {
+                    return Err(color_eyre::eyre::eyre!("disk full"));
+                }
+                fs.writes.push((path.display().to_string(), text.to_string()));
+                Ok(())
+            },
+            &mut |_| {
+                stage_called = true;
+                Ok(())
+            },
+        )
+        .expect_err("a failed write must not report success");
+
+        assert!(!stage_called, "nothing may be staged when a write failed");
+        assert_eq!(
+            fs.state().get("a.rs").map(String::as_str),
+            Some("original a.rs"),
+            "the already-written file must be restored"
+        );
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("disk full"), "the cause must survive: {rendered}");
+        assert!(rendered.contains("worktree was restored"), "{rendered}");
+    }
+
+    #[test]
+    fn a_failed_stage_restores_every_written_file() {
+        // All writes succeed, `git add` fails: without rollback the whole set
+        // is left rewritten and unstaged.
+        let files = vec![formatted("a.rs"), formatted("b.rs")];
+        let mut fs = FakeFs::default();
+
+        let error = super::commit_formatted(
+            &files,
+            &mut |path, text| {
+                fs.writes.push((path.display().to_string(), text.to_string()));
+                Ok(())
+            },
+            &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
+        )
+        .expect_err("a failed stage must not report success");
+
+        let state = fs.state();
+        assert_eq!(state.get("a.rs").map(String::as_str), Some("original a.rs"));
+        assert_eq!(state.get("b.rs").map(String::as_str), Some("original b.rs"));
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("index.lock exists"), "{rendered}");
+        assert!(rendered.contains("worktree was restored"), "{rendered}");
+    }
+
+    #[test]
+    fn a_failed_rollback_names_the_files_left_modified() {
+        // Rollback is best-effort. When it cannot restore a file, the error
+        // must say so by name rather than claiming a clean worktree — the
+        // author needs to know exactly what to `git checkout --`.
+        let files = vec![formatted("a.rs")];
+
+        let error = super::commit_formatted(
+            &files,
+            &mut |_, text| {
+                // The formatted write succeeds; the restore write fails.
+                if text.starts_with("original") {
+                    return Err(color_eyre::eyre::eyre!("read-only filesystem"));
+                }
+                Ok(())
+            },
+            &mut |_| Err(color_eyre::eyre::eyre!("index.lock exists")),
+        )
+        .expect_err("a failed stage must not report success");
+
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("rollback also failed"), "{rendered}");
+        assert!(rendered.contains("a.rs"), "the unrestored file must be named: {rendered}");
+        assert!(
+            !rendered.contains("worktree was restored"),
+            "must not claim a clean worktree: {rendered}"
+        );
+    }
+
+    #[test]
+    fn package_dirs_are_relative_to_the_git_root_not_the_working_directory() {
+        // `git diff --name-only` reports repository-relative paths wherever it
+        // is invoked from. Passing a root that is NOT the working directory
+        // pins the git-root anchor: under the previous `current_dir()`
+        // behaviour these could not come out repository-relative.
+        let metadata = sample_metadata();
+        let packages = super::workspace_packages(&metadata, Path::new("/repo"));
+
+        let mut dirs: Vec<(&str, PathBuf)> =
+            packages.iter().map(|package| (package.name.as_str(), package.dir.clone())).collect();
+        dirs.sort_unstable();
+        assert_eq!(
+            dirs,
+            vec![
+                ("perl-parser", PathBuf::from("crates/perl-parser")),
+                ("xtask", PathBuf::from("xtask")),
+            ]
+        );
+        assert_eq!(
+            super::owning_package(Path::new("crates/perl-parser/src/lib.rs"), &packages)
+                .map(|package| package.name.as_str()),
+            Some("perl-parser"),
+        );
+    }
+
+    #[test]
+    fn a_package_outside_the_repository_root_owns_nothing() {
+        // strip_prefix fails, the dir stays absolute, and an absolute dir can
+        // never prefix-match a repository-relative git path. Those files fall
+        // through to the gate rather than being misattributed.
+        //
+        // #12790: the fixture paths must be genuinely absolute on the host —
+        // a leading `/` without a drive prefix is not absolute on Windows
+        // (`Path::is_absolute` requires prefix + root), so POSIX-flavored
+        // literals fail the assertion there even though the ownership
+        // semantics under test are platform-neutral.
+        #[cfg(windows)]
+        const ABS_REPO: &str = r"C:\repo";
+        #[cfg(not(windows))]
+        const ABS_REPO: &str = "/repo";
+        #[cfg(windows)]
+        let outside_root = Path::new(r"D:\somewhere\else");
+        #[cfg(not(windows))]
+        let outside_root = Path::new("/somewhere/else");
+
+        let mut metadata = sample_metadata();
+        for package in &mut metadata.packages {
+            package.manifest_path = package.manifest_path.replacen("/repo", ABS_REPO, 1);
+        }
+        let packages = super::workspace_packages(&metadata, outside_root);
+        assert!(
+            packages.iter().all(|package| package.dir.is_absolute()),
+            "packages outside the given root must keep absolute dirs: {packages:?}"
+        );
+        assert_eq!(
+            super::owning_package(Path::new("crates/perl-parser/src/lib.rs"), &packages),
+            None
+        );
+    }
+
+    #[test]
+    fn xtask_tasks_do_not_shell_out_to_workspace_wide_cargo_fmt_all() -> Result<()> {
+        let xtask_tasks = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("tasks");
+        let mut offenders = Vec::new();
+        collect_workspace_fmt_all_offenders(&xtask_tasks, &mut offenders)?;
+
+        assert!(
+            offenders.is_empty(),
+            "repo-owned xtask gates must route formatting through fmt::run, not raw workspace fmt: {offenders:?}"
+        );
+        Ok(())
+    }
+
+    fn collect_workspace_fmt_all_offenders(dir: &Path, offenders: &mut Vec<String>) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                collect_workspace_fmt_all_offenders(&path, offenders)?;
+                continue;
+            }
+
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                continue;
+            }
+
+            let source = fs::read_to_string(&path)?;
+            // #16331: judge invocations, not mentions. `fmt.rs` itself is no
+            // longer skipped wholesale — it plans rustfmt batches rather than
+            // spawning `cargo fmt --all`, so none of the invocation shapes
+            // below match it.
+            for reason in workspace_fmt_all_invocations(&source) {
+                offenders.push(format!("{}: {reason}", path.display()));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// One string literal found in Rust source: its text without the
+    /// delimiters, and the offset where the literal token begins in the
+    /// comment-stripped view.
+    struct SourceString {
+        text: String,
+        start: usize,
+    }
+
+    /// Blank `//` and (nested) `/* */` comments while keeping every offset and
+    /// newline stable, and collect the string literals that survive.
+    ///
+    /// Only comments are removed. String literal contents stay in place on
+    /// purpose: a `sh -c` payload is a process argument, not prose, and rule
+    /// matching below needs the surrounding code to tell them apart. Raw
+    /// strings (`r"…"`, `r#"…"#`), escapes, raw identifiers (`r#type`), and
+    /// lifetime ticks are handled well enough for shape matching; none of the
+    /// matched text needs unescaping.
+    fn strip_comments_collect_strings(source: &str) -> (String, Vec<SourceString>) {
+        let bytes = source.as_bytes();
+        let mut stripped = bytes.to_vec();
+        let mut literals = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        stripped[i] = b' ';
+                        i += 1;
+                    }
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    let mut depth = 1usize;
+                    stripped[i] = b' ';
+                    stripped[i + 1] = b' ';
+                    i += 2;
+                    while i < bytes.len() && depth > 0 {
+                        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                            depth += 1;
+                            stripped[i] = b' ';
+                            stripped[i + 1] = b' ';
+                            i += 2;
+                        } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                            depth -= 1;
+                            stripped[i] = b' ';
+                            stripped[i + 1] = b' ';
+                            i += 2;
+                        } else {
+                            if bytes[i] != b'\n' {
+                                stripped[i] = b' ';
+                            }
+                            i += 1;
+                        }
+                    }
+                }
+                b'"' => {
+                    let start = i;
+                    let mut j = i + 1;
+                    let mut closed = false;
+                    while j < bytes.len() {
+                        match bytes[j] {
+                            b'\\' => j += 2,
+                            b'"' => {
+                                closed = true;
+                                j += 1;
+                                break;
+                            }
+                            _ => j += 1,
+                        }
+                    }
+                    if closed && start + 1 < j {
+                        literals.push(SourceString {
+                            text: source[start + 1..j - 1].to_string(),
+                            start,
+                        });
+                    }
+                    i = j.max(i + 1);
+                }
+                b'r' => {
+                    let mut hashes = 0usize;
+                    let mut quote = i + 1;
+                    while bytes.get(quote) == Some(&b'#') {
+                        hashes += 1;
+                        quote += 1;
+                    }
+                    if bytes.get(quote) != Some(&b'"') {
+                        // An identifier such as `run`, or a raw identifier
+                        // such as `r#type`; not a string.
+                        i += 1;
+                        continue;
+                    }
+                    let mut j = quote + 1;
+                    let mut closed = false;
+                    while j < bytes.len() {
+                        if bytes[j] == b'"'
+                            && bytes.len() >= j + 1 + hashes
+                            && bytes[j + 1..j + 1 + hashes].iter().all(|byte| *byte == b'#')
+                        {
+                            closed = true;
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if closed {
+                        if quote + 1 <= j {
+                            literals.push(SourceString {
+                                text: source[quote + 1..j].to_string(),
+                                start: i,
+                            });
+                        }
+                        i = j + 1 + hashes;
+                    } else {
+                        i = bytes.len();
+                    }
+                }
+                b'\'' => {
+                    // A lifetime tick is not a char literal; treating one as a
+                    // string opener would corrupt every following offset.
+                    if bytes.get(i + 1) == Some(&b'\\') {
+                        i += 2;
+                        while i < bytes.len() && bytes[i] != b'\'' {
+                            i += 1;
+                        }
+                        i += 1;
+                    } else if bytes.get(i + 2) == Some(&b'\'') {
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+                _ => i += 1,
+            }
+        }
+        // Only ASCII bytes were replaced in place, so the buffer is still
+        // valid UTF-8.
+        (String::from_utf8_lossy(&stripped).into_owned(), literals)
+    }
+
+    /// Whether `text` carries `--all` as a flag of its own, so that
+    /// `--allow-no-vcs` and friends do not count.
+    /// True when `payload` starts some shell command segment with a
+    /// workspace-wide `cargo fmt` invocation.
+    ///
+    /// Command boundaries are `;`, `&&`, `||`, `|`, newlines, and subshell
+    /// openers; a bounded peephole skips `exec` and `VAR=value` prefixes, so
+    /// `set -e; cargo fmt --all`, `cd dir && cargo fmt --all`,
+    /// `exec cargo fmt --all`, and `FOO=1 cargo fmt --all` all carry the
+    /// invocation (#16331 review). A sentence that merely mentions the
+    /// command after other words ("run cargo fmt --all to reproduce")
+    /// carries none.
+    fn shell_payload_invokes_workspace_fmt(payload: &str) -> bool {
+        payload.split([';', '|', '&', '\n', '(', '{']).any(|segment| {
+            let mut rest = segment.trim_start();
+            // Bounded peephole over `exec` and `VAR=value` prefixes so a
+            // hostile or hand-written prefix chain cannot push the
+            // formatter past the segment scan.
+            for _ in 0..8 {
+                if let Some(after) = rest.strip_prefix("exec ") {
+                    rest = after.trim_start();
+                    continue;
+                }
+                // `VAR=value` assignment prefix: consume the whole token
+                // (name, `=`, value) through the whitespace that ends it.
+                // An `==` comparison or a bare `=value` without a name is
+                // not an assignment and ends the peephole.
+                let Some(eq) = rest.find('=') else {
+                    break;
+                };
+                let head = &rest[..eq];
+                let named =
+                    !head.is_empty() && head.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                let Some(value_end) = rest[eq..].find(|c: char| c.is_ascii_whitespace()) else {
+                    break;
+                };
+                if !named || rest[eq + 1..eq + value_end].is_empty() {
+                    break;
+                }
+                rest = rest[eq + value_end..].trim_start();
+            }
+            rest.starts_with("cargo fmt")
+        })
+    }
+
+    fn carries_all_flag(text: &str) -> bool {
+        let bytes = text.as_bytes();
+        let mut from = 0usize;
+        while let Some(at) = text[from..].find("--all") {
+            let end = from + at + "--all".len();
+            match bytes.get(end) {
+                None => return true,
+                Some(byte) if matches!(*byte, b' ' | b'\t' | b'"' | b'\'' | b',') => return true,
+                _ => {}
+            }
+            from = end;
+        }
+        false
+    }
+
+    /// Index of the `)` matching the `(` at `open`, or the end of `code`.
+    fn matching_paren(code: &str, open: usize) -> usize {
+        let bytes = code.as_bytes();
+        let mut depth = 0usize;
+        for (index, byte) in bytes.iter().enumerate().skip(open) {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return index;
+                    }
+                }
+                _ => {}
+            }
+        }
+        code.len()
+    }
+
+    /// Report every way `source` actually invokes a workspace-wide
+    /// workspace `cargo` formatting pass, as opposed to merely naming one.
+    ///
+    /// #16331: the previous instrument substring-scanned whole files, so a
+    /// JSON test fixture, a doc comment, or a help/error string that
+    /// *mentioned* the command red the gate while its message sent the reader
+    /// looking for a subprocess that does not exist. This scanner strips
+    /// comments and then matches invocation shapes only:
+    ///
+    /// - a `Command::new("cargo")` statement — the constructor argument must
+    ///   be the literal `cargo` — whose string arguments, however chained,
+    ///   include both `fmt` and `--all`;
+    /// - a `cmd(…)` call whose first grouped string literal — the executable
+    ///   position — is `cargo`, `sh`, or `bash`, and whose grouped string
+    ///   arguments include `cargo`, `fmt`, and `--all`;
+    /// - a shell command line passed in argument position — after `(`, `,`,
+    ///   or `[` — that starts some shell command segment (boundaries: `;`,
+    ///   `&&`, `||`, `|`, newline, `(`, `{`) with a workspace-wide
+    ///   `cargo fmt` invocation, allowing `exec` and `VAR=value` prefixes,
+    ///   such as a `sh -c` payload.
+    ///
+    /// A formatter name or command line stored in a constant, config field,
+    /// or fixture is a string, not an execution, and stays clean. Stated
+    /// limitations (accepted imprecisions of a tripwire over this
+    /// repository's own source):
+    ///
+    /// - a command assembled into a variable and handed to a shell indirectly
+    ///   is indistinguishable from ordinary data flow at this layer;
+    /// - structural bounds (`matching_paren`, the statement end) are scanned
+    ///   over raw code, so delimiter characters inside string literals can
+    ///   shift a scanned group or statement boundary;
+    /// - an argument-position literal that *begins* with `cargo fmt` in an
+    ///   unknown callable (`bail!("cargo fmt --all is required")`) still
+    ///   flags: the executable role of an arbitrary call is unknowable here
+    ///   and the gate fails closed.
+    fn workspace_fmt_all_invocations(source: &str) -> Vec<String> {
+        let (code, literals) = strip_comments_collect_strings(source);
+        let code_bytes = code.as_bytes();
+        let mut reasons = Vec::new();
+
+        // Shell-style command line passed in argument position. The payload
+        // must carry the formatter at a shell command position, so
+        // `set -e; cargo fmt --all` is caught (#16331 review) while a prose
+        // sentence like `run cargo fmt --all to reproduce` is not.
+        for literal in &literals {
+            let trimmed = literal.text.trim();
+            if !carries_all_flag(trimmed) || !shell_payload_invokes_workspace_fmt(trimmed) {
+                continue;
+            }
+            let mut cursor = literal.start;
+            while cursor > 0 && code_bytes[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+            if matches!(code_bytes[cursor - 1], b'(' | b',' | b'[') {
+                reasons.push(
+                    "shell-style workspace format command line passed as a process argument"
+                        .to_string(),
+                );
+            }
+        }
+
+        // `Command::new("cargo")` with `fmt` + `--all` in one statement.
+        for (at, _) in code.match_indices("Command::new") {
+            let mut open = at + "Command::new".len();
+            while let Some(byte) = code_bytes.get(open) {
+                if *byte == b' ' || *byte == b'\t' {
+                    open += 1;
+                } else {
+                    break;
+                }
+            }
+            if code_bytes.get(open) != Some(&b'(') {
+                continue;
+            }
+            // The constructor argument must be the literal `cargo`
+            // (#16331 review): `Command::new(tool).args(["cargo", …])` and
+            // `Command::new("echo").args([…])` name no formatter spawn.
+            let constructor_close = matching_paren(&code, open);
+            let constructor = literals
+                .iter()
+                .find(|literal| literal.start > open && literal.start < constructor_close);
+            let Some(constructor) = constructor else {
+                continue;
+            };
+            if constructor.text != "cargo" {
+                continue;
+            }
+            let statement_end = code[at..].find(';').map_or(code.len(), |offset| at + offset);
+            let carries = |wanted: &str| {
+                literals.iter().any(|literal| {
+                    literal.start > at && literal.start < statement_end && literal.text == wanted
+                })
+            };
+            if carries("fmt") && carries("--all") {
+                reasons.push(
+                    "`Command::new(\"cargo\")` statement carries `fmt` and `--all` arguments"
+                        .to_string(),
+                );
+            }
+        }
+
+        // `cmd("cargo", …)` with `fmt` + `--all` inside the call group.
+        for (at, _) in code.match_indices("cmd") {
+            let before = if at == 0 { b' ' } else { code_bytes[at - 1] };
+            if before.is_ascii_alphanumeric() || before == b'_' {
+                continue;
+            }
+            let mut open = at + "cmd".len();
+            if code_bytes.get(open) == Some(&b'!') {
+                open += 1;
+            }
+            if code_bytes.get(open) != Some(&b'(') {
+                continue;
+            }
+            let group_end = matching_paren(&code, open);
+            let in_group: Vec<&SourceString> = literals
+                .iter()
+                .filter(|literal| literal.start > open && literal.start < group_end)
+                .collect();
+            // Executable-position guard (#16331 review): the first grouped
+            // string literal names the executable, and `cmd("echo",
+            // ["cargo", "fmt", "--all"])` executes `echo`. Only `cargo` and
+            // the recognized shells are formatter spawners; anything else is
+            // an argument mention, not an invocation.
+            let Some(executable) = in_group.first() else {
+                continue;
+            };
+            if !matches!(executable.text.as_str(), "cargo" | "sh" | "bash") {
+                continue;
+            }
+            let carries = |wanted: &str| in_group.iter().any(|literal| literal.text == wanted);
+            if carries("cargo") && carries("fmt") && carries("--all") {
+                reasons.push(
+                    "`cmd(\"cargo\", …)` call carries `fmt` and `--all` arguments".to_string(),
+                );
+            }
+        }
+
+        reasons
+    }
+
+    #[test]
+    fn a_string_that_names_the_command_is_not_an_invocation() {
+        // The class that red #16095: a JSON fixture's `reproduce` field
+        // records the command for a passing gate; nothing executes it.
+        let fixture = concat!(
+            r#"{"gate": "workspace-fmt", "#,
+            r#""reproduce": "cargo fmt --all", "result": "success"}"#,
+        );
+        assert!(workspace_fmt_all_invocations(fixture).is_empty());
+
+        // Prose and config values name the formatter; they do not spawn it.
+        let documented = "// never run cargo fmt --all directly\nfn f() {}\n";
+        assert!(workspace_fmt_all_invocations(documented).is_empty());
+        let configured = "const FORMATTER: &str = \"cargo fmt --all\";\n";
+        assert!(workspace_fmt_all_invocations(configured).is_empty());
+    }
+
+    #[test]
+    fn prefixed_shell_payloads_still_carry_the_invocation() {
+        // #16331 review: a payload that only *eventually* runs the formatter
+        // is still a workspace-wide formatting pass.
+        let chained = r#"fn i() { cmd("sh", ["-c", "set -e; cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(chained).len(), 1);
+
+        let and_chain = r#"fn i() { cmd("sh", ["-c", "cd crate && cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(and_chain).len(), 1);
+
+        let exec = r#"fn i() { cmd("sh", ["-c", "exec cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(exec).len(), 1);
+
+        let env_prefix =
+            r#"fn i() { cmd("sh", ["-c", "RUSTUP_TOOLCHAIN=stable cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(env_prefix).len(), 1);
+    }
+
+    #[test]
+    fn prose_mention_in_argument_position_is_not_an_invocation() {
+        // #16331 review: the executable role of an arbitrary call is
+        // unknowable, but a payload that merely mentions the formatter after
+        // other words is a message, not a command line.
+        let bail_message = r#"fn j() { bail!("run cargo fmt --all to reproduce"); }"#;
+        assert!(workspace_fmt_all_invocations(bail_message).is_empty());
+    }
+
+    #[test]
+    fn unrelated_executables_do_not_spawn_the_formatter() {
+        // #16331 review: the first grouped literal names the executable;
+        // `echo` prints three words and spawns nothing.
+        let echo = r#"fn e() { cmd("echo", ["cargo", "fmt", "--all"]).run()?; }"#;
+        assert!(workspace_fmt_all_invocations(echo).is_empty());
+
+        // A non-literal constructor argument names no formatter spawn even
+        // when later arguments mention the pieces.
+        let dynamic_tool =
+            r#"fn e(tool: &str) { Command::new(tool).args(["cargo", "fmt", "--all"]).status(); }"#;
+        assert!(workspace_fmt_all_invocations(dynamic_tool).is_empty());
+
+        let dynamic_then_cargo_mention = concat!(
+            r#"fn e(tool: &str) { Command::new(tool).args(["fmt", "--all"]).status(); }"#,
+            r#"fn f() { other("cargo"); }"#,
+        );
+        assert!(workspace_fmt_all_invocations(dynamic_then_cargo_mention).is_empty());
+
+        // The real spawn shapes stay flagged.
+        let real = r#"fn g() { Command::new("cargo").args(["fmt", "--all"]).status(); }"#;
+        assert_eq!(workspace_fmt_all_invocations(real).len(), 1);
+        let shell = r#"fn i() { cmd("sh", ["-c", "cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(shell).len(), 1);
+        let bash = r#"fn i() { cmd("bash", ["-c", "cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(bash).len(), 1);
+    }
+
+    #[test]
+    fn workspace_fmt_all_invocation_shapes_are_flagged() {
+        let std_command = r#"fn g() { Command::new("cargo").args(["fmt", "--all"]).status(); }"#;
+        assert_eq!(workspace_fmt_all_invocations(std_command).len(), 1);
+
+        let duct_call = r#"fn h() { cmd("cargo", ["fmt", "--all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(duct_call).len(), 1);
+
+        let shell_payload = r#"fn i() { cmd("sh", ["-c", "cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(shell_payload).len(), 1);
+    }
+
+    #[test]
+    fn sanctioned_scoped_formatting_is_not_flagged() {
+        let scoped = r#"fn k() { cmd("cargo", ["fmt", "-p", "xtask"]).run()?; }"#;
+        assert!(workspace_fmt_all_invocations(scoped).is_empty());
+
+        // Workspace formatting now plans rustfmt batches; a leftover
+        // `cmd("cargo", args)` with no `--all` still isn't the banned shape.
+        let dynamic = r#"fn m(args: &[String]) { cmd("cargo", args).run()?; }"#;
+        assert!(workspace_fmt_all_invocations(dynamic).is_empty());
+    }
+}
