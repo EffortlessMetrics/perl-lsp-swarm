@@ -36,9 +36,10 @@ impl ValueShapeInferrer {
     /// Name-keyed defining-class invocant shapes visible at `position`.
     ///
     /// [`named_shapes`] is method-scoped and restored at subroutine exit, so
-    /// invocants would otherwise disappear. This map keeps the last invocant
-    /// object shape whose source span starts at or before `position`, so a
-    /// later method or package cannot leak into an earlier `$self->` site.
+    /// invocants would otherwise disappear. This map copies declared invocant
+    /// shapes (`sub ($self)`, `my ($self) = @_`, `my $self = shift`) from the
+    /// innermost callable whose span contains `position`. File-level sites and
+    /// later packages cannot reuse an exited method's `$self`.
     pub fn named_invocant_shapes_at(ast: &Node, position: usize) -> HashMap<String, ValueShape> {
         Self::infer_state_at(ast, position).invocant_shapes
     }
@@ -65,7 +66,9 @@ impl ValueShapeInferrer {
             current_package: "main".to_string(),
             in_method: false,
             position,
+            captured_at_position: false,
             variable_shapes: HashMap::new(),
+            declared_invocants: HashMap::new(),
             invocant_shapes: HashMap::new(),
             results: Vec::new(),
         };
@@ -82,10 +85,15 @@ struct InferrerState {
     in_method: bool,
     /// Byte offset of the call site consuming invocant shapes.
     position: usize,
+    /// True once the innermost callable containing [`position`](Self::position)
+    /// has copied its declared invocants into [`invocant_shapes`](Self::invocant_shapes).
+    captured_at_position: bool,
     /// Current lexical receiver-shape environment, keyed by scalar variable name.
     variable_shapes: HashMap<String, ValueShape>,
-    /// Last defining-class invocant shape per name whose span starts at or before
-    /// [`position`](Self::position). Survives method-scope restore.
+    /// Declared invocants in the current callable (signature / `@_` / `shift`).
+    declared_invocants: HashMap<String, ValueShape>,
+    /// Declared invocants from the innermost callable whose span contains
+    /// [`position`](Self::position).
     invocant_shapes: HashMap<String, ValueShape>,
     /// Accumulated (EntityId, ValueShape) pairs.
     results: Vec<(EntityId, ValueShape)>,
@@ -124,20 +132,28 @@ impl InferrerState {
             | NodeKind::Method { signature, body, .. } => {
                 let prev_in_method = self.in_method;
                 let prev_shapes = std::mem::take(&mut self.variable_shapes);
+                let prev_declared = std::mem::take(&mut self.declared_invocants);
                 self.in_method = true;
                 if let Some(signature) = signature {
                     self.record_signature_receiver(signature);
                 }
                 self.walk(body);
+                if self.span_contains_position(node) && !self.captured_at_position {
+                    self.invocant_shapes = self.declared_invocants.clone();
+                    self.captured_at_position = true;
+                }
                 self.in_method = prev_in_method;
                 self.variable_shapes = prev_shapes;
+                self.declared_invocants = prev_declared;
                 return;
             }
 
             // Variable declaration with initializer:
             // `my $obj = Foo->new(...)` or `my $obj = bless ...`
             NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
-                if let Some(shape) = self.infer_from_rhs(init) {
+                if self.in_method && is_argument_shift(init) {
+                    self.record_self_like_variable(variable, Confidence::Medium, true);
+                } else if let Some(shape) = self.infer_from_rhs(init) {
                     self.record_variable_shape(variable, shape);
                 }
             }
@@ -148,7 +164,7 @@ impl InferrerState {
                 if self.in_method && is_argument_array(init) =>
             {
                 if let Some(first) = variables.first() {
-                    self.record_self_like_variable(first, Confidence::Medium);
+                    self.record_self_like_variable(first, Confidence::Medium, true);
                 }
             }
 
@@ -159,11 +175,12 @@ impl InferrerState {
                 }
             }
 
-            // `$self` reference inside a method body.
+            // `$self` reference inside a method body. This remains a value-shape
+            // heuristic for `infer()`, but it is not a declared invocant fact.
             NodeKind::Variable { sigil, name }
                 if sigil == "$" && is_self_like_name(name) && self.in_method =>
             {
-                self.record_self_like_variable(node, Confidence::Medium);
+                self.record_self_like_variable(node, Confidence::Medium, false);
             }
 
             _ => {}
@@ -244,10 +261,15 @@ impl InferrerState {
         let Some(variable) = parameter_variable(first) else {
             return;
         };
-        self.record_self_like_variable(variable, Confidence::High);
+        self.record_self_like_variable(variable, Confidence::High, true);
     }
 
-    fn record_self_like_variable(&mut self, variable: &Node, confidence: Confidence) {
+    fn record_self_like_variable(
+        &mut self,
+        variable: &Node,
+        confidence: Confidence,
+        declared: bool,
+    ) {
         let Some(name) = scalar_variable_name(variable) else {
             return;
         };
@@ -255,16 +277,15 @@ impl InferrerState {
             return;
         }
 
-        self.record_variable_shape(
-            variable,
-            ValueShape::Object { package: self.current_package.clone(), confidence },
-        );
-        if variable.location.start <= self.position {
-            self.invocant_shapes.insert(
-                name.to_string(),
-                ValueShape::Object { package: self.current_package.clone(), confidence },
-            );
+        let shape = ValueShape::Object { package: self.current_package.clone(), confidence };
+        self.record_variable_shape(variable, shape.clone());
+        if declared {
+            self.declared_invocants.insert(name.to_string(), shape);
         }
+    }
+
+    fn span_contains_position(&self, node: &Node) -> bool {
+        node.location.start <= self.position && self.position <= node.location.end
     }
 
     fn record_variable_shape(&mut self, variable: &Node, shape: ValueShape) {
@@ -331,6 +352,15 @@ fn is_self_like_name(name: &str) -> bool {
 
 fn is_argument_array(node: &Node) -> bool {
     matches!(&node.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "_")
+}
+
+fn is_argument_shift(node: &Node) -> bool {
+    match &node.kind {
+        NodeKind::FunctionCall { name, args } if name == "shift" => {
+            args.is_empty() || args.iter().any(is_argument_array)
+        }
+        _ => false,
+    }
 }
 
 fn normalize_package_string(value: &str) -> Option<String> {
@@ -525,6 +555,37 @@ mod tests {
             matches!(at_other.get("self"), Some(ValueShape::Object { package, .. }) if package == "Other"),
             "later $self must stay Other, got {at_other:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn named_invocant_shapes_at_do_not_survive_exited_method() -> Result<(), String> {
+        let source = concat!(
+            "package Animal {\n",
+            "    sub speak { my ($self) = @_; }\n",
+            "}\n",
+            "$self->name;\n",
+        );
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
+        let file_self_pos =
+            source.rfind("$self").ok_or_else(|| "expected file-level $self".to_string())?;
+        let at_file = ValueShapeInferrer::named_invocant_shapes_at(&ast, file_self_pos);
+        assert!(
+            !at_file.contains_key("self"),
+            "exited package-block $self must not remain an invocant: {at_file:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn named_invocant_shapes_at_ignore_unbound_numeric_self() -> Result<(), String> {
+        let source = "package Animal;\nsub helper { my $self = 42; $self->name; }\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
+        let pos = source.find("$self->name").ok_or_else(|| "expected $self-> site".to_string())?;
+        let named = ValueShapeInferrer::named_invocant_shapes_at(&ast, pos);
+        assert!(!named.contains_key("self"), "my $self = 42 is not a declared invocant: {named:?}");
         Ok(())
     }
 

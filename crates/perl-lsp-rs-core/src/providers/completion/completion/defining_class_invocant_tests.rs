@@ -354,3 +354,37 @@ fn earlier_package_self_completion_does_not_offer_later_package_methods()
     );
     Ok(())
 }
+
+#[test]
+fn file_level_self_after_package_block_is_unknown() {
+    let source =
+        concat!("package Animal {\n", "    sub speak { my ($self) = @_; }\n", "}\n", "$self->\n");
+    let ev = classify_receiver(&arrow_ctx(source, "$self->", "main"), source, None);
+    assert_eq!(
+        ev,
+        ReceiverEvidence::Unknown,
+        "file-level $self after a closed package block must not keep Animal, got {ev:?}"
+    );
+}
+
+#[test]
+fn file_level_class_after_signature_method_is_unknown() {
+    let source = "package Animal;\nsub new($class) { return 1; }\n$class->\n";
+    let ev = classify_receiver(&arrow_ctx(source, "$class->", "Animal"), source, None);
+    assert_eq!(
+        ev,
+        ReceiverEvidence::Unknown,
+        "file-level $class after the method must not keep Animal, got {ev:?}"
+    );
+}
+
+#[test]
+fn numeric_self_assignment_is_not_defining_class_receiver() {
+    let source = "package Animal;\nsub helper {\n    my $self = 42;\n    $self->\n}\n";
+    let ev = classify_receiver(&arrow_ctx(source, "$self->", "Animal"), source, None);
+    assert_eq!(
+        ev,
+        ReceiverEvidence::Unknown,
+        "my $self = 42 must not become a defining-class invocant, got {ev:?}"
+    );
+}
