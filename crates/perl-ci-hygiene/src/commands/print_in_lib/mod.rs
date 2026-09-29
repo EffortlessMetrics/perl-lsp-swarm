@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use crate::{
-    display_path, first_cfg_test_line_number, production_source_files_for_ci_checks, read_lines,
-    read_usize_file,
+    display_path, production_source_files_for_ci_checks, read_lines, read_usize_file,
+    test_scope::{cfg_test_spans, line_is_test_scope},
 };
 
 use self::allow_scopes::{
@@ -52,7 +52,7 @@ fn scan_offenders(repo_root: &Path) -> Result<Vec<String>> {
             continue;
         }
 
-        let test_start = first_cfg_test_line_number(&path).unwrap_or(usize::MAX);
+        let test_spans = cfg_test_spans(&lines);
 
         let mut debug_assertions_scope = PrintAllowScope::default();
         let mut print_allow_scope = PrintAllowScope::default();
@@ -60,8 +60,14 @@ fn scan_offenders(repo_root: &Path) -> Result<Vec<String>> {
 
         for (index, line) in lines.iter().enumerate() {
             let line_no = index + 1;
-            if line_no >= test_start {
-                break;
+            // Skip the test module rather than stopping at it. This loop used to
+            // `break` at the first `#[cfg(test)]` line, so a production `println!`
+            // written after `mod tests { … }` was never reported (#16523). A span
+            // is brace-balanced, so skipping one whole leaves the scope
+            // bookkeeping below in balance: the opening `{` on the module head and
+            // its closing `}` are inside the same skipped run.
+            if line_is_test_scope(&test_spans, line_no) {
+                continue;
             }
 
             if debug_attr_re.is_match(line) {
@@ -392,6 +398,109 @@ mod tests {
             ),
         )?;
         check_offender_sources(&tree.scan()?, &["println!(\"production\");"])?;
+        Ok(())
+    }
+
+    // ── production after the test module (#16523) ────────────────────────────
+
+    #[test]
+    fn production_after_a_multiline_test_module_is_still_reported() -> Result<()> {
+        // The defect this issue is about. The scan truncated at the first
+        // `#[cfg(test)]` line, so `also_leaked` below was never reported. A
+        // false negative is the quiet direction: nothing surfaced it.
+        let tree = RepoTree::new("production-after-multiline-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "pub fn leaked() {\n",
+                "    println!(\"before\");\n",
+                "}\n",
+                "#[cfg(test)]\n",
+                "mod tests {\n",
+                "    fn it() { println!(\"test-only\"); }\n",
+                "}\n",
+                "pub fn also_leaked() {\n",
+                "    println!(\"after\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"before\");", "println!(\"after\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn production_after_a_compact_test_module_is_still_reported() -> Result<()> {
+        // The same shape in the compact spelling #16521 admitted. Both spellings
+        // must answer identically, or the repair only holds for the one rustfmt
+        // happens to produce in the file under test.
+        let tree = RepoTree::new("production-after-compact-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "pub fn leaked() {\n",
+                "    println!(\"before\");\n",
+                "}\n",
+                "#[cfg(test)] mod tests { fn it() { println!(\"test-only\"); } }\n",
+                "pub fn also_leaked() {\n",
+                "    println!(\"after\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"before\");", "println!(\"after\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_second_test_module_after_production_still_hides_its_own_prints() -> Result<()> {
+        // The paired direction, and the reason the answer is a list of spans and
+        // not one extent. Scanning resumes after the first module, so a reader
+        // that stopped there would report the second module's test-only print
+        // as a production offender — fixing a false negative by opening a false
+        // positive.
+        let tree = RepoTree::new("two-test-modules")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[cfg(test)]\n",
+                "mod first {\n",
+                "    fn it() { println!(\"first-test-only\"); }\n",
+                "}\n",
+                "pub fn between() {\n",
+                "    println!(\"between\");\n",
+                "}\n",
+                "#[cfg(test)]\n",
+                "mod second {\n",
+                "    fn it() { println!(\"second-test-only\"); }\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"between\");"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_opt_out_before_a_test_module_does_not_swallow_what_follows_it() -> Result<()> {
+        // Brace balance across a skipped span. The module's opening `{` and its
+        // closing `}` are both inside the same skipped run, so the scope
+        // bookkeeping stays balanced and a later print is still reported.
+        let tree = RepoTree::new("opt-out-before-test-module")?;
+        tree.source(
+            "lib.rs",
+            concat!(
+                "#[allow(clippy::print_stdout)]\n",
+                "pub fn banner() {\n",
+                "    println!(\"allowed\");\n",
+                "}\n",
+                "#[cfg(test)]\n",
+                "mod tests {\n",
+                "    fn it() { println!(\"test-only\"); }\n",
+                "}\n",
+                "pub fn leaked() {\n",
+                "    println!(\"reported\");\n",
+                "}\n",
+            ),
+        )?;
+        check_offender_sources(&tree.scan()?, &["println!(\"reported\");"])?;
         Ok(())
     }
 
