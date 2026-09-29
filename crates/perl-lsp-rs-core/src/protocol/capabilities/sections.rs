@@ -292,6 +292,8 @@ fn code_action_kinds(_build: &BuildFlags) -> Vec<CodeActionKind> {
     // REFACTOR_EXTRACT is implemented in code_actions_enhanced.rs.
     // Tests verified in lsp_code_actions_tests.rs (Issue #181).
     kinds.push(CodeActionKind::REFACTOR_EXTRACT);
+    kinds.push(CodeActionKind::new("refactor.extract.variable"));
+    kinds.push(CodeActionKind::new("refactor.extract.subroutine"));
     // Note: refactor.inline is NOT advertised because no inline action
     // is currently implemented.
     kinds.push(CodeActionKind::REFACTOR_REWRITE);

@@ -119,8 +119,8 @@ describe('refactoring command implementations', () => {
     setActiveEditor(editor);
     const asWorkspaceEdit = jest.fn(async (edit: unknown) => ({ edit }));
     const sendRequest = jest.fn(async () => [
-      { title: 'Extract Variable', edit: { changes: {} } },
-      { title: 'Extract Method', command: { command: 'ignored' } },
+      { title: 'Renamed action', kind: 'refactor.extract.variable', edit: { changes: {} } },
+      { title: 'Extract Variable', kind: 'refactor.extract.subroutine', command: { command: 'ignored' } },
     ]);
     const client = { sendRequest, protocol2CodeConverter: { asWorkspaceEdit } };
 
@@ -132,7 +132,7 @@ describe('refactoring command implementations', () => {
         start: { line: 2, character: 1 },
         end: { line: 2, character: 12 },
       },
-      context: { diagnostics: [], only: ['refactor.extract'], triggerKind: 2 },
+      context: { diagnostics: [], only: ['refactor.extract.variable'], triggerKind: 2 },
     });
     expect(asWorkspaceEdit).toHaveBeenCalledWith({ changes: {} });
     expect(vscode.workspace.applyEdit).toHaveBeenCalledWith({ edit: { changes: {} } });
@@ -141,8 +141,8 @@ describe('refactoring command implementations', () => {
   test('selects a method action and dispatches command-based edits', async () => {
     setActiveEditor(makeEditor());
     const sendRequest = jest.fn(async () => [
-      { title: 'Unrelated action', command: { command: 'first' } },
-      { title: 'Extract Method', command: { command: 'perl.extractMethod', arguments: ['x'] } },
+      { title: 'Extract Method', kind: 'refactor.extract.variable', command: { command: 'first' } },
+      { title: 'Renamed subroutine action', kind: 'refactor.extract.subroutine', command: { command: 'perl.extractMethod', arguments: ['x'] } },
     ]);
     const client = {
       sendRequest,
@@ -151,7 +151,28 @@ describe('refactoring command implementations', () => {
 
     await extractMethodCommand(dependencies(client));
 
+    expect(sendRequest).toHaveBeenCalledWith('textDocument/codeAction', expect.objectContaining({
+      context: { diagnostics: [], only: ['refactor.extract.subroutine'], triggerKind: 2 },
+    }));
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl.extractMethod', 'x');
+  });
+
+  test('applies the exact subroutine edit despite misleading titles and order', async () => {
+    setActiveEditor(makeEditor());
+    const asWorkspaceEdit = jest.fn(async (edit: unknown) => ({ edit }));
+    const variableEdit = { changes: { 'file:///variable.pl': [] } };
+    const subroutineEdit = { changes: { 'file:///subroutine.pl': [] } };
+    const client = {
+      sendRequest: jest.fn(async () => [
+        { title: 'Extract Method', kind: 'refactor.extract.variable', edit: variableEdit },
+        { title: 'Renamed action', kind: 'refactor.extract.subroutine', edit: subroutineEdit },
+      ]),
+      protocol2CodeConverter: { asWorkspaceEdit },
+    };
+    await extractMethodCommand(dependencies(client));
+    expect(asWorkspaceEdit).toHaveBeenCalledWith(subroutineEdit);
+    expect(vscode.workspace.applyEdit).toHaveBeenCalledWith({ edit: subroutineEdit });
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
   });
 
   test('reports when no extract action is available', async () => {
@@ -166,6 +187,82 @@ describe('refactoring command implementations', () => {
     expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
       'No extract actions available for the selected expression',
     );
+  });
+
+  test.each([
+    ['variable', extractVariableCommand, 'refactor.extract.subroutine', 'No extract variable action is available for the current selection'],
+    ['method', extractMethodCommand, 'refactor.extract.variable', 'No extract method action is available for the current selection'],
+  ])('refuses opposite-only %s responses with edits or commands', async (_name, run, kind, message) => {
+    setActiveEditor(makeEditor());
+    for (const payload of [{ edit: { changes: {} } }, { command: { command: 'opposite' } }]) {
+      jest.clearAllMocks();
+      const client = {
+        sendRequest: jest.fn(async () => [{ title: 'Extract Variable Method', kind, ...payload }]),
+        protocol2CodeConverter: { asWorkspaceEdit: jest.fn() },
+      };
+      await run(dependencies(client));
+      expect(client.protocol2CodeConverter.asWorkspaceEdit).not.toHaveBeenCalled();
+      expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(message);
+    }
+  });
+
+  test.each([
+    ['variable', extractVariableCommand, 'refactor.extract.variable', 'No extract variable action is available for the current selection'],
+    ['method', extractMethodCommand, 'refactor.extract.subroutine', 'No extract method action is available for the current selection'],
+  ])('refuses generic, disabled, and malformed %s actions', async (_name, run, kind, message) => {
+    setActiveEditor(makeEditor());
+    const responses = [
+      { title: 'Old server', kind: 'refactor.extract', edit: { changes: {} } },
+      { title: 'Disabled', kind, disabled: { reason: 'selection required' }, edit: { changes: {} } },
+      { title: 'Malformed edit', kind, edit: { changes: null } },
+      { title: 'Malformed nested edit', kind, edit: { changes: { 'file:///x': 'not-an-array' } } },
+      { title: 'Malformed command', kind, command: { command: 1 } },
+    ];
+    for (const response of responses) {
+      jest.clearAllMocks();
+      const client = {
+        sendRequest: jest.fn(async () => [response]),
+        protocol2CodeConverter: { asWorkspaceEdit: jest.fn() },
+      };
+      await run(dependencies(client));
+      expect(client.protocol2CodeConverter.asWorkspaceEdit).not.toHaveBeenCalled();
+      expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(message);
+    }
+  });
+
+  test('refuses a typed edit when conversion rejects', async () => {
+    setActiveEditor(makeEditor());
+    const client = {
+      sendRequest: jest.fn(async () => [
+        { title: 'Variable', kind: 'refactor.extract.variable', edit: { changes: {} } },
+      ]),
+      protocol2CodeConverter: { asWorkspaceEdit: jest.fn(async () => { throw new Error('bad edit'); }) },
+    };
+    await extractVariableCommand(dependencies(client));
+    expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'No extract variable action is available for the current selection',
+    );
+  });
+
+  test.each([
+    ['variable', extractVariableCommand],
+    ['method', extractMethodCommand],
+  ])('shows rejected %s requests to the user', async (_name, run) => {
+    setActiveEditor(makeEditor());
+    const client = {
+      sendRequest: jest.fn(async () => { throw new Error('server rejected'); }),
+      protocol2CodeConverter: { asWorkspaceEdit: jest.fn() },
+    };
+    await run(dependencies(client));
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining('server rejected'));
+    expect(vscode.workspace.applyEdit).not.toHaveBeenCalled();
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
   });
 
   test('shows refactoring options and dispatches the selected command', async () => {

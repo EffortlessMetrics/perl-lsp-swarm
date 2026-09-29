@@ -24,7 +24,7 @@ pub fn get_refactoring_actions(source: &str, ast: &Node, range: (usize, usize)) 
             NodeKind::FunctionCall { .. } | NodeKind::Binary { .. } if actions.is_empty() => {
                 actions.push(CodeAction {
                     title: "Extract to variable".to_string(),
-                    kind: CodeActionKind::RefactorExtract,
+                    kind: CodeActionKind::RefactorExtractVariable,
                     diagnostics: Vec::new(),
                     edit: extract_variable(source, node, range),
                     is_preferred: false,
@@ -35,7 +35,7 @@ pub fn get_refactoring_actions(source: &str, ast: &Node, range: (usize, usize)) 
             NodeKind::Block { .. } if actions.is_empty() => {
                 actions.push(CodeAction {
                     title: "Extract to function".to_string(),
-                    kind: CodeActionKind::RefactorExtract,
+                    kind: CodeActionKind::RefactorExtractSubroutine,
                     diagnostics: Vec::new(),
                     edit: extract_function(source, node, range),
                     is_preferred: false,
