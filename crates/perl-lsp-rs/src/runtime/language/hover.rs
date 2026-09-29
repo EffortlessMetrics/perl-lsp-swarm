@@ -48,7 +48,16 @@ enum HoverPublication {
     /// Open document: publish only while this generation is still current.
     OpenGeneration(u32),
     /// Disk-index snapshot of a not-open workspace file (#16647).
-    DiskSnapshot,
+    DiskSnapshot { index_matches_disk: bool },
+}
+
+impl HoverPublication {
+    fn workspace_facts_are_current(self) -> bool {
+        match self {
+            Self::OpenGeneration(_) => true,
+            Self::DiskSnapshot { index_matches_disk } => index_matches_disk,
+        }
+    }
 }
 
 thread_local! {
@@ -266,7 +275,9 @@ impl LspServer {
                         parts.extracted,
                         parts.live_compiler_context,
                         parts.hover_range,
-                        HoverPublication::DiskSnapshot,
+                        HoverPublication::DiskSnapshot {
+                            index_matches_disk: parts.index_matches_disk,
+                        },
                     ),
                     None => {
                         if timing_on {
@@ -385,7 +396,7 @@ impl LspServer {
                                 offset,
                             )
                         } else {
-                            self.extract_symbol_hover(uri, ast, &text, offset, &parsed)
+                            self.extract_symbol_hover(uri, ast, &text, offset, &parsed, true)
                         };
                         (
                             extracted,
@@ -458,7 +469,9 @@ impl LspServer {
                         // open document is newer than the index, matching
                         // navigation. Caller-only freshness would present a
                         // stale defining-file symbol as current.
-                        if !self.workspace_index_stale_for_any_open_document() {
+                        if publication.workspace_facts_are_current()
+                            && !self.workspace_index_stale_for_any_open_document()
+                        {
                             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                             if let Some(hover_value) =
                                 self.build_qualified_callable_hover(&package, &name)
@@ -510,7 +523,9 @@ impl LspServer {
                     doc_uri,
                     dynamic_fallback,
                 ) => {
-                    if !self.workspace_index_stale_for_document(&doc_uri) {
+                    if publication.workspace_facts_are_current()
+                        && !self.workspace_index_stale_for_document(&doc_uri)
+                    {
                         let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                         if let Some(hover_value) =
                             self.build_inherited_method_hover(&receiver_pkg, &method_name, &doc_uri)
@@ -582,7 +597,7 @@ impl LspServer {
                 value.unwrap_or(json!(null)),
                 json!(null),
             ),
-            HoverPublication::DiskSnapshot => {
+            HoverPublication::DiskSnapshot { .. } => {
                 if self.document_generation(uri).is_some() {
                     // The file was opened while the disk answer was being
                     // computed; the open buffer supersedes disk text, so fail
@@ -625,6 +640,7 @@ impl LspServer {
         text: &str,
         offset: usize,
         parsed: &Option<Arc<ParsedSnapshot>>,
+        allow_workspace_facts: bool,
     ) -> HoverExtracted {
         let source_region = parsed.as_ref().map(|snapshot| snapshot.source_region_index());
         let source_region = source_region.as_deref();
@@ -1026,6 +1042,9 @@ impl LspServer {
                             return HoverExtracted::Complete(card);
                         }
 
+                        if !allow_workspace_facts {
+                            return HoverExtracted::None;
+                        }
                         // No in-file ancestor found — defer to Phase 2 workspace BFS
                         return HoverExtracted::InheritedMethod(
                             receiver_pkg,

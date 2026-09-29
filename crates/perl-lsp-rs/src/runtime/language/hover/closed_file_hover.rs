@@ -23,6 +23,7 @@ pub(super) struct ClosedFileHover {
     pub(super) extracted: HoverExtracted,
     pub(super) live_compiler_context: Option<LiveHoverCompilerContext>,
     pub(super) hover_range: Option<Value>,
+    pub(super) index_matches_disk: bool,
 }
 
 impl LspServer {
@@ -187,10 +188,15 @@ impl LspServer {
             } else if let Some(module_name) = Self::find_with_module_at_offset(ast, offset) {
                 HoverExtracted::UseModule(module_name, text.clone(), uri.to_string(), offset)
             } else {
-                self.extract_symbol_hover(uri, ast, &text, offset, &parsed)
+                self.extract_symbol_hover(uri, ast, &text, offset, &parsed, index_matches_disk)
             };
 
-            Some(ClosedFileHover { extracted, live_compiler_context, hover_range })
+            Some(ClosedFileHover {
+                extracted,
+                live_compiler_context,
+                hover_range,
+                index_matches_disk,
+            })
         }
     }
 }
@@ -360,6 +366,26 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn closed_file_hover_does_not_block_on_fifo_replacement() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (server, uri) = closed_file_server(dir.path(), ANIMAL)?;
+        let path = url::Url::parse(&uri)?.to_file_path().map_err(|()| "not a file uri")?;
+        std::fs::remove_file(&path)?;
+        let status = std::process::Command::new("mkfifo").arg(&path).status()?;
+        if !status.success() {
+            return Err("mkfifo fixture creation failed".into());
+        }
+
+        let hover = hover_at(&server, &uri, 3, 8)?;
+        assert!(
+            hover.as_ref().is_none_or(Value::is_null),
+            "an indexed path replaced by a FIFO must fail closed without a writer"
+        );
+        Ok(())
+    }
+
     #[test]
     fn closed_file_hover_stays_null_when_file_exceeds_read_limit() -> TestResult {
         let dir = tempfile::tempdir()?;
@@ -414,6 +440,35 @@ mod tests {
     }
 
     #[test]
+    fn closed_file_hover_rejects_stale_inherited_method_after_disk_change() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let indexed = "package Child;\nsub old_method { return 1; }\nsub call { my $self = shift; return $self->old_method; }\n1;\n";
+        let (server, uri) = closed_file_server(dir.path(), indexed)?;
+        let path = url::Url::parse(&uri)?.to_file_path().map_err(|()| "not a file uri")?;
+        let changed =
+            "package Child;\nsub call { my $self = shift; return $self->old_method; }\n1;\n";
+        std::fs::write(path, changed)?;
+        let method_column = u32::try_from(
+            changed
+                .lines()
+                .nth(1)
+                .and_then(|line| line.find("old_method"))
+                .ok_or("changed fixture must include its former method call")?,
+        )?;
+
+        let parts = server
+            .closed_file_hover_parts(&uri, 1, method_column)
+            .ok_or("changed on-disk source must still parse")?;
+        assert!(!parts.index_matches_disk, "the old shard must be stale for changed bytes");
+        let hover = hover_at(&server, &uri, 1, method_column)?;
+        assert!(
+            hover.as_ref().is_none_or(Value::is_null),
+            "removed methods from the old workspace shard must not answer hover, got {hover:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn closed_file_hover_uses_dancer2_route_projection() -> TestResult {
         let dir = tempfile::tempdir()?;
         let lib = dir.path().join("lib");
@@ -452,7 +507,7 @@ mod tests {
 
         let stale_disk_answer = server.publish_hover_answer(
             &uri,
-            super::super::HoverPublication::DiskSnapshot,
+            super::super::HoverPublication::DiskSnapshot { index_matches_disk: true },
             Some(answer.clone()),
         )?;
         assert!(
