@@ -18,8 +18,8 @@
 #      publication join; until then, fetch this repository at a reviewed commit
 #      SHA rather than from `master`.
 #   2. First-party install-surface policy forbids publishing an
-#      `install.ps1 | iex` invocation (see install_surface_check), and a bare
-#      piped invocation omits the remote-bootstrap wrapper's identity pair — a
+#      pipeline from `install.ps1` into `iex` (see install_surface_check);
+#      that bare invocation omits the remote-bootstrap wrapper's identity pair — a
 #      full 40-character commit SHA plus a reviewed SHA-256 digest. A one-liner
 #      could carry both values, but no reviewed pair is published for this
 #      script.
