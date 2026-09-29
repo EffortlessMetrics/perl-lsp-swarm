@@ -1,5 +1,6 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 mod claude;
+mod claude_host_test;
 mod mcp;
 
 use perllsp::protocol::product_identity::{
@@ -17,6 +18,7 @@ enum ClaudeProductAction {
 struct ClaudeProductInvocation {
     action: ClaudeProductAction,
     json: bool,
+    host_test: bool,
 }
 
 fn main() -> std::process::ExitCode {
@@ -88,6 +90,21 @@ fn run_claude_product_command(args: &[String]) -> Result<Option<u8>, &'static st
         return Ok(None);
     };
 
+    if invocation.host_test {
+        if invocation.action != ClaudeProductAction::Doctor {
+            return Err("`perllsp --host-test` is only admitted on `doctor --client claude`");
+        }
+        let mut executor = claude_host_test::ReservedExecutor;
+        let outcome = claude_host_test::dispatch(
+            claude_host_test::ProductSurface::DoctorClientClaudeHostTest { json: invocation.json },
+            &mut executor,
+        );
+        if writeln!(std::io::stdout(), "{}", outcome.rendered).is_err() {
+            return Ok(Some(1));
+        }
+        return Ok(Some(outcome.exit_code));
+    }
+
     let action = match invocation.action {
         ClaudeProductAction::Setup => "install",
         ClaudeProductAction::Doctor => "doctor",
@@ -119,7 +136,7 @@ fn parse_setup_invocation(args: &[String]) -> Result<ClaudeProductInvocation, &'
     }
 
     let json = parse_json_only(&args[1..])?;
-    Ok(ClaudeProductInvocation { action: ClaudeProductAction::Setup, json })
+    Ok(ClaudeProductInvocation { action: ClaudeProductAction::Setup, json, host_test: false })
 }
 
 fn parse_doctor_invocation(
@@ -136,6 +153,7 @@ fn parse_doctor_invocation(
     }
 
     let mut json = false;
+    let mut host_test = false;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -146,12 +164,23 @@ fn parse_doctor_invocation(
                 }
             }
             "--json" => json = true,
+            "--host-test" if host_test => {
+                return Err("`perllsp doctor --host-test` accepts the flag only once");
+            }
+            "--host-test" => host_test = true,
+            "--prompt" | "--command" | "--workspace" | "--env" | "--environment"
+            | "--credential" | "--token" | "--executable" | "--retry" | "--timeout"
+            | "--profile" | "--count" => {
+                return Err(
+                    "Claude host-test rejects client-supplied process, prompt, workspace, environment, credential, and profile authority",
+                );
+            }
             _ => return Err("unknown Claude integration doctor argument"),
         }
         index += 1;
     }
 
-    Ok(Some(ClaudeProductInvocation { action: ClaudeProductAction::Doctor, json }))
+    Ok(Some(ClaudeProductInvocation { action: ClaudeProductAction::Doctor, json, host_test }))
 }
 
 fn parse_json_only(args: &[String]) -> Result<bool, &'static str> {
@@ -180,7 +209,11 @@ mod tests {
             parse_claude_product_invocation(&args(&["perllsp", "setup", "claude", "--json"]));
         assert_eq!(
             parsed,
-            Ok(Some(ClaudeProductInvocation { action: ClaudeProductAction::Setup, json: true }))
+            Ok(Some(ClaudeProductInvocation {
+                action: ClaudeProductAction::Setup,
+                json: true,
+                host_test: false,
+            }))
         );
     }
 
@@ -191,7 +224,11 @@ mod tests {
         ]));
         assert_eq!(
             parsed,
-            Ok(Some(ClaudeProductInvocation { action: ClaudeProductAction::Doctor, json: true }))
+            Ok(Some(ClaudeProductInvocation {
+                action: ClaudeProductAction::Doctor,
+                json: true,
+                host_test: false,
+            }))
         );
     }
 
@@ -219,5 +256,60 @@ mod tests {
     fn setup_does_not_accept_an_implicit_or_other_client() {
         assert!(parse_claude_product_invocation(&args(&["perllsp", "setup"])).is_err());
         assert!(parse_claude_product_invocation(&args(&["perllsp", "setup", "other"])).is_err());
+    }
+
+    #[test]
+    fn host_test_is_opt_in_on_explicit_claude_doctor() {
+        let parsed = parse_claude_product_invocation(&args(&[
+            "perllsp",
+            "doctor",
+            "--client",
+            "claude",
+            "--host-test",
+            "--json",
+        ]));
+        assert_eq!(
+            parsed,
+            Ok(Some(ClaudeProductInvocation {
+                action: ClaudeProductAction::Doctor,
+                json: true,
+                host_test: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn host_test_is_not_selected_by_ordinary_doctor_or_setup() {
+        assert_eq!(parse_claude_product_invocation(&args(&["perllsp", "doctor"])), Ok(None));
+        let setup =
+            parse_claude_product_invocation(&args(&["perllsp", "setup", "claude", "--host-test"]));
+        assert!(setup.is_err(), "setup must not admit --host-test: {setup:?}");
+    }
+
+    #[test]
+    fn host_test_rejects_hostile_client_authority() {
+        for flag in [
+            "--prompt",
+            "--command",
+            "--workspace",
+            "--env",
+            "--credential",
+            "--token",
+            "--executable",
+            "--retry",
+            "--timeout",
+            "--profile",
+            "--count",
+        ] {
+            let parsed = parse_claude_product_invocation(&args(&[
+                "perllsp",
+                "doctor",
+                "--client",
+                "claude",
+                "--host-test",
+                flag,
+            ]));
+            assert!(parsed.is_err(), "expected {flag} to be rejected, got {parsed:?}");
+        }
     }
 }

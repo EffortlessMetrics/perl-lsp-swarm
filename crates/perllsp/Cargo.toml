@@ -33,6 +33,8 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+perl-test-must = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 url = { workspace = true }
 
