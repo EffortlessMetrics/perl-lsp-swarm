@@ -106,6 +106,26 @@ fn a_direct_sibling_keeps_high_source_confidence_beside_a_generator() -> Result<
         plain.declaration_item.is_some() && built.declaration_item.is_some(),
         "both names must stay anchored to the -setup use"
     );
+
+    // Live completion reads `ExportSet.confidence`, not per-symbol facts.
+    // Mixed-list Medium on the declaration must still combine to Medium so
+    // `plain`'s substrate High does not leak into the provider gate.
+    let live = file
+        .stash_graph
+        .export_sets()
+        .into_iter()
+        .find(|set| set.module_name.as_deref() == Some("My::Utils"))
+        .ok_or("live export set")?;
+    assert_eq!(
+        live.confidence,
+        Confidence::Medium,
+        "workspace indexing must keep mixed-list ExportSet Medium: {live:?}"
+    );
+    assert!(
+        live.optional_exports.iter().any(|name| name == "plain")
+            && live.optional_exports.iter().any(|name| name == "built"),
+        "both names must still reach the live export set: {live:?}"
+    );
     Ok(())
 }
 
