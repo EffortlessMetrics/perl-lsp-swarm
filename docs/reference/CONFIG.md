@@ -322,6 +322,34 @@ Extra arguments passed to the Perl interpreter when probing startup `@INC`.
 }
 ```
 
+#### `perl.workspace.discoverySkippedDirs`
+
+| Property | Value |
+|---|---|
+| Type | `string[]` |
+| Default | `[]` |
+| Key | `discoverySkippedDirs` |
+
+Additional directory names skipped while the workspace is discovered and
+indexed. Values are exact directory names compared against each component of
+a candidate path — not globs, regular expressions, or path fragments — so
+`build` skips a `build/` directory but not `build-out/`. Whitespace around a
+name is trimmed and duplicates are removed.
+
+This list is **additive**. Discovery already skips `.git`, `.hg`, `.svn`,
+`target`, `node_modules`, `.cache`, `blib`, `local`, `vendor`, and
+`.perl-lsp` in both enumeration modes, so listing any of those here has no
+effect. A `includePaths` entry that points *into* a skipped directory (for
+example `local/lib/perl5`) is still traversed, which is how a vendored
+Perl dependency tree stays visible.
+
+Project configuration exposes the same control as `[perl].discovery_skipped_dirs`:
+
+```toml
+[perl]
+discovery_skipped_dirs = ["generated"]
+```
+
 #### `perl.workspace.useSystemInc`
 
 | Property | Value |
