@@ -26,6 +26,7 @@ const REVIEW_INDEX_HEADINGS: &[&str] = &[
     "## Governing contract",
     "## Changed production path",
     "## Proof",
+    "## Hosted proof",
     "## Test hardening",
     "## Simplification",
     "## Deviations",
@@ -318,6 +319,29 @@ fn validate_template(template: &str) -> Result<(), String> {
         ],
     )?;
     require_phrases(
+        section(template, "## Hosted proof")?,
+        "Hosted proof",
+        &[
+            "named github actions checks",
+            "hosted-only",
+            "no local rust toolchain",
+            "named hosted checks are the first-class proof",
+            "missing proof is not broken proof",
+            "commit they actually evaluated",
+        ],
+    )?;
+    require_phrases(
+        section(template, "## Verification")?,
+        "Verification",
+        &[
+            "reviewer proof classification",
+            "local rust proof not run",
+            "missing proof",
+            "broken proof",
+            "hosted-only",
+        ],
+    )?;
+    require_phrases(
         section(template, "## Test hardening")?,
         "Test hardening",
         &[
@@ -365,6 +389,9 @@ fn validate_provider_skill(provider: &str, skill: &str) -> Result<(), String> {
             "trace the changed production path",
             "focused and affected proof",
             "pass fail not run not_proven",
+            "hosted proof",
+            "hosted-only",
+            "named hosted checks",
             "realistic wrong implementation",
             "negative stale failure recovery or opposite direction controls",
             "simplify before publication",
@@ -453,6 +480,13 @@ fn ratchet_rejects_missing_or_reordered_template_sections() -> Result<(), Box<dy
         "removing test hardening must fail the publication contract"
     );
 
+    let missing_hosted = template.replacen("## Hosted proof\n", "", 1);
+    assert_ne!(missing_hosted, template, "missing hosted-proof mutation fixture must apply");
+    assert!(
+        validate_template(&missing_hosted).is_err(),
+        "removing hosted proof must fail the publication contract"
+    );
+
     let reordered = template
         .replacen("## Proof", "## __publication_contract_swap__", 1)
         .replacen("## Review index", "## Proof", 1)
@@ -505,6 +539,44 @@ fn ratchet_rejects_weakened_proof_and_provider_drift() -> Result<(), Box<dyn std
     assert!(
         validate_provider_skill("Codex", &relocated).is_err(),
         "moving a provider marker outside the PR review-index section must fail"
+    );
+    Ok(())
+}
+
+#[test]
+fn ratchet_rejects_collapsing_missing_and_broken_hosted_proof()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let template = read(&root, TEMPLATE_PATH)?;
+
+    let collapsed = template.replacen(
+        "missing proof is not broken proof",
+        "treat unrun local cargo as blocking",
+        1,
+    );
+    assert_ne!(collapsed, template, "missing-vs-broken mutation fixture must apply");
+    assert!(
+        validate_template(&collapsed).is_err(),
+        "collapsing missing proof into broken proof must fail the publication contract"
+    );
+
+    let unmarked = template.replacen(
+        "- [ ] Hosted-only: no local Rust toolchain; named hosted checks are the first-class proof",
+        "- [ ] Local proof was skipped",
+        1,
+    );
+    assert_ne!(unmarked, template, "hosted-only author-mark mutation fixture must apply");
+    assert!(
+        validate_template(&unmarked).is_err(),
+        "removing the hosted-only author mark must fail the publication contract"
+    );
+
+    let codex = read(&root, ".agents/skills/publish-pr/SKILL.md")?;
+    let skill_collapsed = codex.replacen("named hosted checks", "unnamed ci jobs", 1);
+    assert_ne!(skill_collapsed, codex, "provider hosted-proof mutation fixture must apply");
+    assert!(
+        validate_provider_skill("Codex", &skill_collapsed).is_err(),
+        "dropping named hosted checks from the publication skill must fail"
     );
     Ok(())
 }
