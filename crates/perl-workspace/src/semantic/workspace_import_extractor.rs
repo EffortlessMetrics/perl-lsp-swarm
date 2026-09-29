@@ -196,11 +196,6 @@ fn overlay_non_directive_imports(node: &Node, file_id: FileId, out: &mut Vec<Imp
         NodeKind::Program { statements } | NodeKind::Block { statements } => {
             overlay_require_then_import(statements, file_id, out);
         }
-        NodeKind::Package { block: Some(block), .. } => {
-            if let NodeKind::Block { statements } = &block.kind {
-                overlay_require_then_import(statements, file_id, out);
-            }
-        }
         _ => {}
     }
 
@@ -290,11 +285,11 @@ fn overlay_require_then_import(statements: &[Node], file_id: FileId, out: &mut V
             let require_span = some_span_start(require_node);
             let confidence = confidence_for_symbols(&symbols);
             if let Some(existing) = out.iter_mut().find(|spec| {
-                spec.kind == ImportKind::Require
-                    && spec.module == module_name
-                    && spec.span_start_byte == require_span
+                spec.span_start_byte == require_span
+                    && matches!(spec.kind, ImportKind::Require | ImportKind::RequireThenImport)
             }) {
                 existing.kind = ImportKind::RequireThenImport;
+                existing.module = module_name;
                 existing.symbols = symbols;
                 existing.confidence = confidence;
             } else {

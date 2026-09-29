@@ -45,14 +45,13 @@ fn matching_workspace_row<'a>(
     workspace
         .iter()
         .find(|spec| {
-            spec.module == hir_spec.module
-                && spec.span_start_byte == hir_spec.span_start_byte
+            spec.span_start_byte == hir_spec.span_start_byte
                 && match hir_spec.kind {
                     ImportKind::Require => {
                         spec.kind == ImportKind::Require
                             || spec.kind == ImportKind::RequireThenImport
                     }
-                    _ => spec.kind == hir_spec.kind,
+                    _ => spec.kind == hir_spec.kind && spec.module == hir_spec.module,
                 }
         })
         .ok_or_else(|| {
@@ -263,6 +262,56 @@ fn malformed_recovered_input_agrees_with_hir_limitations() -> TestResult {
     for hir_spec in &hir_specs {
         matching_workspace_row(hir_spec, &workspace)?;
     }
+    Ok(())
+}
+
+#[test]
+fn quoted_require_then_import_replaces_the_hir_path_row() -> TestResult {
+    let source = "require \"Foo/Bar.pm\";\nFoo::Bar->import(qw(alpha));\n";
+    assert_hir_identity_survives(source)?;
+    let specs = workspace_specs(source)?;
+    let spec = spec_named(&specs, "Foo::Bar")?;
+    assert_eq!(spec.kind, ImportKind::RequireThenImport);
+    assert_eq!(spec.symbols, ImportSymbols::Explicit(vec!["alpha".to_string()]));
+    assert_eq!(
+        specs
+            .iter()
+            .filter(|row| {
+                row.kind == ImportKind::Require || row.kind == ImportKind::RequireThenImport
+            })
+            .count(),
+        1,
+        "quoted require + import must replace the HIR path-like Require row: {specs:?}"
+    );
+    assert!(
+        specs.iter().all(|row| row.module != "Foo/Bar.pm" && row.module != "\"Foo/Bar.pm\""),
+        "paired overlay must not leave the unnormalized require target: {specs:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn package_block_require_then_import_does_not_duplicate_overlay_rows() -> TestResult {
+    let source = "package Demo {\nrequire Foo::Bar;\nFoo::Bar->import(qw(alpha));\n}\n";
+    assert_hir_identity_survives(source)?;
+    let specs = workspace_specs(source)?;
+    assert_eq!(
+        specs.iter().filter(|row| row.module == "Foo::Bar").count(),
+        1,
+        "package-block require+import must not be overlaid twice: {specs:?}"
+    );
+    let spec = spec_named(&specs, "Foo::Bar")?;
+    assert_eq!(spec.kind, ImportKind::RequireThenImport);
+    Ok(())
+}
+
+#[test]
+fn standalone_quoted_require_keeps_hir_path_identity() -> TestResult {
+    let source = "require \"Foo/Bar.pm\";\n";
+    assert_hir_identity_survives(source)?;
+    let specs = workspace_specs(source)?;
+    assert_eq!(specs.len(), 1, "standalone quoted require must keep one HIR row: {specs:?}");
+    assert_eq!(specs[0].kind, ImportKind::Require);
     Ok(())
 }
 
