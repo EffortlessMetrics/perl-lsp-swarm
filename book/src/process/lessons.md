@@ -140,6 +140,6 @@ Keep entries short and falsifiable. The point is system improvement, not blame.
 
 ## See Also
 
-- [`AGENTIC_DEV.md`](AGENTIC_DEV.md) - Development model and budget definitions
-- [`FORENSICS_SCHEMA.md`](../reference/FORENSICS_SCHEMA.md) - PR archaeology dossier template
-- [`INDEX.md`](INDEX.md) - Documentation front door
+- [`AGENTIC_DEV.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/AGENTIC_DEV.md) - Development model and budget definitions
+- [`FORENSICS_SCHEMA.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/FORENSICS_SCHEMA.md) - PR archaeology dossier template
+- [`INDEX.md`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/INDEX.md) - Documentation front door

@@ -85,7 +85,7 @@ hover, and go-to-definition.
 - **Breakpoints** -- Set breakpoints with conditional support
 - **Step Debugging** -- Step into, over, and out of function calls
 - **Variable Inspection** -- View variables, watch expressions, and call stack
-- **TCP Attach** (preview) -- transport only; interactive attach not supported
+- **TCP Attach (transport preview)** -- Handshake connectivity to a Perl debugger peer by host and port; interactive control/inspection over attach is not yet supported, and attaching by PID is not supported (see the [debugging guide's current status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/DEBUGGING.md)).
 
 Debugging is optional and powered by the managed `perl-dap` adapter shipped
 alongside the `perl-lsp` release artifacts -- the extension downloads it for you,

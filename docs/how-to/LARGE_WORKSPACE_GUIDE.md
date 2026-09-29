@@ -15,7 +15,7 @@ behaviour, and diagnose the failures that appear only after hours of editor use.
   - [Criterion Benchmarks](#criterion-benchmarks)
   - [cargo flamegraph](#cargo-flamegraph)
   - [DHAT Heap Profiling](#dhat-heap-profiling)
-  - [tracing / tokio-console](#tracing--tokio-console)
+  - [Tracing and timing](#tracing-and-timing)
   - [Interpreting Results](#interpreting-results)
   - [Common Performance Pitfalls](#common-performance-pitfalls)
 - [Memory Patterns at Scale](#memory-patterns-at-scale)
@@ -200,7 +200,7 @@ echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid
 
 # Profile workspace indexing
 cargo flamegraph --root \
-  -p perl-lsp-rs \
+  -p perllsp \
   -- --stdio < scripts/lsp-index-replay.json \
   > flamegraph.svg
 
@@ -235,7 +235,7 @@ most bytes" in a run.
 
 ```bash
 # Build with DHAT support (Valgrind must be installed)
-RUSTFLAGS="-g" cargo build --release -p perl-lsp-rs
+RUSTFLAGS="-g" cargo build --release -p perllsp
 
 # Run under DHAT — produces dhat.out.<pid>
 valgrind --tool=dhat --dhat-out-file=dhat.out \
@@ -265,7 +265,7 @@ fn main() {
 }
 ```
 
-### tracing / tokio-console
+### Tracing and timing
 
 The LSP server uses `tracing` for structured logging. Enable spans to see where async
 time goes:
@@ -280,17 +280,11 @@ RUST_LOG=perl_lsp=trace RUST_LOG_STYLE=always \
   perllsp --stdio 2>trace.log
 ```
 
-For real-time async task inspection, `tokio-console` is the usual choice - but it is
-**not available in this tree**. No crate here declares a `tokio-console` feature and no
-source file reads a `tokio_unstable` cfg, so the invocation this guide used to carry
-(`cargo run -p perl-lsp-rs --features tokio-console -- --stdio`) could never have worked:
-`perl-lsp-rs` publishes no executable target, and the feature does not exist.
-
-Use the `tracing` route above for structured workspace and parser events. Use
-`PERL_LSP_TIMING` for the selected lock-wait and lock-hold durations this repository
-instruments (for example `didChange.lock_wait`); neither route identifies the task
-that owns a lock, and general live task/waker inspection remains unavailable in
-this tree.
+Live task and waker inspection through `tokio-console` is unavailable in this tree:
+`perllsp` declares no `tokio-console` feature or console subscriber. Use the tracing
+commands above for structured events. Set `PERL_LSP_TIMING=1` to record the selected
+phase and lock-wait timings instrumented by the server (including
+`didChange.lock_wait`). These timings do not identify which task owns a lock.
 
 ### Interpreting Results
 
