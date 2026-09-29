@@ -9,7 +9,7 @@
 //! second checker in code actions.
 
 mod cpan_test_helpers;
-use cpan_test_helpers::{assert_clean_parse, assert_has_blocking_error, parse};
+use cpan_test_helpers::{assert_clean_parse, parse};
 use perl_parser_core::{Node, NodeKind, Parser};
 use perl_tdd_support::must;
 
@@ -36,6 +36,24 @@ fn blocking_messages(errors: &[perl_parser_core::ParseError]) -> Vec<String> {
     errors.iter().filter(|error| error.blocks_clean_parse()).map(ToString::to_string).collect()
 }
 
+/// `assert_has_blocking_error` matches Debug/sexp text, which escapes the
+/// quotes in `in "my"`. Display keeps the Perl wording intact.
+fn assert_blocking_constant_item(source: &str, declarator: &str) {
+    let (ast, errors) = parse_with_errors(source);
+    let messages = blocking_messages(&errors);
+    let expected = format!("Can't declare constant item in \"{declarator}\"");
+    assert!(
+        messages.iter().any(|message| message.contains(&expected)),
+        "expected {expected:?}, got {messages:?}\n{}",
+        ast.to_sexp()
+    );
+    assert!(
+        ast.to_sexp().contains("ERROR"),
+        "recovery must keep an Error node for source:\n{source}\n{}",
+        ast.to_sexp()
+    );
+}
+
 /// Independent syntax oracle. Side-effect-free `-c` only; skipped when `perl`
 /// is not on PATH so the native proof does not depend on a host interpreter.
 fn perl_c_status(source: &str) -> Option<bool> {
@@ -55,22 +73,19 @@ fn perl_c_rejects_sigilless_my_list_and_accepts_the_sigil_control() {
 
 #[test]
 fn my_sigilless_list_item_is_a_blocking_constant_item() {
-    assert_has_blocking_error(INVALID_MY_BASE, "Can't declare constant item in \"my\"");
+    assert_blocking_constant_item(INVALID_MY_BASE, "my");
 }
 
 #[test]
 fn our_and_state_sigilless_list_items_are_blocking() {
-    assert_has_blocking_error("our (base) = @_;\n", "Can't declare constant item in \"our\"");
-    assert_has_blocking_error(
-        "use feature 'state'; state (base) = @_;\n",
-        "Can't declare constant item in \"state\"",
-    );
+    assert_blocking_constant_item("our (base) = @_;\n", "our");
+    assert_blocking_constant_item("use feature 'state'; state (base) = @_;\n", "state");
 }
 
 #[test]
 fn numeric_and_string_list_items_are_constant_items() {
-    assert_has_blocking_error("my (1) = @_;\n", "Can't declare constant item in \"my\"");
-    assert_has_blocking_error("my (\"base\") = @_;\n", "Can't declare constant item in \"my\"");
+    assert_blocking_constant_item("my (1) = @_;\n", "my");
+    assert_blocking_constant_item("my (\"base\") = @_;\n", "my");
 }
 
 #[test]
@@ -117,7 +132,7 @@ fn mixed_list_keeps_valid_slots_and_flags_the_bareword() {
 
 #[test]
 fn nested_sigilless_item_is_rejected() {
-    assert_has_blocking_error("my ($a, (base)) = @_;\n", "Can't declare constant item in \"my\"");
+    assert_blocking_constant_item("my ($a, (base)) = @_;\n", "my");
 }
 
 #[test]
@@ -155,8 +170,12 @@ fn valid_array_hash_undef_and_nested_lists_stay_clean() {
 fn valid_dollar_base_keeps_source_geometry() {
     let source = "my ($base) = @_;";
     let ast = parse(source);
-    let variable = find_variable(&ast, "$", "base").expect("$base must remain in the AST");
-    let start = source.find("$base").expect("fixture contains $base");
+    let Some(variable) = find_variable(&ast, "$", "base") else {
+        panic!("$base must remain in the AST: {}", ast.to_sexp());
+    };
+    let Some(start) = source.find("$base") else {
+        panic!("fixture contains $base");
+    };
     let end = start + "$base".len();
     assert_eq!(
         (variable.location.start, variable.location.end),
@@ -168,6 +187,6 @@ fn valid_dollar_base_keeps_source_geometry() {
 
 #[test]
 fn declaration_as_argument_uses_the_same_admission() {
-    assert_has_blocking_error("foo(my (base) = @_);\n", "Can't declare constant item in \"my\"");
+    assert_blocking_constant_item("foo(my (base) = @_);\n", "my");
     assert_clean_parse("foo(my ($base) = @_);\n");
 }
