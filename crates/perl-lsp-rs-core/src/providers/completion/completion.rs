@@ -251,6 +251,23 @@ fn is_method_receiver_char(ch: char) -> bool {
         || matches!(ch, '_' | '$' | '@' | '%' | ':' | '-' | '>' | '{' | '}' | '[' | ']')
 }
 
+/// True when the token [`method_receiver_start`] handed back is shaped like an
+/// expression operand, not a method receiver: empty, or a plain run of ASCII
+/// lowercase letters, digits, and underscores (`foo`, `1`).
+///
+/// The backward scan cannot tell `Point->new(foo-` from `$obj-` on its own —
+/// both stop at the preceding open paren or whitespace and return a word. A
+/// bareword that can only be an operand head (a constructor argument, a
+/// subtraction right-hand side) must keep the ordinary prefix, which the
+/// dash-trigger gate then answers with no completions. Everything else the
+/// scan can return keeps the arrow rewrite — sigiled variables (`$obj-`),
+/// package names (`Foo-`, `Foo::Bar-`), chained calls
+/// (`$factory->build()-`), and non-ASCII barewords — matching what the
+/// explicit `->` trigger path already accepts.
+fn is_operand_shaped_bareword(receiver: &str) -> bool {
+    receiver.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
 fn next_char_boundary_after(source: &str, index: usize) -> usize {
     source[index..].chars().next().map_or(source.len(), |ch| index + ch.len_utf8())
 }
@@ -835,12 +852,20 @@ impl CompletionProvider {
             && (position < 2 || source.as_bytes()[position - 2] != b'-')
         {
             // Cursor is right after a lone `-` (not `--`). This fires when `-` is a
-            // trigger character and the user has typed the first char of `->`.
-            // Build the prefix as receiver + `->` so that downstream method-completion
-            // functions see the same shape as the `>` trigger path.
+            // trigger character and the user has typed the first char of `->`,
+            // but only when the text before the `-` can end a method receiver
+            // (`$obj`, `Foo::Bar`, a balanced `(...)` call); a minus that starts
+            // an operand (`Point->new(-`, `Point->new(foo-`, `1 -`) keeps the
+            // ordinary prefix. Build the prefix as receiver + `->` so that
+            // downstream method-completion functions see the same shape as the
+            // `>` trigger path.
             let receiver_start = method_receiver_start(source, position.saturating_sub(1));
             let receiver = &source[receiver_start..position - 1];
-            (format!("{receiver}->"), receiver_start)
+            if is_operand_shaped_bareword(receiver) {
+                word_prefix(source, position)
+            } else {
+                (format!("{receiver}->"), receiver_start)
+            }
         } else if let Some(arrow_start) = source[..position].rfind("->") {
             // Preserve the receiver in the context while replacing only the
             // method token after `->` (for example, `Mojo::Pg->d`).
@@ -1156,15 +1181,18 @@ impl CompletionProvider {
         None
     }
 
-    /// Detect whether the cursor is inside a plain hash subscript `$varname{prefix`.
+    /// Detect the syntactic hash-key role at `$varname{prefix` or `$ref->{prefix`.
     ///
-    /// Returns `Some((varname, key_prefix))` when:
-    /// - The source before `position` contains `$varname{` (with no `->` immediately before `{`)
-    /// - The context is not inside a comment or string literal
+    /// The scan is syntactic, but the anchoring `{` must be live Perl syntax:
+    /// a brace inside a comment, string, or regex never opens a hash-key role,
+    /// whatever a later line looks like (#9816).
     ///
-    /// Returns `None` for hashref dereferences (`$ref->{...}`), double-sigil derefs
-    /// (`$$ref{...}`), or contexts where hash key completion is not meaningful.
-    fn detect_hash_key_context(source: &str, position: usize) -> Option<(String, String)> {
+    /// Identify the same hash-key shape used by the core completion dispatcher.
+    /// Runtime enrichment uses the same decision to avoid adding unrelated
+    /// workspace names after the core provider has selected hash keys.
+    /// Returns `None` for double-sigil derefs (`$$ref{...}`) or contexts
+    /// where hash key completion is not meaningful.
+    pub fn detect_hash_key_context(source: &str, position: usize) -> Option<(String, String)> {
         if position == 0 || !source.is_char_boundary(position) {
             return None;
         }
@@ -1195,6 +1223,16 @@ impl CompletionProvider {
             found?
         };
 
+        // The anchor must be live Perl syntax. A brace inside a comment,
+        // string, or regex is not a subscript, and accepting it would let a
+        // later ordinary line be misread as a hash-key role (#9816).
+        if lexical_context::is_in_comment(source, brace_pos)
+            || lexical_context::is_in_string(source, brace_pos)
+            || lexical_context::is_in_regex(source, brace_pos)
+        {
+            return None;
+        }
+
         // Extract typed prefix after the `{` (alphanumeric + `_` chars)
         let key_prefix = {
             let after_brace = &before[brace_pos + 1..];
@@ -1216,17 +1254,20 @@ impl CompletionProvider {
             return None;
         }
 
-        // Check for `->` immediately before the `{` — hashref deref form ($ref->{key}).
-        // Unlike the direct hash form ($hash{key}), the hashref form accesses via a
-        // scalar reference. We handle this by treating `$ref->{` the same as
-        // `$ref{` for key collection — collect_hash_keys_from_source scans both
-        // `%ref = (...)` and `$ref->{key} =` patterns. (#5074)
-        // Previously this returned None (bail-out) when `->` was present. That
-        // bail-out is gone, so there is deliberately no `->` test here — both
-        // forms fall through to the same key-collection path below.
+        // The hashref form ($ref->{key}) accesses via a scalar reference rather
+        // than a named hash, but it is the same key-completion role: #5074 has
+        // collect_hash_keys_from_source scan both `%ref = (...)` literals and
+        // `$ref->{key} =` assignments, and #5159 removed the explicit `->`
+        // bail-out so both spellings classify alike.
 
         // Extract the variable name: scan backward from `{` looking for `$word`.
-        let before_brace = before[..brace_pos].trim_end();
+        // The hashref arrow (`$ref->{`) would otherwise terminate that scan on
+        // `>` and yield an empty name, so strip it first: #5159 removed the
+        // explicit `->` bail-out so both subscript spellings classify alike.
+        let before_brace = match before[..brace_pos].trim_end().strip_suffix("->") {
+            Some(deref_receiver) => deref_receiver.trim_end(),
+            None => before[..brace_pos].trim_end(),
+        };
         if before_brace.is_empty() {
             return None;
         }
@@ -1703,5 +1744,7 @@ impl CompletionProvider {
 
 #[cfg(test)]
 mod keyword_role_tests;
+#[cfg(test)]
+mod same_file_role_completion_tests;
 #[cfg(test)]
 mod tests;

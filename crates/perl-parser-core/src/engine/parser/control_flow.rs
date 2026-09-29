@@ -401,17 +401,25 @@ impl<'a> Parser<'a> {
         self.expect_closing_delimiter(TokenKind::RightParen)?;
         let body = self.parse_block()?;
 
-        // Handle continue block
-        let continue_block = if self.peek_kind() == Some(TokenKind::Continue) {
-            self.advance_token()?; // consume 'continue'
-            Some(Box::new(self.parse_block()?))
-        } else {
-            None
-        };
+        // A `continue` block never attaches to C-style `for`: real Perl
+        // rejects `for (;;) { ... } continue { ... }` outright (`syntax
+        // error near "} continue"`). Fail the parse like
+        // `DoWhileTrailingBlock` rather than recovering — the orphaned
+        // `continue { ... }` would otherwise re-parse as a clean
+        // expression statement and silently accept what `perl` refuses
+        // to compile (#16296). Only the block form is rejected: a bare
+        // `continue;` statement after the loop is valid Perl and keeps
+        // today's route.
+        if self.peek_kind() == Some(TokenKind::Continue)
+            && self.tokens.peek_second().ok().is_some_and(|t| t.kind() == TokenKind::LeftBrace)
+        {
+            let location = self.current_position();
+            return Err(ParseError::CStyleForContinueBlock { location });
+        }
 
         let end = self.previous_position();
         self.charge_node(
-            NodeKind::For { init, condition, update, body: Box::new(body), continue_block },
+            NodeKind::For { init, condition, update, body: Box::new(body), continue_block: None },
             SourceLocation { start, end },
         )
     }
@@ -432,6 +440,12 @@ impl<'a> Parser<'a> {
 
         // Set flag to prevent semicolon consumption in variable declaration
         self.in_for_loop_init = true;
+        // Iterator targets are not assignment expressions: mark them so
+        // declaration tails that form assignments stay disabled (#13486).
+        // Save and restore the prior value around the fallible parse so a
+        // broken header cannot poison later statements via `?` propagation.
+        let prior_foreach_iterator = self.in_foreach_iterator;
+        self.in_foreach_iterator = true;
         let variable = if matches!(
             self.peek_kind(),
             Some(TokenKind::My)
@@ -439,11 +453,13 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Local)
                 | Some(TokenKind::State)
         ) {
-            self.parse_variable_declaration()?
+            self.parse_variable_declaration()
         } else {
             // foreach $var (LIST) — bare scalar without my
-            self.parse_variable()?
+            self.parse_variable()
         };
+        self.in_foreach_iterator = prior_foreach_iterator;
+        let variable = variable?;
         self.in_for_loop_init = false;
 
         self.expect(TokenKind::LeftParen)?;
@@ -477,6 +493,11 @@ impl<'a> Parser<'a> {
     fn parse_foreach_style_for(&mut self) -> ParseResult<Node> {
         // Set flag to prevent semicolon consumption in variable declaration
         self.in_for_loop_init = true;
+        // Iterator targets are not assignment expressions (#13486). Save and
+        // restore the prior value so a broken header cannot poison later
+        // statements via `?` propagation.
+        let prior_foreach_iterator = self.in_foreach_iterator;
+        self.in_foreach_iterator = true;
         let variable = if matches!(
             self.peek_kind(),
             Some(TokenKind::My)
@@ -484,11 +505,13 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Local)
                 | Some(TokenKind::State)
         ) {
-            self.parse_variable_declaration()?
+            self.parse_variable_declaration()
         } else {
             // for $var (LIST) — bare scalar without my
-            self.parse_variable()?
+            self.parse_variable()
         };
+        self.in_foreach_iterator = prior_foreach_iterator;
+        let variable = variable?;
         self.in_for_loop_init = false;
 
         self.expect(TokenKind::LeftParen)?;
@@ -867,7 +890,10 @@ impl<'a> Parser<'a> {
                         // `DoWhileTrailingBlock` joins them: the trailing block
                         // after a do-while condition has no recovery that stays
                         // honest about source that real `perl` refuses to
-                        // compile (#15649).
+                        // compile (#15649). `CStyleForContinueBlock` joins them
+                        // for the same reason on C-style `for`, and
+                        // `QualifiedLoopControlLabel` on qualified labels
+                        // (#16296).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
@@ -876,6 +902,8 @@ impl<'a> Parser<'a> {
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                                 | ParseError::DoWhileTrailingBlock { .. }
+                                | ParseError::CStyleForContinueBlock { .. }
+                                | ParseError::QualifiedLoopControlLabel { .. }
                         ) {
                             return Err(e);
                         }

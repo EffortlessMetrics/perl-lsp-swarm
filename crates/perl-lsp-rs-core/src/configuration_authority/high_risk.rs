@@ -80,6 +80,145 @@ fn high_risk_projection_joins_canonical_authority_and_capability_contract() -> T
 }
 
 #[test]
+fn retired_limits_remain_absent_from_the_active_catalog() -> TestResult {
+    let projection = projection()?;
+    validate(&projection)?;
+    for (id, member, key) in [
+        ("limits.ast_cache_max_entries", "ast_cache_max_entries", "astCacheMaxEntries"),
+        ("limits.ast_cache_ttl_secs", "ast_cache_ttl_secs", "astCacheTtlSecs"),
+        ("limits.symbol_cache_max_entries", "symbol_cache_max_entries", "symbolCacheMaxEntries"),
+        ("limits.indexed_files", "max_indexed_files", "maxIndexedFiles"),
+        ("limits.total_symbols", "max_total_symbols", "maxTotalSymbols"),
+        ("limits.workspace_scan_deadline_ms", "workspace_scan_deadline", "workspaceScanDeadlineMs"),
+    ] {
+        let row =
+            projection.rows.iter().find(|row| row.id == id).ok_or("missing retired limit row")?;
+        let witness = projection
+            .witnesses
+            .get(&format!("limit.removed.{member}"))
+            .ok_or("missing retired parser witness")?;
+        if authority_by_id(id).is_some()
+            || row.kind != "removed"
+            || row.disposition != "remove_false_contract"
+            || row.owner != "#16176"
+            || row.capability.is_some()
+            || row.projections.len() != 1
+            || row.projections.iter().any(|field| {
+                field.present
+                    || field.pointer
+                        != format!("/properties/perl/properties/limits/properties/{key}")
+            })
+            || witness.path != "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs"
+            || witness.function != "@no-key:LspLimits::update_from_value"
+            || witness.expression != key
+        {
+            return Err(
+                format!("{id}: retirement identity or source absence evidence drifted").into()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn catalog_join_rejects_exact_identity_and_partition_errors() -> TestResult {
+    validate(&projection()?)?;
+    for case in
+        ["unknown", "sources", "consumers", "invalidation", "capability", "remainder", "partition"]
+    {
+        let mut changed = projection()?;
+        let id = "limits.completion_cap";
+        let expected = match case {
+            "remainder" => {
+                changed.remaining_low_risk.push("unknown.low_risk".into());
+                "unknown/duplicate remaining ID unknown.low_risk".into()
+            }
+            "partition" => {
+                changed.remaining_low_risk.pop().ok_or("missing remainder control")?;
+                "high-risk bindings plus explicit low-risk remainder do not partition catalog"
+                    .into()
+            }
+            _ => {
+                let row = changed
+                    .rows
+                    .iter_mut()
+                    .find(|row| row.id == id)
+                    .ok_or("missing active control")?;
+                match case {
+                    "unknown" => {
+                        row.id = "limits.unregistered".into();
+                        *row.capability
+                            .as_mut()
+                            .and_then(|value| value.get_mut("proof"))
+                            .and_then(|value| value.get_mut("negative_control_id"))
+                            .ok_or("missing first-effect requirement identity")? =
+                            serde_json::json!("pending:#7479:limits.unregistered");
+                        "limits.unregistered: unknown canonical field".into()
+                    }
+                    "capability" => {
+                        *row.capability
+                            .as_mut()
+                            .and_then(|value| value.get_mut("field_id"))
+                            .ok_or("missing capability identity")? =
+                            serde_json::json!("limits.other");
+                        "capability attached to another field".into()
+                    }
+                    _ => {
+                        match case {
+                            "sources" => row.sources.reverse(),
+                            "consumers" => {
+                                row.canonical_consumers = vec!["BoundedExecution".into()]
+                            }
+                            "invalidation" => row.invalidation = "None".into(),
+                            _ => return Err("unknown catalog join control".into()),
+                        }
+                        format!("{id}: canonical storage/source/consumer/invalidation drift")
+                    }
+                }
+            }
+        };
+        let actual = validate(&changed);
+        if !matches!(&actual, Err(error) if error.to_string() == expected) {
+            return Err(format!("{case}: expected {expected}, got {actual:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn retired_row_cannot_shadow_an_active_catalog_identity() -> TestResult {
+    let mut changed = projection()?;
+    changed.rows.retain(|row| row.id != "limits.completion_cap");
+    let row = changed
+        .rows
+        .iter_mut()
+        .find(|row| row.kind == "removed")
+        .ok_or("missing retirement control")?;
+    row.id = "limits.completion_cap".into();
+    if !matches!(validate(&changed), Err(error) if error.to_string() == "limits.completion_cap: non-active row shadows canonical authority")
+    {
+        return Err("retired row did not produce the exact canonical-shadow error".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn canonical_storage_identity_rejects_the_exact_wrong_field() -> TestResult {
+    let mut changed = projection()?;
+    let row = changed
+        .rows
+        .iter_mut()
+        .find(|row| row.id == "limits.completion_cap")
+        .ok_or("missing active control")?;
+    row.rust_field = "Limits.other".into();
+    if !matches!(validate(&changed), Err(error) if error.to_string() == "limits.completion_cap: canonical storage/source/consumer/invalidation drift")
+    {
+        return Err("wrong storage did not produce the exact canonical-binding error".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn high_risk_authority_mutations_are_rejected() -> TestResult {
     for (id, source) in [
         ("ai.endpoint", "ProjectFile"),

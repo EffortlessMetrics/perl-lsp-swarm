@@ -282,12 +282,37 @@ impl Drop for IndexingGuard {
 /// thread (#14186).
 ///
 /// # SAFETY
-/// Same invariant as `LspServer`'s unsafe `Send`/`Sync` impls: the
-/// `*const Node` pointers inside `DocumentState` are only ever dereferenced
-/// under the wrapping mutex. This handle is consumed exclusively through
-/// [`LspServer::documents_open_in`], which reads key membership and never
-/// touches document contents, so moving a clone into the indexing thread
-/// cannot create aliasing on the raw pointers.
+/// The `Sync` obligation: this handle's only operation, [`Self::is_open`],
+/// reaches `DocumentState` solely through
+/// [`LspServer::documents_open_in`], which checks key membership via
+/// `HashMap::contains_key` and never reads or exposes a map value -- so it
+/// never dereferences the `*const Node` pointers reachable through a
+/// `DocumentState`'s `parsed: Option<Arc<ParsedSnapshot>>`. Sharing
+/// `&OpenDocumentsHandle` across threads therefore only ever lets each
+/// thread perform this read-only membership check, never a value read, so
+/// it creates no path to concurrent pointer dereference *through this
+/// type*. The wrapping mutex does **not** generally prevent those pointers
+/// from being aliased across threads -- `navigation.rs` clones a
+/// `DocumentState` under the documents lock, drops the guard, and then reads
+/// `ParsedSnapshot::parent_map` off-lock (the #3396 pattern, at
+/// `navigation.rs:1219-1220`); `completion.rs` clones and analyses off-lock
+/// the same way, though it reads `parsed.ast()` rather than `parent_map`.
+/// Either way that aliasing is out of scope for this type, because
+/// `OpenDocumentsHandle` never touches the pointers at all.
+///
+/// The `Send` obligation covers this handle's own destructor too: dropping
+/// the last live `Arc<Mutex<HashMap<String, DocumentState>>>` reference
+/// (shared with `LspServer`'s own field) tears down every `DocumentState`,
+/// including its `Arc<ParsedSnapshot>` and, if that is also the last
+/// reference, `ParsedSnapshot`'s `parent_map: Arc<ParentMap>`
+/// (`FxHashMap<*const Node, *const Node>`, whose raw-pointer entries own no
+/// memory and have a no-op `Drop`) and its `Arc<perl_parser::ast::Node>`
+/// tree (`Node`'s `Drop` is an explicit iterative, stack-based destructor
+/// with no thread-local or otherwise thread-affine state). If that final
+/// drop runs on the indexing thread -- possible during shutdown ordering,
+/// since this handle's clone can outlive `LspServer`'s own field -- it is
+/// sound to run there because nothing in this destructor chain is
+/// thread-affine.
 #[cfg(feature = "workspace")]
 #[derive(Clone)]
 struct OpenDocumentsHandle {
@@ -304,10 +329,24 @@ impl OpenDocumentsHandle {
 
 #[cfg(feature = "workspace")]
 #[allow(unsafe_code)]
+// SAFETY: see the type's `# SAFETY` section. The read side is discharged by
+// `is_open`/`documents_open_in` never dereferencing a map value. The drop
+// side is discharged because, if this is the last surviving `Arc` when it
+// is dropped on the indexing thread, the resulting destructor chain
+// (`ParentMap`'s raw-pointer entries, `perl_parser::ast::Node`'s explicit
+// iterative destructor) holds no thread-local or thread-affine state, so
+// running it there is sound.
 unsafe impl Send for OpenDocumentsHandle {}
 
 #[cfg(feature = "workspace")]
 #[allow(unsafe_code)]
+// SAFETY: see the type's `# SAFETY` section. `&OpenDocumentsHandle` exposes
+// only `is_open`, which never dereferences a map value, so sharing this
+// handle across threads gives every thread a read-only key-membership check
+// and no path to concurrent pointer access *through this type*. This does
+// not rely on the mutex serialising raw-pointer aliasing more broadly --
+// it does not (see the off-lock `parent_map` read at `navigation.rs:1220`)
+// -- because this type never reaches the pointers at all.
 unsafe impl Sync for OpenDocumentsHandle {}
 
 #[cfg(feature = "workspace")]
@@ -3094,8 +3133,30 @@ impl LspServer {
                     }
                     #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
                     crate::runtime::readiness::notify_indexing_commit_gate(&indexing_commit_gate);
-                    let current_folders = current_workspace_folders.lock();
-                    if !path_is_in_current_workspace(&path, &current_folders) {
+                    // Scope the folder-membership recheck to its own guard
+                    // (#16651): this mutex must NOT be held across
+                    // `index_file` below. `index_file` blocks on the workspace
+                    // index's semantic-map write locks (`fact_shards.write()`
+                    // et al.) inside its commit, and a diagnostics publication
+                    // that took those same maps as a combined read
+                    // (`with_semantic_queries_for_uri`) resolves modules
+                    // through `workspace_folders.lock()` from inside its
+                    // callback — holding the folders lock here across the
+                    // commit made that pair a permanent ABBA deadlock: the
+                    // indexer waited on the semantic maps while the
+                    // diagnostics publisher waited on this lock, freezing
+                    // indexing mid-scan and wedging every subsequent request
+                    // (completion included) behind them. The membership check
+                    // is a point-in-time admission decision; it never needed
+                    // the commit to be atomic with folder state, and
+                    // open-buffer authority (#8041, #14186) is protected by
+                    // the transition critical section and the `is_open`
+                    // recheck below, not by this guard.
+                    let path_in_current_workspace = {
+                        let current_folders = current_workspace_folders.lock();
+                        path_is_in_current_workspace(&path, &current_folders)
+                    };
+                    if !path_in_current_workspace {
                         tracing::debug!(
                             path = %path.display(),
                             "Skipping file from workspace folder removed during indexing"

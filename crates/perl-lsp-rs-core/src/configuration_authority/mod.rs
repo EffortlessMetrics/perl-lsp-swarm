@@ -18,10 +18,15 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) mod capability;
 mod catalog;
+mod derived_workspace;
 #[cfg(test)]
 mod high_risk;
 
 pub(crate) use catalog::CONFIGURATION_AUTHORITY;
+pub use derived_workspace::{
+    ConfigurationAuthorityReport, DerivedWorkspaceLifecycleState, DerivedWorkspaceRowStatus,
+    DerivedWorkspaceViolation, check_configuration_authority, derived_workspace_corpus_paths,
+};
 
 /// Rust configuration structure that owns an effective field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

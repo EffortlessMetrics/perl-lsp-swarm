@@ -20,6 +20,27 @@ fn is_plain_bareword_glob_name(inner: &str) -> bool {
 /// leading `{` as a dynamic, non-static glob name (#15650). Reporting the
 /// bare expression text (`foo()`, `"name"`) as a static glob name would mint
 /// a symbol that no static consumer can resolve (#15712).
+/// A list-declaration slot that real Perl classifies as a constant item.
+///
+/// `my`/`our`/`state` reject a sigil-less name, number, string, v-string, or
+/// signed numeric literal. `local` still rejects those literals, but a bare
+/// identifier stays eligible: `local(slot)` can name an `:lvalue` subroutine
+/// (#16732). Variables, `undef`, nested lists, typeglobs, and subscripted
+/// lvalues stay outside this class.
+fn is_constant_declaration_list_item(declarator: &str, item: &Node) -> bool {
+    match &item.kind {
+        NodeKind::Identifier { name } => {
+            declarator != "local" && !name.starts_with(['$', '@', '%', '*', '&'])
+        }
+        NodeKind::Number { .. } | NodeKind::String { .. } | NodeKind::VString { .. } => true,
+        NodeKind::Unary { operand, .. } => is_constant_declaration_list_item(declarator, operand),
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            is_constant_declaration_list_item(declarator, variable)
+        }
+        _ => false,
+    }
+}
+
 fn normalize_dynamic_typeglob_name(name: &str) -> String {
     let Some(inner) = name.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else {
         return name.trim().trim_end_matches(';').trim().to_string();
@@ -43,7 +64,7 @@ impl<'a> Parser<'a> {
 
             // Parse comma-separated list of variables with their individual attributes
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
-                let var = self.parse_variable_list_item()?;
+                let var = self.parse_variable_list_item(&declarator)?;
                 variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {
@@ -74,6 +95,31 @@ impl<'a> Parser<'a> {
                 || self.previous_position(),
                 |node| node.location.end.max(self.previous_position()),
             );
+            // Contextual repetition assignment (`my ($x, $y) x= 3`) never
+            // reaches the `=` initializer above: `x=` arrives as
+            // `Identifier("x")` + `Assign`. Route the declaration through the
+            // shared assignment seam so it becomes the LHS of one `x=`
+            // assignment (#13486). The `Identifier` gate keeps symbolic
+            // operators on their existing path: the seam consumes nothing
+            // unless it recognizes an adjacent `x=`. `foreach` iterator
+            // targets are not assignment expressions, so they never grow an
+            // `x=` tail here; C-style `for` initializers stay eligible.
+            if initializer.is_none()
+                && !self.in_foreach_iterator
+                && self.peek_kind() == Some(TokenKind::Identifier)
+                && let Some((op, op_start)) = self.consume_assignment_operator()?
+            {
+                let decl = self.charge_node(
+                    NodeKind::VariableListDeclaration {
+                        declarator,
+                        variables,
+                        attributes,
+                        initializer,
+                    },
+                    SourceLocation { start, end },
+                )?;
+                return self.finish_declaration_repetition_assignment(decl, op, op_start);
+            }
             let node = self.charge_node(
                 NodeKind::VariableListDeclaration {
                     declarator,
@@ -226,7 +272,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse one slot in a lexical list declaration.
-    fn parse_variable_list_item(&mut self) -> ParseResult<Node> {
+    fn parse_variable_list_item(&mut self, declarator: &str) -> ParseResult<Node> {
         match self.peek_kind() {
             Some(TokenKind::Undef) => {
                 let undef_token = self.consume_token()?;
@@ -240,7 +286,7 @@ impl<'a> Parser<'a> {
                 self.consume_token()?; // consume (
                 let mut items = Vec::new();
                 while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
-                    items.push(self.parse_variable_list_item()?);
+                    items.push(self.parse_variable_list_item(declarator)?);
                     if self.peek_kind() == Some(TokenKind::Comma) {
                         self.consume_token()?; // consume ,
                     } else if self.peek_kind() != Some(TokenKind::RightParen) {
@@ -261,7 +307,9 @@ impl<'a> Parser<'a> {
                         let mut it = items.into_iter();
                         match it.next() {
                             Some(only) => Ok(only),
-                            None => self.charge_node(NodeKind::Undef, SourceLocation { start, end }), // LCOV_EXCL_LINE
+                            None => {
+                                self.charge_node(NodeKind::Undef, SourceLocation { start, end })
+                            } // LCOV_EXCL_LINE
                         }
                     }
                     _ => self.charge_node(
@@ -270,8 +318,42 @@ impl<'a> Parser<'a> {
                     ),
                 }
             }
-            _ => self.parse_ternary(),
+            _ => {
+                let item = self.parse_ternary()?;
+                Ok(self.recover_constant_declaration_list_item(declarator, item))
+            }
         }
+    }
+
+    /// Recover a sigil-less / constant slot in `my`/`our`/`state`/`local` lists.
+    ///
+    /// Real `perl -c` rejects `my (base)` with `Can't declare constant item in
+    /// "my"`. The previous path parsed the bareword through `parse_ternary` and
+    /// kept a clean AST, so `perllsp --check` answered `ok` (#16732). Record a
+    /// blocking diagnostic on the offending range and wrap the item so later
+    /// list slots and later statements still parse.
+    fn recover_constant_declaration_list_item(&mut self, declarator: &str, item: Node) -> Node {
+        if !is_constant_declaration_list_item(declarator, &item) {
+            return item;
+        }
+        let message = if declarator == "local" {
+            "Can't modify constant item in local".to_string()
+        } else {
+            format!("Can't declare constant item in \"{declarator}\"")
+        };
+        let location = item.location;
+        self.record_error(ParseError::syntax(message.clone(), location.start));
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
+        Node::new(
+            NodeKind::Error {
+                message,
+                expected: vec![],
+                found: None,
+                partial: Some(Box::new(item)),
+            },
+            location,
+        )
     }
 
     /// Attach optional per-item attributes after a list-declaration slot.
@@ -516,9 +598,9 @@ impl<'a> Parser<'a> {
                         for diagnostic in failure.diagnostics {
                             self.record_error(diagnostic);
                         }
-                        return Err(
-                            self.operation.adopt_nested_failure(failure.error, failure.usage)
-                        );
+                        return Err(self
+                            .operation
+                            .adopt_nested_failure(failure.error, failure.usage));
                     }
                 };
             self.operation.authorize_adopted_nodes(adopted_nodes)?;
@@ -1418,62 +1500,58 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    /// Validate ordering rules for a collected list of signature parameters.
-    ///
-    /// Emits diagnostics (without aborting the parse) for:
-    /// - A slurpy (`@` or `%`) parameter that is not the last parameter.
-    /// - Both an `@` and a `%` slurpy parameter present in the same signature.
-    /// - A mandatory parameter appearing after an optional parameter.
+    /// Validate classified parameters without discarding or reordering the signature.
+    /// Error parameters contribute no inferred state; earlier known state survives them.
     fn validate_signature_ordering(&mut self, params: &[Node]) {
-        let mut seen_slurpy_at = false; // saw @array slurpy
-        let mut seen_slurpy_pct = false; // saw %hash slurpy
-        let mut seen_optional = false;
+        use crate::InvalidSignatureOrderingKind as Ordering;
+        let mut seen_optional_positional = false;
+        let mut seen_named = false;
+        let mut seen_slurpy = false;
 
-        for (idx, param) in params.iter().enumerate() {
-            let is_last = idx == params.len() - 1;
-
-            match &param.kind {
-                NodeKind::SlurpyParameter { variable } => {
-                    let sigil = match &variable.kind {
-                        NodeKind::Variable { sigil, .. } => sigil.as_str(),
-                        _ => "",
-                    };
-
-                    if sigil == "@" {
-                        if seen_slurpy_pct {
-                            self.record_error(ParseError::syntax(
-                                "Signature cannot have both @ and % slurpy parameters",
-                                param.location.start,
-                            ));
+        for param in params {
+            if !matches!(
+                param.kind,
+                NodeKind::MandatoryParameter { .. }
+                    | NodeKind::OptionalParameter { .. }
+                    | NodeKind::NamedParameter { .. }
+                    | NodeKind::SlurpyParameter { .. }
+            ) {
+                continue;
+            }
+            let kind = if seen_slurpy {
+                Some(Ordering::ParameterAfterSlurpy)
+            } else {
+                match &param.kind {
+                    NodeKind::MandatoryParameter { .. } => {
+                        if seen_named {
+                            Some(Ordering::PositionalAfterNamed)
+                        } else if seen_optional_positional {
+                            Some(Ordering::MandatoryAfterOptional)
+                        } else {
+                            None
                         }
-                        seen_slurpy_at = true;
-                    } else if sigil == "%" {
-                        if seen_slurpy_at {
-                            self.record_error(ParseError::syntax(
-                                "Signature cannot have both @ and % slurpy parameters",
-                                param.location.start,
-                            ));
-                        }
-                        seen_slurpy_pct = true;
                     }
-
-                    if !is_last {
-                        self.record_error(ParseError::syntax(
-                            "Slurpy parameter must be the last parameter in the signature",
-                            param.location.start,
-                        ));
+                    NodeKind::OptionalParameter { .. } => {
+                        seen_optional_positional = true;
+                        seen_named.then_some(Ordering::PositionalAfterNamed)
                     }
+                    NodeKind::NamedParameter { required, .. } => {
+                        seen_named = true;
+                        (*required && seen_optional_positional)
+                            .then_some(Ordering::RequiredNamedAfterOptional)
+                    }
+                    NodeKind::SlurpyParameter { .. } => {
+                        seen_slurpy = true;
+                        None
+                    }
+                    _ => None,
                 }
-                NodeKind::OptionalParameter { .. } => {
-                    seen_optional = true;
-                }
-                NodeKind::MandatoryParameter { .. } if seen_optional => {
-                    self.record_error(ParseError::syntax(
-                        "Mandatory parameter cannot follow an optional parameter in signature",
-                        param.location.start,
-                    ));
-                }
-                _ => {}
+            };
+            if let Some(kind) = kind {
+                self.record_error(ParseError::InvalidSignatureOrdering {
+                    kind,
+                    range: param.location,
+                });
             }
         }
     }
@@ -1518,60 +1596,104 @@ impl<'a> Parser<'a> {
         let mut end = variable.location.end;
         end = self.consume_signature_param_attributes(end)?;
 
-        // Check for a default value. Positional parameters accept only `=`;
-        // named parameters (Perl 5.44 / PPC0024) additionally accept the `//=`
-        // and `||=` default operators (`sub f (:$x //= 1)`), which apply the
-        // default when the caller omits the argument or passes undef / a false
-        // value respectively.
-        let default_op: Option<&'static str> = match self.peek_kind() {
-            Some(TokenKind::Assign) => Some("="),
-            Some(TokenKind::DefinedOrAssign) if named => Some("//="),
-            Some(TokenKind::LogicalOrAssign) if named => Some("||="),
+        // Preserve the consumed operator token: its own range is source authority.
+        let default_token = match self.peek_kind() {
+            Some(TokenKind::Assign | TokenKind::DefinedOrAssign | TokenKind::LogicalOrAssign) => {
+                Some(self.advance_token()?)
+            }
             _ => None,
         };
-        let default_value = if default_op.is_some() {
-            self.advance_token()?; // consume the default operator
-            // Parse a full scalar expression for the default value (perlsub: "any scalar
-            // expression").  parse_ternary covers calls, binops, and ternary expressions
-            // while stopping at the `,` or `)` that delimits signature parameters, since
-            // comma collection only happens in parse_comma (one level above).
-            Some(Box::new(self.parse_ternary()?))
+        let is_slurpy = matches!(&variable.kind, NodeKind::Variable { sigil, .. } if sigil == "@" || sigil == "%");
+        use crate::InvalidSignatureParameterKind;
+        let invalid_kind = if named && is_slurpy {
+            Some(InvalidSignatureParameterKind::NamedAggregate)
+        } else if is_slurpy && default_token.is_some() {
+            Some(InvalidSignatureParameterKind::SlurpyDefault)
         } else {
             None
         };
-
-        end = if let Some(ref default) = default_value { default.location.end } else { end };
-
-        // Check if variable is slurpy (@args or %hash)
-        let is_slurpy = matches!(&variable.kind, NodeKind::Variable { sigil, .. } if sigil == "@" || sigil == "%");
-
-        // Create the appropriate parameter node type
+        if let Some(token) = &default_token
+            && (matches!(
+                self.peek_kind(),
+                None | Some(TokenKind::Comma | TokenKind::Colon | TokenKind::RightParen)
+            ) || self.tokens.is_eof())
+        {
+            let range = SourceLocation { start, end: token.end() };
+            let error = ParseError::InvalidSignatureParameter {
+                kind: InvalidSignatureParameterKind::MissingDefaultExpression,
+                range,
+            };
+            self.record_error(error.clone());
+            return self.charge_node(
+                NodeKind::Error {
+                    message: error.to_string(),
+                    expected: vec![],
+                    found: default_token,
+                    partial: Some(Box::new(variable)),
+                },
+                range,
+            );
+        }
+        // Parse exactly the ordinary scalar expression, including for a forbidden
+        // aggregate default, so recovery retains its expression and real endpoint.
+        let default_value =
+            if default_token.is_some() { Some(Box::new(self.parse_ternary()?)) } else { None };
+        if let Some(default) = &default_value {
+            // #16242: a grouped default such as `$a = (1+2)` consumes its closing
+            // parentheses while the parenthesized primary returns the *inner*
+            // expression node, so the child's `location.end` can stop short of the
+            // consumed grouping delimiters. Keep the consumed extent honest for both
+            // the parameter node and the InvalidSignatureParameter ranges below by
+            // also taking the parser's consumed-token endpoint; the max with the
+            // child's own end covers expression paths that take tokens straight off
+            // the stream, where `last_end_position` lags behind (see #5503).
+            end = default.location.end.max(self.previous_position());
+        }
+        if let Some(kind) = invalid_kind {
+            let range = SourceLocation { start, end };
+            let error = ParseError::InvalidSignatureParameter { kind, range };
+            self.record_error(error.clone());
+            return self.charge_node(
+                NodeKind::Error {
+                    message: error.to_string(),
+                    expected: vec![],
+                    found: default_token,
+                    partial: Some(match default_value {
+                        Some(default) => default,
+                        None => Box::new(variable),
+                    }),
+                },
+                range,
+            );
+        }
+        let default_operator_span = default_token
+            .as_ref()
+            .map(|token| SourceLocation { start: token.start(), end: token.end() });
+        let default_operator = default_token.as_ref().map(|token| token.text.to_string());
         let param_kind = if named {
-            // The external argument name is the lexical variable name without
-            // its sigil (`:$alpha` is supplied by callers as `alpha => ...`).
             let external_name = match &variable.kind {
                 NodeKind::Variable { name, .. } => name.clone(),
                 _ => String::new(),
             };
-            // A named parameter without a default is required; with a default
-            // it is optional. Preserve which operator introduced the default
-            // (`=`, `//=`, or `||=`) so downstream layers can distinguish the
-            // defaulting semantics.
-            let (default_operator, required) = match default_op {
-                Some(op) => (Some(op.to_string()), false),
-                None => (None, true),
-            };
             NodeKind::NamedParameter {
                 variable: Box::new(variable),
                 external_name,
+                required: default_value.is_none(),
                 default_operator,
+                default_operator_span,
                 default_value,
-                required,
             }
         } else if is_slurpy {
             NodeKind::SlurpyParameter { variable: Box::new(variable) }
-        } else if let Some(default) = default_value {
-            NodeKind::OptionalParameter { variable: Box::new(variable), default_value: default }
+        } else if let (Some(default), Some(operator), Some(operator_span)) =
+            (default_value, default_operator, default_operator_span)
+        {
+            NodeKind::OptionalParameter {
+                variable: Box::new(variable),
+                default_value: default,
+                default_operator: operator,
+                default_operator_span: operator_span,
+            }
         } else {
             NodeKind::MandatoryParameter { variable: Box::new(variable) }
         };
@@ -1918,12 +2040,8 @@ fn parse_inline_expression(
             ));
         }
     };
-    let diagnostics = parser
-        .errors()
-        .iter()
-        .cloned()
-        .map(|error| offset_parse_error(error, offset))
-        .collect();
+    let diagnostics =
+        parser.errors().iter().cloned().map(|error| offset_parse_error(error, offset)).collect();
     let NodeKind::Program { mut statements } = ast.into_parts().0 else {
         return Err(NestedParseFailure::capture(
             ParseError::syntax("Expected an expression program", offset),
@@ -1951,7 +2069,13 @@ fn parse_inline_expression(
         // the value used as the dereference target. Preserve every expression
         // so HIR/PIR traversal does not lose preceding side effects.
         let mut expression = *statement_expression;
-        shift_node_locations(&mut expression, offset);
+        if !shift_node_locations(&mut expression, offset) {
+            return Err(NestedParseFailure::capture(
+                ParseError::syntax("Inline expression source range overflow", offset),
+                &parser,
+                offset,
+            ));
+        }
         expressions.push(expression);
     }
     // Assembly nodes are charged to the nested operation, then reported so the
@@ -2015,14 +2139,46 @@ fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
         ParseError::Recovered { site, kind, location } => {
             ParseError::Recovered { site, kind, location: location.saturating_add(offset) }
         }
+        ParseError::InvalidSignatureParameter { kind, range } => {
+            ParseError::InvalidSignatureParameter {
+                kind,
+                range: SourceLocation {
+                    start: range.start.saturating_add(offset),
+                    end: range.end.saturating_add(offset),
+                },
+            }
+        }
+        ParseError::InvalidSignatureOrdering { kind, range } => {
+            ParseError::InvalidSignatureOrdering {
+                kind,
+                range: SourceLocation {
+                    start: range.start.saturating_add(offset),
+                    end: range.end.saturating_add(offset),
+                },
+            }
+        }
         other => other,
     }
 }
 
-fn shift_node_locations(node: &mut Node, offset: usize) {
-    node.location.start += offset;
-    node.location.end += offset;
-    node.for_each_child_mut(|child| shift_node_locations(child, offset));
+fn shift_node_locations(node: &mut Node, offset: usize) -> bool {
+    let (Some(start), Some(end)) =
+        (node.location.start.checked_add(offset), node.location.end.checked_add(offset))
+    else {
+        return false;
+    };
+    node.location = SourceLocation { start, end };
+    if !node.kind.map_payload_locations_in_place(|range| SourceLocation {
+        start: range.start.saturating_add(offset),
+        end: range.end.saturating_add(offset),
+    }) {
+        return false;
+    }
+    let mut valid = true;
+    node.for_each_child_mut(|child| {
+        valid &= shift_node_locations(child, offset);
+    });
+    valid
 }
 
 /// Return `true` if `c` is a character that Perl permits in old-style prototypes.
@@ -2057,10 +2213,71 @@ fn is_simple_scalar_name(name: &str) -> bool {
 #[cfg(test)]
 mod inline_expression_tests {
     use super::*;
+    #[test]
+    fn signature_diagnostic_offsets_both_endpoints() -> Result<(), String> {
+        let error = offset_parse_error(
+            ParseError::InvalidSignatureParameter {
+                kind: crate::InvalidSignatureParameterKind::SlurpyDefault,
+                range: SourceLocation { start: 3, end: 11 },
+            },
+            17,
+        );
+        if !matches!(
+            error,
+            ParseError::InvalidSignatureParameter {
+                range: SourceLocation { start: 20, end: 28 },
+                ..
+            }
+        ) {
+            return Err("diagnostic endpoint not mapped".into());
+        }
+        if crate::ErrorClass::error_class(&error) != crate::ErrorCategory::UserError {
+            return Err("parameter diagnostic category changed".into());
+        }
+        if error.location() != Some(20)
+            || error.diagnostic_anchor() != crate::syntax::error::ParseDiagnosticAnchor::Exact(20)
+            || !error.blocks_clean_parse()
+        {
+            return Err("diagnostic compatibility changed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn signature_ordering_offsets_both_endpoints() -> Result<(), String> {
+        let error = offset_parse_error(
+            ParseError::InvalidSignatureOrdering {
+                kind: crate::InvalidSignatureOrderingKind::PositionalAfterNamed,
+                range: SourceLocation { start: 3, end: 11 },
+            },
+            17,
+        );
+        if !matches!(
+            error,
+            ParseError::InvalidSignatureOrdering {
+                kind: crate::InvalidSignatureOrderingKind::PositionalAfterNamed,
+                range: SourceLocation { start: 20, end: 28 },
+            }
+        ) {
+            return Err("ordering diagnostic kind/endpoints not mapped".into());
+        }
+        if crate::ErrorClass::error_class(&error) != crate::ErrorCategory::UserError
+            || error.location() != Some(20)
+            || error.diagnostic_anchor() != crate::syntax::error::ParseDiagnosticAnchor::Exact(20)
+            || !error.blocks_clean_parse()
+        {
+            return Err("ordering diagnostic compatibility changed".into());
+        }
+        Ok(())
+    }
 
     #[test]
     fn non_expression_inline_statement_reports_offset_location() -> ParseResult<()> {
-        let error = match parse_inline_expression("my $name;", 17, ParserConfigIdentity::production_default()) {
+        let error = match parse_inline_expression(
+            "my $name;",
+            17,
+            ParserConfigIdentity::production_default(),
+        ) {
             Ok(_) => {
                 return Err(ParseError::syntax(
                     "expected a non-expression statement to be rejected",
@@ -2080,8 +2297,13 @@ mod inline_expression_tests {
     }
 
     #[test]
-    fn non_expression_after_expression_is_not_discarded() -> Result<(), Box<dyn std::error::Error>> {
-        let error = match parse_inline_expression("$tmp; my $name;", 17, ParserConfigIdentity::production_default()) {
+    fn non_expression_after_expression_is_not_discarded() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let error = match parse_inline_expression(
+            "$tmp; my $name;",
+            17,
+            ParserConfigIdentity::production_default(),
+        ) {
             Ok(_) => return Err("expected a non-expression statement to be rejected".into()),
             Err(failure) => failure.error,
         };
@@ -2097,15 +2319,16 @@ mod inline_expression_tests {
 
     #[test]
     fn malformed_inline_expression_reports_outer_offset() -> ParseResult<()> {
-        let error = match parse_inline_expression("(", 17, ParserConfigIdentity::production_default()) {
-            Ok(_) => {
-                return Err(ParseError::syntax(
-                    "expected malformed inline expression to be rejected",
-                    17,
-                ));
-            }
-            Err(failure) => failure.error,
-        };
+        let error =
+            match parse_inline_expression("(", 17, ParserConfigIdentity::production_default()) {
+                Ok(_) => {
+                    return Err(ParseError::syntax(
+                        "expected malformed inline expression to be rejected",
+                        17,
+                    ));
+                }
+                Err(failure) => failure.error,
+            };
         let Some(location) = error.location() else {
             return Err(ParseError::syntax("expected a located parse error", 17));
         };
@@ -2120,8 +2343,12 @@ mod inline_expression_tests {
 
     #[test]
     fn multi_statement_inline_expression_preserves_every_expression() -> ParseResult<()> {
-        let (node, _, _, _) = parse_inline_expression("$tmp; 'STDOUT'", 17, ParserConfigIdentity::production_default())
-            .map_err(|failure| failure.error)?;
+        let (node, _, _, _) = parse_inline_expression(
+            "$tmp; 'STDOUT'",
+            17,
+            ParserConfigIdentity::production_default(),
+        )
+        .map_err(|failure| failure.error)?;
 
         let NodeKind::Block { statements } = node.into_parts().0 else {
             return Err(ParseError::syntax(
@@ -2136,8 +2363,9 @@ mod inline_expression_tests {
     #[test]
     fn inline_expression_forwards_recoverable_diagnostics() -> ParseResult<()> {
         let source = r#""abab" =~ /(?:[^b]*(?=(b)|(a))ab)*/"#;
-        let (_, diagnostics, _, _) = parse_inline_expression(source, 17, ParserConfigIdentity::production_default())
-            .map_err(|failure| failure.error)?;
+        let (_, diagnostics, _, _) =
+            parse_inline_expression(source, 17, ParserConfigIdentity::production_default())
+                .map_err(|failure| failure.error)?;
         if !diagnostics.iter().any(|diagnostic| {
             matches!(diagnostic, ParseError::Advisory { message, .. }
                 if message.contains("Nested quantifiers detected"))
@@ -2323,7 +2551,7 @@ mod prototype_heuristic_tests {
             other => return Err(format!("expected NamedParameter, got {}", other.kind_name())),
         }
 
-        // `//=` arm: named-only, gated by `named`.
+        // `//=` arm: valid for named and positional scalars.
         let node = parse_param(":$b //= 2")?;
         match &node.kind {
             NodeKind::NamedParameter { default_operator, required, .. } => {
@@ -2337,7 +2565,7 @@ mod prototype_heuristic_tests {
             other => return Err(format!("expected NamedParameter, got {}", other.kind_name())),
         }
 
-        // `||=` arm: named-only, gated by `named`.
+        // `||=` arm: valid for named and positional scalars.
         let node = parse_param(":$c ||= 3")?;
         match &node.kind {
             NodeKind::NamedParameter { default_operator, required, .. } => {
@@ -2363,19 +2591,13 @@ mod prototype_heuristic_tests {
             other => return Err(format!("expected NamedParameter, got {}", other.kind_name())),
         }
 
-        // Fallback `_ => None` arm for a *positional* parameter: `named` is
-        // false, so the `//=` guard fails even though `DefinedOrAssign`
-        // follows, and default_op falls through to `_ => None`. The `//= 1`
-        // tokens are left unconsumed by this call (the caller reports the
-        // error), but this seam-owner call directly observes that no default
-        // was consumed at all -- proving the guard, not an incidental
-        // downstream parse failure.
+        // #8912 real-Perl authority: positional conditional defaults consume
+        // their operator and retain the same fact as named scalar defaults.
         let node = parse_param("$x //= 1")?;
-        assert!(
-            matches!(&node.kind, NodeKind::MandatoryParameter { .. }),
-            "positional `$x //= 1`: named=false so the `//=` arm guard fails, \
-             falling through to `_ => None` (no default consumed)"
-        );
+        if !matches!(&node.kind, NodeKind::OptionalParameter { default_operator, .. } if default_operator == "//=")
+        {
+            return Err("lost positional conditional default".into());
+        }
 
         // Discriminator for the type-constraint `peek_kind() == Some(Identifier)`
         // boundary at the head of `parse_signature_param`: a leading *bareword*
@@ -2396,31 +2618,30 @@ mod prototype_heuristic_tests {
     /// Exact error-variant coverage for the named-parameter seam in
     /// `parse_signature_param`: a named parameter whose default operator is
     /// present but followed by no default expression (`:$x =`) must surface the
-    /// underlying `parse_ternary` error rather than fabricating a defaulted
-    /// parameter. Grips the weakly-covered error edge of the named seam.
+    /// typed missing-expression diagnostic and retain an Error parameter,
+    /// rather than fabricating a defaulted scalar.
     #[test]
-    fn parse_signature_param_named_default_without_expression_is_an_error() {
+    fn parse_signature_param_named_default_without_expression_is_an_error() -> Result<(), String> {
         let mut parser = Parser::new(":$x =");
-        assert!(
-            parser.parse_signature_param().is_err(),
-            "`:$x =` has a default operator with no following expression, so \
-             parse_signature_param must propagate the parse_ternary error"
-        );
+        let node = parser.parse_signature_param().map_err(|error| error.to_string())?;
+        if !matches!(node.kind, NodeKind::Error { .. }) || parser.get_errors().is_empty() {
+            return Err("missing default not retained as error".into());
+        }
+        Ok(())
     }
 
-    /// The `//=` / `||=` default operators are named-only (PPC0024). A
-    /// *positional* parameter must not consume them as a default — the parser
-    /// reports an error instead of silently accepting the named-only syntax.
-    /// Guards the `named` gate in `parse_signature_param` against regression.
+    /// #8912 establishes positional conditional defaults in core Perl.
     #[test]
-    fn positional_parameter_rejects_slash_slash_and_pipe_pipe_defaults() -> Result<(), String> {
-        for src in ["sub f ($x //= 1) {}", "sub f ($x ||= 1) {}"] {
+    fn positional_parameter_accepts_slash_slash_and_pipe_pipe_defaults() -> Result<(), String> {
+        for src in [
+            "use feature 'signatures'; sub f ($x //= 1) {}",
+            "use feature 'signatures'; sub f ($x ||= 1) {}",
+        ] {
             let mut parser = Parser::new(src);
             parser.parse().map_err(|e| format!("parse `{src}`: {e:?}"))?;
-            assert!(
-                !parser.get_errors().is_empty(),
-                "expected a parse error for positional default operator in `{src}`",
-            );
+            if !parser.get_errors().is_empty() {
+                return Err(format!("rejected {src}"));
+            }
         }
         Ok(())
     }

@@ -19,7 +19,7 @@
     "ai.client": {
       "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
       "function": "ServerConfig::update_from_value",
-      "expression": "if let Some(ai) = settings.get(\"aiCompletion\") {\n            // Security (#4997): activation and selection authority cannot be\n            // written from any LSP client payload. The same parser serves\n            // initialization options, didChangeConfiguration, and unscoped or\n            // folder-scoped workspace/configuration results, so no arrival\n            // here can prove user/machine provenance. Rejections preserve any\n            // previously accepted trusted state instead of clearing it.\n            if let Some(_enabled) = ai.get(\"enabled\") {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.enabled from a generic LSP settings channel \\\n                     (security: #4997): this channel cannot prove user/machine provenance, \\\n                     so it can neither arm nor disable remote AI egress\"\n                );\n            }\n            if let Some(provider) = ai.get(\"provider\") {\n                let _ = provider;\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.provider from a generic LSP settings channel \\\n                     (security: #4997): backend/egress identity selection requires \\\n                     trusted user/operator authority\"\n                );\n            }\n            // Security (#5684): do NOT honour LSP-channel endpoint, apiKeyEnv,\n            // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect\n            // AI completion requests to an attacker-controlled endpoint and\n            // exfiltrate source code, or change the env var name to read an\n            // arbitrary secret. No configuration path currently sets them:\n            // `.perl-lsp.toml` does not carry these fields at all (#4955),\n            // no client channel may supply them (#5684), and the primary VS\n            // Code extension exposes no endpoint/credential surface (known\n            // gap documented in docs/reference/AI_COMPLETION.md and #4997).\n            if let Some(_endpoint) = ai.get(\"endpoint\").and_then(|v| v.as_str()) {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.endpoint from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(model) = ai.get(\"model\") {\n                let _ = model;\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.model from a generic LSP settings channel \\\n                     (security: #4997): request identity selection requires \\\n                     trusted user/operator authority\"\n                );\n            }\n            if let Some(_key_env) = ai.get(\"apiKeyEnv\").and_then(|v| v.as_str()) {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.apiKeyEnv from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(_key_header) = ai.get(\"apiKeyHeader\").and_then(|v| v.as_str()) {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.apiKeyHeader from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(_key_prefix) = ai.get(\"apiKeyPrefix\") {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.apiKeyPrefix from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(timeout) = ai.get(\"timeoutMs\").and_then(|v| v.as_u64()) {\n                self.ai_completion.timeout_ms = timeout;\n            }\n            if let Some(tokens) = ai.get(\"maxOutputTokens\").and_then(|v| v.as_u64()) {\n                self.ai_completion.max_output_tokens = tokens as u32;\n            }\n            if let Some(rps) = ai.get(\"rateLimitRps\").and_then(|v| v.as_f64()) {\n                self.ai_completion.rate_limit_rps = rps;\n            }\n            if let Some(inflight) = ai.get(\"maxInflight\").and_then(|v| v.as_u64()) {\n                // The configuration authority catalog declares `ai.max_inflight`\n                // as `UnsignedRange { minimum: 1, maximum: 64 }` with\n                // `KeepLastValid`. This channel bypassed both: `as u32` wraps,\n                // so 4294967296 became 0 \u00e2\u20ac\u201d and then a gate capacity of 1, i.e.\n                // *tighter* than the user asked for \u00e2\u20ac\u201d while 65..=u32::MAX\n                // sailed past the declared maximum.\n                //\n                // Pre-existing, but `max_inflight` is now a live-concurrency\n                // ceiling rather than only the token bucket's burst (`#8300`),\n                // so an out-of-range value changes how many requests may be\n                // simultaneously active. Honour the declared contract here.\n                match u32::try_from(inflight) {\n                    Ok(value) if AI_MAX_INFLIGHT_RANGE.contains(&value) => {\n                        self.ai_completion.max_inflight = value;\n                    }\n                    _ => {\n                        tracing::warn!(\n                            requested = inflight,\n                            minimum = *AI_MAX_INFLIGHT_RANGE.start(),\n                            maximum = *AI_MAX_INFLIGHT_RANGE.end(),\n                            retained = self.ai_completion.max_inflight,\n                            \"aiCompletion.maxInflight is out of range; keeping the previous value\"\n                        );\n                    }\n                }\n            }\n            if let Some(fallback) = ai.get(\"fallback\").and_then(|v| v.as_bool()) {\n                self.ai_completion.fallback = fallback;\n            }\n            if let Some(local_model_mode) = ai.get(\"localModelMode\").and_then(|v| v.as_bool()) {\n                self.ai_completion.local_model_mode = local_model_mode;\n            }\n            if let Some(streaming) = ai.get(\"streaming\") {\n                // Security (#4997): streaming activation follows the same\n                // authority law as backend arming; a generic payload may not\n                // imply authorization either way.\n                if let Some(_enabled) = streaming.get(\"enabled\") {\n                    tracing::warn!(\n                        target: \"perl_lsp::config\",\n                        \"ignoring aiCompletion.streaming.enabled from a generic LSP \\\n                         settings channel (security: #4997): streaming preferences \\\n                         never imply or revoke remote egress authorization\"\n                    );\n                }\n                if let Some(debounce) = streaming.get(\"updateDebounceMs\").and_then(|v| v.as_u64()) {\n                    self.ai_completion.streaming.update_debounce_ms = debounce;\n                }\n            }\n            recompute_ai_completion_effective(&mut self.ai_completion);\n        }"
+      "expression": "if let Some(ai) = settings.get(\"aiCompletion\") {\n            // Security (#4997): activation and selection authority cannot be\n            // written from any LSP client payload. The same parser serves\n            // initialization options, didChangeConfiguration, and unscoped or\n            // folder-scoped workspace/configuration results, so no arrival\n            // here can prove user/machine provenance. Rejections preserve any\n            // previously accepted trusted state instead of clearing it.\n            if let Some(_enabled) = ai.get(\"enabled\") {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.enabled from a generic LSP settings channel \\\n                     (security: #4997): this channel cannot prove user/machine provenance, \\\n                     so it can neither arm nor disable remote AI egress\"\n                );\n            }\n            if let Some(provider) = ai.get(\"provider\") {\n                let _ = provider;\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.provider from a generic LSP settings channel \\\n                     (security: #4997): backend/egress identity selection requires \\\n                     trusted user/operator authority\"\n                );\n            }\n            // Security (#5684): do NOT honour LSP-channel endpoint, apiKeyEnv,\n            // apiKeyHeader, or apiKeyPrefix. A hostile workspace could redirect\n            // AI completion requests to an attacker-controlled endpoint and\n            // exfiltrate source code, or change the env var name to read an\n            // arbitrary secret. No configuration path currently sets them:\n            // `.perl-lsp.toml` does not carry these fields at all (#4955),\n            // no client channel may supply them (#5684), and the primary VS\n            // Code extension exposes no endpoint/credential surface (known\n            // gap documented in docs/reference/AI_COMPLETION.md and #4997).\n            if let Some(_endpoint) = ai.get(\"endpoint\").and_then(|v| v.as_str()) {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.endpoint from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(model) = ai.get(\"model\") {\n                let _ = model;\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.model from a generic LSP settings channel \\\n                     (security: #4997): request identity selection requires \\\n                     trusted user/operator authority\"\n                );\n            }\n            if let Some(_key_env) = ai.get(\"apiKeyEnv\").and_then(|v| v.as_str()) {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.apiKeyEnv from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(_key_header) = ai.get(\"apiKeyHeader\").and_then(|v| v.as_str()) {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.apiKeyHeader from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(_key_prefix) = ai.get(\"apiKeyPrefix\") {\n                tracing::warn!(\n                    target: \"perl_lsp::config\",\n                    \"ignoring aiCompletion.apiKeyPrefix from didChangeConfiguration (security: #5684)\"\n                );\n            }\n            if let Some(timeout) = ai.get(\"timeoutMs\").and_then(|v| v.as_u64()) {\n                self.ai_completion.timeout_ms = timeout;\n            }\n            if let Some(tokens) = ai.get(\"maxOutputTokens\").and_then(|v| v.as_u64()) {\n                self.ai_completion.max_output_tokens = tokens as u32;\n            }\n            if let Some(rps) = ai.get(\"rateLimitRps\").and_then(|v| v.as_f64()) {\n                self.ai_completion.rate_limit_rps = rps;\n            }\n            if let Some(inflight) = ai.get(\"maxInflight\").and_then(|v| v.as_u64()) {\n                // The configuration authority catalog declares `ai.max_inflight`\n                // as `UnsignedRange { minimum: 1, maximum: 64 }` with\n                // `KeepLastValid`. This channel bypassed both: `as u32` wraps,\n                // so 4294967296 became 0 â€” and then a gate capacity of 1, i.e.\n                // *tighter* than the user asked for â€” while 65..=u32::MAX\n                // sailed past the declared maximum.\n                //\n                // Pre-existing, but `max_inflight` is now a live-concurrency\n                // ceiling rather than only the token bucket's burst (`#8300`),\n                // so an out-of-range value changes how many requests may be\n                // simultaneously active. Honour the declared contract here.\n                match u32::try_from(inflight) {\n                    Ok(value) if AI_MAX_INFLIGHT_RANGE.contains(&value) => {\n                        self.ai_completion.max_inflight = value;\n                    }\n                    _ => {\n                        tracing::warn!(\n                            requested = inflight,\n                            minimum = *AI_MAX_INFLIGHT_RANGE.start(),\n                            maximum = *AI_MAX_INFLIGHT_RANGE.end(),\n                            retained = self.ai_completion.max_inflight,\n                            \"aiCompletion.maxInflight is out of range; keeping the previous value\"\n                        );\n                    }\n                }\n            }\n            if let Some(fallback) = ai.get(\"fallback\").and_then(|v| v.as_bool()) {\n                self.ai_completion.fallback = fallback;\n            }\n            if let Some(local_model_mode) = ai.get(\"localModelMode\").and_then(|v| v.as_bool()) {\n                self.ai_completion.local_model_mode = local_model_mode;\n            }\n            if let Some(streaming) = ai.get(\"streaming\") {\n                // Security (#4997): streaming activation follows the same\n                // authority law as backend arming; a generic payload may not\n                // imply authorization either way.\n                if let Some(_enabled) = streaming.get(\"enabled\") {\n                    tracing::warn!(\n                        target: \"perl_lsp::config\",\n                        \"ignoring aiCompletion.streaming.enabled from a generic LSP \\\n                         settings channel (security: #4997): streaming preferences \\\n                         never imply or revoke remote egress authorization\"\n                    );\n                }\n                if let Some(debounce) = streaming.get(\"updateDebounceMs\").and_then(|v| v.as_u64()) {\n                    self.ai_completion.streaming.update_debounce_ms = debounce;\n                }\n            }\n            recompute_ai_completion_effective(&mut self.ai_completion);\n        }"
     },
     "format.client": {
       "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
@@ -166,30 +166,30 @@
       "function": "inlay_hints_cap",
       "expression": "LSP_LIMITS.read().map(|l| l.inlay_hints_cap).unwrap_or(500)"
     },
-    "limit.write.ast_cache_max_entries": {
+    "limit.removed.ast_cache_max_entries": {
       "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
-      "function": "LspLimits::update_from_value",
-      "expression": "if let Some(v) = limits.get(\"astCacheMaxEntries\").and_then(|v| v.as_u64()) {\n                self.ast_cache_max_entries = v as usize;\n            }"
+      "function": "@no-key:LspLimits::update_from_value",
+      "expression": "astCacheMaxEntries"
     },
-    "limit.write.ast_cache_ttl_secs": {
+    "limit.removed.ast_cache_ttl_secs": {
       "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
-      "function": "LspLimits::update_from_value",
-      "expression": "if let Some(v) = limits.get(\"astCacheTtlSecs\").and_then(|v| v.as_u64()) {\n                self.ast_cache_ttl_secs = v;\n            }"
+      "function": "@no-key:LspLimits::update_from_value",
+      "expression": "astCacheTtlSecs"
     },
-    "limit.write.symbol_cache_max_entries": {
+    "limit.removed.symbol_cache_max_entries": {
       "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
-      "function": "LspLimits::update_from_value",
-      "expression": "if let Some(v) = limits.get(\"symbolCacheMaxEntries\").and_then(|v| v.as_u64()) {\n                self.symbol_cache_max_entries = v as usize;\n            }"
+      "function": "@no-key:LspLimits::update_from_value",
+      "expression": "symbolCacheMaxEntries"
     },
-    "limit.write.max_indexed_files": {
+    "limit.removed.max_indexed_files": {
       "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
-      "function": "LspLimits::update_from_value",
-      "expression": "if let Some(v) = limits.get(\"maxIndexedFiles\").and_then(|v| v.as_u64()) {\n                self.max_indexed_files = v as usize;\n            }"
+      "function": "@no-key:LspLimits::update_from_value",
+      "expression": "maxIndexedFiles"
     },
-    "limit.write.max_total_symbols": {
+    "limit.removed.max_total_symbols": {
       "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
-      "function": "LspLimits::update_from_value",
-      "expression": "if let Some(v) = limits.get(\"maxTotalSymbols\").and_then(|v| v.as_u64()) {\n                self.max_total_symbols = v as usize;\n            }"
+      "function": "@no-key:LspLimits::update_from_value",
+      "expression": "maxTotalSymbols"
     },
     "limit.write.max_file_size_bytes": {
       "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
@@ -201,10 +201,10 @@
       "function": "max_file_size_bytes",
       "expression": "LSP_LIMITS.read().map(|l| l.max_file_size_bytes).unwrap_or(1_024 * 1_024)"
     },
-    "limit.write.workspace_scan_deadline": {
+    "limit.removed.workspace_scan_deadline": {
       "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
-      "function": "LspLimits::update_from_value",
-      "expression": "if let Some(v) = limits.get(\"workspaceScanDeadlineMs\").and_then(|v| v.as_u64()) {\n                self.workspace_scan_deadline = Duration::from_millis(v);\n            }"
+      "function": "@no-key:LspLimits::update_from_value",
+      "expression": "workspaceScanDeadlineMs"
     },
     "limit.write.reference_search_deadline": {
       "path": "crates/perl-lsp-rs-core/src/runtime/limits/mod.rs",
@@ -2626,8 +2626,8 @@
     },
     {
       "id": "limits.ast_cache_max_entries",
-      "kind": "active",
-      "disposition": "parsed_pending_with_owner",
+      "kind": "removed",
+      "disposition": "remove_false_contract",
       "owner": "#16176",
       "rust_field": "Limits.ast_cache_max_entries",
       "sources": [
@@ -2640,15 +2640,13 @@
         "BoundedExecution"
       ],
       "invalidation": "RuntimeScheduling",
-      "writers": [
-        "limit.write.ast_cache_max_entries"
-      ],
+      "writers": [],
       "consumers": [],
       "projections": [
         {
           "path": "schemas/perllsp-settings.schema.json",
           "pointer": "/properties/perl/properties/limits/properties/astCacheMaxEntries",
-          "present": true
+          "present": false
         }
       ],
       "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
@@ -2662,27 +2660,7 @@
         "status": "unresolved",
         "witness": null
       },
-      "capability": {
-        "field_id": "limits.ast_cache_max_entries",
-        "roles": [
-          "select"
-        ],
-        "effects": [
-          "resource_budget"
-        ],
-        "composition": [
-          {
-            "kind": "hard_product_envelope",
-            "owner": "#7479"
-          }
-        ],
-        "proof": {
-          "kind": "unsupported",
-          "owner": "#16176",
-          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
-        },
-        "reduction_exception": null
-      }
+      "capability": null
     },
     {
       "id": "limits.ast_cache_memory_bytes",
@@ -2748,8 +2726,8 @@
     },
     {
       "id": "limits.ast_cache_ttl_secs",
-      "kind": "active",
-      "disposition": "parsed_pending_with_owner",
+      "kind": "removed",
+      "disposition": "remove_false_contract",
       "owner": "#16176",
       "rust_field": "Limits.ast_cache_ttl_secs",
       "sources": [
@@ -2762,15 +2740,13 @@
         "BoundedExecution"
       ],
       "invalidation": "RuntimeScheduling",
-      "writers": [
-        "limit.write.ast_cache_ttl_secs"
-      ],
+      "writers": [],
       "consumers": [],
       "projections": [
         {
           "path": "schemas/perllsp-settings.schema.json",
           "pointer": "/properties/perl/properties/limits/properties/astCacheTtlSecs",
-          "present": true
+          "present": false
         }
       ],
       "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
@@ -2784,27 +2760,7 @@
         "status": "unresolved",
         "witness": null
       },
-      "capability": {
-        "field_id": "limits.ast_cache_ttl_secs",
-        "roles": [
-          "select"
-        ],
-        "effects": [
-          "resource_budget"
-        ],
-        "composition": [
-          {
-            "kind": "hard_product_envelope",
-            "owner": "#7479"
-          }
-        ],
-        "proof": {
-          "kind": "unsupported",
-          "owner": "#16176",
-          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
-        },
-        "reduction_exception": null
-      }
+      "capability": null
     },
     {
       "id": "limits.code_lens_cap",
@@ -3180,8 +3136,8 @@
     },
     {
       "id": "limits.indexed_files",
-      "kind": "active",
-      "disposition": "parsed_pending_with_owner",
+      "kind": "removed",
+      "disposition": "remove_false_contract",
       "owner": "#16176",
       "rust_field": "Limits.max_indexed_files",
       "sources": [
@@ -3194,15 +3150,13 @@
         "BoundedExecution"
       ],
       "invalidation": "RuntimeScheduling",
-      "writers": [
-        "limit.write.max_indexed_files"
-      ],
+      "writers": [],
       "consumers": [],
       "projections": [
         {
           "path": "schemas/perllsp-settings.schema.json",
           "pointer": "/properties/perl/properties/limits/properties/maxIndexedFiles",
-          "present": true
+          "present": false
         }
       ],
       "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
@@ -3216,27 +3170,7 @@
         "status": "unresolved",
         "witness": null
       },
-      "capability": {
-        "field_id": "limits.indexed_files",
-        "roles": [
-          "select"
-        ],
-        "effects": [
-          "resource_budget"
-        ],
-        "composition": [
-          {
-            "kind": "hard_product_envelope",
-            "owner": "#7479"
-          }
-        ],
-        "proof": {
-          "kind": "unsupported",
-          "owner": "#16176",
-          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
-        },
-        "reduction_exception": null
-      }
+      "capability": null
     },
     {
       "id": "limits.inlay_hints_cap",
@@ -3426,8 +3360,8 @@
     },
     {
       "id": "limits.symbol_cache_max_entries",
-      "kind": "active",
-      "disposition": "parsed_pending_with_owner",
+      "kind": "removed",
+      "disposition": "remove_false_contract",
       "owner": "#16176",
       "rust_field": "Limits.symbol_cache_max_entries",
       "sources": [
@@ -3440,15 +3374,13 @@
         "BoundedExecution"
       ],
       "invalidation": "RuntimeScheduling",
-      "writers": [
-        "limit.write.symbol_cache_max_entries"
-      ],
+      "writers": [],
       "consumers": [],
       "projections": [
         {
           "path": "schemas/perllsp-settings.schema.json",
           "pointer": "/properties/perl/properties/limits/properties/symbolCacheMaxEntries",
-          "present": true
+          "present": false
         }
       ],
       "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
@@ -3462,32 +3394,12 @@
         "status": "unresolved",
         "witness": null
       },
-      "capability": {
-        "field_id": "limits.symbol_cache_max_entries",
-        "roles": [
-          "select"
-        ],
-        "effects": [
-          "resource_budget"
-        ],
-        "composition": [
-          {
-            "kind": "hard_product_envelope",
-            "owner": "#7479"
-          }
-        ],
-        "proof": {
-          "kind": "unsupported",
-          "owner": "#16176",
-          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
-        },
-        "reduction_exception": null
-      }
+      "capability": null
     },
     {
       "id": "limits.total_symbols",
-      "kind": "active",
-      "disposition": "parsed_pending_with_owner",
+      "kind": "removed",
+      "disposition": "remove_false_contract",
       "owner": "#16176",
       "rust_field": "Limits.max_total_symbols",
       "sources": [
@@ -3500,15 +3412,13 @@
         "BoundedExecution"
       ],
       "invalidation": "RuntimeScheduling",
-      "writers": [
-        "limit.write.max_total_symbols"
-      ],
+      "writers": [],
       "consumers": [],
       "projections": [
         {
           "path": "schemas/perllsp-settings.schema.json",
           "pointer": "/properties/perl/properties/limits/properties/maxTotalSymbols",
-          "present": true
+          "present": false
         }
       ],
       "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
@@ -3522,27 +3432,7 @@
         "status": "unresolved",
         "witness": null
       },
-      "capability": {
-        "field_id": "limits.total_symbols",
-        "roles": [
-          "select"
-        ],
-        "effects": [
-          "resource_budget"
-        ],
-        "composition": [
-          {
-            "kind": "hard_product_envelope",
-            "owner": "#7479"
-          }
-        ],
-        "proof": {
-          "kind": "unsupported",
-          "owner": "#16176",
-          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
-        },
-        "reduction_exception": null
-      }
+      "capability": null
     },
     {
       "id": "limits.warning_memory_threshold_bytes",
@@ -3608,8 +3498,8 @@
     },
     {
       "id": "limits.workspace_scan_deadline_ms",
-      "kind": "active",
-      "disposition": "parsed_pending_with_owner",
+      "kind": "removed",
+      "disposition": "remove_false_contract",
       "owner": "#16176",
       "rust_field": "Limits.workspace_scan_deadline",
       "sources": [
@@ -3622,15 +3512,13 @@
         "BoundedExecution"
       ],
       "invalidation": "RuntimeScheduling",
-      "writers": [
-        "limit.write.workspace_scan_deadline"
-      ],
+      "writers": [],
       "consumers": [],
       "projections": [
         {
           "path": "schemas/perllsp-settings.schema.json",
           "pointer": "/properties/perl/properties/limits/properties/workspaceScanDeadlineMs",
-          "present": true
+          "present": false
         }
       ],
       "docs": "docs/reference/CONFIGURATION_SCHEMA.md",
@@ -3644,27 +3532,7 @@
         "status": "unresolved",
         "witness": null
       },
-      "capability": {
-        "field_id": "limits.workspace_scan_deadline_ms",
-        "roles": [
-          "select"
-        ],
-        "effects": [
-          "resource_budget"
-        ],
-        "composition": [
-          {
-            "kind": "hard_product_envelope",
-            "owner": "#7479"
-          }
-        ],
-        "proof": {
-          "kind": "unsupported",
-          "owner": "#16176",
-          "reason": "Unresolved adapter, retained migration input, or consumer owner; structural binding does not prove live external effect."
-        },
-        "reduction_exception": null
-      }
+      "capability": null
     },
     {
       "id": "limits.workspace_symbol_cap",

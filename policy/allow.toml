@@ -1344,23 +1344,6 @@ expires = "2026-10-20"
 ast_kind = "tracked_file"
 glob = "justfile"
 
-# schemas/ directory - configuration/yml files
-[[allow]]
-id = "allow-b0184"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "test_print_indirect.pl"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root-level Perl test script. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "test_print_indirect.pl"
-
 # vscode-extension/* - unknown_non_rust (b0161 is package_metadata, b0162 is test_fixture)
 [[allow]]
 id = "allow-b0186"
@@ -4508,3 +4491,23 @@ expires = "2026-12-20"
 ast_kind = "attribute"
 lint = "dead_code"
 target_fingerprint = "policy:allow-13855-staged-contract"
+
+# A single UX test success receipt needs to survive libtest capture in CI.
+# The function uses a print macro locally and direct descriptor IO in CI.
+[[allow]]
+id = "allow-ux-ws-symbol-receipt-15988"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "One path-free workspace-symbol readiness timing receipt must reach UX CI logs after a passing test; libtest discards captured print output and the existing recorder schema has no readiness fields."
+evidence = ["issue:15988", "test:ux_latency_workspace_symbols_sees_open_document_symbols"]
+created = "2026-09-29"
+review_after = "2026-12-28"
+
+[allow.selector]
+ast_kind = "attribute"
+container = "emit_workspace_symbol_probe_receipt"
+lint = "clippy::print_stderr"
+target_fingerprint = "policy:allow-ux-ws-symbol-receipt-15988"

@@ -5,9 +5,10 @@ This projection consumes the canonical configuration authority catalog and the
 CA02A capability validator. It is not a second configuration catalog, accepted
 settings store, source-authority grant, or runtime security fix.
 
-`fixtures/configuration_authority/high_risk_bindings.v1.json` joins 59 canonical
-high-risk fields, four removed runner settings, and the derived folder-scoped
-`ProjectPerlConfig.version` field. Its explicit 19-ID remainder belongs to #10807.
+`fixtures/configuration_authority/high_risk_bindings.v1.json` joins 53 canonical
+high-risk fields, four removed runner settings, six retired limit settings, and
+the derived folder-scoped `ProjectPerlConfig.version` field. Its explicit 19-ID
+remainder belongs to #10807.
 The core check requires that active bindings and the remainder partition the real
 catalog; a high-risk field cannot be relabeled low-risk to escape the check.
 
@@ -58,10 +59,10 @@ hard-envelope owners are likewise ownership evidence, not executed proof.
 it is not the name of an existing test or an execution receipt. The checker joins
 that requirement's owner to the explicitly unresolved first-effect obligation.
 
-- #16176 owns implementation/removal of six parsed limit fields without a proven
-  LSP_LIMITS consumer: cache entry/TTL, symbol-cache entry, index-file and total
-  symbol limits, and workspace scan deadline. The similarly named IndexLimits
-  fields are a different owner and do not establish this connection.
+- #16176 settled removal of six unsupported limit settings. Their rows now bind
+  schema absence and parser-key absence; they are not active catalog fields.
+  The similarly named IndexLimits fields are a different owner and do not
+  restore the retired LSP_LIMITS contract.
 - #7479 owns hard limits. This PR neither clamps nor rejects new runtime values.
 - #16182 owns the distinct workspace resolution-timeout envelope; its real
   context-to-consumer chain is bound, but its bounds are not proved here.
