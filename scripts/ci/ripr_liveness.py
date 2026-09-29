@@ -138,12 +138,17 @@ ADVISORY_CHECK_NAME = "ripr+ liveness"
 IN_FLIGHT_STATUSES = frozenset({"in_progress"})
 
 # How long after a run finishes the reporter still considers withdrawing a red
-# it wrote for it. Without a bound the memory read has to cover every head in
-# the runs page -- 92 distinct heads measured on the last 100 ripr runs, each
-# one a paginated call, every 15 minutes. The red is only worth withdrawing
-# while the run is plausibly still the story on that head, and `ripr`'s median
-# is ~59 minutes, so six hours is generous. Older than that the head has been
-# superseded and the check run is history.
+# it wrote for it. This is a valve, not a budget: it drops the older portion of
+# the runs page once throughput rises, and it is *not* what bounds the read
+# today. Measured on the last 100 `ripr` runs, the page spans 264 minutes and
+# carries 91 distinct heads, so a 6-hour bound drops nothing and every head is
+# still read. That number is the honest cost of the capability and is reported
+# in the step summary rather than assumed away -- the read is what lets a
+# retraction happen at all, and shrinking it would silently stop red from ever
+# clearing, which is the defect this exists to fix.
+#
+# It clears the slowest observed run twice over (118 min) so a long run's head
+# is never dropped while the run is still going.
 POSTED_MEMORY_HOURS = 6
 
 
@@ -157,16 +162,16 @@ def posted_memory_heads(runs: list[dict[str, Any]], as_of: datetime.datetime | N
     have not finished" would never withdraw the red for the commonest recovery
     of all.
 
-    A run that finished longer ago than `POSTED_MEMORY_HOURS` is dropped. The
-    check run outliving its condition is what this whole change is about, but
-    re-reading every head in the runs page forever is how an advisory reporter
-    becomes the expensive thing it exists to make cheap: the last 100 `ripr`
-    runs carried 92 distinct heads, and one paginated call each, every 15
-    minutes.
+    A run that finished longer ago than `POSTED_MEMORY_HOURS` is dropped. This
+    is a throughput valve rather than a budget -- see the constant's comment
+    for what it does and does not bound today.
 
     An unreadable clock yields the conservative set -- every head with one --
     because over-reading costs API calls and under-reading silently skips a
-    retraction, and the failure modes are not equally bad.
+    retraction, and the failure modes are not equally bad. A naive datetime is
+    treated the same way rather than raising out of the snapshot step: the
+    subtraction below is only defined for an aware value, and this is a public
+    seam whose annotation does not say so.
     """
     heads = {
         run["head_sha"]
@@ -175,7 +180,7 @@ def posted_memory_heads(runs: list[dict[str, Any]], as_of: datetime.datetime | N
         and isinstance(run.get("head_sha"), str)
         and run["head_sha"]
     }
-    if as_of is None:
+    if as_of is None or as_of.tzinfo is None:
         return heads
     age_limit = POSTED_MEMORY_HOURS * 60
     keep: set[str] = set()
@@ -678,10 +683,14 @@ def classify_run(
     # A run with jobs is the case this reporter historically said nothing about,
     # which is the half of the gap that costs an auditor: silence for a working
     # run and a permanent red for a recovered one are the same defect, and only
-    # the second is a fault. An in-flight run with a readable progress read is
-    # `alive`; one without stays SCHEDULED and is reported by the caller as an
-    # alive line carrying no step detail, because "we could not read the detail"
-    # and "nothing is running" are not the same observation.
+    # the second is a fault.
+    #
+    # `alive` says the run is in progress, which `status` alone establishes.
+    # The step detail is a refinement, not a condition: a run whose jobs read
+    # failed is still alive, and the caller renders it as an alive line naming
+    # no step rather than dropping it. Dropping it would make a transient read
+    # failure indistinguishable from a run making no progress, which is the
+    # exact confusion this reporter exists to remove.
     if run.get("status") in IN_FLIGHT_STATUSES:
         # Past the floor, like every other class here. A run two minutes old
         # needs no heartbeat, and the floor is the rule this reporter already
@@ -724,56 +733,81 @@ def check_title(classification: str, waited_minutes: int) -> str:
     return f"ripr has scheduled no jobs for {waited_minutes} min"
 
 
-# Why a previously reported stall is no longer one, phrased from the
-# classification observed now. The reporter holds no state from the fire that
-# wrote the failure, so it cannot state how long the stall lasted without
-# inventing a number; the resolution names the run, the head, and the current
-# observation, and nothing it cannot derive.
-RESOLUTION_REASONS = {
-    ALIVE: "it has scheduled jobs now",
-    SERIALISED: "it is queued behind an earlier run, which is a designed wait",
-    AWAITING_APPROVAL: "it is held for fork-PR maintainer approval",
+# Why a stall this reporter previously reported is no longer one, keyed by what
+# was positively observed to have changed. A retraction names only a reason it
+# can point at; the fallback branch is deliberately absent, because an unproven
+# reason is a sentence about a live CI run that nothing backs up.
+RESOLVED = "it has scheduled jobs now"
+RESOLVED_RUNNING = "it is running"
+RESOLVED_QUEUED = "it is queued behind an earlier run, which is a designed wait"
+RESOLVED_APPROVAL = "it is held for fork-PR maintainer approval"
+RESOLVED_COMPLETED = "the run has completed"
+
+RESOLUTION_BODIES = {
+    RESOLVED: "Jobs are scheduled on it, so the absence of proof that was "
+    "reported has ended.",
+    RESOLVED_RUNNING: "The run is in progress, so it is no longer waiting with "
+    "nothing scheduled.",
+    RESOLVED_QUEUED: "An earlier ripr run on this pull request is now holding "
+    "the concurrency group, which is the designed `cancel-in-progress: false` "
+    "wait rather than a scheduling fault.",
+    RESOLVED_APPROVAL: "The run is held for fork-PR maintainer approval, which "
+    "is a human gate rather than an infrastructure fault.",
+    RESOLVED_COMPLETED: "The run has finished, so the wait this reported is over.",
 }
 
 
-def resolution_title(run: dict[str, Any], classification: str) -> str:
+def recovery_reason(
+    run: dict[str, Any],
+    classification: str,
+) -> str | None:
+    """Why a reported stall no longer holds -- or ``None`` when it may still hold.
+
+    This is the difference between *recovered* and *not known to be recovered*,
+    and the whole retraction path turns on it.
+
+    ``classify_run`` maps an **unreadable** job count to ``SCHEDULED``, which
+    is right for reporting -- an unreadable count is not a confirmed zero -- and
+    exactly wrong for retraction. Treating "I could not read this" as "the
+    condition cleared" withdraws the red from a run that is still genuinely
+    dead, and the next fire re-reds it: the head flaps neutral/failure every 15
+    minutes while the gate is down. That is a worse failure than the one this
+    reporter exists to prevent, because it looks like the fix working.
+
+    So a retraction needs positive evidence, in one of exactly four shapes: a
+    count that reads above zero, a run that is in progress, a run that finished,
+    or a classification that names a different cause. Everything else -- an
+    unreadable count, a run back inside the floor, a run still empty -- is
+    silence.
+    """
+    if classification == ALIVE:
+        return RESOLVED_RUNNING
+    if classification == SERIALISED:
+        return RESOLVED_QUEUED
+    if classification == AWAITING_APPROVAL:
+        return RESOLVED_APPROVAL
+    if run.get("status") == "completed":
+        return RESOLVED_COMPLETED
+    job_count = run.get("job_count")
+    if isinstance(job_count, int) and not isinstance(job_count, bool) and job_count > 0:
+        return RESOLVED
+    return None
+
+
+def resolution_title(run: dict[str, Any], reason: str) -> str:
     """One line withdrawing a stall this reporter previously reported."""
-    run_id = run.get("id")
-    if classification == SCHEDULED and run.get("status") == "completed":
-        return f"ripr run {run_id} no longer stalled: the run has completed"
-    reason = RESOLUTION_REASONS.get(classification, "it is no longer waiting with no jobs")
-    return f"ripr run {run_id} no longer stalled: {reason}"
+    return f"ripr run {run.get('id')} no longer stalled: {reason}"
 
 
-def resolution_summary(run: dict[str, Any], classification: str) -> str:
+def resolution_summary(run: dict[str, Any], reason: str) -> str:
     """The body behind a retraction, saying plainly what changed and why."""
     run_id = run.get("id")
     head = run.get("head_sha", "unknown")
     lines = [
         f"The `infra-no-proof` failure this reporter posted for run `{run_id}` on "
-        f"`{head}` no longer holds. The run currently reads as: "
-        f"`{classification}`.",
+        f"`{head}` no longer holds. What it reads as now: {reason}.",
         "",
-    ]
-    if classification == ALIVE:
-        lines.append(
-            "Jobs are scheduled and at least one is running, so the absence of "
-            "proof that was reported has ended."
-        )
-    elif classification == SERIALISED:
-        lines.append(
-            "An earlier ripr run on this pull request is now holding the "
-            "concurrency group, which is the designed `cancel-in-progress: "
-            "false` wait rather than a scheduling fault."
-        )
-    elif classification == AWAITING_APPROVAL:
-        lines.append(
-            "The run is held for fork-PR maintainer approval, which is a human "
-            "gate rather than an infrastructure fault."
-        )
-    else:
-        lines.append("The run has finished, so the wait this reported is over.")
-    lines += [
+        RESOLUTION_BODIES[reason],
         "",
         "This withdraws a claim this reporter made about scheduling. It is not a "
         "statement that the run produced proof: no conclusion here evaluates the "
@@ -861,6 +895,7 @@ def classify_snapshot(
     runs = snapshot.get("runs")
     runs = runs if isinstance(runs, list) else []
     posted = posted_checks if isinstance(posted_checks, dict) else {}
+    heads_read = sum(1 for value in posted.values() if isinstance(value, dict))
 
     findings: list[dict[str, Any]] = []
     alive: list[dict[str, Any]] = []
@@ -888,14 +923,16 @@ def classify_snapshot(
         classification, predecessor = classify_run(run, runs, waited_minutes, floor_minutes)
 
         # A stall this reporter already reported for this run, on this head, is
-        # withdrawn the moment the run stops reading as one. The external id is
-        # the same one the failure was posted under, so this is an update to
-        # that check run and not a second, competing statement about it.
+        # withdrawn the moment the run positively stops reading as one. The
+        # external id is the same one the failure was posted under, so this is
+        # an update to that check run and not a second, competing statement
+        # about it.
         run_id = run.get("id")
         head_sha = run.get("head_sha")
         stall_id = external_id_for(run_id, INFRA_NO_PROOF)
         posted_check_id = posted_id_for(posted, head_sha, run_id, INFRA_NO_PROOF)
-        if posted_check_id is not None and classification != INFRA_NO_PROOF:
+        reason = recovery_reason(run, classification)
+        if posted_check_id is not None and reason is not None:
             resolutions.append(
                 {
                     "run_id": run_id,
@@ -905,8 +942,9 @@ def classify_snapshot(
                     "external_id": stall_id,
                     "conclusion": RESOLUTION_CONCLUSION,
                     "now_classification": classification,
-                    "check_title": resolution_title(run, classification),
-                    "check_summary": resolution_summary(run, classification),
+                    "reason": reason,
+                    "check_title": resolution_title(run, reason),
+                    "check_summary": resolution_summary(run, reason),
                 }
             )
 
@@ -970,6 +1008,7 @@ def classify_snapshot(
         "as_of": snapshot.get("as_of"),
         "floor_minutes": floor_minutes,
         "runs_examined": len(runs),
+        "heads_read": heads_read,
         "findings": findings,
         "alive": alive,
         "resolutions": resolutions,
@@ -995,7 +1034,8 @@ def render(report: dict[str, Any]) -> str:
         "### ripr liveness",
         "",
         f"{report.get('runs_examined', 0)} run(s) examined, floor "
-        f"{report.get('floor_minutes', DEFAULT_FLOOR_MINUTES)} min.",
+        f"{report.get('floor_minutes', DEFAULT_FLOOR_MINUTES)} min, "
+        f"{report.get('heads_read', 0)} head(s) read for prior state.",
         "",
     ]
     if not findings:

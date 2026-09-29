@@ -1005,6 +1005,173 @@ class RetractionTests(unittest.TestCase):
         self.assertEqual(len(report["findings"]), 1)
         self.assertEqual(report["findings"][0]["conclusion"], "failure")
 
+    def test_an_unreadable_job_count_does_not_retract_a_live_stall(self) -> None:
+        """The false retraction, and the reason `recovery_reason` exists.
+
+        `classify_run` maps an unreadable count to `SCHEDULED`, which is right
+        for reporting and exactly wrong for retraction. If "I could not read
+        this" were treated as "the condition cleared", a still-dead run's red
+        would be withdrawn, then re-reded on the next fire, flapping
+        neutral/failure every 15 minutes while the gate is down. That reads as
+        the fix working.
+        """
+        unreadable = run(
+            35487554523,
+            status="pending",
+            created_at="2026-09-20T03:49:05Z",
+            job_count=None,
+            pulls=[16083],
+            head_sha=HEAD,
+        )
+        report = liveness.classify_snapshot(
+            snapshot(unreadable, as_of="2026-09-20T05:05:00Z"),
+            posted({STALL_ID: 55501}),
+        )
+        self.assertEqual(report["resolutions"], [])
+        # And the run is reported for neither, because nothing was established.
+        self.assertEqual(report["findings"], [])
+        self.assertIsNone(liveness.recovery_reason(unreadable, liveness.SCHEDULED))
+
+    def test_a_run_back_inside_a_raised_floor_is_not_withdrawn(self) -> None:
+        """The floor is a dispatch input, so it can move under a live stall.
+
+        A `workflow_dispatch` with a larger `floor_minutes` reclassifies a still
+        empty run to `within_floor`. That is a change in this reporter's own
+        threshold, not a recovery of the run, and withdrawing the red on it
+        would hide a stall that is still real.
+        """
+        still_empty = run(
+            35487554523,
+            status="pending",
+            created_at="2026-09-20T03:49:05Z",
+            pulls=[16083],
+            head_sha=HEAD,
+        )
+        report = liveness.classify_snapshot(
+            snapshot(still_empty, as_of="2026-09-20T03:55:00Z", floor=60),
+            posted({STALL_ID: 55501}),
+        )
+        self.assertEqual(report["resolutions"], [])
+        self.assertIsNone(
+            liveness.recovery_reason(still_empty, liveness.WITHIN_FLOOR)
+        )
+
+    def test_a_run_that_gained_jobs_is_withdrawn(self) -> None:
+        """`queued` with jobs is recovery, and is the runner-backlog shape.
+
+        A run whose jobs exist but are all waiting on a busy pool reads
+        `queued` and classifies `SCHEDULED`, so this path does not go through
+        any of the three reportable classes -- and it is the empty-ness, not
+        the class, that the original failure was about.
+        """
+        gained = run(
+            35487554523,
+            status="queued",
+            created_at="2026-09-20T03:49:05Z",
+            job_count=4,
+            pulls=[16083],
+            head_sha=HEAD,
+        )
+        report = liveness.classify_snapshot(
+            snapshot(gained, as_of="2026-09-20T05:05:00Z"),
+            posted({STALL_ID: 55501}),
+        )
+        self.assertEqual(len(report["resolutions"]), 1)
+        self.assertEqual(report["resolutions"][0]["reason"], liveness.RESOLVED)
+
+    def test_a_retraction_never_claims_a_run_finished_while_it_has_not(self) -> None:
+        """Every reason's body must agree with its own title.
+
+        The body used to fall through to "the run has finished" for any class
+        it had no phrase for -- including a `queued` run with jobs, which is the
+        single most reachable recovery and is emphatically not finished. The
+        check run then contradicted itself on a live CI run.
+        """
+        cases = {
+            liveness.RESOLVED: run(
+                1, status="queued", job_count=4, pulls=[1], head_sha=HEAD
+            ),
+            liveness.RESOLVED_RUNNING: run(
+                2, status="in_progress", job_count=4, pulls=[1], head_sha=HEAD
+            ),
+            liveness.RESOLVED_APPROVAL: run(
+                3, status="waiting", pulls=[], head_branch="p",
+                head_repository="a/b", base_refs=["main"], head_sha=HEAD
+            ),
+            liveness.RESOLVED_COMPLETED: run(
+                4, status="completed", job_count=4, pulls=[1], head_sha=HEAD
+            ),
+        }
+        for reason, candidate in cases.items():
+            with self.subTest(reason=reason):
+                summary = liveness.resolution_summary(candidate, reason)
+                finished = "has finished" in summary
+                self.assertEqual(
+                    finished,
+                    reason == liveness.RESOLVED_COMPLETED,
+                    f"summary for {reason!r} asserts the wrong run state: {summary!r}",
+                )
+
+    def test_every_retraction_reason_has_a_body(self) -> None:
+        """A reason with no body would raise inside the classifier.
+
+        `RESOLUTION_BODIES[reason]` is a hard index, so a new reason added to
+        `recovery_reason` without a body is a KeyError on a live fire rather
+        than a failed assertion here.
+        """
+        reasons = {
+            liveness.RESOLVED,
+            liveness.RESOLVED_RUNNING,
+            liveness.RESOLVED_QUEUED,
+            liveness.RESOLVED_APPROVAL,
+            liveness.RESOLVED_COMPLETED,
+        }
+        for reason in reasons:
+            self.assertIn(reason, liveness.RESOLUTION_BODIES)
+            self.assertTrue(liveness.RESOLUTION_BODIES[reason].strip())
+        # And nothing that is not a reason may appear as a key.
+        self.assertEqual(
+            set(liveness.RESOLUTION_BODIES),
+            reasons,
+            "a body with no matching reason is dead text the classifier cannot emit",
+        )
+
+    def test_an_unknown_reason_raises_rather_than_defaulting(self) -> None:
+        """The hard index is the safety property, and it needs its own test.
+
+        Turning `RESOLUTION_BODIES[reason]` into a `.get(reason, <default>)`
+        would look harmless -- and the default is "the run has finished", so a
+        reason the table has lost would state, on a live CI run, that the run
+        had completed. Nothing else in the suite would notice: every test that
+        renders a body uses a reason the table still has.
+        """
+        candidate = run(1, status="queued", job_count=4, pulls=[1], head_sha=HEAD)
+        with self.assertRaises(KeyError):
+            liveness.resolution_summary(candidate, "a reason nobody defined")
+
+    def test_an_unreadable_clock_does_not_raise_on_a_naive_datetime(self) -> None:
+        """A public seam should not raise a TypeError into the snapshot step."""
+        import datetime as _dt
+
+        runs = [run(1, status="completed", created_at="2026-09-19T00:00:00Z", head_sha=HEAD)]
+        self.assertEqual(
+            liveness.posted_memory_heads(runs, _dt.datetime(2026, 9, 20, 12, 0)),
+            {HEAD},
+        )
+
+    def test_the_report_states_how_many_heads_it_read(self) -> None:
+        """The per-fire cost is reported, not assumed.
+
+        A reader of the step summary should be able to see the read growing
+        with throughput without going to the logs.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z"),
+            posted({STALL_ID: 55501}),
+        )
+        self.assertEqual(report["heads_read"], 1)
+        self.assertIn("1 head(s) read", liveness.render(report))
+
     def test_a_recovered_run_is_not_withdrawn_without_a_record_of_the_failure(self) -> None:
         """No memory means no retraction.
 
