@@ -555,10 +555,10 @@ fn evaluate_pir_reference_candidate(
 }
 
 /// Keep only the facts that belong to the binding selected for this query.
-fn facts_for_selected_binding<'a>(
-    matching: Vec<&'a LexicalBindingFact>,
+fn facts_for_selected_binding(
+    matching: Vec<&LexicalBindingFact>,
     query_byte_offset: Option<usize>,
-) -> Vec<&'a LexicalBindingFact> {
+) -> Vec<&LexicalBindingFact> {
     let selected = binding_for_query(&matching, query_byte_offset);
     matching
         .into_iter()
