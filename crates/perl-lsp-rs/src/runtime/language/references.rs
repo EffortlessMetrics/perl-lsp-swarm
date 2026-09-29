@@ -12,7 +12,9 @@ use super::super::{DocumentHighlightProvider, LspServer, Value, json};
 use super::reference_text::{
     TextReferenceQuery, finalize_reference_locations, search_document_texts_for_references,
 };
-use crate::protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri};
+use crate::protocol::{
+    JsonRpcError, JsonRpcId, REQUEST_CANCELLED, REQUEST_FAILED, req_position, req_uri,
+};
 use crate::runtime::window::RequestProgressGuard;
 use crate::state::{reference_search_deadline, references_cap};
 use crate::util::token_under_cursor;
@@ -511,8 +513,12 @@ impl LspServer {
         let Some(context) = context else {
             return;
         };
-        let result_count = lsp_location_count(result);
-        let (decision, reason) = if result_count == 0 {
+        let deadline_exhausted = fallback_receipt.deadline_exhausted;
+        let candidate_count = lsp_location_count(result);
+        let result_count = if deadline_exhausted { 0 } else { candidate_count };
+        let (decision, reason) = if deadline_exhausted {
+            ("blocked", "reference_search_deadline_exceeded")
+        } else if result_count == 0 {
             ("fallback", "no_result")
         } else {
             ("acted", "live_provider_result")
@@ -553,12 +559,14 @@ impl LspServer {
                 index_state
             }
         };
-        let fallback_state = tier.fallback_state(result_count);
+        let fallback_state =
+            if deadline_exhausted { "request_failed" } else { tier.fallback_state(result_count) };
         // Confidence is high only when the semantic source-backed tier answered.
-        let confidence = if tier.is_source_backed() { "high" } else { "low" };
+        let confidence =
+            if !deadline_exhausted && tier.is_source_backed() { "high" } else { "low" };
         // source_backed_result_count is the total result count only for source-backed answers
         let source_backed_result_count: usize =
-            if tier.is_source_backed() { result_count } else { 0 };
+            if !deadline_exhausted && tier.is_source_backed() { result_count } else { 0 };
 
         let SourceBackedReceiptFields {
             attempted: source_backed_attempted,
@@ -589,20 +597,21 @@ impl LspServer {
             "character": context.character,
             "include_declaration": context.include_declaration,
             "result_count": result_count,
-            "index_result_count": index_result_count,
-            "text_result_count": text_result_count,
+            "index_result_count": if deadline_exhausted { 0 } else { index_result_count },
+            "text_result_count": if deadline_exhausted { 0 } else { text_result_count },
+            "terminal_outcome": if deadline_exhausted { "request_failed_deadline" } else { "result" },
             "source_backed_result_count": source_backed_result_count,
-            "fact_source": tier.fact_source(),
+            "fact_source": if deadline_exhausted { "provider_runtime" } else { tier.fact_source() },
             "confidence": confidence,
-            "freshness": tier.freshness(index_state),
-            "source_backed": tier.is_source_backed(),
-            "source_backed_state": tier.source_backed_state(),
-            "answering_tier": tier.as_str(),
+            "freshness": if deadline_exhausted { "unknown" } else { tier.freshness(index_state) },
+            "source_backed": !deadline_exhausted && tier.is_source_backed(),
+            "source_backed_state": if deadline_exhausted { "not_returned" } else { tier.source_backed_state() },
+            "answering_tier": if deadline_exhausted { "none" } else { tier.as_str() },
             "index_state": index_state,
             "latency_us": latency_us,
             "fallback_state": fallback_state,
             "dynamic_boundary": false,
-            "trace_only_no_live_behavior_change": true,
+            "trace_only_no_live_behavior_change": !deadline_exhausted,
             "source_backed_attempted": source_backed_attempted,
             "source_backed_outcome": source_backed_outcome,
             "source_backed_decline_stage": source_backed_decline_stage,
@@ -618,8 +627,18 @@ impl LspServer {
             "cancellation_observed": fallback_receipt.cancellation_observed,
             "fallback_completeness": fallback_receipt.fallback_completeness,
             "fallback_reason": fallback_receipt.fallback_reason,
-            "claim_boundary": "records existing references response only; no broader live references cutover"
+            "claim_boundary": if fallback_receipt.deadline_exhausted {
+                "deadline-truncated references fail the request; no broader live references cutover"
+            } else {
+                "records existing references response only; no broader live references cutover"
+            }
         });
+        if deadline_exhausted && let Some(object) = receipt.as_object_mut() {
+            object.insert("discarded_candidate_count".to_owned(), json!(candidate_count));
+            object.insert("discarded_index_candidate_count".to_owned(), json!(index_result_count));
+            object.insert("discarded_text_candidate_count".to_owned(), json!(text_result_count));
+            object.insert("discarded_candidate_tier".to_owned(), json!(tier.as_str()));
+        }
         if let Some(request_id) = request_id
             && let Some(object) = receipt.as_object_mut()
         {
@@ -698,6 +717,14 @@ impl LspServer {
             source_backed_attempt.as_ref(),
             &fallback_receipt,
         );
+        if fallback_receipt.deadline_exhausted {
+            return Err(JsonRpcError {
+                code: REQUEST_FAILED,
+                message: "Reference search deadline exceeded before the result was complete"
+                    .to_owned(),
+                data: None,
+            });
+        }
         Ok(result)
     }
 
@@ -1034,8 +1061,13 @@ impl LspServer {
 
                                     // Check deadline before text search
                                     if start.elapsed() >= deadline {
+                                        fallback_receipt.deadline_exhausted = true;
+                                        fallback_receipt.fallback_completeness = "partial";
+                                        fallback_receipt.fallback_reason = Some(
+                                            "reference_scan_deadline_before_text_search".to_owned(),
+                                        );
                                         tracing::debug!(
-                                            "References: deadline exceeded, returning partial results"
+                                            "References: deadline exceeded before text search"
                                         );
                                         let index_count = workspace_locations.len();
                                         workspace_locations.truncate(cap);
@@ -1525,13 +1557,32 @@ impl LspServer {
         receipt: &mut ReferenceTextFallbackReceipt,
         request_id: Option<&JsonRpcId>,
     ) -> Result<Vec<(String, String)>, JsonRpcError> {
+        self.bounded_open_document_snapshot_with_deadline_check(
+            current_uri,
+            current_text,
+            budget,
+            receipt,
+            request_id,
+            &mut || Instant::now() >= budget.deadline,
+        )
+    }
+
+    fn bounded_open_document_snapshot_with_deadline_check(
+        &self,
+        current_uri: &str,
+        current_text: &str,
+        budget: &ReferenceTextFallbackBudget,
+        receipt: &mut ReferenceTextFallbackReceipt,
+        request_id: Option<&JsonRpcId>,
+        deadline_expired: &mut impl FnMut() -> bool,
+    ) -> Result<Vec<(String, String)>, JsonRpcError> {
         receipt.fallback_completeness = "partial";
         receipt.fallback_reason = Some("bounded_open_document_text_scan".to_owned());
         receipt.scan_budget_documents = budget.max_documents;
         receipt.scan_budget_bytes = budget.max_bytes;
 
         self.check_references_cancellation(request_id, receipt)?;
-        if Instant::now() >= budget.deadline {
+        if deadline_expired() {
             receipt.deadline_exhausted = true;
             receipt.fallback_reason = Some("reference_scan_deadline_before_snapshot".to_owned());
             return Ok(Vec::new());
@@ -1558,7 +1609,7 @@ impl LspServer {
                     continue;
                 }
                 self.check_references_cancellation(request_id, receipt)?;
-                if Instant::now() >= budget.deadline {
+                if deadline_expired() {
                     receipt.deadline_exhausted = true;
                     receipt.fallback_reason =
                         Some("reference_scan_deadline_during_snapshot".to_owned());
@@ -1593,7 +1644,7 @@ impl LspServer {
 
         for document_uri in candidates {
             self.check_references_cancellation(request_id, receipt)?;
-            if Instant::now() >= budget.deadline {
+            if deadline_expired() {
                 receipt.deadline_exhausted = true;
                 receipt.fallback_reason =
                     Some("reference_scan_deadline_during_snapshot".to_owned());
@@ -2642,6 +2693,89 @@ mod tests {
     }
 
     // ── Handler trace tests (--lib reachable) ────────────────────────────
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_marks_deadline_before_scan() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///deadline-before-snapshot.pl";
+        server.test_apply_did_open(current_uri, "my $target = 1;", 1)?;
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 128,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: Instant::now(),
+        };
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let snapshot = server.bounded_open_document_snapshot(
+            current_uri,
+            "my $target = 1;",
+            &budget,
+            &mut receipt,
+            None,
+        )?;
+        if !snapshot.is_empty()
+            || !receipt.deadline_exhausted
+            || receipt.budget_exhausted
+            || receipt.fallback_completeness != "partial"
+        {
+            return Err(format!("deadline-only snapshot was not recorded: {receipt:?}").into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_marks_deadline_during_scan() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///deadline-during-snapshot.pl";
+        server.test_apply_did_open(current_uri, "my $target = 1;", 1)?;
+        server.test_apply_did_open("file:///other-deadline.pl", "$target++;", 1)?;
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 128,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let mut checks = 0;
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let snapshot = server.bounded_open_document_snapshot_with_deadline_check(
+            current_uri,
+            "my $target = 1;",
+            &budget,
+            &mut receipt,
+            None,
+            &mut || {
+                checks += 1;
+                checks > 1
+            },
+        )?;
+        if snapshot.len() != 1
+            || checks != 2
+            || !receipt.deadline_exhausted
+            || receipt.budget_exhausted
+            || receipt.scanned_documents != 1
+            || receipt.fallback_reason.as_deref() != Some("reference_scan_deadline_during_snapshot")
+        {
+            return Err(format!("mid-snapshot deadline was not recorded: {receipt:?}").into());
+        }
+        Ok(())
+    }
 
     #[cfg(feature = "workspace")]
     #[test]
