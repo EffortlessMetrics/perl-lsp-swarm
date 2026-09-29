@@ -135,7 +135,7 @@ For performance tuning options (cache sizes, deadline budgets, file limits), see
 
 ### Are there workspace size limits?
 
-The workspace index has internal limits of 10,000 files and 500,000 total symbols; LSP settings cannot raise these caps. If your workspace reaches a cap, open a narrower workspace folder containing the Perl source you need, then reindex or restart the server. [CONFIG.md](CONFIG.md) lists supported `perl.limits` settings. For degraded-index diagnosis, see the [large-workspace troubleshooting guide](../large-workspaces/TROUBLESHOOTING.md).
+The workspace index has internal limits of 10,000 files and 500,000 total symbols; LSP settings cannot raise these caps. If your workspace reaches a cap, open a narrower workspace folder containing the Perl source you need, then restart the server. [CONFIG.md](CONFIG.md) lists supported `perl.limits` settings. For degraded-index diagnosis, see the [large-workspace troubleshooting guide](../large-workspaces/TROUBLESHOOTING.md).
 
 ### What if the server is slow on startup?
 
