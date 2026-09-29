@@ -1055,8 +1055,10 @@ fn run_project_workload(
                 (rename_cursor, result, edits, readiness_state_for(initial_readiness))
             }
             "diagnostics_present_import" => {
-                let diagnostics =
-                    harness.wait_for_diagnostics(&project.active_file, Duration::from_secs(5));
+                let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+                    &format!("diagnostics for {}", &project.active_file),
+                    harness.wait_for_diagnostics(&project.active_file, Duration::from_secs(5)),
+                )?;
                 (
                     CursorReceipt { line: 0, character: 0 },
                     json!(diagnostics),

@@ -49,8 +49,10 @@ fn scenario_22_template_in_html_mode_preserves_neighboring_perl_navigation() -> 
 
     std::thread::sleep(Duration::from_millis(500));
 
-    let template_diags =
-        harness.wait_for_diagnostics("templates/index.html.ep", Duration::from_millis(1200));
+    let template_diags = perl_lsp_ux_tests::wait_with_subject(
+        &format!("diagnostics for {}", "templates/index.html.ep"),
+        harness.wait_for_diagnostics("templates/index.html.ep", Duration::from_millis(1200)),
+    )?;
     assert!(
         template_diags.is_empty(),
         "template opened as html should skip Perl parse diagnostics, got: {template_diags:?}"
