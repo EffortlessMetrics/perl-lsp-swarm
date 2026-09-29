@@ -2276,10 +2276,20 @@ mod tests {
     #[test]
     fn literal_preserve_region_for_range_ignores_heredoc_outside_range()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Heredoc start on line 0, range is line 1.
+        // The range begins after the heredoc terminator, on an ordinary code line.
+        let source = "print <<'EOF';\nbody\nEOF\nmy $x = 1;\n";
+        let range = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
+        assert_eq!(literal_preserve_region_for_range(source, range), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn literal_preserve_region_for_range_detects_heredoc_body_without_terminator()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "print <<'EOF';\nmy $x = 1;\n";
         let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
-        assert_eq!(literal_preserve_region_for_range(source, range), None);
+        assert_eq!(literal_preserve_region_for_range(source, range), Some("heredoc"));
 
         Ok(())
     }
