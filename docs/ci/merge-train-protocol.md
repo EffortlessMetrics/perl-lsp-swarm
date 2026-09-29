@@ -27,7 +27,7 @@ cargo xtask queue-snapshot --out target/queue-snapshot.json
 # closed to NOT_PROVEN when no current typed live observation exists. Checked-in
 # fixtures (for example master-green.json) are offline replays and can never
 # authorize live train construction (#15387).
-cargo xtask queue-health
+cargo xtask queue health
 ```
 
 Use the protected merge preflight and current GitHub facts; do not reconcile

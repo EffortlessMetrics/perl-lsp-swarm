@@ -131,14 +131,11 @@ pub struct QueueHealthArgs {
 }
 
 pub fn run(args: QueueHealthArgs) -> Result<()> {
-    let source = if args.fixture.is_some() {
-        ObservationSource::OfflineFixture
-    } else {
-        ObservationSource::Live
-    };
     let (input, source) = match load_input(args.fixture.as_deref()) {
         Ok(loaded) => loaded,
-        Err(err) if source == ObservationSource::Live => {
+        // No --fixture argument means the live path: a missing or
+        // unreadable live input is itself evidence absence (#15387).
+        Err(err) if args.fixture.is_none() => {
             // A missing or unreadable live input is itself evidence absence:
             // fail closed to a NOT_PROVEN receipt instead of aborting without
             // one (#15387).
@@ -164,7 +161,12 @@ pub fn run(args: QueueHealthArgs) -> Result<()> {
         }
         Err(err) => return Err(err),
     };
-    let receipt = classify(&input, source);
+    // Independently observe the current default-branch tip for live runs
+    // (#15387 review): a receipt whose master_sha predates the observed
+    // tip must not reopen GREEN lanes after main advances.
+    let observed_tip =
+        if source == ObservationSource::Live { observe_default_branch_tip() } else { None };
+    let receipt = classify(&input, source, observed_tip.as_deref());
 
     let out = serde_json::to_string_pretty(&receipt)?;
     let receipt_path = args.receipt.unwrap_or_else(|| PathBuf::from(DEFAULT_RECEIPT_PATH));
@@ -205,7 +207,33 @@ fn is_full_object_id(sha: &str) -> bool {
     sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-pub fn classify(input: &QueueHealthInput, source: ObservationSource) -> QueueHealthReceipt {
+/// Independently observe the current default-branch tip from the local
+/// repository (#15387 review). A failed or unresolvable observation yields
+/// None and the settled branch classifies NOT_PROVEN — a timestamp alone
+/// never establishes subject currentness.
+fn observe_default_branch_tip() -> Option<String> {
+    let root = crate::utils::project_root().ok()?;
+    for reference in ["origin/main", "main"] {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", &format!("{reference}^{{commit}}")])
+            .current_dir(&root)
+            .output()
+            .ok()?;
+        if output.status.success() {
+            let tip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if is_full_object_id(&tip) {
+                return Some(tip);
+            }
+        }
+    }
+    None
+}
+
+pub fn classify(
+    input: &QueueHealthInput,
+    source: ObservationSource,
+    observed_tip: Option<&str>,
+) -> QueueHealthReceipt {
     let mut reasons = Vec::new();
 
     // Absence is evidence of nothing: a missing, empty, or unrecognized
@@ -240,16 +268,27 @@ pub fn classify(input: &QueueHealthInput, source: ObservationSource) -> QueueHea
     let has_failures = !input.failed_checks.is_empty();
     let shared_blocker = input.failure_classifier.as_ref().is_some_and(|c| c.shared_blocker);
 
+    // Typed evidence rows dominate the aggregate arrays (#15387 review): a
+    // typed PENDING row under an aggregate-green state is still unsettled,
+    // and a typed policy finding is still failing. Stale, cancelled,
+    // not-proven, draft-skip, and not-applicable rows stay NOT_PROVEN
+    // through green_blockers on the settled branch.
+    let typed_pending =
+        input.required_check_evidence.iter().any(|row| row.result == EvidenceClass::Pending);
+    let typed_failure =
+        input.required_check_evidence.iter().any(|row| row.result == EvidenceClass::PolicyFinding);
+
     // Observed negative/pending evidence still dominates: a failing or
     // unsettled queue is honest even when the observation is otherwise weak,
     // and neither mode opens mutating lanes. Only the settled branch requires
     // complete, current, subject-bound evidence.
-    let mode = if state.as_deref() == Some("red") || has_failures || shared_blocker {
+    let mode = if state.as_deref() == Some("red") || has_failures || shared_blocker || typed_failure
+    {
         QueueMode::Red
-    } else if state.as_deref() == Some("pending") || has_pending {
+    } else if state.as_deref() == Some("pending") || has_pending || typed_pending {
         QueueMode::Pending
     } else {
-        let green_blockers = green_blockers(input, source);
+        let green_blockers = green_blockers(input, source, state.as_deref(), observed_tip);
         if green_blockers.is_empty() {
             QueueMode::Green
         } else {
@@ -269,7 +308,8 @@ pub fn classify(input: &QueueHealthInput, source: ObservationSource) -> QueueHea
         }
     }
 
-    let (allowed_lanes, blocked_lanes, verdict) = build_policy(mode, input.gate_policy.as_ref());
+    let (allowed_lanes, blocked_lanes, verdict) =
+        build_policy(mode, source, input.gate_policy.as_ref());
 
     QueueHealthReceipt {
         check: QUEUE_HEALTH_CHECK.to_string(),
@@ -286,8 +326,31 @@ pub fn classify(input: &QueueHealthInput, source: ObservationSource) -> QueueHea
 
 /// Every reason the settled (green) branch is unreachable, or empty when the
 /// observation is a complete, current, subject-bound live observation (#15387).
-fn green_blockers(input: &QueueHealthInput, source: ObservationSource) -> Vec<String> {
+fn green_blockers(
+    input: &QueueHealthInput,
+    source: ObservationSource,
+    state: Option<&str>,
+    observed_tip: Option<&str>,
+) -> Vec<String> {
     let mut blockers = Vec::new();
+
+    // Subject currentness (#15387 review): a well-formed but stale
+    // master_sha reopens GREEN lanes after main advances. The receipt is
+    // only settled when the independently observed default-branch tip
+    // equals the receipt's subject; an unobservable tip is NOT_PROVEN.
+    match observed_tip {
+        None => blockers.push(
+            "current default-branch tip could not be independently observed; 
+             receipt subject currentness unproven"
+                .to_string(),
+        ),
+        Some(tip) if tip != input.master_sha => blockers.push(format!(
+            "stale observation: receipt describes default branch at {} but the observed 
+             tip is {tip}; subject currentness unproven",
+            input.master_sha
+        )),
+        Some(_) => {}
+    }
 
     if source == ObservationSource::OfflineFixture {
         blockers.push(
@@ -318,13 +381,8 @@ fn green_blockers(input: &QueueHealthInput, source: ObservationSource) -> Vec<St
         );
     }
 
-    let state = input
-        .ci_state
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase());
-    match state.as_deref() {
+    // The caller's pre-parsed, lowercased state (#16263 review) is reused.
+    match state {
         Some("green") => {}
         None => blockers.push("ci_state missing from input; main-CI state unknown".to_string()),
         Some(other) => {
@@ -389,8 +447,28 @@ fn green_blockers(input: &QueueHealthInput, source: ObservationSource) -> Vec<St
 
 fn build_policy(
     mode: QueueMode,
+    source: ObservationSource,
     gate_policy: Option<&GatePolicy>,
 ) -> (Vec<String>, Vec<String>, String) {
+    // Source authority constrains policy for every mode (#15387 review):
+    // an offline fixture replay may not hand out merge-ready promotion or
+    // master-fix lanes just because the replayed evidence was pending or
+    // red — only the settled branch used to check provenance.
+    if source == ObservationSource::OfflineFixture {
+        return (
+            vec!["read-only-review".to_string(), "read-only-design".to_string()],
+            vec![
+                "merge-drain".to_string(),
+                "cascade-update".to_string(),
+                "green-ci-promotion".to_string(),
+                "merge-ready-promotion".to_string(),
+                "merge-ready-promotion-if-candidate-current".to_string(),
+                "broad-cascade-final-labels".to_string(),
+                "master-fix".to_string(),
+            ],
+            "offline fixture replay: rehearsal only, never live queue authorization".to_string(),
+        );
+    }
     match mode {
         QueueMode::Green => (
             vec![
@@ -515,8 +593,77 @@ mod tests {
     }
 
     #[test]
+    fn stale_or_unobservable_tip_is_never_green() {
+        // #15387 review: a well-formed stale master_sha must not reopen GREEN
+        // lanes after main advances, and an unobservable tip is NOT_PROVEN.
+        let advanced = "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let receipt = classify(&complete_live_input(), ObservationSource::Live, Some(advanced));
+        assert_eq!(receipt.mode, QueueMode::NotProven);
+        assert!(!receipt.allowed_lanes.iter().any(|lane| lane == "merge-drain"));
+        assert!(receipt.reasons.iter().any(|reason| reason.contains("stale observation")));
+
+        let receipt = classify(&complete_live_input(), ObservationSource::Live, None);
+        assert_eq!(receipt.mode, QueueMode::NotProven);
+        assert!(
+            receipt
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("could not be independently observed"))
+        );
+    }
+
+    #[test]
+    fn typed_rows_select_pending_and_red_under_aggregate_green() {
+        // #15387 review: a typed PENDING row under aggregate-green is still
+        // unsettled, and a typed policy finding is still failing.
+        let mut pending = complete_live_input();
+        pending.required_check_evidence.push(RequiredCheckEvidence {
+            name: "docs".to_string(),
+            evaluated_sha: MASTER_SHA.to_string(),
+            subject: CheckSubject::CandidateHead,
+            result: EvidenceClass::Pending,
+        });
+        let receipt = classify(&pending, ObservationSource::Live, Some(MASTER_SHA));
+        assert_eq!(receipt.mode, QueueMode::Pending);
+
+        let mut failing = complete_live_input();
+        failing.required_check_evidence.push(RequiredCheckEvidence {
+            name: "unit".to_string(),
+            evaluated_sha: MASTER_SHA.to_string(),
+            subject: CheckSubject::CandidateHead,
+            result: EvidenceClass::PolicyFinding,
+        });
+        let receipt = classify(&failing, ObservationSource::Live, Some(MASTER_SHA));
+        assert_eq!(receipt.mode, QueueMode::Red);
+    }
+
+    #[test]
+    fn offline_fixture_replay_never_holds_mutation_lanes() {
+        // #15387 review: source authority constrains policy for every mode —
+        // a pending or red fixture replay may not hand out merge-ready or
+        // master-fix lanes the way live evidence can.
+        for state in ["green", "pending", "red"] {
+            let mut input = complete_live_input();
+            input.ci_state = Some(state.to_string());
+            let receipt = classify(&input, ObservationSource::OfflineFixture, None);
+            assert!(
+                receipt
+                    .allowed_lanes
+                    .iter()
+                    .all(|lane| lane == "read-only-review" || lane == "read-only-design"),
+                "fixture replay for state {state:?} must be rehearsal-only: {:?}",
+                receipt.allowed_lanes
+            );
+            assert_eq!(
+                receipt.verdict,
+                "offline fixture replay: rehearsal only, never live queue authorization"
+            );
+        }
+    }
+
+    #[test]
     fn missing_ci_state_is_never_green() {
-        let receipt = classify(&legacy_input(None), ObservationSource::Live);
+        let receipt = classify(&legacy_input(None), ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(receipt.mode, QueueMode::NotProven);
         assert!(!receipt.allowed_lanes.iter().any(|lane| lane == "merge-drain"));
         assert!(receipt.reasons.iter().any(|reason| reason.contains("ci_state missing")));
@@ -525,7 +672,8 @@ mod tests {
     #[test]
     fn unknown_or_malformed_ci_state_is_never_green() {
         for state in ["unknown", "bananas", ""] {
-            let receipt = classify(&legacy_input(Some(state)), ObservationSource::Live);
+            let receipt =
+                classify(&legacy_input(Some(state)), ObservationSource::Live, Some(MASTER_SHA));
             assert_eq!(receipt.mode, QueueMode::NotProven, "state {state:?} must not be green");
         }
     }
@@ -533,7 +681,7 @@ mod tests {
     #[test]
     fn empty_arrays_with_unproved_denominator_are_not_fully_settled() {
         let input = legacy_input(Some("green"));
-        let receipt = classify(&input, ObservationSource::Live);
+        let receipt = classify(&input, ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(receipt.mode, QueueMode::NotProven);
         assert!(receipt.reasons.iter().any(|reason| reason.contains("denominator unproved")));
         assert!(receipt.reasons.iter().all(|reason| !reason.contains("fully settled")));
@@ -546,14 +694,14 @@ mod tests {
         let mut input = complete_live_input();
         input.expected_required_checks = Vec::new();
         input.required_check_evidence = vec![success_row("advisory-lint")];
-        let receipt = classify(&input, ObservationSource::Live);
+        let receipt = classify(&input, ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(receipt.mode, QueueMode::NotProven);
         assert!(receipt.reasons.iter().any(|reason| reason.contains("denominator unproved")));
     }
 
     #[test]
     fn complete_live_typed_evidence_is_green() {
-        let receipt = classify(&complete_live_input(), ObservationSource::Live);
+        let receipt = classify(&complete_live_input(), ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(receipt.mode, QueueMode::Green);
         assert!(receipt.allowed_lanes.contains(&"merge-drain".to_string()));
         assert_eq!(receipt.schema_version, QUEUE_HEALTH_SCHEMA_VERSION);
@@ -564,7 +712,7 @@ mod tests {
     fn missing_one_required_context_is_not_green() {
         let mut input = complete_live_input();
         input.required_check_evidence = vec![success_row("merge-gate")];
-        let receipt = classify(&input, ObservationSource::Live);
+        let receipt = classify(&input, ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(receipt.mode, QueueMode::NotProven);
         assert!(receipt.reasons.iter().any(|reason| reason.contains("clippy has no evidence row")));
     }
@@ -574,12 +722,18 @@ mod tests {
         let mut stale = complete_live_input();
         stale.required_check_evidence[1].evaluated_sha =
             "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
-        assert_eq!(classify(&stale, ObservationSource::Live).mode, QueueMode::NotProven);
+        assert_eq!(
+            classify(&stale, ObservationSource::Live, Some(MASTER_SHA)).mode,
+            QueueMode::NotProven
+        );
 
         let mut wrong_subject = complete_live_input();
         wrong_subject.required_check_evidence[1].subject =
             CheckSubject::MergeGroup { merge_group_sha: MASTER_SHA.to_string() };
-        assert_eq!(classify(&wrong_subject, ObservationSource::Live).mode, QueueMode::NotProven);
+        assert_eq!(
+            classify(&wrong_subject, ObservationSource::Live, Some(MASTER_SHA)).mode,
+            QueueMode::NotProven
+        );
     }
 
     #[test]
@@ -590,7 +744,7 @@ mod tests {
             .required_check_evidence
             .iter_mut()
             .for_each(|row| row.evaluated_sha = "1111111".to_string());
-        let receipt = classify(&input, ObservationSource::Live);
+        let receipt = classify(&input, ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(receipt.mode, QueueMode::NotProven);
         assert!(
             receipt.reasons.iter().any(|reason| reason.contains("full 40-character object id"))
@@ -601,11 +755,17 @@ mod tests {
     fn unversioned_or_mismatched_input_fails_closed() {
         let mut input = complete_live_input();
         input.input_schema_version = None;
-        assert_eq!(classify(&input, ObservationSource::Live).mode, QueueMode::NotProven);
+        assert_eq!(
+            classify(&input, ObservationSource::Live, Some(MASTER_SHA)).mode,
+            QueueMode::NotProven
+        );
 
         let mut input = complete_live_input();
         input.input_schema_version = Some(INPUT_SCHEMA_VERSION + 1);
-        assert_eq!(classify(&input, ObservationSource::Live).mode, QueueMode::NotProven);
+        assert_eq!(
+            classify(&input, ObservationSource::Live, Some(MASTER_SHA)).mode,
+            QueueMode::NotProven
+        );
     }
 
     #[test]
@@ -613,7 +773,7 @@ mod tests {
         // A source/API failure is not a settled observation.
         let mut failed = complete_live_input();
         failed.source_error = Some("github check-run collector unavailable".to_string());
-        let receipt = classify(&failed, ObservationSource::Live);
+        let receipt = classify(&failed, ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(receipt.mode, QueueMode::NotProven);
         assert!(receipt.reasons.iter().any(|reason| reason.contains("observation source error")));
 
@@ -622,7 +782,7 @@ mod tests {
         let mut zero = complete_live_input();
         zero.expected_required_checks = Vec::new();
         zero.zero_applicable = true;
-        let receipt = classify(&zero, ObservationSource::Live);
+        let receipt = classify(&zero, ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(receipt.mode, QueueMode::Green);
     }
 
@@ -630,16 +790,22 @@ mod tests {
     fn incomplete_source_is_not_green() {
         let mut input = complete_live_input();
         input.source_complete = None;
-        assert_eq!(classify(&input, ObservationSource::Live).mode, QueueMode::NotProven);
+        assert_eq!(
+            classify(&input, ObservationSource::Live, Some(MASTER_SHA)).mode,
+            QueueMode::NotProven
+        );
 
         let mut input = complete_live_input();
         input.source_complete = Some(false);
-        assert_eq!(classify(&input, ObservationSource::Live).mode, QueueMode::NotProven);
+        assert_eq!(
+            classify(&input, ObservationSource::Live, Some(MASTER_SHA)).mode,
+            QueueMode::NotProven
+        );
     }
 
     #[test]
     fn fixture_output_cannot_authorize_live_lanes() {
-        let receipt = classify(&complete_live_input(), ObservationSource::OfflineFixture);
+        let receipt = classify(&complete_live_input(), ObservationSource::OfflineFixture, None);
         assert_eq!(receipt.mode, QueueMode::NotProven);
         assert_eq!(receipt.source, ObservationSource::OfflineFixture);
         assert!(receipt.reasons.iter().any(|reason| reason.contains("offline fixture")));
@@ -651,7 +817,7 @@ mod tests {
         input.pending_checks = vec!["merge-gate".to_string()];
         input.gate_policy =
             Some(GatePolicy { pending_allows_merge_ready_if_candidate_current: true });
-        let receipt = classify(&input, ObservationSource::Live);
+        let receipt = classify(&input, ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(receipt.mode, QueueMode::Pending);
         assert!(
             receipt
@@ -668,14 +834,14 @@ mod tests {
             shared_blocker: true,
             summary: Some("clippy broken".to_string()),
         });
-        let receipt = classify(&input, ObservationSource::Live);
+        let receipt = classify(&input, ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(receipt.mode, QueueMode::Red);
         assert!(receipt.allowed_lanes.contains(&"master-fix".to_string()));
     }
 
     #[test]
     fn not_proven_lanes_and_serialization() {
-        let receipt = classify(&legacy_input(None), ObservationSource::Live);
+        let receipt = classify(&legacy_input(None), ObservationSource::Live, Some(MASTER_SHA));
         assert_eq!(
             receipt.allowed_lanes,
             vec!["read-only-investigation".to_string(), "evidence-refresh".to_string()]
