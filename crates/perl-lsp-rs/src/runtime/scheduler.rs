@@ -160,7 +160,8 @@ pub(crate) struct ReadFreshness {
     pub uri: String,
     /// Generation counter as observed at ingress. `None` when the
     /// document was not yet open at ingress (e.g. a hover arriving before
-    /// the matching `didOpen`); in that case freshness is not enforced.
+    /// the matching `didOpen`); delivery still checks that the URI remains
+    /// closed, so a disk-snapshot response cannot race over a live buffer.
     pub document_generation: Option<u32>,
     /// Generation counter identity captured at ingress. A close/reopen can
     /// reuse the numeric generation, so the allocation identity is part of
@@ -923,6 +924,14 @@ impl Scheduler {
         };
 
         let Some(captured) = freshness.document_generation else {
+            // A disk-snapshot request entered before `didOpen`. Recheck while
+            // holding the document-store lock and enqueue under that same lock
+            // so an open mutation cannot slip between the guard and delivery.
+            let normalized_uri = server.normalize_uri_key(&freshness.uri);
+            let documents = server.documents.lock();
+            if documents.contains_key(&normalized_uri) {
+                return Some(StaleReason::DocumentInstanceChanged);
+            }
             Self::send_response(&server.outbound, response);
             return None;
         };
@@ -2094,6 +2103,31 @@ mod tests {
             !output.contains("\"id\":78"),
             "post-handler stale completion result must not be delivered; output={output}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn disk_snapshot_response_is_rejected_after_did_open() -> Result<(), JsonRpcError> {
+        let (server, output) = server_with_captured_output();
+        let uri = "file:///closed-hover-open-race.pl";
+        let freshness = make_freshness(uri, None, None);
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+
+        assert_eq!(
+            Scheduler::send_response_if_fresh(
+                &server,
+                Some(&freshness),
+                JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: JsonRpcId::from_value(&serde_json::json!(79)),
+                    result: Some(serde_json::json!({ "contents": "disk" })),
+                    error: None,
+                },
+            ),
+            Some(StaleReason::DocumentInstanceChanged)
+        );
+        let output = String::from_utf8_lossy(&output.lock().clone()).to_string();
+        assert!(!output.contains("\"id\":79"), "stale disk response was sent: {output}");
         Ok(())
     }
 

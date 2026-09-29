@@ -11,7 +11,7 @@ use super::hover_extracted::HoverExtracted;
 use super::live_compiler_hover::LiveHoverCompilerContext;
 use super::{LspServer, Value, json};
 use crate::state::ParsedSnapshot;
-use std::sync::Arc;
+use std::{io::Read, sync::Arc};
 
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::IndexReadinessPolicy;
@@ -67,7 +67,22 @@ impl LspServer {
             workspace_index.file_id_for_uri(uri)?;
 
             let path = url::Url::parse(uri).ok()?.to_file_path().ok()?;
-            let text = std::fs::read_to_string(path).ok()?;
+            let byte_limit = perl_lsp_rs_core::runtime::limits::max_file_size_bytes();
+            let path_metadata = std::fs::metadata(&path).ok()?;
+            if !path_metadata.is_file() || path_metadata.len() > byte_limit as u64 {
+                return None;
+            }
+            let file = std::fs::File::open(&path).ok()?;
+            let opened_metadata = file.metadata().ok()?;
+            if !opened_metadata.is_file() || opened_metadata.len() > byte_limit as u64 {
+                return None;
+            }
+            let mut bytes = Vec::with_capacity(opened_metadata.len() as usize);
+            file.take(byte_limit as u64 + 1).read_to_end(&mut bytes).ok()?;
+            if bytes.len() > byte_limit {
+                return None;
+            }
+            let text = crate::util::decode_text_bytes(&bytes);
 
             // The canonical parse the parse worker runs (code-slice input,
             // full text as the snapshot source), minus the publish step: this
@@ -88,8 +103,19 @@ impl LspServer {
                     .with_regex_analysis(regex_analysis),
             );
             let ast = snapshot.ast()?;
+            // The URI is closed, so the normal document-generation stale gate
+            // cannot establish that its semantic shard describes these disk
+            // bytes. Keep local hover on the fresh parse, but permit compiler
+            // facts only when the indexed shard has the same source hash.
+            let index_matches_disk = workspace_index
+                .file_fact_shard(uri)
+                .is_some_and(|shard| shard.content_hash == snapshot.content_hash());
 
-            let offset = crate::util::position_to_offset(&text, line, character)?;
+            let line_starts = perl_parser::position::LineStartsCache::new(&text);
+            let offset = line_starts.position_to_offset(&text, line, character);
+            if line_starts.offset_to_position(&text, offset) != (line, character) {
+                return None;
+            }
             let (token_start, token_end) = Self::token_byte_bounds_of(&text, offset);
             let hover_range = if token_end > token_start && token_end <= text.len() {
                 let start = crate::util::offset_to_position(&text, token_start);
@@ -108,17 +134,49 @@ impl LspServer {
             let source_region = snapshot.source_region_index();
             let source_region_kind = source_region.kind_at_offset(offset).as_str().to_string();
             super::set_hover_trace_source_region_kind(Some(source_region_kind.clone()));
-            let live_compiler_context = Self::live_hover_compiler_context(
-                uri,
-                &text,
-                offset,
-                Some(source_region_kind),
-                Some(source_region.as_ref()),
-            );
+            let dancer2_hover = self
+                .dancer2_package_at(uri, &text, snapshot.content_hash(), ast, offset)
+                .and_then(|(context, package)| {
+                    perl_lsp_rs_core::providers::dancer2::hover_projection_at(
+                        &context.activations,
+                        &context.facts,
+                        ast,
+                        &package,
+                        offset,
+                    )
+                })
+                .map(|projection| match projection {
+                    perl_lsp_rs_core::providers::dancer2::RouteHoverProjection::Route {
+                        content,
+                        ..
+                    }
+                    | perl_lsp_rs_core::providers::dancer2::RouteHoverProjection::Keyword {
+                        content,
+                    }
+                    | perl_lsp_rs_core::providers::dancer2::RouteHoverProjection::Hook {
+                        content,
+                        ..
+                    } => content.clone(),
+                    _ => "Dancer2 framework projection".to_string(),
+                });
+            let live_compiler_context = if index_matches_disk && dancer2_hover.is_none() {
+                Self::live_hover_compiler_context(
+                    uri,
+                    &text,
+                    offset,
+                    Some(source_region_kind),
+                    Some(source_region.as_ref()),
+                )
+            } else {
+                None
+            };
 
             let parsed = Some(Arc::clone(&snapshot));
-            let extracted = if let Some(module_name) = Self::find_use_module_at_offset(ast, offset)
-            {
+            let extracted = if let Some(content) = dancer2_hover {
+                HoverExtracted::Complete(json!({
+                    "contents": { "kind": "markdown", "value": content }
+                }))
+            } else if let Some(module_name) = Self::find_use_module_at_offset(ast, offset) {
                 if let Some(pragma_hover) = Self::build_pragma_hover(&module_name) {
                     HoverExtracted::Complete(pragma_hover)
                 } else {
@@ -286,6 +344,95 @@ mod tests {
             hover.as_ref().is_none_or(Value::is_null),
             "hover on an index entry whose file vanished must stay null, got: {hover:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn closed_file_hover_stays_null_for_non_regular_file() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (server, uri) = closed_file_server(dir.path(), ANIMAL)?;
+        let path = url::Url::parse(&uri)?.to_file_path().map_err(|()| "not a file uri")?;
+        std::fs::remove_file(&path)?;
+        std::fs::create_dir(&path)?;
+
+        let hover = hover_at(&server, &uri, 3, 8)?;
+        assert!(hover.as_ref().is_none_or(Value::is_null));
+        Ok(())
+    }
+
+    #[test]
+    fn closed_file_hover_stays_null_when_file_exceeds_read_limit() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (server, uri) = closed_file_server(dir.path(), ANIMAL)?;
+        let path = url::Url::parse(&uri)?.to_file_path().map_err(|()| "not a file uri")?;
+        let too_large = perl_lsp_rs_core::runtime::limits::max_file_size_bytes() + 1;
+        let oversized = vec![b' '; too_large];
+        std::fs::write(path, oversized)?;
+
+        let hover = hover_at(&server, &uri, 3, 8)?;
+        assert!(hover.as_ref().is_none_or(Value::is_null));
+        Ok(())
+    }
+
+    #[test]
+    fn closed_file_hover_uses_crlf_line_geometry() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let text = "package ClosedCrLf;\r\nsub speak { 1 }\r\n1;\r\n";
+        let (server, uri) = closed_file_server(dir.path(), text)?;
+
+        // Line 1 begins after CRLF. Column zero is `sub`, and column four is
+        // the start of `speak`; the line-feed-only converter shifted both.
+        let hover =
+            hover_at(&server, &uri, 1, 4)?.ok_or("closed-file sub hover must not be null")?;
+        let value = hover_markdown(&hover).ok_or("hover must carry markdown contents")?;
+        assert!(value.contains("**Subroutine**"), "expected subroutine card, got: {value}");
+        let range = hover.get("range").ok_or("hover must include token range")?;
+        assert_eq!(range["start"]["line"], 1);
+        assert_eq!(range["start"]["character"], 4);
+        Ok(())
+    }
+
+    #[test]
+    fn closed_file_hover_rejects_stale_compiler_shard_after_disk_change() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (server, uri) = closed_file_server(dir.path(), ANIMAL)?;
+        let path = url::Url::parse(&uri)?.to_file_path().map_err(|()| "not a file uri")?;
+        let changed = "package ClosedAnimal;\nsub fresh { return 'disk'; }\n1;\n";
+        std::fs::write(&path, changed)?;
+
+        let parts = server
+            .closed_file_hover_parts(&uri, 1, 4)
+            .ok_or("changed on-disk source must still produce local hover facts")?;
+        assert!(
+            parts.live_compiler_context.is_none(),
+            "compiler facts from the old indexed source must not answer a disk snapshot"
+        );
+        let hover = hover_at(&server, &uri, 1, 4)?.ok_or("fresh sub hover must not be null")?;
+        let value = hover_markdown(&hover).ok_or("hover must carry markdown contents")?;
+        assert!(value.contains("fresh"), "hover must describe current disk source: {value}");
+        Ok(())
+    }
+
+    #[test]
+    fn closed_file_hover_uses_dancer2_route_projection() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let lib = dir.path().join("lib");
+        std::fs::create_dir_all(&lib)?;
+        std::fs::write(
+            lib.join("Dancer2.pm"),
+            "package Dancer2;\nour $VERSION = '1.300.0';\n1;\n",
+        )?;
+        let text =
+            "use lib 'lib';\nuse Dancer2;\nget 'user_show', '/users/:id' => sub { 'user' };\n1;\n";
+        let (server, uri) = closed_file_server(dir.path(), text)?;
+
+        let hover = hover_at(&server, &uri, 2, 6)?
+            .ok_or("closed-file Dancer2 route hover must not be null")?;
+        let value = hover_markdown(&hover)
+            .ok_or_else(|| format!("hover must carry markdown contents, got {hover}"))?;
+        assert!(value.contains("Dancer2 route"), "expected route projection, got: {value}");
+        assert!(value.contains("user_show"), "expected route name, got: {value}");
+        assert!(value.contains("/users/:id"), "expected route path, got: {value}");
         Ok(())
     }
 
