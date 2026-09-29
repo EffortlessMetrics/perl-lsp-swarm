@@ -23,11 +23,9 @@ pub(crate) fn validate_receipt(
     reject_installed(&receipt)?;
     reject_cleanup_and_mutations(&receipt)?;
     reject_status_aggregation(&receipt)?;
-    validate_schema_value(
-        &serde_json::to_value(&receipt).map_err(|error| {
-            RehearsalError::new(ReasonCode::MalformedDocument, error.to_string())
-        })?,
-    )?;
+    validate_schema_value(&serde_json::to_value(&receipt).map_err(|error| {
+        RehearsalError::new(ReasonCode::MalformedDocument, redact_parse_error(&error.to_string()))
+    })?)?;
     let expected = compute_receipt_digest(&receipt)?;
     if receipt.receipt_digest != expected {
         return Err(RehearsalError::new(
@@ -39,8 +37,13 @@ pub(crate) fn validate_receipt(
 }
 
 pub(crate) fn validate_bytes(bytes: &[u8]) -> Result<RehearsalReceipt, RehearsalError> {
-    let receipt: RehearsalReceipt = serde_json::from_slice(bytes)
-        .map_err(|error| RehearsalError::new(ReasonCode::MalformedDocument, error.to_string()))?;
+    let value: Value = serde_json::from_slice(bytes).map_err(|error| {
+        RehearsalError::new(ReasonCode::MalformedDocument, redact_parse_error(&error.to_string()))
+    })?;
+    scan_privacy(&value, "$")?;
+    let receipt: RehearsalReceipt = serde_json::from_value(value).map_err(|error| {
+        RehearsalError::new(ReasonCode::MalformedDocument, redact_parse_error(&error.to_string()))
+    })?;
     validate_receipt(receipt)
 }
 
@@ -384,8 +387,9 @@ fn reject_status_aggregation(receipt: &RehearsalReceipt) -> Result<(), Rehearsal
 }
 
 fn reject_privacy(receipt: &RehearsalReceipt) -> Result<(), RehearsalError> {
-    let value = serde_json::to_value(receipt)
-        .map_err(|error| RehearsalError::new(ReasonCode::MalformedDocument, error.to_string()))?;
+    let value = serde_json::to_value(receipt).map_err(|error| {
+        RehearsalError::new(ReasonCode::MalformedDocument, redact_parse_error(&error.to_string()))
+    })?;
     scan_privacy(&value, "$")
 }
 
@@ -465,6 +469,14 @@ fn privacy_hit(text: &str) -> Option<&'static str> {
         return Some("a private environment or credential assignment");
     }
     None
+}
+
+fn redact_parse_error(message: &str) -> String {
+    if privacy_hit(message).is_some() || message.len() > MAX_DURABLE_STRING {
+        "malformed readiness_rehearsal.v1 document (diagnostic redacted)".to_string()
+    } else {
+        message.to_string()
+    }
 }
 
 fn looks_like_git_sha(value: &str) -> bool {

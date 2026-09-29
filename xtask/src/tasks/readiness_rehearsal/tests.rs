@@ -2,8 +2,8 @@ use color_eyre::eyre::Result;
 
 use super::fixtures::{Expect, build_case, fixture_cases, run_fixture_suite, sync_fixture_files};
 use super::model::{
-    FIXTURE_DIR, ReasonCode, Status, canonical_json, compute_receipt_digest, project_human,
-    project_json,
+    FIXTURE_DIR, ReasonCode, RehearsalError, Status, canonical_json, compute_receipt_digest,
+    project_human, project_json,
 };
 use super::validate::{validate_bytes, validate_receipt, validate_schema_file};
 use crate::utils::project_root;
@@ -129,5 +129,100 @@ fn committed_json_round_trips_through_validate_bytes() -> Result<()> {
             "nonzero_exit_pass.json expected nonzero_exit_pass, got {}",
             error.code.as_str()
         ),
+    }
+}
+
+const PRIVACY_PROBE: &str = "ghp_FAKE_REVIEW_MARKER";
+
+fn load_valid_pass_value() -> Result<serde_json::Value> {
+    let bytes = std::fs::read(project_root()?.join(FIXTURE_DIR).join("valid_pass.json"))?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn assert_diagnostic_hides_probe(error: &RehearsalError) -> Result<()> {
+    let text = error.to_string();
+    if text.contains(PRIVACY_PROBE) || text.contains("ghp_") {
+        color_eyre::eyre::bail!("parse diagnostic echoed a privacy probe: {text}");
+    }
+    Ok(())
+}
+
+#[test]
+fn unknown_field_credential_is_privacy_leak_and_not_echoed() -> Result<()> {
+    let mut value = load_valid_pass_value()?;
+    value
+        .as_object_mut()
+        .ok_or_else(|| color_eyre::eyre::eyre!("valid_pass object"))?
+        .insert(PRIVACY_PROBE.to_string(), serde_json::Value::Bool(true));
+    let bytes = serde_json::to_vec(&value)?;
+    match validate_bytes(&bytes) {
+        Err(error) if error.code == ReasonCode::PrivacyLeak => {
+            assert_diagnostic_hides_probe(&error)
+        }
+        Ok(_) => color_eyre::eyre::bail!("unknown credential field validated"),
+        Err(error) => color_eyre::eyre::bail!(
+            "unknown credential field expected privacy_leak, got {}: {error}",
+            error.code.as_str()
+        ),
+    }
+}
+
+#[test]
+fn invalid_enum_credential_is_privacy_leak_and_not_echoed() -> Result<()> {
+    let mut value = load_valid_pass_value()?;
+    value
+        .as_object_mut()
+        .ok_or_else(|| color_eyre::eyre::eyre!("valid_pass object"))?
+        .insert("status".to_string(), serde_json::Value::String(PRIVACY_PROBE.to_string()));
+    let bytes = serde_json::to_vec(&value)?;
+    match validate_bytes(&bytes) {
+        Err(error) if error.code == ReasonCode::PrivacyLeak => {
+            assert_diagnostic_hides_probe(&error)
+        }
+        Ok(_) => color_eyre::eyre::bail!("invalid enum credential validated"),
+        Err(error) => color_eyre::eyre::bail!(
+            "invalid enum credential expected privacy_leak, got {}: {error}",
+            error.code.as_str()
+        ),
+    }
+}
+
+#[test]
+fn malformed_json_credential_is_redacted() -> Result<()> {
+    let bytes =
+        format!("{{\"schema_version\":\"readiness_rehearsal.v1\",\"{PRIVACY_PROBE}\"").into_bytes();
+    match validate_bytes(&bytes) {
+        Err(error) if error.code == ReasonCode::MalformedDocument => {
+            assert_diagnostic_hides_probe(&error)
+        }
+        Ok(_) => color_eyre::eyre::bail!("truncated credential JSON validated"),
+        Err(error) => color_eyre::eyre::bail!(
+            "truncated credential JSON expected malformed_document, got {}: {error}",
+            error.code.as_str()
+        ),
+    }
+}
+
+#[test]
+fn validate_path_does_not_echo_unknown_field_credential() -> Result<()> {
+    let mut value = load_valid_pass_value()?;
+    value
+        .as_object_mut()
+        .ok_or_else(|| color_eyre::eyre::eyre!("valid_pass object"))?
+        .insert(PRIVACY_PROBE.to_string(), serde_json::Value::Bool(true));
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("readiness-rehearsal-privacy-{}.json", std::process::id()));
+    std::fs::write(&path, serde_json::to_vec(&value)?)?;
+    let result = super::validate_path(path.clone());
+    let _ = std::fs::remove_file(&path);
+    match result {
+        Err(error) => {
+            let text = format!("{error:#}");
+            if text.contains(PRIVACY_PROBE) || text.contains("ghp_") {
+                color_eyre::eyre::bail!("validate_path echoed a privacy probe: {text}");
+            }
+            Ok(())
+        }
+        Ok(()) => color_eyre::eyre::bail!("validate_path accepted an unknown credential field"),
     }
 }
