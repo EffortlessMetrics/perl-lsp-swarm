@@ -1692,24 +1692,26 @@ impl WorkspaceIndex {
     /// assert_eq!(folder, Some("file:///project1".to_string()));
     /// ```
     fn determine_folder_uri(&self, file_uri: &str) -> Option<String> {
+        let file_uri = Self::normalize_uri(file_uri);
         let folders = self.workspace_folders.read();
-        let mut best_match: Option<&String> = None;
+        let mut best_match: Option<(&String, usize)> = None;
         for folder_uri in folders.iter() {
+            let normalized_folder = Self::normalize_uri(folder_uri);
             // Check if the file URI starts with the folder URI
             // We need to ensure proper URI matching (with or without trailing slash)
-            let folder_with_slash = if folder_uri.ends_with('/') {
-                folder_uri.clone()
+            let folder_with_slash = if normalized_folder.ends_with('/') {
+                normalized_folder.clone()
             } else {
-                format!("{}/", folder_uri)
+                format!("{}/", normalized_folder)
             };
-            if file_uri.starts_with(&folder_with_slash) || file_uri == folder_uri {
+            if file_uri.starts_with(&folder_with_slash) || file_uri == normalized_folder {
                 match best_match {
-                    Some(existing) if existing.len() >= folder_uri.len() => {}
-                    _ => best_match = Some(folder_uri),
+                    Some((_, length)) if length >= normalized_folder.len() => {}
+                    _ => best_match = Some((folder_uri, normalized_folder.len())),
                 }
             }
         }
-        best_match.cloned()
+        best_match.map(|(folder, _)| folder.clone())
     }
 
     fn find_definition_in_files(
@@ -2055,7 +2057,7 @@ impl WorkspaceIndex {
     /// Uses the same longest-prefix rule as indexed symbol attribution.
     #[must_use]
     pub fn workspace_folder_for_uri(&self, uri: &str) -> Option<String> {
-        self.determine_folder_uri(&Self::normalize_uri(uri))
+        self.determine_folder_uri(uri)
     }
 
     /// Return the document generation represented by the indexed file snapshot.
@@ -11701,6 +11703,18 @@ sub other_sub {
             folder,
             Some("file:///project/lib".to_string()),
             "Nested workspace folders should attribute files to the most specific folder"
+        );
+    }
+
+    #[test]
+    fn test_determine_folder_uri_accepts_localhost_root_alias() {
+        let index = WorkspaceIndex::new();
+        index.set_workspace_folders(vec!["file://localhost/project".to_string()]);
+
+        assert_eq!(
+            index.workspace_folder_for_uri("file:///project/lib/Module.pm"),
+            Some("file://localhost/project".to_string()),
+            "canonical document URI should retain the registered root identity"
         );
     }
 

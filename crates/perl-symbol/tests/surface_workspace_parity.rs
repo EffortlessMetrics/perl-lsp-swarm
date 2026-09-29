@@ -99,3 +99,32 @@ fn surface_bank_tracks_constant_kind_for_constant_sources() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn named_subroutine_declarators_survive_symbol_projection() -> Result<()> {
+    let ast = parse(
+        "package User; my sub hidden { 1 } state sub memo { 1 } our sub shared { 1 } sub public { 1 }",
+    )?;
+    let decls = extract_symbol_decls(&ast, Some("main"));
+
+    for (name, expected) in
+        [("hidden", Some("my")), ("memo", Some("state")), ("shared", Some("our")), ("public", None)]
+    {
+        let decl = decls
+            .iter()
+            .find(|decl| decl.name == name)
+            .ok_or_else(|| anyhow::anyhow!("missing named subroutine {name}"))?;
+        anyhow::ensure!(
+            decl.kind == SymbolKind::Subroutine,
+            "{name} has wrong kind: {:?}",
+            decl.kind
+        );
+        anyhow::ensure!(
+            decl.declarator.as_deref() == expected,
+            "{name} declarator {:?}, expected {expected:?}",
+            decl.declarator
+        );
+    }
+
+    Ok(())
+}

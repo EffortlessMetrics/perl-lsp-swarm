@@ -41,7 +41,7 @@ pub use tokens::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
 
 use crate::SourceLocation;
 use crate::analysis::class_model::{
-    ClassModel, ClassModelBuilder, MethodResolutionOrder, ModifierKind,
+    ClassModel, ClassModelBuilder, MethodResolutionOrder, ModifierKind, merge_reopened_class_models,
 };
 use crate::analysis::generated_member_extractor::GeneratedMemberExtractor;
 use crate::analysis::package_graph_extractor::PackageGraphExtractor;
@@ -336,48 +336,7 @@ impl SemanticAnalyzer {
     /// are replaced by their later declaration, and later explicit ancestry or
     /// MRO declarations replace earlier package state.
     fn merged_class_models(&self) -> Vec<ClassModel> {
-        let mut merged: Vec<ClassModel> = Vec::new();
-        for model in &self.class_models {
-            let Some(existing) = merged.iter_mut().find(|candidate| candidate.name == model.name)
-            else {
-                merged.push(model.clone());
-                continue;
-            };
-
-            // `extends`, `use parent`, `use base`, and `@ISA` describe the
-            // package's current ancestry. A later declaration supersedes an
-            // earlier one; blindly unioning the lists invents parents that Perl
-            // would no longer dispatch through. An empty later segment carries
-            // no ancestry declaration and therefore leaves the prior value
-            // intact.
-            if model.parents_explicit {
-                if model.parents_replaces_prior {
-                    existing.parents = model.parents.clone();
-                } else if model.parents_additive {
-                    existing.parents.extend(model.parents.iter().cloned());
-                } else {
-                    existing.parents = model.parents.clone();
-                }
-            }
-            if !model.roles.is_empty() {
-                existing.roles = model.roles.clone();
-            }
-
-            // Reopening a package can redefine a method. Keep declaration
-            // order authoritative so every consumer selects the later symbol,
-            // rather than retaining a stale earlier body in the merged view.
-            for method in &model.methods {
-                existing.methods.retain(|candidate| candidate.name != method.name);
-                existing.methods.push(method.clone());
-            }
-            existing.modifiers.extend(model.modifiers.iter().cloned());
-            // An explicit `use mro 'dfs'` must be able to reset an earlier
-            // explicit C3. Silent reopened segments carry no MRO decision.
-            if model.mro_explicit {
-                existing.mro = model.mro;
-            }
-        }
-        merged
+        merge_reopened_class_models(&self.class_models)
     }
 
     /// Find the method named `symbol.name` that `package` itself contributes.
