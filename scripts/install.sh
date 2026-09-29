@@ -261,18 +261,17 @@ detect_platform() {
             _libc=""
             ;;
         MINGW*|MSYS*|CYGWIN*)
-            # Do not send Windows users to the piped PowerShell installer: the
-            # copy published at $REPO/master still builds a perl-lsp-*.zip asset
-            # name while releases ship perllsp-*.zip, so it 404s (#5461, fix
-            # pending promotion in #4348). Point at the archive that works.
+            # Keep Windows users on the manual archive from this shell path.
+            # The published PowerShell script has separate provenance and
+            # checksum limitations documented in docs/how-to/INSTALLATION.md.
             err "Windows is not supported by this script. Download
   perllsp-<version>-x86_64-pc-windows-msvc.zip
 from https://github.com/$REPO/releases, extract it, and put the folder
 containing perllsp.exe on your PATH.
 
-The PowerShell installer is not usable yet — the published copy builds a
-download URL that 404s. See
-https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461"
+The PowerShell installer is a separate path; use only the immutable revision
+documented in the installation guide. See
+https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
             ;;
         *)
             err "unsupported operating system: $_os"
@@ -337,6 +336,23 @@ https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5461"
 
 # ── Version resolution ─────────────────────────────────────────────────────────
 
+# #8367 semver core, single-sourced so source-mode and release-mode validation
+# cannot drift: X.Y.Z with no leading zeroes, plus an optional prerelease/build
+# suffix (-alpha.1, +build.7) with its restricted alphabet.
+PLSP_SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+
+# #16541: release mode builds download URLs from VERSION, so an invalid pin
+# must be rejected before any request is built. #8367 validated the
+# source-mode spec only; a truncated tag ("0.12") or typo ("0.17.o") used to
+# survive resolution and die later as a bare 404. Same semver core as source
+# mode, with one optional leading "v".
+validate_release_version_spec() {
+    local _spec="${1#v}"
+    if [[ ! "$_spec" =~ $PLSP_SEMVER_RE ]]; then
+        err "invalid VERSION=$1 for release mode: expected a full X.Y.Z semver (v0.12.0) with optional prerelease/build metadata; check https://github.com/${REPO}/releases for an existing tag"
+    fi
+}
+
 resolve_version() {
     if [ "$VERSION" = "latest" ]; then
         info "fetching latest release..."
@@ -353,6 +369,11 @@ Check your internet connection or set VERSION=v<x.y.z> to pin a version."
             err "could not parse tag_name from GitHub API response"
         fi
     else
+        # #16541: reject an invalid pin before any URL is built; previously
+        # anything non-"latest" was accepted and survived to a dead-end 404.
+        if [ "$INSTALL_MODE" = "release" ]; then
+            validate_release_version_spec "$VERSION"
+        fi
         # Accept "0.12.0" or "v0.12.0"
         case "$VERSION" in
             v*) TAG="$VERSION" ;;
@@ -467,9 +488,9 @@ download_and_verify() {
         err "download failed: $ASSET_URL
 
 If this version does not have a pre-built binary for your platform, try:
-  cargo install perllsp
+  cargo install perllsp --version $VERSION_NUM
   # or
-  cargo install perllsp --target $TARGET"
+  cargo install perllsp --version $VERSION_NUM --target $TARGET"
     fi
 
     if ! _actual="$(calculate_sha256 "$_sha_tool" "$_archive")"; then
@@ -1093,7 +1114,7 @@ The release archive may have an unexpected layout."
 # (-alpha.1, +build.7) is accepted with its restricted alphabet.
 validate_source_version_spec() {
     local _spec="$1"
-    if [[ ! "$_spec" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+    if [[ ! "$_spec" =~ $PLSP_SEMVER_RE ]]; then
         err "invalid VERSION=$_spec for source mode: expected a full X.Y.Z semver (v0.12.0) with optional prerelease/build metadata"
     fi
 }
@@ -1142,17 +1163,18 @@ verify_source_install_identity() {
     esac
 }
 
-build_from_source() {
-    need_cmd cargo
-
-    # Toolchain guard (#12593): the source build parses edition-2024 manifests;
-    # refuse a stale non-rustup cargo before any build work. The prebuilt
-    # download path above does not need cargo, so the guard lives here. In the
-    # standalone remote bootstrap (the root install.sh runs this file without
-    # its scripts/ siblings) the library cannot be sourced, so an inline
-    # floor check refuses the same confusing pre-1.85 failures instead of
-    # silently skipping the guard; from 1.85 up to the workspace rust-version,
-    # cargo's own rust-version enforcement reports the requirement cleanly.
+# Toolchain guard (#12593, #15030): the source build parses edition-2024
+# manifests; refuse a stale non-rustup cargo before any build or network work.
+# The release download path does not need cargo, so the guard is conditional on
+# INSTALL_MODE=source. In the standalone remote bootstrap (the root install.sh
+# runs this file without its scripts/ siblings) the library cannot be sourced,
+# so an inline floor check refuses the same confusing pre-1.85 failures instead
+# of silently skipping the guard; from 1.85 up to the workspace rust-version,
+# cargo's own rust-version enforcement reports the requirement cleanly.
+# The guard must run before resolve_version() because the GitHub release query
+# is network work that would otherwise mask the toolchain refusal from a user
+# who has a stale cargo and no internet (#15030).
+run_cargo_toolchain_guard() {
     _guard_lib="$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh"
     if [ -f "$_guard_lib" ]; then
         # shellcheck source=lib/cargo-toolchain-guard.sh
@@ -1168,6 +1190,10 @@ build_from_source() {
         fi
     fi
     unset _guard_lib _guard_version _guard_major _guard_minor
+}
+
+build_from_source() {
+    need_cmd cargo
 
     local _target_arg=()
     local _version_arg=()
@@ -1627,7 +1653,7 @@ verify_install() {
     if _got_version="$("$_bin" --version 2>&1)"; then
         info "verified: $_got_version"
     else
-        warn "could not run '$BIN_NAME --version'; the binary may require a restart to load shared libraries"
+        err "installed binary failed to run '$BIN_NAME --version': $_bin (output: $_got_version)"
     fi
 }
 
@@ -1715,6 +1741,14 @@ main() {
     need_cmd curl
     need_cmd tar
 
+    # Toolchain guard must run before any network work in the source-build path
+    # (#15030): a user with a stale cargo and no internet was getting a
+    # misleading "check your internet connection" message instead of the typed
+    # cargo-toolchain-guard: REFUSED banner.
+    if [ "$INSTALL_MODE" = "source" ]; then
+        run_cargo_toolchain_guard
+    fi
+
     resolve_version
     TMPDIR="$(mktemp -d)"
     # shellcheck disable=SC2064
@@ -1723,9 +1757,13 @@ main() {
     if [ "$INSTALL_MODE" = "release" ]; then
         # Archive inspection classifies entries from the ustar headers rather
         # than from a tar listing, so the release path needs `od` as well as
-        # `tar` (#11508). A source build never inspects an archive, so the
-        # requirement stays inside this branch instead of gating both modes.
+        # `tar` (#11508). Size probing and bounded extraction shell out to
+        # `gzip -l` / `gzip -dc`, so `gzip` joins them — without it a missing
+        # tool misreports as a corrupt archive. A source build never inspects
+        # an archive, so the requirements stay inside this branch instead of
+        # gating both modes.
         need_cmd od
+        need_cmd gzip
         download_and_verify
         extract_archive
     else

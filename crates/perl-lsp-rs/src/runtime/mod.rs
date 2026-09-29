@@ -219,6 +219,12 @@ pub struct LspServer {
     outbound_writer_handle: Option<std::thread::JoinHandle<outbound::WriterTerminalOutcome>>,
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
+    /// Root-input classification recorded by the most recent `initialize`
+    /// request (#8161). `None` before the first initialize. Kept as a separate
+    /// receipt from `client_capabilities.workspace_folders_support` so the
+    /// client's advertised bit and the declared root input never merge into
+    /// one derived boolean.
+    initial_root_input: Mutex<Option<lifecycle::root_input::InitialRootInput>>,
     /// Cancelled request IDs
     cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Request IDs that are queued or executing in the async scheduler.
@@ -483,6 +489,15 @@ pub struct LspServer {
     /// process-level `Once`) so that each `LspServer` instance tracks its own
     /// session independently.
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
+    /// Whether the "this is a Perl core module, use hover instead" goto-definition
+    /// notice has already been written to the output channel this session.
+    ///
+    /// Same shape and same reason as `root_undetected_shown`: goto-definition is a
+    /// per-request action, so an unguarded notice repeats on every F12 over
+    /// `use strict` and trains the user to ignore the channel. Instance-level
+    /// rather than a process-level `Once`, so each `LspServer` session is its own
+    /// window (#16551).
+    pub(crate) core_module_notice_shown: Arc<AtomicBool>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:

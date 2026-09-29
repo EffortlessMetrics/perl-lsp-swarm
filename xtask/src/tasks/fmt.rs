@@ -1655,21 +1655,468 @@ mod tests {
             }
 
             let source = fs::read_to_string(&path)?;
-            if path.file_name().and_then(|name| name.to_str()) == Some("fmt.rs") {
-                continue;
-            }
-
-            let argv_pattern = ["\"fmt\"", ", \"--all\""].concat();
-            let shell_pattern = ["cargo fmt", " --all"].concat();
-            let args_pattern = ["args([\"fmt\"", ", \"--all\""].concat();
-            if source.contains(&argv_pattern)
-                || source.contains(&shell_pattern)
-                || source.contains(&args_pattern)
-            {
-                offenders.push(path.display().to_string());
+            // #16331: judge invocations, not mentions. `fmt.rs` itself is no
+            // longer skipped wholesale — its sanctioned `cmd("cargo", ...)`
+            // spawn builds its arguments dynamically, so none of the
+            // invocation shapes below match it.
+            for reason in workspace_fmt_all_invocations(&source) {
+                offenders.push(format!("{}: {reason}", path.display()));
             }
         }
 
         Ok(())
+    }
+
+    /// One string literal found in Rust source: its text without the
+    /// delimiters, and the offset where the literal token begins in the
+    /// comment-stripped view.
+    struct SourceString {
+        text: String,
+        start: usize,
+    }
+
+    /// Blank `//` and (nested) `/* */` comments while keeping every offset and
+    /// newline stable, and collect the string literals that survive.
+    ///
+    /// Only comments are removed. String literal contents stay in place on
+    /// purpose: a `sh -c` payload is a process argument, not prose, and rule
+    /// matching below needs the surrounding code to tell them apart. Raw
+    /// strings (`r"…"`, `r#"…"#`), escapes, raw identifiers (`r#type`), and
+    /// lifetime ticks are handled well enough for shape matching; none of the
+    /// matched text needs unescaping.
+    fn strip_comments_collect_strings(source: &str) -> (String, Vec<SourceString>) {
+        let bytes = source.as_bytes();
+        let mut stripped = bytes.to_vec();
+        let mut literals = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        stripped[i] = b' ';
+                        i += 1;
+                    }
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    let mut depth = 1usize;
+                    stripped[i] = b' ';
+                    stripped[i + 1] = b' ';
+                    i += 2;
+                    while i < bytes.len() && depth > 0 {
+                        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                            depth += 1;
+                            stripped[i] = b' ';
+                            stripped[i + 1] = b' ';
+                            i += 2;
+                        } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                            depth -= 1;
+                            stripped[i] = b' ';
+                            stripped[i + 1] = b' ';
+                            i += 2;
+                        } else {
+                            if bytes[i] != b'\n' {
+                                stripped[i] = b' ';
+                            }
+                            i += 1;
+                        }
+                    }
+                }
+                b'"' => {
+                    let start = i;
+                    let mut j = i + 1;
+                    let mut closed = false;
+                    while j < bytes.len() {
+                        match bytes[j] {
+                            b'\\' => j += 2,
+                            b'"' => {
+                                closed = true;
+                                j += 1;
+                                break;
+                            }
+                            _ => j += 1,
+                        }
+                    }
+                    if closed && start + 1 < j {
+                        literals.push(SourceString {
+                            text: source[start + 1..j - 1].to_string(),
+                            start,
+                        });
+                    }
+                    i = j.max(i + 1);
+                }
+                b'r' => {
+                    let mut hashes = 0usize;
+                    let mut quote = i + 1;
+                    while bytes.get(quote) == Some(&b'#') {
+                        hashes += 1;
+                        quote += 1;
+                    }
+                    if bytes.get(quote) != Some(&b'"') {
+                        // An identifier such as `run`, or a raw identifier
+                        // such as `r#type`; not a string.
+                        i += 1;
+                        continue;
+                    }
+                    let mut j = quote + 1;
+                    let mut closed = false;
+                    while j < bytes.len() {
+                        if bytes[j] == b'"'
+                            && bytes.len() >= j + 1 + hashes
+                            && bytes[j + 1..j + 1 + hashes].iter().all(|byte| *byte == b'#')
+                        {
+                            closed = true;
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if closed {
+                        if quote + 1 <= j {
+                            literals.push(SourceString {
+                                text: source[quote + 1..j].to_string(),
+                                start: i,
+                            });
+                        }
+                        i = j + 1 + hashes;
+                    } else {
+                        i = bytes.len();
+                    }
+                }
+                b'\'' => {
+                    // A lifetime tick is not a char literal; treating one as a
+                    // string opener would corrupt every following offset.
+                    if bytes.get(i + 1) == Some(&b'\\') {
+                        i += 2;
+                        while i < bytes.len() && bytes[i] != b'\'' {
+                            i += 1;
+                        }
+                        i += 1;
+                    } else if bytes.get(i + 2) == Some(&b'\'') {
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+                _ => i += 1,
+            }
+        }
+        // Only ASCII bytes were replaced in place, so the buffer is still
+        // valid UTF-8.
+        (String::from_utf8_lossy(&stripped).into_owned(), literals)
+    }
+
+    /// Whether `text` carries `--all` as a flag of its own, so that
+    /// `--allow-no-vcs` and friends do not count.
+    /// True when `payload` starts some shell command segment with a
+    /// workspace-wide `cargo fmt` invocation.
+    ///
+    /// Command boundaries are `;`, `&&`, `||`, `|`, newlines, and subshell
+    /// openers; a bounded peephole skips `exec` and `VAR=value` prefixes, so
+    /// `set -e; cargo fmt --all`, `cd dir && cargo fmt --all`,
+    /// `exec cargo fmt --all`, and `FOO=1 cargo fmt --all` all carry the
+    /// invocation (#16331 review). A sentence that merely mentions the
+    /// command after other words ("run cargo fmt --all to reproduce")
+    /// carries none.
+    fn shell_payload_invokes_workspace_fmt(payload: &str) -> bool {
+        payload.split([';', '|', '&', '\n', '(', '{']).any(|segment| {
+            let mut rest = segment.trim_start();
+            // Bounded peephole over `exec` and `VAR=value` prefixes so a
+            // hostile or hand-written prefix chain cannot push the
+            // formatter past the segment scan.
+            for _ in 0..8 {
+                if let Some(after) = rest.strip_prefix("exec ") {
+                    rest = after.trim_start();
+                    continue;
+                }
+                // `VAR=value` assignment prefix: consume the whole token
+                // (name, `=`, value) through the whitespace that ends it.
+                // An `==` comparison or a bare `=value` without a name is
+                // not an assignment and ends the peephole.
+                let Some(eq) = rest.find('=') else {
+                    break;
+                };
+                let head = &rest[..eq];
+                let named =
+                    !head.is_empty() && head.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                let Some(value_end) = rest[eq..].find(|c: char| c.is_ascii_whitespace()) else {
+                    break;
+                };
+                if !named || rest[eq + 1..eq + value_end].is_empty() {
+                    break;
+                }
+                rest = rest[eq + value_end..].trim_start();
+            }
+            rest.starts_with("cargo fmt")
+        })
+    }
+
+    fn carries_all_flag(text: &str) -> bool {
+        let bytes = text.as_bytes();
+        let mut from = 0usize;
+        while let Some(at) = text[from..].find("--all") {
+            let end = from + at + "--all".len();
+            match bytes.get(end) {
+                None => return true,
+                Some(byte) if matches!(*byte, b' ' | b'\t' | b'"' | b'\'' | b',') => return true,
+                _ => {}
+            }
+            from = end;
+        }
+        false
+    }
+
+    /// Index of the `)` matching the `(` at `open`, or the end of `code`.
+    fn matching_paren(code: &str, open: usize) -> usize {
+        let bytes = code.as_bytes();
+        let mut depth = 0usize;
+        for (index, byte) in bytes.iter().enumerate().skip(open) {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return index;
+                    }
+                }
+                _ => {}
+            }
+        }
+        code.len()
+    }
+
+    /// Report every way `source` actually invokes a workspace-wide
+    /// workspace `cargo` formatting pass, as opposed to merely naming one.
+    ///
+    /// #16331: the previous instrument substring-scanned whole files, so a
+    /// JSON test fixture, a doc comment, or a help/error string that
+    /// *mentioned* the command red the gate while its message sent the reader
+    /// looking for a subprocess that does not exist. This scanner strips
+    /// comments and then matches invocation shapes only:
+    ///
+    /// - a `Command::new("cargo")` statement — the constructor argument must
+    ///   be the literal `cargo` — whose string arguments, however chained,
+    ///   include both `fmt` and `--all`;
+    /// - a `cmd(…)` call whose first grouped string literal — the executable
+    ///   position — is `cargo`, `sh`, or `bash`, and whose grouped string
+    ///   arguments include `cargo`, `fmt`, and `--all`;
+    /// - a shell command line passed in argument position — after `(`, `,`,
+    ///   or `[` — that starts some shell command segment (boundaries: `;`,
+    ///   `&&`, `||`, `|`, newline, `(`, `{`) with a workspace-wide
+    ///   `cargo fmt` invocation, allowing `exec` and `VAR=value` prefixes,
+    ///   such as a `sh -c` payload.
+    ///
+    /// A formatter name or command line stored in a constant, config field,
+    /// or fixture is a string, not an execution, and stays clean. Stated
+    /// limitations (accepted imprecisions of a tripwire over this
+    /// repository's own source):
+    ///
+    /// - a command assembled into a variable and handed to a shell indirectly
+    ///   is indistinguishable from ordinary data flow at this layer;
+    /// - structural bounds (`matching_paren`, the statement end) are scanned
+    ///   over raw code, so delimiter characters inside string literals can
+    ///   shift a scanned group or statement boundary;
+    /// - an argument-position literal that *begins* with `cargo fmt` in an
+    ///   unknown callable (`bail!("cargo fmt --all is required")`) still
+    ///   flags: the executable role of an arbitrary call is unknowable here
+    ///   and the gate fails closed.
+    fn workspace_fmt_all_invocations(source: &str) -> Vec<String> {
+        let (code, literals) = strip_comments_collect_strings(source);
+        let code_bytes = code.as_bytes();
+        let mut reasons = Vec::new();
+
+        // Shell-style command line passed in argument position. The payload
+        // must carry the formatter at a shell command position, so
+        // `set -e; cargo fmt --all` is caught (#16331 review) while a prose
+        // sentence like `run cargo fmt --all to reproduce` is not.
+        for literal in &literals {
+            let trimmed = literal.text.trim();
+            if !carries_all_flag(trimmed) || !shell_payload_invokes_workspace_fmt(trimmed) {
+                continue;
+            }
+            let mut cursor = literal.start;
+            while cursor > 0 && code_bytes[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+            if matches!(code_bytes[cursor - 1], b'(' | b',' | b'[') {
+                reasons.push(
+                    "shell-style workspace format command line passed as a process argument"
+                        .to_string(),
+                );
+            }
+        }
+
+        // `Command::new("cargo")` with `fmt` + `--all` in one statement.
+        for (at, _) in code.match_indices("Command::new") {
+            let mut open = at + "Command::new".len();
+            while let Some(byte) = code_bytes.get(open) {
+                if *byte == b' ' || *byte == b'\t' {
+                    open += 1;
+                } else {
+                    break;
+                }
+            }
+            if code_bytes.get(open) != Some(&b'(') {
+                continue;
+            }
+            // The constructor argument must be the literal `cargo`
+            // (#16331 review): `Command::new(tool).args(["cargo", …])` and
+            // `Command::new("echo").args([…])` name no formatter spawn.
+            let constructor_close = matching_paren(&code, open);
+            let constructor = literals
+                .iter()
+                .find(|literal| literal.start > open && literal.start < constructor_close);
+            let Some(constructor) = constructor else {
+                continue;
+            };
+            if constructor.text != "cargo" {
+                continue;
+            }
+            let statement_end = code[at..].find(';').map_or(code.len(), |offset| at + offset);
+            let carries = |wanted: &str| {
+                literals.iter().any(|literal| {
+                    literal.start > at && literal.start < statement_end && literal.text == wanted
+                })
+            };
+            if carries("fmt") && carries("--all") {
+                reasons.push(
+                    "`Command::new(\"cargo\")` statement carries `fmt` and `--all` arguments"
+                        .to_string(),
+                );
+            }
+        }
+
+        // `cmd("cargo", …)` with `fmt` + `--all` inside the call group.
+        for (at, _) in code.match_indices("cmd") {
+            let before = if at == 0 { b' ' } else { code_bytes[at - 1] };
+            if before.is_ascii_alphanumeric() || before == b'_' {
+                continue;
+            }
+            let mut open = at + "cmd".len();
+            if code_bytes.get(open) == Some(&b'!') {
+                open += 1;
+            }
+            if code_bytes.get(open) != Some(&b'(') {
+                continue;
+            }
+            let group_end = matching_paren(&code, open);
+            let in_group: Vec<&SourceString> = literals
+                .iter()
+                .filter(|literal| literal.start > open && literal.start < group_end)
+                .collect();
+            // Executable-position guard (#16331 review): the first grouped
+            // string literal names the executable, and `cmd("echo",
+            // ["cargo", "fmt", "--all"])` executes `echo`. Only `cargo` and
+            // the recognized shells are formatter spawners; anything else is
+            // an argument mention, not an invocation.
+            let Some(executable) = in_group.first() else {
+                continue;
+            };
+            if !matches!(executable.text.as_str(), "cargo" | "sh" | "bash") {
+                continue;
+            }
+            let carries = |wanted: &str| in_group.iter().any(|literal| literal.text == wanted);
+            if carries("cargo") && carries("fmt") && carries("--all") {
+                reasons.push(
+                    "`cmd(\"cargo\", …)` call carries `fmt` and `--all` arguments".to_string(),
+                );
+            }
+        }
+
+        reasons
+    }
+
+    #[test]
+    fn a_string_that_names_the_command_is_not_an_invocation() {
+        // The class that red #16095: a JSON fixture's `reproduce` field
+        // records the command for a passing gate; nothing executes it.
+        let fixture = concat!(
+            r#"{"gate": "workspace-fmt", "#,
+            r#""reproduce": "cargo fmt --all", "result": "success"}"#,
+        );
+        assert!(workspace_fmt_all_invocations(fixture).is_empty());
+
+        // Prose and config values name the formatter; they do not spawn it.
+        let documented = "// never run cargo fmt --all directly\nfn f() {}\n";
+        assert!(workspace_fmt_all_invocations(documented).is_empty());
+        let configured = "const FORMATTER: &str = \"cargo fmt --all\";\n";
+        assert!(workspace_fmt_all_invocations(configured).is_empty());
+    }
+
+    #[test]
+    fn prefixed_shell_payloads_still_carry_the_invocation() {
+        // #16331 review: a payload that only *eventually* runs the formatter
+        // is still a workspace-wide formatting pass.
+        let chained = r#"fn i() { cmd("sh", ["-c", "set -e; cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(chained).len(), 1);
+
+        let and_chain = r#"fn i() { cmd("sh", ["-c", "cd crate && cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(and_chain).len(), 1);
+
+        let exec = r#"fn i() { cmd("sh", ["-c", "exec cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(exec).len(), 1);
+
+        let env_prefix =
+            r#"fn i() { cmd("sh", ["-c", "RUSTUP_TOOLCHAIN=stable cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(env_prefix).len(), 1);
+    }
+
+    #[test]
+    fn prose_mention_in_argument_position_is_not_an_invocation() {
+        // #16331 review: the executable role of an arbitrary call is
+        // unknowable, but a payload that merely mentions the formatter after
+        // other words is a message, not a command line.
+        let bail_message = r#"fn j() { bail!("run cargo fmt --all to reproduce"); }"#;
+        assert!(workspace_fmt_all_invocations(bail_message).is_empty());
+    }
+
+    #[test]
+    fn unrelated_executables_do_not_spawn_the_formatter() {
+        // #16331 review: the first grouped literal names the executable;
+        // `echo` prints three words and spawns nothing.
+        let echo = r#"fn e() { cmd("echo", ["cargo", "fmt", "--all"]).run()?; }"#;
+        assert!(workspace_fmt_all_invocations(echo).is_empty());
+
+        // A non-literal constructor argument names no formatter spawn even
+        // when later arguments mention the pieces.
+        let dynamic_tool =
+            r#"fn e(tool: &str) { Command::new(tool).args(["cargo", "fmt", "--all"]).status(); }"#;
+        assert!(workspace_fmt_all_invocations(dynamic_tool).is_empty());
+
+        let dynamic_then_cargo_mention = concat!(
+            r#"fn e(tool: &str) { Command::new(tool).args(["fmt", "--all"]).status(); }"#,
+            r#"fn f() { other("cargo"); }"#,
+        );
+        assert!(workspace_fmt_all_invocations(dynamic_then_cargo_mention).is_empty());
+
+        // The real spawn shapes stay flagged.
+        let real = r#"fn g() { Command::new("cargo").args(["fmt", "--all"]).status(); }"#;
+        assert_eq!(workspace_fmt_all_invocations(real).len(), 1);
+        let shell = r#"fn i() { cmd("sh", ["-c", "cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(shell).len(), 1);
+        let bash = r#"fn i() { cmd("bash", ["-c", "cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(bash).len(), 1);
+    }
+
+    #[test]
+    fn workspace_fmt_all_invocation_shapes_are_flagged() {
+        let std_command = r#"fn g() { Command::new("cargo").args(["fmt", "--all"]).status(); }"#;
+        assert_eq!(workspace_fmt_all_invocations(std_command).len(), 1);
+
+        let duct_call = r#"fn h() { cmd("cargo", ["fmt", "--all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(duct_call).len(), 1);
+
+        let shell_payload = r#"fn i() { cmd("sh", ["-c", "cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(shell_payload).len(), 1);
+    }
+
+    #[test]
+    fn sanctioned_scoped_formatting_is_not_flagged() {
+        let scoped = r#"fn k() { cmd("cargo", ["fmt", "-p", "xtask"]).run()?; }"#;
+        assert!(workspace_fmt_all_invocations(scoped).is_empty());
+
+        // `fmt.rs`'s own sanctioned spawn builds its arguments dynamically;
+        // with the mention scanner retired, the wholesale `fmt.rs` skip is
+        // gone with it.
+        let dynamic = r#"fn m(args: &[String]) { cmd("cargo", args).run()?; }"#;
+        assert!(workspace_fmt_all_invocations(dynamic).is_empty());
     }
 }

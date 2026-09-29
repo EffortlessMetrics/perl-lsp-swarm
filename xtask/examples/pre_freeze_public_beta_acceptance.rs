@@ -4,16 +4,12 @@
 //! artifact, platform, journey, and mechanism evidence without claiming that
 //! the packet itself proves the underlying runtime observations.
 
-#![expect(
-    clippy::print_stdout,
-    reason = "packet validator emits one concise machine-readable result"
-)]
-
 use clap::Parser;
 use color_eyre::eyre::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 const CHECK: &str = "pre-freeze-public-beta-acceptance";
@@ -40,6 +36,9 @@ struct Args {
     /// Machine-readable packet JSON to validate.
     #[arg(long)]
     packet: PathBuf,
+    /// Explicit topology adapter input, required for v2; never inferred from the packet.
+    #[arg(long)]
+    topology_requirements: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -402,14 +401,36 @@ fn validate(packet: &Packet) -> Result<FreezeRecommendation> {
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
-    let packet: Packet = serde_json::from_str(&fs::read_to_string(args.packet)?)?;
+    let bytes = fs::read(&args.packet)?;
+    let header: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if header.get("schema_version").and_then(serde_json::Value::as_str)
+        == Some(xtask::pre_freeze_public_beta_acceptance::SCHEMA)
+    {
+        use xtask::pre_freeze_public_beta_acceptance::{
+            TopologyRequirements, parse_v2, validate_v2,
+        };
+        let path = args.topology_requirements.ok_or_else(|| {
+            color_eyre::eyre::eyre!("v2 requires --topology-requirements; no authority is inferred")
+        })?;
+        let requirements: TopologyRequirements = serde_json::from_slice(&fs::read(path)?)?;
+        let packet = parse_v2(&bytes).map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
+        let report = validate_v2(&packet, &requirements)
+            .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
+        writeln!(std::io::stdout().lock(), "{}", serde_json::to_string(&report)?)?;
+        return Ok(());
+    }
+    if args.topology_requirements.is_some() {
+        bail!("topology requirements apply only to v2; legacy input remains historical");
+    }
+    let packet: Packet = serde_json::from_slice(&bytes)?;
     let recommendation = validate(&packet)?;
-    println!(
-        "pre-freeze-public-beta-acceptance: sha={} artifact_set={} recommendation={}",
+    writeln!(
+        std::io::stdout().lock(),
+        "pre-freeze-public-beta-acceptance: historical_v1=true installed_qualification=not_proven sha={} artifact_set={} recommendation={}",
         packet.repository_sha,
         packet.artifact_set_id,
         recommendation.as_str()
-    );
+    )?;
     Ok(())
 }
 
@@ -420,7 +441,7 @@ mod tests {
         FreezeRecommendation, JourneyCell, MechanismDisposition, Packet, PlatformEvidence,
         Platforms, ZeroBudgetCounts, computed_recommendation, validate,
     };
-    use color_eyre::eyre::Result;
+    use color_eyre::eyre::{Result, ensure, eyre};
 
     fn ready_packet() -> Packet {
         let artifact = |name: &str| ArtifactEvidence {
@@ -494,44 +515,57 @@ mod tests {
     #[test]
     fn complete_linux_packet_can_recommend_ready() -> Result<()> {
         let packet = ready_packet();
-        assert_eq!(validate(&packet)?, FreezeRecommendation::Ready);
+        ensure!(
+            validate(&packet)? == FreezeRecommendation::Ready,
+            "unexpected legacy recommendation"
+        );
         Ok(())
     }
 
     #[test]
-    fn missing_journey_cell_fails_closed() {
+    fn missing_journey_cell_fails_closed() -> Result<()> {
         let mut packet = ready_packet();
         packet.journey_cells.pop();
-        assert!(validate(&packet).is_err());
+        ensure!(validate(&packet).is_err(), "invalid legacy packet accepted");
+        Ok(())
     }
 
     #[test]
-    fn platform_provenance_from_another_candidate_fails_closed() {
+    fn platform_provenance_from_another_candidate_fails_closed() -> Result<()> {
         let mut packet = ready_packet();
         packet.platforms.linux.provenance.candidate_id = "other-candidate".to_string();
-        assert!(validate(&packet).is_err());
+        ensure!(validate(&packet).is_err(), "invalid legacy packet accepted");
+        Ok(())
     }
 
     #[test]
-    fn journey_provenance_from_another_topology_fails_closed() {
+    fn journey_provenance_from_another_topology_fails_closed() -> Result<()> {
         let mut packet = ready_packet();
-        packet.journey_cells[0].provenance.topology_digest = format!("sha256:{}", "c".repeat(64));
-        assert!(validate(&packet).is_err());
+        packet
+            .journey_cells
+            .first_mut()
+            .ok_or_else(|| eyre!("fixture missing journey"))?
+            .provenance
+            .topology_digest = format!("sha256:{}", "c".repeat(64));
+        ensure!(validate(&packet).is_err(), "invalid legacy packet accepted");
+        Ok(())
     }
 
     #[test]
-    fn workspace_artifact_provenance_cannot_pass() {
+    fn workspace_artifact_provenance_cannot_pass() -> Result<()> {
         let mut packet = ready_packet();
         packet.artifacts.perllsp.provenance = ArtifactProvenance::WorkspaceOutput;
-        assert!(validate(&packet).is_err());
+        ensure!(validate(&packet).is_err(), "invalid legacy packet accepted");
+        Ok(())
     }
 
     #[test]
-    fn artifact_from_another_repository_sha_fails_closed() {
+    fn artifact_from_another_repository_sha_fails_closed() -> Result<()> {
         let mut packet = ready_packet();
         packet.artifacts.perllsp.repository_sha =
             "fedcba9876543210fedcba9876543210fedcba98".to_string();
-        assert!(validate(&packet).is_err());
+        ensure!(validate(&packet).is_err(), "invalid legacy packet accepted");
+        Ok(())
     }
 
     #[test]
@@ -539,17 +573,24 @@ mod tests {
         let mut packet = ready_packet();
         packet.product_blockers = vec!["exact installed binary is missing".to_string()];
         packet.freeze_recommendation = FreezeRecommendation::Blocked;
-        assert_eq!(validate(&packet)?, FreezeRecommendation::Blocked);
+        ensure!(
+            validate(&packet)? == FreezeRecommendation::Blocked,
+            "unexpected legacy recommendation"
+        );
         Ok(())
     }
 
     #[test]
-    fn nonzero_zero_budget_count_requires_blocked_recommendation() {
+    fn nonzero_zero_budget_count_requires_blocked_recommendation() -> Result<()> {
         let mut packet = ready_packet();
         packet.zero_budget_counts.false_exact = 1;
         packet.freeze_recommendation = FreezeRecommendation::Blocked;
-        assert_eq!(computed_recommendation(&packet), FreezeRecommendation::Blocked);
-        assert!(validate(&packet).is_ok());
+        ensure!(
+            computed_recommendation(&packet) == FreezeRecommendation::Blocked,
+            "unexpected legacy recommendation"
+        );
+        validate(&packet)?;
+        Ok(())
     }
 
     #[test]
@@ -557,14 +598,18 @@ mod tests {
         let mut packet = ready_packet();
         packet.platforms.linux.status = EvidenceStatus::NotProven;
         packet.freeze_recommendation = FreezeRecommendation::NotProven;
-        assert_eq!(validate(&packet)?, FreezeRecommendation::NotProven);
+        ensure!(
+            validate(&packet)? == FreezeRecommendation::NotProven,
+            "unexpected legacy recommendation"
+        );
         Ok(())
     }
 
     #[test]
-    fn incomplete_mechanism_disposition_fails_closed() {
+    fn incomplete_mechanism_disposition_fails_closed() -> Result<()> {
         let mut packet = ready_packet();
         packet.mechanism_dispositions.pop();
-        assert!(validate(&packet).is_err());
+        ensure!(validate(&packet).is_err(), "invalid legacy packet accepted");
+        Ok(())
     }
 }

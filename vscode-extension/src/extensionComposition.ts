@@ -59,6 +59,9 @@ export class ExtensionLanguageClientLifecycle<
           if (this.nextServerPath !== undefined) {
             const serverPath = this.nextServerPath;
             this.nextServerPath = undefined;
+            // The override bypasses hooks.resolveServerPath, so per-attempt
+            // resets that live there must fire here instead (#15592).
+            await hooks.onServerPathOverrideConsumed?.(serverPath);
             return serverPath;
           }
           return hooks.resolveServerPath();

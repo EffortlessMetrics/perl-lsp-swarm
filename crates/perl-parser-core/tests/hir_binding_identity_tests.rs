@@ -307,13 +307,13 @@ fn package_top_level_declarations_are_not_visible_to_program_root_occurrences() 
 }
 
 /// A declaration must name the binding it *introduces*, which plain visibility
-/// resolution cannot do: both declarations below are visible from the same
-/// scope, and the scope walk takes the last one.
+/// resolution cannot do: at the beginning of the second declaration's own
+/// token, only the first declaration is visible.
 ///
 /// Declarations are therefore matched on the declaration token's own span. Reads
 /// remain visibility-resolved, so the read *between* the two declarations still
-/// resolves to the later binding — that residual position-insensitivity is the
-/// documented boundary tracked by #14173.
+/// resolves to the nearest prior binding; identity of the declarations is
+/// independently anchored to their own spans.
 #[test]
 fn same_scope_redeclarations_get_distinct_declaration_identities() {
     let source = "sub f { my $x = 1; print $x; my $x = 2; print $x; }\n";
@@ -340,18 +340,11 @@ fn same_scope_redeclarations_get_distinct_declaration_identities() {
     }
 }
 
-/// Known boundary, not a claim of correctness: in `my $x = $x;` the initializer
-/// must read the *outer* `$x`, because a new lexical's scope begins only after
-/// its own declaration statement. Occurrence resolution is position-insensitive
-/// within a scope, so the initializer instead reads the binding being declared.
-///
-/// The fix is position-sensitive occurrence resolution, which is deliberately
-/// out of scope here: it would also change `use-before-declare` (`print $x;
-/// my $x = 1;`) from `Lexical` with a binding to `Package` with none — a
-/// consumer-visible `VariableKind` change this slice explicitly does not make.
-/// Tracked by #14173.
+/// A lexical becomes visible after its declaration statement; its initializer
+/// reads the visible outer binding. This pins the declaration-order repair in
+/// #13868 while keeping declaration identity distinct from occurrence lookup.
 #[test]
-fn self_referential_initializer_reads_the_shadowing_binding() {
+fn self_referential_initializer_reads_the_outer_binding() {
     let source = "my $x = 1; if (1) { my $x = $x; }\n";
     let file = lower(source);
 
@@ -361,15 +354,12 @@ fn self_referential_initializer_reads_the_shadowing_binding() {
     let (outer, inner) = (decl_ids[0], decl_ids[1]);
     assert_ne!(outer, inner, "the two declarations are distinct bindings");
 
-    // The initializer read sits after the inner declaration token.
+    // The initializer sits after the inner token but before the declaration
+    // statement completes, so it still sees the outer binding.
     let rhs = must_some(
         occurrences(&file).into_iter().rfind(|o| o.name == "x" && o.access == AccessMode::Read),
     );
-    assert_eq!(
-        rhs.binding,
-        Some(inner),
-        "known boundary: `my $x = $x` reads the binding it declares; Perl would read the outer one"
-    );
+    assert_eq!(rhs.binding, Some(outer), "the initializer must read the outer binding");
 }
 
 /// Known boundary, not a claim of correctness: a `foreach my $i` iterator is

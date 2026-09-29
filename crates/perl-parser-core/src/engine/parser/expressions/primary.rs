@@ -1175,11 +1175,23 @@ impl<'a> Parser<'a> {
             }
 
             TokenKind::Undef => {
-                let token = self.advance_token()?;
-                self.charge_node(
-                    NodeKind::Undef,
-                    SourceLocation { start: token.start(), end: token.end() },
-                )
+                // `undef => 1` is Perl's autoquoted key `"undef"`, not the
+                // undefined-value term. `looks_like_bare_call` admits this
+                // keyword before `=>` (#16639); convert it here so
+                // `auto_quote_bareword_before_fat_comma` sees an Identifier.
+                if self.is_keyword_before_fat_arrow() {
+                    let token = self.advance_token()?;
+                    self.charge_node(
+                        NodeKind::Identifier { name: token.text.to_string() },
+                        SourceLocation { start: token.start(), end: token.end() },
+                    )
+                } else {
+                    let token = self.advance_token()?;
+                    self.charge_node(
+                        NodeKind::Undef,
+                        SourceLocation { start: token.start(), end: token.end() },
+                    )
+                }
             }
 
             // Handle 'sub' specially - it might be an anonymous subroutine
@@ -1254,7 +1266,6 @@ impl<'a> Parser<'a> {
             | TokenKind::Default
             | TokenKind::Catch
             | TokenKind::Finally
-            | TokenKind::Continue
             | TokenKind::Class
             | TokenKind::Method
             | TokenKind::Format
@@ -1294,7 +1305,7 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            TokenKind::Next | TokenKind::Last | TokenKind::Redo => {
+            TokenKind::Next | TokenKind::Last | TokenKind::Redo | TokenKind::Continue => {
                 if self.is_keyword_before_fat_arrow() {
                     let token = self.advance_token()?;
                     self.charge_node(

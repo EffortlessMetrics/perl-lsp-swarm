@@ -4509,3 +4509,23 @@ expires = "2026-12-20"
 ast_kind = "attribute"
 lint = "dead_code"
 target_fingerprint = "policy:allow-10247-staged-document-revision"
+
+# A single UX test success receipt needs to survive libtest capture in CI.
+# The function uses a print macro locally and direct descriptor IO in CI.
+[[allow]]
+id = "allow-ux-ws-symbol-receipt-15988"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "crates/perl-lsp-ux-tests/tests/ux_latency_raw_rpc.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "One path-free workspace-symbol readiness timing receipt must reach UX CI logs after a passing test; libtest discards captured print output and the existing recorder schema has no readiness fields."
+evidence = ["issue:15988", "test:ux_latency_workspace_symbols_sees_open_document_symbols"]
+created = "2026-09-29"
+review_after = "2026-12-28"
+
+[allow.selector]
+ast_kind = "attribute"
+container = "emit_workspace_symbol_probe_receipt"
+lint = "clippy::print_stderr"
+target_fingerprint = "policy:allow-ux-ws-symbol-receipt-15988"

@@ -20,6 +20,27 @@ fn is_plain_bareword_glob_name(inner: &str) -> bool {
 /// leading `{` as a dynamic, non-static glob name (#15650). Reporting the
 /// bare expression text (`foo()`, `"name"`) as a static glob name would mint
 /// a symbol that no static consumer can resolve (#15712).
+/// A list-declaration slot that real Perl classifies as a constant item.
+///
+/// `my`/`our`/`state` reject a sigil-less name, number, string, v-string, or
+/// signed numeric literal. `local` still rejects those literals, but a bare
+/// identifier stays eligible: `local(slot)` can name an `:lvalue` subroutine
+/// (#16732). Variables, `undef`, nested lists, typeglobs, and subscripted
+/// lvalues stay outside this class.
+fn is_constant_declaration_list_item(declarator: &str, item: &Node) -> bool {
+    match &item.kind {
+        NodeKind::Identifier { name } => {
+            declarator != "local" && !name.starts_with(['$', '@', '%', '*', '&'])
+        }
+        NodeKind::Number { .. } | NodeKind::String { .. } | NodeKind::VString { .. } => true,
+        NodeKind::Unary { operand, .. } => is_constant_declaration_list_item(declarator, operand),
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            is_constant_declaration_list_item(declarator, variable)
+        }
+        _ => false,
+    }
+}
+
 fn normalize_dynamic_typeglob_name(name: &str) -> String {
     let Some(inner) = name.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else {
         return name.trim().trim_end_matches(';').trim().to_string();
@@ -43,7 +64,7 @@ impl<'a> Parser<'a> {
 
             // Parse comma-separated list of variables with their individual attributes
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
-                let var = self.parse_variable_list_item()?;
+                let var = self.parse_variable_list_item(&declarator)?;
                 variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {
@@ -251,7 +272,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse one slot in a lexical list declaration.
-    fn parse_variable_list_item(&mut self) -> ParseResult<Node> {
+    fn parse_variable_list_item(&mut self, declarator: &str) -> ParseResult<Node> {
         match self.peek_kind() {
             Some(TokenKind::Undef) => {
                 let undef_token = self.consume_token()?;
@@ -265,7 +286,7 @@ impl<'a> Parser<'a> {
                 self.consume_token()?; // consume (
                 let mut items = Vec::new();
                 while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
-                    items.push(self.parse_variable_list_item()?);
+                    items.push(self.parse_variable_list_item(declarator)?);
                     if self.peek_kind() == Some(TokenKind::Comma) {
                         self.consume_token()?; // consume ,
                     } else if self.peek_kind() != Some(TokenKind::RightParen) {
@@ -297,8 +318,42 @@ impl<'a> Parser<'a> {
                     ),
                 }
             }
-            _ => self.parse_ternary(),
+            _ => {
+                let item = self.parse_ternary()?;
+                Ok(self.recover_constant_declaration_list_item(declarator, item))
+            }
         }
+    }
+
+    /// Recover a sigil-less / constant slot in `my`/`our`/`state`/`local` lists.
+    ///
+    /// Real `perl -c` rejects `my (base)` with `Can't declare constant item in
+    /// "my"`. The previous path parsed the bareword through `parse_ternary` and
+    /// kept a clean AST, so `perllsp --check` answered `ok` (#16732). Record a
+    /// blocking diagnostic on the offending range and wrap the item so later
+    /// list slots and later statements still parse.
+    fn recover_constant_declaration_list_item(&mut self, declarator: &str, item: Node) -> Node {
+        if !is_constant_declaration_list_item(declarator, &item) {
+            return item;
+        }
+        let message = if declarator == "local" {
+            "Can't modify constant item in local".to_string()
+        } else {
+            format!("Can't declare constant item in \"{declarator}\"")
+        };
+        let location = item.location;
+        self.record_error(ParseError::syntax(message.clone(), location.start));
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
+        Node::new(
+            NodeKind::Error {
+                message,
+                expected: vec![],
+                found: None,
+                partial: Some(Box::new(item)),
+            },
+            location,
+        )
     }
 
     /// Attach optional per-item attributes after a list-declaration slot.
@@ -1445,62 +1500,58 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    /// Validate ordering rules for a collected list of signature parameters.
-    ///
-    /// Emits diagnostics (without aborting the parse) for:
-    /// - A slurpy (`@` or `%`) parameter that is not the last parameter.
-    /// - Both an `@` and a `%` slurpy parameter present in the same signature.
-    /// - A mandatory parameter appearing after an optional parameter.
+    /// Validate classified parameters without discarding or reordering the signature.
+    /// Error parameters contribute no inferred state; earlier known state survives them.
     fn validate_signature_ordering(&mut self, params: &[Node]) {
-        let mut seen_slurpy_at = false; // saw @array slurpy
-        let mut seen_slurpy_pct = false; // saw %hash slurpy
-        let mut seen_optional = false;
+        use crate::InvalidSignatureOrderingKind as Ordering;
+        let mut seen_optional_positional = false;
+        let mut seen_named = false;
+        let mut seen_slurpy = false;
 
-        for (idx, param) in params.iter().enumerate() {
-            let is_last = idx == params.len() - 1;
-
-            match &param.kind {
-                NodeKind::SlurpyParameter { variable } => {
-                    let sigil = match &variable.kind {
-                        NodeKind::Variable { sigil, .. } => sigil.as_str(),
-                        _ => "",
-                    };
-
-                    if sigil == "@" {
-                        if seen_slurpy_pct {
-                            self.record_error(ParseError::syntax(
-                                "Signature cannot have both @ and % slurpy parameters",
-                                param.location.start,
-                            ));
+        for param in params {
+            if !matches!(
+                param.kind,
+                NodeKind::MandatoryParameter { .. }
+                    | NodeKind::OptionalParameter { .. }
+                    | NodeKind::NamedParameter { .. }
+                    | NodeKind::SlurpyParameter { .. }
+            ) {
+                continue;
+            }
+            let kind = if seen_slurpy {
+                Some(Ordering::ParameterAfterSlurpy)
+            } else {
+                match &param.kind {
+                    NodeKind::MandatoryParameter { .. } => {
+                        if seen_named {
+                            Some(Ordering::PositionalAfterNamed)
+                        } else if seen_optional_positional {
+                            Some(Ordering::MandatoryAfterOptional)
+                        } else {
+                            None
                         }
-                        seen_slurpy_at = true;
-                    } else if sigil == "%" {
-                        if seen_slurpy_at {
-                            self.record_error(ParseError::syntax(
-                                "Signature cannot have both @ and % slurpy parameters",
-                                param.location.start,
-                            ));
-                        }
-                        seen_slurpy_pct = true;
                     }
-
-                    if !is_last {
-                        self.record_error(ParseError::syntax(
-                            "Slurpy parameter must be the last parameter in the signature",
-                            param.location.start,
-                        ));
+                    NodeKind::OptionalParameter { .. } => {
+                        seen_optional_positional = true;
+                        seen_named.then_some(Ordering::PositionalAfterNamed)
                     }
+                    NodeKind::NamedParameter { required, .. } => {
+                        seen_named = true;
+                        (*required && seen_optional_positional)
+                            .then_some(Ordering::RequiredNamedAfterOptional)
+                    }
+                    NodeKind::SlurpyParameter { .. } => {
+                        seen_slurpy = true;
+                        None
+                    }
+                    _ => None,
                 }
-                NodeKind::OptionalParameter { .. } => {
-                    seen_optional = true;
-                }
-                NodeKind::MandatoryParameter { .. } if seen_optional => {
-                    self.record_error(ParseError::syntax(
-                        "Mandatory parameter cannot follow an optional parameter in signature",
-                        param.location.start,
-                    ));
-                }
-                _ => {}
+            };
+            if let Some(kind) = kind {
+                self.record_error(ParseError::InvalidSignatureOrdering {
+                    kind,
+                    range: param.location,
+                });
             }
         }
     }
@@ -1588,7 +1639,15 @@ impl<'a> Parser<'a> {
         let default_value =
             if default_token.is_some() { Some(Box::new(self.parse_ternary()?)) } else { None };
         if let Some(default) = &default_value {
-            end = default.location.end;
+            // #16242: a grouped default such as `$a = (1+2)` consumes its closing
+            // parentheses while the parenthesized primary returns the *inner*
+            // expression node, so the child's `location.end` can stop short of the
+            // consumed grouping delimiters. Keep the consumed extent honest for both
+            // the parameter node and the InvalidSignatureParameter ranges below by
+            // also taking the parser's consumed-token endpoint; the max with the
+            // child's own end covers expression paths that take tokens straight off
+            // the stream, where `last_end_position` lags behind (see #5503).
+            end = default.location.end.max(self.previous_position());
         }
         if let Some(kind) = invalid_kind {
             let range = SourceLocation { start, end };
@@ -2089,6 +2148,15 @@ fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
                 },
             }
         }
+        ParseError::InvalidSignatureOrdering { kind, range } => {
+            ParseError::InvalidSignatureOrdering {
+                kind,
+                range: SourceLocation {
+                    start: range.start.saturating_add(offset),
+                    end: range.end.saturating_add(offset),
+                },
+            }
+        }
         other => other,
     }
 }
@@ -2171,6 +2239,34 @@ mod inline_expression_tests {
             || !error.blocks_clean_parse()
         {
             return Err("diagnostic compatibility changed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn signature_ordering_offsets_both_endpoints() -> Result<(), String> {
+        let error = offset_parse_error(
+            ParseError::InvalidSignatureOrdering {
+                kind: crate::InvalidSignatureOrderingKind::PositionalAfterNamed,
+                range: SourceLocation { start: 3, end: 11 },
+            },
+            17,
+        );
+        if !matches!(
+            error,
+            ParseError::InvalidSignatureOrdering {
+                kind: crate::InvalidSignatureOrderingKind::PositionalAfterNamed,
+                range: SourceLocation { start: 20, end: 28 },
+            }
+        ) {
+            return Err("ordering diagnostic kind/endpoints not mapped".into());
+        }
+        if crate::ErrorClass::error_class(&error) != crate::ErrorCategory::UserError
+            || error.location() != Some(20)
+            || error.diagnostic_anchor() != crate::syntax::error::ParseDiagnosticAnchor::Exact(20)
+            || !error.blocks_clean_parse()
+        {
+            return Err("ordering diagnostic compatibility changed".into());
         }
         Ok(())
     }

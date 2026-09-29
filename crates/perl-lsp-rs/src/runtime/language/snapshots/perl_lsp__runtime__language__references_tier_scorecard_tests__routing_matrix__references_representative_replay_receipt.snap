@@ -36,7 +36,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "not_applicable",
-      "result_count": 8,
+      "result_count": 2,
       "scenario_rationale": "same_file_lexical_usage_without_declaration",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -45,7 +45,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_exact_candidate_count": 0,
       "source_backed_outcome": "declined",
       "source_backed_symbol_at_found": false,
-      "text_result_count": 6,
+      "text_result_count": 2,
       "uri": "file:///real_projects/mojolicious_skeleton/lib/Mojolicious.pm"
     },
     {
@@ -69,7 +69,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "not_applicable",
-      "result_count": 10,
+      "result_count": 3,
       "scenario_rationale": "same_file_lexical_usage_with_declaration_included",
       "source_backed": false,
       "source_backed_attempted": false,
@@ -78,7 +78,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_exact_candidate_count": 0,
       "source_backed_outcome": "not_attempted",
       "source_backed_symbol_at_found": false,
-      "text_result_count": 7,
+      "text_result_count": 3,
       "uri": "file:///real_projects/mojolicious_skeleton/lib/Mojolicious.pm"
     },
     {
@@ -102,7 +102,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "not_applicable",
-      "result_count": 74,
+      "result_count": 43,
       "scenario_rationale": "same_file_lexical_usage_without_declaration",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -135,7 +135,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "not_applicable",
-      "result_count": 74,
+      "result_count": 43,
       "scenario_rationale": "same_file_lexical_usage_without_declaration",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -214,7 +214,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "uri": "file:///real_projects/mojolicious_skeleton/lib/Mojolicious.pm"
     },
     {
-      "answering_tier": "workspace_text",
+      "answering_tier": "workspace_mixed",
       "character": 4,
       "cursor_site": "usage",
       "declaration_shape": "not_applicable",
@@ -222,7 +222,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "fact_class": "imported_symbol",
       "file": "lib/Mojolicious.pm",
       "include_declaration": false,
-      "index_result_count": 0,
+      "index_result_count": 2,
       "line": 72,
       "needle": "croak",
       "project": "mojolicious_skeleton",
@@ -232,18 +232,18 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_fallback_state": "legacy_provider",
       "receipt_freshness": "fresh",
       "receipt_reason": "live_provider_result",
-      "receipt_source_backed_state": "workspace_text_fallback",
+      "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "function_call",
-      "result_count": 1,
+      "result_count": 8,
       "scenario_rationale": "carp_croak_declared_outside_the_fixture_project",
       "source_backed": false,
       "source_backed_attempted": true,
-      "source_backed_cutover_result": "legacy_fallback",
-      "source_backed_decline_stage": "cutover",
+      "source_backed_cutover_result": null,
+      "source_backed_decline_stage": "entity_resolution",
       "source_backed_exact_candidate_count": 0,
       "source_backed_outcome": "declined",
-      "source_backed_symbol_at_found": false,
-      "text_result_count": 1,
+      "source_backed_symbol_at_found": true,
+      "text_result_count": 6,
       "uri": "file:///real_projects/mojolicious_skeleton/lib/Mojolicious.pm"
     },
     {
@@ -267,7 +267,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "not_applicable",
-      "result_count": 30,
+      "result_count": 14,
       "scenario_rationale": "same_file_lexical_usage_without_declaration",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -276,7 +276,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_exact_candidate_count": 7,
       "source_backed_outcome": "declined",
       "source_backed_symbol_at_found": true,
-      "text_result_count": 16,
+      "text_result_count": 8,
       "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm"
     },
     {
@@ -300,7 +300,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "not_applicable",
-      "result_count": 15,
+      "result_count": 3,
       "scenario_rationale": "same_file_lexical_usage_without_declaration",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -309,7 +309,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_exact_candidate_count": 3,
       "source_backed_outcome": "declined",
       "source_backed_symbol_at_found": true,
-      "text_result_count": 12,
+      "text_result_count": 2,
       "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm"
     },
     {
@@ -333,7 +333,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "not_applicable",
-      "result_count": 15,
+      "result_count": 3,
       "scenario_rationale": "same_file_lexical_usage_without_declaration",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -342,7 +342,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_exact_candidate_count": 3,
       "source_backed_outcome": "declined",
       "source_backed_symbol_at_found": true,
-      "text_result_count": 12,
+      "text_result_count": 2,
       "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm"
     },
     {
@@ -399,7 +399,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_text_fallback",
       "request_shape": "function_call",
-      "result_count": 7,
+      "result_count": 1,
       "scenario_rationale": "carp_croak_declared_outside_the_fixture_project",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -408,7 +408,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_exact_candidate_count": 0,
       "source_backed_outcome": "declined",
       "source_backed_symbol_at_found": true,
-      "text_result_count": 7,
+      "text_result_count": 1,
       "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm"
     },
     {
@@ -432,7 +432,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "not_applicable",
-      "result_count": 6,
+      "result_count": 2,
       "scenario_rationale": "same_file_lexical_usage_without_declaration",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -441,7 +441,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_exact_candidate_count": 2,
       "source_backed_outcome": "declined",
       "source_backed_symbol_at_found": true,
-      "text_result_count": 4,
+      "text_result_count": 2,
       "uri": "file:///real_projects/catalyst_skeleton/lib/Catalyst/Action.pm"
     },
     {
@@ -465,7 +465,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_mixed_fallback",
       "request_shape": "not_applicable",
-      "result_count": 53,
+      "result_count": 32,
       "scenario_rationale": "same_file_lexical_usage_without_declaration",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -564,7 +564,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "receipt_reason": "live_provider_result",
       "receipt_source_backed_state": "workspace_text_fallback",
       "request_shape": "function_call",
-      "result_count": 12,
+      "result_count": 6,
       "scenario_rationale": "carp_croak_declared_outside_the_fixture_project",
       "source_backed": false,
       "source_backed_attempted": true,
@@ -573,7 +573,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "source_backed_exact_candidate_count": 0,
       "source_backed_outcome": "declined",
       "source_backed_symbol_at_found": true,
-      "text_result_count": 12,
+      "text_result_count": 6,
       "uri": "file:///real_projects/catalyst_skeleton/lib/Catalyst/Dispatcher.pm"
     },
     {

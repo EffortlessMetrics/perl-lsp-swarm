@@ -30,9 +30,11 @@
 //!     cargo test -p perl-lsp-ux-tests --test ux_latency_raw_rpc \
 //!         -- --test-threads=1 --nocapture
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
+use perl_lsp_ux_tests::observation::WaitEnd;
 use perl_lsp_ux_tests::{LspEvent, ScenarioConfig, UxHarness, binary_available};
 use serde_json::{Value, json};
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 const SHORT_SOURCE: &str = r#"use strict;
@@ -105,11 +107,25 @@ fn e2e_config(timeout: Duration) -> ScenarioConfig {
     }
 }
 
+/// Budget for one e2e scenario and for individual request roundtrips.
+///
+/// These receipts assert arrival, not speed (see the module header): the
+/// claim is "we drove the e2e config and the answer arrived," so the bound
+/// exists only to fail fast on a wedged binary. A tight budget turns the
+/// verdict into a function of the runner: #16278 measured the two UX
+/// workflows disagreeing on 11 of 30 identical heads because a loaded CI
+/// moment pushed healthy roundtrips past fixed 8s/5s budgets (one observed
+/// expiry: 7999ms with the stream still live). 60s keeps the wedge
+/// detector while leaving runner-speed noise outside the claim; the happy
+/// path still completes in well under a second.
 fn timeout() -> Duration {
-    // 8s gives CI runners ample headroom while still failing fast on a
-    // wedged binary. Local dev typically completes each scenario in <500ms.
-    Duration::from_secs(8)
+    Duration::from_secs(60)
 }
+
+/// Budget for "wait until the observation arrives" helpers. Same contract
+/// as [`timeout`]: arrival is the assertion; the bound only detects a
+/// wedged binary.
+const ARRIVAL_BUDGET: Duration = Duration::from_secs(30);
 
 fn symbol_tree_contains_name(symbols: &[Value], expected_name: &str) -> bool {
     let mut pending: Vec<&Value> = symbols.iter().collect();
@@ -122,6 +138,81 @@ fn symbol_tree_contains_name(symbols: &[Value], expected_name: &str) -> bool {
         }
     }
     false
+}
+
+#[derive(Debug)]
+struct WorkspaceSymbolObservation {
+    symbols: Vec<Value>,
+    elapsed: Duration,
+    budget: Duration,
+}
+
+// Local runs use a print macro; CI needs descriptor IO to bypass libtest capture.
+// Keep both paths explicit so the source-policy exception is operative.
+#[expect(
+    clippy::print_stderr,
+    reason = "policy:allow-ux-ws-symbol-receipt-15988: one path-free success receipt must survive libtest capture in CI logs"
+)]
+fn emit_workspace_symbol_probe_receipt(receipt: &Value) -> Result<()> {
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let stderr = std::io::stderr();
+        let mut output = stderr.lock();
+        serde_json::to_writer(&mut output, receipt)?;
+        output.write_all(b"\n")?;
+    } else {
+        eprintln!("{receipt}");
+    }
+    Ok(())
+}
+
+fn workspace_symbols_with_budget(
+    harness: &UxHarness,
+    deadline: Instant,
+    phase: &str,
+) -> Result<WorkspaceSymbolObservation> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        bail!("workspace/symbol {phase}: overall deadline expired before RPC");
+    }
+
+    let request_started = Instant::now();
+    match harness.workspace_symbols_with_timeout("alpha", remaining) {
+        Ok(symbols) => Ok(WorkspaceSymbolObservation {
+            symbols,
+            elapsed: request_started.elapsed(),
+            budget: remaining,
+        }),
+        Err(error) => {
+            let kind = if format!("{error:#}").contains("deadline expired after") {
+                "RPC timeout"
+            } else {
+                "RPC failure"
+            };
+            bail!(
+                "workspace/symbol {phase}: {kind} after {}ms (budget {}ms): {error:#}",
+                request_started.elapsed().as_millis(),
+                remaining.as_millis()
+            )
+        }
+    }
+}
+
+fn observe_immediate_workspace_symbols(
+    request: impl FnOnce() -> Result<WorkspaceSymbolObservation>,
+    readiness_after_rpc: impl FnOnce() -> std::result::Result<(), WaitEnd>,
+    ready_before_query: bool,
+) -> Result<WorkspaceSymbolObservation> {
+    match request() {
+        Ok(observation) => Ok(observation),
+        Err(error) => {
+            // The first RPC can consume the whole scenario budget. Preserve the
+            // exact-document readiness state already buffered when it ends.
+            let readiness = readiness_after_rpc();
+            bail!(
+                "workspace/symbol immediate request failed; ready_before_query={ready_before_query}; active_document_readiness_after_rpc={readiness:?}: {error:#}"
+            )
+        }
+    }
 }
 
 fn registration_seen(events: &[LspEvent], method_name: &str) -> bool {
@@ -205,7 +296,7 @@ fn ux_latency_edit_publishes_parse_error_diagnostic() -> Result<()> {
     harness.open_file("broken.pl", PARSE_ERROR_SOURCE)?;
 
     // Under syntax-only + zero debounce, a parse error must arrive promptly.
-    let diags = harness.wait_for_diagnostics("broken.pl", Duration::from_secs(5));
+    let diags = harness.wait_for_diagnostics("broken.pl", ARRIVAL_BUDGET);
     assert!(
         !diags.is_empty(),
         "syntax-only e2e mode must surface parse errors; got empty diagnostics list"
@@ -236,12 +327,12 @@ fn ux_latency_edit_clears_diagnostics_when_parse_recovers() -> Result<()> {
     let harness = UxHarness::new(e2e_config(timeout()))?;
     harness.open_file("recovers.pl", PARSE_ERROR_SOURCE)?;
 
-    let bad = harness.wait_for_diagnostics("recovers.pl", Duration::from_secs(5));
+    let bad = harness.wait_for_diagnostics("recovers.pl", ARRIVAL_BUDGET);
     assert!(!bad.is_empty(), "broken parse must report at least one diagnostic; got {bad:?}");
 
     // Apply the fix and expect the latest publish for this URI to be empty.
     harness.change_file_full("recovers.pl", CLEAN_SOURCE)?;
-    let cleared = harness.wait_for_no_diagnostics("recovers.pl", Duration::from_secs(5));
+    let cleared = harness.wait_for_no_diagnostics("recovers.pl", ARRIVAL_BUDGET);
     assert!(
         cleared,
         "syntax-only mode must publish an empty diagnostic list after the parse recovers"
@@ -296,7 +387,7 @@ fn ux_latency_inline_completion_dynamic_path_returns_deterministic_items() -> Re
 
     let harness = UxHarness::new(e2e_config(timeout()))?;
     let inline_registered =
-        wait_for_registration(&harness, "textDocument/inlineCompletion", Duration::from_secs(2));
+        wait_for_registration(&harness, "textDocument/inlineCompletion", ARRIVAL_BUDGET);
     assert!(
         inline_registered,
         "lean LSP4IJ-shaped client must receive dynamic inline-completion registration"
@@ -345,21 +436,71 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
 
     let harness = UxHarness::new(e2e_config(timeout()))?;
     harness.open_file("lib/Latency/Symbols.pm", SYMBOL_SOURCE)?;
-
-    let symbols = harness.wait_for_workspace_symbols(
-        "alpha",
-        Duration::from_secs(5),
-        Duration::from_millis(50),
-        |items| {
-            items.iter().any(|symbol| symbol.get("name").and_then(Value::as_str) == Some("alpha"))
-        },
+    let opened_at = Instant::now();
+    let deadline = opened_at + ARRIVAL_BUDGET;
+    let uri = harness.workspace.uri("lib/Latency/Symbols.pm");
+    let ready_before_query = harness.wait_for_active_document_ready(&uri, Duration::ZERO);
+    let first = observe_immediate_workspace_symbols(
+        || workspace_symbols_with_budget(&harness, deadline, "immediate after didOpen"),
+        || harness.wait_for_active_document_ready_result(&uri, Duration::ZERO),
+        ready_before_query,
     )?;
-    assert!(
-        symbols.iter().any(|symbol| symbol.get("name").and_then(Value::as_str) == Some("alpha")),
-        "workspace/symbol must find alpha from an opened e2e document; got {symbols:?}"
-    );
+    let first_has_alpha = first.symbols.iter().any(|symbol| symbol["name"] == "alpha");
+    let ready_by_response = harness.wait_for_active_document_ready(&uri, Duration::ZERO);
 
+    let ready_budget = deadline.saturating_duration_since(Instant::now());
+    match harness.wait_for_active_document_ready_result(&uri, ready_budget) {
+        Ok(()) => {}
+        Err(WaitEnd::Deadline { .. }) => {
+            bail!(
+                "active-document readiness timeout after {}ms with stream live; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
+                opened_at.elapsed().as_millis()
+            );
+        }
+        Err(end) => {
+            bail!(
+                "active-document readiness stream ended after {}ms: {end:?}; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
+                opened_at.elapsed().as_millis()
+            );
+        }
+    }
+    // The event may have arrived while the first RPC was in flight. This is
+    // the latest time by which readiness is confirmed, not its arrival time.
+    let readiness_confirmed_by = opened_at.elapsed();
+
+    let after_ready = workspace_symbols_with_budget(&harness, deadline, "after active-document-ready")
+        .with_context(|| {
+            format!(
+                "active-document-ready confirmed by {}ms; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
+                readiness_confirmed_by.as_millis()
+            )
+        })?;
+    let after_ready_has_alpha = after_ready.symbols.iter().any(|symbol| symbol["name"] == "alpha");
+    if !after_ready_has_alpha {
+        bail!(
+            "workspace/symbol empty or missing alpha after active-document-ready (confirmed by {}ms); ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}, after_ready={after_ready:?}",
+            readiness_confirmed_by.as_millis()
+        );
+    }
     harness.assert_no_crash();
+
+    // One reviewed stderr exception keeps the passing timing visible in CI.
+    let receipt = json!({
+        "kind": "workspace_symbol_readiness_probe",
+        "test": "ux_latency_workspace_symbols_sees_open_document_symbols",
+        "result": "pass",
+        "immediate_rpc_ms": first.elapsed.as_millis(),
+        "immediate_budget_ms": first.budget.as_millis(),
+        "immediate_alpha": first_has_alpha,
+        "ready_before_query": ready_before_query,
+        "ready_by_response": ready_by_response,
+        "readiness_confirmed_by_ms": readiness_confirmed_by.as_millis(),
+        "after_ready_rpc_ms": after_ready.elapsed.as_millis(),
+        "after_ready_budget_ms": after_ready.budget.as_millis(),
+        "after_ready_alpha": after_ready_has_alpha,
+    });
+    emit_workspace_symbol_probe_receipt(&receipt)?;
+
     Ok(())
 }
 
@@ -387,6 +528,37 @@ fn symbol_tree_contains_name_searches_nested_children() -> Result<()> {
 }
 
 #[test]
+fn stalled_immediate_rpc_reports_readiness_that_arrived_during_request() -> Result<()> {
+    let ready = std::cell::Cell::new(false);
+    let error = observe_immediate_workspace_symbols(
+        || {
+            ready.set(true);
+            Err(anyhow::anyhow!("deadline expired after 30s"))
+        },
+        || ready.get().then_some(()).ok_or(WaitEnd::Deadline { timeout: Duration::ZERO }),
+        false,
+    )
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("simulated stalled request unexpectedly succeeded"))?;
+    let message = format!("{error:#}");
+    anyhow::ensure!(message.contains("active_document_readiness_after_rpc=Ok(())"), "{message}");
+    anyhow::ensure!(message.contains("deadline expired after 30s"), "{message}");
+
+    let not_ready = observe_immediate_workspace_symbols(
+        || Err(anyhow::anyhow!("deadline expired after 30s")),
+        || Err(WaitEnd::Deadline { timeout: Duration::ZERO }),
+        false,
+    )
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("simulated stalled request unexpectedly succeeded"))?;
+    anyhow::ensure!(
+        format!("{not_ready:#}").contains("active_document_readiness_after_rpc=Err(Deadline"),
+        "{not_ready:#}"
+    );
+    Ok(())
+}
+
+#[test]
 fn ux_latency_code_action_returns_without_error_for_parse_diagnostic() -> Result<()> {
     if !binary_available() {
         return Ok(());
@@ -394,7 +566,7 @@ fn ux_latency_code_action_returns_without_error_for_parse_diagnostic() -> Result
 
     let harness = UxHarness::new(e2e_config(timeout()))?;
     harness.open_file("action.pl", PARSE_ERROR_SOURCE)?;
-    let diagnostics = harness.wait_for_diagnostics("action.pl", Duration::from_secs(5));
+    let diagnostics = harness.wait_for_diagnostics("action.pl", ARRIVAL_BUDGET);
     assert!(
         !diagnostics.is_empty(),
         "code action e2e receipt needs a real diagnostic to act on; got {diagnostics:?}"

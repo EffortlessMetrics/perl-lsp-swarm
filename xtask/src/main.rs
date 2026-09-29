@@ -38,34 +38,35 @@ use tasks::{
     activation, active_goal_manifest, agent_capability_policy, agent_flow,
     agent_implementation_packet, agent_lease, agent_receipt, agent_review_packet,
     aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
-    check, check_agent_context, check_lint_policy, check_tautology, check_test_wiring,
-    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_cache_inventory, ci_contract,
-    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
-    ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
-    compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
-    compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
-    critic_rule_proof, dead_code, dead_code_api_ledger, debt_report, dependency_hygiene, dev,
-    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
-    emacs_train_context, emacs_train_packet, emacs_train_specs, features, finalize_check,
-    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
-    github, github_preflight, github_review, goals, hardening, hook_checks, htmx_catalog_drift,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_controllers, issue_plan, kwalitee_namespace_inventory, layer_check, lsp_318_claims,
-    lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate, metrics,
-    module_train, module_train_live, native_critic, native_format, native_neovim_train,
-    native_product_surface, native_tooling, oneliner_capability_matrix, oracle_fixture_manifest,
-    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
-    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
-    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
-    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
-    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
-    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, standalone_diagnostics, supported_editor_inline_smoke,
+    check, check_agent_context, check_configuration_authority, check_lint_policy, check_tautology,
+    check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows,
+    ci_cache_inventory, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
+    ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
+    code_action_generation_ledger, command_evidence, compare, compat_inventory,
+    compiler_lexical_cutline, compiler_performance_receipt, compiler_upstream_status,
+    completion_candidates, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof, dead_code,
+    dead_code_api_ledger, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
+    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_packet,
+    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
+    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
+    goals, hardening, hook_checks, htmx_catalog_drift, ignored_tests, incremental_proof,
+    inject_sha_assets, inline_completion_quality, inline_completion_smoke, install_surface_check,
+    integration_proof, intent_diff_gate, issue_controllers, issue_plan,
+    kwalitee_namespace_inventory, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
+    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
+    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
+    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
+    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
+    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
+    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
+    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
+    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
+    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
+    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
+    srp_microcrates, standalone_diagnostics, standalone_vectors, supported_editor_inline_smoke,
     swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
     train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
     ux_scorecard, validate_workspace_exclusions, workflow_authority_inventory,
@@ -157,6 +158,9 @@ enum Commands {
     /// Validate the code-action provider-generation disposition ledger and its
     /// parity corpus against current source (#9188).
     CheckCodeActionGenerationLedger,
+
+    /// Validate derived workspace-folder writer/invalidation evidence (#16827).
+    CheckConfigurationAuthority,
 
     /// Validate the `perl_parser::dead_code` API disposition ledger against
     /// current module source, the public-API baseline, its compatibility
@@ -825,6 +829,12 @@ enum Commands {
         /// Head revision used for diff-scoped RIPR receipt commands.
         #[arg(long, default_value = "HEAD")]
         ripr_head: String,
+        /// Commit the repo-wide RIPR+ total-debt receipt may be bound to
+        /// instead of the head, for `--mode enforce-new-ripr` only. Normally
+        /// the merge base the pull request is measured against. Must name the
+        /// commit exactly; omitting it keeps the receipt head-bound.
+        #[arg(long)]
+        ripr_baseline_commit: Option<String>,
         /// Quality-gate JSON receipt path.
         #[arg(long, default_value = "target/receipts/quality/quality-gate.json")]
         receipt: PathBuf,
@@ -2006,6 +2016,10 @@ enum Commands {
         #[arg(long)]
         no_wait_release: bool,
 
+        /// Durable `release_turnkey_transaction.v1` record path.
+        #[arg(long)]
+        transaction: Option<PathBuf>,
+
         /// Workflow wait timeout in seconds.
         #[arg(long)]
         workflow_timeout: Option<u64>,
@@ -2400,6 +2414,17 @@ enum Commands {
 
     /// Check active install docs and release notes for stale install command drift.
     InstallSurfaceCheck,
+
+    /// Standalone install semantic conformance vectors (#11550): the
+    /// versioned deterministic corpus, independent expected-outcome oracle,
+    /// fixture-port protocol data, and mutation bank used to prove POSIX and
+    /// PowerShell transaction conformance. Proof-only: never executes
+    /// production adapters and implements no product behavior.
+    #[command(name = "standalone-vectors")]
+    StandaloneVectors {
+        #[command(subcommand)]
+        command: StandaloneVectorsCommand,
+    },
 
     /// Validate PR intent/title/body against changed paths and closeout evidence.
     IntentDiffGate {
@@ -3081,6 +3106,27 @@ enum CheckFilePolicyCliMode {
 }
 
 #[derive(Subcommand)]
+enum StandaloneVectorsCommand {
+    /// Validate the corpus: schema, contract rules, independent-oracle
+    /// derivations, authored expectations, and byte-identical goldens.
+    /// `--update-golden` is an explicit writer action, never live state.
+    Check {
+        /// Rewrite the golden semantic packets.
+        #[arg(long)]
+        update_golden: bool,
+    },
+    /// Render one vector's full derivation (stage walk, receipts, ceilings,
+    /// terminal fold) and its assertion results.
+    Explain {
+        /// Vector id, e.g. v001-archive-pair-success.
+        vector: String,
+    },
+    /// Apply every registered wrong-behavior mutation to its target vectors;
+    /// fail if any mutation survives with a packet identical to its golden.
+    MutationCheck,
+}
+
+#[derive(Subcommand)]
 enum EditorCompatCommand {
     /// Run one exact Vim + vim-lsp actual-host subject through the hermetic
     /// Rust host runner (#10944). The pinned vim-lsp checkout is verified
@@ -3206,6 +3252,13 @@ enum VimEditorCompatCommand {
         /// Host run timeout in milliseconds (default 240000).
         #[arg(long, default_value_t = 240_000)]
         timeout_ms: u64,
+
+        /// Envelope schema version this run must emit and validate (#15340).
+        /// Only the current `editor_client_compat` envelope is supported;
+        /// anything else fails closed before any work instead of emitting a
+        /// shape the caller does not parse.
+        #[arg(long, default_value = xtask::editor_client_compat::SCHEMA_VERSION)]
+        api_version: String,
     },
 }
 
@@ -4898,6 +4951,13 @@ enum EmacsIntegrationCommand {
         /// Host run timeout in milliseconds (default 180000).
         #[arg(long, default_value_t = 180_000)]
         timeout_ms: u64,
+
+        /// Envelope schema version this run must emit and validate (#15340).
+        /// Only the current `editor_client_compat` envelope is supported;
+        /// anything else fails closed before any work instead of emitting a
+        /// shape the caller does not parse.
+        #[arg(long, default_value = xtask::editor_client_compat::SCHEMA_VERSION)]
+        api_version: String,
     },
     /// Governed Emacs host-journey and fixture/cell manifest operations
     /// (#11768). Offline, deterministic, and second-run clean; validating or
@@ -5256,7 +5316,7 @@ enum QueueCommand {
         fixture: Option<PathBuf>,
     },
 
-    /// Classify master queue health into GREEN/PENDING/RED modes.
+    /// Classify master queue health into GREEN/PENDING/RED/NOT_PROVEN modes.
     Health {
         /// Output path for queue-health receipt JSON.
         #[arg(long)]
@@ -5468,6 +5528,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
+        Commands::CheckConfigurationAuthority => check_configuration_authority::run(),
         Commands::CheckDeadCodeApiLedger { write } => dead_code_api_ledger::run(write),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::Activation { command } => activation::run(command),
@@ -5559,7 +5620,10 @@ fn run_cli(cli: Cli) -> Result<()> {
                     candidate,
                     out,
                     timeout_ms,
+                    api_version,
                 } => {
+                    xtask::editor_client_compat::ensure_api_version(&api_version)
+                        .map_err(|error| eyre!("{error:#}"))?;
                     let repo_root =
                         utils::project_root().map_err(|error| eyre!(error.to_string()))?;
                     if journey == "save-format" {
@@ -5877,6 +5941,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
                         &repo_root,
+                        &api_version,
                         &subject,
                         vim,
                         vim_lsp_dir,
@@ -6084,6 +6149,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_baseline_commit,
             receipt,
             summary,
             check,
@@ -6098,6 +6164,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             patch_coverage,
             ripr_base,
             ripr_head,
+            ripr_baseline_commit,
             receipt,
             summary,
             check,
@@ -6315,6 +6382,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             no_auto_merge,
             no_wait_pr_merge,
             no_wait_release,
+            transaction,
             workflow_timeout,
         } => release_turnkey::run(release_turnkey::ReleaseTurnkeyConfig {
             version,
@@ -6328,6 +6396,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             no_auto_merge,
             no_wait_pr_merge,
             no_wait_release,
+            transaction: transaction.map(|path| path.display().to_string()),
             workflow_timeout,
         }),
         Commands::PrepCratesIoLaunch { mode } => {
@@ -6495,11 +6564,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                     client_package,
                     out,
                     timeout_ms,
+                    api_version,
                 } => {
                     let root =
                         crate::utils::project_root().map_err(|error| eyre!(error.to_string()))?;
                     let outcome = xtask::emacs_host_run::host_run_from_cli(
                         &root,
+                        &api_version,
                         &subject,
                         emacs,
                         candidate,
@@ -7114,6 +7185,15 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::DocClaims => doc_claims::run(),
         Commands::InstallSurfaceCheck => install_surface_check::run(),
+        Commands::StandaloneVectors { command } => match command {
+            StandaloneVectorsCommand::Check { update_golden } => {
+                standalone_vectors::run_check(update_golden)
+            }
+            StandaloneVectorsCommand::Explain { vector } => {
+                standalone_vectors::run_explain(&vector)
+            }
+            StandaloneVectorsCommand::MutationCheck => standalone_vectors::run_mutation_check(),
+        },
         Commands::IntentDiffGate { pr, fixture, receipt } => {
             intent_diff_gate::run(intent_diff_gate::IntentDiffGateConfig { pr, fixture, receipt })
         }
