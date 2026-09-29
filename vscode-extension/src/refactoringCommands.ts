@@ -80,15 +80,14 @@ async function applyAction(
       const workspaceEdit = await client.protocol2CodeConverter.asWorkspaceEdit(
         action.edit as Parameters<typeof client.protocol2CodeConverter.asWorkspaceEdit>[0],
       );
-      if (workspaceEdit) {
-        await vscode.workspace.applyEdit(workspaceEdit);
-      } else {
+      if (!workspaceEdit || !(await vscode.workspace.applyEdit(workspaceEdit))) {
         vscode.window.showInformationMessage(unavailableMessage);
+        return;
       }
     } catch {
       vscode.window.showInformationMessage(unavailableMessage);
+      return;
     }
-    return;
   }
 
   if (action.command) {
@@ -97,7 +96,9 @@ async function applyAction(
     return;
   }
 
-  vscode.window.showInformationMessage(unavailableMessage);
+  if (!action.edit) {
+    vscode.window.showInformationMessage(unavailableMessage);
+  }
 }
 
 /** Request and apply the server's extract-variable code action. */
