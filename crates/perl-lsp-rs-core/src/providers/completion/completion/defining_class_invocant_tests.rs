@@ -39,15 +39,17 @@ fn parse(source: &str) -> perl_parser_core::ast::Node {
 
 fn animal_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    // Canonical initial-name fixture seeding (#11301 burndown): these files
+    // are on-disk workspace members, not live documents.
+    index.index_initial_file(
         Url::parse("file:///workspace/Animal.pm")?,
         "package Animal;\nsub name { }\nsub speak { }\n1;\n".to_string(),
     )?;
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/Other.pm")?,
         "package Other;\nsub name { }\nsub fetch { }\n1;\n".to_string(),
     )?;
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/Dog.pm")?,
         "package Dog;\nuse parent 'Animal';\nsub fetch { }\n1;\n".to_string(),
     )?;

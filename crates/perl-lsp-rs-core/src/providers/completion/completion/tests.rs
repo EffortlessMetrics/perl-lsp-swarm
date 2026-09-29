@@ -9155,7 +9155,7 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
 /// inheritance edge rather than merely finding declarations in one AST.
 fn inherited_moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/Parent.pm")?,
         r#"package Parent;
 use Moo;
@@ -9176,10 +9176,10 @@ has 'status' => (
 #[test]
 fn block_form_package_after_close_stays_main() {
     let code = r#"package Child {
-    sub greet {
-        my $self = shift;
-        $self->bark;
-    }
+method greet {
+    my $self = shift;
+    $self->bark;
+}
 }
 $self->
 "#;
@@ -9224,7 +9224,7 @@ package Child;
 use Moo;
 use parent 'Parent';
 
-sub greet {
+method greet {
     my $self = shift;
     $self->
 }
@@ -9248,7 +9248,7 @@ package Child;
 use Moo;
 use parent 'Parent';
 
-sub greet {
+method greet {
     my $self = shift;
     $self->
 }
@@ -9275,7 +9275,7 @@ package Child;
 use Moo;
 use parent 'Parent';
 
-sub inspect {
+method inspect {
     my $self = shift;
     $self->
 }
@@ -9306,7 +9306,7 @@ package Child;
 use Moo;
 use parent 'Parent';
 
-sub inspect {
+method inspect {
     my $self = shift;
     $self->
 }
@@ -9315,7 +9315,7 @@ sub inspect {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let index = must(inherited_moo_parent_index());
-    must(index.index_file(
+    must(index.index_initial_file(
         must(Url::parse("file:///workspace/Unrelated.pm")),
         "package Other; sub Child { 1 }".to_string(),
     ));

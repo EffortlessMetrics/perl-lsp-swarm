@@ -77,7 +77,11 @@ outcome_owner = "#10230"
 # producer identities, entry routes, and finalizer route are unchanged. The
 # existing workspace producer emits fewer candidates in those roles; this is
 # a source re-audit, not a claim that completion behavior is unchanged.
-source_digest = "sha256:4e07962ef527ce07ef6f6735eb3eeefbafe2ca1f490b6a7ef0ecc6b528b0c527"
+# Re-anchor 2026-09-29 (#16861): extracted `completion/receiver.rs` (classifier,
+# not a producer) and excluded two test modules under the scan roots
+# (`defining_class_invocant_tests.rs`, `same_file_role_completion_tests.rs`).
+# No producer add/remove/re-channel; scanned product files become 43.
+source_digest = "sha256:c97638d855d457ea6db3916a7598bc957c6b6ca22c1284e55b1e780af8d185e4"
 
 [[delegations]]
 module = "dancer2"
@@ -896,6 +900,23 @@ reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#8958"
 limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
 note = "Method candidates from the workspace index."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::drop_generic_local_methods_rebound_from_composition"
+package = "perl-lsp-rs-core"
+candidate_class = "method"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#16809"
+limitations = "This seam removes generic local method labels that composition later rebinds; it does not mint new candidates. Identity remains the leftover label."
+note = "Drops current-document generic `method` items whose names are rebound from composed roles or inherited members."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_workspace_symbol_completions"

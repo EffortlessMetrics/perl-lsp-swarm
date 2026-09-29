@@ -122,8 +122,10 @@ const SCAN_ROOTS: &[&str] = &[
 /// source. They are excluded by name because their whole contents are proof,
 /// not a candidate route.
 const TEST_SURFACE_FILES: &[&str] = &[
-    "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
+    "crates/perl-lsp-rs-core/src/providers/completion/completion/defining_class_invocant_tests.rs",
     "crates/perl-lsp-rs-core/src/providers/completion/completion/keyword_role_tests.rs",
+    "crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs",
+    "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
 ];
 
 /// The runtime file holding the LSP entry points. Reachability is reconciled

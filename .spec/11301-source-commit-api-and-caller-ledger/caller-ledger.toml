@@ -120,6 +120,17 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # (workspace_index.rs), and the seeded content is initial state, so the call
 # was converted to the canonical name with identical behavior. Baseline
 # therefore stays 710.
+# Held at 710 by #16861 (PR #16894): combined-tree unledgered caller identities
+# were converted to canonical APIs rather than raising the baseline.
+# Checker-equivalent identities added (canonical calls only):
+#   crates/perl-lsp-rs-core/src/providers/completion/completion/defining_class_invocant_tests.rs
+#     three `index_initial_file` fixtures (Animal/Other/Dog on-disk members)
+#   crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs
+#     one `index_initial_file` fixture from #16850, converted on this combined tree
+#   crates/perl-workspace/tests/canonical_import_fact_adapter.rs
+#     `index_initial_file_str` initial fixtures plus `index_live_file` generation
+#     probes from #16859, converted on this combined tree
+# No compatibility call was added. Baseline therefore stays 710.
 compatibility_baseline = 710
 
 # Structural recurrence control (#11305): files under these prefixes must
@@ -138,6 +149,8 @@ compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/defining_class_invocant_tests.rs",
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/workspace.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion_shadow.rs",
@@ -186,6 +199,7 @@ caller_paths = [
   "crates/perl-workspace/src/bin/workspace_memory_profile.rs",
   "crates/perl-workspace/src/workspace/workspace_index.rs",
   "crates/perl-workspace/src/workspace_index_utf16_test.rs",
+  "crates/perl-workspace/tests/canonical_import_fact_adapter.rs",
   "crates/perl-workspace/tests/common/mod.rs",
   "crates/perl-workspace/tests/comprehensive_unit_tests.rs",
   "crates/perl-workspace/tests/cross_file_reference_query_tests.rs",
