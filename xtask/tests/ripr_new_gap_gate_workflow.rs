@@ -228,6 +228,15 @@ impl<'a> GateRoute<'a> {
             fallback_result: "skipped",
         }
     }
+
+    fn github_cancelled() -> Self {
+        Self {
+            router_target: "github",
+            selfhosted_result: "skipped",
+            github_result: "cancelled",
+            fallback_result: "skipped",
+        }
+    }
 }
 
 fn gate_lane_identity(route: GateRoute<'_>) -> (&'static str, &'static str) {
@@ -363,7 +372,10 @@ fn run_gate_with_fake_gh_logs(
             run = run.replace("repos/${GITHUB_REPOSITORY}/", "repos/Other/repository/");
         }
         GhApiControl::WrongRun => {
-            run = run.replace("actions/runs/${GITHUB_RUN_ID}/jobs", "actions/runs/9999/jobs");
+            run = run.replace(
+                "actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs",
+                "actions/runs/9999/attempts/${GITHUB_RUN_ATTEMPT}/jobs",
+            );
         }
         GhApiControl::WrongLogJob => {
             run = run.replace("actions/jobs/${lane_job_id}/logs", "actions/jobs/99999/logs");
@@ -425,7 +437,7 @@ gh() {
       shift
     fi
   done
-  local expected_jobs_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/jobs?per_page=100"
+  local expected_jobs_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/attempts/1/jobs?per_page=100"
   local expected_log_url="repos/${FAKE_REPOSITORY}/actions/jobs/${FAKE_JOB_ID}/logs"
   local expected_annotations_url="repos/${FAKE_REPOSITORY}/check-runs/${FAKE_JOB_ID}/annotations"
   case "$url" in
@@ -512,6 +524,7 @@ gh() {
         .env("FALLBACK_RESULT", route.fallback_result)
         .env("GITHUB_REPOSITORY", "EffortlessMetrics/perl-lsp-swarm")
         .env("GITHUB_RUN_ID", "4242")
+        .env("GITHUB_RUN_ATTEMPT", "1")
         .env("GITHUB_SHA", "0123456789abcdef0123456789abcdef01234567")
         .env("GITHUB_TOKEN", "gate-token")
         .env("GH_TOKEN", token.unwrap_or(""))
@@ -1104,11 +1117,41 @@ fn write_retry_artifact(path: &std::path::Path, artifact_mode: &str) -> Result<(
             archive.start_file("ripr-gate-classification.env", options)?;
             archive.write_all(b"classification=infra-no-proof\nrun_id=not-a-number\n")?;
         }
-        "valid" | "download-failure" | "missing" => {
+        "valid"
+        | "download-failure"
+        | "missing"
+        | "missing-attempt"
+        | "stale-attempt"
+        | "stale-job"
+        | "wrong-job-name"
+        | "missing-evaluated-head"
+        | "timeout"
+        | "unknown-cancel" => {
             archive.start_file("ripr-gate-classification.env", options)?;
-            archive.write_all(
-                b"classification=infra-no-proof\nlane_name=ripr+ on GitHub Hosted\nlane_job_id=97001\nhead_sha=0123456789abcdef0123456789abcdef01234567\nrouter_target=github\nrun_id=4242\n",
-            )?;
+            let classification = match artifact_mode {
+                "timeout" => "configured-timeout-no-proof",
+                "unknown-cancel" => "cancelled-no-verdict",
+                _ => "infra-no-proof",
+            };
+            let attempt = match artifact_mode {
+                "missing-attempt" => "",
+                "stale-attempt" => "run_attempt=2\n",
+                _ => "run_attempt=1\n",
+            };
+            let lane_job_id = if artifact_mode == "stale-job" { "97002" } else { "97001" };
+            let evaluated_sha = if artifact_mode == "missing-evaluated-head" {
+                "not-a-sha"
+            } else {
+                "0123456789abcdef0123456789abcdef01234567"
+            };
+            let lane_name = if artifact_mode == "wrong-job-name" {
+                "ripr+ on Self Hosted"
+            } else {
+                "ripr+ on GitHub Hosted"
+            };
+            archive.write_all(format!(
+                "classification={classification}\nlane_name={lane_name}\nlane_job_id={lane_job_id}\nhead_sha={evaluated_sha}\nrouter_target=github\nrun_id=4242\n{attempt}"
+            ).as_bytes())?;
         }
         _ => bail!("unknown artifact fixture: {artifact_mode}"),
     }
@@ -1204,6 +1247,7 @@ gh() {
   local expected_artifacts_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/artifacts?per_page=100"
   local expected_artifact_zip_url="repos/${FAKE_REPOSITORY}/actions/artifacts/${FAKE_ARTIFACT_ID}/zip"
   local expected_run_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}"
+  local expected_jobs_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100"
   local expected_rerun_url="repos/${FAKE_REPOSITORY}/actions/runs/${FAKE_RUN_ID}/rerun-failed-jobs"
   printf '%s %s\n' "$method" "$url" >> "$FAKE_API_CALLS"
   if [ "$url" = "$expected_artifacts_url" ]; then
@@ -1228,6 +1272,10 @@ gh() {
         return 1
       fi
       printf '{"run_attempt":%s,"status":"%s"}\n' "$FAKE_LIVE_ATTEMPT" "$FAKE_LIVE_STATUS" > "$FAKE_LIVE_RESPONSE"
+      jq -r "$jq_selector" "$FAKE_LIVE_RESPONSE"
+  elif [ "$url" = "$expected_jobs_url" ]; then
+      [ "$method" = "GET" ] || return 1
+      printf '{"jobs":[{"id":97001,"name":"ripr+ on GitHub Hosted"}]}\n' > "$FAKE_LIVE_RESPONSE"
       jq -r "$jq_selector" "$FAKE_LIVE_RESPONSE"
   elif [ "$url" = "$expected_rerun_url" ]; then
       [ "$method" = "POST" ] || return 1
@@ -1964,7 +2012,11 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
             && evaluate_step.contains("write_gate_classification \"ripr-failure\"")
             && evaluate_step.contains("> ripr-gate-classification.env")
             && evaluate_step.contains("head_sha=${GITHUB_SHA}")
-            && evaluate_step.contains("run_id=${GITHUB_RUN_ID}"),
+            && evaluate_step.contains("run_id=${GITHUB_RUN_ID}")
+            && evaluate_step.contains("run_attempt=${GITHUB_RUN_ATTEMPT}")
+            && evaluate_step.contains("lane_job_id=${lane_job_id:-unknown}")
+            && evaluate_step.contains("write_gate_classification \"configured-timeout-no-proof\"")
+            && evaluate_step.contains("write_gate_classification \"cancelled-no-verdict\""),
         "the ripr gate must emit every classified lane verdict as a data file for the retry workflow"
     );
     let upload_step = workflow_step(&gate, "Upload gate classification")
@@ -2011,6 +2063,11 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     assert!(
         retry.contains("[ \"${gate_run_id}\" != \"${RUN_ID}\" ]"),
         "ripr-infra-retry must verify the classification run id matches the event run"
+    );
+    assert!(
+        retry.contains("[ \"${gate_attempt}\" != \"${RUN_ATTEMPT}\" ]")
+            && retry.contains("/attempts/${RUN_ATTEMPT}/jobs?per_page=100"),
+        "retry must bind the artifact attempt and its lane job to the event attempt"
     );
     assert_eq!(
         retry_gh_token_binding()?,
@@ -2074,6 +2131,30 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     {
         bail!("valid classification data must reach the bounded rerun API:\n{valid_output}");
     }
+    for (mode, expected) in [
+        ("missing-attempt", "classification attempt (invalid)"),
+        ("stale-attempt", "classification attempt (2)"),
+        ("stale-job", "is not in current run attempt 1"),
+        ("wrong-job-name", "lane name does not match current run attempt 1"),
+        ("missing-evaluated-head", "classification lacks a valid evaluated SHA"),
+        ("timeout", "classification is not infra-no-proof"),
+        ("unknown-cancel", "classification is not infra-no-proof"),
+    ] {
+        let (outcome, output, posted) = run_retry_case(mode, "1")?;
+        if !outcome.status.success() || posted || !output.contains(expected) {
+            bail!("{mode} artifact must not arm an automatic retry:\n{output}");
+        }
+    }
+    let (stale_attempt_two, stale_attempt_two_output, stale_attempt_two_posted) =
+        run_retry_case("valid", "2")?;
+    if !stale_attempt_two.status.success()
+        || stale_attempt_two_posted
+        || !stale_attempt_two_output.contains("single automatic same-head retry is exhausted")
+    {
+        bail!(
+            "attempt-1 artifact delivered for attempt 2 must remain exhausted:\n{stale_attempt_two_output}"
+        );
+    }
     let (in_progress, in_progress_output, in_progress_posted) = run_retry_case_with_live(
         "valid",
         "1",
@@ -2099,6 +2180,7 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
     for expected_call in [
         "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242/artifacts?per_page=100",
         "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/artifacts/99001/zip",
+        "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242/attempts/1/jobs?per_page=100",
         "GET repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242",
         "POST repos/EffortlessMetrics/perl-lsp-swarm/actions/runs/4242/rerun-failed-jobs",
     ] {
@@ -2137,6 +2219,87 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
         bail!("attempt two must take the loud manual NOT_PROVEN path:\n{exhausted_output}");
     }
 
+    Ok(())
+}
+
+#[test]
+fn ripr_cancelled_gate_requires_current_job_timeout_annotation() -> Result<()> {
+    let steps = r#"{"conclusion":"cancelled","steps":[{"name":"Run RIPR","status":"in_progress","conclusion":null}]}"#;
+    let exact = r#"[{"annotation_level":"failure","message":"The job has exceeded the maximum execution time of 2h15m0s"}]"#;
+    let near_miss = r#"[{"annotation_level":"failure","message":"The job has exceeded the maximum execution time of 2h15m1s"}]"#;
+    for (name, annotation, class) in [
+        ("configured timeout", exact, "configured-timeout-no-proof"),
+        ("near-miss timeout", near_miss, "cancelled-no-verdict"),
+        ("unknown cancellation", "[]", "cancelled-no-verdict"),
+    ] {
+        let (outcome, output, artifact) = run_gate_with_fake_gh_logs(
+            Some(""),
+            "",
+            0,
+            0,
+            GateRoute::github_cancelled(),
+            GhApiControl::Valid,
+            Some("gate-token"),
+            0,
+            30,
+            annotation,
+            steps,
+        )?;
+        if outcome.status.success()
+            || !output.contains(&format!("RIPR_GATE_VERDICT={class}"))
+            || !artifact.as_deref().unwrap_or("").contains(&format!("classification={class}"))
+            || !artifact.as_deref().unwrap_or("").contains("run_attempt=1")
+        {
+            bail!(
+                "{name} must block with an attempt-bound {class} receipt:\n{output}\n{artifact:?}"
+            );
+        }
+    }
+    let (outcome, output, artifact) = run_gate_with_fake_gh_logs(
+        Some("quality gate failed; see receipt\n"),
+        "",
+        0,
+        0,
+        GateRoute::github_cancelled(),
+        GhApiControl::Valid,
+        Some("gate-token"),
+        0,
+        30,
+        exact,
+        steps,
+    )?;
+    if outcome.status.success()
+        || !output.contains("RIPR_GATE_VERDICT=ripr-failure")
+        || !artifact.as_deref().unwrap_or("").contains("classification=ripr-failure")
+    {
+        bail!("a genuine gap receipt must outrank a timeout annotation:\n{output}\n{artifact:?}");
+    }
+    // Even an inconsistent graph with a successful selected hosted lane and
+    // a cancelled fallback cannot be reported as a successful proof.
+    let inconsistent = GateRoute {
+        router_target: "github",
+        selfhosted_result: "skipped",
+        github_result: "success",
+        fallback_result: "cancelled",
+    };
+    let (outcome, output, _) = run_gate_with_fake_gh_logs(
+        Some(""),
+        "",
+        0,
+        0,
+        inconsistent,
+        GhApiControl::Valid,
+        Some("gate-token"),
+        0,
+        30,
+        "[]",
+        steps,
+    )?;
+    if outcome.status.success() || !output.contains("RIPR_GATE_VERDICT=cancelled-no-verdict") {
+        bail!(
+            "any cancelled evidence lane must block even with an inconsistent hosted success:\n{output}"
+        );
+    }
     Ok(())
 }
 
@@ -2215,6 +2378,7 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
     );
     for verdict in [
         "RIPR_GATE_VERDICT=infra-no-proof",
+        "RIPR_GATE_VERDICT=configured-timeout-no-proof",
         "RIPR_GATE_VERDICT=ripr-failure",
         "RIPR_GATE_VERDICT=cancelled-no-verdict",
         "RIPR_GATE_VERDICT=neutral-router-skipped",

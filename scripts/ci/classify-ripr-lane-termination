@@ -69,8 +69,9 @@
 #   decision_boundary="<one-line summary>"
 # API-evidence mode shares classification/gap_receipt_matches/verdict/
 # decision_boundary and reports its own evidence counters:
+#   classification additionally permits configured-timeout-no-proof;
 #   shutdown_signal_matches / sigterm143_matches / op_cancelled_matches /
-#   lost_communication_matches (annotation marker counts),
+#   lost_communication_matches / configured_timeout_matches (annotation marker counts),
 #   stuck_in_progress_steps + lane_job_conclusion (steps-state shape),
 #   annotations_read / steps_read (evidence readability), mode=api-evidence.
 #
@@ -153,7 +154,7 @@ EOF
 # runner-teardown evidence arms the infra/retry path.
 emit_api_verdict() {
   local ann_file="$1" steps_file="$2" receipt_file="$3"
-  local gap_hits=0 shut_hits=0 term143_hits=0 cancel_hits=0 lost_hits=0
+  local gap_hits=0 shut_hits=0 term143_hits=0 cancel_hits=0 lost_hits=0 timeout_hits=0
   local stuck_hits=0 job_conclusion="" ann_read=false steps_read=false
   local receipt_scanned=false receipt_capable_failed=false
   local class msgs
@@ -181,6 +182,9 @@ emit_api_verdict() {
         # 35501271465). The phrase is GitHub's fixed runner-service notice, so
         # the loose match stays specific to platform teardown.
         lost_hits=$(printf '%s\n' "$msgs" | grep -cE 'lost communication with the server' || true)
+        # #16980: only the configured hosted job's exact platform annotation
+        # distinguishes its 135-minute timeout from an unknown cancellation.
+        timeout_hits=$(printf '%s\n' "$msgs" | grep -cFx 'The job has exceeded the maximum execution time of 2h15m0s' || true)
       fi
     fi
     if [ -s "$steps_file" ] && jq -e 'type == "object"' "$steps_file" >/dev/null 2>&1; then
@@ -223,6 +227,12 @@ emit_api_verdict() {
     # failure; unreadable steps state or a failed receipt-capable step means
     # a genuine red cannot be ruled out.
     class="ripr-failure"
+  elif [ "$ann_read" = "true" ] && [ "$steps_read" = "true" ] &&
+    [ "$job_conclusion" = "cancelled" ] && [ "$timeout_hits" -gt 0 ]; then
+    # A configured timeout is blocking no-proof, never runner eviction and
+    # never eligible for the bounded infra retry. A failed receipt-capable
+    # step without a scanned receipt has already failed closed above.
+    class="configured-timeout-no-proof"
   elif [ "$shut_hits" -gt 0 ] || [ "$term143_hits" -gt 0 ] || [ "$cancel_hits" -gt 0 ] || [ "$lost_hits" -gt 0 ]; then
     # Boundary rule 2a: positive teardown annotations only.
     class="infra-no-proof"
@@ -246,13 +256,14 @@ shutdown_signal_matches=$shut_hits
 sigterm143_matches=$term143_hits
 op_cancelled_matches=$cancel_hits
 lost_communication_matches=$lost_hits
+configured_timeout_matches=$timeout_hits
 stuck_in_progress_steps=$stuck_hits
 lane_job_conclusion=${job_conclusion:-none}
 annotations_read=$ann_read
 steps_read=$steps_read
 mode=api-evidence
 verdict=$class
-decision_boundary="genuine gap receipt outranks infra markers; teardown annotations or a failed lane with an unconcluded step arm the retry, everything else fails closed"
+decision_boundary="genuine gap receipt outranks all markers; exact 2h15m0s annotation plus cancelled job proves configured timeout without retry; teardown annotations or a failed lane with an unconcluded step arm infra retry, everything else fails closed"
 EOF
 }
 
