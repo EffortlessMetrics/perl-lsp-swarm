@@ -14,7 +14,7 @@ pub(crate) enum RuntimeLimitsFamily {
     DegradationPolicy,
 }
 
-/// Deterministic change set: identical accepted input yields [`RuntimeLimitsChange::Unchanged`].
+/// Deterministic change set: identical behavior-backed input yields [`RuntimeLimitsChange::Unchanged`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RuntimeLimitsChange {
     Unchanged,
@@ -45,19 +45,19 @@ impl AcceptedRuntimeLimitsView {
         if self.result_caps().presentation_changed(other.result_caps()) {
             families.push(RuntimeLimitsFamily::PresentationResultCaps);
         }
-        if self.source_admission() != other.source_admission() {
+        if self.source_admission().behavior_changed(other.source_admission()) {
             families.push(RuntimeLimitsFamily::SourceAdmission);
         }
-        if self.provider_deadlines() != other.provider_deadlines() {
+        if self.provider_deadlines().behavior_changed(other.provider_deadlines()) {
             families.push(RuntimeLimitsFamily::ProviderDeadlines);
         }
-        if self.index_io_deadlines() != other.index_io_deadlines() {
+        if self.index_io_deadlines().behavior_changed(other.index_io_deadlines()) {
             families.push(RuntimeLimitsFamily::IndexIoDeadlines);
         }
-        if self.memory_cache() != other.memory_cache() {
+        if self.memory_cache().behavior_changed(other.memory_cache()) {
             families.push(RuntimeLimitsFamily::MemoryCache);
         }
-        if self.degradation_policy() != other.degradation_policy() {
+        if self.degradation_policy().behavior_changed(other.degradation_policy()) {
             families.push(RuntimeLimitsFamily::DegradationPolicy);
         }
         RuntimeLimitsChange::from_families(families)

@@ -8,7 +8,7 @@ use crate::hashing::sha256_hex;
 ///
 /// Bump only when identity-visible layout, family membership, or fingerprint
 /// material changes.
-pub(crate) const ACCEPTED_RUNTIME_LIMITS_SCHEMA_GENERATION: u32 = 1;
+pub(crate) const ACCEPTED_RUNTIME_LIMITS_SCHEMA_GENERATION: u32 = 2;
 
 /// Length-tagged byte material so concatenated fingerprint parts cannot collide
 /// on a shared prefix.

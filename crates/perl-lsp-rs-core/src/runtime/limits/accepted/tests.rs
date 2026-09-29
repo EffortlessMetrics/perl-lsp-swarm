@@ -329,14 +329,86 @@ fn transferred_lsp_limits_fields_are_not_accepted_lookups() {
     assert!(!view.source_admission().max_symbols_per_file.is_behavior_backed());
     assert!(!view.source_admission().parse_storm_threshold.is_behavior_backed());
     assert!(!view.index_io_deadlines().regex_scan.is_behavior_backed());
-    assert!(matches!(view.index_io_deadlines().file_index, LimitLookup::FixedProduct(_)));
+    assert!(!view.index_io_deadlines().file_index.is_behavior_backed());
+    assert!(!view.index_io_deadlines().filesystem.is_behavior_backed());
+    assert!(!view.degradation_policy().return_partial_on_timeout.is_behavior_backed());
+    assert!(!view.degradation_policy().include_open_docs_when_degraded.is_behavior_backed());
+    assert!(
+        matches!(view.index_io_deadlines().file_index, LimitLookup::FixedInternal { .. }),
+        "no-reader internals are not FixedProduct: {:?}",
+        view.index_io_deadlines().file_index
+    );
+    assert_eq!(view.index_io_deadlines().file_index.accepted(), None);
+}
+
+#[test]
+fn unconsumed_snapshot_changes_do_not_classify_as_accepted_family_changes() {
+    let base = LspLimits::default();
+    let left = assemble(&base);
+    let mut transferred = base.clone();
+    transferred.max_symbols_per_file = base.max_symbols_per_file.saturating_add(1);
+    let transferred_view = assemble(&transferred);
+    assert_eq!(left.classify_change(&transferred_view), RuntimeLimitsChange::Unchanged);
+    assert_ne!(left.fingerprint(), transferred_view.fingerprint());
+
+    let mut parsed = base.clone();
+    parsed.diagnostics_per_file_cap = 1;
+    let parsed_view = assemble(&parsed);
+    assert_eq!(left.classify_change(&parsed_view), RuntimeLimitsChange::Unchanged);
+    assert_ne!(left.fingerprint(), parsed_view.fingerprint());
+
+    let mut internal = base.clone();
+    internal.file_index_deadline = base.file_index_deadline + Duration::from_nanos(1);
+    let internal_view = assemble(&internal);
+    assert_eq!(left.classify_change(&internal_view), RuntimeLimitsChange::Unchanged);
+    assert_ne!(left.fingerprint(), internal_view.fingerprint());
+}
+
+#[test]
+fn accepted_file_size_change_still_classifies_source_admission() {
+    let base = LspLimits::default();
+    let left = assemble(&base);
+    let mut changed = base.clone();
+    changed.max_file_size_bytes = base.max_file_size_bytes.saturating_add(1);
+    let right = assemble(&changed);
+    assert_eq!(
+        left.classify_change(&right),
+        RuntimeLimitsChange::Family(RuntimeLimitsFamily::SourceAdmission)
+    );
+}
+
+#[test]
+fn submillisecond_deadline_change_has_a_distinct_fingerprint() {
+    let base = LspLimits::default();
+    let left = assemble(&base);
+    let mut changed = base.clone();
+    changed.completion_deadline = base.completion_deadline + Duration::from_nanos(1);
+    let right = assemble(&changed);
+    assert_ne!(left.fingerprint(), right.fingerprint());
+    assert_eq!(
+        left.classify_change(&right),
+        RuntimeLimitsChange::Family(RuntimeLimitsFamily::ProviderDeadlines)
+    );
+}
+
+#[test]
+fn definition_only_file_content_validator_is_not_a_live_consumer() {
+    let row = must_some_with(
+        RUNTIME_LIMITS_DENOMINATOR
+            .iter()
+            .find(|row| row.id == "limits.file_size_bytes.file_content"),
+        "file_content denominator row exists",
+    );
+    assert_eq!(row.state, LimitConsumerState::ParsedNoConsumer);
+    assert!(row.production_site.is_none());
+    assert!(row.first_effect.is_none());
 }
 
 #[test]
 fn schema_generation_is_versioned() {
     let view = assemble(&LspLimits::default());
     assert_eq!(view.schema_generation(), super::ACCEPTED_RUNTIME_LIMITS_SCHEMA_GENERATION);
-    assert_eq!(view.schema_generation(), 1);
+    assert_eq!(view.schema_generation(), 2);
 }
 
 #[test]

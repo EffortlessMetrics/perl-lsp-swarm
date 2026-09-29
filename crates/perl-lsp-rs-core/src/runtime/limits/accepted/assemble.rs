@@ -91,15 +91,15 @@ impl AcceptedLimitsAssembly {
             completion: LimitLookup::Accepted(Deadline::from_accepted(limits.completion_deadline)),
         };
         let index_io_deadlines = IndexIoDeadlineFamily {
-            file_index: LimitLookup::FixedProduct(Deadline::from_accepted(
-                limits.file_index_deadline,
-            )),
+            file_index: LimitLookup::FixedInternal {
+                snapshot: Deadline::from_accepted(limits.file_index_deadline),
+            },
             regex_scan: LimitLookup::ParsedNoConsumer {
                 snapshot: Deadline::from_accepted(limits.regex_scan_deadline),
             },
-            filesystem: LimitLookup::FixedProduct(Deadline::from_accepted(
-                limits.fs_operation_deadline,
-            )),
+            filesystem: LimitLookup::FixedInternal {
+                snapshot: Deadline::from_accepted(limits.fs_operation_deadline),
+            },
         };
         let memory_cache = MemoryCacheFamily {
             warning_threshold: LimitLookup::ParsedNoConsumer {
@@ -113,14 +113,16 @@ impl AcceptedLimitsAssembly {
             },
         };
         let degradation_policy = DegradationPolicyFamily {
-            return_partial_on_timeout: LimitLookup::FixedProduct(limits.return_partial_on_timeout),
-            include_open_docs_when_degraded: LimitLookup::FixedProduct(
-                limits.include_open_docs_when_degraded,
-            ),
+            return_partial_on_timeout: LimitLookup::FixedInternal {
+                snapshot: limits.return_partial_on_timeout,
+            },
+            include_open_docs_when_degraded: LimitLookup::FixedInternal {
+                snapshot: limits.include_open_docs_when_degraded,
+            },
         };
         let relational = match (
-            memory_snapshot(memory_cache.warning_threshold),
-            memory_snapshot(memory_cache.critical_threshold),
+            memory_cache.warning_threshold.snapshot(),
+            memory_cache.critical_threshold.snapshot(),
         ) {
             (Some(warning), Some(critical)) if warning.get() < critical.get() => {
                 RelationalValidation::Valid
@@ -142,16 +144,6 @@ impl AcceptedLimitsAssembly {
             relational,
             limitations: "requested-versus-accepted client values are not preserved on LspLimits; #7479/#10857 remain unbound",
         }))
-    }
-}
-
-fn memory_snapshot(lookup: LimitLookup<ByteBudget>) -> Option<ByteBudget> {
-    match lookup {
-        LimitLookup::Accepted(value)
-        | LimitLookup::FixedProduct(value)
-        | LimitLookup::ParsedNoConsumer { snapshot: value }
-        | LimitLookup::Transferred { snapshot: value, .. } => Some(value),
-        LimitLookup::NotProven { snapshot, .. } => snapshot,
     }
 }
 

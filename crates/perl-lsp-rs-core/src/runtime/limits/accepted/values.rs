@@ -33,6 +33,10 @@ impl Deadline {
     pub(crate) fn as_millis(self) -> u128 {
         self.0.as_millis()
     }
+
+    pub(crate) fn as_nanos(self) -> u128 {
+        self.0.as_nanos()
+    }
 }
 
 /// Accepted retained-byte budget.

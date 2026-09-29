@@ -303,16 +303,16 @@ pub(crate) static RUNTIME_LIMITS_DENOMINATOR: &[DenominatorRow] = &[
         "perl.limits.maxFileSizeBytes",
         "source_admission.max_file_size",
         RuntimeLimits,
-        Live,
+        ParsedNoConsumer,
         rust = Some("max_file_size_bytes"),
         schema = Some("maxFileSizeBytes"),
         accessor = Some("max_file_size_bytes"),
-        site = Some(FILE_VAL),
-        marker = Some("let max_file_size = limits_max_file_size_bytes()"),
-        effect = Some("reject oversized buffer content"),
+        site = None,
+        marker = None,
+        effect = None,
         life = "document",
         clamp = SnapshotAlreadyMutated,
-        status = "accepted-size-not-projected",
+        status = "definition-only-validate_file_content-no-production-caller",
         migrate = Some("#16843"),
         test = "file_size_file_content",
         rel = None
@@ -1066,6 +1066,8 @@ fn check_states(rows: &[DenominatorRow], violations: &mut Vec<String>) {
     }
 }
 
+/// Named-site marker presence is a regression check, not whole-tree caller
+/// discovery. A new first-effect site outside this corpus is not detected here.
 fn check_production_sites(rows: &[DenominatorRow], violations: &mut Vec<String>) {
     let corpus = production_corpus();
     for row in rows {

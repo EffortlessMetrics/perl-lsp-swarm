@@ -184,7 +184,7 @@ fn push_count(material: &mut String, key: &str, lookup: LimitLookup<CountThresho
 }
 
 fn push_deadline(material: &mut String, key: &str, lookup: LimitLookup<Deadline>) {
-    push_lookup(material, key, lookup, |value| value.as_millis().to_string());
+    push_lookup(material, key, lookup, |value| value.as_nanos().to_string());
 }
 
 fn push_bool(material: &mut String, key: &str, lookup: LimitLookup<bool>) {
@@ -203,6 +203,9 @@ fn push_lookup<T: Copy>(
         }
         LimitLookup::FixedProduct(value) => {
             push_tagged(material, &format!("{key}-f"), render(value).as_bytes());
+        }
+        LimitLookup::FixedInternal { snapshot } => {
+            push_tagged(material, &format!("{key}-i"), render(snapshot).as_bytes());
         }
         LimitLookup::ParsedNoConsumer { snapshot } => {
             push_tagged(material, &format!("{key}-p"), render(snapshot).as_bytes());
