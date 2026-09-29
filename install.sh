@@ -26,7 +26,7 @@ bootstrap_fail() {
     echo "Identity-bound bootstrap requires the ref+digest pair published at" >&2
     echo "release closeout. That packet has not been published yet." >&2
     echo "The manual archive install works today:" >&2
-    echo "see docs/how-to/INSTALLATION.md (installer-script-macos-and-linux)." >&2
+    echo "see docs/how-to/INSTALLATION.md (macos-and-linux-manual-archive)." >&2
     exit 1
 }
 

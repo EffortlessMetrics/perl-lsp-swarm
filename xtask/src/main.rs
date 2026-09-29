@@ -5308,7 +5308,7 @@ enum QueueCommand {
         fixture: Option<PathBuf>,
     },
 
-    /// Classify master queue health into GREEN/PENDING/RED modes.
+    /// Classify master queue health into GREEN/PENDING/RED/NOT_PROVEN modes.
     Health {
         /// Output path for queue-health receipt JSON.
         #[arg(long)]
