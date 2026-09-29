@@ -1464,6 +1464,14 @@ pub struct ExportDeclaration {
     pub tag_name: Option<String>,
     /// Static exported symbols.
     pub symbols: Vec<String>,
+    /// Names in [`Self::symbols`] whose Sub::Exporter value is a generator
+    /// rather than this package's own sub of that name.
+    ///
+    /// Empty for classic Exporter/`Exporter::Tiny` declarations and for a
+    /// Sub::Exporter name whose value is `undef`/`undef()` (no generator).
+    /// A setup-wide custom `generator` lists every declared name here, because
+    /// none of them is shown to be the package's own sub.
+    pub generator_backed: Vec<String>,
     /// Source range for the declaration.
     pub range: SourceLocation,
     /// HIR item that produced this declaration, when available.
@@ -1954,6 +1962,9 @@ pub struct FrameworkExportedSymbolFact {
     pub declaration_item: Option<HirId>,
     /// Backing visible-symbol fact for provider-shadow proof.
     pub visible_symbol: VisibleSymbol,
+    /// Whether this name is a direct source-anchored export or a generator-backed
+    /// declared name. Classic Exporter declarations are always [`FrameworkExportMechanism::Direct`].
+    pub mechanism: FrameworkExportMechanism,
     /// Source declaration provenance.
     pub source_provenance: Provenance,
     /// Source declaration confidence.
@@ -1962,6 +1973,17 @@ pub struct FrameworkExportedSymbolFact {
     pub provenance: Provenance,
     /// Adapter fact confidence.
     pub confidence: Confidence,
+}
+
+/// How one exported name was declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FrameworkExportMechanism {
+    /// The name is expected to be this package's own sub of that name.
+    Direct,
+    /// The name is declared, but a generator produces the installed code.
+    /// This does not establish the generated value or callable signature.
+    GeneratorBacked,
 }
 
 /// Export relationship represented by a framework fact.
@@ -2064,11 +2086,35 @@ fn project_exported_symbols_from_declaration(
             range: declaration.range,
             declaration_item: declaration.declaration_item,
             visible_symbol: visible_symbol_for_export(declaration, symbol, kind),
+            mechanism: export_mechanism(declaration, symbol),
             source_provenance: stash_provenance_to_fact(declaration.provenance),
-            source_confidence: stash_confidence_to_fact(declaration.confidence),
+            source_confidence: export_source_confidence(declaration, symbol),
             provenance: Provenance::FrameworkSynthesis,
             confidence: Confidence::Medium,
         });
+    }
+}
+
+fn name_is_generator_backed(declaration: &ExportDeclaration, symbol: &str) -> bool {
+    declaration.generator_backed.iter().any(|name| name == symbol)
+}
+
+fn export_mechanism(declaration: &ExportDeclaration, symbol: &str) -> FrameworkExportMechanism {
+    if name_is_generator_backed(declaration, symbol) {
+        FrameworkExportMechanism::GeneratorBacked
+    } else {
+        FrameworkExportMechanism::Direct
+    }
+}
+
+fn export_source_confidence(declaration: &ExportDeclaration, symbol: &str) -> Confidence {
+    if name_is_generator_backed(declaration, symbol) {
+        Confidence::Medium
+    } else {
+        match declaration.confidence {
+            StashConfidence::Low => Confidence::Low,
+            StashConfidence::Medium | StashConfidence::High => Confidence::High,
+        }
     }
 }
 
