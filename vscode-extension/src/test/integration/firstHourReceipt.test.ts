@@ -161,6 +161,31 @@ function assertSuccessfulStartupMetrics(metrics: Record<string, unknown>, label:
   }
 }
 
+async function waitForRunningStartupMetrics(
+  getMetrics: () => Record<string, unknown>,
+  label: string,
+  timeoutMs = 30_000,
+): Promise<Record<string, unknown>> {
+  const deadline = monotonicNow() + timeoutMs;
+  let metrics = getMetrics();
+  while (metrics.lifecycle_state !== 'running') {
+    if (metrics.lifecycle_state === 'failed' || metrics.lifecycle_state === 'stopped') {
+      throw new Error(
+        `${label} reached terminal lifecycle state ${String(metrics.lifecycle_state)}`,
+      );
+    }
+    if (monotonicNow() >= deadline) {
+      throw new Error(
+        `${label} did not reach running within ${timeoutMs}ms (state ${String(metrics.lifecycle_state)})`,
+      );
+    }
+    await delay(100);
+    metrics = getMetrics();
+  }
+  assertSuccessfulStartupMetrics(metrics, label);
+  return metrics;
+}
+
 async function collectProviderMoment(
   label: string,
   classification: MomentResult['classification'],
@@ -624,9 +649,11 @@ suite('First-hour VS Code receipt', function () {
             relative !== '..' &&
             !relative.startsWith(`..${path.sep}`),
         );
-        initialInstalled = observeSelectedInstalled(
-          extensionApi?.getLanguageClientStartupMetrics?.() ?? {},
+        const runningMetrics = await waitForRunningStartupMetrics(
+          () => extensionApi?.getLanguageClientStartupMetrics?.() ?? {},
+          'installed identity',
         );
+        initialInstalled = observeSelectedInstalled(runningMetrics);
         installedByteIdentity = {
           schema_version: 'installed_lsp_vsix_bytes.v1',
           extension_root: extensionRoot,
@@ -684,9 +711,14 @@ suite('First-hour VS Code receipt', function () {
         vscode.commands.executeCommand('perl-lsp.restart'),
         90_000,
       );
-      const restartMetrics = extensionApi?.getLanguageClientStartupMetrics?.();
-      assert.ok(restartMetrics, 'current-source smoke must expose restart metrics');
-      assertSuccessfulStartupMetrics(restartMetrics, 'restart startup');
+      assert.ok(
+        extensionApi?.getLanguageClientStartupMetrics,
+        'current-source smoke must expose restart metrics',
+      );
+      const restartMetrics = await waitForRunningStartupMetrics(
+        extensionApi.getLanguageClientStartupMetrics,
+        'restart startup',
+      );
       const restartMilestones = restartMetrics.milestones;
       assert.ok(
         restartMilestones &&
