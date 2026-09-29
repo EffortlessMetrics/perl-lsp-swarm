@@ -915,6 +915,14 @@ impl LspServer {
             PushDiagnosticsDisposition::Replacement
         };
         let payload = publish_diagnostics_params(uri, Some(version), &lsp_diagnostics);
+        // A test-only completed-payload barrier. Already-invalid early-hook
+        // subjects skip this second invocation, preserving the old hook oracle.
+        #[cfg(test)]
+        if generation.load(Ordering::SeqCst) == gen_at_snapshot
+            && let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref()
+        {
+            hook();
+        }
         match self.commit_push_diagnostics(&identity, payload, disposition) {
             PushDiagnosticsCommitOutcome::CommittedCurrent
             | PushDiagnosticsCommitOutcome::SafeClearCommitted => {}
@@ -1531,6 +1539,10 @@ impl LspServer {
                 return Ok(Some(Self::empty_full_diagnostic_report()));
             }
             let response = self.document_report_to_json(&report, &doc, uri_str);
+            #[cfg(test)]
+            if let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref() {
+                hook();
+            }
             return Ok(Some(
                 self.commit_if_diagnostic_subject_current(
                     DiagnosticSubject {
@@ -2239,6 +2251,16 @@ impl LspServer {
                     object.remove("resultId");
                 }
 
+                // No publication/document guards are held at this test barrier.
+                // Do not repeat the callback when the early hook already moved
+                // the aggregate identity; existing mutation controls stay intact.
+                #[cfg(test)]
+                if self.workspace_identity_generation.load(Ordering::SeqCst)
+                    == *workspace_gen_at_snapshot
+                    && let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref()
+                {
+                    hook();
+                }
                 items.push(report);
             }
         }

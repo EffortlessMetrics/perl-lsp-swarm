@@ -674,6 +674,10 @@ impl LspServer {
         requested_kinds: &[&str],
     ) -> Value {
         if let Some(staged) = staged_native_actions {
+            #[cfg(test)]
+            if let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref() {
+                hook();
+            }
             let mut with_native = code_actions.clone();
             let insertion = native_insert_at.min(with_native.len());
             with_native.splice(insertion..insertion, staged.actions.iter().cloned());
