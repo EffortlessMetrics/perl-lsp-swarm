@@ -1035,18 +1035,27 @@ impl LspServer {
             return;
         }
 
+        // The core provider owns method and hash-key positions. This name-only
+        // workspace pass cannot validate receiver identity or key membership;
+        // appending its generic names would reintroduce impossible candidates
+        // after the core provider has selected the appropriate role (#9816).
+        let Some(text_before) = doc_text.get(..offset) else {
+            return;
+        };
+        let is_method_completion =
+            text_before.trim_end().rsplit_once("->").is_some_and(|(_, suffix)| {
+                suffix.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            });
+        if is_method_completion
+            || CompletionProvider::detect_hash_key_context(doc_text, offset).is_some()
+        {
+            return;
+        }
+
         match workspace_mode {
             IndexAccessMode::Full(coordinator) => {
                 let index = coordinator.index();
 
-                let text_before = &doc_text[..offset.min(doc_text.len())];
-                // Method context survives once a method name is partially typed:
-                // `$obj->` and `$obj->co` are both method-completion positions,
-                // while `$x->[0]` or plain identifiers are not.
-                let is_method_completion =
-                    text_before.trim_end().rsplit_once("->").is_some_and(|(_, suffix)| {
-                        suffix.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-                    });
                 let prefix = text_before
                     .chars()
                     .rev()
@@ -1109,15 +1118,6 @@ impl LspServer {
                 let mut seen: HashSet<String> =
                     completions.iter().map(|completion| completion.label.to_string()).collect();
 
-                // The runtime pass has no receiver facts of its own. When the
-                // core provider already attached receiver evidence to this
-                // response, keep its quiet name-only extras; otherwise label
-                // callable candidates honestly instead of emitting an
-                // unlabelled dynamic-boundary insertion (issue #11158).
-                let receiver_evidence_present = completions.iter().any(|completion| {
-                    completion.detail.as_deref().is_some_and(|detail| detail.contains("receiver:"))
-                });
-
                 for symbol in workspace_symbols {
                     if should_continue.is_some_and(|check| !check()) {
                         return;
@@ -1131,17 +1131,16 @@ impl LspServer {
                     // symbols, so emitting these as bare insertions can leave
                     // an unimported cross-file reference in the document.
                     // The core provider owns import-aware, current-file, and
-                    // qualified completions for these kinds; retain only the
-                    // module-name kinds here (issue #11158).
-                    if !is_method_completion
-                        && matches!(
-                            symbol.kind,
-                            crate::workspace_index::SymbolKind::Subroutine
-                                | crate::workspace_index::SymbolKind::Method
-                                | crate::workspace_index::SymbolKind::Constant
-                                | crate::workspace_index::SymbolKind::Export
-                        )
-                    {
+                    // qualified completions for these kinds. The method role
+                    // has already returned above (#9816); retain only other
+                    // eligible workspace names here (issue #11158).
+                    if matches!(
+                        symbol.kind,
+                        crate::workspace_index::SymbolKind::Subroutine
+                            | crate::workspace_index::SymbolKind::Method
+                            | crate::workspace_index::SymbolKind::Constant
+                            | crate::workspace_index::SymbolKind::Export
+                    ) {
                         continue;
                     }
 
@@ -1219,21 +1218,7 @@ impl LspServer {
 
                     let label = symbol.name.clone();
                     let qualified_name = Self::workspace_symbol_qualified_name(&symbol);
-                    let detail = if !receiver_evidence_present
-                        && matches!(
-                            symbol.kind,
-                            crate::workspace_index::SymbolKind::Subroutine
-                                | crate::workspace_index::SymbolKind::Method
-                                | crate::workspace_index::SymbolKind::Constant
-                                | crate::workspace_index::SymbolKind::Export
-                        ) {
-                        // Callable kinds only reach this pass through the
-                        // method-completion gate above, which carries no
-                        // receiver evidence; say so on the item.
-                        Some(format!("{qualified_name} — receiver: unknown, low confidence"))
-                    } else {
-                        Some(qualified_name.clone())
-                    };
+                    let detail = qualified_name.clone();
                     // Invariant: text_edit_range.is_some() ⟺ insert_text is the
                     // fully-qualified name.  The serializer (completion_item_to_lsp_value)
                     // depends on this to locate the newText from `item["insertText"]`.
@@ -1263,7 +1248,7 @@ impl LspServer {
                     completions.push(crate::completion::CompletionItem {
                         label: label.into(),
                         kind: Self::workspace_symbol_kind(&symbol),
-                        detail: detail.map(Into::into),
+                        detail: Some(detail.into()),
                         insert_text: insert_text.map(Into::into),
                         // Workspace enrichment is a fallback tier. Give it an
                         // explicit low-priority rank so unranked labels (for
@@ -5538,6 +5523,41 @@ our $single_root_var;
                 )
             })
             .collect()
+    }
+
+    /// Core completion claims these structural roles before the runtime
+    /// workspace pass runs. A package variable valid at a normal sigil
+    /// position must not leak back into either role (#9816).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn runtime_workspace_pass_does_not_reopen_method_or_hash_key_roles() {
+        let uri = "file:///project/bin/app.pl";
+        let ordinary = run_workspace_pass_over_secrets_module(uri, "$api", None);
+        assert!(ordinary.iter().any(|(label, _, _)| label == "$api_token"));
+
+        for source in [
+            "my $obj; $obj->",
+            "my $obj; $obj->api",
+            "my $hash; $hash{",
+            "my $hash; $hash{api",
+            // The hashref form is the same hash-key role (#5159): enrichment
+            // must stay out of it too.
+            "my $ref; $ref->{",
+            "my $ref; $ref->{api",
+        ] {
+            let items = run_workspace_pass_over_secrets_module(uri, source, None);
+            assert!(items.is_empty(), "runtime fallback leaked into {source:?}: {items:?}");
+        }
+
+        // The gate concerns the role at the cursor, not an arrow or an
+        // earlier hash subscript elsewhere in the document.
+        for source in ["$obj->call();\n$api", "$hash{key};\n$api"] {
+            let items = run_workspace_pass_over_secrets_module(uri, source, None);
+            assert!(
+                items.iter().any(|(label, _, _)| label == "$api_token"),
+                "ordinary variable position after a completed access lost enrichment: {items:?}"
+            );
+        }
     }
 
     /// A package variable owned by an unimported module must be inserted fully

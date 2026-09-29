@@ -86,7 +86,10 @@ function proposalTarget(env = process.env) {
       `PERL_LSP_VSCODE_TARGET must name a packaged <platform>-<arch> target, got: ${target}`,
     );
   }
-  return { platform: match[1], arch: match[2] };
+  return {
+    platform: /** @type {'win32' | 'linux' | 'alpine' | 'darwin'} */ (match[1]),
+    arch: /** @type {'x64' | 'arm64'} */ (match[2]),
+  };
 }
 
 function assertCurrentSubject(args, runGit = git) {
@@ -136,7 +139,7 @@ function makeProposal({
   reason,
   platform,
   arch,
-  ignoredFiles = [],
+  ignoredFiles = /** @type {string[]} */ ([]),
 }) {
   if (candidateDocument.file_sha256 !== baseDocument.file_sha256) {
     throw new Error(

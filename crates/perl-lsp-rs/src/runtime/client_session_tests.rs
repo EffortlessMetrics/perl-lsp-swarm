@@ -10,7 +10,7 @@ mod tests {
 
     use perl_lsp_rs_core::governance::FeatureProfile;
 
-    use super::super::client_session::{ClientSession, ShutdownAdmission};
+    use super::super::client_session::{ClientSession, ProgressTokenInstall, ShutdownAdmission};
     use super::super::types::{PendingWorkspaceConfigurationRequest, ServerRequestId};
     use crate::protocol::JsonRpcId;
     use std::sync::atomic::Ordering;
@@ -73,10 +73,17 @@ mod tests {
             "pre-shutdown generation must not authorize after drain"
         );
 
-        session.progress_tokens.lock().insert("late-progress".to_string());
+        assert_eq!(
+            session.install_progress_token("late-progress".to_string(), None),
+            ProgressTokenInstall::Shutdown
+        );
+        assert!(
+            session.progress_tokens.lock().is_empty(),
+            "a late producer must not retain session-owned progress after shutdown"
+        );
         assert_eq!(session.begin_shutdown(), ShutdownAdmission::AlreadyShutdown);
         assert!(
-            session.progress_tokens.lock().contains("late-progress"),
+            session.progress_tokens.lock().is_empty(),
             "a second shutdown must not re-run drain (exactly-once admission)"
         );
     }
@@ -191,11 +198,14 @@ mod tests {
         assert_eq!(first, 1, "exactly one racer may drain");
         assert_eq!(already, racers - 1, "every other racer must observe already-shutdown");
         assert!(session_handles_are_empty(&session));
-        session.progress_tokens.lock().insert("late-progress".to_string());
+        assert_eq!(
+            session.install_progress_token("late-progress".to_string(), None),
+            ProgressTokenInstall::Shutdown
+        );
         assert_eq!(session.begin_shutdown(), ShutdownAdmission::AlreadyShutdown);
         assert!(
-            session.progress_tokens.lock().contains("late-progress"),
-            "post-race shutdown must still refuse a second drain"
+            session.progress_tokens.lock().is_empty(),
+            "post-race shutdown must still refuse a second drain and late install"
         );
     }
 

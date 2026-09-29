@@ -439,6 +439,11 @@ pub struct LspServer {
     /// adding production synchronization.
     #[cfg(test)]
     pub(crate) diagnostic_after_snapshot_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test-only barrier fired inside `create_work_done_progress` immediately
+    /// before the outbound `window/workDoneProgress/create` request, so a
+    /// shutdown race can drain the session while the producer is in I/O.
+    #[cfg(test)]
+    pub(crate) progress_create_outbound_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Accepted-ticket document-symbol sink (#11674): per-URI record of the
     /// last committed local symbol ticket + monotonic sequence. The
     /// irreversible `symbol_index` replacement/clear for parser-triggered

@@ -375,6 +375,7 @@ struct IndexingResources {
     progress_tokens: Arc<Mutex<HashSet<String>>>,
     progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     next_request_id: Arc<AtomicI32>,
+    shutdown_received: Arc<AtomicBool>,
     permission_denied_shown: Arc<AtomicBool>,
     readiness_receipt: Arc<Mutex<crate::runtime::readiness::WorkspaceReadinessReceipt>>,
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -2750,6 +2751,7 @@ impl LspServer {
             progress_tokens: Arc::clone(&self.client_session.progress_tokens),
             progress_token_to_request: Arc::clone(&self.client_session.progress_token_to_request),
             next_request_id: Arc::clone(&self.client_session.next_request_id),
+            shutdown_received: Arc::clone(&self.client_session.shutdown_received),
             permission_denied_shown: Arc::clone(&self.permission_denied_shown),
             readiness_receipt: Arc::clone(&self.workspace_readiness_receipt),
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -2839,6 +2841,7 @@ impl LspServer {
         let progress_request_id = indexing_cancellation_request_id(progress_create_id);
         let progress_tokens = resources.progress_tokens;
         let progress_token_to_request = resources.progress_token_to_request;
+        let shutdown_received = resources.shutdown_received;
         if work_done_progress {
             let cancellation_token = PerlLspCancellationToken::new(
                 progress_request_id.clone(),
@@ -2847,11 +2850,19 @@ impl LspServer {
             if let Err(error) = GLOBAL_CANCELLATION_REGISTRY.register_token(cancellation_token) {
                 tracing::warn!(%error, "Failed to register workspace indexing cancellation token");
             } else {
-                progress_tokens.lock().insert(WORKSPACE_INDEX_PROGRESS_TOKEN.to_string());
-                progress_token_to_request.lock().insert(
+                match crate::runtime::client_session::install_progress_token_with(
+                    &shutdown_received,
+                    &progress_tokens,
+                    &progress_token_to_request,
                     WORKSPACE_INDEX_PROGRESS_TOKEN.to_string(),
-                    progress_request_id.clone(),
-                );
+                    Some(progress_request_id.clone()),
+                ) {
+                    crate::runtime::client_session::ProgressTokenInstall::Installed => {}
+                    crate::runtime::client_session::ProgressTokenInstall::Shutdown
+                    | crate::runtime::client_session::ProgressTokenInstall::AlreadyExists => {
+                        GLOBAL_CANCELLATION_REGISTRY.remove_request(&progress_request_id);
+                    }
+                }
             }
         }
         let permission_denied_shown = resources.permission_denied_shown;

@@ -2,15 +2,24 @@
 
 use color_eyre::eyre::{Context, Result, eyre};
 use duct::cmd;
+use fmt_plan::{
+    FORMATTER_SPAWN_BUDGET, FormatRoot, FormatterBatch, FormatterPlanArgs, plan_formatter_batches,
+};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+#[path = "fmt_plan.rs"]
+mod fmt_plan;
 
 #[derive(Deserialize)]
 struct CargoMetadata {
     packages: Vec<CargoPackage>,
     workspace_members: Vec<String>,
+    #[serde(default)]
+    workspace_root: String,
 }
 
 #[derive(Deserialize)]
@@ -18,6 +27,16 @@ struct CargoPackage {
     id: String,
     name: String,
     manifest_path: String,
+    edition: String,
+    #[serde(default)]
+    targets: Vec<CargoTarget>,
+}
+
+#[derive(Deserialize)]
+struct CargoTarget {
+    #[serde(default)]
+    src_path: String,
+    #[serde(default)]
     edition: String,
 }
 
@@ -40,6 +59,7 @@ pub(crate) struct WorkspacePackage {
 /// `Diff in <path>` lines from stdout; in apply mode it stays empty (cargo
 /// fmt without `--check` is expected to mutate files and exit zero unless
 /// rustfmt itself errored, which we still report as a per-crate failure).
+#[derive(Debug)]
 struct CrateFailure {
     manifest_path: String,
     unformatted_files: Vec<String>,
@@ -368,53 +388,27 @@ pub fn run(check: bool, package_filters: Option<Vec<String>>) -> Result<()> {
     let action = if check { "Checking" } else { "Formatting" };
     spinner.set_message(format!("{} code", action));
 
+    let metadata = load_workspace_metadata()?;
+    let program = rustfmt_program();
+    let program_for_plan = program.to_string_lossy().into_owned();
+    let config_path = rustfmt_config_path_from_metadata(&metadata);
+    let plan_args = FormatterPlanArgs {
+        program: &program_for_plan,
+        config_path: config_path.as_deref(),
+        check,
+        budget: FORMATTER_SPAWN_BUDGET,
+    };
+
+    // Plan every package before spawning anything. A command-size failure is
+    // not formatting drift, and apply mode must not mutate after a planning
+    // instrument failure.
+    let plans = plan_workspace_format(&metadata, package_filters.as_deref(), &plan_args)?;
+
     let mut failures: Vec<CrateFailure> = Vec::new();
-
-    for manifest_path in workspace_manifest_paths(package_filters.as_deref())? {
-        spinner.set_message(format!("{} {}", action, manifest_path));
-
-        let mut args = vec!["fmt".to_string(), "--manifest-path".to_string(), manifest_path];
-        if check {
-            args.push("--".to_string());
-            args.push("--check".to_string());
-        }
-
-        // Capture stdout in --check mode so we can name the unformatted files
-        // in the aggregate error report. In apply mode we let cargo's output
-        // pass through unchanged so users still see rustfmt warnings live.
-        let result = if check {
-            cmd("cargo", &args).stdout_capture().unchecked().run()
-        } else {
-            cmd("cargo", &args).unchecked().run()
-        };
-
-        match result {
-            Ok(output) => {
-                if !output.status.success() {
-                    let unformatted_files =
-                        if check { parse_unformatted_files(&output.stdout) } else { Vec::new() };
-                    // In --check mode, echo the captured stdout so the user
-                    // still sees the diff context in addition to the summary.
-                    if check && !output.stdout.is_empty() {
-                        print!("{}", String::from_utf8_lossy(&output.stdout));
-                    }
-                    failures.push(CrateFailure {
-                        manifest_path: args[2].clone(),
-                        unformatted_files,
-                        spawn_error: None,
-                    });
-                }
-            }
-            Err(err) => {
-                // Spawn / I/O failures are kept in the aggregate report
-                // rather than aborting on the first crate, so a single run
-                // still surfaces every per-crate problem.
-                failures.push(CrateFailure {
-                    manifest_path: args[2].clone(),
-                    unformatted_files: Vec::new(),
-                    spawn_error: Some(err.to_string()),
-                });
-            }
+    for plan in &plans {
+        spinner.set_message(format!("{} {}", action, plan.manifest_path));
+        if let Some(failure) = execute_package_plan(plan, check, &program, config_path.as_deref()) {
+            failures.push(failure);
         }
     }
 
@@ -507,6 +501,195 @@ fn format_failure_report(check: bool, failures: &[CrateFailure]) -> String {
         }
     }
     report
+}
+
+/// One member's planned rustfmt batches. Empty `batches` means the package
+/// contributed no unique target roots after workspace-wide dedup.
+#[derive(Debug)]
+struct PackageFormatterPlan {
+    manifest_path: String,
+    batches: Vec<FormatterBatch>,
+}
+
+struct BatchRunResult {
+    success: bool,
+    stdout: Vec<u8>,
+    spawn_error: Option<String>,
+}
+
+fn rustfmt_program() -> PathBuf {
+    match std::env::var_os("RUSTFMT") {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => PathBuf::from("rustfmt"),
+    }
+}
+
+fn rustfmt_config_path_from_metadata(metadata: &CargoMetadata) -> Option<PathBuf> {
+    if metadata.workspace_root.is_empty() {
+        return None;
+    }
+    let path = Path::new(&metadata.workspace_root).join("rustfmt.toml");
+    path.is_file().then_some(path)
+}
+
+/// Target roots cargo-fmt would put on one rustfmt argv for this package.
+///
+/// This is the governed denominator: `src/lib.rs`, bins, `tests/*.rs`,
+/// benches, examples, and `build.rs`. rustfmt still walks out-of-line `mod`
+/// children from those roots. Non-`.rs` targets are skipped; nothing here
+/// walks the package directory, so fixtures that are not cargo targets stay
+/// out of the gate.
+fn collect_package_format_roots(package: &CargoPackage) -> Vec<FormatRoot> {
+    let mut seen = HashSet::new();
+    let mut roots = Vec::with_capacity(package.targets.len());
+    for target in &package.targets {
+        let path = PathBuf::from(&target.src_path);
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let edition = if target.edition.is_empty() {
+            package.edition.clone()
+        } else {
+            target.edition.clone()
+        };
+        roots.push(FormatRoot { edition, path });
+    }
+    roots
+}
+
+fn plan_workspace_format(
+    metadata: &CargoMetadata,
+    package_filters: Option<&[String]>,
+    args: &FormatterPlanArgs<'_>,
+) -> Result<Vec<PackageFormatterPlan>> {
+    let manifests = collect_workspace_manifest_paths(metadata, package_filters)?;
+    let mut by_manifest: HashMap<&str, &CargoPackage> = HashMap::new();
+    for package in &metadata.packages {
+        if metadata.workspace_members.iter().any(|member| member == &package.id) {
+            by_manifest.insert(package.manifest_path.as_str(), package);
+        }
+    }
+
+    let mut seen_files: HashSet<PathBuf> = HashSet::new();
+    let mut plans = Vec::with_capacity(manifests.len());
+    for manifest_path in manifests {
+        let package = by_manifest.get(manifest_path.as_str()).ok_or_else(|| {
+            eyre!("Workspace member not found in cargo metadata: {manifest_path}")
+        })?;
+        let mut roots = collect_package_format_roots(package);
+        roots.retain(|root| seen_files.insert(root.path.clone()));
+        let batches = plan_formatter_batches(&roots, args)
+            .map_err(|error| eyre!("formatter planning failed for {manifest_path}: {error}"))?;
+        plans.push(PackageFormatterPlan { manifest_path, batches });
+    }
+    Ok(plans)
+}
+
+fn execute_package_plan(
+    plan: &PackageFormatterPlan,
+    check: bool,
+    program: &Path,
+    config_path: Option<&Path>,
+) -> Option<CrateFailure> {
+    execute_package_plan_with(plan, check, |batch| {
+        run_rustfmt_batch(program, check, &batch.edition, config_path, &batch.files)
+    })
+}
+
+fn execute_package_plan_with(
+    plan: &PackageFormatterPlan,
+    check: bool,
+    mut run_batch: impl FnMut(&FormatterBatch) -> BatchRunResult,
+) -> Option<CrateFailure> {
+    let mut unformatted_files = Vec::new();
+    let mut spawn_errors: Vec<String> = Vec::new();
+    let mut apply_failed = false;
+    let mut check_failed = false;
+
+    for batch in &plan.batches {
+        let outcome = run_batch(batch);
+        if let Some(error) = outcome.spawn_error {
+            spawn_errors.push(error);
+            continue;
+        }
+        if outcome.success {
+            continue;
+        }
+        if check {
+            if !outcome.stdout.is_empty() {
+                print!("{}", String::from_utf8_lossy(&outcome.stdout));
+            }
+            for file in parse_unformatted_files(&outcome.stdout) {
+                if !unformatted_files.iter().any(|seen| seen == &file) {
+                    unformatted_files.push(file);
+                }
+            }
+            check_failed = true;
+        } else {
+            apply_failed = true;
+        }
+    }
+
+    if spawn_errors.is_empty() && unformatted_files.is_empty() && !apply_failed && !check_failed {
+        return None;
+    }
+
+    Some(CrateFailure {
+        manifest_path: plan.manifest_path.clone(),
+        unformatted_files,
+        spawn_error: if spawn_errors.is_empty() { None } else { Some(spawn_errors.join("; ")) },
+    })
+}
+
+fn run_rustfmt_batch(
+    program: &Path,
+    check: bool,
+    edition: &str,
+    config_path: Option<&Path>,
+    files: &[PathBuf],
+) -> BatchRunResult {
+    let mut command = Command::new(program);
+    command.arg("--edition").arg(edition);
+    if let Some(config) = config_path {
+        command.arg("--config-path").arg(config);
+    }
+    if check {
+        command.arg("--check");
+        command.stdout(Stdio::piped());
+    }
+    command.stderr(Stdio::inherit());
+    for file in files {
+        command.arg(file);
+    }
+
+    if check {
+        match command.output() {
+            Ok(output) => BatchRunResult {
+                success: output.status.success(),
+                stdout: output.stdout,
+                spawn_error: None,
+            },
+            Err(err) => BatchRunResult {
+                success: false,
+                stdout: Vec::new(),
+                spawn_error: Some(err.to_string()),
+            },
+        }
+    } else {
+        match command.status() {
+            Ok(status) => {
+                BatchRunResult { success: status.success(), stdout: Vec::new(), spawn_error: None }
+            }
+            Err(err) => BatchRunResult {
+                success: false,
+                stdout: Vec::new(),
+                spawn_error: Some(err.to_string()),
+            },
+        }
+    }
 }
 
 fn load_workspace_metadata() -> Result<CargoMetadata> {
@@ -835,11 +1018,6 @@ fn repo_root() -> Result<PathBuf> {
     bytes_to_path(&bytes)
 }
 
-fn workspace_manifest_paths(package_filters: Option<&[String]>) -> Result<Vec<String>> {
-    let metadata = load_workspace_metadata()?;
-    collect_workspace_manifest_paths(&metadata, package_filters)
-}
-
 fn collect_workspace_manifest_paths(
     metadata: &CargoMetadata,
     package_filters: Option<&[String]>,
@@ -900,13 +1078,16 @@ fn dedup_preserve_order(paths: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CargoMetadata, CargoPackage, CrateFailure, StagedFormatAction, WorkspacePackage,
-        classify_staged_paths, collect_workspace_manifest_paths, format_failure_report,
-        is_rewritable_staged_file, parse_unformatted_files,
+        BatchRunResult, CargoMetadata, CargoPackage, CargoTarget, CrateFailure,
+        FORMATTER_SPAWN_BUDGET, PackageFormatterPlan, StagedFormatAction, WorkspacePackage,
+        classify_staged_paths, collect_package_format_roots, collect_workspace_manifest_paths,
+        execute_package_plan_with, format_failure_report, is_rewritable_staged_file,
+        parse_unformatted_files, plan_workspace_format,
     };
     use color_eyre::eyre::Result;
     use std::collections::HashSet;
     use std::fs;
+    use std::process::{Command, Stdio};
 
     fn unstaged(paths: &[&str]) -> HashSet<PathBuf> {
         paths.iter().map(PathBuf::from).collect()
@@ -1195,18 +1376,21 @@ mod tests {
                     name: "xtask".to_string(),
                     manifest_path: "/repo/xtask/Cargo.toml".to_string(),
                     edition: "2024".to_string(),
+                    targets: vec![],
                 },
                 CargoPackage {
                     id: "path+file:///repo/crates/perl-parser#0.1.0".to_string(),
                     name: "perl-parser".to_string(),
                     manifest_path: "/repo/crates/perl-parser/Cargo.toml".to_string(),
                     edition: "2024".to_string(),
+                    targets: vec![],
                 },
             ],
             workspace_members: vec![
                 "path+file:///repo/xtask#0.1.0".to_string(),
                 "path+file:///repo/crates/perl-parser#0.1.0".to_string(),
             ],
+            workspace_root: String::new(),
         }
     }
 
@@ -1353,6 +1537,267 @@ mod tests {
         assert!(report.contains("cargo fmt failed"));
         assert!(report.contains("crates/foo/Cargo.toml"));
         assert!(report.contains("rustfmt not found"));
+    }
+
+    fn rust_target(src_path: &str, edition: &str) -> CargoTarget {
+        CargoTarget { src_path: src_path.to_string(), edition: edition.to_string() }
+    }
+
+    fn plan_args(check: bool, budget: usize) -> super::FormatterPlanArgs<'static> {
+        super::FormatterPlanArgs { program: "rustfmt", config_path: None, check, budget }
+    }
+
+    #[test]
+    fn package_roots_are_cargo_targets_not_a_directory_walk() {
+        let package = CargoPackage {
+            id: "path+file:///repo/crates/pkg#0.1.0".to_string(),
+            name: "pkg".to_string(),
+            manifest_path: "/repo/crates/pkg/Cargo.toml".to_string(),
+            edition: "2024".to_string(),
+            targets: vec![
+                rust_target("/repo/crates/pkg/src/lib.rs", "2024"),
+                rust_target("/repo/crates/pkg/src/bin/tool.rs", "2024"),
+                rust_target("/repo/crates/pkg/tests/case.rs", "2024"),
+                rust_target("/repo/crates/pkg/benches/hot.rs", "2024"),
+                rust_target("/repo/crates/pkg/examples/demo.rs", "2024"),
+                rust_target("/repo/crates/pkg/build.rs", "2024"),
+                rust_target("/repo/crates/pkg/README.md", "2024"),
+                rust_target("/repo/crates/pkg/src/lib.rs", "2024"),
+            ],
+        };
+        let roots = collect_package_format_roots(&package);
+        let paths: Vec<String> = roots.iter().map(|root| root.path.display().to_string()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "/repo/crates/pkg/src/lib.rs",
+                "/repo/crates/pkg/src/bin/tool.rs",
+                "/repo/crates/pkg/tests/case.rs",
+                "/repo/crates/pkg/benches/hot.rs",
+                "/repo/crates/pkg/examples/demo.rs",
+                "/repo/crates/pkg/build.rs",
+            ]
+        );
+        assert!(
+            !paths.iter().any(|path| path.contains("fixtures")),
+            "non-target fixture files must not enter the formatter denominator"
+        );
+    }
+
+    #[test]
+    fn overlapping_package_roots_are_formatted_exactly_once() -> Result<()> {
+        let shared = "/repo/crates/shared/src/lib.rs";
+        let mut metadata = sample_metadata();
+        metadata.packages[0].targets =
+            vec![rust_target(shared, "2024"), rust_target("/repo/xtask/src/main.rs", "2024")];
+        metadata.packages[1].targets = vec![
+            rust_target(shared, "2024"),
+            rust_target("/repo/crates/perl-parser/src/lib.rs", "2024"),
+        ];
+        let plans =
+            plan_workspace_format(&metadata, None, &plan_args(true, FORMATTER_SPAWN_BUDGET))?;
+        let mut files = Vec::new();
+        for plan in &plans {
+            for batch in &plan.batches {
+                files.extend(batch.files.iter().map(|path| path.display().to_string()));
+            }
+        }
+        let shared_hits = files.iter().filter(|path| path.as_str() == shared).count();
+        assert_eq!(shared_hits, 1, "overlapping package/root logic must not select a file twice");
+        assert!(files.iter().any(|path| path.ends_with("xtask/src/main.rs")));
+        assert!(files.iter().any(|path| path.ends_with("perl-parser/src/lib.rs")));
+        Ok(())
+    }
+
+    #[test]
+    fn an_over_budget_root_fails_planning_without_a_partial_plan() {
+        let huge = format!("{}.rs", "x".repeat(FORMATTER_SPAWN_BUDGET));
+        let mut metadata = sample_metadata();
+        metadata.packages[0].targets = vec![rust_target(&huge, "2024")];
+        let error =
+            plan_workspace_format(&metadata, None, &plan_args(true, FORMATTER_SPAWN_BUDGET))
+                .expect_err("command-size uncertainty must not be a successful plan");
+        let rendered = format!("{error}");
+        assert!(rendered.contains("process-spawn limit"), "{rendered}");
+        assert!(rendered.contains("not formatting drift"), "{rendered}");
+    }
+
+    fn batch(edition: &str, files: &[&str]) -> super::FormatterBatch {
+        super::FormatterBatch {
+            edition: edition.to_string(),
+            files: files.iter().map(PathBuf::from).collect(),
+            estimated_command_len: 1,
+        }
+    }
+
+    fn drift(path: &str) -> BatchRunResult {
+        BatchRunResult {
+            success: false,
+            stdout: format!("Diff in {path} at line 1:\n").into_bytes(),
+            spawn_error: None,
+        }
+    }
+
+    fn clean() -> BatchRunResult {
+        BatchRunResult { success: true, stdout: Vec::new(), spawn_error: None }
+    }
+
+    #[test]
+    fn a_later_batch_failure_is_not_hidden_by_an_earlier_pass() {
+        let plan = PackageFormatterPlan {
+            manifest_path: "crates/pkg/Cargo.toml".to_string(),
+            batches: vec![
+                batch("2024", &["first.rs"]),
+                batch("2024", &["middle.rs"]),
+                batch("2024", &["last.rs"]),
+            ],
+        };
+        let failure = execute_package_plan_with(&plan, true, |current| {
+            let name = current.files[0].display().to_string();
+            if name == "first.rs" { clean() } else { drift(&name) }
+        })
+        .expect("aggregate must fail");
+        assert!(failure.spawn_error.is_none());
+        assert_eq!(failure.unformatted_files, vec!["middle.rs".to_string(), "last.rs".to_string()]);
+    }
+
+    #[test]
+    fn a_child_formatter_failure_makes_the_aggregate_fail() {
+        let plan = PackageFormatterPlan {
+            manifest_path: "crates/pkg/Cargo.toml".to_string(),
+            batches: vec![batch("2024", &["first.rs"]), batch("2024", &["last.rs"])],
+        };
+        let failure = execute_package_plan_with(&plan, true, |current| {
+            if current.files[0].display().to_string() == "last.rs" {
+                BatchRunResult { success: false, stdout: Vec::new(), spawn_error: None }
+            } else {
+                clean()
+            }
+        })
+        .expect("a child non-zero without Diff lines must still fail the crate");
+        assert!(failure.unformatted_files.is_empty());
+        assert!(failure.spawn_error.is_none());
+    }
+
+    #[test]
+    fn a_spawn_failure_stays_distinct_from_formatting_drift() {
+        let plan = PackageFormatterPlan {
+            manifest_path: "crates/pkg/Cargo.toml".to_string(),
+            batches: vec![batch("2024", &["clean.rs"]), batch("2024", &["drift.rs"])],
+        };
+        let failure = execute_package_plan_with(&plan, true, |current| {
+            if current.files[0].display().to_string() == "clean.rs" {
+                BatchRunResult {
+                    success: false,
+                    stdout: Vec::new(),
+                    spawn_error: Some(
+                        "The filename or extension is too long. (os error 206)".into(),
+                    ),
+                }
+            } else {
+                drift("drift.rs")
+            }
+        })
+        .expect("both spawn and drift must surface");
+        let spawn = failure.spawn_error.expect("spawn error must be retained");
+        assert!(spawn.contains("os error 206"), "{spawn}");
+        assert_eq!(failure.unformatted_files, vec!["drift.rs".to_string()]);
+    }
+
+    #[test]
+    fn check_mode_does_not_ask_the_runner_to_apply() {
+        let plan = PackageFormatterPlan {
+            manifest_path: "crates/pkg/Cargo.toml".to_string(),
+            batches: vec![batch("2024", &["a.rs"])],
+        };
+        let mut saw_check_style_call = false;
+        let _ = execute_package_plan_with(&plan, true, |_| {
+            saw_check_style_call = true;
+            clean()
+        });
+        assert!(saw_check_style_call);
+        // execute_package_plan_with itself does not write files; mutation is
+        // the rustfmt child's job. The production check path always passes
+        // `--check` (see run_rustfmt_batch). Guarded at the source below.
+    }
+
+    #[test]
+    fn check_mode_detects_first_middle_and_final_drift_without_mutating() -> Result<()> {
+        let rustfmt = Command::new("rustfmt")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if !rustfmt.as_ref().is_ok_and(std::process::ExitStatus::success) {
+            return Err(color_eyre::eyre::eyre!(
+                "rustfmt is required for the check-mode mutation/drift fixture"
+            ));
+        }
+
+        let dir = tempfile::tempdir()?;
+        let mut files = Vec::new();
+        for name in ["first.rs", "middle.rs", "last.rs"] {
+            let path = dir.path().join(name);
+            fs::write(&path, "fn probe(){ let x=1; }\n")?;
+            files.push(path);
+        }
+        let original: Vec<Vec<u8>> =
+            files.iter().map(|path| fs::read(path)).collect::<std::io::Result<_>>()?;
+
+        let plan = PackageFormatterPlan {
+            manifest_path: "Cargo.toml".to_string(),
+            batches: files
+                .iter()
+                .map(|path| super::FormatterBatch {
+                    edition: "2024".to_string(),
+                    files: vec![path.clone()],
+                    estimated_command_len: 1,
+                })
+                .collect(),
+        };
+        let failure = super::execute_package_plan(&plan, true, Path::new("rustfmt"), None)
+            .expect("unformatted first/middle/last batches must fail check");
+        assert_eq!(failure.unformatted_files.len(), 3, "{:?}", failure.unformatted_files);
+        for (path, bytes) in files.iter().zip(&original) {
+            assert_eq!(&fs::read(path)?, bytes, "check mode must not mutate {}", path.display());
+        }
+
+        let apply = super::execute_package_plan(&plan, false, Path::new("rustfmt"), None);
+        assert!(apply.is_none(), "apply of the same denominator must succeed: {apply:?}");
+        for path in &files {
+            let after = fs::read_to_string(path)?;
+            assert_ne!(after, "fn probe(){ let x=1; }\n", "apply must rewrite {}", path.display());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_formatter_plans_before_it_spawns_and_never_uses_cargo_fmt_all() -> Result<()> {
+        let fmt_source = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("tasks").join("fmt.rs"),
+        )?;
+        let body = fmt_source
+            .split_once("pub fn run(")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once("\n/// Parse rustfmt's"))
+            .map(|(body, _)| body)
+            .ok_or_else(|| color_eyre::eyre::eyre!("could not isolate run() body"))?;
+        let plan_at = body.find("plan_workspace_format").ok_or_else(|| {
+            color_eyre::eyre::eyre!("run() must plan bounded rustfmt batches before spawning")
+        })?;
+        let exec_at = body
+            .find("execute_package_plan")
+            .ok_or_else(|| color_eyre::eyre::eyre!("run() must execute the planned batches"))?;
+        assert!(plan_at < exec_at, "planning must precede any rustfmt spawn");
+        assert!(
+            !body.contains("\"fmt\""),
+            "run() must not spawn cargo fmt; cargo-fmt rebuilds one unbounded rustfmt argv"
+        );
+        assert!(
+            !body.contains("--all"),
+            "run() must not fall back to workspace-wide cargo fmt --all"
+        );
+        Ok(())
     }
 
     #[test]
@@ -1655,21 +2100,467 @@ mod tests {
             }
 
             let source = fs::read_to_string(&path)?;
-            if path.file_name().and_then(|name| name.to_str()) == Some("fmt.rs") {
-                continue;
-            }
-
-            let argv_pattern = ["\"fmt\"", ", \"--all\""].concat();
-            let shell_pattern = ["cargo fmt", " --all"].concat();
-            let args_pattern = ["args([\"fmt\"", ", \"--all\""].concat();
-            if source.contains(&argv_pattern)
-                || source.contains(&shell_pattern)
-                || source.contains(&args_pattern)
-            {
-                offenders.push(path.display().to_string());
+            // #16331: judge invocations, not mentions. `fmt.rs` itself is no
+            // longer skipped wholesale — it plans rustfmt batches rather than
+            // spawning `cargo fmt --all`, so none of the invocation shapes
+            // below match it.
+            for reason in workspace_fmt_all_invocations(&source) {
+                offenders.push(format!("{}: {reason}", path.display()));
             }
         }
 
         Ok(())
+    }
+
+    /// One string literal found in Rust source: its text without the
+    /// delimiters, and the offset where the literal token begins in the
+    /// comment-stripped view.
+    struct SourceString {
+        text: String,
+        start: usize,
+    }
+
+    /// Blank `//` and (nested) `/* */` comments while keeping every offset and
+    /// newline stable, and collect the string literals that survive.
+    ///
+    /// Only comments are removed. String literal contents stay in place on
+    /// purpose: a `sh -c` payload is a process argument, not prose, and rule
+    /// matching below needs the surrounding code to tell them apart. Raw
+    /// strings (`r"…"`, `r#"…"#`), escapes, raw identifiers (`r#type`), and
+    /// lifetime ticks are handled well enough for shape matching; none of the
+    /// matched text needs unescaping.
+    fn strip_comments_collect_strings(source: &str) -> (String, Vec<SourceString>) {
+        let bytes = source.as_bytes();
+        let mut stripped = bytes.to_vec();
+        let mut literals = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        stripped[i] = b' ';
+                        i += 1;
+                    }
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    let mut depth = 1usize;
+                    stripped[i] = b' ';
+                    stripped[i + 1] = b' ';
+                    i += 2;
+                    while i < bytes.len() && depth > 0 {
+                        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                            depth += 1;
+                            stripped[i] = b' ';
+                            stripped[i + 1] = b' ';
+                            i += 2;
+                        } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                            depth -= 1;
+                            stripped[i] = b' ';
+                            stripped[i + 1] = b' ';
+                            i += 2;
+                        } else {
+                            if bytes[i] != b'\n' {
+                                stripped[i] = b' ';
+                            }
+                            i += 1;
+                        }
+                    }
+                }
+                b'"' => {
+                    let start = i;
+                    let mut j = i + 1;
+                    let mut closed = false;
+                    while j < bytes.len() {
+                        match bytes[j] {
+                            b'\\' => j += 2,
+                            b'"' => {
+                                closed = true;
+                                j += 1;
+                                break;
+                            }
+                            _ => j += 1,
+                        }
+                    }
+                    if closed && start + 1 < j {
+                        literals.push(SourceString {
+                            text: source[start + 1..j - 1].to_string(),
+                            start,
+                        });
+                    }
+                    i = j.max(i + 1);
+                }
+                b'r' => {
+                    let mut hashes = 0usize;
+                    let mut quote = i + 1;
+                    while bytes.get(quote) == Some(&b'#') {
+                        hashes += 1;
+                        quote += 1;
+                    }
+                    if bytes.get(quote) != Some(&b'"') {
+                        // An identifier such as `run`, or a raw identifier
+                        // such as `r#type`; not a string.
+                        i += 1;
+                        continue;
+                    }
+                    let mut j = quote + 1;
+                    let mut closed = false;
+                    while j < bytes.len() {
+                        if bytes[j] == b'"'
+                            && bytes.len() >= j + 1 + hashes
+                            && bytes[j + 1..j + 1 + hashes].iter().all(|byte| *byte == b'#')
+                        {
+                            closed = true;
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if closed {
+                        if quote + 1 <= j {
+                            literals.push(SourceString {
+                                text: source[quote + 1..j].to_string(),
+                                start: i,
+                            });
+                        }
+                        i = j + 1 + hashes;
+                    } else {
+                        i = bytes.len();
+                    }
+                }
+                b'\'' => {
+                    // A lifetime tick is not a char literal; treating one as a
+                    // string opener would corrupt every following offset.
+                    if bytes.get(i + 1) == Some(&b'\\') {
+                        i += 2;
+                        while i < bytes.len() && bytes[i] != b'\'' {
+                            i += 1;
+                        }
+                        i += 1;
+                    } else if bytes.get(i + 2) == Some(&b'\'') {
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+                _ => i += 1,
+            }
+        }
+        // Only ASCII bytes were replaced in place, so the buffer is still
+        // valid UTF-8.
+        (String::from_utf8_lossy(&stripped).into_owned(), literals)
+    }
+
+    /// Whether `text` carries `--all` as a flag of its own, so that
+    /// `--allow-no-vcs` and friends do not count.
+    /// True when `payload` starts some shell command segment with a
+    /// workspace-wide `cargo fmt` invocation.
+    ///
+    /// Command boundaries are `;`, `&&`, `||`, `|`, newlines, and subshell
+    /// openers; a bounded peephole skips `exec` and `VAR=value` prefixes, so
+    /// `set -e; cargo fmt --all`, `cd dir && cargo fmt --all`,
+    /// `exec cargo fmt --all`, and `FOO=1 cargo fmt --all` all carry the
+    /// invocation (#16331 review). A sentence that merely mentions the
+    /// command after other words ("run cargo fmt --all to reproduce")
+    /// carries none.
+    fn shell_payload_invokes_workspace_fmt(payload: &str) -> bool {
+        payload.split([';', '|', '&', '\n', '(', '{']).any(|segment| {
+            let mut rest = segment.trim_start();
+            // Bounded peephole over `exec` and `VAR=value` prefixes so a
+            // hostile or hand-written prefix chain cannot push the
+            // formatter past the segment scan.
+            for _ in 0..8 {
+                if let Some(after) = rest.strip_prefix("exec ") {
+                    rest = after.trim_start();
+                    continue;
+                }
+                // `VAR=value` assignment prefix: consume the whole token
+                // (name, `=`, value) through the whitespace that ends it.
+                // An `==` comparison or a bare `=value` without a name is
+                // not an assignment and ends the peephole.
+                let Some(eq) = rest.find('=') else {
+                    break;
+                };
+                let head = &rest[..eq];
+                let named =
+                    !head.is_empty() && head.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                let Some(value_end) = rest[eq..].find(|c: char| c.is_ascii_whitespace()) else {
+                    break;
+                };
+                if !named || rest[eq + 1..eq + value_end].is_empty() {
+                    break;
+                }
+                rest = rest[eq + value_end..].trim_start();
+            }
+            rest.starts_with("cargo fmt")
+        })
+    }
+
+    fn carries_all_flag(text: &str) -> bool {
+        let bytes = text.as_bytes();
+        let mut from = 0usize;
+        while let Some(at) = text[from..].find("--all") {
+            let end = from + at + "--all".len();
+            match bytes.get(end) {
+                None => return true,
+                Some(byte) if matches!(*byte, b' ' | b'\t' | b'"' | b'\'' | b',') => return true,
+                _ => {}
+            }
+            from = end;
+        }
+        false
+    }
+
+    /// Index of the `)` matching the `(` at `open`, or the end of `code`.
+    fn matching_paren(code: &str, open: usize) -> usize {
+        let bytes = code.as_bytes();
+        let mut depth = 0usize;
+        for (index, byte) in bytes.iter().enumerate().skip(open) {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return index;
+                    }
+                }
+                _ => {}
+            }
+        }
+        code.len()
+    }
+
+    /// Report every way `source` actually invokes a workspace-wide
+    /// workspace `cargo` formatting pass, as opposed to merely naming one.
+    ///
+    /// #16331: the previous instrument substring-scanned whole files, so a
+    /// JSON test fixture, a doc comment, or a help/error string that
+    /// *mentioned* the command red the gate while its message sent the reader
+    /// looking for a subprocess that does not exist. This scanner strips
+    /// comments and then matches invocation shapes only:
+    ///
+    /// - a `Command::new("cargo")` statement — the constructor argument must
+    ///   be the literal `cargo` — whose string arguments, however chained,
+    ///   include both `fmt` and `--all`;
+    /// - a `cmd(…)` call whose first grouped string literal — the executable
+    ///   position — is `cargo`, `sh`, or `bash`, and whose grouped string
+    ///   arguments include `cargo`, `fmt`, and `--all`;
+    /// - a shell command line passed in argument position — after `(`, `,`,
+    ///   or `[` — that starts some shell command segment (boundaries: `;`,
+    ///   `&&`, `||`, `|`, newline, `(`, `{`) with a workspace-wide
+    ///   `cargo fmt` invocation, allowing `exec` and `VAR=value` prefixes,
+    ///   such as a `sh -c` payload.
+    ///
+    /// A formatter name or command line stored in a constant, config field,
+    /// or fixture is a string, not an execution, and stays clean. Stated
+    /// limitations (accepted imprecisions of a tripwire over this
+    /// repository's own source):
+    ///
+    /// - a command assembled into a variable and handed to a shell indirectly
+    ///   is indistinguishable from ordinary data flow at this layer;
+    /// - structural bounds (`matching_paren`, the statement end) are scanned
+    ///   over raw code, so delimiter characters inside string literals can
+    ///   shift a scanned group or statement boundary;
+    /// - an argument-position literal that *begins* with `cargo fmt` in an
+    ///   unknown callable (`bail!("cargo fmt --all is required")`) still
+    ///   flags: the executable role of an arbitrary call is unknowable here
+    ///   and the gate fails closed.
+    fn workspace_fmt_all_invocations(source: &str) -> Vec<String> {
+        let (code, literals) = strip_comments_collect_strings(source);
+        let code_bytes = code.as_bytes();
+        let mut reasons = Vec::new();
+
+        // Shell-style command line passed in argument position. The payload
+        // must carry the formatter at a shell command position, so
+        // `set -e; cargo fmt --all` is caught (#16331 review) while a prose
+        // sentence like `run cargo fmt --all to reproduce` is not.
+        for literal in &literals {
+            let trimmed = literal.text.trim();
+            if !carries_all_flag(trimmed) || !shell_payload_invokes_workspace_fmt(trimmed) {
+                continue;
+            }
+            let mut cursor = literal.start;
+            while cursor > 0 && code_bytes[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+            if matches!(code_bytes[cursor - 1], b'(' | b',' | b'[') {
+                reasons.push(
+                    "shell-style workspace format command line passed as a process argument"
+                        .to_string(),
+                );
+            }
+        }
+
+        // `Command::new("cargo")` with `fmt` + `--all` in one statement.
+        for (at, _) in code.match_indices("Command::new") {
+            let mut open = at + "Command::new".len();
+            while let Some(byte) = code_bytes.get(open) {
+                if *byte == b' ' || *byte == b'\t' {
+                    open += 1;
+                } else {
+                    break;
+                }
+            }
+            if code_bytes.get(open) != Some(&b'(') {
+                continue;
+            }
+            // The constructor argument must be the literal `cargo`
+            // (#16331 review): `Command::new(tool).args(["cargo", …])` and
+            // `Command::new("echo").args([…])` name no formatter spawn.
+            let constructor_close = matching_paren(&code, open);
+            let constructor = literals
+                .iter()
+                .find(|literal| literal.start > open && literal.start < constructor_close);
+            let Some(constructor) = constructor else {
+                continue;
+            };
+            if constructor.text != "cargo" {
+                continue;
+            }
+            let statement_end = code[at..].find(';').map_or(code.len(), |offset| at + offset);
+            let carries = |wanted: &str| {
+                literals.iter().any(|literal| {
+                    literal.start > at && literal.start < statement_end && literal.text == wanted
+                })
+            };
+            if carries("fmt") && carries("--all") {
+                reasons.push(
+                    "`Command::new(\"cargo\")` statement carries `fmt` and `--all` arguments"
+                        .to_string(),
+                );
+            }
+        }
+
+        // `cmd("cargo", …)` with `fmt` + `--all` inside the call group.
+        for (at, _) in code.match_indices("cmd") {
+            let before = if at == 0 { b' ' } else { code_bytes[at - 1] };
+            if before.is_ascii_alphanumeric() || before == b'_' {
+                continue;
+            }
+            let mut open = at + "cmd".len();
+            if code_bytes.get(open) == Some(&b'!') {
+                open += 1;
+            }
+            if code_bytes.get(open) != Some(&b'(') {
+                continue;
+            }
+            let group_end = matching_paren(&code, open);
+            let in_group: Vec<&SourceString> = literals
+                .iter()
+                .filter(|literal| literal.start > open && literal.start < group_end)
+                .collect();
+            // Executable-position guard (#16331 review): the first grouped
+            // string literal names the executable, and `cmd("echo",
+            // ["cargo", "fmt", "--all"])` executes `echo`. Only `cargo` and
+            // the recognized shells are formatter spawners; anything else is
+            // an argument mention, not an invocation.
+            let Some(executable) = in_group.first() else {
+                continue;
+            };
+            if !matches!(executable.text.as_str(), "cargo" | "sh" | "bash") {
+                continue;
+            }
+            let carries = |wanted: &str| in_group.iter().any(|literal| literal.text == wanted);
+            if carries("cargo") && carries("fmt") && carries("--all") {
+                reasons.push(
+                    "`cmd(\"cargo\", …)` call carries `fmt` and `--all` arguments".to_string(),
+                );
+            }
+        }
+
+        reasons
+    }
+
+    #[test]
+    fn a_string_that_names_the_command_is_not_an_invocation() {
+        // The class that red #16095: a JSON fixture's `reproduce` field
+        // records the command for a passing gate; nothing executes it.
+        let fixture = concat!(
+            r#"{"gate": "workspace-fmt", "#,
+            r#""reproduce": "cargo fmt --all", "result": "success"}"#,
+        );
+        assert!(workspace_fmt_all_invocations(fixture).is_empty());
+
+        // Prose and config values name the formatter; they do not spawn it.
+        let documented = "// never run cargo fmt --all directly\nfn f() {}\n";
+        assert!(workspace_fmt_all_invocations(documented).is_empty());
+        let configured = "const FORMATTER: &str = \"cargo fmt --all\";\n";
+        assert!(workspace_fmt_all_invocations(configured).is_empty());
+    }
+
+    #[test]
+    fn prefixed_shell_payloads_still_carry_the_invocation() {
+        // #16331 review: a payload that only *eventually* runs the formatter
+        // is still a workspace-wide formatting pass.
+        let chained = r#"fn i() { cmd("sh", ["-c", "set -e; cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(chained).len(), 1);
+
+        let and_chain = r#"fn i() { cmd("sh", ["-c", "cd crate && cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(and_chain).len(), 1);
+
+        let exec = r#"fn i() { cmd("sh", ["-c", "exec cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(exec).len(), 1);
+
+        let env_prefix =
+            r#"fn i() { cmd("sh", ["-c", "RUSTUP_TOOLCHAIN=stable cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(env_prefix).len(), 1);
+    }
+
+    #[test]
+    fn prose_mention_in_argument_position_is_not_an_invocation() {
+        // #16331 review: the executable role of an arbitrary call is
+        // unknowable, but a payload that merely mentions the formatter after
+        // other words is a message, not a command line.
+        let bail_message = r#"fn j() { bail!("run cargo fmt --all to reproduce"); }"#;
+        assert!(workspace_fmt_all_invocations(bail_message).is_empty());
+    }
+
+    #[test]
+    fn unrelated_executables_do_not_spawn_the_formatter() {
+        // #16331 review: the first grouped literal names the executable;
+        // `echo` prints three words and spawns nothing.
+        let echo = r#"fn e() { cmd("echo", ["cargo", "fmt", "--all"]).run()?; }"#;
+        assert!(workspace_fmt_all_invocations(echo).is_empty());
+
+        // A non-literal constructor argument names no formatter spawn even
+        // when later arguments mention the pieces.
+        let dynamic_tool =
+            r#"fn e(tool: &str) { Command::new(tool).args(["cargo", "fmt", "--all"]).status(); }"#;
+        assert!(workspace_fmt_all_invocations(dynamic_tool).is_empty());
+
+        let dynamic_then_cargo_mention = concat!(
+            r#"fn e(tool: &str) { Command::new(tool).args(["fmt", "--all"]).status(); }"#,
+            r#"fn f() { other("cargo"); }"#,
+        );
+        assert!(workspace_fmt_all_invocations(dynamic_then_cargo_mention).is_empty());
+
+        // The real spawn shapes stay flagged.
+        let real = r#"fn g() { Command::new("cargo").args(["fmt", "--all"]).status(); }"#;
+        assert_eq!(workspace_fmt_all_invocations(real).len(), 1);
+        let shell = r#"fn i() { cmd("sh", ["-c", "cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(shell).len(), 1);
+        let bash = r#"fn i() { cmd("bash", ["-c", "cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(bash).len(), 1);
+    }
+
+    #[test]
+    fn workspace_fmt_all_invocation_shapes_are_flagged() {
+        let std_command = r#"fn g() { Command::new("cargo").args(["fmt", "--all"]).status(); }"#;
+        assert_eq!(workspace_fmt_all_invocations(std_command).len(), 1);
+
+        let duct_call = r#"fn h() { cmd("cargo", ["fmt", "--all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(duct_call).len(), 1);
+
+        let shell_payload = r#"fn i() { cmd("sh", ["-c", "cargo fmt --all"]).run()?; }"#;
+        assert_eq!(workspace_fmt_all_invocations(shell_payload).len(), 1);
+    }
+
+    #[test]
+    fn sanctioned_scoped_formatting_is_not_flagged() {
+        let scoped = r#"fn k() { cmd("cargo", ["fmt", "-p", "xtask"]).run()?; }"#;
+        assert!(workspace_fmt_all_invocations(scoped).is_empty());
+
+        // Workspace formatting now plans rustfmt batches; a leftover
+        // `cmd("cargo", args)` with no `--all` still isn't the banned shape.
+        let dynamic = r#"fn m(args: &[String]) { cmd("cargo", args).run()?; }"#;
+        assert!(workspace_fmt_all_invocations(dynamic).is_empty());
     }
 }

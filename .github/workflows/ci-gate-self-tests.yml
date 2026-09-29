@@ -115,6 +115,9 @@ on:
       - 'scripts/tests/test-cargo-toolchain-guard.sh'
       - 'scripts/tests/test-cargo-safe-toolchain-guard.sh'
       - 'scripts/tests/test-fuzz-bounded.sh'
+      - 'scripts/lib/release-turnkey-handoff.sh'
+      - 'scripts/tests/test-release-turnkey-handoff.sh'
+      - 'xtask/src/tasks/release_turnkey.rs'
       - 'rust-toolchain.toml'
       - 'Cargo.toml'
       - '.github/workflows/publish-dry-run.yml'
@@ -548,6 +551,33 @@ jobs:
             echo "## Cargo toolchain guard self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  release-turnkey-handoff-self-test:
+    name: Release-turnkey manual-handoff self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run release-turnkey handoff self-test
+        run: bash scripts/tests/test-release-turnkey-handoff.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Release-turnkey handoff self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`--no-auto-merge\` and \`--no-wait-pr-merge\` stop at typed resumable handoffs and do not dispatch Release Orchestration unless exact landing is already proven in the same invocation (issue #16798)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Release-turnkey handoff self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "A manual/partial merge option can still continue into Release Orchestration without proven landing. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   fuzz-bounded-discovery-self-test:

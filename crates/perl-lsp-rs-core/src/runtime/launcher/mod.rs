@@ -16,6 +16,7 @@ use std::sync::{Mutex, MutexGuard, Once, PoisonError};
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
 mod checking_guidance;
+mod debounce;
 mod port;
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
@@ -248,8 +249,22 @@ pub struct TransportArgs {
     pub socket: bool,
 
     /// Port to listen on (for socket mode)
-    #[arg(long)]
+    #[arg(long, value_parser = parse_cli_port, allow_negative_numbers = true)]
     pub port: Option<u16>,
+}
+
+/// Clap adapter for the canonical `--port` token grammar.
+///
+/// Returns the same range/not-a-number reasons as launcher prevalidation so a
+/// later clap `u16` reparse cannot introduce `ParseIntError` wording. The
+/// envelope around that reason stays product-specific (`perllsp` prevalidate
+/// versus clap's `perl-dap --help` pointer).
+fn parse_cli_port(raw_port: &str) -> Result<u16, String> {
+    match port::parse_port_token(raw_port) {
+        Ok(port) => Ok(port),
+        Err(LaunchParseError::InvalidPort { reason, .. }) => Err(reason),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 impl TransportArgs {
@@ -321,7 +336,8 @@ pub struct LspArgs {
     )]
     pub dev_environment: bool,
 
-    /// Output machine-readable JSON (currently affects --doctor only)
+    /// Output machine-readable JSON (affects --doctor; paired with --info it is
+    /// the one-shot identity form, resolved ahead of this parser)
     #[arg(long)]
     pub json: bool,
 
@@ -625,6 +641,13 @@ pub enum LaunchParseError {
         /// Raw shell token from CLI.
         raw_shell: String,
     },
+    /// Invalid `--diagnostic-debounce-ms` value.
+    InvalidDiagnosticDebounceMs {
+        /// Raw debounce token from CLI, kept verbatim for classification.
+        raw_value: String,
+        /// Actionable reason the value was rejected.
+        reason: String,
+    },
     /// Invalid `--runtime-mode` token.
     InvalidRuntimeMode {
         /// Raw token from CLI.
@@ -667,6 +690,9 @@ impl fmt::Display for LaunchParseError {
                     "Unknown shell: {raw_shell}. Supported: bash, zsh, fish, powershell, pwsh"
                 )
             }
+            Self::InvalidDiagnosticDebounceMs { raw_value, reason } => {
+                f.write_str(&debounce::render_debounce_rejection(raw_value, reason))
+            }
             Self::InvalidRuntimeMode { raw_mode } => {
                 write!(f, "Invalid runtime mode: {raw_mode}. Supported: normal, e2e")
             }
@@ -692,6 +718,7 @@ impl perl_parser_core::ErrorClass for LaunchParseError {
             | Self::InvalidFeatureProfile { .. }
             | Self::InvalidPort { .. }
             | Self::InvalidShell { .. }
+            | Self::InvalidDiagnosticDebounceMs { .. }
             | Self::InvalidRuntimeMode { .. }
             | Self::InvalidDiagnosticMode { .. } => perl_parser_core::ErrorCategory::UserError,
         }
@@ -853,6 +880,16 @@ fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParse
     while index < args.len() {
         let token = args[index].to_string_lossy();
 
+        // Operands after a bare `--` are positional file paths, not flags.
+        // clap's `--check` `trailing_var_arg` already treats that region as
+        // files; walking it here would reclassify a filename that happens to
+        // match a prevalidated option (`--diagnostic-debounce-ms`, `--port`,
+        // `--mcp`, …) as a missing or invalid value. The identity surface
+        // already honors the same terminator in `product_identity.rs`.
+        if token == "--" {
+            break;
+        }
+
         if token == "--mcp" || token.starts_with("--mcp=") {
             return Err(LaunchParseError::McpAliasRejected);
         }
@@ -879,6 +916,51 @@ fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParse
             }
 
             port::validate_port_token(raw_port)?;
+        }
+
+        // `--diagnostic-debounce-ms` is declared as a clap `Option<u64>`, so
+        // without this prevalidation an invalid token would reach clap and come
+        // back through `ParserDiagnostic` carrying Rust's `ParseIntError`
+        // wording. Validating here keeps the option's grammar, accepted range,
+        // and rejection text in one owner and off the parse-source channel
+        // (#16806). The same rule serves both spellings, and a token that
+        // passes here is one clap's own `u64` parse is then guaranteed to
+        // accept, so the two cannot disagree.
+        if token == "--diagnostic-debounce-ms" {
+            let next = args.get(index + 1).map(|value| value.to_string_lossy().to_string());
+            let Some(raw_value) = next else {
+                return Err(LaunchParseError::MissingValue {
+                    option: "--diagnostic-debounce-ms".to_string(),
+                });
+            };
+
+            // clap does not accept a hyphen-leading token as this option's
+            // value (it refuses to read one as a value and then treats it as a
+            // flag), so neither do we. Claiming `-1` or `-h` as a *value* here
+            // would replace clap's real diagnostic with a rejection of a value
+            // the user never supplied. The equals spelling still reaches the
+            // value parser, so `--diagnostic-debounce-ms=-1` keeps the precise
+            // out-of-range reason.
+            if raw_value.starts_with('-') || raw_value.is_empty() {
+                return Err(LaunchParseError::MissingValue {
+                    option: "--diagnostic-debounce-ms".to_string(),
+                });
+            }
+
+            debounce::validate_debounce_token(&raw_value)?;
+
+            index += 2;
+            continue;
+        }
+
+        if let Some(raw_value) = token.strip_prefix("--diagnostic-debounce-ms=") {
+            if raw_value.is_empty() {
+                return Err(LaunchParseError::MissingValue {
+                    option: "--diagnostic-debounce-ms".to_string(),
+                });
+            }
+
+            debounce::validate_debounce_token(raw_value)?;
         }
 
         if token == "--completion" {
@@ -972,6 +1054,11 @@ pub fn help_text() -> String {
     out.push_str("  --version            Show version information\n");
     out.push_str("  --features-json      Output features catalog as JSON\n");
     out.push('\n');
+    out.push_str("Identity options (one-shot: must be the only argument):\n");
+    out.push_str("  --identity           Print the installed-binary identity packet and exit\n");
+    out.push_str("  --identity-json      Print that packet as perl_lsp.binary_identity.v1 JSON\n");
+    out.push_str("  --info --json        Same JSON packet (composed one-shot form)\n");
+    out.push('\n');
     out.push_str("Tool options:\n");
     out.push_str("  ");
     out.push_str(checking_guidance::CHECK_FLAG);
@@ -996,8 +1083,9 @@ pub fn help_text() -> String {
         "  --dev-environment    With --doctor: dev-prerequisite report (symlink, shells, Perl)\n",
     );
     out.push_str(
-        "  --json               Machine-readable JSON output (currently affects --doctor)\n",
+        "  --json               Machine-readable JSON output (affects --doctor; with --info,\n",
     );
+    out.push_str("                       pairs as the one-shot identity form)\n");
     out.push_str("  --perltidy-compat-report <profile>\n");
     out.push_str("                       Report native formatter compatibility for .perltidyrc\n");
     out.push_str("  --perlcritic-compat-report <profile>\n");
@@ -1051,6 +1139,8 @@ pub fn help_text() -> String {
     out.push_str("  perllsp --perltidy-compat-report .perltidyrc\n");
     out.push_str("  perllsp --perlcritic-compat-report .perlcriticrc\n");
     out.push_str("  perllsp --info                          # server information\n");
+    out.push_str("  perllsp --identity                      # installed-binary identity packet\n");
+    out.push_str("  perllsp --identity-json                 # the same packet as JSON\n");
     out.push_str("  perllsp --completion bash >> ~/.bashrc  # install completions\n");
     out.push('\n');
     out.push_str("Environment:\n");
@@ -1071,7 +1161,8 @@ pub fn help_text() -> String {
     out.push_str("                       Set file-watcher tuning value\n");
     out.push_str("  PERL_LSP_TIMING=<mode>\n");
     out.push_str(
-        "                       Enable phase-1 latency instrumentation (off, spans, json)\n",
+        "                       Enable phase-1 latency instrumentation; JSONL to stderr (off, stderr, \
+         json) or JSONL appended to a file path\n",
     );
     out.push_str("  PERL_LSP_INCREMENTAL=1\n");
     out.push_str("                       Enable incremental reparsing (experimental)\n");
@@ -1108,7 +1199,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --external-tools --critic-compatibility --dev-environment --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
+    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --external-tools --critic-compatibility --dev-environment --json --version --features-json --identity --identity-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
 
     case "${prev}" in
         --port)
@@ -1174,6 +1265,9 @@ _perl-lsp() {
         '--dev-environment[With --doctor: development-environment prerequisites]' \
         '--version[Show version information]' \
         '--features-json[Output features catalog as JSON]' \
+        '--json[With --info: same JSON identity packet (composed one-shot form)]' \
+        '--identity[Print the installed-binary identity packet and exit]' \
+        '--identity-json[Print that packet as perl_lsp.binary_identity.v1 JSON]' \
         '--perltidy-compat-report[Report native formatter compatibility for .perltidyrc]:profile:_files' \
         '--perlcritic-compat-report[Report native critic compatibility for .perlcriticrc]:profile:_files' \
         '--feature-profile[Set feature profile]:profile:(ga-lock ga prod production all auto)' \
@@ -1209,6 +1303,9 @@ complete -c perl-lsp -l doctor -d 'Explain Perl path, config, and effective @INC
 complete -c perl-lsp -l dev-environment -d 'With --doctor: development-environment prerequisites'
 complete -c perl-lsp -l version -d 'Show version information'
 complete -c perl-lsp -l features-json -d 'Output features catalog as JSON'
+complete -c perl-lsp -l json -d 'With --info: same JSON identity packet (composed one-shot form)'
+complete -c perl-lsp -l identity -d 'Print the installed-binary identity packet and exit (one-shot)'
+complete -c perl-lsp -l identity-json -d 'Print that packet as perl_lsp.binary_identity.v1 JSON (one-shot)'
 complete -c perl-lsp -l perltidy-compat-report -F -d 'Report native formatter compatibility for .perltidyrc'
 complete -c perl-lsp -l perlcritic-compat-report -F -d 'Report native critic compatibility for .perlcriticrc'
 complete -c perl-lsp -l feature-profile -x -a 'ga-lock ga prod production all auto' -d 'Set feature profile'
@@ -1246,6 +1343,9 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
         [CompletionResult]::new('--dev-environment', '--dev-environment', 'ParameterName', 'With --doctor: development-environment prerequisites')
         [CompletionResult]::new('--version', '--version', 'ParameterName', 'Show version information')
         [CompletionResult]::new('--features-json', '--features-json', 'ParameterName', 'Output features catalog as JSON')
+        [CompletionResult]::new('--json', '--json', 'ParameterName', 'With --info: same JSON identity packet (composed one-shot form)')
+        [CompletionResult]::new('--identity', '--identity', 'ParameterName', 'Print the installed-binary identity packet and exit (one-shot)')
+        [CompletionResult]::new('--identity-json', '--identity-json', 'ParameterName', 'Print that packet as perl_lsp.binary_identity.v1 JSON (one-shot)')
         [CompletionResult]::new('--perltidy-compat-report', '--perltidy-compat-report', 'ParameterName', 'Report native formatter compatibility for .perltidyrc')
         [CompletionResult]::new('--perlcritic-compat-report', '--perlcritic-compat-report', 'ParameterName', 'Report native critic compatibility for .perlcriticrc')
         [CompletionResult]::new('--feature-profile', '--feature-profile', 'ParameterName', 'Set feature profile')
@@ -1438,6 +1538,7 @@ mod tests {
         DEFAULT_LSP_PORT, DiagnosticMode, LaunchAction, LaunchParseError, RuntimeMode,
         RuntimeTuning, TransportMode, parse_args,
     };
+    use crate::product_identity::{IDENTITY_FLAG, IDENTITY_JSON_FLAG};
     use perl_parser_core::{ErrorCategory, ErrorClass};
     use perl_tdd_support::{must, must_err, must_some};
 
@@ -1454,6 +1555,10 @@ mod tests {
                 reason: "not a number".into(),
             },
             LaunchParseError::InvalidShell { raw_shell: "tcsh".into() },
+            LaunchParseError::InvalidDiagnosticDebounceMs {
+                raw_value: "abc".into(),
+                reason: "not a number".into(),
+            },
             LaunchParseError::InvalidRuntimeMode { raw_mode: "bad".into() },
             LaunchParseError::InvalidDiagnosticMode { raw_mode: "bad".into() },
         ];
@@ -1724,6 +1829,43 @@ mod tests {
     }
 
     #[test]
+    fn identity_flags_are_reachable_from_every_completion_surface() {
+        // A supported one-shot surface that no shipped surface names is not
+        // discoverable. Help and the completion scripts are the only places a
+        // user or script can learn the spelling, so both identity flags and the
+        // composed form must appear in every one of them.
+        let help = super::help_text();
+        assert!(help.contains(IDENTITY_FLAG), "help_text omits {IDENTITY_FLAG}: {help}");
+        assert!(help.contains(IDENTITY_JSON_FLAG), "help_text omits {IDENTITY_JSON_FLAG}: {help}");
+        assert!(
+            help.contains("--info --json"),
+            "help_text omits the composed one-shot form: {help}"
+        );
+
+        // Each script spells a long option in its own shell's convention, and
+        // fish names long options without their leading dashes.
+        let spellings: [(&str, &str, &str, &str); 4] = [
+            ("bash", " --identity ", " --identity-json ", " --json "),
+            ("zsh", "'--identity[", "'--identity-json[", "'--json["),
+            ("fish", "-l identity ", "-l identity-json ", "-l json "),
+            ("powershell", "'--identity',", "'--identity-json',", "'--json',"),
+        ];
+
+        for (shell, human, json_flag, composed_json) in spellings {
+            let script = must_some(super::shell_completion(shell));
+            assert!(script.contains(human), "{shell} completion omits {IDENTITY_FLAG}: {script}");
+            assert!(
+                script.contains(json_flag),
+                "{shell} completion omits {IDENTITY_JSON_FLAG}: {script}"
+            );
+            assert!(
+                script.contains(composed_json),
+                "{shell} completion omits the composed --json form: {script}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_socket_and_port_options() {
         let plan = must(parse_args(["perl-lsp", "--socket", "--port", "8123"]));
         assert_eq!(plan.config.transport, TransportMode::Socket { port: 8123 });
@@ -1781,6 +1923,39 @@ mod tests {
     fn parse_check_flag_sets_check_action() {
         let plan = must(parse_args(["perl-lsp", "--check"]));
         assert_eq!(plan.action, LaunchAction::Check);
+    }
+
+    /// Class-level falsifier for the prevalidate walker vs the `--` terminator.
+    ///
+    /// Every option `prevalidate_cli_values` currently owns can be a legal
+    /// `--check` filename after `--`. If the walker keeps scanning past the
+    /// terminator, these invocations fail as missing/invalid option values
+    /// instead of becoming `LaunchAction::Check` with that file.
+    #[test]
+    fn check_mode_flag_shaped_filenames_after_terminator_are_files_not_options() {
+        for filename in [
+            "--diagnostic-debounce-ms",
+            "--diagnostic-debounce-ms=abc",
+            "--port",
+            "--port=abc",
+            "--mcp",
+            "--mcp=1",
+            "--completion",
+            "--feature-profile",
+            "--feature-profile=",
+        ] {
+            let plan = must(parse_args(["perl-lsp", "--check", "--", filename]));
+            assert_eq!(plan.action, LaunchAction::Check, "filename={filename}");
+            assert_eq!(plan.files, vec![filename.to_string()], "filename={filename}");
+        }
+
+        // The flag region is unchanged: the same tokens before `--` still
+        // validate as the option.
+        let error = must_err(parse_args(["perl-lsp", "--diagnostic-debounce-ms", "abc"]));
+        assert!(
+            matches!(&error, LaunchParseError::InvalidDiagnosticDebounceMs { raw_value, .. } if raw_value == "abc"),
+            "expected a typed debounce rejection, got {error:?}"
+        );
     }
 
     // ── --completion flag ─────────────────────────────────────────

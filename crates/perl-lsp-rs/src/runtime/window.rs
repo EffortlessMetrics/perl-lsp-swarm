@@ -202,13 +202,24 @@ impl LspServer {
             "token": token,
         });
 
-        // Send request
+        // Send request without holding session progress locks across I/O.
+        #[cfg(test)]
+        self.fire_progress_create_outbound_hook();
         self.send_request_internal("window/workDoneProgress/create", params)?;
 
-        // Register token on success
-        self.client_session.progress_tokens.lock().insert(token.to_string());
-
-        Ok(())
+        match self.client_session.install_progress_token(token.to_string(), None) {
+            crate::runtime::client_session::ProgressTokenInstall::Installed => Ok(()),
+            crate::runtime::client_session::ProgressTokenInstall::AlreadyExists => {
+                Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("Progress token '{}' already exists", token),
+                ))
+            }
+            crate::runtime::client_session::ProgressTokenInstall::Shutdown => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                format!("Progress token '{token}' refused: session is shut down"),
+            )),
+        }
     }
 
     /// Report progress begin notification
@@ -394,6 +405,13 @@ impl LspServer {
     /// infrastructure which auto-generates request IDs.
     fn send_request_internal(&self, method: &str, params: Value) -> io::Result<()> {
         self.send_request(method, params).map(|_| ())
+    }
+
+    #[cfg(test)]
+    fn fire_progress_create_outbound_hook(&self) {
+        if let Some(hook) = self.progress_create_outbound_hook.lock().take() {
+            hook();
+        }
     }
 }
 

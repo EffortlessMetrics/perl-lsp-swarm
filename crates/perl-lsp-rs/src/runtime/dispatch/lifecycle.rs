@@ -444,6 +444,46 @@ mod tests {
     }
 
     #[test]
+    fn given_create_progress_paused_at_outbound_when_shutdown_then_token_is_not_retained()
+    -> TestResult {
+        use std::sync::Arc;
+        use std::sync::Barrier;
+        use std::thread;
+
+        let server = Arc::new(LspServer::new());
+        server
+            .handle_initialize(None)
+            .map_err(|e| format!("initialize request should succeed: {e}"))?;
+        server.client_session.initialized.store(true, Ordering::Release);
+        server.client_session.client_capabilities.lock().work_done_progress_support = true;
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let entered_hook = Arc::clone(&entered);
+        let release_hook = Arc::clone(&release);
+        *server.progress_create_outbound_hook.lock() = Some(Box::new(move || {
+            entered_hook.wait();
+            release_hook.wait();
+        }));
+
+        let producer = {
+            let server = Arc::clone(&server);
+            thread::spawn(move || server.try_begin_request_progress("race", "indexing"))
+        };
+
+        entered.wait();
+        server.handle_shutdown_dispatch().map_err(|e| format!("shutdown should succeed: {e}"))?;
+        release.wait();
+        let begun = producer.join().map_err(|_| "progress producer thread panicked")?;
+        assert!(begun.is_none(), "post-shutdown create must not start a progress frame");
+        assert!(
+            server.client_session.progress_tokens.lock().is_empty(),
+            "late create must not retain a session-owned progress token"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn given_shutdown_already_received_when_shutdown_sent_again_then_invalid_request_error_returned()
     -> TestResult {
         // Given

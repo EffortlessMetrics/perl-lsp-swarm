@@ -613,4 +613,207 @@ mod tests {
         );
         Ok(())
     }
+
+    /// End-to-end regression for #16659: the ~2.1 MiB sync-ceiling stale
+    /// snapshot. `didOpen` is admitted, formatting returns a whole-document
+    /// edit, the client's post-format `didChange` exceeds the text-sync
+    /// ceiling and is silently dropped at pre-dispatch admission — and the
+    /// second formatting request MUST fail closed with `ContentModified`
+    /// instead of returning stale-snapshot edits the client would splice over
+    /// its actual (larger) buffer, duplicating the tail.
+    ///
+    /// Runs through the real dispatcher (`handle_request`), so the drop lands
+    /// in `prepare_request`, exactly where production loses the notification.
+    #[test]
+    fn handle_formatting_refuses_after_over_ceiling_did_change_drop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::runtime::input_validation::text_sync_params_ceiling;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        // Captured out here so the request constructor below stays terse.
+        use crate::runtime::JsonRpcRequest;
+
+        // The default configuration's ceiling is 2,101,248 bytes
+        // (maxFileSizeBytes 1,048,576 × 2 + 4,096 envelope headroom), so the
+        // fixture is sized at the reported scale — deliberately with no
+        // global-limit mutation, which would race non-serial sibling tests.
+        let ceiling = text_sync_params_ceiling();
+
+        let output = Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        struct CaptureWriter(Arc<parking_lot::Mutex<Vec<u8>>>);
+        impl std::io::Write for CaptureWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let server = LspServer::with_io(
+            Box::new(Cursor::new(Vec::<u8>::new())),
+            Box::new(CaptureWriter(Arc::clone(&output))),
+        );
+
+        let request = |id: Option<i64>, method: &str, params: Value| JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: id.map(JsonRpcId::Integer),
+            method: method.to_string(),
+            params: Some(params),
+        };
+
+        // Initialize so textDocument/formatting passes the lifecycle gate.
+        let init =
+            server.handle_request(request(Some(1), "initialize", json!({ "capabilities": {} })));
+        assert!(
+            init.as_ref().is_some_and(|response| response.error.is_none()),
+            "initialize must succeed for the dispatcher route"
+        );
+
+        // Unformatted one-line subs (~28 bytes each): the native formatter
+        // expands this shape ~1.5x, which is what pushes the client's
+        // post-format didChange frame over the ceiling while the didOpen
+        // frame stays under it. 56,000 subs ⇒ didOpen frame ≈ 1.63 MB (78% of
+        // the ceiling), formatted didChange frame ≈ 2.35 MB (112%).
+        const N_SUBS: usize = 56_000;
+        let mut text = String::with_capacity(N_SUBS * 32);
+        for i in 0..N_SUBS {
+            text.push_str(&format!("sub f_{i}{{my $x=7;return $x;}}\n"));
+        }
+        let uri = "file:///fmt_desync_16659.pl";
+
+        // 1. didOpen — admitted (frame under the ceiling, stored as an
+        //    oversize no-parse document exactly like the reported session).
+        let open_params = json!({
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text },
+        });
+        let open_frame = serde_json::to_string(&open_params)?.len();
+        assert!(
+            open_frame < ceiling,
+            "precondition: didOpen frame {open_frame} must be under ceiling {ceiling}"
+        );
+        assert!(
+            server.handle_request(request(None, "textDocument/didOpen", open_params)).is_none(),
+            "didOpen is a notification and must not respond"
+        );
+
+        // 2. formatting #1 — returns the whole-document edit.
+        let fmt1 = server
+            .handle_request(request(
+                Some(2),
+                "textDocument/formatting",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "options": { "tabSize": 4, "insertSpaces": true },
+                }),
+            ))
+            .ok_or("formatting #1 must respond")?;
+        let fmt1_error = fmt1.error.as_ref().map(|error| (error.code, error.message.clone()));
+        assert!(fmt1_error.is_none(), "formatting #1 must succeed: {fmt1_error:?}");
+        let edits1 = fmt1
+            .result
+            .and_then(|value| value.as_array().map(ToOwned::to_owned))
+            .ok_or("formatting #1 must return an edits array")?;
+        assert!(!edits1.is_empty(), "formatting #1 must return edits");
+        let formatted = edits1[0]["newText"].as_str().ok_or("edit must carry newText")?.to_string();
+
+        // 3. The client applies the edit and pushes the formatted buffer back.
+        //    That didChange frame exceeds the ceiling and is silently dropped.
+        let change_params = json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": formatted }],
+        });
+        let change_frame = serde_json::to_string(&change_params)?.len();
+        assert!(
+            change_frame > ceiling,
+            "precondition: formatted didChange frame {change_frame} must exceed ceiling \
+             {ceiling}; the fixture no longer reproduces the corruption shape"
+        );
+        assert!(
+            server.handle_request(request(None, "textDocument/didChange", change_params)).is_none(),
+            "didChange is a notification and must not respond"
+        );
+
+        // 4. formatting #2 — the stale-snapshot corruption case: it must fail
+        //    closed, never return edits computed against the dropped buffer.
+        let fmt2 = server
+            .handle_request(request(
+                Some(3),
+                "textDocument/formatting",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "options": { "tabSize": 4, "insertSpaces": true },
+                }),
+            ))
+            .ok_or("formatting #2 must respond")?;
+        let error = fmt2
+            .error
+            .ok_or("formatting #2 after a dropped oversize sync must fail closed (#16659)")?;
+        assert_eq!(
+            error.code, CONTENT_MODIFIED,
+            "stale-snapshot formatting must be ContentModified, not Applied"
+        );
+        assert!(
+            error.message.contains("full-document resync"),
+            "the refusal must be the full-sync fail-close, got: {}",
+            error.message
+        );
+        assert!(fmt2.result.is_none(), "a refused formatting request must not carry edits");
+
+        // 5. Recovery: an admitted full replacement (under the ceiling, newer
+        //    version) restores currentness; formatting works again.
+        assert!(
+            server
+                .handle_request(request(
+                    None,
+                    "textDocument/didChange",
+                    json!({
+                        "textDocument": { "uri": uri, "version": 3 },
+                        "contentChanges": [{ "text": "sub recovered{my $y=2;return $y;}\n" }],
+                    }),
+                ))
+                .is_none(),
+            "didChange is a notification and must not respond"
+        );
+        let fmt3 = server
+            .handle_request(request(
+                Some(4),
+                "textDocument/formatting",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "options": { "tabSize": 4, "insertSpaces": true },
+                }),
+            ))
+            .ok_or("formatting #3 must respond")?;
+        let recovered_edits = if fmt3.error.is_some() {
+            0
+        } else {
+            fmt3.result.as_ref().and_then(|value| value.as_array()).map(Vec::len).unwrap_or(0)
+        };
+        assert!(
+            recovered_edits > 0,
+            "an admitted full replacement must restore formatting, got error {:?}",
+            fmt3.error.as_ref().map(|error| (error.code, error.message.clone()))
+        );
+
+        // 6. The silent drop must have been surfaced exactly once.
+        drop(server);
+        let outbound = String::from_utf8(output.lock().clone())
+            .map_err(|error| format!("outbound stream not valid UTF-8: {error}"))?;
+        assert_eq!(
+            outbound.matches("window/showMessage").count(),
+            1,
+            "exactly one desync warning per episode: {outbound}"
+        );
+        assert!(
+            outbound.contains("\"type\":2"),
+            "desync warning must be MessageType::Warning: {outbound}"
+        );
+        assert!(
+            outbound.contains("text-sync limit"),
+            "desync warning must name the sync limit: {outbound}"
+        );
+        Ok(())
+    }
 }

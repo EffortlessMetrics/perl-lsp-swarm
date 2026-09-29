@@ -59,6 +59,20 @@ pub(crate) enum ShutdownAdmission {
     AlreadyShutdown,
 }
 
+/// Outcome of installing a session-owned progress token.
+///
+/// Token installation is serialized with [`ClientSession::begin_shutdown`]
+/// through the `progress_tokens` mutex: drain sets `shutdown_received` and
+/// then clears under that lock, so a late producer either refuses or inserts
+/// before drain and is then cleared. An independent atomic precheck before
+/// outbound I/O is not this gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProgressTokenInstall {
+    Installed,
+    Shutdown,
+    AlreadyExists,
+}
+
 /// Connection-scoped client/session state for one LSP connection.
 pub(crate) struct ClientSession {
     /// Monotonic session identity. Starts at 1; bumps on shutdown and
@@ -70,7 +84,7 @@ pub(crate) struct ClientSession {
     default_advertised_feature_ids: Vec<&'static str>,
     pub(crate) initialize_requested: AtomicBool,
     pub(crate) initialized: AtomicBool,
-    pub(crate) shutdown_received: AtomicBool,
+    pub(crate) shutdown_received: Arc<AtomicBool>,
     pub(crate) pending_startup_log: Arc<Mutex<Option<String>>>,
     pub(crate) config: Arc<Mutex<ServerConfig>>,
     pub(crate) client_capabilities: Mutex<ClientCapabilities>,
@@ -90,6 +104,8 @@ pub(crate) struct ClientSession {
     pub(crate) progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     pub(crate) trace_level: Arc<Mutex<String>>,
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
+    /// Once-per-session core-module goto-definition notice (#16551).
+    pub(crate) core_module_notice_shown: Arc<AtomicBool>,
     pub(crate) session_warning_dedup: SessionWarningDedupStore,
 }
 
@@ -103,7 +119,7 @@ impl ClientSession {
             default_advertised_feature_ids: default_advertised_feature_ids.clone(),
             initialize_requested: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
-            shutdown_received: AtomicBool::new(false),
+            shutdown_received: Arc::new(AtomicBool::new(false)),
             pending_startup_log: Arc::new(Mutex::new(None)),
             config: Arc::new(Mutex::new(ServerConfig::default())),
             client_capabilities: Mutex::new(ClientCapabilities::default()),
@@ -122,6 +138,7 @@ impl ClientSession {
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
+            core_module_notice_shown: Arc::new(AtomicBool::new(false)),
             session_warning_dedup: SessionWarningDedupStore::default(),
         }
     }
@@ -174,7 +191,28 @@ impl ClientSession {
         *self.trace_level.lock() = "off".to_string();
         self.next_request_id.store(1, Ordering::Release);
         self.root_undetected_shown.store(false, Ordering::Release);
+        self.core_module_notice_shown.store(false, Ordering::Release);
         self.client_supports_pull_diags.store(false, Ordering::Release);
+    }
+
+    /// Install a progress token if this session is still live.
+    ///
+    /// Holds `progress_tokens` only for admission and insertion — not across
+    /// outbound I/O. Production producers must use this (or
+    /// [`install_progress_token_with`]) rather than inserting through the
+    /// raw mutex.
+    pub(crate) fn install_progress_token(
+        &self,
+        token: String,
+        request_id: Option<JsonRpcId>,
+    ) -> ProgressTokenInstall {
+        install_progress_token_with(
+            &self.shutdown_received,
+            &self.progress_tokens,
+            &self.progress_token_to_request,
+            token,
+            request_id,
+        )
     }
 
     fn invalidate_identity_and_drain(&self) {
@@ -195,4 +233,26 @@ impl ClientSession {
         // terminal connection; [`Self::replace_connection`] resets it.
         self.session_warning_dedup.clear_all_families();
     }
+}
+
+/// Shared progress-token installer for `ClientSession` and cloned worker
+/// handles. Callers must not hold `progress_tokens` across outbound I/O.
+pub(crate) fn install_progress_token_with(
+    shutdown_received: &AtomicBool,
+    progress_tokens: &Mutex<HashSet<String>>,
+    progress_token_to_request: &Mutex<HashMap<String, JsonRpcId>>,
+    token: String,
+    request_id: Option<JsonRpcId>,
+) -> ProgressTokenInstall {
+    let mut tokens = progress_tokens.lock();
+    if shutdown_received.load(Ordering::Acquire) {
+        return ProgressTokenInstall::Shutdown;
+    }
+    if !tokens.insert(token.clone()) {
+        return ProgressTokenInstall::AlreadyExists;
+    }
+    if let Some(id) = request_id {
+        progress_token_to_request.lock().insert(token, id);
+    }
+    ProgressTokenInstall::Installed
 }
