@@ -248,8 +248,22 @@ pub struct TransportArgs {
     pub socket: bool,
 
     /// Port to listen on (for socket mode)
-    #[arg(long)]
+    #[arg(long, value_parser = parse_cli_port, allow_negative_numbers = true)]
     pub port: Option<u16>,
+}
+
+/// Clap adapter for the canonical `--port` token grammar.
+///
+/// Returns the same range/not-a-number reasons as launcher prevalidation so a
+/// later clap `u16` reparse cannot introduce `ParseIntError` wording. The
+/// envelope around that reason stays product-specific (`perllsp` prevalidate
+/// versus clap's `perl-dap --help` pointer).
+fn parse_cli_port(raw_port: &str) -> Result<u16, String> {
+    match port::parse_port_token(raw_port) {
+        Ok(port) => Ok(port),
+        Err(LaunchParseError::InvalidPort { reason, .. }) => Err(reason),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 impl TransportArgs {
