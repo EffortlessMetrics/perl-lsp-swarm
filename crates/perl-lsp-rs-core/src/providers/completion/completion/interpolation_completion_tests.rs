@@ -98,7 +98,11 @@ fn braced_interpolation_replaces_the_name_inside_braces() {
 fn qq_paired_delimiter_admits_interpolation_slot() {
     let source = r#"my $name = "hi"; my $text = qq{Hello $na"#;
     let items = completions_at(source, source.len());
-    assert!(has_label(&items, "$name"), "qq{} slot missing $name: {:?}", labels(&items));
+    assert!(
+        has_label(&items, "$name"),
+        "qq paired-delimiter slot missing $name: {:?}",
+        labels(&items)
+    );
 }
 
 #[test]
