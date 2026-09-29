@@ -83,6 +83,20 @@ void test('current-source Linux smoke runs when the DAP crate changes', () => {
   assert.match(source, /^      - 'crates\/perl-dap\/\*\*'$/m);
 });
 
+void test('installed current-source smoke keeps E2E tuning but enables normal diagnostics', () => {
+  const source = readWorkflow('vscode-current-source-linux-smoke.yml');
+  const smokeIndex = source.indexOf('- name: Run exact current-source smoke under Xvfb');
+  assert.notEqual(smokeIndex, -1);
+  const nextStepIndex = source.slice(smokeIndex + 1).search(/\r?\n\s+- name:/);
+  const smokeStep = source.slice(
+    smokeIndex,
+    nextStepIndex === -1 ? source.length : smokeIndex + 1 + nextStepIndex,
+  );
+  assert.match(smokeStep, /^          PERL_LSP_E2E: '1'\r?$/m);
+  assert.match(smokeStep, /^          PERL_LSP_DIAGNOSTIC_MODE: normal\r?$/m);
+  assert.match(smokeStep, /run: xvfb-run -a npm run test:published:local/);
+});
+
 void test('current-source Linux smoke enables the candidate-bound Test Explorer leg', () => {
   const source = readWorkflow('vscode-current-source-linux-smoke.yml');
   const smokeIndex = source.indexOf('- name: Run exact current-source smoke under Xvfb');
