@@ -44,7 +44,7 @@
 //! assert!(!compare.provider_behavior_changed); // always false in PR2
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use perl_parser_core::hir::HirBindingId;
 use perl_parser_core::pir::{LexicalBindingFact, LexicalExtractorReceipt, LexicalRole};
@@ -273,8 +273,8 @@ fn evaluate_refusal(
 ///
 /// 1. Build the compiler set: anchored facts in `receipt.bodies[target_body_idx]`
 ///    whose bare name equals `target_name` and which belong to the selected
-///    HIR binding (outermost Write when no cursor is supplied), projected to
-///    `(start, end)` byte pairs.
+///    HIR binding (containing-span outermost when no cursor is supplied; refused
+///    when shadows are incomparable), projected to `(start, end)` byte pairs.
 /// 2. Build the legacy set from `legacy_result`.
 /// 3. Sites in exactly one set are *candidates* for disagreement. Greedily pair a
 ///    legacy-only site with the first unused compiler-only site whose start is
@@ -313,7 +313,11 @@ pub fn shadow_references_with_pir(
         .iter()
         .filter(|fact| fact.name.name == target_name && fact.source_anchor.is_anchored())
         .collect();
-    let compiler_ranges: BTreeSet<(usize, usize)> = facts_for_selected_binding(matching, None)
+    let matching = match selected_facts(matching, None) {
+        Ok(matching) => matching,
+        Err(reason) => return PirShadowCompareReceipt::refused(reason),
+    };
+    let compiler_ranges: BTreeSet<(usize, usize)> = matching
         .into_iter()
         .filter_map(|fact| {
             lexical_fact_range(fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
@@ -436,9 +440,12 @@ pub struct ReferenceOptions {
     ///
     /// When `Some`, PromoteExact selects the [`HirBindingId`] of the fact
     /// whose source range contains this offset so nested same-spelling
-    /// lexicals stay distinct. When `None`, the outermost (earliest Write)
-    /// binding of the target name in the body is selected — never the union
-    /// of every same-spelling fact in the body.
+    /// lexicals stay distinct. A supplied cursor that does not land on an
+    /// extracted fact (for example a `Modify` such as `$x++`) refuses Exact
+    /// instead of retargeting another shadow. When `None`, the outermost
+    /// binding is the one whose fact span strictly contains every other
+    /// same-spelling binding's span; incomparable shadows refuse Exact rather
+    /// than guessing from source order.
     pub query_byte_offset: Option<usize>,
 }
 
@@ -528,7 +535,7 @@ fn evaluate_pir_reference_candidate(
         return Err(PirShadowRefusalReason::NoExactFacts);
     }
 
-    let matching = facts_for_selected_binding(matching, opts.query_byte_offset);
+    let matching = selected_facts(matching, opts.query_byte_offset)?;
     let mut declaration_skipped = false;
     let mut ranges: Vec<lsp_types::Range> = Vec::new();
     for fact in matching {
@@ -554,49 +561,100 @@ fn evaluate_pir_reference_candidate(
     Ok(ranges)
 }
 
+enum BindingPick {
+    Selected(HirBindingId),
+    Unfiltered,
+}
+
 /// Keep only the facts that belong to the binding selected for this query.
-fn facts_for_selected_binding(
+fn selected_facts(
     matching: Vec<&LexicalBindingFact>,
     query_byte_offset: Option<usize>,
-) -> Vec<&LexicalBindingFact> {
-    let selected = binding_for_query(&matching, query_byte_offset);
-    matching
-        .into_iter()
-        .filter(|fact| match selected {
-            Some(selected) => fact.binding == Some(selected),
-            None => true,
-        })
-        .collect()
+) -> Result<Vec<&LexicalBindingFact>, PirShadowRefusalReason> {
+    match pick_binding(&matching, query_byte_offset)? {
+        BindingPick::Unfiltered => Ok(matching),
+        BindingPick::Selected(selected) => {
+            Ok(matching.into_iter().filter(|fact| fact.binding == Some(selected)).collect())
+        }
+    }
 }
 
 /// Select the HIR binding PromoteExact should return for one name+sigil set.
 ///
-/// A cursor that lands on a fact range wins. Otherwise the outermost
-/// declaration (earliest Write with a binding) is selected so the compiler
-/// never unions inner-scope shadows into the outer result.
-fn binding_for_query(
+/// A cursor that lands on a fact range wins. A supplied cursor that misses
+/// every extracted fact refuses Exact (Modify sites such as `$x++` are not
+/// facts). Cursorless selection uses the binding whose fact span strictly
+/// contains every other same-spelling binding; incomparable shadows refuse
+/// rather than guessing from source order.
+fn pick_binding(
     facts: &[&LexicalBindingFact],
     query_byte_offset: Option<usize>,
-) -> Option<HirBindingId> {
+) -> Result<BindingPick, PirShadowRefusalReason> {
     if let Some(offset) = query_byte_offset {
-        for fact in facts {
-            if let Some(range) = fact.source_anchor.range.as_ref()
-                && offset >= range.start
-                && offset < range.end
-            {
-                return fact.binding;
-            }
+        return match binding_at_offset(facts, offset) {
+            Some(binding) => Ok(BindingPick::Selected(binding)),
+            None => Err(PirShadowRefusalReason::NoExactFacts),
+        };
+    }
+
+    let mut ids = BTreeSet::new();
+    for fact in facts {
+        if let Some(binding) = fact.binding {
+            ids.insert(binding);
         }
     }
-    facts
-        .iter()
-        .filter(|fact| fact.role == LexicalRole::Write)
-        .filter_map(|fact| {
-            let start = fact.source_anchor.range.as_ref().map(|range| range.start)?;
-            fact.binding.map(|binding| (start, binding))
-        })
-        .min_by_key(|(start, _)| *start)
-        .map(|(_, binding)| binding)
+    let mut id_iter = ids.into_iter();
+    match (id_iter.next(), id_iter.next()) {
+        (None, _) => Ok(BindingPick::Unfiltered),
+        (Some(only), None) => Ok(BindingPick::Selected(only)),
+        (Some(_), Some(_)) => match containing_outermost_binding(facts) {
+            Some(binding) => Ok(BindingPick::Selected(binding)),
+            None => Err(PirShadowRefusalReason::NoExactFacts),
+        },
+    }
+}
+
+fn binding_at_offset(facts: &[&LexicalBindingFact], offset: usize) -> Option<HirBindingId> {
+    for fact in facts {
+        if let Some(range) = fact.source_anchor.range.as_ref()
+            && offset >= range.start
+            && offset < range.end
+        {
+            return fact.binding;
+        }
+    }
+    None
+}
+
+fn containing_outermost_binding(facts: &[&LexicalBindingFact]) -> Option<HirBindingId> {
+    let mut spans: BTreeMap<HirBindingId, (usize, usize)> = BTreeMap::new();
+    for fact in facts {
+        let Some(binding) = fact.binding else {
+            continue;
+        };
+        let Some(range) = fact.source_anchor.range.as_ref() else {
+            continue;
+        };
+        let span = spans.entry(binding).or_insert((range.start, range.end));
+        span.0 = span.0.min(range.start);
+        span.1 = span.1.max(range.end);
+    }
+    let mut outermost = None;
+    for (candidate, cand_span) in &spans {
+        let contains_every_other = spans.iter().all(|(other, other_span)| {
+            other == candidate
+                || (other_span.0 >= cand_span.0
+                    && other_span.1 <= cand_span.1
+                    && *other_span != *cand_span)
+        });
+        if contains_every_other {
+            if outermost.is_some() {
+                return None;
+            }
+            outermost = Some(*candidate);
+        }
+    }
+    outermost
 }
 
 /// Run the PIR-A lexical reference promotion with the corrected contract.

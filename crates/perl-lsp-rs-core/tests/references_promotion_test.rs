@@ -1195,6 +1195,60 @@ fn inner_cursor_returns_only_the_inner_shadow_binding() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn cursor_on_inner_modify_refuses_exact_instead_of_retargeting_outer() -> TestResult {
+    let source = "my $x = 1;\n{\n    my $x = 2;\n    $x++;\n}\nprint $x;\n";
+    let receipt = receipt_for(source);
+    let increment = source.find("$x++").ok_or("inner `$x++`")?;
+
+    let outcome = references_pir_promote(
+        PromotionMode::PromoteExact,
+        "$",
+        "x",
+        &receipt,
+        &[],
+        0,
+        &byte_mapper,
+        ReferenceOptions { include_declaration: true, query_byte_offset: Some(increment) },
+    );
+    match outcome {
+        ReferencesPirPromoteOutcome::LegacyFallback {
+            reason: PirShadowRefusalReason::NoExactFacts,
+            ..
+        } => Ok(()),
+        other => Err(format!(
+            "cursor on inner `$x++` must refuse Exact rather than retarget outer `$x`, got {other:?}"
+        )
+        .into()),
+    }
+}
+
+#[test]
+fn cursorless_incomparable_shadows_refuse_exact() -> TestResult {
+    let source = "{ my $x = 2; print $x; } my $x = 1; print $x;\n";
+    let receipt = receipt_for(source);
+    let outcome = references_pir_promote(
+        PromotionMode::PromoteExact,
+        "$",
+        "x",
+        &receipt,
+        &[],
+        0,
+        &byte_mapper,
+        opts_all(),
+    );
+    match outcome {
+        ReferencesPirPromoteOutcome::LegacyFallback {
+            reason: PirShadowRefusalReason::NoExactFacts,
+            ..
+        } => Ok(()),
+        other => {
+            Err(format!("cursorless incomparable `$x` shadows must refuse Exact, got {other:?}")
+                .into())
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // F11: includeDeclaration=true includes both declaration and use
 //
