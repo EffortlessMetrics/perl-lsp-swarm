@@ -174,10 +174,8 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             cargo_failure::panic_location("thread 'x' panicked at src/lib.rs:12:9:"),
             "the panic line names a location",
         );
-        let failure = must_some_with(
-            parse_first_failure(DOCTEST_LOG, 101),
-            "a first failure exists",
-        );
+        let failure =
+            must_some_with(parse_first_failure(DOCTEST_LOG, 101), "a first failure exists");
         assert_eq!(
             failure.site.as_deref(),
             Some(location.line_only().as_str()),
