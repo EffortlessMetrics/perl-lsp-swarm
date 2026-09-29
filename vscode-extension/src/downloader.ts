@@ -39,8 +39,14 @@ import {
   managedUpdateCheckStateKey,
   probeBinaryIdentity,
   LEGACY_UPDATE_CHECK_STATE_KEY,
+  managedUpdatePromptSuppressionStateKey,
   type ManagedEmulation,
 } from './managedStorageIdentity';
+import {
+  decideManagedUpdateCheck,
+  type ManagedUpdateCheckDecision,
+  type ManagedUpdateCheckIntent,
+} from './managedUpdateCheckAdmission';
 
 interface ReleaseAsset {
   name: string;
@@ -736,13 +742,19 @@ export const MANAGED_INSTALL_TARGET_FILE = 'target.json';
 export const UNSUPPORTED_COMPATIBILITY_KEY = 'unsupported-host-target';
 
 /**
- * `globalState` key recording that the user chose "Don't ask again" on the
- * update prompt (#16536).
+ * Unscoped `globalState` key recording that the user chose "Don't ask again"
+ * on the update prompt (#16536).
  *
  * Suppression is scoped to the PROMPT only. It used to write
  * `updateCheckInterval: 0` globally, which also silenced interval checks and
  * silently disabled a later `perl-lsp.autoUpdate=true`. Users who want checks
  * fully off still have that setting; this key only stops the notification.
+ *
+ * This unscoped row is now a read-only migration seed. It is not scoped to a
+ * compatibility target, so a dismissal on one host would otherwise silence the
+ * prompt on a different target sharing the same global state object — the
+ * exact defect #9847 fixed for the cadence timestamp. Current writes go to
+ * {@link managedUpdatePromptSuppressionStateKey}; see #16803.
  */
 export const UPDATE_PROMPT_SUPPRESSED_KEY = 'perl-lsp.updatePromptSuppressed';
 
@@ -2093,108 +2105,77 @@ export class BinaryDownloader {
   }
 
   /**
-   * Silent background update check. Fire-and-forget from activate().
+   * Silent background update check. Fire-and-forget from activate(), or run as
+   * an explicit user command with `force`.
    *
-   * No-ops when:
-   * - channel === 'tag' (user has pinned a version)
-   * - serverPath is user-configured (downloader doesn't own the binary)
-   * - binary is bundled (under extensionPath, not globalStorageUri)
-   * - updateCheckInterval === 0 (user disabled checks)
-   * - not enough time has elapsed since the last check
-   * - versions are equal or local is ahead
+   * Admission is owned by {@link decideManagedUpdateCheck}: this method
+   * assembles the facts, acts on the returned decision, and renders it. It no
+   * longer answers "should this check run?" with its own chain of early
+   * returns, so a refusal always carries an exact reason instead of a silent
+   * `return` (#16803).
    *
-   * With `force` (the manual "Check for Binary Updates" command, #16530) the
-   * two interval guards are bypassed so the command always performs a real
-   * check — the legacy global-state reset used to be defeated by the
-   * compatibility-scoped timestamp (#16530) — and an explicit user gets a
-   * visible outcome: "You are up to date" when nothing newer exists, the
-   * pinned-channel explanation when checks are disabled, and the update
-   * prompt even when automatic prompts were suppressed.
+   * `force` (the manual "Check for Binary Updates" command, #16530) is the
+   * `manual_force` intent: it bypasses interval and timestamp suppression, and
+   * reports its outcome, but it does not bypass a pinned tag, an invalid
+   * configuration, or the fact that the user owns their own binary.
    *
-   * Background errors stay in the output channel; a manual check reports
-   * skips and failures so the command never silently appears to do nothing.
+   * Background errors stay in the output channel; a manual check reports skips
+   * and failures so the command never silently appears to do nothing.
    */
   async checkForUpdateSilent(force = false): Promise<void> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
+    const intent: ManagedUpdateCheckIntent = force ? 'manual_force' : 'activation_background';
 
-    // Guard: skip if user pinned a specific version
-    const channel = config.get<string>('channel', 'latest');
-    if (channel === 'tag') {
-      if (force) {
-        // A manual command must explain why it will not check (#16530)
-        // instead of silently doing nothing.
-        const versionTag = config.get<string>('versionTag', '');
-        void vscode.window.showInformationMessage(
-          versionTag
-            ? `Binary update checks are disabled while perl-lsp.channel is pinned to "tag" (${versionTag}). Change perl-lsp.channel to check for updates.`
-            : 'Binary update checks are disabled while perl-lsp.channel is set to "tag". Change perl-lsp.channel to check for updates.',
-        );
-      }
-      return;
-    }
+    // The check interval and the prompt-suppression flag are properties of one
+    // target's managed row. A GNU host must not suppress a musl host's check
+    // or prompt merely because both hosts share one extension global state
+    // object (#9847). The unscoped pre-#9847 cadence value is read once as a
+    // seed; nothing is ever written back to it.
+    const hostKey = this.getHostCompatibilityKey();
+    const scopedStateKey = managedUpdateCheckStateKey(hostKey);
+    const scopedPromptKey = managedUpdatePromptSuppressionStateKey(hostKey);
+    const legacyCheck = this.context.globalState.get<number>(LEGACY_UPDATE_CHECK_STATE_KEY, 0);
+    const scopedCheck =
+      scopedStateKey === null ? 0 : this.context.globalState.get<number>(scopedStateKey, 0);
+    // A pre-scope suppression is honoured as a read-only seed so an upgrade
+    // does not resurrect a prompt the user already dismissed, but only the
+    // scoped key is ever written, so the legacy row cannot stay authoritative.
+    const promptSuppressed =
+      scopedPromptKey === null
+        ? this.context.globalState.get<boolean>(UPDATE_PROMPT_SUPPRESSED_KEY, false)
+        : this.context.globalState.get<boolean>(scopedPromptKey, false) ||
+          this.context.globalState.get<boolean>(UPDATE_PROMPT_SUPPRESSED_KEY, false);
 
-    // Guard: skip if user manages their own binary
-    const userPath = config.get<string>('serverPath', '');
-    if (userPath) {
-      if (force) {
-        void vscode.window.showInformationMessage(
-          'Binary update checks are unavailable while perl-lsp.serverPath is configured.',
-        );
-      }
-      return;
-    }
-
-    // Guard: only applies to auto-downloaded binaries (under globalStorageUri)
     const binaryPath = this.getLocalBinaryPath();
     const storagePath = this.context.globalStorageUri.fsPath;
-    if (!binaryPath.startsWith(storagePath)) {
-      if (force) {
-        void vscode.window.showInformationMessage(
-          'Binary update checks are unavailable because this binary is not managed by perl-lsp.',
-        );
-      }
-      return;
-    }
-    if (!fs.existsSync(binaryPath)) {
-      if (force) {
-        void vscode.window.showWarningMessage(
-          'Binary update check could not run because the managed binary is missing. Run Perl: Reinstall Server Binary.',
-        );
-      }
+
+    const decision = decideManagedUpdateCheck({
+      intent,
+      channel: config.get<string>('channel', 'latest'),
+      versionTag: config.get<string>('versionTag', ''),
+      updateCheckIntervalHours: config.get<number>('updateCheckInterval', 24),
+      autoUpdate: config.get<boolean>('autoUpdate', false),
+      promptSuppressed,
+      configuredServerPath: config.get<string>('serverPath', ''),
+      hostCompatibilityProven: scopedStateKey !== null,
+      managedBinaryPath: binaryPath.startsWith(storagePath),
+      localBinaryPresent: fs.existsSync(binaryPath),
+      scopedStateKey: scopedStateKey ?? '',
+      lastCheckMs: scopedCheck > 0 ? scopedCheck : legacyCheck,
+      nowMs: Date.now(),
+    });
+
+    if (decision.kind !== 'run') {
+      this.reportUpdateCheckRefusal(decision);
       return;
     }
 
-    // Guard: check interval (treat negative values same as 0 — disabled).
-    // An explicit manual check bypasses both interval guards (#16530); the
-    // background path keeps them.
+    // Background failures retain the ordinary throttle to avoid hammering, so
+    // the cadence row advances before the check. A manual attempt advances it
+    // only once the check actually reached the release endpoint, below: a
+    // failed manual check must not delay the next background check.
     if (!force) {
-      const intervalHours = config.get<number>('updateCheckInterval', 24);
-      if (intervalHours <= 0) {
-        return;
-      }
-      // The check interval is a property of one target's managed row. A GNU host
-      // must not suppress a musl host's check merely because both hosts share
-      // one extension global state object (#9847). The unscoped pre-#9847 value
-      // is read once as a seed so upgrading does not force an immediate check.
-      const stateKey =
-        managedUpdateCheckStateKey(this.getHostCompatibilityKey()) ?? LEGACY_UPDATE_CHECK_STATE_KEY;
-      const scopedCheck = this.context.globalState.get<number>(stateKey, 0);
-      const lastCheck =
-        scopedCheck > 0
-          ? scopedCheck
-          : this.context.globalState.get<number>(LEGACY_UPDATE_CHECK_STATE_KEY, 0);
-      const elapsedHours = (Date.now() - lastCheck) / (1000 * 60 * 60);
-      if (elapsedHours < intervalHours) {
-        return;
-      }
-    }
-
-    // Background failures retain the ordinary throttle to avoid hammering.
-    // A failed manual attempt must not delay the next background check.
-    const stateKey =
-      managedUpdateCheckStateKey(this.getHostCompatibilityKey()) ?? LEGACY_UPDATE_CHECK_STATE_KEY;
-    if (!force) {
-      await this.context.globalState.update(stateKey, Date.now());
+      await this.context.globalState.update(decision.stateKey, Date.now());
     }
 
     try {
@@ -2217,7 +2198,7 @@ export class BinaryDownloader {
       const release = await this.getLatestRelease();
       const remoteVersion = release.tag_name.replace(/^v/, '');
       if (force) {
-        await this.context.globalState.update(stateKey, Date.now());
+        await this.context.globalState.update(decision.stateKey, Date.now());
       }
 
       if (compareVersions(localVersion, remoteVersion) >= 0) {
@@ -2234,8 +2215,7 @@ export class BinaryDownloader {
         `[update-check] New version available: ${remoteVersion} (installed: ${localVersion})`,
       );
 
-      const autoUpdate = config.get<boolean>('autoUpdate', false);
-      if (autoUpdate) {
+      if (decision.action === 'auto_update') {
         this.outputChannel.appendLine(`[update-check] Auto-updating to ${remoteVersion}`);
         const installed = await this.ensureBinary(true);
         if (force && installed) {
@@ -2244,14 +2224,7 @@ export class BinaryDownloader {
         return;
       }
 
-      // "Don't ask again" suppresses only this prompt (#16536); interval
-      // checks and autoUpdate are unaffected. A forced manual check overrides
-      // the suppression: the user asked, so they get the offer.
-      const promptSuppressed = this.context.globalState.get<boolean>(
-        UPDATE_PROMPT_SUPPRESSED_KEY,
-        false,
-      );
-      if (!force && promptSuppressed) {
+      if (decision.action === 'prompt_suppressed') {
         this.outputChannel.appendLine(
           '[update-check] Update available, but update prompts are suppressed ' +
             '("Don\'t ask again" was chosen earlier). Set perl-lsp.autoUpdate or run ' +
@@ -2270,10 +2243,10 @@ export class BinaryDownloader {
       if (choice === 'Update') {
         await this.ensureBinary(true);
       } else if (choice === "Don't ask again") {
-        // Scope the suppression to the prompt (#16536): writing
-        // `updateCheckInterval: 0` here used to also disable interval checks
-        // and any later perl-lsp.autoUpdate=true.
-        await this.context.globalState.update(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+        // Suppress the prompt for this compatibility target only (#16536,
+        // #9847, #16803). Writing `updateCheckInterval: 0` here would also
+        // disable interval checks and any later perl-lsp.autoUpdate=true.
+        await this.setUpdatePromptSuppressed(true);
       }
       // 'Dismiss' is a no-op — will check again next interval
     } catch (err: unknown) {
@@ -2290,6 +2263,70 @@ export class BinaryDownloader {
           });
       }
     }
+  }
+
+  /**
+   * Render one non-run admission decision.
+   *
+   * Every refusal names itself and reaches the user as a typed reason, so a
+   * skipped or invalid check is never indistinguishable from "up to date".
+   * Only a decision the user asked for raises a notification; background
+   * refusals stay in the output channel.
+   */
+  private reportUpdateCheckRefusal(
+    decision: Exclude<ManagedUpdateCheckDecision, { kind: 'run' }>,
+  ): void {
+    const explanation = decision.kind === 'skip' ? decision.detail : decision.remediation;
+    this.outputChannel.appendLine(
+      `[update-check] ${decision.kind}: ${decision.reason} — ${explanation}`,
+    );
+    if (decision.userVisibility !== 'report') {
+      return;
+    }
+    // The user ran the command and is owed an answer. The existing #16530/#16533
+    // copy is preserved verbatim per reason; #16804 owns consolidating it.
+    switch (decision.reason) {
+      case 'pinned_exact_tag':
+        // The decision names the exact pinned tag, so a refusal is never
+        // mistakable for "up to date" (#16530).
+        void vscode.window.showInformationMessage(`Binary update check skipped: ${explanation}`);
+        return;
+      case 'explicit_user_binary_selected':
+        void vscode.window.showInformationMessage(
+          'Binary update checks are unavailable while perl-lsp.serverPath is configured.',
+        );
+        return;
+      case 'binary_not_managed':
+        void vscode.window.showInformationMessage(
+          'Binary update checks are unavailable because this binary is not managed by perl-lsp.',
+        );
+        return;
+      case 'local_binary_missing':
+        void vscode.window.showWarningMessage(
+          'Binary update check could not run because the managed binary is missing. Run Perl: Reinstall Server Binary.',
+        );
+        return;
+      default:
+        void vscode.window.showWarningMessage(`Binary update check skipped: ${explanation}`);
+    }
+  }
+
+  /**
+   * Record the "Don't ask again" prompt state for this host's compatibility key.
+   *
+   * Fails closed: with no proven compatibility key there is no namespace to
+   * write, so the prompt simply reappears rather than being suppressed in a
+   * shared row that also governs a different target.
+   */
+  private async setUpdatePromptSuppressed(suppressed: boolean): Promise<void> {
+    const key = managedUpdatePromptSuppressionStateKey(this.getHostCompatibilityKey());
+    if (key === null) {
+      this.outputChannel.appendLine(
+        '[update-check] Cannot record prompt suppression: this host has no proven compatibility key',
+      );
+      return;
+    }
+    await this.context.globalState.update(key, suppressed);
   }
 
   private async getLocalVersion(binaryPath: string): Promise<string | null> {

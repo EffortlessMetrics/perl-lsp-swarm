@@ -140,6 +140,26 @@ export function managedUpdateCheckStateKey(key: string): string | null {
 export const LEGACY_UPDATE_CHECK_STATE_KEY = 'perl-lsp.lastUpdateCheck';
 
 /**
+ * `globalState` key for the "Don't ask again" update prompt.
+ *
+ * This is deliberately not `perl-lsp.updateCheckInterval = 0`. Cadence answers
+ * "how often may a check run"; prompt suppression answers "do not raise the
+ * recurring update-available prompt again". Writing one to enforce the other
+ * silently disabled every future check, so the two now have separate
+ * compatibility-scoped keys with the same per-target isolation as the cadence
+ * timestamp (#16803).
+ */
+export function managedUpdatePromptSuppressionStateKey(key: string): string | null {
+  if (parseManagedCompatibilityKey(key) === null) {
+    return null;
+  }
+  return `${UPDATE_PROMPT_SUPPRESSION_STATE_KEY}.${key}`;
+}
+
+/** The unscoped prompt-suppression key; never read as a seed. */
+export const UPDATE_PROMPT_SUPPRESSION_STATE_KEY = 'perl-lsp.updatePromptSuppressed';
+
+/**
  * Compatibility keys this host may legitimately consume, most preferred first.
  *
  * Windows ARM64 is the only host with more than one admissible key: a release

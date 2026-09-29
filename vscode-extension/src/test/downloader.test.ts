@@ -38,6 +38,7 @@ import {
   legacyManagedBaseDir,
   managedNamespaceDir,
   managedUpdateCheckStateKey,
+  managedUpdatePromptSuppressionStateKey,
 } from '../managedStorageIdentity';
 import { buildManagedCandidateManifest } from '../managedCacheProtocol';
 import type { ManagedCandidateManifest, ManagedCandidateSubject } from '../managedCacheProtocol';
@@ -2838,10 +2839,15 @@ describe('checkForUpdateSilent', () => {
     );
   });
 
-  test('"Don\'t ask again" records the prompt-suppression key without touching updateCheckInterval', async () => {
+  test('"Don\'t ask again" records the compatibility-scoped prompt-suppression key without touching updateCheckInterval', async () => {
     // #16536: suppression used to write updateCheckInterval: 0 globally, which
     // also disabled interval checks and any later perl-lsp.autoUpdate=true.
     // It must suppress only the prompt.
+    //
+    // #16803: the row must also be compatibility-scoped. One unscoped
+    // `globalState` object is shared by every host (Remote-SSH, WSL, roaming
+    // profiles), so an unscoped suppression row silences a different target's
+    // prompt — the same defect #9847 fixed for the cadence timestamp.
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
@@ -2854,13 +2860,43 @@ describe('checkForUpdateSilent', () => {
     await downloader.checkForUpdateSilent();
 
     const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
-    expect(ctx.globalState.update).toHaveBeenCalledWith(UPDATE_PROMPT_SUPPRESSED_KEY, true);
-    expect(ctx.globalState._store.get(UPDATE_PROMPT_SUPPRESSED_KEY)).toBe(true);
+    const scopedPromptKey = managedUpdatePromptSuppressionStateKey(HOST_COMPATIBILITY_KEY)!;
+    expect(ctx.globalState.update).toHaveBeenCalledWith(scopedPromptKey, true);
+    expect(ctx.globalState._store.get(scopedPromptKey)).toBe(true);
+    // The unscoped row is a read-only migration seed and is never written, so
+    // it cannot remain a competing current authority.
+    expect(ctx.globalState._store.get(UPDATE_PROMPT_SUPPRESSED_KEY)).toBeUndefined();
     // The configuration surface is never written by the prompt.
     const configMock = vscode.workspace.getConfiguration.mock.results.at(-1)!.value;
     expect(configMock.update).not.toHaveBeenCalled();
     // And the scoped update-check timestamp still advances.
     expect(ctx.globalState._store.get(scopedKey)).toEqual(expect.any(Number));
+  });
+
+  test('a scoped suppression for one host does not silence a different host target (#16803)', async () => {
+    // #9847's defect class, still live for the prompt row: the suppression is
+    // attributed to one compatibility key, so a second target sharing the same
+    // global state object must still be offered the update.
+    const gnuKey = 'x86_64-unknown-linux-gnu';
+    ctx.globalState._store.set(managedUpdatePromptSuppressionStateKey(gnuKey)!, true);
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent();
+
+    // This host is not the one that was suppressed, so the prompt still runs.
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('0.13.0 is available'),
+      'Update',
+      'Dismiss',
+      "Don't ask again",
+    );
   });
 
   test('a suppressed prompt still lets interval checks run — but shows no prompt (#16536)', async () => {
