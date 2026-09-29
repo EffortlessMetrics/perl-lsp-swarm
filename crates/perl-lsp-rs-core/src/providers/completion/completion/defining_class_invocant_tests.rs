@@ -348,9 +348,9 @@ fn earlier_package_self_completion_does_not_offer_later_package_methods()
         completions.iter().map(|item| (&item.label, item.detail.as_deref())).collect::<Vec<_>>()
     );
     assert!(
-        !has_label(&completions, "fetch"),
-        "later Other::fetch must not enter the earlier Animal $self-> site; got {:?}",
-        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+        !exact_invocant_method(&completions, "fetch"),
+        "later Other::fetch must not enter as a canonical invocant method; got {:?}",
+        completions.iter().map(|item| (&item.label, item.detail.as_deref())).collect::<Vec<_>>()
     );
     Ok(())
 }

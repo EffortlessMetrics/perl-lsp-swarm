@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Resolve defining-class `$self->` / `$class->` method completion from canonical invocant facts instead of variable spelling.
+time: 2026-09-29T05:58:00Z
+custom:
+  PR: "16894"
+  Slug: defining-class-invocant-facts
+  Breaking: "no"
