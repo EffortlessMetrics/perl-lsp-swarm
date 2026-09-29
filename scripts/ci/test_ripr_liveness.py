@@ -1553,5 +1553,154 @@ class WorkflowTransitionTests(unittest.TestCase):
         self.assertIn("--posted target/ripr/liveness/posted.json", self.text)
 
 
+class PostedMemoryBoundTests(unittest.TestCase):
+    """Which heads the reporter bothers to read its own history for.
+
+    The runs page carries 92 distinct heads over its last 100 entries, and the
+    check-runs read is paginated. One call per head, every 15 minutes, is how an
+    advisory reporter becomes the expensive thing it exists to make cheap --
+    so the population is bounded deliberately, and these pin both halves of the
+    bound against the mistake that would undo it.
+    """
+
+    AS_OF = "2026-09-20T12:00:00Z"
+
+    def _head(self, run_id: int, head: str, **kwargs) -> dict:
+        return run(run_id, head_sha=head, **kwargs)
+
+    def _heads(self, runs: list[dict], as_of: str | None = None) -> set[str]:
+        moment = liveness.parse_time(as_of or self.AS_OF)
+        return liveness.posted_memory_heads(runs, moment)
+
+    def test_a_run_still_going_is_worth_reading(self) -> None:
+        self.assertIn(HEAD, self._heads([self._head(1, HEAD, status="in_progress")]))
+
+    def test_a_run_that_just_finished_is_worth_reading(self) -> None:
+        """The population that is easy to forget, and the one that matters.
+
+        A run that stalls and then completes never becomes non-completed again,
+        so bounding on "runs that have not finished" would silently skip the
+        retraction for the commonest recovery of all.
+        """
+        finished = self._head(
+            1, HEAD, status="completed", created_at="2026-09-20T11:00:00Z"
+        )
+        self.assertIn(HEAD, self._heads([finished]))
+
+    def test_a_run_that_finished_long_ago_is_not_worth_reading(self) -> None:
+        old = self._head(
+            1, HEAD, status="completed", created_at="2026-09-19T00:00:00Z"
+        )
+        self.assertEqual(self._heads([old]), set())
+
+    def test_the_bound_clears_the_slowest_observed_run(self) -> None:
+        """The invariant that actually has to hold.
+
+        `ripr`'s median is ~59 minutes and its slowest measured run 118. The
+        bound is measured from `created_at`, so a bound shorter than a run's own
+        lifetime would drop its head while the run was still going -- and a run
+        that is still going is exactly what a retraction is for. Comfortably
+        over the slowest observation, not merely over the median.
+        """
+        self.assertGreater(liveness.POSTED_MEMORY_HOURS * 60, 118 * 2)
+
+    def test_the_post_completion_window_is_generous(self) -> None:
+        """The bound is from `created_at`, so a long run gets less time after.
+
+        For the slowest observed run the remaining window is still hours, which
+        is many more 15-minute fires than a red needs to survive before the head
+        is superseded anyway.
+        """
+        remaining = (liveness.POSTED_MEMORY_HOURS * 60) - 118
+        self.assertGreaterEqual(remaining // 15, 8)
+
+    def test_only_relevant_heads_are_selected_from_a_full_page(self) -> None:
+        """The shape that actually happens: 100 runs, 92 heads, a few live."""
+        runs: list[dict] = []
+        for index in range(77):
+            runs.append(
+                self._head(
+                    1000 + index,
+                    f"{index:040x}",
+                    status="completed",
+                    created_at="2026-09-18T00:00:00Z",
+                )
+            )
+        live = self._head(9001, HEAD, status="in_progress")
+        stalled = self._head(9002, OTHER_HEAD, status="pending")
+        runs += [live, stalled]
+        self.assertEqual(self._heads(runs), {HEAD, OTHER_HEAD})
+
+    def test_an_unreadable_clock_reads_every_head(self) -> None:
+        """Over-reading costs calls; under-reading skips a retraction.
+
+        The two failure modes are not equally bad, so an unusable clock takes
+        the expensive one.
+        """
+        runs = [
+            self._head(1, HEAD, status="completed", created_at="2026-09-19T00:00:00Z")
+        ]
+        self.assertEqual(liveness.posted_memory_heads(runs, None), {HEAD})
+
+    def test_a_headless_run_contributes_nothing(self) -> None:
+        self.assertEqual(self._heads([{"id": 1, "status": "in_progress"}]), set())
+
+
+class AliveFloorTests(unittest.TestCase):
+    """`alive` is gated by the floor, like every other class here.
+
+    18 ripr runs were in flight at once when this was written. A heartbeat on
+    every one of them every 15 minutes is ~1,700 advisory writes a day, most of
+    them announcing a run that had just started. The reader who needs this is
+    the one asking whether a long run is dead, and the floor is that threshold.
+    """
+
+    def test_a_working_run_inside_the_floor_says_nothing(self) -> None:
+        fresh = run(
+            35487554523,
+            status="in_progress",
+            created_at="2026-09-20T04:30:00Z",
+            job_count=4,
+            pulls=[16083],
+            head_sha=HEAD,
+        )
+        report = liveness.classify_snapshot(
+            snapshot(fresh, as_of="2026-09-20T04:35:00Z")
+        )
+        self.assertEqual(report["alive"], [])
+        self.assertEqual(report["findings"], [])
+
+    def test_the_same_run_past_the_floor_is_alive(self) -> None:
+        """The control, so the test above is not passing for the wrong reason."""
+        older = run(
+            35487554523,
+            status="in_progress",
+            created_at="2026-09-20T04:24:00Z",
+            job_count=4,
+            pulls=[16083],
+            head_sha=HEAD,
+        )
+        report = liveness.classify_snapshot(
+            snapshot(older, as_of="2026-09-20T04:35:00Z")
+        )
+        self.assertEqual(len(report["alive"]), 1)
+
+    def test_the_floor_applies_to_alive_and_to_a_stall_alike(self) -> None:
+        """One floor, one meaning: do not comment on a run that just started."""
+        for status, job_count in (("in_progress", 4), ("pending", 0)):
+            inside = run(
+                7,
+                status=status,
+                created_at="2026-09-20T04:30:00Z",
+                job_count=job_count,
+                pulls=[16083],
+            )
+            report = liveness.classify_snapshot(
+                snapshot(inside, as_of="2026-09-20T04:35:00Z")
+            )
+            self.assertEqual(report["alive"], [], status)
+            self.assertEqual(report["findings"], [], status)
+
+
 if __name__ == "__main__":
     unittest.main()

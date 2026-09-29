@@ -137,6 +137,62 @@ ADVISORY_CHECK_NAME = "ripr+ liveness"
 # describe -- and `completed` has nothing left to report.
 IN_FLIGHT_STATUSES = frozenset({"in_progress"})
 
+# How long after a run finishes the reporter still considers withdrawing a red
+# it wrote for it. Without a bound the memory read has to cover every head in
+# the runs page -- 92 distinct heads measured on the last 100 ripr runs, each
+# one a paginated call, every 15 minutes. The red is only worth withdrawing
+# while the run is plausibly still the story on that head, and `ripr`'s median
+# is ~59 minutes, so six hours is generous. Older than that the head has been
+# superseded and the check run is history.
+POSTED_MEMORY_HOURS = 6
+
+
+def posted_memory_heads(runs: list[dict[str, Any]], as_of: datetime.datetime | None) -> set[str]:
+    """The heads still worth reading this reporter's own history for.
+
+    Two populations qualify, and the second is the one that is easy to forget:
+    runs that are still going, and runs that have only just finished. A stall
+    is posted against a run that is waiting, but a run that stalls and then
+    completes never becomes non-completed again, so a population of "runs that
+    have not finished" would never withdraw the red for the commonest recovery
+    of all.
+
+    A run that finished longer ago than `POSTED_MEMORY_HOURS` is dropped. The
+    check run outliving its condition is what this whole change is about, but
+    re-reading every head in the runs page forever is how an advisory reporter
+    becomes the expensive thing it exists to make cheap: the last 100 `ripr`
+    runs carried 92 distinct heads, and one paginated call each, every 15
+    minutes.
+
+    An unreadable clock yields the conservative set -- every head with one --
+    because over-reading costs API calls and under-reading silently skips a
+    retraction, and the failure modes are not equally bad.
+    """
+    heads = {
+        run["head_sha"]
+        for run in runs
+        if isinstance(run, dict)
+        and isinstance(run.get("head_sha"), str)
+        and run["head_sha"]
+    }
+    if as_of is None:
+        return heads
+    age_limit = POSTED_MEMORY_HOURS * 60
+    keep: set[str] = set()
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        head = run.get("head_sha")
+        if not isinstance(head, str) or not head:
+            continue
+        if run.get("status") != "completed":
+            keep.add(head)
+            continue
+        created_at = parse_time(run.get("created_at"))
+        if created_at is None or (as_of - created_at).total_seconds() // 60 <= age_limit:
+            keep.add(head)
+    return keep
+
 # The one identity a posted check run can be addressed by, across cron fires.
 # The run id is the anchor and the classification is the claim, so a recovery
 # is a change of conclusion for an id this reporter already wrote rather than a
@@ -627,6 +683,15 @@ def classify_run(
     # alive line carrying no step detail, because "we could not read the detail"
     # and "nothing is running" are not the same observation.
     if run.get("status") in IN_FLIGHT_STATUSES:
+        # Past the floor, like every other class here. A run two minutes old
+        # needs no heartbeat, and the floor is the rule this reporter already
+        # uses to decide what is worth saying: measured over the last 100 ripr
+        # runs, 18 were in flight at any moment, and a line on each of them
+        # every 15 minutes would be ~1,700 advisory writes a day saying a run
+        # had just started. The reader who needs this is the one asking whether
+        # a long run is dead, and the floor is exactly that threshold.
+        if waited_minutes < floor_minutes:
+            return SCHEDULED, None
         return ALIVE, None
     # An unreadable job count is not zero: treat it as scheduled rather than
     # report a run whose emptiness was never established.

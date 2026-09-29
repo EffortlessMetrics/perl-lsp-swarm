@@ -185,7 +185,17 @@ jobs:
           # head it was posted against, and this reporter only ever updates one
           # it finds there. A run whose head has moved on is not this run's
           # check run to touch.
-          heads = {r.get("head_sha") for r in runs if isinstance(r, dict) and r.get("head_sha")}
+          #
+          # Bounded to the heads still worth a read, which is the runs that are
+          # going plus the ones that only just finished. The runs page carries
+          # 92 distinct heads over its last 100 entries, and this read is
+          # paginated; spending one call on each of those every 15 minutes would
+          # make this advisory reporter the expensive thing it exists to make
+          # cheap. The decision of which heads qualify is the module's, so it
+          # is testable rather than a number typed into YAML.
+          as_of = datetime.datetime.now(datetime.timezone.utc)
+          heads = liveness.posted_memory_heads(
+              runs, as_of.replace(microsecond=0))
           posted = {}
           for head in sorted(heads):
               out = subprocess.run(
@@ -203,8 +213,11 @@ jobs:
           json.dump(posted, open("target/ripr/liveness/posted.json", "w"), indent=2)
 
           snapshot = {
-              "as_of": datetime.datetime.now(datetime.timezone.utc)
-                  .replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+              # One clock for both the memory bound and the snapshot it feeds.
+              # Two reads of the wall clock would let a run age across the
+              # boundary between them, so a head could be read and then judged
+              # by a different age than the one that selected it.
+              "as_of": as_of.isoformat().replace("+00:00", "Z"),
               "floor_minutes": int(os.environ["FLOOR_MINUTES"]),
               "runs": runs,
           }
