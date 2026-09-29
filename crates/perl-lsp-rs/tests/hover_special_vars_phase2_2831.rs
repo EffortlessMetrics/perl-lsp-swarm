@@ -16,7 +16,7 @@
 mod support;
 
 use serde_json::json;
-use support::lsp_harness::LspHarness;
+use support::lsp_harness::{LspHarness, TempWorkspace};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -97,7 +97,7 @@ fn test_hover_subroutine_args_array_p2() -> TestResult {
 #[test]
 fn test_special_variables_in_sub_do_not_resolve_to_containing_sub() -> TestResult {
     let uri = "file:///special_variable_identity.pl";
-    let doc = "sub demo {\n    my $a = 1;\n    my ($x) = @_;\n    local $| = 1;\n    # $| @_\n    my $literal = '$| @_';\n    return $a;\n}\ndemo();\n";
+    let doc = "sub demo {\n    my $a = 1;\n    my ($x) = @_;\n    local $| = 1;\n    # $| @_\n    my $literal = '$| @_';\n    my $quoted_lexical = '$a';\n    return $a;\n}\ndemo();\n";
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
     harness.open_document(uri, doc)?;
@@ -131,7 +131,7 @@ fn test_special_variables_in_sub_do_not_resolve_to_containing_sub() -> TestResul
         }
     }
 
-    for (line, character, expected_line) in [(6, 12, 1), (8, 2, 0)] {
+    for (line, character, expected_line) in [(7, 12, 1), (9, 2, 0)] {
         let definition = harness.request(
             "textDocument/definition",
             json!({
@@ -148,7 +148,7 @@ fn test_special_variables_in_sub_do_not_resolve_to_containing_sub() -> TestResul
         }
     }
 
-    for (line, character) in [(4, 7), (4, 10), (5, 20), (5, 23)] {
+    for (line, character) in [(4, 7), (4, 10), (5, 20), (5, 23), (6, 26), (6, 27)] {
         let params = json!({
             "textDocument": {"uri": uri},
             "position": {"line": line, "character": character}
@@ -157,15 +157,317 @@ fn test_special_variables_in_sub_do_not_resolve_to_containing_sub() -> TestResul
         if hover_value(&hover).is_some() {
             return Err(format!("comment/string gained hover: {hover}").into());
         }
-        // String definition routing is tracked separately in #16714.
-        if line == 4 {
-            let definition = harness.request("textDocument/definition", params)?;
-            if !definition.is_null()
-                && !definition.as_array().is_some_and(|locations| locations.is_empty())
-            {
-                return Err(format!("comment at ({line}, {character}) navigated to an unrelated declaration: {definition}").into());
-            }
+        let definition = harness.request("textDocument/definition", params)?;
+        if !definition.is_null()
+            && !definition.as_array().is_some_and(|locations| locations.is_empty())
+        {
+            return Err(format!("inert source at ({line}, {character}) navigated to an unrelated declaration: {definition}").into());
         }
+    }
+    Ok(())
+}
+
+/// Quoted method names in modifiers are intentional navigation targets, unlike
+/// the inert special-variable text in the same opened-document fixture above.
+#[test]
+fn test_quoted_method_modifier_keeps_definition_target() -> TestResult {
+    let uri = "file:///quoted_modifier_definition.pl";
+    let doc = "package MyApp::User;\nuse Moo;\nsub save { }\nbefore 'save' => sub { };\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document(uri, doc)?;
+
+    let definition = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 3, "character": 9}
+        }),
+    )?;
+    if definition.pointer("/0/range/start/line").and_then(|line| line.as_u64()) != Some(2) {
+        return Err(format!("quoted modifier should navigate to sub save: {definition}").into());
+    }
+    Ok(())
+}
+
+/// Raw-text goto detection must not turn quoted prose into a label reference.
+#[test]
+fn test_quoted_goto_does_not_navigate_to_real_label() -> TestResult {
+    let uri = "file:///quoted_goto_definition.pl";
+    let doc = "sub demo {\n    TARGET: return 1;\n    my $literal = 'goto TARGET';\n    goto TARGET;\n}\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document(uri, doc)?;
+
+    let quoted = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 2, "character": 24}
+        }),
+    )?;
+    if !quoted.is_null() && !quoted.as_array().is_some_and(|locations| locations.is_empty()) {
+        return Err(format!("quoted goto navigated to a real label: {quoted}").into());
+    }
+
+    let real = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 3, "character": 9}
+        }),
+    )?;
+    if real.pointer("/0/range/start/line").and_then(|line| line.as_u64()) != Some(1) {
+        return Err(format!("real goto should navigate to TARGET label: {real}").into());
+    }
+    Ok(())
+}
+
+/// Quoted module-looking text must not enter raw use/package-arrow routing.
+#[test]
+fn test_quoted_module_text_does_not_navigate_to_real_module() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let module = "package Foo;\nsub bar { 1 }\n1;\n";
+    let doc = "use lib 'lib';\nuse Foo;\nuse parent 'Foo';\nmy $literal = 'use Foo';\nmy $arrow = 'Foo->bar';\nmy $framework = 'with \"Foo\"';\nwith \"Foo\";\nFoo->bar();\n";
+    workspace.write("lib/Foo.pm", module)?;
+    workspace.write("main.pl", doc)?;
+    let module_uri = workspace.uri("lib/Foo.pm");
+    let uri = workspace.uri("main.pl");
+
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    harness.open_document(&module_uri, module)?;
+    harness.open_document(&uri, doc)?;
+    harness.barrier();
+
+    for (line, character) in [(3, 19), (4, 13), (5, 23)] {
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character}
+            }),
+        )?;
+        if !definition.is_null()
+            && !definition.as_array().is_some_and(|locations| locations.is_empty())
+        {
+            return Err(format!(
+                "quoted module text at ({line}, {character}) navigated: {definition}"
+            )
+            .into());
+        }
+    }
+
+    for (line, character) in [(1, 5), (2, 12), (6, 6), (7, 1)] {
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character}
+            }),
+        )?;
+        if !definition
+            .pointer("/0/uri")
+            .and_then(|actual| actual.as_str())
+            .is_some_and(|actual| actual.eq_ignore_ascii_case(&module_uri))
+        {
+            return Err(format!("real module reference should reach Foo.pm: {definition}").into());
+        }
+    }
+    Ok(())
+}
+
+/// Physical lines inside a multiline literal must not be parsed as module statements.
+#[test]
+fn test_multiline_literal_module_statements_are_inert() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let doc = "use lib 'lib';\nmy $literal = '\nuse parent Foo;\nrequire \"Foo/Bar.pm\";\n';\nuse parent 'Foo';\nrequire \"Foo/Bar.pm\";\n";
+    let foo = "package Foo;\n1;\n";
+    let bar = "package Foo::Bar;\n1;\n";
+    workspace.write("lib/Foo.pm", foo)?;
+    workspace.write("lib/Foo/Bar.pm", bar)?;
+    workspace.write("main.pl", doc)?;
+    let uri = workspace.uri("main.pl");
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    harness.open_document(&workspace.uri("lib/Foo.pm"), foo)?;
+    harness.open_document(&workspace.uri("lib/Foo/Bar.pm"), bar)?;
+    harness.open_document(&uri, doc)?;
+    harness.barrier();
+
+    for (line, character) in [(2, 12), (3, 12)] {
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        )?;
+        if !definition.is_null() && !definition.as_array().is_some_and(|items| items.is_empty()) {
+            return Err(format!("literal statement at line {line} navigated: {definition}").into());
+        }
+    }
+
+    for (line, character, expected) in [(5, 13, "Foo.pm"), (6, 12, "Bar.pm")] {
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        )?;
+        if !definition
+            .pointer("/0/uri")
+            .and_then(|uri| uri.as_str())
+            .is_some_and(|uri| uri.ends_with(expected))
+        {
+            return Err(format!(
+                "real statement at line {line} should reach {expected}: {definition}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// A partial literal in a parent/base expression is not a standalone module.
+#[test]
+fn test_concatenated_parent_base_argument_does_not_open_partial_module() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let foo = "package Foo;\n1;\n";
+    let foo_bar = "package FooBar;\n1;\n";
+    let bar = "package Bar;\n1;\n";
+    let doc = "use lib 'lib';\nuse parent ('Foo' . 'Bar');\nuse base ('Foo' . 'Bar');\nuse parent 'Foo';\nuse base 'Foo';\nuse parent ('Foo');\nuse base ('Foo');\nuse parent -norequire => 'Foo';\nuse parent uc('Foo');\nuse base uc('Foo');\nuse parent 'Foo' => 'Bar';\nuse base 'Foo' => 'Bar';\nuse parent (-norequire => 'Foo');\nuse parent 'Foo', 'Bar';\nuse base ('Foo', 'Bar');\nuse parent (-norequire => 'Foo', 'Bar');\n";
+    workspace.write("lib/Foo.pm", foo)?;
+    workspace.write("lib/FooBar.pm", foo_bar)?;
+    workspace.write("lib/Bar.pm", bar)?;
+    workspace.write("lib/FOO.pm", "package FOO;\n1;\n")?;
+    workspace.write("main.pl", doc)?;
+    let uri = workspace.uri("main.pl");
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    harness.open_document(&workspace.uri("lib/Foo.pm"), foo)?;
+    harness.open_document(&workspace.uri("lib/FooBar.pm"), foo_bar)?;
+    harness.open_document(&workspace.uri("lib/Bar.pm"), bar)?;
+    harness.open_document(&uri, doc)?;
+    harness.barrier();
+
+    for (line, needle) in [(1, "Foo"), (1, "Bar"), (2, "Foo"), (2, "Bar"), (8, "Foo"), (9, "Foo")] {
+        let character = doc
+            .lines()
+            .nth(line)
+            .and_then(|source| source.find(needle))
+            .ok_or("Expected quoted fragment in test source")?
+            + 1;
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        )?;
+        if !definition.is_null() && !definition.as_array().is_some_and(|items| items.is_empty()) {
+            return Err(format!(
+                "partial parent/base literal at line {line} navigated: {definition}"
+            )
+            .into());
+        }
+    }
+
+    for line in [3, 4, 5, 6, 7, 12] {
+        let character = doc
+            .lines()
+            .nth(line)
+            .and_then(|source| source.find("Foo"))
+            .ok_or("Expected standalone module in test source")?
+            + 1;
+        let real = harness.request(
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        )?;
+        if !real
+            .pointer("/0/uri")
+            .and_then(|uri| uri.as_str())
+            .is_some_and(|uri| uri.ends_with("Foo.pm"))
+        {
+            return Err(format!(
+                "standalone parent/base at line {line} should reach Foo.pm: {real}"
+            )
+            .into());
+        }
+    }
+    for (line, module) in [
+        (10, "Foo"),
+        (10, "Bar"),
+        (11, "Foo"),
+        (11, "Bar"),
+        (13, "Foo"),
+        (13, "Bar"),
+        (14, "Foo"),
+        (14, "Bar"),
+        (15, "Foo"),
+        (15, "Bar"),
+    ] {
+        let character = doc
+            .lines()
+            .nth(line)
+            .and_then(|source| source.find(module))
+            .ok_or("Expected parent/base list module in test source")?
+            + 1;
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        )?;
+        if !definition
+            .pointer("/0/uri")
+            .and_then(|uri| uri.as_str())
+            .is_some_and(|uri| uri.ends_with(&format!("{module}.pm")))
+        {
+            return Err(format!(
+                "parent/base list member {module} at line {line} should navigate: {definition}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// A quoted XS argument is a target only when the loader call itself is code.
+#[test]
+fn test_quoted_xs_argument_keeps_target_but_inert_loader_does_not() -> TestResult {
+    let workspace = TempWorkspace::new()?;
+    let doc = "package My::Module;\nuse XSLoader;\nXSLoader::load('My::Module');\nmy $literal = 'XSLoader::load My::Module';\n1;\n";
+    let xs = "EXTERN_C void boot_My__Module(pTHX_ CV* cv) { }\n";
+    workspace.write("lib/My/Module.pm", doc)?;
+    workspace.write("Module.xs", xs)?;
+    let uri = workspace.uri("lib/My/Module.pm");
+    let mut harness = LspHarness::new();
+    harness.initialize_with_root(&workspace.root_uri, None)?;
+    harness.open_document(&uri, doc)?;
+    harness.barrier();
+
+    for character in [15, 30] {
+        let definition = harness.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 3, "character": character}
+            }),
+        )?;
+        if !definition.is_null()
+            && !definition.as_array().is_some_and(|locations| locations.is_empty())
+        {
+            return Err(format!(
+                "inert XS loader at character {character} navigated: {definition}"
+            )
+            .into());
+        }
+    }
+
+    let definition = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 2, "character": 16}
+        }),
+    )?;
+    if !definition
+        .pointer("/0/uri")
+        .and_then(|uri| uri.as_str())
+        .is_some_and(|uri| uri.ends_with("/Module.xs"))
+    {
+        return Err(format!("quoted XS argument should navigate to Module.xs: {definition}").into());
     }
     Ok(())
 }

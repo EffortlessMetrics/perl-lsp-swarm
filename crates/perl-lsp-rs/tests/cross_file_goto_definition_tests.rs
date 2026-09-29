@@ -3252,6 +3252,118 @@ my $result = helper_a();
         "Definition should point to My/Utils.pm, got: {uri}"
     );
 
+    // The quoted import-list entry is an intentional symbol target too.
+    let (line, character) = find_line_char(caller, "helper_a',")?;
+    let imported = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": workspace.uri("app.pl")},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+    if !imported
+        .pointer("/0/uri")
+        .and_then(|uri| uri.as_str())
+        .is_some_and(|uri| uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"))
+        || imported.pointer("/0/range/start/line").and_then(|line| line.as_u64()) != Some(4)
+    {
+        return Err(format!(
+            "quoted import-list symbol should reach My::Utils::helper_a: {imported}"
+        )
+        .into());
+    }
+
+    // A continued use statement owns the quoted member on a later physical line.
+    let multiline = "use My::Utils (\n  'helper_a',\n);\n";
+    let multiline_uri = workspace.uri("multiline.pl");
+    harness.open(&multiline_uri, multiline)?;
+    harness.barrier();
+    let continued = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": multiline_uri},
+            "position": {"line": 1, "character": 4}
+        }),
+    )?;
+    if !continued
+        .pointer("/0/uri")
+        .and_then(|uri| uri.as_str())
+        .is_some_and(|uri| uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"))
+        || continued.pointer("/0/range/start/line").and_then(|line| line.as_u64()) != Some(4)
+    {
+        return Err(format!("continued quoted import should reach helper_a: {continued}").into());
+    }
+
+    // The same physical shape inside a single-quoted string has no Use owner.
+    let inert = "my $literal = 'prefix\nuse My::Utils (\n  \"helper_a\",\n);\nsuffix';\n";
+    let inert_uri = workspace.uri("inert.pl");
+    harness.open(&inert_uri, inert)?;
+    harness.barrier();
+    let quoted_prose = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": inert_uri},
+            "position": {"line": 2, "character": 4}
+        }),
+    )?;
+    if !quoted_prose.is_null()
+        && !quoted_prose.as_array().is_some_and(|locations| locations.is_empty())
+    {
+        return Err(format!("inert continued import navigated: {quoted_prose}").into());
+    }
+
+    // The first quoted argument remains a target; a matching word embedded
+    // in the second argument must not borrow that target.
+    let mixed = "use My::Utils ('helper_a', 'prose helper_a');\n";
+    let mixed_uri = workspace.uri("mixed_import.pl");
+    harness.open(&mixed_uri, mixed)?;
+    harness.barrier();
+    let (line, good_start) = find_line_char(mixed, "helper_a',")?;
+    let good = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": mixed_uri},
+            "position": {"line": line, "character": good_start}
+        }),
+    )?;
+    if !good
+        .pointer("/0/uri")
+        .and_then(|uri| uri.as_str())
+        .is_some_and(|uri| uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"))
+        || good.pointer("/0/range/start/line").and_then(|line| line.as_u64()) != Some(4)
+    {
+        return Err(format!("first mixed-list member should reach helper_a: {good}").into());
+    }
+    let (line, prose_start) = find_line_char(mixed, "prose helper_a")?;
+    let prose = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": mixed_uri},
+            "position": {"line": line, "character": prose_start + 6}
+        }),
+    )?;
+    if !prose.is_null() && !prose.as_array().is_some_and(|locations| locations.is_empty()) {
+        return Err(format!("prose token borrowed another import target: {prose}").into());
+    }
+
+    // A concatenation produces one different argument; its first literal is
+    // not an independently imported helper_a.
+    let concatenated = "use My::Utils ('helper_a' . '_suffix');\n";
+    let concatenated_uri = workspace.uri("concatenated_import.pl");
+    harness.open(&concatenated_uri, concatenated)?;
+    harness.barrier();
+    let (line, character) = find_line_char(concatenated, "helper_a'")?;
+    let part = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": concatenated_uri},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+    if !part.is_null() && !part.as_array().is_some_and(|locations| locations.is_empty()) {
+        return Err(format!("concatenated literal navigated as an import: {part}").into());
+    }
+
     Ok(())
 }
 
