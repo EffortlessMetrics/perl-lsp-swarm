@@ -1357,6 +1357,7 @@ fn config_for(case: &GeneratedCase) -> perl_lsp_perltidy::native::FormatConfig {
         indent_width: 4,
         use_tabs: false,
         final_newline: case.profile.final_newline,
+        trim_trailing_whitespace: false,
         trailing_comma: perl_lsp_perltidy::native::TrailingComma::Preserve,
         brace_placement: case.profile.brace_placement,
         else_placement: perl_lsp_perltidy::native::ElsePlacement::Cuddled,
