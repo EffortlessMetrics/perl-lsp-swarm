@@ -152,6 +152,18 @@ else
         "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
+set +e
+LAST_OUTPUT="$(bash "$WRAPPER" 1.2.3 "$TMP/live-bin" extra --print-target 2>&1)"
+LAST_STATUS=$?
+set -e
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" == *"unexpected argument"* ]]; then
+    pass "live wrapper third leading positional fails closed"
+else
+    fail_case "live wrapper third leading positional fails closed" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
 # ── Help / docs surfaces ────────────────────────────────────────────────────
 
 set +e
@@ -216,6 +228,21 @@ if [ "$LAST_STATUS" -eq 0 ] \
     pass "wrapper VERSION env wins slot 1 without shifting INSTALL_DIR"
 else
     fail_case "wrapper VERSION env wins slot 1 without shifting INSTALL_DIR" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
+# Wrapper peels two slots then execs; a leftover leading positional must not
+# reach canonical as a silently ignored env-wins slot 1.
+set +e
+LAST_OUTPUT="$(bash "$CHECKOUT/install.sh" 1.2.3 /tmp/arg-surface-bin extra --print-target 2>&1)"
+LAST_STATUS=$?
+set -e
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" == *"unexpected argument"* ]] \
+    && [[ "$LAST_OUTPUT" != *"STUB"* ]]; then
+    pass "wrapper third leading positional fails closed before exec"
+else
+    fail_case "wrapper third leading positional fails closed before exec" \
         "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
