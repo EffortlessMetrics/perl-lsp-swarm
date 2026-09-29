@@ -5,6 +5,10 @@
 //! flags. The remaining false-green surface is promotion from the wrong
 //! evidence: a dispatcher checkbox, the other macOS triple, a different SHA,
 //! a malformed prior, or an already-decided receipt.
+//!
+//! This target path-includes the instrument model so `disposition.rs` keeps a
+//! single type authority. Unused receipt types belong to the example binary.
+#![allow(dead_code)]
 
 #[path = "../src/bin/release_artifact_size/disposition.rs"]
 mod disposition;
@@ -89,14 +93,14 @@ fn a_matching_waiting_borderline_prior_confirms_the_repeat() {
 }
 
 #[test]
-fn an_intel_prior_cannot_confirm_an_arm64_repeat() {
+fn an_intel_prior_cannot_confirm_an_arm64_repeat() -> Result<()> {
     let prior = waiting_borderline(INTEL, SHA_A, LOCK_A);
     match confirm(ARM, SHA_A, LOCK_A, &prior) {
         Err(RepeatDenial::TargetMismatch { prior, current }) => {
-            assert_eq!(prior, INTEL);
-            assert_eq!(current, ARM);
+            ensure!(prior == INTEL && current == ARM);
+            Ok(())
         }
-        other => panic!("Intel evidence must not satisfy the arm64 row, got {other:?}"),
+        other => Err(anyhow!("Intel evidence must not satisfy the arm64 row, got {other:?}")),
     }
 }
 
@@ -143,29 +147,35 @@ fn a_different_decision_policy_cannot_confirm_the_repeat() {
 }
 
 #[test]
-fn a_wrong_schema_cannot_confirm_the_repeat() {
+fn a_wrong_schema_cannot_confirm_the_repeat() -> Result<()> {
     let mut prior = waiting_borderline(ARM, SHA_A, LOCK_A);
     prior.schema_version = "release_artifact_size.v0".to_string();
     match confirm(ARM, SHA_A, LOCK_A, &prior) {
         Err(RepeatDenial::SchemaMismatch { observed }) => {
-            assert_eq!(observed, "release_artifact_size.v0");
+            ensure!(observed == "release_artifact_size.v0");
+            Ok(())
         }
-        other => panic!("expected schema mismatch, got {other:?}"),
+        other => Err(anyhow!("expected schema mismatch, got {other:?}")),
     }
 }
 
 #[test]
-fn an_adopt_or_no_adopt_prior_cannot_confirm_a_borderline_repeat() {
+fn an_adopt_or_no_adopt_prior_cannot_confirm_a_borderline_repeat() -> Result<()> {
     for recommendation in ["adopt", "do_not_adopt", "reject"] {
         let mut prior = waiting_borderline(ARM, SHA_A, LOCK_A);
         prior.recommendation = recommendation.to_string();
         match confirm(ARM, SHA_A, LOCK_A, &prior) {
             Err(RepeatDenial::PriorWasNotAWaitingBorderline { recommendation: observed }) => {
-                assert_eq!(observed, recommendation);
+                ensure!(observed == recommendation);
             }
-            other => panic!("{recommendation} must not confirm a borderline, got {other:?}"),
+            other => {
+                return Err(anyhow!(
+                    "{recommendation} must not confirm a borderline, got {other:?}"
+                ));
+            }
         }
     }
+    Ok(())
 }
 
 #[test]
@@ -275,23 +285,25 @@ fn a_serialized_waiting_borderline_receipt_confirms_after_reload() -> Result<()>
 }
 
 #[test]
-fn every_governed_target_has_exactly_one_recorded_disposition() {
+fn every_governed_target_has_exactly_one_recorded_disposition() -> Result<()> {
     let recorded: BTreeSet<&str> = TARGET_DISPOSITIONS.iter().map(|row| row.target).collect();
     let governed: BTreeSet<&str> = GOVERNED_TARGETS.into_iter().collect();
-    assert_eq!(
-        recorded, governed,
+    ensure!(
+        recorded == governed,
         "controller dispositions must cover each governed triple once, found {recorded:?}"
     );
     for target in GOVERNED_TARGETS {
-        let row = recorded_disposition(target).unwrap_or_else(|| panic!("missing {target}"));
-        assert!(
+        let row = recorded_disposition(target)
+            .ok_or_else(|| anyhow!("missing recorded disposition for {target}"))?;
+        ensure!(
             matches!(row.recommendation, "adopt" | "do_not_adopt" | "reject" | "not_proven"),
             "illegal disposition `{}` for {target}",
             row.recommendation
         );
-        assert!(!row.reason.is_empty(), "{target} disposition needs a reason");
+        ensure!(!row.reason.is_empty(), "{target} disposition needs a reason");
     }
-    assert!(recorded_disposition("x86_64-unknown-linux-gnu").is_none());
+    ensure!(recorded_disposition("x86_64-unknown-linux-gnu").is_none());
+    Ok(())
 }
 
 #[test]
