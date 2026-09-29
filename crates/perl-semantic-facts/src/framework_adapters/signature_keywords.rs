@@ -681,14 +681,28 @@ fn expand_import_token(argument: &str) -> Vec<String> {
     vec![trimmed.trim_matches(|ch| matches!(ch, '\'' | '"')).to_string()]
 }
 
-/// Whether `source_span` is the explicit-empty import spelling `use Module ();`.
+/// Whether `source_span` is an explicit-empty import such as `use Module ();`.
+///
+/// An optional reviewed version may appear between the module name and the
+/// empty list. Interior whitespace inside the parentheses is still empty.
 #[must_use]
 pub fn source_has_explicit_empty_import(source_span: &str, module: &str) -> bool {
-    let Some((_, rest)) = source_span.split_once(module) else {
-        return source_span.contains("()");
+    let rest = match source_span.split_once(module) {
+        Some((_, rest)) => rest,
+        None => source_span,
     };
-    let rest = rest.trim_start();
-    rest.starts_with("();") || rest.starts_with("()")
+    let rest = skip_optional_version_token(rest.trim_start());
+    let Some(inner) = rest.strip_prefix('(') else {
+        return false;
+    };
+    inner.trim_start().starts_with(')')
+}
+
+fn skip_optional_version_token(rest: &str) -> &str {
+    let end = rest
+        .find(|character: char| !character.is_ascii_digit() && !matches!(character, '.' | '_'))
+        .unwrap_or(rest.len());
+    if end > 0 && is_version_spelling(&rest[..end]) { rest[end..].trim_start() } else { rest }
 }
 
 /// One source-extracted literal declaration awaiting minting.
@@ -719,6 +733,8 @@ pub struct SignatureKeywordDeclaration {
     pub parameters: Vec<SignatureKeywordParameter>,
     /// Why remaining parameter forms were not flattened into exact facts.
     pub parameter_limitations: Vec<String>,
+    /// Extraction generation; minting requires this to match detection.
+    pub source_generation: SourceGeneration,
 }
 
 impl SignatureKeywordDeclaration {
@@ -752,6 +768,7 @@ impl SignatureKeywordDeclaration {
             body_anchor,
             parameters,
             parameter_limitations,
+            source_generation: SourceGeneration::Unknown,
         }
     }
 }
@@ -854,6 +871,9 @@ pub fn signature_keyword_callable_facts(
     if !detection.is_detected() {
         return Vec::new();
     }
+    if detection.descriptor != family.descriptor() {
+        return Vec::new();
+    }
     let generation = &detection.project_generation;
     if !generation.is_known() {
         return Vec::new();
@@ -861,7 +881,9 @@ pub fn signature_keyword_callable_facts(
     declarations
         .iter()
         .filter(|declaration| {
-            declaration.family == family && declaration.package.as_deref() == package
+            declaration.family == family
+                && declaration.package.as_deref() == package
+                && declaration.source_generation == *generation
         })
         .map(|declaration| mint_callable_fact(family, generation, declaration))
         .collect()
@@ -1125,6 +1147,7 @@ mod tests {
             body_anchor: None,
             parameters: Vec::new(),
             parameter_limitations: Vec::new(),
+            source_generation: SourceGeneration::known("gen-1"),
         };
         let absent = detect_function_parameters(&input(
             SignatureKeywordFamily::FunctionParameters,
@@ -1134,6 +1157,40 @@ mod tests {
         assert!(
             signature_keyword_callable_facts(
                 &absent,
+                SignatureKeywordFamily::FunctionParameters,
+                Some("App"),
+                &[declaration],
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn minting_requires_matching_family_descriptor() {
+        let declaration = SignatureKeywordDeclaration {
+            package: Some("App".to_string()),
+            file_id: FileId(1),
+            declaration_index: 0,
+            family: SignatureKeywordFamily::FunctionParameters,
+            keyword: SignatureKeyword::Fun,
+            name: "add".to_string(),
+            name_anchor: signature_keyword_anchor(FileId(1), 4, 7),
+            declaration_anchor: signature_keyword_anchor(FileId(1), 0, 20),
+            signature_anchor: None,
+            body_anchor: None,
+            parameters: Vec::new(),
+            parameter_limitations: Vec::new(),
+            source_generation: SourceGeneration::known("gen-1"),
+        };
+        let ms = detect_method_signatures(&input(
+            SignatureKeywordFamily::MethodSignatures,
+            vec![matched(SignatureKeywordFamily::MethodSignatures, "20170211", "gen-1")],
+            "gen-1",
+        ));
+        assert!(ms.is_detected());
+        assert!(
+            signature_keyword_callable_facts(
+                &ms,
                 SignatureKeywordFamily::FunctionParameters,
                 Some("App"),
                 &[declaration],
@@ -1154,6 +1211,14 @@ mod tests {
         ));
         assert!(!source_has_explicit_empty_import(
             "use Function::Parameters;",
+            "Function::Parameters"
+        ));
+        assert!(source_has_explicit_empty_import(
+            "use Function::Parameters 2.002006 ();",
+            "Function::Parameters"
+        ));
+        assert!(source_has_explicit_empty_import(
+            "use Function::Parameters ( );",
             "Function::Parameters"
         ));
     }

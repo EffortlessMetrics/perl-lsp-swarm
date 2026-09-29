@@ -120,6 +120,7 @@ impl WalkState<'_> {
 
     fn push_declaration(&mut self, mut declaration: SignatureKeywordDeclaration) {
         declaration.declaration_index = self.next_index;
+        declaration.source_generation = self.generation.clone();
         self.next_index = self.next_index.saturating_add(1);
         self.declarations.push(declaration);
     }
@@ -129,7 +130,8 @@ impl WalkState<'_> {
 struct ScopeKeywords {
     fun: Option<SignatureKeywordFamily>,
     func: Option<SignatureKeywordFamily>,
-    method: Option<SignatureKeywordFamily>,
+    fp_method: bool,
+    ms_method: bool,
 }
 
 impl ScopeKeywords {
@@ -137,7 +139,11 @@ impl ScopeKeywords {
         match keyword {
             SignatureKeyword::Fun => self.fun,
             SignatureKeyword::Func => self.func,
-            SignatureKeyword::Method => self.method,
+            SignatureKeyword::Method => match (self.fp_method, self.ms_method) {
+                (true, false) => Some(SignatureKeywordFamily::FunctionParameters),
+                (false, true) => Some(SignatureKeywordFamily::MethodSignatures),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -150,10 +156,11 @@ impl ScopeKeywords {
             self.func = Some(family);
         }
         if keywords.contains(SignatureKeyword::Method) {
-            self.method = match self.method {
-                Some(existing) if existing != family => None,
-                _ => Some(family),
-            };
+            match family {
+                SignatureKeywordFamily::FunctionParameters => self.fp_method = true,
+                SignatureKeywordFamily::MethodSignatures => self.ms_method = true,
+                _ => {}
+            }
         }
     }
 
@@ -165,10 +172,12 @@ impl ScopeKeywords {
         if (disable_all || keywords.contains(SignatureKeyword::Func)) && self.func == Some(family) {
             self.func = None;
         }
-        if (disable_all || keywords.contains(SignatureKeyword::Method))
-            && self.method == Some(family)
-        {
-            self.method = None;
+        if disable_all || keywords.contains(SignatureKeyword::Method) {
+            match family {
+                SignatureKeywordFamily::FunctionParameters => self.fp_method = false,
+                SignatureKeywordFamily::MethodSignatures => self.ms_method = false,
+                _ => {}
+            }
         }
     }
 }
@@ -262,7 +271,7 @@ fn apply_use(node: &Node, module: &str, args: &[String], state: &mut WalkState<'
         file_id: state.file_id,
         anchor_id: AnchorId(u64::try_from(node.location.start).unwrap_or(u64::MAX)),
         family,
-        requested_version,
+        requested_version: requested_version.clone(),
         import_disposition: import_disposition.clone(),
         anchor: SignatureKeywordSiteAnchor::new(
             state.current_package.clone(),
@@ -271,9 +280,21 @@ fn apply_use(node: &Node, module: &str, args: &[String], state: &mut WalkState<'
             state.generation.clone(),
         ),
     });
-    if let SignatureKeywordImportDisposition::Exact { keywords } = import_disposition {
+    if let SignatureKeywordImportDisposition::Exact { keywords } = import_disposition
+        && requested_version_is_admitted(family, requested_version.as_deref())
+    {
         state.keywords.apply_use(family, keywords);
     }
+}
+
+fn requested_version_is_admitted(family: SignatureKeywordFamily, requested: Option<&str>) -> bool {
+    let Some(requested) = requested else {
+        return true;
+    };
+    perl_semantic_facts::framework::version_constraint_matches(
+        family.version_constraint(),
+        requested,
+    ) == Some(true)
 }
 
 fn apply_no(node: &Node, module: &str, args: &[String], state: &mut WalkState<'_>) {
@@ -306,7 +327,8 @@ fn try_extract_method(node: &Node, state: &mut WalkState<'_>) {
     let signature_anchor =
         signature.as_ref().map(|sig| state.anchor(sig.location.start, sig.location.end));
     let body_anchor = Some(state.anchor(body.location.start, body.location.end));
-    let (parameters, parameter_limitations) = parameters_from_signature(signature.as_deref());
+    let (parameters, parameter_limitations) =
+        parameters_from_signature(signature.as_deref(), state.source);
     state.push_declaration(SignatureKeywordDeclaration::new(
         state.current_package.clone(),
         state.file_id,
@@ -349,7 +371,7 @@ fn try_extract_call_declaration<'a>(node: &'a Node, state: &mut WalkState<'_>) -
     }
     let (body_start, body_end) =
         block_operator_span(state.source, left.location.end, arg.location.end)?;
-    let (parameters, parameter_limitations) = parameters_from_call_args(param_args);
+    let (parameters, parameter_limitations) = parameters_from_call_args(param_args, state.source);
     let name_anchor = name_anchor_from_call(left, name, state.file_id);
     let signature_anchor =
         Some(state.anchor(left.location.start.saturating_add(name.len()), left.location.end));
@@ -411,6 +433,13 @@ fn try_extract_two_statement_optional_signature(
     if !matches!(first_arg.kind, NodeKind::Block { .. }) {
         return false;
     }
+    if state
+        .source
+        .get(first.location.end..second.location.start)
+        .is_some_and(|gap| gap.contains(';'))
+    {
+        return false;
+    }
     let name_anchor = name_anchor_from_call(second_expr, name, state.file_id);
     state.push_declaration(SignatureKeywordDeclaration::new(
         state.current_package.clone(),
@@ -426,6 +455,7 @@ fn try_extract_two_statement_optional_signature(
         Vec::new(),
         Vec::new(),
     ));
+    walk_node(first_arg, state);
     true
 }
 
@@ -449,6 +479,7 @@ fn name_anchor_from_call(call: &Node, name: &str, file_id: FileId) -> SourceAnch
 
 fn parameters_from_signature(
     signature: Option<&Node>,
+    source: &str,
 ) -> (Vec<SignatureKeywordParameter>, Vec<String>) {
     let Some(signature) = signature else {
         return (Vec::new(), Vec::new());
@@ -456,18 +487,24 @@ fn parameters_from_signature(
     let NodeKind::Signature { parameters } = &signature.kind else {
         return (Vec::new(), vec!["signature-form-unsupported".to_string()]);
     };
-    classify_parameter_nodes(parameters)
+    classify_parameter_nodes(parameters, source)
 }
 
-fn parameters_from_call_args(args: &[Node]) -> (Vec<SignatureKeywordParameter>, Vec<String>) {
-    classify_parameter_nodes(args)
+fn parameters_from_call_args(
+    args: &[Node],
+    source: &str,
+) -> (Vec<SignatureKeywordParameter>, Vec<String>) {
+    classify_parameter_nodes(args, source)
 }
 
-fn classify_parameter_nodes(nodes: &[Node]) -> (Vec<SignatureKeywordParameter>, Vec<String>) {
+fn classify_parameter_nodes(
+    nodes: &[Node],
+    source: &str,
+) -> (Vec<SignatureKeywordParameter>, Vec<String>) {
     let mut parameters = Vec::new();
     let mut limitations = Vec::new();
     for node in nodes {
-        match classify_one_parameter(node) {
+        match classify_one_parameter(node, source) {
             Ok(parameter) => parameters.push(parameter),
             Err(limitation) => {
                 if !limitations.contains(&limitation) {
@@ -479,7 +516,10 @@ fn classify_parameter_nodes(nodes: &[Node]) -> (Vec<SignatureKeywordParameter>, 
     (parameters, limitations)
 }
 
-fn classify_one_parameter(node: &Node) -> Result<SignatureKeywordParameter, String> {
+fn classify_one_parameter(node: &Node, source: &str) -> Result<SignatureKeywordParameter, String> {
+    if parameter_span_has_type_constraint(source, node) {
+        return Err("typed-parameter-unsupported".to_string());
+    }
     match &node.kind {
         NodeKind::MandatoryParameter { variable } => {
             variable_parameter(variable, SignatureParameterKind::Positional)
@@ -563,6 +603,16 @@ fn block_operator_span(
         return None;
     }
     Some((index, end))
+}
+
+fn parameter_span_has_type_constraint(source: &str, node: &Node) -> bool {
+    let Some(span) = source.get(node.location.start..node.location.end) else {
+        return false;
+    };
+    let Some(sigil_at) = span.find(['$', '@', '%']) else {
+        return false;
+    };
+    span.get(..sigil_at).is_some_and(|prefix| prefix.chars().any(|ch| ch.is_ascii_alphabetic()))
 }
 
 fn saturate_u32(value: usize) -> u32 {

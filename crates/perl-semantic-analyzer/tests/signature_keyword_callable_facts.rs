@@ -553,6 +553,87 @@ method run ($arg) { $arg }
     assert!(lookup_signature_keyword_callable(&facts, Some("App"), "run").is_some());
 }
 
+#[test]
+fn typed_method_parameters_are_not_exact() {
+    let code = r#"
+package App;
+use Function::Parameters;
+method run (Str $arg) { $arg }
+"#;
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    let run = query(&facts, Some("App"), "run");
+    assert!(run.parameters.is_empty());
+    assert!(run.envelope.boundary.is_some());
+}
+
+#[test]
+fn semicolon_between_fun_and_name_is_not_a_declaration() {
+    let code = r#"
+package App;
+use Function::Parameters;
+fun;
+add { 1 }
+"#;
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "add").is_none());
+}
+
+#[test]
+fn no_parens_body_still_walks_nested_callables() {
+    let code = r#"
+package App;
+use Function::Parameters;
+fun outer { fun inner ($x) { $x } }
+"#;
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "outer").is_some());
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "inner").is_some());
+}
+
+#[test]
+fn third_import_does_not_revive_conflicting_method() {
+    let code = r#"
+package App;
+use Function::Parameters;
+use Method::Signatures;
+use Function::Parameters;
+method run ($x) { $x }
+"#;
+    let fp = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    let ms = minted(code, SignatureKeywordFamily::MethodSignatures, "20170211", "gen-1");
+    assert!(lookup_signature_keyword_callable(&fp, Some("App"), "run").is_none());
+    assert!(lookup_signature_keyword_callable(&ms, Some("App"), "run").is_none());
+}
+
+#[test]
+fn versioned_and_spaced_empty_imports_fail_closed() {
+    let versioned = minted(
+        "package App;\nuse Function::Parameters 2.002006 ();\nfun add ($x) { $x }\n",
+        SignatureKeywordFamily::FunctionParameters,
+        "2.002006",
+        "gen-1",
+    );
+    let spaced = minted(
+        "package App;\nuse Function::Parameters ( );\nfun add ($x) { $x }\n",
+        SignatureKeywordFamily::FunctionParameters,
+        "2.002006",
+        "gen-1",
+    );
+    assert!(versioned.is_empty());
+    assert!(spaced.is_empty());
+}
+
+#[test]
+fn unsupported_requested_version_does_not_enable_keywords() {
+    let facts = minted(
+        "package App;\nuse Function::Parameters 3.0;\nfun add ($x) { $x }\n",
+        SignatureKeywordFamily::FunctionParameters,
+        "2.002006",
+        "gen-1",
+    );
+    assert!(facts.is_empty());
+}
+
 trait DeclarationPackage {
     fn declaration_package(&self) -> Option<&str>;
 }
