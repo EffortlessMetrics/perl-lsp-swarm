@@ -43,7 +43,7 @@ jobs:
       - name: Run lane-history reader tests
         # pr_plan.py substitutes history numbers into lane estimates, so a
         # payload it cannot read as v1 must fail closed rather than be
-        # consumed (#15320). This file is the only consumer gate; the
+        # consumed (#15320). This is the PR Plan consumer gate; these
         # focused tests were otherwise not executed by any workflow.
         run: python3 scripts/ci/test_pr_plan.py
 
