@@ -1,9 +1,6 @@
 //! Handlers for nodes that open new scopes or have structural recursion semantics.
 
-use super::{
-    AnalysisContext, IssueKind, Scope, ScopeAnalyzer, ScopeIssue, sigil_to_index,
-    split_variable_name,
-};
+use super::{AnalysisContext, IssueKind, Scope, ScopeAnalyzer, ScopeIssue, split_variable_name};
 use crate::ast::{Node, NodeKind, SourceLocation};
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -300,13 +297,7 @@ fn process_callable_scope<'a>(
                     continue;
                 }
 
-                // Optimization: Access variable directly from current scope to avoid Rc clone
-                let idx = sigil_to_index(sigil);
-                let vars = sub_scope.variables.borrow();
-                if let Some(map) = vars[idx].as_ref()
-                    && let Some(var) = map.get(name)
-                    && !*var.is_used.borrow()
-                {
+                if sub_scope.take_unused_local(sigil, name) {
                     issues.push(ScopeIssue {
                         kind: IssueKind::UnusedParameter,
                         variable_name: full_name.clone(),
@@ -317,8 +308,6 @@ fn process_callable_scope<'a>(
                             full_name
                         ),
                     });
-                    // Mark as used to prevent double reporting
-                    *var.is_used.borrow_mut() = true;
                 }
             }
         }
