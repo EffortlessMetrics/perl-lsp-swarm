@@ -430,16 +430,31 @@ mod tests {
             .handle_shutdown_dispatch()
             .map_err(|e| format!("shutdown should succeed: {e}"))?;
 
-        assert_eq!(response, Some(json!(null)));
-        assert!(server.client_session.progress_tokens.lock().is_empty());
-        assert!(server.client_session.progress_token_to_request.lock().is_empty());
-        assert!(server.client_session.cancelled.lock().is_empty());
-        assert!(server.client_session.pending_workspace_configuration_requests.lock().is_empty());
-        assert!(!server.client_session.client_capabilities.lock().work_done_progress_support);
-        assert!(
-            !server.client_session.authorize_generation(old_generation),
-            "old session identity must not authorize after production shutdown"
-        );
+        if response != Some(json!(null)) {
+            return Err(format!("production shutdown must return JSON-RPC null, got {response:?}"));
+        }
+        if !server.client_session.progress_tokens.lock().is_empty() {
+            return Err("production shutdown must drain progress_tokens".to_string());
+        }
+        if !server.client_session.progress_token_to_request.lock().is_empty() {
+            return Err("production shutdown must drain progress_token_to_request".to_string());
+        }
+        if !server.client_session.cancelled.lock().is_empty() {
+            return Err("production shutdown must drain cancelled ids".to_string());
+        }
+        if !server.client_session.pending_workspace_configuration_requests.lock().is_empty() {
+            return Err(
+                "production shutdown must drain pending reverse-request handles".to_string()
+            );
+        }
+        if server.client_session.client_capabilities.lock().work_done_progress_support {
+            return Err("production shutdown must reset work_done_progress_support".to_string());
+        }
+        if server.client_session.authorize_generation(old_generation) {
+            return Err(
+                "old session identity must not authorize after production shutdown".to_string()
+            );
+        }
         Ok(())
     }
 

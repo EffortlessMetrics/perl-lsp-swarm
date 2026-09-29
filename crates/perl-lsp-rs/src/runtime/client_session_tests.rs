@@ -15,6 +15,8 @@ mod tests {
     use crate::protocol::JsonRpcId;
     use std::sync::atomic::Ordering;
 
+    type TestResult = Result<(), String>;
+
     fn session() -> ClientSession {
         ClientSession::new(FeatureProfile::current())
     }
@@ -57,114 +59,177 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_drains_progress_and_pending_reverse_requests_exactly_once() {
+    fn shutdown_drains_progress_and_pending_reverse_requests_exactly_once() -> TestResult {
         let session = session();
         let generation = plant_connection_state(&session);
 
-        assert_eq!(session.begin_shutdown(), ShutdownAdmission::First);
-        assert!(session_handles_are_empty(&session));
-        assert!(
-            session.client_supports_pull_diags.load(Ordering::Acquire),
-            "shutdown must not invert a pull client into a push-diagnostics transport"
-        );
-        assert!(session.shutdown_received.load(Ordering::Acquire));
-        assert!(
-            !session.authorize_generation(generation),
-            "pre-shutdown generation must not authorize after drain"
-        );
+        if session.begin_shutdown() != ShutdownAdmission::First {
+            return Err("first shutdown must admit drain".to_string());
+        }
+        if !session_handles_are_empty(&session) {
+            return Err("first shutdown must drain every session-owned handle".to_string());
+        }
+        if !session.client_supports_pull_diags.load(Ordering::Acquire) {
+            return Err("shutdown must not invert a pull client into a push-diagnostics transport"
+                .to_string());
+        }
+        if !session.shutdown_received.load(Ordering::Acquire) {
+            return Err("shutdown_received must stay set on the terminal connection".to_string());
+        }
+        if session.authorize_generation(generation) {
+            return Err("pre-shutdown generation must not authorize after drain".to_string());
+        }
 
-        assert_eq!(
-            session.install_progress_token("late-progress".to_string(), None),
-            ProgressTokenInstall::Shutdown
-        );
-        assert!(
-            session.progress_tokens.lock().is_empty(),
-            "a late producer must not retain session-owned progress after shutdown"
-        );
-        assert_eq!(session.begin_shutdown(), ShutdownAdmission::AlreadyShutdown);
-        assert!(
-            session.progress_tokens.lock().is_empty(),
-            "a second shutdown must not re-run drain (exactly-once admission)"
-        );
+        if session.install_progress_token("late-progress".to_string(), None)
+            != ProgressTokenInstall::Shutdown
+        {
+            return Err("late install after drain must return Shutdown".to_string());
+        }
+        if !session.progress_tokens.lock().is_empty() {
+            return Err(
+                "a late producer must not retain session-owned progress after shutdown".to_string()
+            );
+        }
+        if session.begin_shutdown() != ShutdownAdmission::AlreadyShutdown {
+            return Err("second shutdown must observe AlreadyShutdown".to_string());
+        }
+        if !session.progress_tokens.lock().is_empty() {
+            return Err(
+                "a second shutdown must not re-run drain (exactly-once admission)".to_string()
+            );
+        }
+        Ok(())
     }
 
     #[test]
-    fn replacement_connection_cannot_inherit_prior_capability_or_progress_identity() {
+    fn replacement_connection_cannot_inherit_prior_capability_or_progress_identity() -> TestResult {
         let session = session();
         let old_generation = plant_connection_state(&session);
 
         session.replace_connection();
 
-        assert!(session_handles_are_empty(&session));
-        assert!(!session.client_supports_pull_diags.load(Ordering::Acquire));
-        assert!(!session.initialize_requested.load(Ordering::Acquire));
-        assert!(!session.initialized.load(Ordering::Acquire));
-        assert!(!session.shutdown_received.load(Ordering::Acquire));
-        assert_eq!(&*session.trace_level.lock(), "off");
-        assert_eq!(session.next_request_id.load(Ordering::Acquire), 1);
-        assert!(
-            !session.authorize_generation(old_generation),
-            "old session identity must not authorize the replacement connection"
-        );
+        if !session_handles_are_empty(&session) {
+            return Err("replacement must drain every session-owned handle".to_string());
+        }
+        if session.client_supports_pull_diags.load(Ordering::Acquire) {
+            return Err("replacement must reset pull-diagnostics transport".to_string());
+        }
+        if session.initialize_requested.load(Ordering::Acquire) {
+            return Err("replacement must clear initialize_requested".to_string());
+        }
+        if session.initialized.load(Ordering::Acquire) {
+            return Err("replacement must clear initialized".to_string());
+        }
+        if session.shutdown_received.load(Ordering::Acquire) {
+            return Err("replacement must clear shutdown_received".to_string());
+        }
+        if &*session.trace_level.lock() != "off" {
+            return Err(format!(
+                "replacement must restore default trace level, got {:?}",
+                session.trace_level.lock()
+            ));
+        }
+        if session.next_request_id.load(Ordering::Acquire) != 1 {
+            return Err(format!(
+                "replacement must reset next_request_id to 1, got {}",
+                session.next_request_id.load(Ordering::Acquire)
+            ));
+        }
+        if session.authorize_generation(old_generation) {
+            return Err(
+                "old session identity must not authorize the replacement connection".to_string()
+            );
+        }
         let new_generation = session.generation();
-        assert_ne!(new_generation, old_generation);
-        assert!(session.authorize_generation(new_generation));
+        if new_generation == old_generation {
+            return Err("replacement must mint a new generation".to_string());
+        }
+        if !session.authorize_generation(new_generation) {
+            return Err("replacement generation must authorize the new connection".to_string());
+        }
 
         plant_connection_state(&session);
-        assert!(
-            session.progress_tokens.lock().contains("progress-old"),
-            "control: a replacement session can own its own progress token"
-        );
-        assert!(
-            !session.authorize_generation(old_generation),
-            "planting new state must not revive the retired generation"
-        );
+        if !session.progress_tokens.lock().contains("progress-old") {
+            return Err("control: a replacement session can own its own progress token".to_string());
+        }
+        if session.authorize_generation(old_generation) {
+            return Err("planting new state must not revive the retired generation".to_string());
+        }
+        Ok(())
     }
 
     #[test]
-    fn unobserved_and_retired_generations_cannot_authorize() {
+    fn unobserved_and_retired_generations_cannot_authorize() -> TestResult {
         let session = session();
-        assert!(!session.authorize_generation(0), "generation 0 is never a live identity");
+        if session.authorize_generation(0) {
+            return Err("generation 0 is never a live identity".to_string());
+        }
         let live = session.generation();
-        assert_eq!(live, 1);
-        assert!(session.authorize_generation(live));
+        if live != 1 {
+            return Err(format!("fresh session generation must start at 1, got {live}"));
+        }
+        if !session.authorize_generation(live) {
+            return Err("live generation must authorize before shutdown".to_string());
+        }
 
         session.begin_shutdown();
-        assert!(
-            !session.authorize_generation(live),
-            "shutdown must retire the generation that authorized before drain"
-        );
-        assert!(session.authorize_generation(session.generation()));
+        if session.authorize_generation(live) {
+            return Err(
+                "shutdown must retire the generation that authorized before drain".to_string()
+            );
+        }
+        if !session.authorize_generation(session.generation()) {
+            return Err(
+                "post-shutdown generation must authorize the terminal connection".to_string()
+            );
+        }
+        Ok(())
     }
 
     #[test]
-    fn shutdown_keeps_the_same_connection_terminal() {
+    fn shutdown_keeps_the_same_connection_terminal() -> TestResult {
         let session = session();
         plant_connection_state(&session);
-        assert_eq!(session.begin_shutdown(), ShutdownAdmission::First);
-        assert!(session.initialize_requested.load(Ordering::Acquire));
-        assert!(session.initialized.load(Ordering::Acquire));
-        assert!(session.shutdown_received.load(Ordering::Acquire));
-        assert!(session_handles_are_empty(&session));
-        assert!(
-            session.client_supports_pull_diags.load(Ordering::Acquire),
-            "a terminal connection keeps its negotiated pull-diagnostics transport"
-        );
+        if session.begin_shutdown() != ShutdownAdmission::First {
+            return Err("first shutdown must admit drain".to_string());
+        }
+        if !session.initialize_requested.load(Ordering::Acquire) {
+            return Err("terminal connection must keep initialize_requested".to_string());
+        }
+        if !session.initialized.load(Ordering::Acquire) {
+            return Err("terminal connection must keep initialized".to_string());
+        }
+        if !session.shutdown_received.load(Ordering::Acquire) {
+            return Err("terminal connection must keep shutdown_received".to_string());
+        }
+        if !session_handles_are_empty(&session) {
+            return Err("terminal connection must drain session-owned handles".to_string());
+        }
+        if !session.client_supports_pull_diags.load(Ordering::Acquire) {
+            return Err(
+                "a terminal connection keeps its negotiated pull-diagnostics transport".to_string()
+            );
+        }
+        Ok(())
     }
 
     #[test]
-    fn shutdown_does_not_invert_pull_diagnostics_into_push() {
+    fn shutdown_does_not_invert_pull_diagnostics_into_push() -> TestResult {
         let session = session();
         plant_connection_state(&session);
-        assert_eq!(session.begin_shutdown(), ShutdownAdmission::First);
-        assert!(
-            session.client_supports_pull_diags.load(Ordering::Acquire),
-            "publish_diagnostics treats a false pull flag as permission to push"
-        );
+        if session.begin_shutdown() != ShutdownAdmission::First {
+            return Err("first shutdown must admit drain".to_string());
+        }
+        if !session.client_supports_pull_diags.load(Ordering::Acquire) {
+            return Err(
+                "publish_diagnostics treats a false pull flag as permission to push".to_string()
+            );
+        }
+        Ok(())
     }
 
     #[test]
-    fn concurrent_shutdown_admits_exactly_one_drain() {
+    fn concurrent_shutdown_admits_exactly_one_drain() -> TestResult {
         use std::sync::Arc;
         use std::sync::mpsc;
 
@@ -192,21 +257,32 @@ mod tests {
             }
         }
         for join in joins {
-            let _ = join.join();
+            join.join().map_err(|_| "shutdown racer thread panicked".to_string())?;
         }
 
-        assert_eq!(first, 1, "exactly one racer may drain");
-        assert_eq!(already, racers - 1, "every other racer must observe already-shutdown");
-        assert!(session_handles_are_empty(&session));
-        assert_eq!(
-            session.install_progress_token("late-progress".to_string(), None),
-            ProgressTokenInstall::Shutdown
-        );
-        assert_eq!(session.begin_shutdown(), ShutdownAdmission::AlreadyShutdown);
-        assert!(
-            session.progress_tokens.lock().is_empty(),
-            "post-race shutdown must still refuse a second drain and late install"
-        );
+        if first != 1 {
+            return Err(format!("exactly one racer may drain, got {first}"));
+        }
+        if already != racers - 1 {
+            return Err(format!("every other racer must observe already-shutdown, got {already}"));
+        }
+        if !session_handles_are_empty(&session) {
+            return Err("concurrent shutdown must leave session-owned handles empty".to_string());
+        }
+        if session.install_progress_token("late-progress".to_string(), None)
+            != ProgressTokenInstall::Shutdown
+        {
+            return Err("post-race late install must return Shutdown".to_string());
+        }
+        if session.begin_shutdown() != ShutdownAdmission::AlreadyShutdown {
+            return Err("post-race shutdown must still observe AlreadyShutdown".to_string());
+        }
+        if !session.progress_tokens.lock().is_empty() {
+            return Err(
+                "post-race shutdown must still refuse a second drain and late install".to_string()
+            );
+        }
+        Ok(())
     }
 
     fn code_without_doc_comments(source: &str) -> String {
@@ -221,15 +297,20 @@ mod tests {
     }
 
     #[test]
-    fn client_session_does_not_embed_a_second_reverse_request_registry() {
+    fn client_session_does_not_embed_a_second_reverse_request_registry() -> TestResult {
         let code = code_without_doc_comments(include_str!("client_session.rs"));
-        assert!(
-            !code.contains("ServerRequestRegistry"),
-            "ClientSession must consume #7007 rather than embed a second registry type"
-        );
-        assert!(
-            code.contains("pending_workspace_configuration_requests"),
-            "the existing feature-specific pending table remains the live reverse-request map"
-        );
+        if code.contains("ServerRequestRegistry") {
+            return Err(
+                "ClientSession must consume #7007 rather than embed a second registry type"
+                    .to_string(),
+            );
+        }
+        if !code.contains("pending_workspace_configuration_requests") {
+            return Err(
+                "the existing feature-specific pending table remains the live reverse-request map"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 }
