@@ -3415,6 +3415,26 @@ impl WorkspaceIndex {
         self.find_definitions(symbol_name).into_iter().next()
     }
 
+    /// Return indexed declarations that can own package or class facts.
+    ///
+    /// A bare name may also identify a subroutine or constant. Callers that
+    /// need package ancestry should not parse those unrelated candidate files.
+    pub fn find_package_declarations(&self, name: &str) -> Vec<Location> {
+        let symbols = self.symbols.read();
+        symbols
+            .get(name)
+            .map(|candidates| {
+                candidates
+                    .iter()
+                    .filter(|candidate| {
+                        matches!(candidate.kind, SymbolKind::Package | SymbolKind::Class)
+                    })
+                    .map(|candidate| candidate.location.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) fn definition_candidates(&self, symbol_name: &str) -> Vec<Location> {
         let symbols = self.symbols.read();
         symbols
@@ -11408,6 +11428,30 @@ helper_one();
         assert_eq!(candidates[0].uri, "file:///lib/A.pm");
         assert_eq!(candidates[1].uri, "file:///lib/B.pm");
         assert_eq!(must_some(index.find_definition("shared")).uri, "file:///lib/A.pm");
+    }
+
+    #[test]
+    fn package_declarations_exclude_same_named_callables_and_keep_classes() {
+        let index = WorkspaceIndex::new();
+        for (uri, source) in [
+            ("file:///lib/Sub.pm", "package Other; sub Shared { 1 }"),
+            ("file:///lib/Package.pm", "package Shared; sub from_package { 1 }"),
+            ("file:///lib/Package2.pm", "package Shared; sub from_split { 1 }"),
+            (
+                "file:///lib/Class.pm",
+                "use feature 'class'; class Shared { method from_class () { 1 } }",
+            ),
+        ] {
+            must(index.index_file(must(url::Url::parse(uri)), source.to_string()));
+        }
+
+        let locations = index.find_package_declarations("Shared");
+        let uris: Vec<_> = locations.iter().map(|location| location.uri.as_str()).collect();
+        assert_eq!(
+            uris,
+            ["file:///lib/Class.pm", "file:///lib/Package.pm", "file:///lib/Package2.pm"]
+        );
+        assert_eq!(index.find_definitions("Shared").len(), 4);
     }
 
     #[test]

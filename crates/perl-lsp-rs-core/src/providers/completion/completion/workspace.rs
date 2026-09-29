@@ -3009,7 +3009,7 @@ fn load_indexed_source_package_facts(
 ) -> SourcePackageFacts {
     let mut merged = empty_source_package_facts();
     let mut seen_uris = HashSet::new();
-    for location in index.find_definitions(pkg) {
+    for location in index.find_package_declarations(pkg) {
         let uri = location.uri.as_str();
         if !scope.admits(index, uri) || !seen_uris.insert(uri.to_string()) {
             continue;
