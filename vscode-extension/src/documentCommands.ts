@@ -25,6 +25,22 @@ export interface DocumentCommandDependencies {
 let incPathsChannel: vscode.OutputChannel | undefined;
 let parserAstChannel: vscode.OutputChannel | undefined;
 
+function checkSyntaxFailureMessage(error: Error, output: string): string {
+  const processError = error as Error & { code?: number | string | null; killed?: boolean };
+  if (processError.code === 'ENOENT') {
+    return 'Could not check syntax: Perl was not found on PATH. Install Perl and add it to PATH.';
+  }
+  if (processError.killed && processError.code == null) {
+    return 'Could not check syntax: perl -c timed out after 10 seconds.';
+  }
+  if (typeof processError.code === 'number') {
+    return output
+      ? `Syntax check failed: ${output}`
+      : `Syntax check failed: perl -c exited with code ${processError.code} without output.`;
+  }
+  return `Could not check syntax: ${error.message || output || 'Perl process failed without output.'}`;
+}
+
 /** Check the active Perl document with the local Perl interpreter. */
 export async function runCheckSyntaxCommand(
   dependencies: DocumentCommandDependencies,
@@ -60,15 +76,17 @@ export async function runCheckSyntaxCommand(
     run('perl', perlArgs, { timeout: 10_000 }, (error, stdout, stderr) => {
       const output = (stdout + stderr).trim();
       if (error) {
-        vscode.window
-          .showErrorMessage(`Syntax error: ${output}`, 'Show Output')
-          .then((selection) => {
-            if (selection === 'Show Output') {
-              dependencies.outputChannel.appendLine(`[check-syntax] ${output}`);
-              dependencies.outputChannel.show();
+        const message = checkSyntaxFailureMessage(error, output);
+        vscode.window.showErrorMessage(message, 'Show Output').then((selection) => {
+          if (selection === 'Show Output') {
+            dependencies.outputChannel.appendLine(`[check-syntax] ${message}`);
+            if (output && !message.includes(output)) {
+              dependencies.outputChannel.appendLine(output);
             }
-            resolve();
-          });
+            dependencies.outputChannel.show();
+          }
+          resolve();
+        });
         return;
       }
 
