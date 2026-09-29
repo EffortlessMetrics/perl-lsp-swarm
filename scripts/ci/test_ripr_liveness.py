@@ -917,5 +917,641 @@ class CliTests(unittest.TestCase):
             self.assertIn("| `200` |", out.read_text(encoding="utf-8"))
 
 
+HEAD = "2698f3026226d52c7dcbc47d3dacf53e08465f75"
+OTHER_HEAD = "a" * 40
+STALL_ID = f"ripr-liveness:{35487554523}:infra-no-proof"
+
+
+def stalled(as_of: str = "2026-09-20T04:35:00Z") -> dict:
+    """The measured case: run 35487554523 on PR #16083, waiting with no jobs."""
+    return run(
+        35487554523,
+        status="pending",
+        created_at="2026-09-20T03:49:05Z",
+        pulls=[16083],
+        head_sha=HEAD,
+    )
+
+
+def recovered(*, as_of: str = "2026-09-20T05:05:00Z", **overrides) -> dict:
+    """The same run, now working: the API is the only record of the change."""
+    candidate = run(
+        35487554523,
+        status="in_progress",
+        created_at="2026-09-20T03:49:05Z",
+        job_count=4,
+        pulls=[16083],
+        head_sha=HEAD,
+    )
+    candidate["progress"] = {
+        "total_count": 4,
+        "completed_count": 2,
+        "in_progress_steps": ["Generate PR evidence"],
+    }
+    candidate.update(overrides)
+    return candidate
+
+
+def posted(ids: dict[str, int], head: str = HEAD) -> dict[str, dict[str, int]]:
+    return {head: ids}
+
+
+class RetractionTests(unittest.TestCase):
+    """A stall that clears must stop being red on the head.
+
+    The reporter was append-only: it could add a check run and never take one
+    back, so a red it wrote outlived the condition that justified it. These
+    tests are two-snapshot fixtures -- stall, then recovery -- over the same
+    run, because the defect is a *transition* and neither snapshot alone can
+    express one.
+    """
+
+    def test_a_stall_that_clears_is_withdrawn(self) -> None:
+        """The defect. Snapshot A writes a failure; snapshot B withdraws it."""
+        first = liveness.classify_snapshot(
+            snapshot(stalled(), as_of="2026-09-20T04:35:00Z")
+        )
+        self.assertEqual(first["findings"][0]["conclusion"], "failure")
+        external_id = first["findings"][0]["external_id"]
+        self.assertEqual(external_id, STALL_ID)
+
+        second = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z"),
+            posted({STALL_ID: 55501}),
+        )
+        self.assertEqual(len(second["resolutions"]), 1)
+        resolution = second["resolutions"][0]
+        # The same external id, and the numeric id of the check run that
+        # carries the red: a retraction has to *replace* that run, not sit
+        # beside it as a second, contradicting statement.
+        self.assertEqual(resolution["external_id"], STALL_ID)
+        self.assertEqual(resolution["check_run_id"], 55501)
+        self.assertEqual(resolution["conclusion"], "neutral")
+        self.assertEqual(resolution["now_classification"], liveness.ALIVE)
+        self.assertIn("no longer stalled", resolution["check_title"])
+
+    def test_a_run_still_stalled_is_not_withdrawn(self) -> None:
+        """The control, and the one that costs a false clear.
+
+        Retracting on every pass would clear a live stall, which is strictly
+        worse than the defect being fixed: the reporter would be telling a
+        reader a dead run is fine.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(stalled(), as_of="2026-09-20T05:05:00Z"),
+            posted({STALL_ID: 55501}),
+        )
+        self.assertEqual(report["resolutions"], [])
+        self.assertEqual(len(report["findings"]), 1)
+        self.assertEqual(report["findings"][0]["conclusion"], "failure")
+
+    def test_a_recovered_run_is_not_withdrawn_without_a_record_of_the_failure(self) -> None:
+        """No memory means no retraction.
+
+        A recovery must not be reported as one on the strength of having
+        happened at all: without the check run to withdraw, "resolved" is a
+        claim about a write that was never made.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z")
+        )
+        self.assertEqual(report["resolutions"], [])
+
+    def test_a_stall_written_on_another_head_is_not_withdrawn(self) -> None:
+        """A check run lives on the head it was posted against.
+
+        A pushed head makes the old head stale, and the red on the stale head is
+        a fact about that head. Retracting it from the new head's report would
+        rewrite history rather than withdraw a claim.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z"),
+            posted({STALL_ID: 55501}, head=OTHER_HEAD),
+        )
+        self.assertEqual(report["resolutions"], [])
+
+    def test_a_failure_for_a_different_classification_is_not_withdrawn(self) -> None:
+        """Only `infra-no-proof` is red, so only it has a failure to take back.
+
+        A posted `serialised` or `alive` run is neutral, and "withdrawing" it
+        would be an update that changes nothing while implying a fault cleared.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z"),
+            posted({"ripr-liveness:35487554523:serialised_behind_predecessor": 55502}),
+        )
+        self.assertEqual(report["resolutions"], [])
+
+    def test_a_resolution_names_what_the_run_reads_as_now(self) -> None:
+        """The reader has to learn *why* it cleared, not just that it did."""
+        report = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z"),
+            posted({STALL_ID: 55501}),
+        )
+        summary = report["resolutions"][0]["check_summary"]
+        self.assertIn("no longer holds", summary)
+        self.assertIn("not a statement that the run produced proof", summary)
+        # A retraction must not read as proof. If the word appears at all it
+        # is to disclaim it, never to claim it.
+        self.assertNotIn("succeeded", summary)
+
+    def test_a_completed_run_is_withdrawn(self) -> None:
+        """The commonest recovery: the run finished."""
+        finished = run(
+            35487554523,
+            status="completed",
+            created_at="2026-09-20T03:49:05Z",
+            job_count=4,
+            pulls=[16083],
+            head_sha=HEAD,
+        )
+        report = liveness.classify_snapshot(
+            snapshot(finished, as_of="2026-09-20T05:05:00Z"),
+            posted({STALL_ID: 55501}),
+        )
+        self.assertEqual(len(report["resolutions"]), 1)
+        self.assertIn("completed", report["resolutions"][0]["check_title"])
+
+    def test_a_run_that_became_an_explained_wait_is_withdrawn(self) -> None:
+        """A stall that turns out to be a serialised wait was never a fault.
+
+        The reader is told it cleared and told why, so the earlier red reads as
+        a superseded misreading rather than an unexplained change of mind.
+        """
+        behind = run(
+            35487554523,
+            status="queued",
+            created_at="2026-09-20T03:49:05Z",
+            pulls=[16083],
+            head_sha=HEAD,
+        )
+        report = liveness.classify_snapshot(
+            snapshot(
+                behind,
+                run(
+                    35400000000,
+                    status="in_progress",
+                    created_at="2026-09-20T03:40:00Z",
+                    job_count=4,
+                    pulls=[16083],
+                    head_sha=HEAD,
+                ),
+                as_of="2026-09-20T05:05:00Z",
+            ),
+            posted({STALL_ID: 55501}),
+        )
+        self.assertEqual(len(report["resolutions"]), 1)
+        self.assertEqual(
+            report["resolutions"][0]["now_classification"], liveness.SERIALISED
+        )
+
+
+class AliveTests(unittest.TestCase):
+    """The positive case: a run that is working says so.
+
+    Reading a run's health from ``updated_at`` does not work, because GitHub
+    advances it only on run- and job-level transitions and not while a step
+    executes -- a measured healthy run sat ~40 minutes inside one step, and a
+    dead one is equally motionless.
+    """
+
+    def test_an_in_flight_run_reports_the_step_it_is_running(self) -> None:
+        report = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z")
+        )
+        self.assertEqual(len(report["alive"]), 1)
+        entry = report["alive"][0]
+        self.assertEqual(entry["classification"], liveness.ALIVE)
+        self.assertIn("Generate PR evidence", entry["check_title"])
+        self.assertIn("2/4 jobs done", entry["check_title"])
+        self.assertIn("75 min", entry["check_title"])
+
+    def test_an_alive_run_is_not_a_finding(self) -> None:
+        """`findings` means "a run reporting on absent proof".
+
+        Folding a working run into it would hand every existing reader of that
+        list -- the post loop, the markdown table, the early exit -- a fact it
+        was never written for, and the early exit would stop firing on a
+        genuinely quiet head.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z")
+        )
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(len(report["alive"]), 1)
+
+    def test_an_alive_run_never_carries_a_failure(self) -> None:
+        """The safety property, stated as a fact about the data.
+
+        `infra-no-proof` is the only `failure` in the table, and a run with
+        jobs cannot reach it. This asserts the end of that chain rather than
+        trusting the chain to hold.
+        """
+        report = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z")
+        )
+        for entry in report["alive"]:
+            self.assertEqual(entry["conclusion"], "neutral")
+            self.assertNotEqual(entry["conclusion"], "failure")
+            self.assertNotEqual(entry["check_name"], liveness.REQUIRED_CONTEXT_NAME)
+
+    def test_an_alive_report_refuses_to_read_as_proof(self) -> None:
+        report = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z")
+        )
+        summary = report["alive"][0]["check_summary"]
+        self.assertIn("not a verdict", summary)
+        self.assertIn("must not be read as the run having produced proof", summary)
+
+    def test_an_unreadable_progress_read_still_reports_alive(self) -> None:
+        """"We could not read the step" is not "nothing is running".
+
+        Dropping the run instead would make a transient read failure
+        indistinguishable from a run making no progress, which is the exact
+        confusion this reporter exists to remove.
+        """
+        candidate = run(
+            35487554523,
+            status="in_progress",
+            created_at="2026-09-20T03:49:05Z",
+            job_count=4,
+            pulls=[16083],
+            head_sha=HEAD,
+        )
+        report = liveness.classify_snapshot(
+            snapshot(candidate, as_of="2026-09-20T05:05:00Z")
+        )
+        self.assertEqual(len(report["alive"]), 1)
+        entry = report["alive"][0]
+        self.assertIsNone(entry["progress"])
+        self.assertIn("no step detail", entry["check_title"])
+        self.assertIn("not evidence of a stall", entry["check_summary"])
+
+    def test_a_queued_run_with_jobs_is_not_alive(self) -> None:
+        """`queued` with jobs is waiting on a runner, not working.
+
+        `serialised` already describes a designed wait, and calling that
+        "alive" would report a run as making progress on the strength of jobs
+        that have not started.
+        """
+        queued = run(
+            35487554523,
+            status="queued",
+            created_at="2026-09-20T03:49:05Z",
+            job_count=4,
+            pulls=[16083],
+            head_sha=HEAD,
+        )
+        report = liveness.classify_snapshot(
+            snapshot(queued, as_of="2026-09-20T05:05:00Z")
+        )
+        self.assertEqual(report["alive"], [])
+
+    def test_a_healthy_run_still_precedes_a_stalled_one(self) -> None:
+        """The existing predecessor contract is unchanged by the alive channel.
+
+        The healthy run carries a lower id because `predecessor` means *earlier*
+        run; a later run is a successor and explains nothing, which is its own
+        proven case.
+        """
+        healthy = run(
+            100,
+            status="in_progress",
+            created_at="2026-09-20T03:30:00Z",
+            job_count=4,
+            pulls=[16099],
+        )
+        report = liveness.classify_snapshot(
+            snapshot(
+                run(200, created_at="2026-09-20T04:00:00Z", pulls=[16099]),
+                healthy,
+                as_of="2026-09-20T05:05:00Z",
+            )
+        )
+        findings = {f["run_id"]: f for f in report["findings"]}
+        self.assertEqual(findings[200]["classification"], liveness.SERIALISED)
+        self.assertEqual(findings[200]["predecessor_run_id"], 100)
+        self.assertEqual([e["run_id"] for e in report["alive"]], [100])
+
+
+class ExternalIdTests(unittest.TestCase):
+    """The id is the only thing that survives between cron fires."""
+
+    def test_an_id_round_trips(self) -> None:
+        built = liveness.external_id_for(42, liveness.INFRA_NO_PROOF)
+        self.assertEqual(built, "ripr-liveness:42:infra-no-proof")
+        self.assertEqual(
+            liveness.parse_external_id(built), (42, liveness.INFRA_NO_PROOF)
+        )
+
+    def test_an_unreadable_run_id_has_no_external_id(self) -> None:
+        """A stringified guess would post a check run nothing could withdraw."""
+        self.assertIsNone(liveness.external_id_for(None, liveness.INFRA_NO_PROOF))
+        self.assertIsNone(liveness.external_id_for("42", liveness.INFRA_NO_PROOF))
+        self.assertIsNone(liveness.external_id_for(True, liveness.INFRA_NO_PROOF))
+
+    def test_only_this_reporters_own_namespace_parses(self) -> None:
+        """A check run written by any other job is not this reporter's to touch.
+
+        The prefix is the whole guard. Without it, a run id scraped out of an
+        unrelated check run would let this reporter address a check run it does
+        not own.
+        """
+        self.assertIsNone(liveness.parse_external_id("42:infra-no-proof"))
+        self.assertIsNone(liveness.parse_external_id("other:42:infra-no-proof"))
+        self.assertIsNone(liveness.parse_external_id("ripr-liveness:42"))
+        self.assertIsNone(liveness.parse_external_id("ripr-liveness:x:y"))
+        self.assertIsNone(liveness.parse_external_id("ripr-liveness:42:a:b"))
+        self.assertIsNone(liveness.parse_external_id(None))
+
+    def test_an_unreadable_head_reports_nothing_posted(self) -> None:
+        """Failing toward "not posted" re-posts; the other way loses a signal."""
+        self.assertIsNone(
+            liveness.posted_id_for(posted({STALL_ID: 1}), None, 35487554523, liveness.INFRA_NO_PROOF)
+        )
+        self.assertIsNone(
+            liveness.posted_id_for({}, HEAD, 35487554523, liveness.INFRA_NO_PROOF)
+        )
+        self.assertIsNone(
+            liveness.posted_id_for(posted({STALL_ID: 0}), HEAD, 35487554523, liveness.INFRA_NO_PROOF)
+        )
+
+
+class PostedChecksReadTests(unittest.TestCase):
+    """The read that supplies the memory between fires.
+
+    ``filter=all`` and ``--paginate`` were the subject of the one defect this
+    workflow shipped: the dedup read used the endpoint's default filter, which
+    answers "is this the newest id under this name" when the question is "has
+    this id ever been posted". Those two flags are wired in the workflow; what
+    the body *means* is pinned here, because a parser that quietly accepted the
+    wrong shape would look identical to a working one.
+    """
+
+    ROW = '{"external_id": "ripr-liveness:1:infra-no-proof", "id": 9001}'
+
+    def test_a_line_per_check_run_parses_to_an_addressable_id(self) -> None:
+        self.assertEqual(
+            liveness.posted_checks_from_api(0, self.ROW + "\n"),
+            {"ripr-liveness:1:infra-no-proof": 9001},
+        )
+
+    def test_paginated_output_is_one_row_per_line(self) -> None:
+        body = "\n".join(
+            [
+                '{"external_id": "ripr-liveness:1:infra-no-proof", "id": 9001}',
+                '{"external_id": "ripr-liveness:2:alive", "id": 9002}',
+                "",
+            ]
+        )
+        self.assertEqual(
+            liveness.posted_checks_from_api(0, body),
+            {
+                "ripr-liveness:1:infra-no-proof": 9001,
+                "ripr-liveness:2:alive": 9002,
+            },
+        )
+
+    def test_a_failed_read_is_unreadable_not_empty(self) -> None:
+        """`None` and `{}` are different answers and must not collapse.
+
+        `None` lets the caller re-post, which is visible. An empty map would
+        read as "nothing has ever been posted here" and silently stop updating
+        a live signal.
+        """
+        self.assertIsNone(liveness.posted_checks_from_api(1, ""))
+        self.assertIsNone(liveness.posted_checks_from_api(0, None))
+        self.assertIsNone(liveness.posted_checks_from_api(0, "\n\n"))
+
+    def test_a_row_without_an_addressable_id_is_dropped(self) -> None:
+        """A partial row would aim an update at check run 0.
+
+        The API's answer to that is a 404, indistinguishable from a row that
+        was never this reporter's.
+        """
+        self.assertIsNone(
+            liveness.posted_checks_from_api(0, '{"external_id": "ripr-liveness:1:x"}\n')
+        )
+        self.assertIsNone(
+            liveness.posted_checks_from_api(0, '{"external_id": "ripr-liveness:1:x", "id": 0}\n')
+        )
+        self.assertIsNone(
+            liveness.posted_checks_from_api(0, '{"external_id": null, "id": 9001}\n')
+        )
+        self.assertIsNone(
+            liveness.posted_checks_from_api(0, '{"id": 9001}\n')
+        )
+
+    def test_an_unreadable_line_does_not_discard_the_usable_ones(self) -> None:
+        body = "\n".join(
+            [
+                "not json at all",
+                '{"external_id": "ripr-liveness:1:infra-no-proof", "id": 9001}',
+                "[1, 2, 3]",
+            ]
+        )
+        self.assertEqual(
+            liveness.posted_checks_from_api(0, body),
+            {"ripr-liveness:1:infra-no-proof": 9001},
+        )
+
+    def test_the_query_selects_only_rows_carrying_an_external_id(self) -> None:
+        """A null id is filtered by the query, not by the parser's patience.
+
+        The workflow's `--jq` selects `.external_id != null`; this asserts the
+        shape that selection produces, so a change to the query that let a
+        null through is caught by the reader rather than by a live failure.
+        """
+        self.assertIsNone(liveness.posted_checks_from_api(0, '{"external_id": null, "id": 5}\n'))
+
+
+class ProgressReadTests(unittest.TestCase):
+    BODY = json.dumps(
+        {
+            "total_count": 4,
+            "completed_count": 2,
+            "in_progress_steps": ["Generate PR evidence"],
+        }
+    )
+
+    def test_a_readable_detail_becomes_progress(self) -> None:
+        self.assertEqual(
+            liveness.progress_from_api(0, self.BODY),
+            {
+                "total_count": 4,
+                "completed_count": 2,
+                "in_progress_steps": ["Generate PR evidence"],
+            },
+        )
+
+    def test_a_failed_read_is_unreadable(self) -> None:
+        self.assertIsNone(liveness.progress_from_api(1, self.BODY))
+        self.assertIsNone(liveness.progress_from_api(0, None))
+        self.assertIsNone(liveness.progress_from_api(0, "not json"))
+        self.assertIsNone(liveness.progress_from_api(0, "[]"))
+        self.assertIsNone(liveness.progress_from_api(0, '{"total_count": -1}'))
+
+    def test_a_completed_count_beyond_the_total_is_clamped(self) -> None:
+        """The API races a job from running to complete between two counts."""
+        self.assertEqual(
+            liveness.progress_from_api(
+                0, json.dumps({"total_count": 2, "completed_count": 3})
+            )["completed_count"],
+            2,
+        )
+
+    def test_a_run_with_no_step_running_still_reads_as_progress(self) -> None:
+        """A read that succeeded and found nothing running is not a failed read.
+
+        The two are different facts and collapse into the same "alive" class,
+        so the title has to carry which one it was. Reporting "no step detail"
+        here would be a lie about a read that answered.
+        """
+        between_steps = run(
+            35487554523,
+            status="in_progress",
+            created_at="2026-09-20T03:49:05Z",
+            job_count=4,
+            pulls=[16083],
+            head_sha=HEAD,
+        )
+        between_steps["progress"] = {
+            "total_count": 4,
+            "completed_count": 4,
+            "in_progress_steps": [],
+        }
+        report = liveness.classify_snapshot(
+            snapshot(between_steps, as_of="2026-09-20T05:05:00Z")
+        )
+        self.assertIn("no step running", report["alive"][0]["check_title"])
+        self.assertIn("4/4 jobs done", report["alive"][0]["check_title"])
+
+
+class TransitionSafetyTests(unittest.TestCase):
+    """The refusals the issue requires a control for."""
+
+    def test_no_path_in_the_report_can_carry_a_success_conclusion(self) -> None:
+        """Not "the table has no success" -- the produced data has none either.
+
+        A table is an intention; the rendered report is what gets written to a
+        head. The retraction path is the one worth proving, because it is the
+        only write that replaces a `failure` with something else.
+        """
+        cases = [
+            (stalled(), {"as_of": "2026-09-20T05:05:00Z"}, None),
+            (recovered(), {"as_of": "2026-09-20T05:05:00Z"}, posted({STALL_ID: 55501})),
+            (
+                run(7, status="waiting", created_at="2026-09-20T03:00:00Z",
+                    head_branch="patch-1", head_repository="a/b", base_refs=["main"]),
+                {"as_of": "2026-09-20T05:05:00Z"},
+                None,
+            ),
+        ]
+        for run_obj, kwargs, memory in cases:
+            report = liveness.classify_snapshot(snapshot(run_obj, **kwargs), memory)
+            for channel in ("findings", "alive", "resolutions"):
+                for entry in report[channel]:
+                    self.assertNotEqual(
+                        entry["conclusion"],
+                        "success",
+                        msg=f"{channel} produced a success conclusion",
+                    )
+
+    def test_every_channel_offers_only_the_advisory_check_name(self) -> None:
+        report = liveness.classify_snapshot(
+            snapshot(recovered(), as_of="2026-09-20T05:05:00Z"),
+            posted({STALL_ID: 55501}),
+        )
+        for channel in ("findings", "alive", "resolutions"):
+            for entry in report[channel]:
+                self.assertEqual(entry["check_name"], liveness.ADVISORY_CHECK_NAME)
+                self.assertNotEqual(entry["check_name"], liveness.REQUIRED_CONTEXT_NAME)
+
+    def test_the_only_failure_still_comes_only_from_an_empty_run(self) -> None:
+        report = liveness.classify_snapshot(
+            snapshot(
+                recovered(),
+                run(200, created_at="2026-09-20T04:00:00Z", pulls=[16099]),
+                as_of="2026-09-20T05:05:00Z",
+            ),
+            posted({STALL_ID: 55501}),
+        )
+        failures = [
+            entry
+            for channel in ("findings", "alive", "resolutions")
+            for entry in report[channel]
+            if entry["conclusion"] == "failure"
+        ]
+        self.assertEqual([f["run_id"] for f in failures], [200])
+        self.assertEqual(failures[0]["classification"], liveness.INFRA_NO_PROOF)
+
+    def test_the_report_states_what_it_will_not_claim(self) -> None:
+        report = liveness.classify_snapshot(snapshot(recovered()))
+        boundary = " ".join(report["claim_boundary"])
+        self.assertIn("Never emits a success conclusion", boundary)
+        self.assertIn("never posts under the required context", boundary)
+        self.assertIn("not a verdict", boundary)
+        self.assertIn("never retracted", boundary)
+
+
+class WorkflowTransitionTests(unittest.TestCase):
+    """The workflow is transport. These assert it stays transport.
+
+    The module makes the decisions; this file must not make a second, untested
+    copy of any of them. The shipped defect this guards against is precisely a
+    decision that lived in the YAML, where nothing could reach it (#16152).
+    """
+
+    WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ripr-liveness.yml"
+
+    def setUp(self) -> None:
+        self.text = self.WORKFLOW.read_text(encoding="utf-8")
+
+    def test_the_workflow_still_refuses_a_success_conclusion(self) -> None:
+        """The refusal the issue requires a control for, kept verbatim in role."""
+        self.assertIn('if conclusion == "success":', self.text)
+        self.assertIn(
+            "refusing to post a success conclusion from the liveness reporter", self.text
+        )
+
+    def test_the_workflow_still_refuses_the_required_context(self) -> None:
+        self.assertIn("if name == REQUIRED_CONTEXT:", self.text)
+        self.assertIn("refusing to post under the required context", self.text)
+
+    def test_the_workflow_can_update_a_check_run_it_already_wrote(self) -> None:
+        """The capability the defect was the absence of."""
+        self.assertIn('"PATCH"', self.text)
+        self.assertIn("/check-runs/{check_run_id}", self.text)
+
+    def test_an_update_does_not_resend_the_fixed_identity_fields(self) -> None:
+        """A check run's name and head are fixed at creation.
+
+        Resending them invites a rejection on a head that is not even wrong,
+        and the failure would look like a permissions problem.
+        """
+        patch_block = self.text.split("if verb == \"PATCH\" and isinstance(check_run_id, int):", 1)[1]
+        patch_payload = patch_block.split("payload = {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("head_sha", patch_payload)
+        self.assertNotIn("external_id", patch_payload)
+        self.assertIn("conclusion", patch_payload)
+
+    def test_the_post_loop_delegates_rather_than_deciding(self) -> None:
+        """No `already_posted` in the YAML: that decision is now the module's."""
+        self.assertNotIn("def already_posted", self.text)
+        self.assertIn("posted_checks_from_api", self.text)
+
+    def test_the_dedup_read_keeps_its_pinned_flags(self) -> None:
+        """`filter=all` and `--paginate` are the fix for a shipped defect (#16344)."""
+        self.assertIn("check-runs?filter=all&per_page=100", self.text)
+        self.assertIn('"--paginate"', self.text)
+
+    def test_the_snapshot_reads_step_detail_for_in_flight_runs(self) -> None:
+        self.assertIn("IN_FLIGHT_STATUSES", self.text)
+        self.assertIn("in_progress_steps", self.text)
+
+    def test_the_classify_step_passes_the_posted_memory(self) -> None:
+        self.assertIn("--posted target/ripr/liveness/posted.json", self.text)
+
+
 if __name__ == "__main__":
     unittest.main()

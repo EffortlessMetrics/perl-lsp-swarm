@@ -16,6 +16,19 @@
 # writing that name from here could change whether a pull request is mergeable,
 # and a check run this workflow left behind could outlive the real one. The
 # classifier can never emit a `success` conclusion.
+#
+# It also carries state between fires, by reading back the check runs it has
+# already written, which buys the two transitions a check run is supposed to
+# support and this reporter previously could not make:
+#
+# * a stall that clears is *withdrawn*, by updating the check run that carries
+#   the red rather than adding a contradicting one beside it;
+# * a run that is working says so, naming the step currently running, because
+#   the run object is no evidence either way -- GitHub advances `updated_at`
+#   only on run- and job-level transitions, not while a step executes.
+#
+# Neither transition can red anything: `infra-no-proof` is the only `failure`
+# this reporter can write, and no path reaches it from a run that has jobs.
 
 name: ripr liveness
 
@@ -98,6 +111,26 @@ jobs:
               else:
                   run["job_count"] = 1
 
+              # An in-flight run also gets its step detail read. This is the
+              # only evidence of progress that exists: GitHub advances a run's
+              # `updated_at` on run- and job-level transitions, not while a
+              # step executes, and a measured healthy run sat ~40 minutes
+              # inside one step. So the run object is motionless for most of a
+              # working run's life and equally motionless for a dead one.
+              #
+              # `job_count` deliberately stays 1 rather than the real count.
+              # It feeds the predecessor test, and that test is already proven
+              # against `queued`-with-jobs; re-deriving it from a second shape
+              # would change a classification this change is not about. The
+              # detail is carried separately.
+              if run.get("status") in liveness.IN_FLIGHT_STATUSES:
+                  out = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/actions/runs/{run['id']}/jobs",
+                       "--jq", '{total_count: .total_count, completed_count: ([.jobs[]? | select(.status == "completed")] | length), in_progress_steps: [.jobs[]?.steps[]? | select(.status == "in_progress") | .name]}'],
+                      capture_output=True, text=True, check=False,
+                  )
+                  run["progress"] = liveness.progress_from_api(out.returncode, out.stdout)
+
               # A completed run can neither be a candidate nor hold a group,
               # so it needs no identity and no call spent on one.
               if run.get("status") == "completed":
@@ -125,6 +158,50 @@ jobs:
                       run, liveness.resolved_pulls_from_api(out.returncode, out.stdout)
                   )
 
+          # The reporter's memory across cron fires. It is the API's own record
+          # rather than a persisted state file: the check runs this workflow
+          # wrote are already on the head, so there is nothing to go stale, be
+          # evicted, or be written by a run that then failed before posting.
+          # Reading it back is what lets a later fire *update* a check run --
+          # to withdraw a stall that cleared, to refresh a heartbeat -- instead
+          # of adding a second, contradicting one.
+          #
+          # `filter=all` and `--paginate` are both load-bearing, and the first
+          # is the one that bites at two entries rather than at a hundred. The
+          # endpoint's `filter` defaults to `latest`, which returns only the
+          # most recent check run *per name* -- and every post here carries the
+          # single name `ripr+ liveness`, so the default answers "is this the
+          # newest liveness id" when the question is "has this id been posted
+          # at all". A run that flips between `infra-no-proof` and
+          # `serialised_behind_predecessor` as its predecessor starts and
+          # finishes alternates between two ids, and under the default each
+          # flip looks unposted and re-posts, forever. `--paginate` then
+          # matters past 100 distinct check names, which this repository's heads
+          # do reach -- 74 names, but 83 rows on one head measured.
+          # `--paginate` with `--jq` emits one value per line across all pages
+          # rather than one JSON document.
+          #
+          # Read per head rather than once globally: a check run lives on the
+          # head it was posted against, and this reporter only ever updates one
+          # it finds there. A run whose head has moved on is not this run's
+          # check run to touch.
+          heads = {r.get("head_sha") for r in runs if isinstance(r, dict) and r.get("head_sha")}
+          posted = {}
+          for head in sorted(heads):
+              out = subprocess.run(
+                  ["gh", "api", "--paginate",
+                   f"repos/{repo}/commits/{head}/check-runs?filter=all&per_page=100",
+                   "--jq", '.check_runs[] | select(.external_id != null) | {external_id, id} | @json'],
+                  capture_output=True, text=True, check=False,
+              )
+              # An unreadable head is recorded as absent, not as empty: absent
+              # re-posts, which is visible and correctable, while empty would
+              # silently stop updating a live signal.
+              rows = liveness.posted_checks_from_api(out.returncode, out.stdout)
+              if rows:
+                  posted[head] = rows
+          json.dump(posted, open("target/ripr/liveness/posted.json", "w"), indent=2)
+
           snapshot = {
               "as_of": datetime.datetime.now(datetime.timezone.utc)
                   .replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -140,6 +217,7 @@ jobs:
           set -euo pipefail
           python3 scripts/ci/ripr_liveness.py \
             --snapshot target/ripr/liveness/snapshot.json \
+            --posted target/ripr/liveness/posted.json \
             --out target/ripr/liveness/report.md \
             --json target/ripr/liveness/report.json \
             --print
@@ -156,76 +234,86 @@ jobs:
 
           repo = os.environ["GITHUB_REPOSITORY"]
           report = json.load(open("target/ripr/liveness/report.json"))
-          findings = report.get("findings", [])
-          if not findings:
-              print("no ripr run is waiting past the floor")
-              sys.exit(0)
 
           REQUIRED_CONTEXT = "ripr+ New Gap Gate"
 
-          def already_posted(head_sha, external_id):
-              """Whether this exact finding is already on this head.
+          def write(entry, verb):
+              """POST a claim this reporter has not made, or PATCH the one it has.
 
-              The cron fires every 15 minutes and a stall lasts as long as it
-              lasts, so without this a two-hour stall leaves eight identical
-              check runs on one pull request.
+              A check run is GitHub's current state, so a second POST under a
+              new id would add a contradicting statement rather than replace
+              the old one. That is why the entry carries the id of the run to
+              update: the external_id is the same across fires, so recovery and
+              progress are updates to the check run that already carries the
+              claim (#16567).
 
-              `filter=all` and `--paginate` are both load-bearing, and the
-              first is the one that bites at two entries rather than at a
-              hundred. The endpoint's `filter` defaults to `latest`, which
-              returns only the most recent check run *per name* -- and every
-              post here carries the single name `ripr+ liveness`, so the
-              default answers "is this the newest liveness id" when the
-              question is "has this id been posted at all". A run that flips
-              between `infra-no-proof` and `serialised_behind_predecessor` as
-              its predecessor starts and finishes alternates between two ids,
-              and under the default each flip looks unposted and re-posts,
-              forever. `--paginate` then matters past 100 distinct check
-              names, which this repository's heads do reach -- 74 names, but
-              83 rows on one head measured. `--paginate` with `--jq` emits
-              one id per line across all pages rather than one JSON document.
+              The two verbs take different bodies. An update addresses an
+              existing check run by its own numeric id and must not resend the
+              identity fields, because a check run's name and head are fixed at
+              creation; resending them invites a rejection on a head that is
+              not even wrong. Only the mutable parts -- status, conclusion, and
+              the output a reader sees -- are sent back.
               """
-              out = subprocess.run(
-                  ["gh", "api", "--paginate",
-                   f"repos/{repo}/commits/{head_sha}/check-runs?filter=all&per_page=100",
-                   "--jq", ".check_runs[].external_id"],
-                  capture_output=True, text=True, check=False,
+              external_id = entry.get("external_id")
+              if not external_id:
+                  # No stable address means no way to write or withdraw this
+                  # later, so it is refused rather than posted blind.
+                  print(f"run {entry.get('run_id')}: no external id, skipped")
+                  return
+              output = {"title": entry["check_title"], "summary": entry["check_summary"]}
+              check_run_id = entry.get("check_run_id")
+              if verb == "PATCH" and isinstance(check_run_id, int):
+                  path = f"repos/{repo}/check-runs/{check_run_id}"
+                  payload = {
+                      "status": "completed",
+                      "conclusion": entry["conclusion"],
+                      "output": output,
+                  }
+              else:
+                  path = f"repos/{repo}/check-runs"
+                  payload = {
+                      "name": entry["check_name"],
+                      "head_sha": entry["head_sha"],
+                      "external_id": external_id,
+                      "status": "completed",
+                      "conclusion": entry["conclusion"],
+                      "output": output,
+                  }
+              result = subprocess.run(
+                  ["gh", "api", "--method", verb, path, "--input", "-"],
+                  input=json.dumps(payload), capture_output=True, text=True, check=False,
               )
-              if out.returncode != 0:
-                  return False  # unreadable: post rather than stay silent
-              return external_id in out.stdout.split()
+              status = "ok" if result.returncode == 0 else f"failed: {result.stderr.strip()}"
+              print(f"{entry['head_sha']} {entry.get('classification', entry.get('now_classification'))}: {verb} {status}")
 
-          for finding in findings:
-              conclusion = finding["conclusion"]
-              name = finding["check_name"]
+          # Every entry carries the decision -- post or patch -- already made
+          # by the tested module. This step translates and does not decide: the
+          # one defect this workflow shipped lived exactly in a decision that
+          # had no test seam (#16152).
+          entries = []
+          for finding in report.get("findings", []):
+              entries.append((finding, "PATCH" if finding.get("check_run_id") else "POST"))
+          for alive in report.get("alive", []):
+              entries.append((alive, "PATCH" if alive.get("check_run_id") else "POST"))
+          for resolution in report.get("resolutions", []):
+              entries.append((resolution, "PATCH"))
+
+          if not entries:
+              print("no ripr run is waiting past the floor, running, or newly recovered")
+              sys.exit(0)
+
+          for entry, verb in entries:
+              conclusion = entry["conclusion"]
+              name = entry["check_name"]
               # The classifier can never say success and never offers the
               # required context's name; refuse both here anyway rather than
-              # trust an upstream change not to.
+              # trust an upstream change not to. A retraction is the case this
+              # matters most: it is the one write that replaces a `failure`
+              # with something else on a live head, and `success` there would
+              # be this reporter claiming a candidate is proven.
               if conclusion == "success":
                   raise SystemExit("refusing to post a success conclusion from the liveness reporter")
               if name == REQUIRED_CONTEXT:
                   raise SystemExit(f"refusing to post under the required context {name!r}")
-              head_sha = finding["head_sha"]
-              external_id = f"ripr-liveness:{finding['run_id']}:{finding['classification']}"
-              if already_posted(head_sha, external_id):
-                  print(f"{head_sha} {finding['classification']}: already reported")
-                  continue
-              payload = {
-                  "name": name,
-                  "head_sha": head_sha,
-                  "external_id": external_id,
-                  "status": "completed",
-                  "conclusion": conclusion,
-                  "output": {
-                      "title": finding["check_title"],
-                      "summary": finding["check_summary"],
-                  },
-              }
-              result = subprocess.run(
-                  ["gh", "api", "--method", "POST", f"repos/{repo}/check-runs",
-                   "--input", "-"],
-                  input=json.dumps(payload), capture_output=True, text=True, check=False,
-              )
-              status = "posted" if result.returncode == 0 else f"failed: {result.stderr.strip()}"
-              print(f"{head_sha} {finding['classification']}: {status}")
+              write(entry, verb)
           PY
