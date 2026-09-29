@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "total_files": 29,
-  "total_bytes": 1892077,
+  "total_files": 30,
+  "total_bytes": 1892342,
   "files": {
+    "readme.md": 27166,
     "package.nls.json": 2210,
     "package.json": 62099,
+    "LICENSE.txt": 1069,
     "language-configuration.json": 1010,
     "icon.png": 8358,
     "gherkin-language-configuration.json": 510,
-    "readme.md": 27485,
-    "LICENSE.txt": 1069,
     "changelog.md": 25072,
     ".oxlintrc.json": 559,
     ".oxfmtrc.json": 203,
@@ -29,8 +29,9 @@
     "media/walkthrough/debug-first-script.svg": 1778,
     "media/walkthrough/configure-settings.svg": 1935,
     "media/walkthrough/ai-completion.svg": 1624,
-    "assets/demo-project/main.pl": 203,
-    "assets/demo-project/lib/Utils.pm": 485,
-    "assets/demo-project/lib/Database.pm": 298
+    "assets/demo-project/README.md": 842,
+    "assets/demo-project/main.pl": 199,
+    "assets/demo-project/lib/Utils.pm": 272,
+    "assets/demo-project/lib/Database.pm": 257
   }
 }
