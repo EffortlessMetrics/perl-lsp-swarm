@@ -43,8 +43,13 @@ static RESULT_LINE_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| 
 /// doctest prints its full spaced name on the block header too, so a reader
 /// that truncates it here disagrees with itself between the result line and the
 /// block.
+///
+/// The trailing `[ \t\r]*` admits a CRLF header. `$` under `(?m)` sits before
+/// the `\n`, so a bare `$` would reject every block in a log written on
+/// Windows while still reading the result lines — the receipt would then name
+/// the failing test and refuse to say anything about it.
 static FAILURE_BLOCK_RE: LazyLock<Result<Regex, regex::Error>> =
-    LazyLock::new(|| Regex::new(r"(?m)^-{4}[ \t]+(.+?)[ \t]+stdout[ \t]+-{4}[ \t]*$"));
+    LazyLock::new(|| Regex::new(r"(?m)^-{4}[ \t]+(.+?)[ \t]+stdout[ \t]+-{4}[ \t\r]*$"));
 
 /// The outcome libtest spells after `...` on a result line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,18 +217,27 @@ fn parse_location(rest: &str) -> Option<PanicLocation> {
     } else {
         (parts[0].to_string(), parts[1], 2)
     };
-    // A path may not contain whitespace or an inner colon. That is what stops a
-    // token like `./ something:100:200` — whitespace inside the "path" — from
-    // being read as a location.
-    if !is_plausible_path(&path) {
-        return None;
-    }
+    // Whether `path` is usable as a location is deliberately *not* decided here.
+    // The two consumers disagree about it, and that disagreement predates this
+    // module: the gate reports whatever `path:line` the panic printed, while the
+    // receipt has a documented grammar that rejects a leading non-path character
+    // and any whitespace inside the path. Applying the receipt's rule here would
+    // silently narrow the gate's evidence — `ci_explain` classifies on
+    // `first_failure.site.is_some()`, so a rejected path turns a code regression
+    // into `unknown`. Each consumer applies its own rule; see
+    // [`is_plausible_path`].
     let line = line_field.parse::<u64>().ok()?;
     let column = parts.get(line_index).and_then(|field| field.parse::<u64>().ok());
     Some(PanicLocation { path, line, column })
 }
 
-fn is_plausible_path(path: &str) -> bool {
+/// Whether a path is one this repository is willing to report as a location.
+///
+/// The receipt's rule, exported so it stays the receipt's: a leading letter, `.`
+/// or `/`, and no whitespace or inner colon anywhere, so a token like
+/// `./ something:100:200` cannot be captured as a location. The gate
+/// deliberately does not apply this — see [`panic_location`].
+pub fn is_plausible_path(path: &str) -> bool {
     // A drive-qualified path starts at its letter; otherwise the first character
     // admits relative (`crates/...`), dot-relative (`./...`) and absolute
     // (`/...`) forms, so a panic outside the workspace root is still captured.
@@ -351,9 +365,31 @@ mod tests {
         Ok(())
     }
 
+    /// The reader parses `path:line:column` structurally and refuses to judge
+    /// the path: the gate reports whatever was printed, and only the receipt
+    /// applies a path grammar. So a whitespace-bearing "path" is still parsed —
+    /// what it is *not* is a path the receipt will report.
     #[test]
-    fn panic_location_rejects_whitespace_inside_a_path() {
-        assert_eq!(panic_location("panicked at ./ something:100:200"), None);
+    fn a_whitespace_bearing_path_is_parsed_but_not_plausible() -> anyhow::Result<()> {
+        let location = location_or("panicked at ./ something:100:200", "whitespace path")?;
+        assert_eq!(location.path, "./ something");
+        assert_eq!(location.line, 100);
+        assert_eq!(location.column, Some(200));
+        assert!(
+            !is_plausible_path(&location.path),
+            "the receipt's grammar is the consumer's call, exposed not imposed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn plausible_paths_are_accepted_and_junk_is_not() {
+        for path in ["crates/a/b.rs", "src/lib.rs", "/abs/path.rs", "./rel.rs", r"C:\src\a.rs"] {
+            assert!(is_plausible_path(path), "{path:?} is a real path shape");
+        }
+        for path in ["./ something", "9lives/src/lib.rs", "-/weird.rs", "a b.rs"] {
+            assert!(!is_plausible_path(path), "{path:?} is not a path the receipt reports");
+        }
     }
 
     #[test]

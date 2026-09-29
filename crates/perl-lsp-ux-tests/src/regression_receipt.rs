@@ -172,15 +172,16 @@ fn classify_with_exit_status(
     let panic_location =
         first_failing_test.as_ref().and_then(|name| panic_location_for_test(raw, name));
     let scenario = first_failing_test.as_ref().and_then(|name| scenario_from_test_name(name));
-    let workflow = first_failing_test.as_ref().and_then(|name| workflow_from_test_name(name));
+    let namable = first_failing_test.as_ref().filter(|name| can_name_a_command(name));
+    let workflow = namable.and_then(|name| workflow_from_test_name(name));
 
     let failing_tests = discriminate_failing_tests(raw);
 
-    let canonical_repro = first_failing_test.as_ref().map(|name| {
+    let canonical_repro = namable.map(|name| {
         format!("cargo test -p perl-lsp-ux-tests {name} -- --test-threads=1 --nocapture")
     });
 
-    let friendly_repro = first_failing_test.as_ref().map(|name| {
+    let friendly_repro = namable.map(|name| {
         // Extract just the test function name (after ::) for the shorthand command.
         let short = name.split("::").last().unwrap_or(name);
         format!("just ux-tests {short}")
@@ -292,12 +293,15 @@ fn panic_location_for_test(raw: &str, name: &str) -> Option<String> {
     let block =
         cargo_failure::failure_block_spans(raw).into_iter().find(|block| block.name == name)?;
     let body = block_body(block.body(raw));
-    body.lines()
-        .find_map(cargo_failure::panic_location)
-        // The receipt has always reported `file:line:column`, so a location that
-        // carries no column is not one it can report.
-        .filter(|location| location.column.is_some())
-        .map(|location| location.with_column())
+    // A line that resolves to no column, or to a path outside the receipt's
+    // grammar, is not one it can report — but that must skip *that line* and
+    // keep scanning, or a single column-less panic earlier in the block would
+    // discard a later, reportable one.
+    body.lines().find_map(|line| {
+        let location = cargo_failure::panic_location(line)?;
+        (location.column.is_some() && cargo_failure::is_plausible_path(&location.path))
+            .then(|| location.with_column())
+    })
 }
 
 /// Split cargo's trailing failure report into one block per failing test and
@@ -740,6 +744,20 @@ fn workflow_from_test_name(test: &str) -> Option<String> {
     if workflow.is_empty() { None } else { Some(workflow.to_string()) }
 }
 
+/// Whether a test name can be turned into a `workflow` and a runnable repro.
+///
+/// Those fields are built from a `::`-delimited Rust test path, and every name
+/// libtest prints is whitespace-free except a doctest's
+/// `<file> - <path> (line N)`. Splitting that one on `::` yields the
+/// meaningless `path (line 12)`, and interpolating it into a command yields
+/// `cargo test -p perl-lsp-ux-tests src/lib.rs - item::path (line 12) -- …`,
+/// which no shell runs. Deriving them anyway would replace an honest absence
+/// with a confident wrong answer, so a name this receipt cannot name a command
+/// for contributes no workflow and no repro (#16907).
+fn can_name_a_command(test: &str) -> bool {
+    !test.is_empty() && !test.contains(char::is_whitespace)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,11 +767,13 @@ mod tests {
     /// The `file:line:column` the shared cargo-output reader recovers from a
     /// panic line, formatted the way the receipt has always reported it. The
     /// reader and its grammar moved to [`cargo_failure`] (#16907); the receipt's
-    /// contract — a location is only reported when it carries a column — did not.
+    /// own two acceptance rules — a column must be present, and the path must
+    /// satisfy the receipt's grammar — did not, so this mirrors the production
+    /// filter in `panic_location_for_test` exactly.
     fn panic_location_str(line: &str) -> Option<String> {
-        cargo_failure::panic_location(line)
-            .filter(|location| location.column.is_some())
-            .map(|location| location.with_column())
+        let location = cargo_failure::panic_location(line)?;
+        (location.column.is_some() && cargo_failure::is_plausible_path(&location.path))
+            .then(|| location.with_column())
     }
 
     #[test]
@@ -770,8 +790,7 @@ mod tests {
     /// than the one that failed.
     ///
     /// Verbatim shape of a real failing doctest run (#16907).
-    const FAILING_DOCTEST_LOG: &str = r#"
-running 1 test
+    const FAILING_DOCTEST_LOG: &str = r#"running 1 test
 test src/lib.rs - item::path (line 12) ... FAILED
 
 failures:
@@ -787,6 +806,10 @@ failures:
 
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 "#;
+
+    /// The doctest's name, exactly as cargo prints it on both the result line
+    /// and the block header.
+    const DOCTEST_NAME: &str = "src/lib.rs - item::path (line 12)";
 
     #[test]
     fn doctest_failure_keeps_the_whole_spaced_name() {
@@ -804,6 +827,88 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             vec!["src/lib.rs - item::path (line 12)"],
             "the stdout block header carries the same spaced name, so it must agree with the \
              result line rather than produce a second, shorter identity"
+        );
+    }
+
+    /// Naming the test correctly is only half the receipt. The fields derived
+    /// from the name — `workflow`, and the two repro commands — are built for a
+    /// `::`-delimited Rust test path. A doctest name is neither, and splitting
+    /// `src/lib.rs - item::path (line 12)` on `::` yields `path (line 12)`.
+    /// Deriving them anyway would turn an honest absence into a confident wrong
+    /// answer, so a name that cannot be named as a command contributes none.
+    #[test]
+    fn doctest_name_yields_no_workflow_and_no_runnable_repro() {
+        let receipt = classify(FAILING_DOCTEST_LOG, Some("abc123".to_string()));
+
+        assert_eq!(receipt.scenario, None, "not a UX scenario test");
+        assert_eq!(
+            receipt.workflow, None,
+            "`path (line 12)` is not a workflow; a name with spaces must not be split into one"
+        );
+        assert_eq!(
+            receipt.canonical_repro, None,
+            "`cargo test … src/lib.rs - item::path (line 12) -- …` is not a runnable command"
+        );
+        assert_eq!(receipt.friendly_repro, None, "nor is `just ux-tests path (line 12)`");
+        // The failure itself is still reported — refusing to invent a command is
+        // not the same as losing the failure.
+        assert_eq!(receipt.first_failing_test.as_deref(), Some(DOCTEST_NAME));
+    }
+
+    /// A log written on Windows ends every line with `\r\n`. `$` under `(?m)`
+    /// sits before the `\n`, so a block header must tolerate the `\r` or every
+    /// block goes unread while the result line still parses — a receipt that
+    /// names the failing test and then says nothing about it.
+    #[test]
+    fn a_crlf_log_still_yields_its_block_and_panic() {
+        let crlf = FAILING_DOCTEST_LOG.replace('\n', "\r\n");
+        let receipt = classify(&crlf, Some("abc123".to_string()));
+
+        assert_eq!(
+            receipt.first_failing_test.as_deref(),
+            Some(DOCTEST_NAME),
+            "a result line must survive CRLF"
+        );
+        assert_eq!(receipt.failing_tests.len(), 1, "the stdout block header must survive CRLF too");
+        assert_eq!(
+            receipt.panic_location.as_deref(),
+            Some("src/lib.rs:12:9"),
+            "and the block must still carry its own panic"
+        );
+    }
+
+    /// A column-less panic line is one the receipt cannot report, but it must
+    /// skip that line rather than abandon the test's whole block.
+    #[test]
+    fn a_column_less_panic_does_not_hide_a_later_reportable_one() {
+        let log = "running 1 test\ntest tasks::a::b ... FAILED\n\nfailures:\n\n\
+---- tasks::a::b stdout ----\n\
+thread 'a' panicked at src/lib.rs:42:\n\
+thread 'b' panicked at src/other.rs:7:3:\n\
+\n\
+failures:\n    tasks::a::b\n\n\
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        let receipt = classify(log, Some("abc123".to_string()));
+        assert_eq!(
+            receipt.panic_location.as_deref(),
+            Some("src/other.rs:7:3"),
+            "the second panic carries a column and is the one the receipt reports"
+        );
+    }
+
+    /// The gate reports whatever `path:line` a panic printed; the receipt has a
+    /// stricter path grammar. Sharing the parse must not make the gate stricter,
+    /// because `ci_explain` classifies on `site.is_some()` — a rejected path
+    /// turns a code regression into `unknown`.
+    #[test]
+    fn a_path_the_receipt_refuses_is_still_parsed_for_the_gate() {
+        let location =
+            cargo_failure::panic_location("thread 'x' panicked at 9lives/src/lib.rs:42:8:");
+        let location = location.expect("the shared reader parses path:line:column structurally");
+        assert_eq!(location.line_only(), "9lives/src/lib.rs:42");
+        assert!(
+            !cargo_failure::is_plausible_path(&location.path),
+            "and the receipt is free to refuse to report it"
         );
     }
 

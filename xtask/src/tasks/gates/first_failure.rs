@@ -23,18 +23,14 @@ pub fn parse_first_failure(output: &str, exit_code: i32) -> Option<FirstFailure>
     let lines: Vec<&str> = output.lines().collect();
 
     // The `... FAILED` result line wins over the `---- ... stdout ----` header,
-    // because it appears first in cargo's report.
+    // because it appears first in cargo's report. The header is a whole-log
+    // scan rather than a per-line one, so it costs one pass and only runs when
+    // no result line named a failure.
     let test_name = lines
         .iter()
         .find_map(|line| cargo_failure::failed_test_name(line).map(str::to_string))
         .or_else(|| {
-            lines.iter().find_map(|line| {
-                let trimmed = line.trim();
-                cargo_failure::failure_block_spans(trimmed)
-                    .into_iter()
-                    .next()
-                    .map(|block| block.name)
-            })
+            cargo_failure::failure_block_spans(output).into_iter().next().map(|block| block.name)
         });
 
     let mut site: Option<String> = None;
@@ -104,7 +100,6 @@ mod tests {
     use std::fs;
 
     use super::parse_first_failure;
-    use perl_lsp_ux_tests::cargo_failure;
     use perl_tdd_support::must_some_with;
 
     const CARGO_TEST_COMMAND: &str = "cargo test -p xtask --locked";
@@ -148,40 +143,87 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
-    /// The two surfaces read the same bytes. Before the shared reader they
-    /// disagreed here, and a disagreement is the failure mode: a diagnostic that
-    /// names one test in the gate summary and a different one in the UX receipt
-    /// cannot be acted on.
+    /// The drift this PR removes is a *disagreement between two surfaces*, so
+    /// the guard has to put both surfaces in one test. `xtask` is the only
+    /// crate that can see both, which is the whole reason this test lives here.
+    ///
+    /// It runs the real receipt over the same bytes and compares its two
+    /// named fields against the gate's. A test that only called the shared
+    /// reader would pass even if one consumer stopped using it.
     #[test]
-    fn gate_and_receipt_name_the_same_failing_test() {
+    fn gate_and_receipt_agree_on_the_same_log() -> anyhow::Result<()> {
+        let log = std::env::temp_dir().join("xtask-first-failure-agreement.log");
+        std::fs::write(&log, DOCTEST_LOG)?;
+
+        let receipt = perl_lsp_ux_tests::regression_receipt::run(
+            perl_lsp_ux_tests::regression_receipt::UxRegressionReceiptConfig {
+                input: log.clone(),
+                receipt: None,
+                sha: Some("agreement".to_string()),
+                exit_status_file: None,
+            },
+        )?;
+        let receipt_json: serde_json::Value = match &receipt {
+            perl_lsp_ux_tests::regression_receipt::UxRegressionReceiptOutput::Payload(text) => {
+                serde_json::from_str(text)?
+            }
+            perl_lsp_ux_tests::regression_receipt::UxRegressionReceiptOutput::Written(path) => {
+                serde_json::from_str(&std::fs::read_to_string(path)?)?
+            }
+        };
+        let _ = std::fs::remove_file(&log);
+
+        let failure =
+            must_some_with(parse_first_failure(DOCTEST_LOG, 101), "a first failure exists");
+
         assert_eq!(
-            cargo_failure::failed_test_names(DOCTEST_LOG),
-            vec![DOCTEST_NAME.to_string()],
-            "the shared reader must recover the same name the gate reports"
+            receipt_json["first_failing_test"].as_str(),
+            failure.test.as_deref(),
+            "the receipt and the gate must name the same failing test"
         );
-        let blocks = cargo_failure::failure_block_spans(DOCTEST_LOG);
-        assert_eq!(blocks.len(), 1, "the stdout block must be recognised");
-        assert_eq!(blocks[0].name, DOCTEST_NAME, "block header and result line are one identity");
-        assert!(
-            blocks[0].body(DOCTEST_LOG).contains("panicked at src/lib.rs:12:9:"),
-            "the block must carry its own panic, so the reader can scope it to this test"
+        let gate_site = failure.site.as_deref().unwrap_or_default();
+        let receipt_site = receipt_json["panic_location"].as_str().unwrap_or_default();
+        assert_eq!(
+            gate_site,
+            receipt_site.rsplit_once(':').map(|(head, _)| head).unwrap_or(receipt_site),
+            "the gate's file:line must be the receipt's file:line:column, minus the column"
+        );
+        assert_eq!(gate_site, "src/lib.rs:12", "and neither may be silently absent");
+        Ok(())
+    }
+
+    /// The `... FAILED` result line is absent here, so the name comes from the
+    /// block header. Cargo prints headers in failure order, and this alignment
+    /// with that order is a disclosed behaviour change, so it is pinned rather
+    /// than left to whichever header the old loop happened to end on.
+    #[test]
+    fn a_header_only_log_names_the_first_failing_block() {
+        let log = "failures:\n\n---- first::test stdout ----\nboom\n---- second::test stdout ----\nboom\n";
+        let failure =
+            must_some_with(parse_first_failure(log, 101), "a block header names a failing test");
+        assert_eq!(
+            failure.test.as_deref(),
+            Some("first::test"),
+            "headers are printed in failure order, so the first is the first failure"
         );
     }
 
+    /// The gate reports whatever `path:line` a panic printed. The receipt has a
+    /// stricter path grammar, and applying the receipt's rule in the shared
+    /// reader would narrow the gate's evidence — `ci_explain` classifies on
+    /// `site.is_some()`, so a refused path turns a code regression into
+    /// `unknown`.
     #[test]
-    fn both_surfaces_read_the_same_panic_location() {
-        let location = must_some_with(
-            cargo_failure::panic_location("thread 'x' panicked at src/lib.rs:12:9:"),
-            "the panic line names a location",
+    fn the_gate_still_reports_a_path_the_receipt_would_refuse() {
+        let failure = must_some_with(
+            parse_first_failure("thread 'x' panicked at 9lives/src/lib.rs:42:8:", 101),
+            "a panic line names a site",
         );
-        let failure =
-            must_some_with(parse_first_failure(DOCTEST_LOG, 101), "a first failure exists");
         assert_eq!(
             failure.site.as_deref(),
-            Some(location.line_only().as_str()),
-            "the gate's file:line is the shared reader's own line, column deliberately dropped"
+            Some("9lives/src/lib.rs:42"),
+            "sharing the parse must not narrow what the gate accepts"
         );
-        assert_eq!(location.with_column(), "src/lib.rs:12:9");
     }
 
     #[test]
