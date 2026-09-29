@@ -949,48 +949,39 @@ fn print_scalar_filehandle_heredoc_start(
 /// Used by `print_scalar_filehandle_heredoc_start` to reject method/function
 /// calls whose prefix spans a line break (#16163).
 fn previous_line_ends_with_arrow_or_ampersand(input: &str, line_start: usize) -> bool {
-    let bytes = input.as_bytes();
-    if line_start == 0 || line_start > bytes.len() {
+    if line_start == 0 || line_start > input.len() || !input.is_char_boundary(line_start) {
         return false;
     }
-    // The previous line lives between the most recent line terminator that
-    // sits *before* `line_start - 1` and the byte just before `line_start`.
-    // When `line_start` opens immediately after a `\n` or `\r`, that
-    // terminator is what ends the previous line, so we must look strictly
-    // *before* it for the line that precedes the previous line.
-    let mut scan_limit = line_start;
-    if scan_limit > 0 && matches!(bytes.get(scan_limit - 1), Some(b'\n') | Some(b'\r')) {
-        scan_limit -= 1;
-    }
-    let mut prev_newline_idx: Option<usize> = None;
-    if scan_limit > 0 {
-        for idx in (0..scan_limit).rev() {
-            match bytes.get(idx) {
-                Some(b'\n') | Some(b'\r') => {
-                    prev_newline_idx = Some(idx);
-                    break;
-                }
-                _ => {}
-            }
+    // Walk backwards over whole physical lines so CRLF terminators (a bare-CR
+    // stop must not end the backward search before the LF it pairs with),
+    // blank separator lines, and comment-only lines are all skipped: the call
+    // prefix lives on the nearest non-blank code line (#16163 review).
+    let mut end = line_start;
+    loop {
+        let before = &input[..end];
+        let trimmed_end = before.trim_end_matches(['\r', '\n']);
+        if trimmed_end.is_empty() {
+            return false;
         }
+        let line_start_idx = match trimmed_end.rfind(['\r', '\n']) {
+            Some(idx) => idx + 1,
+            None => 0,
+        };
+        let line = &trimmed_end[line_start_idx..];
+        // Strip a trailing `#` comment conservatively, then trailing blanks.
+        let code_part = match line.find('#') {
+            Some(idx) => &line[..idx],
+            None => line,
+        };
+        let trimmed = code_part.trim_end_matches([' ', '\t']);
+        if trimmed.is_empty() {
+            end = line_start_idx;
+            continue;
+        }
+        // A method arrow or a sigil continues the call onto the next line; a
+        // bare `>` (comparison / open angle) does not (#16163 review).
+        return trimmed.ends_with("->") || trimmed.ends_with('&');
     }
-    let prev_line_start = match prev_newline_idx {
-        Some(nl_idx) => nl_idx + 1,
-        None => 0,
-    };
-    let prev_line_end = scan_limit;
-    if prev_line_end <= prev_line_start {
-        return false;
-    }
-    let prev_line = &input[prev_line_start..prev_line_end];
-    // Strip a trailing `#`-comment if present. A `#` outside any string or
-    // pattern is the comment introducer; we treat it as such conservatively.
-    let code_part = match prev_line.find('#') {
-        Some(idx) => &prev_line[..idx],
-        None => prev_line,
-    };
-    let trimmed = code_part.trim_end_matches([' ', '\t']);
-    trimmed.ends_with("->") || trimmed.ends_with('&') || trimmed.ends_with('>')
 }
 
 /// Return `true` when a `sub` declaration carries an empty prototype at `end`.
@@ -1079,6 +1070,58 @@ fn parse_quoted_heredoc_label(line: &str, start: usize, quote: char) -> Option<(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn prev_line_call_prefix_survives_crlf_blank_and_comment_lines() {
+        // #16163 review: CRLF terminators, blank separator lines, and
+        // comment-only lines must not hide the call prefix.
+        let crlf = "obj->\r\nprint($fh <<E);\n";
+        let Some(line_start) = crlf.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&crlf, line_start));
+
+        let blank = "obj->
+
+print($fh <<E);
+";
+        let Some(line_start) = blank.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&blank, line_start));
+
+        let commented = "obj-> # chain
+print($fh <<E);
+";
+        let Some(line_start) = commented.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&commented, line_start));
+
+        let amp = "&
+print($fh <<E);
+";
+        let Some(line_start) = amp.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(previous_line_ends_with_arrow_or_ampersand(&amp, line_start));
+    }
+
+    #[test]
+    fn prev_line_bare_gt_is_not_a_call_prefix() {
+        // #16163 review: a bare `>` (comparison / open angle) does not make
+        // the next line's `print` a method target; only `->` and `&` do.
+        let source = "if ($a >
+print($fh <<E);
+";
+        let Some(line_start) = source.find("print") else {
+            unreachable!("print fixture must contain print");
+        };
+        assert!(!previous_line_ends_with_arrow_or_ampersand(&source, line_start));
+        assert!(!previous_line_ends_with_arrow_or_ampersand("", 0));
+    }
+
     use super::LocalSymbolTable;
     use crate::{LexerConfig, PerlLexer, TokenType};
 

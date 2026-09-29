@@ -669,6 +669,8 @@ impl<'a> PerlLexer<'a> {
         let saved_hash_brace_depth = self.hash_brace_depth;
         let saved_after_var_subscript = self.after_var_subscript;
         let saved_paren_depth = self.paren_depth;
+        let saved_print_list_parens = self.print_list_parens.clone();
+        let saved_pending_print_list_paren = self.pending_print_list_paren;
         let saved_current_pos = self.current_pos;
         let saved_after_newline = self.after_newline;
         let saved_pending_heredocs = self.pending_heredocs.clone();
@@ -688,6 +690,8 @@ impl<'a> PerlLexer<'a> {
         self.hash_brace_depth = saved_hash_brace_depth;
         self.after_var_subscript = saved_after_var_subscript;
         self.paren_depth = saved_paren_depth;
+        self.print_list_parens = saved_print_list_parens;
+        self.pending_print_list_paren = saved_pending_print_list_paren;
         self.current_pos = saved_current_pos;
         self.after_newline = saved_after_newline;
         self.pending_heredocs = saved_pending_heredocs;
@@ -728,6 +732,8 @@ impl<'a> PerlLexer<'a> {
         self.hash_brace_depth = 0;
         self.after_var_subscript = false;
         self.paren_depth = 0;
+        self.print_list_parens.clear();
+        self.pending_print_list_paren = false;
         self.current_pos = Position::start();
         self.after_newline = true;
         self.pending_heredocs.clear();
@@ -960,8 +966,12 @@ impl<'a> PerlLexer<'a> {
         // A nullary authority is different (#16165): `sub foo ()` and `time`
         // complete a term, so `foo <<END` and `time <<END` shift even at
         // statement level (local Perl oracle).
+        let print_filehandle_slot =
+            self.print_list_parens.last().is_some_and(|(enclosing_depth, seen_comma)| {
+                self.paren_depth == enclosing_depth + 1 && !seen_comma
+            });
         if self.mode == LexerMode::ExpectOperator
-            && ((self.paren_depth > 0 && self.print_list_paren_depth == 0)
+            && ((self.paren_depth > 0 && !print_filehandle_slot)
                 || self.preceding_word_is_nullary())
         {
             return None;
@@ -2654,7 +2664,10 @@ impl<'a> PerlLexer<'a> {
                 // consumed here even when nested prototypes re-enter the path.
                 if self.pending_print_list_paren {
                     self.pending_print_list_paren = false;
-                    self.print_list_paren_depth += 1;
+                    // Record the enclosing depth so the matching `)` pops
+                    // exactly this opener, never a nested paren (#16163
+                    // review).
+                    self.print_list_parens.push((self.paren_depth, false));
                 }
                 self.paren_depth += 1;
                 self.after_var_subscript = false;
@@ -2676,13 +2689,15 @@ impl<'a> PerlLexer<'a> {
                 }
                 self.after_arrow = false;
                 self.paren_depth = self.paren_depth.saturating_sub(1);
-                // A closing paren decrements the `print(...)` list-operator
-                // counter for #16163. We pop the most recent open print paren;
-                // nested parens inside the print list (e.g. `print((1)x<<E);`)
-                // do not change the counter because the inner `(` did not open
-                // a print list.
-                if self.print_list_paren_depth > 0 {
-                    self.print_list_paren_depth -= 1;
+                // A closing paren pops the `print(...)` opener it actually
+                // matches: the enclosing depth recorded at the opener equals
+                // this paren's depth after the decrement. A nested `)` inside
+                // the print list leaves the opener on the stack (#16163
+                // review).
+                if let Some((enclosing_depth, _)) = self.print_list_parens.last()
+                    && self.paren_depth == *enclosing_depth
+                {
+                    self.print_list_parens.pop();
                 }
                 // A closing paren ends any var-subscript context: `if ($var)` should
                 // NOT leave after_var_subscript set, otherwise the following `{` would
@@ -2714,6 +2729,14 @@ impl<'a> PerlLexer<'a> {
             }
             ',' => {
                 self.advance();
+                // A top-level comma inside a `print(...)` list ends the
+                // filehandle slot (#16163 review): later arguments are
+                // ordinary list terms, so a following `<<` is a shift.
+                if let Some((enclosing_depth, seen_comma)) = self.print_list_parens.last_mut()
+                    && self.paren_depth == *enclosing_depth + 1
+                {
+                    *seen_comma = true;
+                }
                 self.after_var_subscript = false;
                 self.mode = LexerMode::ExpectTerm;
                 Some(Token {

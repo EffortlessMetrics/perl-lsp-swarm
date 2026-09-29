@@ -30,7 +30,12 @@ pub struct PerlLexer<'a> {
     /// preceding `->` or `&`). Inside those parens, in `ExpectOperator` mode,
     /// `<<` is recognized as a heredoc opener; the same `<<` outside those
     /// parens is the left-shift operator. Tracked for #16163.
-    pub(crate) print_list_paren_depth: u32,
+    /// Open `print(...)` list-operator parens as `(enclosing_paren_depth,
+    /// seen_top_level_comma)` pairs, ordered innermost-last (#16163
+    /// review). The enclosing depth is the `paren_depth` at which the
+    /// print opener's `(` was consumed, so a nested `)` pops only the
+    /// entry it actually closes.
+    pub(crate) print_list_parens: Vec<(usize, bool)>,
     /// Set by the identifier-or-keyword handler when a `print` keyword/identifier
     /// at term position is immediately followed (after horizontal whitespace) by
     /// `(`. Consumed by the `(` handler in `try_delimiter` to record that the
