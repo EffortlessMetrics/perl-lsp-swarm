@@ -4341,14 +4341,22 @@ mod tests {
                 == vec!["lib-b".to_string()],
             "null invalidation must preserve B's include paths",
         )?;
-        let invalidated = output.messages()?;
-        let request = invalidated
-            .iter()
-            .rev()
-            .find(|message| {
+        // The outbound writer runs on another thread. A synchronous snapshot
+        // after didChangeConfiguration can precede its queued request under
+        // parallel test load, even though the request was accepted.
+        let request_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let (invalidated, request) = loop {
+            let observed = output.messages()?;
+            if let Some(request) = observed.iter().rev().find(|message| {
                 message.get("method").and_then(Value::as_str) == Some("workspace/configuration")
-            })
-            .ok_or("scoped configuration request missing")?;
+            }) {
+                break (observed.clone(), request.clone());
+            }
+            if std::time::Instant::now() >= request_deadline {
+                return Err(format!("scoped configuration request missing: {observed:?}").into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         let id = request.get("id").ok_or("configuration request id missing")?;
         verify(
             request.pointer("/params/items/1/scopeUri") == Some(&json!(a_uri)),
