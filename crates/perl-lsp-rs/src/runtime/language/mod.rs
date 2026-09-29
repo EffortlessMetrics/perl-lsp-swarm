@@ -31,6 +31,7 @@ mod misc;
 mod missing_module_lookup;
 mod moniker;
 mod navigation;
+mod reference_text;
 mod references;
 mod rename;
 mod semantic_tokens;

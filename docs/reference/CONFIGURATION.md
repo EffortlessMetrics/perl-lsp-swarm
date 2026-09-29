@@ -331,9 +331,6 @@ Editor settings:
       "resolutionTimeout": 100
     },
     "limits": {
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 2000000,
-      "workspaceScanDeadlineMs": 120000,
       "workspaceSymbolCap": 300,
       "referencesCap": 1000
     }
@@ -343,7 +340,6 @@ Editor settings:
 
 Tips for large codebases:
 - Keep `useSystemInc: false` — system `@INC` queries block on network filesystems
-- Increase `workspaceScanDeadlineMs` to give the initial index time to complete
 - If the server feels slow on first open, it is indexing. Subsequent opens are fast.
 
 ---
@@ -364,13 +360,9 @@ Running on a VM, container, or remote SSH session with limited RAM or slow I/O:
       "enabled": false
     },
     "limits": {
-      "maxIndexedFiles": 3000,
-      "maxTotalSymbols": 100000,
-      "astCacheMaxEntries": 30,
       "workspaceSymbolCap": 100,
       "referencesCap": 200,
       "completionCap": 50,
-      "workspaceScanDeadlineMs": 15000,
       "referenceSearchDeadlineMs": 1000
     }
   }
@@ -473,9 +465,6 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
       "workspaceSymbolCap": 200,
       "referencesCap": 500,
       "completionCap": 100,
-      "maxIndexedFiles": 10000,
-      "maxTotalSymbols": 500000,
-      "workspaceScanDeadlineMs": 30000
     }
   },
 
@@ -558,13 +547,12 @@ perllsp --features-json --feature-profile production | python3 -m json.tool
 
 ### Server is slow to start on a large project
 
-This is expected on first open — the server is indexing your workspace. Subsequent opens are fast (the index is cached). If it is taking more than a few minutes, raise `workspaceScanDeadlineMs`:
+This is expected on first open — the server is indexing your workspace. Subsequent opens are fast (the index is cached). If it is taking more than a few minutes, exclude cold directories with `.perl-lspignore`:
 
 ```json
 {
   "perl": {
     "limits": {
-      "workspaceScanDeadlineMs": 120000
     }
   }
 }

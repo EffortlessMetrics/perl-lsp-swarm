@@ -3,7 +3,7 @@ mod claude;
 mod mcp;
 
 use perllsp::protocol::product_identity::{
-    BinaryIdentityPacketV1, IdentityOutputFormat, requested_identity_output,
+    BinaryIdentityPacketV1, IdentityOutputFormat, IdentityRequest, requested_identity,
 };
 use std::io::Write as _;
 
@@ -21,7 +21,17 @@ struct ClaudeProductInvocation {
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    if let Some(format) = requested_identity_output(&args) {
+
+    // The one-shot identity surface is resolved ahead of the ordinary parser, so
+    // a mix is reported here rather than reaching clap — which would deny
+    // `--identity` as an unknown option, or answer a requested JSON packet with
+    // the human `--info` projection.
+    let identity = requested_identity(&args);
+    if let Some(message) = identity.rejection_message() {
+        let _ = writeln!(std::io::stderr(), "{message}");
+        return std::process::ExitCode::FAILURE;
+    }
+    if let IdentityRequest::Output(format) = identity {
         let packet = BinaryIdentityPacketV1::embedded_server(env!("CARGO_PKG_VERSION"));
         let rendered = match format {
             IdentityOutputFormat::Human => packet.to_human(),

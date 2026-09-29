@@ -1,0 +1,4 @@
+component: "Developer experience"
+kind: Fixed
+body: "The shared CLI's unknown-shell completion fallback now lists `pwsh` (`bash, zsh, fish, powershell, pwsh`), matching the `InvalidShell` diagnostic and `--help`; the fallback remains unreachable through `run_cli` because `parse_args` rejects unknown shells first (#16603)."
+time: 2026-09-28T05:46:27Z
