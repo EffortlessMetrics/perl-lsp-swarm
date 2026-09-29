@@ -79,7 +79,7 @@ pub struct BodyExtractionResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LexicalExtractorReceipt {
-    /// Schema version (currently 2).
+    /// Schema version (currently 3).
     pub schema_version: u32,
     /// Per-body extraction results, in order.
     pub bodies: Vec<BodyExtractionResult>,
@@ -143,26 +143,28 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
             match &pir_node.operation {
                 PirOperation::LexicalRead { name } if pir_node.source_anchor.is_anchored() => {
                     anchored_node_count += 1;
-                    facts.push(LexicalBindingFact {
-                        name: name.clone(),
-                        role: LexicalRole::Read,
-                        source_anchor: pir_node.source_anchor.clone(),
+                    push_anchored_lexical_fact(
+                        &mut facts,
+                        name.clone(),
+                        LexicalRole::Read,
+                        &pir_node.source_anchor,
                         body_idx,
-                        body_owner: owner.clone(),
-                        binding: binding_for_anchor(&bindings_by_range, &pir_node.source_anchor),
-                    });
+                        &owner,
+                        &bindings_by_range,
+                    );
                     total_read_count += 1;
                 }
                 PirOperation::LexicalWrite { name } if pir_node.source_anchor.is_anchored() => {
                     anchored_node_count += 1;
-                    facts.push(LexicalBindingFact {
-                        name: name.clone(),
-                        role: LexicalRole::Write,
-                        source_anchor: pir_node.source_anchor.clone(),
+                    push_anchored_lexical_fact(
+                        &mut facts,
+                        name.clone(),
+                        LexicalRole::Write,
+                        &pir_node.source_anchor,
                         body_idx,
-                        body_owner: owner.clone(),
-                        binding: binding_for_anchor(&bindings_by_range, &pir_node.source_anchor),
-                    });
+                        &owner,
+                        &bindings_by_range,
+                    );
                     total_write_count += 1;
                 }
                 PirOperation::Modify { .. }
@@ -204,6 +206,25 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
         dynamic_boundary_count,
         provider_behavior_changed: false,
     }
+}
+
+fn push_anchored_lexical_fact(
+    facts: &mut Vec<LexicalBindingFact>,
+    name: LexicalName,
+    role: LexicalRole,
+    source_anchor: &PirSourceAnchor,
+    body_idx: usize,
+    owner: &BodyOwnerKind,
+    bindings_by_range: &BTreeMap<(usize, usize), HirBindingId>,
+) {
+    facts.push(LexicalBindingFact {
+        name,
+        role,
+        source_anchor: source_anchor.clone(),
+        body_idx,
+        body_owner: owner.clone(),
+        binding: binding_for_anchor(bindings_by_range, source_anchor),
+    });
 }
 
 /// Index canonical HIR bindings by the source range of each occurrence.

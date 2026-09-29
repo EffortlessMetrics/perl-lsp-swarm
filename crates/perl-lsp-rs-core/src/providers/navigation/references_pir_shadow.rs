@@ -272,7 +272,9 @@ fn evaluate_refusal(
 /// # Comparison algorithm
 ///
 /// 1. Build the compiler set: anchored facts in `receipt.bodies[target_body_idx]`
-///    whose bare name equals `target_name`, projected to `(start, end)` byte pairs.
+///    whose bare name equals `target_name` and which belong to the selected
+///    HIR binding (outermost Write when no cursor is supplied), projected to
+///    `(start, end)` byte pairs.
 /// 2. Build the legacy set from `legacy_result`.
 /// 3. Sites in exactly one set are *candidates* for disagreement. Greedily pair a
 ///    legacy-only site with the first unused compiler-only site whose start is
@@ -306,11 +308,13 @@ pub fn shadow_references_with_pir(
 
     let legacy_set: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
 
-    // Build the compiler set: anchored facts for `target_name` (bare name) in the target body.
-    let compiler_ranges: BTreeSet<(usize, usize)> = receipt.bodies[target_body_idx]
+    let matching: Vec<_> = receipt.bodies[target_body_idx]
         .facts
         .iter()
-        .filter(|f| f.name.name == target_name && f.source_anchor.is_anchored())
+        .filter(|fact| fact.name.name == target_name && fact.source_anchor.is_anchored())
+        .collect();
+    let compiler_ranges: BTreeSet<(usize, usize)> = facts_for_selected_binding(matching, None)
+        .into_iter()
         .filter_map(|fact| {
             lexical_fact_range(fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
         })
@@ -524,16 +528,10 @@ fn evaluate_pir_reference_candidate(
         return Err(PirShadowRefusalReason::NoExactFacts);
     }
 
-    let selected_binding = binding_for_query(&matching, opts.query_byte_offset);
+    let matching = facts_for_selected_binding(matching, opts.query_byte_offset);
     let mut declaration_skipped = false;
     let mut ranges: Vec<lsp_types::Range> = Vec::new();
     for fact in matching {
-        if let Some(selected) = selected_binding {
-            match fact.binding {
-                Some(binding) if binding == selected => {}
-                _ => continue,
-            }
-        }
         if !opts.include_declaration && !declaration_skipped && fact.role == LexicalRole::Write {
             declaration_skipped = true;
             continue;
@@ -554,6 +552,21 @@ fn evaluate_pir_reference_candidate(
     ranges.dedup();
 
     Ok(ranges)
+}
+
+/// Keep only the facts that belong to the binding selected for this query.
+fn facts_for_selected_binding<'a>(
+    matching: Vec<&'a LexicalBindingFact>,
+    query_byte_offset: Option<usize>,
+) -> Vec<&'a LexicalBindingFact> {
+    let selected = binding_for_query(&matching, query_byte_offset);
+    matching
+        .into_iter()
+        .filter(|fact| match selected {
+            Some(selected) => fact.binding == Some(selected),
+            None => true,
+        })
+        .collect()
 }
 
 /// Select the HIR binding PromoteExact should return for one name+sigil set.

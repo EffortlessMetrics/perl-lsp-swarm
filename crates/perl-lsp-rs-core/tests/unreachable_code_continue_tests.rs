@@ -80,7 +80,8 @@ fn for_and_foreach_continue_blocks_use_the_same_local_flow_contract()
 #[test]
 fn c_style_for_continue_block_is_a_parse_error_not_a_pl406_contract()
 -> Result<(), Box<dyn std::error::Error>> {
-    let source = r#"for (my $i = 0; $i < 3; $i++) { work(); } continue { die "err"; print "dead"; }"#;
+    let source =
+        r#"for (my $i = 0; $i < 3; $i++) { work(); } continue { die "err"; print "dead"; }"#;
     let mut parser = Parser::new(source);
     match parser.parse() {
         Err(ParseError::CStyleForContinueBlock { .. }) => Ok(()),

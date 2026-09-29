@@ -5414,8 +5414,10 @@ pub fn perl_lsp_rs_core::providers::references_pir_shadow::RangeDisagreement::eq
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::RangeDisagreement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::navigation::references_pir_shadow::ReferenceOptions
 pub perl_lsp_rs_core::providers::navigation::references_pir_shadow::ReferenceOptions::include_declaration: bool
+pub perl_lsp_rs_core::providers::navigation::references_pir_shadow::ReferenceOptions::query_byte_offset: core::option::Option<usize>
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::clone(&self) -> perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::eq(&self, other: &perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions) -> bool
+pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::default() -> perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_lsp_rs_core::providers::navigation::references_pir_shadow::DEFAULT_PROMOTION_MODE: perl_lsp_rs_core::providers::references_pir_shadow::PromotionMode
 pub fn perl_lsp_rs_core::providers::navigation::references_pir_shadow::references_pir_promote(mode: perl_lsp_rs_core::providers::references_pir_shadow::PromotionMode, target_sigil: &str, target_name: &str, pir_receipt: &perl_parser_core::pir::extractor::LexicalExtractorReceipt, legacy_result: &[(usize, usize)], target_body_idx: usize, uri_mapper: &dyn core::ops::function::Fn(usize, usize) -> lsp_types::Range, opts: perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions) -> perl_lsp_rs_core::providers::references_pir_shadow::ReferencesPirPromoteOutcome
@@ -5527,8 +5529,10 @@ pub fn perl_lsp_rs_core::providers::NavigationProvider::new() -> perl_lsp_rs_cor
 pub fn perl_lsp_rs_core::providers::NavigationProvider::default() -> perl_lsp_rs_core::providers::NavigationProvider
 pub struct perl_lsp_rs_core::providers::navigation::ReferenceOptions
 pub perl_lsp_rs_core::providers::navigation::ReferenceOptions::include_declaration: bool
+pub perl_lsp_rs_core::providers::navigation::ReferenceOptions::query_byte_offset: core::option::Option<usize>
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::clone(&self) -> perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::eq(&self, other: &perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions) -> bool
+pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::default() -> perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::navigation::TypeDefinitionProvider
 pub fn perl_lsp_rs_core::providers::TypeDefinitionProvider::new() -> perl_lsp_rs_core::providers::TypeDefinitionProvider
@@ -6322,8 +6326,10 @@ pub fn perl_lsp_rs_core::providers::references_pir_shadow::RangeDisagreement::eq
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::RangeDisagreement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions
 pub perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::include_declaration: bool
+pub perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::query_byte_offset: core::option::Option<usize>
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::clone(&self) -> perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::eq(&self, other: &perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions) -> bool
+pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::default() -> perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_lsp_rs_core::providers::references_pir_shadow::DEFAULT_PROMOTION_MODE: perl_lsp_rs_core::providers::references_pir_shadow::PromotionMode
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::references_pir_promote(mode: perl_lsp_rs_core::providers::references_pir_shadow::PromotionMode, target_sigil: &str, target_name: &str, pir_receipt: &perl_parser_core::pir::extractor::LexicalExtractorReceipt, legacy_result: &[(usize, usize)], target_body_idx: usize, uri_mapper: &dyn core::ops::function::Fn(usize, usize) -> lsp_types::Range, opts: perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions) -> perl_lsp_rs_core::providers::references_pir_shadow::ReferencesPirPromoteOutcome
@@ -9351,8 +9357,10 @@ pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::new(rps: f64, bur
 pub fn perl_lsp_rs_core::providers::rate_limiter::RateLimiter::try_acquire(&self) -> bool
 pub struct perl_lsp_rs_core::providers::ReferenceOptions
 pub perl_lsp_rs_core::providers::ReferenceOptions::include_declaration: bool
+pub perl_lsp_rs_core::providers::ReferenceOptions::query_byte_offset: core::option::Option<usize>
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::clone(&self) -> perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::eq(&self, other: &perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions) -> bool
+pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::default() -> perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions
 pub fn perl_lsp_rs_core::providers::references_pir_shadow::ReferenceOptions::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::RelatedInformation
 pub perl_lsp_rs_core::providers::RelatedInformation::location: (usize, usize)
