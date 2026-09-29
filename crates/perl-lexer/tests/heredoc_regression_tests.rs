@@ -269,6 +269,22 @@ fn ampersand_call_bypasses_nullary_prototype_so_marker_is_heredoc() {
 }
 
 #[test]
+fn parenthesized_ampersand_call_keeps_the_shift_reading() {
+    // Lexer `try_heredoc` rejects a heredoc after a completed term inside
+    // parentheses. The scanner must not consume `sub visible` as body prose.
+    let source = "sub foo () { 1 }\nmy $x = (&foo <<END);\nsub visible { }\nEND\n";
+    let table = LocalSymbolTable::scan_subs(source);
+    assert!(table.is_known_sub("visible"), "parenthesized shift hid live code: {source:?}");
+
+    let config = LexerConfig { symbol_table: Some(table), ..Default::default() };
+    let tokens = PerlLexer::with_config(source, config).collect_tokens();
+    assert!(
+        !tokens.iter().any(|t| matches!(t.token_type, TokenType::HeredocStart)),
+        "lexer must keep the parenthesized shift reading for (&foo <<END): {source:?}"
+    );
+}
+
+#[test]
 fn unprototyped_sub_keeps_heredoc_reading_negative_control() {
     // Mandatory negative control (local Perl oracle): an unprototyped `foo`
     // can still take arguments, so `print foo <<'END'` IS a heredoc — the

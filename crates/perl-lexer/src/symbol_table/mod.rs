@@ -857,8 +857,9 @@ fn heredoc_allowed_before(
     // bypasses that prototype, so `<<END` is a heredoc argument (perl 5.42 and
     // lexer `preceding_bareword`, #16445). Immediate adjacency is the call
     // sigil, matching the lexer; binary `1 & foo` and spaced `& foo` keep the
-    // shift reading. Variable sigils name completed terms: `$print <<'END'`
-    // is left shift.
+    // shift reading. An unmatched `(` on the prefix keeps the lexer's
+    // parenthesized shift (`(&foo <<END)`). Variable sigils name completed
+    // terms: `$print <<'END'` is left shift.
     previous_word_and_sigil_before(line, offset).is_some_and(|(sigil, word)| {
         // A sigiled word is a completed term first: `$print <<'END'` and the
         // typeglob/last-index forms are left shifts, never heredoc
@@ -877,12 +878,30 @@ fn heredoc_allowed_before(
         let immediately_before = &prefix[..prefix.len() - word.len()];
         let before_word = immediately_before.trim_end_matches([' ', '\t']);
         let is_return_keyword = word == "return" && !before_word.ends_with("->");
+        // Adjacent `&foo` skips nullary prototype reasoning (perl 5.42 + lexer
+        // `preceding_bareword`). Inside parentheses the lexer still reads `<<`
+        // as a shift after a completed term (`try_heredoc` paren_depth), so an
+        // unmatched `(` on this prefix keeps the nullary/shift path.
+        let ampersand_call =
+            immediately_before.ends_with('&') && !prefix_has_unmatched_open_paren(prefix);
         is_return_keyword
-            || immediately_before.ends_with('&')
+            || ampersand_call
             || (is_callable_word(word, known_subs, &hints.callables)
                 && !is_nullary_word(word, nullaries, hints)
                 && !is_nullary_builtin(word))
     })
+}
+
+fn prefix_has_unmatched_open_paren(prefix: &str) -> bool {
+    let mut depth = 0usize;
+    for ch in prefix.chars() {
+        match ch {
+            '(' => depth = depth.saturating_add(1),
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth > 0
 }
 
 /// Recognize the immediate scalar-filehandle `print $handle LIST` term slot.
@@ -1147,6 +1166,22 @@ mod tests {
             "sub Foo::bar () { 1 }\nmy $x = &Foo::bar <<END;\nsub phantom { }\nEND\nsub real { }\n",
             &["real"],
             &["phantom"],
+        );
+        // No-space `1&foo` still has an adjacent `&` on the word; the lexer
+        // voids it the same way and emits HeredocStart. Matching that reading
+        // is the #16445 contract, not perl 5.38.2's shift.
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = 1&foo <<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        // Inside parentheses the lexer keeps `<<` as a shift after a completed
+        // term (`try_heredoc` paren_depth). The `&` bypass must not hide those
+        // live declarations.
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = (&foo <<END);\nsub visible { }\nEND\n",
+            &["visible"],
+            &[],
         );
     }
 
