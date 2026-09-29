@@ -391,7 +391,7 @@ fn load_workspace_config(
             include_source: "default includePaths",
             rejected_include_paths: Vec::new(),
         }),
-        Err(error) => Err(format!("{}: {error}", workspace.join(".perl-lsp.toml").display())),
+        Err(error) => Err(format!("{}: {error}", display_path(&workspace.join(".perl-lsp.toml")))),
     }
 }
 
@@ -1018,7 +1018,7 @@ fn build_repo_entrypoints_report() -> RepoEntrypointsReport {
             marker: REPO_ENTRYPOINT_MARKER,
             located: true,
             complete: Some(repo_entrypoints_complete(&root)),
-            note: format!("repository root: {}", root.display()),
+            note: format!("repository root: {}", display_path(&root)),
         },
     }
 }
@@ -2375,7 +2375,7 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
     for flavor in &report.bash_flavors {
         out.push_str(&format!("  - {}: {}", flavor.flavor, flavor.status));
         if let Some(path) = &flavor.bash_path {
-            out.push_str(&format!(" | {path}"));
+            out.push_str(&format!(" | {}", display_path_text(path)));
         }
         out.push_str(&format!(
             " | runs repo entrypoints: {}",
@@ -2455,11 +2455,90 @@ fn truncate_for_detail(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// Renders `path` for the human-readable doctor report.
+///
+/// Doctor is an action report: its `Next steps` section tells the user which
+/// paths to act on. On Windows `Path::canonicalize` returns the extended-length
+/// `\\?\` spelling (it is `GetFinalPathNameByHandleW` underneath), and `cmd.exe`
+/// refuses that spelling as a working directory — it reports "CMD does not
+/// support UNC paths as current directories", silently falls back to the Windows
+/// directory, and exits 1. So the text surface prints the plain form whenever
+/// the plain form is expressible, and keeps the prefix only where dropping it
+/// would change which path is meant (#16662).
+///
+/// Display-only. Canonicalized values stay extended in the `--json` surface and
+/// in every filesystem operation: the extended spelling is the lossless one,
+/// and this is the boundary that trades it for a pasteable one.
+fn display_path(path: &Path) -> String {
+    display_path_text(&path.display().to_string())
+}
+
+/// Longest plain-namespace Windows path in characters, excluding the
+/// terminator. Past this the Win32 layer truncates the plain spelling, which is
+/// the whole reason the extended form exists, so a longer path keeps its prefix.
+#[cfg(windows)]
+const MAX_PLAIN_PATH_CHARS: usize = 259;
+
+/// Renders already-rendered path text for the human-readable doctor report.
+///
+/// Same contract as [`display_path`], for the report fields that were
+/// stringified where they were built rather than held as a `PathBuf`.
+#[cfg(windows)]
+fn display_path_text(text: &str) -> String {
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return text.to_string();
+    };
+
+    // `\\?\UNC\server\share` is the extended spelling of the `\\server\share`
+    // namespace. Every other `\\?\` namespace — volume GUID, `GLOBALROOT`,
+    // device object — has no plain spelling at all, so those stay extended
+    // rather than being rendered as a path that resolves elsewhere or nowhere.
+    let plain = match rest.strip_prefix(r"UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None if is_drive_anchored(rest) => rest.to_string(),
+        None => return text.to_string(),
+    };
+
+    // The extended namespace skips Win32 normalization, so an extended path may
+    // carry forward slashes, `.`/`..` components, a character the plain
+    // namespace rejects, or a length it cannot hold. Each of those makes the
+    // plain form a *different* path, so keep the prefix and give up
+    // pasteability rather than give up meaning.
+    if plain.chars().count() > MAX_PLAIN_PATH_CHARS
+        || plain.split(['\\', '/']).any(|component| component == "." || component == "..")
+        || plain
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '<' | '>' | '|' | '"' | '?' | '*'))
+    {
+        return text.to_string();
+    }
+
+    plain
+}
+
+/// True for an absolute `C:\`-anchored remainder, which is the only non-UNC
+/// `\\?\` namespace with a plain spelling. A drive-relative remainder
+/// (`\\?\C:rest`) is deliberately excluded: the plain form would resolve
+/// against a different current drive.
+#[cfg(windows)]
+fn is_drive_anchored(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    matches!(chars.next(), Some(drive) if drive.is_ascii_alphabetic())
+        && matches!(chars.next(), Some(':'))
+        && matches!(chars.next(), Some('\\'))
+}
+
+/// Non-Windows paths are never extended-length, so this is the identity.
+#[cfg(not(windows))]
+fn display_path_text(text: &str) -> String {
+    text.to_string()
+}
+
 fn render_report(report: DoctorReport) -> String {
     let mut out = String::new();
     out.push_str("perl-lsp doctor\n");
     out.push_str("===============\n\n");
-    out.push_str(&format!("Workspace: {}\n", report.workspace.display()));
+    out.push_str(&format!("Workspace: {}\n", display_path(&report.workspace)));
     out.push_str(&format!("Project config: {}\n", render_project_config_status(&report.config)));
     if !report.config.rejected_include_paths.is_empty() {
         out.push_str("Rejected .perl-lsp.toml include_paths entries:\n");
@@ -2491,7 +2570,7 @@ fn render_report(report: DoctorReport) -> String {
     out.push_str(&format!("System @INC: {}\n", report.system_inc.status));
     if !report.system_inc.paths.is_empty() {
         for path in &report.system_inc.paths {
-            out.push_str(&format!("  - {}\n", path.display()));
+            out.push_str(&format!("  - {}\n", display_path(path)));
         }
     }
     out.push('\n');
@@ -2548,7 +2627,7 @@ fn render_project_config_status(config: &ProjectConfigReport) -> &'static str {
 
 fn render_perl_binary(report: &PerlReport) -> String {
     match &report.binary {
-        Some(path) => format!("{} ({})", path.display(), report.source),
+        Some(path) => format!("{} ({})", display_path(path), report.source),
         None => format!("not found ({})", report.source),
     }
 }
@@ -2577,7 +2656,7 @@ fn render_tool_report(report: &ToolReport) -> String {
                 .map(|version| version.to_string())
                 .or_else(|| report.error.as_ref().map(|error| error.summary()))
                 .unwrap_or_else(|| "version unavailable".to_string());
-            format!("{} ({}); {}", path.display(), report.source, status)
+            format!("{} ({}); {}", display_path(path), report.source, status)
         }
         None => {
             let error = report
@@ -2619,7 +2698,7 @@ fn render_path_reports(out: &mut String, reports: &[PathReport]) {
     for report in reports {
         out.push_str(&format!(
             "  - {} ({}, {}; raw: {})\n",
-            report.resolved.display(),
+            display_path(&report.resolved),
             report.source,
             report.status,
             report.raw
@@ -3595,6 +3674,105 @@ mod tests {
         assert!(rendered.contains("Install perltidy (cpanm Perl::Tidy)"));
         assert!(rendered.contains("Install perlcritic (cpanm Perl::Critic)"));
         Ok(())
+    }
+
+    #[test]
+    fn doctor_report_workspace_line_is_pasteable_in_cmd() -> TestResult {
+        // The defect (#16662): `workspace_dir` canonicalizes, and on Windows
+        // `canonicalize` returns the extended-length `\\?\` spelling, which
+        // `cmd.exe` refuses as a working directory. Assert the rendered line
+        // carries the plain form. On non-Windows the canonical path is already
+        // plain, so this is the retained-behavior half of the same contract.
+        let temp = tempfile::tempdir()?;
+        let workspace = workspace_dir(temp.path().to_str().ok_or("non-UTF-8 temp path")?)?;
+        let workspace_text = workspace.display().to_string();
+
+        let rendered = render_report(DoctorReport {
+            workspace,
+            config: ProjectConfigReport {
+                status: ProjectConfigStatus::Missing,
+                include_source: "default includePaths",
+                rejected_include_paths: Vec::new(),
+            },
+            perl: PerlReport {
+                binary: None,
+                source: "PATH",
+                version: None,
+                error: Some(ReportFailure::Message("perl binary not found on PATH".to_string())),
+            },
+            perltidy: probe_tool_with_resolver("perltidy", "--version", |_| None),
+            perlcritic: probe_tool_with_resolver("perlcritic", "--version", |_| None),
+            perl5lib_paths: Vec::new(),
+            perl5lib_enabled: false,
+            perl5lib_precedence: Perl5LibPrecedence::Prepend,
+            configured_paths: Vec::new(),
+            effective_paths: Vec::new(),
+            system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
+            text_sync_envelope: TextSyncEnvelopeReport {
+                decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
+                text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
+                position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
+            },
+        });
+
+        let line = rendered
+            .lines()
+            .find(|line| line.starts_with("Workspace: "))
+            .ok_or("doctor report has no Workspace line")?;
+        assert_eq!(line, &format!("Workspace: {}", display_path(&PathBuf::from(&workspace_text))));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_keeps_verbatim_form_where_the_plain_form_would_be_lossy() {
+        // The negative control that discriminates a conditional strip from an
+        // unconditional one: a path the plain namespace cannot hold, and
+        // namespaces with no plain spelling at all, must stay verbatim.
+        let too_long = format!(r"\\?\C:\{}", "d".repeat(MAX_PLAIN_PATH_CHARS));
+        assert_eq!(
+            display_path_text(&too_long),
+            too_long,
+            "a path past MAX_PATH must keep its prefix"
+        );
+
+        for text in [
+            r"\\?\Volume{9f1c2a3b-0000-0000-0000-000000000000}\dir",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\dir",
+            r"\\?\C:relative\to\thing",
+            r"\\?\C:\dir\.\other",
+        ] {
+            assert_eq!(display_path_text(text), text, "{text} has no lossless plain form");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_de_verbatims_the_plain_namable_forms() {
+        assert_eq!(display_path_text(r"\\?\C:\code\proj"), r"C:\code\proj");
+        assert_eq!(display_path_text(r"\\?\UNC\server\share\dir"), r"\\server\share\dir");
+        // Retained: anything already plain is returned untouched.
+        assert_eq!(display_path_text(r"C:\code\proj"), r"C:\code\proj");
+        assert_eq!(display_path_text("/usr/bin/perl"), "/usr/bin/perl");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolved_include_path_rows_are_pasteable_too() {
+        // The issue transcript showed the prefix on every resolved include-path
+        // row, not only the `Workspace:` line: those rows are resolved against
+        // the canonicalized root, so they inherit the same extended spelling.
+        let mut out = String::new();
+        render_path_reports(
+            &mut out,
+            &[PathReport {
+                raw: "lib".to_string(),
+                resolved: PathBuf::from(r"\\?\C:\code\proj\lib"),
+                source: "default includePaths",
+                status: "missing",
+            }],
+        );
+        assert_eq!(out, "  - C:\\code\\proj\\lib (default includePaths, missing; raw: lib)\n");
     }
 
     #[test]
