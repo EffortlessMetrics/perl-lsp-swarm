@@ -19,7 +19,7 @@ verify the binary before wiring it into shared automation.
 Use one of the public install paths that matches how you work:
 
 - VS Code: install the `EffortlessMetrics.perl-lsp-rs` extension and let it download the matching `perllsp` binary.
-- macOS or Linux: use the [manual archive](#manual-archive) until the release packet publishes an immutable installer identity and digest. The identity-bound [installer wrapper](#installer-script-macos-and-linux) becomes usable when those values exist.
+- macOS or Linux: use the [macOS and Linux manual archive](#macos-and-linux-manual-archive) until the release packet publishes an immutable installer identity and digest. The identity-bound [installer wrapper](#installer-script-macos-and-linux) becomes usable when those values exist.
 - Windows: install from the [manual archive](#manual-archive), or use the [published PowerShell script](#published-powershell-script) for `perllsp.exe` only after reviewing its checksum limitations.
 - Other editors: download a prebuilt binary from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) and put it on your `PATH`.
 - Local testing or pre-release validation: install from this repo with `cargo install --path crates/perllsp`.
@@ -83,7 +83,8 @@ curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTAL
 Do not substitute a digest downloaded from the same unverified mutable source
 at runtime. The digest must come from the reviewed release/topology closeout or
 another independently reviewed repository record. Until such a digest is
-published, use a manual release archive or a reviewed clone.
+published, use the [macOS and Linux manual archive](#macos-and-linux-manual-archive)
+or the clone-local installer above.
 
 Installer options remain environment variables on the `bash` side of the
 pipeline:
@@ -155,9 +156,9 @@ persistence, and hosted install-transition proof remain separate under
 [#7832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7832),
 [#5903](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5903), and
 [#10746](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10746).
-Use the manual archive with independently reviewed checksum or attestation
-evidence for release-sensitive installation until those remaining boundaries
-land.
+Use the [macOS and Linux manual archive](#macos-and-linux-manual-archive) with
+independently reviewed checksum or attestation evidence for release-sensitive
+installation until those remaining boundaries land.
 
 `BUILD_FROM_SOURCE=1` installs **`perllsp` only**, not `perl-dap`. That mode runs
 `cargo install perllsp`. The crates.io package `perl-lsp` is a different project,
@@ -166,6 +167,56 @@ the debug adapter is skipped without an error. If you need the
 debugger, use a release archive instead — the archives ship both binaries — or
 build `perl-dap` yourself from a clone with
 `cargo build -p perl-dap --release`.
+
+## macOS and Linux manual archive
+
+This is the working POSIX recovery path while the identity-bound piped
+bootstrap is unpublished. It does not execute `install.sh`, and it does not
+need `PERL_LSP_INSTALLER_REF` or `PERL_LSP_INSTALLER_SHA256`.
+
+1. Open [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases)
+   and choose the `perllsp-<version>-<target>.tar.gz` whose suffix matches the
+   [prebuilt table](#prebuilt-releases). Check the latest release page before
+   copying a version number. The verified public-beta example on this page is
+   `v0.17.0`.
+2. Download that archive and the same release's `SHA256SUMS` file. Both are
+   co-hosted by the release: matching them proves artifact integrity, not
+   independent publisher provenance.
+3. Verify the selected asset, then extract it. The published layout is a
+   package directory named like the archive stem; it contains `perllsp` and
+   `perl-dap`.
+
+```bash
+# Replace VERSION and TARGET after checking GitHub Releases.
+VERSION=0.17.0
+TARGET=x86_64-unknown-linux-gnu
+TAG="v${VERSION}"
+ASSET="perllsp-${VERSION}-${TARGET}.tar.gz"
+BASE="https://github.com/EffortlessMetrics/perl-lsp/releases/download/${TAG}"
+
+curl -fsSL -O "${BASE}/${ASSET}"
+curl -fsSL -O "${BASE}/SHA256SUMS"
+
+# GNU coreutils (Linux):
+grep -F "$ASSET" SHA256SUMS | sha256sum -c -
+# macOS:
+# grep -F "$ASSET" SHA256SUMS | shasum -a 256 -c -
+
+tar -xzf "$ASSET"
+```
+
+Put the extracted directory (`perllsp-${VERSION}-${TARGET}`) on your `PATH`,
+then inspect the binaries:
+
+```bash
+perllsp --version
+perl-dap --version
+```
+
+A reviewed clone is the other working POSIX alternative: from a checkout,
+`bash install.sh` executes the sibling [`scripts/install.sh`](../../scripts/install.sh)
+directly and never reaches the piped-bootstrap identity gate. See
+[Installer Script (macOS and Linux)](#installer-script-macos-and-linux).
 
 ## Windows
 
