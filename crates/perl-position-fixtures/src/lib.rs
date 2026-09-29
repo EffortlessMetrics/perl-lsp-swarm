@@ -342,7 +342,7 @@ pub struct RefusalFact {
 /// Decode the complete hex source without text normalization.
 pub fn raw_bytes(case: &Case) -> Result<Vec<u8>, String> {
     let chars = case.raw_hex.as_bytes();
-    if chars.len() % 2 != 0 || !chars.iter().all(u8::is_ascii_hexdigit) {
+    if !chars.len().is_multiple_of(2) || !chars.iter().all(u8::is_ascii_hexdigit) {
         return Err(format!("{}: raw_hex is not even-length ASCII hex", case.id));
     }
     chars

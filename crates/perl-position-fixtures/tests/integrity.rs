@@ -135,6 +135,18 @@ fn byte_and_projection_negative_controls_fail_closed() -> Result<(), String> {
     )?;
     rejected(
         manifest.clone(),
+        "ascii",
+        |case| case.raw_hex.push('a'),
+        "raw_hex is not even-length ASCII hex",
+    )?;
+    rejected(
+        manifest.clone(),
+        "ascii",
+        |case| case.raw_hex.push_str("gg"),
+        "raw_hex is not even-length ASCII hex",
+    )?;
+    rejected(
+        manifest.clone(),
         "astral",
         |case| case.exhaustive = false,
         "exhaustive coverage class",
