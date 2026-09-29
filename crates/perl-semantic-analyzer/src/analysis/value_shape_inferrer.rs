@@ -37,9 +37,11 @@ impl ValueShapeInferrer {
     ///
     /// [`named_shapes`] is method-scoped and restored at subroutine exit, so
     /// invocants would otherwise disappear. This map copies declared invocant
-    /// shapes (`sub ($self)`, `my ($self) = @_`, `my $self = shift`) from the
-    /// innermost callable whose span contains `position`. File-level sites and
-    /// later packages cannot reuse an exited method's `$self`.
+    /// shapes (`method ($self)`, `my ($self) = @_`, `my $self = shift`) from
+    /// the innermost admitted `method` whose span contains `position`, using
+    /// the lexical environment at that cursor. Ordinary `sub` callables,
+    /// file-level sites, later declarations, scalar/undef reassignment, and
+    /// same-name shadows do not contribute.
     pub fn named_invocant_shapes_at(ast: &Node, position: usize) -> HashMap<String, ValueShape> {
         Self::infer_state_at(ast, position).invocant_shapes
     }
@@ -65,6 +67,7 @@ impl ValueShapeInferrer {
         let mut state = InferrerState {
             current_package: "main".to_string(),
             in_method: false,
+            in_admitted_method: false,
             position,
             captured_at_position: false,
             variable_shapes: HashMap::new(),
@@ -83,6 +86,11 @@ struct InferrerState {
     current_package: String,
     /// Whether we are currently inside a subroutine/method body.
     in_method: bool,
+    /// Whether the current callable is an admitted method (`NodeKind::Method`).
+    ///
+    /// Ordinary `sub` unpacking of `$self` is not a defining-class invocant
+    /// fact. Only Perl `method` / `ADJUST` bodies mint [`declared_invocants`].
+    in_admitted_method: bool,
     /// Byte offset of the call site consuming invocant shapes.
     position: usize,
     /// True once the innermost callable containing [`position`](Self::position)
@@ -103,10 +111,19 @@ impl InferrerState {
     /// Recursive AST walker.
     fn walk(&mut self, node: &Node) {
         match &node.kind {
-            // Statement containers — walk children in order.
-            NodeKind::Program { statements } | NodeKind::Block { statements } => {
-                for stmt in statements {
-                    self.walk(stmt);
+            // Statement containers — walk children in source order and stop
+            // after the cursor so later declarations cannot contribute.
+            NodeKind::Program { statements } => {
+                self.walk_statements(statements);
+                return;
+            }
+            NodeKind::Block { statements } => {
+                let prev_declared =
+                    self.in_admitted_method.then(|| self.declared_invocants.clone());
+                self.walk_statements(statements);
+                self.capture_declared_invocants_if_current(node);
+                if let Some(prev) = prev_declared {
+                    self.declared_invocants = prev;
                 }
                 return;
             }
@@ -126,25 +143,25 @@ impl InferrerState {
                 return;
             }
 
-            // Subroutine / method body — track method-like scope, record
-            // signature receivers, and keep receiver shapes local to the body.
-            NodeKind::Subroutine { signature, body, .. }
-            | NodeKind::Method { signature, body, .. } => {
-                let prev_in_method = self.in_method;
-                let prev_shapes = std::mem::take(&mut self.variable_shapes);
-                let prev_declared = std::mem::take(&mut self.declared_invocants);
-                self.in_method = true;
-                if let Some(signature) = signature {
-                    self.record_signature_receiver(signature);
-                }
+            // `class Foo { ... }` — the class name is the owning package.
+            NodeKind::Class { name, body, .. } => {
+                let prev = self.current_package.clone();
+                self.current_package = name.clone();
                 self.walk(body);
-                if self.span_contains_position(node) && !self.captured_at_position {
-                    self.invocant_shapes = self.declared_invocants.clone();
-                    self.captured_at_position = true;
-                }
-                self.in_method = prev_in_method;
-                self.variable_shapes = prev_shapes;
-                self.declared_invocants = prev_declared;
+                self.current_package = prev;
+                return;
+            }
+
+            // Ordinary subroutines keep the infer() `$self` heuristic but do
+            // not mint defining-class invocant facts for completion.
+            NodeKind::Subroutine { signature, body, .. } => {
+                self.walk_callable(node, signature.as_deref(), body, false);
+                return;
+            }
+
+            // Admitted Perl `method` / `ADJUST` bodies are the invocant producer.
+            NodeKind::Method { signature, body, .. } => {
+                self.walk_callable(node, signature.as_deref(), body, true);
                 return;
             }
 
@@ -152,10 +169,21 @@ impl InferrerState {
             // `my $obj = Foo->new(...)` or `my $obj = bless ...`
             NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
                 if self.in_method && is_argument_shift(init) {
-                    self.record_self_like_variable(variable, Confidence::Medium, true);
+                    self.record_self_like_variable(
+                        variable,
+                        Confidence::Medium,
+                        self.in_admitted_method,
+                    );
                 } else if let Some(shape) = self.infer_from_rhs(init) {
                     self.record_variable_shape(variable, shape);
+                    self.revoke_declared_invocant(variable);
+                } else {
+                    self.revoke_declared_invocant(variable);
                 }
+            }
+
+            NodeKind::VariableDeclaration { variable, initializer: None, .. } => {
+                self.revoke_declared_invocant(variable);
             }
 
             // List unpacking convention for invocants:
@@ -164,7 +192,17 @@ impl InferrerState {
                 if self.in_method && is_argument_array(init) =>
             {
                 if let Some(first) = variables.first() {
-                    self.record_self_like_variable(first, Confidence::Medium, true);
+                    self.record_self_like_variable(
+                        first,
+                        Confidence::Medium,
+                        self.in_admitted_method,
+                    );
+                }
+            }
+
+            NodeKind::VariableListDeclaration { variables, .. } => {
+                for variable in variables {
+                    self.revoke_declared_invocant(variable);
                 }
             }
 
@@ -173,6 +211,7 @@ impl InferrerState {
                 if let Some(shape) = self.infer_from_rhs(rhs) {
                     self.record_variable_shape(lhs, shape);
                 }
+                self.revoke_declared_invocant(lhs);
             }
 
             // `$self` reference inside a method body. This remains a value-shape
@@ -189,6 +228,60 @@ impl InferrerState {
         // Recurse into children for all other node types.
         for child in node.children() {
             self.walk(child);
+        }
+    }
+
+    fn walk_statements(&mut self, statements: &[Node]) {
+        for stmt in statements {
+            if stmt.location.start > self.position {
+                break;
+            }
+            self.walk(stmt);
+        }
+    }
+
+    fn walk_callable(
+        &mut self,
+        node: &Node,
+        signature: Option<&Node>,
+        body: &Node,
+        admitted: bool,
+    ) {
+        let prev_in_method = self.in_method;
+        let prev_admitted = self.in_admitted_method;
+        let prev_shapes = std::mem::take(&mut self.variable_shapes);
+        let prev_declared = std::mem::take(&mut self.declared_invocants);
+        self.in_method = true;
+        self.in_admitted_method = admitted;
+        if let Some(signature) = signature {
+            self.record_signature_receiver(signature);
+        }
+        self.walk(body);
+        if admitted {
+            self.capture_declared_invocants_if_current(node);
+        }
+        self.in_method = prev_in_method;
+        self.in_admitted_method = prev_admitted;
+        self.variable_shapes = prev_shapes;
+        self.declared_invocants = prev_declared;
+    }
+
+    fn capture_declared_invocants_if_current(&mut self, node: &Node) {
+        if self.in_admitted_method
+            && self.span_contains_position(node)
+            && !self.captured_at_position
+        {
+            self.invocant_shapes = self.declared_invocants.clone();
+            self.captured_at_position = true;
+        }
+    }
+
+    fn revoke_declared_invocant(&mut self, variable: &Node) {
+        let Some(name) = scalar_variable_name(variable) else {
+            return;
+        };
+        if is_self_like_name(name) {
+            self.declared_invocants.remove(name);
         }
     }
 
@@ -506,7 +599,7 @@ mod tests {
 
     #[test]
     fn named_shapes_expose_signature_class_and_ignore_bare_self() -> Result<(), String> {
-        let source = "package Widget;\nsub new($class) { return 1; }\n$self->name;\n";
+        let source = "package Widget;\nmethod new($class) { return 1; }\n$self->name;\n";
         let mut parser = Parser::new(source);
         let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
         let class_pos =
@@ -535,9 +628,9 @@ mod tests {
     fn named_invocant_shapes_at_earlier_method_ignore_later_package() -> Result<(), String> {
         let source = concat!(
             "package Animal;\n",
-            "sub speak { my ($self) = @_; $self->name; }\n",
+            "method speak { my ($self) = @_; $self->name; }\n",
             "package Other;\n",
-            "sub fetch { my ($self) = @_; $self->name; }\n",
+            "method fetch { my ($self) = @_; $self->name; }\n",
         );
         let mut parser = Parser::new(source);
         let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
@@ -562,7 +655,7 @@ mod tests {
     fn named_invocant_shapes_at_do_not_survive_exited_method() -> Result<(), String> {
         let source = concat!(
             "package Animal {\n",
-            "    sub speak { my ($self) = @_; }\n",
+            "    method speak { my ($self) = @_; }\n",
             "}\n",
             "$self->name;\n",
         );
@@ -586,6 +679,83 @@ mod tests {
         let pos = source.find("$self->name").ok_or_else(|| "expected $self-> site".to_string())?;
         let named = ValueShapeInferrer::named_invocant_shapes_at(&ast, pos);
         assert!(!named.contains_key("self"), "my $self = 42 is not a declared invocant: {named:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn named_invocant_shapes_at_ordinary_sub_are_empty() -> Result<(), String> {
+        let source = "package Animal;\nsub helper { my ($self) = @_; $self->name; }\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
+        let pos = source.find("$self->name").ok_or_else(|| "expected $self-> site".to_string())?;
+        let named = ValueShapeInferrer::named_invocant_shapes_at(&ast, pos);
+        assert!(
+            named.is_empty(),
+            "ordinary package sub must not mint defining-class invocants: {named:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn named_invocant_shapes_at_class_method_signature() -> Result<(), String> {
+        let source = "class Animal {\n    method speak($self) { $self->name; }\n}\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
+        let pos = source.find("$self->name").ok_or_else(|| "expected $self-> site".to_string())?;
+        let named = ValueShapeInferrer::named_invocant_shapes_at(&ast, pos);
+        assert!(
+            matches!(named.get("self"), Some(ValueShape::Object { package, .. }) if package == "Animal"),
+            "class method $self must be Animal, got {named:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn named_invocant_shapes_at_scalar_reassignment_revokes() -> Result<(), String> {
+        let source =
+            "package Animal;\nmethod speak { my ($self) = @_; $self = 42; $self->name; }\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
+        let pos = source.find("$self->name").ok_or_else(|| "expected $self-> site".to_string())?;
+        let named = ValueShapeInferrer::named_invocant_shapes_at(&ast, pos);
+        assert!(
+            !named.contains_key("self"),
+            "scalar reassignment must revoke the declared invocant: {named:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn named_invocant_shapes_at_inner_shadow_revokes() -> Result<(), String> {
+        let source = concat!(
+            "package Animal;\n",
+            "method speak {\n",
+            "    my ($self) = @_;\n",
+            "    { my $self = 42; $self->name; }\n",
+            "}\n",
+        );
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
+        let pos = source.find("$self->name").ok_or_else(|| "expected $self-> site".to_string())?;
+        let named = ValueShapeInferrer::named_invocant_shapes_at(&ast, pos);
+        assert!(
+            !named.contains_key("self"),
+            "inner my $self = 42 must shadow the declared invocant: {named:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn named_invocant_shapes_at_later_declaration_is_invisible() -> Result<(), String> {
+        let source = "package Animal;\nmethod speak { $self->name; my ($self) = @_; }\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
+        let pos = source.find("$self->name").ok_or_else(|| "expected $self-> site".to_string())?;
+        let named = ValueShapeInferrer::named_invocant_shapes_at(&ast, pos);
+        assert!(
+            !named.contains_key("self"),
+            "declaration after the cursor must not contribute: {named:?}"
+        );
         Ok(())
     }
 

@@ -2289,7 +2289,7 @@ sub validate_input { }
     // The currently-edited file is in MyService but does NOT define
     // process_request or validate_input locally — they are workspace-only.
     let code = r#"package MyService;
-sub run {
+method run {
 my $self = shift;
 $self->"#;
     let mut parser = Parser::new(code);
@@ -2351,7 +2351,7 @@ sub handle { }
 
     // Only `run` is in the edited file; `handle` lives only in the workspace index.
     let code = r#"package MyHandler;
-sub run {
+method run {
 my $this = shift;
 $this->"#;
     let mut parser = Parser::new(code);
@@ -2390,7 +2390,7 @@ sub own_method { }
     )?;
 
     let code = r#"package Child;
-sub run {
+method run {
 my $self = shift;
 $self->"#;
     let mut parser = Parser::new(code);
@@ -2446,7 +2446,7 @@ use parent 'Parent';
     )?;
 
     let code = r#"package Child;
-sub run {
+method run {
 my $self = shift;
 $self->"#;
     let mut parser = Parser::new(code);
@@ -2497,7 +2497,7 @@ with 'IntermediateRole';
     )?;
 
     let code = r#"package Consumer;
-sub run {
+method run {
 my $self = shift;
 $self->"#;
     let mut parser = Parser::new(code);
@@ -3164,7 +3164,7 @@ use parent 'Parent';
     )?;
 
     let code = r#"package Child;
-sub run {
+method run {
 my $self = shift;
 $self->"#;
     let mut parser = Parser::new(code);

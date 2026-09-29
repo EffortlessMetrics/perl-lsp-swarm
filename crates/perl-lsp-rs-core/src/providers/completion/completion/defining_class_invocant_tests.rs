@@ -90,10 +90,7 @@ fn unknown_fallback_method(completions: &[CompletionItem], label: &str) -> bool 
 }
 
 fn is_typed_defining_class_receiver(evidence: &ReceiverEvidence, package: &str) -> bool {
-    match evidence {
-        ReceiverEvidence::TypeEngine(pkg) | ReceiverEvidence::SelfOrThis(pkg) => pkg == package,
-        _ => false,
-    }
+    matches!(evidence, ReceiverEvidence::SelfOrThis(pkg) if pkg == package)
 }
 
 #[test]
@@ -121,7 +118,7 @@ fn spelling_only_self_matches_ordinary_unknown_lexical() {
 
 #[test]
 fn list_declared_self_uses_canonical_receiver_facts() {
-    let source = "package Animal;\nsub speak {\n    my ($self) = @_;\n    $self->\n}\n";
+    let source = "package Animal;\nmethod speak {\n    my ($self) = @_;\n    $self->\n}\n";
     let ev = classify_receiver(&arrow_ctx(source, "$self->", "Animal"), source, None);
     assert!(
         is_typed_defining_class_receiver(&ev, "Animal"),
@@ -131,7 +128,7 @@ fn list_declared_self_uses_canonical_receiver_facts() {
 
 #[test]
 fn shift_declared_self_uses_canonical_receiver_facts() {
-    let source = "package Animal;\nsub speak {\n    my $self = shift;\n    $self->\n}\n";
+    let source = "package Animal;\nmethod speak {\n    my $self = shift;\n    $self->\n}\n";
     let ev = classify_receiver(&arrow_ctx(source, "$self->", "Animal"), source, None);
     assert!(
         is_typed_defining_class_receiver(&ev, "Animal"),
@@ -141,7 +138,7 @@ fn shift_declared_self_uses_canonical_receiver_facts() {
 
 #[test]
 fn signature_self_uses_canonical_receiver_facts() {
-    let source = "package Animal;\nsub speak ($self) {\n    $self->\n}\n";
+    let source = "package Animal;\nmethod speak($self) {\n    $self->\n}\n";
     let ev = classify_receiver(&arrow_ctx(source, "$self->", "Animal"), source, None);
     assert!(
         is_typed_defining_class_receiver(&ev, "Animal"),
@@ -151,7 +148,7 @@ fn signature_self_uses_canonical_receiver_facts() {
 
 #[test]
 fn signature_class_uses_canonical_receiver_facts() {
-    let source = "package Animal;\nsub new ($class) {\n    $class->\n}\n";
+    let source = "package Animal;\nmethod new($class) {\n    $class->\n}\n";
     let ev = classify_receiver(&arrow_ctx(source, "$class->", "Animal"), source, None);
     assert!(
         is_typed_defining_class_receiver(&ev, "Animal"),
@@ -163,7 +160,7 @@ fn signature_class_uses_canonical_receiver_facts() {
 fn reassigned_self_prefers_constructor_assignment() {
     let source = concat!(
         "package Animal;\n",
-        "sub speak {\n",
+        "method speak {\n",
         "    my $self = shift;\n",
         "    $self = Other->new;\n",
         "    $self->\n",
@@ -180,7 +177,7 @@ fn reassigned_self_prefers_constructor_assignment() {
 #[test]
 fn list_declared_self_completion_offers_defining_class_methods()
 -> Result<(), Box<dyn std::error::Error>> {
-    let source = "package Animal;\nsub speak {\n    my ($self) = @_;\n    $self->\n}\n";
+    let source = "package Animal;\nmethod speak {\n    my ($self) = @_;\n    $self->\n}\n";
     let completions = completions_for(source, "$self->", animal_index()?)?;
     assert!(
         has_label(&completions, "speak") && exact_invocant_method(&completions, "name"),
@@ -198,7 +195,7 @@ fn list_declared_self_completion_offers_defining_class_methods()
 #[test]
 fn class_invocant_completion_offers_defining_class_methods()
 -> Result<(), Box<dyn std::error::Error>> {
-    let source = "package Animal;\nsub new {\n    my $class = shift;\n    $class->\n}\n";
+    let source = "package Animal;\nmethod new {\n    my $class = shift;\n    $class->\n}\n";
     let completions = completions_for(source, "$class->", animal_index()?)?;
     assert!(
         exact_invocant_method(&completions, "name"),
@@ -214,8 +211,7 @@ fn class_invocant_completion_offers_defining_class_methods()
 
 #[test]
 fn inherited_self_completion_offers_parent_methods() -> Result<(), Box<dyn std::error::Error>> {
-    let source =
-        "package Dog;\nuse parent 'Animal';\nsub greet {\n    my $self = shift;\n    $self->\n}\n";
+    let source = "package Dog;\nuse parent 'Animal';\nmethod greet {\n    my $self = shift;\n    $self->\n}\n";
     let completions = completions_for(source, "$self->", animal_index()?)?;
     assert!(
         has_label(&completions, "speak") && has_label(&completions, "fetch"),
@@ -262,7 +258,7 @@ fn ordinary_main_self_does_not_offer_animal_methods() -> Result<(), Box<dyn std:
 fn shadowed_inner_self_uses_nearest_invocant_package() {
     let source = concat!(
         "package Animal;\n",
-        "sub speak {\n",
+        "method speak {\n",
         "    my $self = shift;\n",
         "    {\n",
         "        package Other;\n",
@@ -278,7 +274,7 @@ fn shadowed_inner_self_uses_nearest_invocant_package() {
 
 #[test]
 fn list_declared_this_uses_canonical_receiver_facts() {
-    let source = "package Animal;\nsub speak {\n    my ($this) = @_;\n    $this->\n}\n";
+    let source = "package Animal;\nmethod speak {\n    my ($this) = @_;\n    $this->\n}\n";
     let ev = classify_receiver(&arrow_ctx(source, "$this->", "Animal"), source, None);
     assert!(
         is_typed_defining_class_receiver(&ev, "Animal"),
@@ -290,12 +286,12 @@ fn list_declared_this_uses_canonical_receiver_facts() {
 fn earlier_package_self_does_not_take_later_package() {
     let source = concat!(
         "package Animal;\n",
-        "sub speak {\n",
+        "method speak {\n",
         "    my ($self) = @_;\n",
         "    $self->\n",
         "}\n",
         "package Other;\n",
-        "sub fetch {\n",
+        "method fetch {\n",
         "    my ($self) = @_;\n",
         "    $self->\n",
         "}\n"
@@ -327,12 +323,12 @@ fn earlier_package_self_completion_does_not_offer_later_package_methods()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = concat!(
         "package Animal;\n",
-        "sub speak {\n",
+        "method speak {\n",
         "    my ($self) = @_;\n",
         "    $self->\n",
         "}\n",
         "package Other;\n",
-        "sub fetch {\n",
+        "method fetch {\n",
         "    my ($self) = @_;\n",
         "    $self->\n",
         "}\n"
@@ -357,8 +353,12 @@ fn earlier_package_self_completion_does_not_offer_later_package_methods()
 
 #[test]
 fn file_level_self_after_package_block_is_unknown() {
-    let source =
-        concat!("package Animal {\n", "    sub speak { my ($self) = @_; }\n", "}\n", "$self->\n");
+    let source = concat!(
+        "package Animal {\n",
+        "    method speak { my ($self) = @_; }\n",
+        "}\n",
+        "$self->\n"
+    );
     let ev = classify_receiver(&arrow_ctx(source, "$self->", "main"), source, None);
     assert_eq!(
         ev,
@@ -369,7 +369,7 @@ fn file_level_self_after_package_block_is_unknown() {
 
 #[test]
 fn file_level_class_after_signature_method_is_unknown() {
-    let source = "package Animal;\nsub new($class) { return 1; }\n$class->\n";
+    let source = "package Animal;\nmethod new($class) { return 1; }\n$class->\n";
     let ev = classify_receiver(&arrow_ctx(source, "$class->", "Animal"), source, None);
     assert_eq!(
         ev,
@@ -386,5 +386,102 @@ fn numeric_self_assignment_is_not_defining_class_receiver() {
         ev,
         ReceiverEvidence::Unknown,
         "my $self = 42 must not become a defining-class invocant, got {ev:?}"
+    );
+}
+
+#[test]
+fn ordinary_package_sub_is_not_a_defining_class_method() {
+    let source = "package Animal;\nsub helper {\n    my ($self) = @_;\n    $self->\n}\n";
+    let ev = classify_receiver(&arrow_ctx(source, "$self->", "Animal"), source, None);
+    assert_eq!(
+        ev,
+        ReceiverEvidence::Unknown,
+        "ordinary package sub helper($self) must not become a defining-class invocant, got {ev:?}"
+    );
+}
+
+#[test]
+fn class_method_signature_is_admitted_defining_class_receiver() {
+    let source = "class Animal {\n    method speak($self) {\n        $self->\n    }\n}\n";
+    let ev = classify_receiver(&arrow_ctx(source, "$self->", "Animal"), source, None);
+    assert_eq!(
+        ev,
+        ReceiverEvidence::SelfOrThis("Animal".to_string()),
+        "core class method $self must be an admitted defining-class receiver, got {ev:?}"
+    );
+}
+
+#[test]
+fn scalar_reassignment_after_unpack_is_unknown() {
+    let source = concat!(
+        "package Animal;\n",
+        "method speak {\n",
+        "    my ($self) = @_;\n",
+        "    $self = 42;\n",
+        "    $self->\n",
+        "}\n"
+    );
+    let ev = classify_receiver(&arrow_ctx(source, "$self->", "Animal"), source, None);
+    assert_eq!(
+        ev,
+        ReceiverEvidence::Unknown,
+        "my ($self)=@_; $self=42; $self-> must not keep Animal, got {ev:?}"
+    );
+}
+
+#[test]
+fn undef_reassignment_after_unpack_is_unknown() {
+    let source = concat!(
+        "package Animal;\n",
+        "method speak {\n",
+        "    my ($self) = @_;\n",
+        "    $self = undef;\n",
+        "    $self->\n",
+        "}\n"
+    );
+    let ev = classify_receiver(&arrow_ctx(source, "$self->", "Animal"), source, None);
+    assert_eq!(
+        ev,
+        ReceiverEvidence::Unknown,
+        "undef reassignment must revoke the declared invocant, got {ev:?}"
+    );
+}
+
+#[test]
+fn inner_shadow_self_is_unknown() {
+    let source = concat!(
+        "package Animal;\n",
+        "method speak {\n",
+        "    my ($self) = @_;\n",
+        "    {\n",
+        "        my $self = 42;\n",
+        "        $self->\n",
+        "    }\n",
+        "}\n"
+    );
+    let ev = classify_receiver(&arrow_ctx(source, "$self->", "Animal"), source, None);
+    assert_eq!(
+        ev,
+        ReceiverEvidence::Unknown,
+        "inner my $self = 42 must not keep the outer invocant, got {ev:?}"
+    );
+}
+
+#[test]
+fn declaration_after_cursor_is_unknown() {
+    let source = concat!(
+        "package Animal;\n",
+        "method speak {\n",
+        "    $self->\n",
+        "    my ($self) = @_;\n",
+        "}\n"
+    );
+    let start = must_some_with(source.find("$self->"), "cursor site must exist");
+    let ev =
+        classify_receiver(&ctx_for("$self->", "Animal", start + "$self->".len()), source, None);
+    assert_eq!(
+        ev,
+        ReceiverEvidence::Unknown,
+        "declaration after the cursor must not contribute, got {ev:?}"
     );
 }

@@ -246,7 +246,8 @@ fn test_user_story_defining_class_self_arrow_completion() -> TestResult {
     let server = create_test_server();
     initialize_server(&server);
 
-    let code = "package Animal;\nsub name { }\nsub speak {\n    my ($self) = @_;\n    $self->\n}\n";
+    let code =
+        "package Animal;\nsub name { }\nmethod speak {\n    my ($self) = @_;\n    $self->\n}\n";
     open_document(&server, "file:///test/Animal.pm", code);
 
     let line = 4_u32;

@@ -24,9 +24,10 @@ use perl_semantic_facts::{Confidence, ValueShape};
 /// Package for a defining-class invocant at the completion position.
 ///
 /// Consumes existing [`ValueShapeInferrer`] invocant facts at `context.position`.
-/// Spelling of `$self` / `$this` / `$class` is not enough; file-level and `main`
-/// sites stay unknown. Constructor/bless text patterns are classified first so
-/// a reassigned `$self = Other->new` is not overwritten here.
+/// Spelling of `$self` / `$this` / `$class` is not enough; ordinary `sub`
+/// parameters, file-level sites, and `main` stay unknown. Constructor/bless
+/// text patterns are classified first so a reassigned `$self = Other->new`
+/// is not overwritten here.
 fn defining_class_invocant_receiver(context: &CompletionContext, source: &str) -> Option<String> {
     let var_name = context.receiver_prefix().trim_end_matches("->").strip_prefix('$')?;
     if !ValueShapeInferrer::is_defining_class_invocant_name(var_name) {
@@ -203,8 +204,8 @@ pub(super) fn detail_with_evidence(base: String, evidence: &ReceiverEvidence) ->
 /// Classify the receiver of a `->` method-completion call site.
 ///
 /// Exact source-backed facts win, then constructor/bless/static text patterns,
-/// then position-local defining-class invocant shapes, then type-engine packages.
-/// `$self` / `$this` / `$class` spelling is not itself receiver evidence.
+/// then position-local admitted defining-class invocant shapes, then type-engine
+/// packages. `$self` / `$this` / `$class` spelling is not itself receiver evidence.
 #[cfg(test)]
 pub(super) fn classify_receiver(
     context: &CompletionContext,
@@ -228,7 +229,7 @@ pub(super) fn classify_receiver_with_symbol_table(
         return text;
     }
     if let Some(pkg) = defining_class_invocant_receiver(context, source) {
-        return ReceiverEvidence::TypeEngine(pkg);
+        return ReceiverEvidence::SelfOrThis(pkg);
     }
     if let Some(pkg) = type_engine_receiver(context, type_engine) {
         return ReceiverEvidence::TypeEngine(pkg);
