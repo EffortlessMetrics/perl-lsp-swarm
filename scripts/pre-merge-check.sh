@@ -3,13 +3,14 @@
 #
 # Checks that a PR is ready to hand to GitHub's protected squash-merge path:
 #   1. Not draft.
-#   2. GitHub reports it mergeable and CLEAN or BEHIND.
+#   2. GitHub reports it mergeable, with live required checks green and
+#      every advisory red classified when its summary is UNSTABLE.
 #   3. Title contains an issue reference (#NNN).
 #   4. Native review requests/findings have converged.
 #   5. One subject-bound substantive review is REVIEW_CURRENT.
 #
-# GitHub protection remains authoritative for required statuses, queue state,
-# and final merge authorization. This helper never rebases or mutates a branch
+# GitHub protection remains authoritative for queue state and final merge
+# authorization. This helper never rebases or mutates a branch
 # to manufacture exact-head evidence.
 set -euo pipefail
 
@@ -23,7 +24,7 @@ json_read() {
     printf '%s' "$PR_JSON" | jq -r "$filter" | tr -d '\r'
 }
 
-PR_JSON="$(gh pr view "$PR" --json isDraft,title,mergeable,mergeStateStatus)"
+PR_JSON="$(gh pr view "$PR" --json isDraft,title,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup)"
 
 IS_DRAFT="$(json_read '.isDraft')"
 MERGEABLE="$(json_read '.mergeable // empty')"
@@ -37,7 +38,7 @@ if [[ "$IS_DRAFT" == "true" ]]; then
     FAILED=1
 fi
 
-if [[ "$MERGEABLE" != "MERGEABLE" || ( "$MERGE_STATE" != "CLEAN" && "$MERGE_STATE" != "BEHIND" ) ]]; then
+if [[ "$MERGEABLE" != "MERGEABLE" || ( "$MERGE_STATE" != "CLEAN" && "$MERGE_STATE" != "BEHIND" && "$MERGE_STATE" != "UNSTABLE" ) ]]; then
     echo "FAIL PR #$PR: native merge state is not queue-eligible (mergeable=$MERGEABLE, state=$MERGE_STATE)" >&2
     echo "     Resolve the actual conflict, review, required-check, or queue condition reported by GitHub" >&2
     FAILED=1
@@ -56,6 +57,37 @@ trap cleanup EXIT
 REVIEW_REPO="${GITHUB_REPOSITORY:-}"
 if [[ -z "$REVIEW_REPO" ]]; then
     REVIEW_REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+fi
+
+BASE_BRANCH="$(json_read '.baseRefName')"
+if [[ -z "$BASE_BRANCH" || "$BASE_BRANCH" == "null" ]]; then
+    echo "FAIL PR #$PR: base branch is NOT_PROVEN" >&2
+    FAILED=1
+else
+    if ! gh api "repos/$REVIEW_REPO/rules/branches/$BASE_BRANCH" >"$TMP_DIR/rules.json" ||
+       ! gh api "repos/$REVIEW_REPO/branches/$BASE_BRANCH/protection/required_status_checks" >"$TMP_DIR/classic.json"; then
+        echo "FAIL PR #$PR: live required-check policy is NOT_PROVEN" >&2
+        FAILED=1
+    else
+        # gh pr checks exits nonzero for a red required check; its JSON still
+        # carries the diagnostic state. The classifier rejects missing data.
+        gh pr checks "$PR" --required --json name,state >"$TMP_DIR/required.json" || true
+        printf '%s' "$PR_JSON" >"$TMP_DIR/pr.json"
+        if [[ -n "${PRE_MERGE_ADVISORY_EVIDENCE:-}" ]]; then
+            if ! jq -n --slurpfile pr "$TMP_DIR/pr.json" --slurpfile rules "$TMP_DIR/rules.json" \
+                --slurpfile classic "$TMP_DIR/classic.json" --slurpfile required_checks "$TMP_DIR/required.json" \
+                --slurpfile evidence "$PRE_MERGE_ADVISORY_EVIDENCE" \
+                '{pr:$pr[0],rules:$rules[0],classic:$classic[0],required_checks:$required_checks[0],evidence:$evidence[0]}' \
+                | python3 "$SCRIPT_DIR/ci/classify-pre-merge-status.py"; then
+                FAILED=1
+            fi
+        elif ! jq -n --slurpfile pr "$TMP_DIR/pr.json" --slurpfile rules "$TMP_DIR/rules.json" \
+            --slurpfile classic "$TMP_DIR/classic.json" --slurpfile required_checks "$TMP_DIR/required.json" \
+            '{pr:$pr[0],rules:$rules[0],classic:$classic[0],required_checks:$required_checks[0]}' \
+            | python3 "$SCRIPT_DIR/ci/classify-pre-merge-status.py"; then
+            FAILED=1
+        fi
+    fi
 fi
 
 set +e

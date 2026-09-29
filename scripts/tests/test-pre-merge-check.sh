@@ -8,6 +8,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 IMPL="$SCRIPT_DIR/../pre-merge-check.sh"
 CONVERGENCE_WRAPPER="$SCRIPT_DIR/../ci/check-pr-review-convergence"
 SEMANTIC_CHECKER="$SCRIPT_DIR/../ci/check-pr-semantic-review-currentness.py"
+STATUS_FIXTURES="$SCRIPT_DIR/test-pre-merge-status.py"
 CURRENTNESS_DOC="$REPO_ROOT/docs/agents/REVIEW_CURRENTNESS.md"
 AGENT_VERIFY="$REPO_ROOT/.agents/skills/verify-live-ci/SKILL.md"
 CLAUDE_VERIFY="$REPO_ROOT/.claude/skills/verify-live-ci/SKILL.md"
@@ -19,6 +20,7 @@ for required in \
     "$IMPL" \
     "$CONVERGENCE_WRAPPER" \
     "$SEMANTIC_CHECKER" \
+    "$STATUS_FIXTURES" \
     "$CURRENTNESS_DOC" \
     "$AGENT_VERIFY" \
     "$CLAUDE_VERIFY" \
@@ -39,13 +41,20 @@ make_mock_gh() {
     semantic_class="${2:-REVIEW_CURRENT}"
     semantic_reason="${3:-fixture}"
     semantic_rc="${4:-0}"
+    json="$(jq -c '. + {headRefOid:"fixture-head",baseRefName:"main",statusCheckRollup:[{name:"Required A",conclusion:"SUCCESS",detailsUrl:"https://example.test/required"}]}' <<<"$json")"
+    printf '%s' "$json" >"$tmpdir/pr.json"
+    printf '%s' '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Required A"}]}}]' >"$tmpdir/rules.json"
+    printf '%s' '{"contexts":[],"checks":[]}' >"$tmpdir/classic.json"
+    printf '%s' '[{"name":"Required A","state":"SUCCESS"}]' >"$tmpdir/required.json"
     cat > "$tmpdir/gh" <<EOF_MOCK
 #!/usr/bin/env bash
-if [[ "\$*" == *"repo view"* ]]; then
-    printf '%s' 'test-owner/test-repo'
-else
-    printf '%s' '$json'
-fi
+case "\$*" in
+    'repo view'*) printf '%s' 'test-owner/test-repo' ;;
+    *'rules/branches/'*) cat '$tmpdir/rules.json' ;;
+    *'protection/required_status_checks'*) cat '$tmpdir/classic.json' ;;
+    *'--required'*) cat '$tmpdir/required.json' ;;
+    *) cat '$tmpdir/pr.json' ;;
+esac
 EOF_MOCK
     cat > "$tmpdir/semantic-currentness.py" <<EOF_SEMANTIC
 #!/usr/bin/env python3
@@ -70,6 +79,7 @@ run_check() {
     local fixture="${3:-all-resolved-converges}"
     local code=0
     PATH="$mock_dir:$PATH" \
+        PRE_MERGE_ADVISORY_EVIDENCE="${PRE_MERGE_ADVISORY_EVIDENCE:-}" \
         SEMANTIC_CURRENTNESS_BIN="$mock_dir/semantic-currentness.py" \
         CONVERGENCE_TEST_FIXTURE_DIR="$SCRIPT_DIR/../ci/fixtures/convergence/$fixture" \
         bash "$IMPL" "$pr_number" >/dev/null 2>&1 || code=$?
@@ -83,6 +93,7 @@ run_check_with_output() {
     local code=0
     local output
     output="$(PATH="$mock_dir:$PATH" \
+        PRE_MERGE_ADVISORY_EVIDENCE="${PRE_MERGE_ADVISORY_EVIDENCE:-}" \
         SEMANTIC_CURRENTNESS_BIN="$mock_dir/semantic-currentness.py" \
         CONVERGENCE_TEST_FIXTURE_DIR="$SCRIPT_DIR/../ci/fixtures/convergence/$fixture" \
         bash "$IMPL" "$pr_number" 2>&1)" || code=$?
@@ -142,6 +153,24 @@ test_behind_merge_state_passes() {
     code="$(run_check "$mock")"
     cleanup "$mock"
     [[ "$code" -eq 0 ]] && pass "behind native merge state exits zero" || fail "behind native merge state unexpectedly failed"
+}
+
+test_unstable_inherited_advisory_requires_evidence() {
+    local mock json code
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"UNSTABLE","title":"fix: launcher (#16939)"}'
+    mock="$(make_mock_gh "$json")"
+    jq '.statusCheckRollup += [{name:"PR Smoke",conclusion:"FAILURE",detailsUrl:"https://example.test/advisory"}]' "$mock/pr.json" >"$mock/updated.json"
+    mv "$mock/updated.json" "$mock/pr.json"
+    code="$(run_check "$mock")"
+    if [[ "$code" -eq 0 ]]; then
+        fail "UNSTABLE advisory without evidence unexpectedly passed"
+    else
+        pass "UNSTABLE advisory without evidence fails closed"
+    fi
+    printf '%s' '{"headRefOid":"fixture-head","advisories":[{"name":"PR Smoke","detailsUrl":"https://example.test/advisory","classification":"inherited","discriminator":"same failing gate and signature at merge base","evidenceUrl":"https://example.test/advisory","mergeBaseRunUrl":"https://example.test/merge-base"}]}' >"$mock/evidence.json"
+    PRE_MERGE_ADVISORY_EVIDENCE="$mock/evidence.json" code="$(run_check "$mock")"
+    cleanup "$mock"
+    [[ "$code" -eq 0 ]] && pass "UNSTABLE inherited advisory with exact-head evidence passes" || fail "UNSTABLE inherited advisory with evidence failed"
 }
 
 test_semantic_not_proven_fails_even_when_native_facts_converge() {
@@ -231,12 +260,18 @@ test_conflicting_pr_fails
 test_missing_issue_ref_fails
 test_clean_review_current_pr_passes
 test_behind_merge_state_passes
+test_unstable_inherited_advisory_requires_evidence
 test_semantic_not_proven_fails_even_when_native_facts_converge
 test_zero_or_generic_review_cannot_become_review_current
 test_public_wrappers_keep_authority_split
 test_currentness_policy_surfaces
 test_error_messages_are_native
 test_no_pr_number_fails
+if python3 "$STATUS_FIXTURES"; then
+    pass "required and advisory status fixtures"
+else
+    fail "required and advisory status fixtures"
+fi
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
 
 [[ "$FAIL_COUNT" -eq 0 ]]
