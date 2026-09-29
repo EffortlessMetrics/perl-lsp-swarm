@@ -13,8 +13,8 @@ use cpan_test_helpers::assert_clean_parse;
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     ExportDeclarationKind, FrameworkAdapterKind, FrameworkAdapterRegistry,
-    FrameworkExportMechanism, FrameworkExportedSymbolKind, HirFile, StashDynamicBoundaryKind,
-    lower_ast,
+    FrameworkExportMechanism, FrameworkExportedSymbolKind, HirFile, StashConfidence,
+    StashDynamicBoundaryKind, lower_ast,
 };
 use perl_semantic_facts::Confidence;
 
@@ -197,4 +197,92 @@ fn two_packages_in_one_file_keep_distinct_literal_exports() {
     assert!(names.contains(&("Second::Utils", "from_second")));
     assert!(!names.contains(&("First::Utils", "from_second")));
     assert!(!names.contains(&("Second::Utils", "from_first")));
+}
+
+#[test]
+fn a_medium_declaration_without_generator_backed_names_is_not_promoted() -> Result<(), String> {
+    // The mixed-list High promotion applies only when Medium is explained by
+    // generator-backed siblings. A Medium declaration with an empty
+    // `generator_backed` list — classic Exporter, or any future producer —
+    // must keep Medium, not gain High by that rule.
+    let mut file = lower(
+        "package Classic;\n\
+         use Exporter 'import';\n\
+         our @EXPORT_OK = qw(foo);\n",
+    );
+    let declaration = file
+        .stash_graph
+        .export_declarations
+        .iter_mut()
+        .find(|declaration| {
+            declaration.package == "Classic" && declaration.kind == ExportDeclarationKind::Optional
+        })
+        .ok_or("classic optional declaration")?;
+    assert!(
+        declaration.generator_backed.is_empty(),
+        "classic Exporter names are not generator-backed"
+    );
+    declaration.confidence = StashConfidence::Medium;
+
+    let graph = FrameworkAdapterRegistry::default().project_file(&file);
+    let foo = graph
+        .exported_symbols
+        .iter()
+        .find(|fact| fact.package == "Classic" && fact.name == "foo")
+        .ok_or("foo framework fact")?;
+    assert_eq!(foo.mechanism, FrameworkExportMechanism::Direct);
+    assert_eq!(
+        foo.source_confidence,
+        Confidence::Medium,
+        "Medium without generator-backed siblings must not become High: {foo:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_later_undef_value_clears_an_earlier_generator() -> Result<(), String> {
+    // Perl keeps the last value for a repeated hash key. `foo => \&gen` then
+    // `foo => undef` exports the source sub, so the last spelling must win
+    // for generator membership — not the union of every occurrence.
+    let last_direct = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => { foo => \\&gen, foo => undef } };\n\
+         sub foo { 1 }\n",
+    );
+    let last_generated = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => { foo => undef, foo => \\&gen } };\n\
+         sub foo { 1 }\n",
+    );
+    let last_bare = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [ foo => \\&gen, qw(foo) ] };\n\
+         sub foo { 1 }\n",
+    );
+
+    let fact = |file: &HirFile| -> Result<_, String> {
+        FrameworkAdapterRegistry::default()
+            .project_file(file)
+            .exported_symbols
+            .into_iter()
+            .find(|exported| {
+                exported.package == "My::Utils"
+                    && exported.name == "foo"
+                    && exported.kind == FrameworkExportedSymbolKind::Optional
+            })
+            .ok_or_else(|| "foo optional fact".to_string())
+    };
+
+    let direct = fact(&last_direct)?;
+    assert_eq!(direct.mechanism, FrameworkExportMechanism::Direct);
+    assert_eq!(direct.source_confidence, Confidence::High);
+
+    let generated = fact(&last_generated)?;
+    assert_eq!(generated.mechanism, FrameworkExportMechanism::GeneratorBacked);
+    assert_eq!(generated.source_confidence, Confidence::Medium);
+
+    let bare = fact(&last_bare)?;
+    assert_eq!(bare.mechanism, FrameworkExportMechanism::Direct);
+    assert_eq!(bare.source_confidence, Confidence::High);
+    Ok(())
 }

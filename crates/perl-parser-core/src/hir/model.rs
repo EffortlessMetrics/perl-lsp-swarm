@@ -2109,13 +2109,19 @@ fn export_mechanism(declaration: &ExportDeclaration, symbol: &str) -> FrameworkE
 
 fn export_source_confidence(declaration: &ExportDeclaration, symbol: &str) -> Confidence {
     if name_is_generator_backed(declaration, symbol) {
-        Confidence::Medium
-    } else {
-        match declaration.confidence {
+        return Confidence::Medium;
+    }
+    // A mixed Sub::Exporter list stores Medium on the whole declaration because
+    // some sibling is generator-backed. Direct names in that list stay High.
+    // Medium from any other cause — empty `generator_backed`, classic Exporter,
+    // a future producer — must not be promoted.
+    if !declaration.generator_backed.is_empty() {
+        return match declaration.confidence {
             StashConfidence::Low => Confidence::Low,
             StashConfidence::Medium | StashConfidence::High => Confidence::High,
-        }
+        };
     }
+    stash_confidence_to_fact(declaration.confidence)
 }
 
 fn visible_symbol_for_export(

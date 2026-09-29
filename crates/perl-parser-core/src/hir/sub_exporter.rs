@@ -648,7 +648,12 @@ fn sub_exporter_export_names(value: &[String]) -> Option<SubExporterExports> {
             let no_generator = matches!(value, [only] if only == "undef")
                 || matches!(value, [word, open, close]
                     if word == "undef" && open == "(" && close == ")");
-            if !no_generator {
+            // Perl keeps the last value for a repeated key, so generator
+            // membership follows the last spelling of this name rather than
+            // the union of every occurrence.
+            if no_generator {
+                generated.remove(&name);
+            } else {
                 generated.insert(name.clone());
             }
             names.push(name);
@@ -666,6 +671,7 @@ fn sub_exporter_export_names(value: &[String]) -> Option<SubExporterExports> {
             if !is_sub_exporter_name(&name) {
                 return None;
             }
+            generated.remove(&name);
             names.push(name);
         }
     }
