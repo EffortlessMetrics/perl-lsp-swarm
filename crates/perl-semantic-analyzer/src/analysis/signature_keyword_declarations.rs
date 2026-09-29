@@ -283,7 +283,7 @@ fn apply_no(node: &Node, module: &str, args: &[String], state: &mut WalkState<'_
     };
     let keywords = match disposition {
         SignatureKeywordImportDisposition::Exact { keywords } => keywords,
-        SignatureKeywordImportDisposition::Unmodeled { .. } => SignatureKeywordSet::none(),
+        _ => SignatureKeywordSet::none(),
     };
     state.keywords.apply_no(family, keywords);
 }

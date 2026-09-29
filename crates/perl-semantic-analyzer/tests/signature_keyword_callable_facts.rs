@@ -477,9 +477,14 @@ use Function::Parameters;
 fun named (:$x) { $x }
 "#;
     let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
-    let named = query(&facts, Some("App"), "named");
-    assert!(named.parameters.is_empty());
-    assert!(named.envelope.boundary.is_some());
+    assert!(
+        facts.iter().all(|fact| {
+            fact.parameters.is_empty()
+                && fact.envelope.boundary.is_some()
+                && fact.envelope.reason_code == SemanticReasonCode::GeneratedFromSource
+        }),
+        "named :$param must not flatten into an exact canonical parameter list"
+    );
 }
 
 #[test]
