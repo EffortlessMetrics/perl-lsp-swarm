@@ -2,10 +2,9 @@
 //!
 //! The availability matrix proves that a rejected pin cannot be rescued by a
 //! PATH interpreter. This companion test proves the positive direction with
-//! two distinct, deterministic pipe-probe controls: a fake ambient `perl` on
-//! PATH and a separately compiled pinned control. Both emit unique identities
-//! through the same probe seam, then the pin must win over PATH and retain its
-//! exact executable identity.
+//! two copies of the same pipe-usable interpreter at distinct paths: ambient
+//! `perl` on PATH and pinned `perl5`. The live debuggee reports `$^X`, which
+//! must identify the pinned path rather than the ambient path.
 
 #![expect(
     clippy::print_stderr,
@@ -73,8 +72,7 @@ fn live_debug_adapter_executes_the_pinned_interpreter_identity() -> Result<(), B
         }
     }
     let ambient = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
-    let pinned =
-        controls.path().join(if cfg!(windows) { "pinned-perl.exe" } else { "pinned-perl" });
+    let pinned = controls.path().join(if cfg!(windows) { "perl5.exe" } else { "perl5" });
     fs::copy(&source_perl, &ambient)?;
     fs::copy(&source_perl, &pinned)?;
 
