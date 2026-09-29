@@ -930,6 +930,16 @@ impl Scheduler {
             let normalized_uri = server.normalize_uri_key(&freshness.uri);
             let documents = server.documents.lock();
             if documents.contains_key(&normalized_uri) {
+                // The hover handler can observe the newly opened document and
+                // deliberately publish null instead of its disk result. Keep
+                // that safe fallback successful for clients whose didOpen
+                // notification was still being applied at request ingress.
+                // Any non-null result may contain disk-derived data and must
+                // still be rejected.
+                if response.result.as_ref().is_some_and(serde_json::Value::is_null) {
+                    Self::send_response(&server.outbound, response);
+                    return None;
+                }
                 return Some(StaleReason::DocumentInstanceChanged);
             }
             Self::send_response(&server.outbound, response);
@@ -2128,6 +2138,29 @@ mod tests {
         );
         let output = String::from_utf8_lossy(&output.lock().clone()).to_string();
         assert!(!output.contains("\"id\":79"), "stale disk response was sent: {output}");
+        Ok(())
+    }
+
+    #[test]
+    fn null_hover_after_did_open_remains_a_successful_fallback() -> Result<(), JsonRpcError> {
+        let (server, _output) = server_with_captured_output();
+        let uri = "file:///closed-hover-open-race.pl";
+        let freshness = make_freshness(uri, None, None);
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+
+        assert_eq!(
+            Scheduler::send_response_if_fresh(
+                &server,
+                Some(&freshness),
+                JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: JsonRpcId::from_value(&serde_json::json!(80)),
+                    result: Some(serde_json::Value::Null),
+                    error: None,
+                },
+            ),
+            None
+        );
         Ok(())
     }
 
