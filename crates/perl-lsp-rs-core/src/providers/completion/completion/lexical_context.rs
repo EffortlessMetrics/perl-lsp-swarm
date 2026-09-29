@@ -1494,10 +1494,7 @@ fn extract_heredoc_delimiter(text: &str) -> Option<HeredocDelimiter> {
     };
     let first_char = text.chars().next()?;
 
-    let interpolates = match first_char {
-        '\'' | '\\' => false,
-        _ => true,
-    };
+    let interpolates = !matches!(first_char, '\'' | '\\');
     let label = match first_char {
         // Quoted forms: <<'EOF', <<"EOF", <<`EOF`, etc.
         '\'' | '"' | '`' => parse_quoted_heredoc_label(text, first_char)?,
@@ -1730,6 +1727,7 @@ fn pod_directive(line: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_some;
 
     fn assert_quote_like_start(
         source: &[u8],
@@ -2442,7 +2440,7 @@ my $after = "op"#;
         assert_eq!(interpolation_admission(code, code.len()), InterpolationAdmission::NotOwned);
 
         let replacement = "my $name = 1;\nmy $x = s;foo;$na;";
-        let slot = replacement.find("$na").expect("$na in replacement");
+        let slot = must_some(replacement.find("$na"));
         assert_eq!(
             interpolation_admission(replacement, slot + 3),
             InterpolationAdmission::NotOwned

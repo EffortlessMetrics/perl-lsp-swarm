@@ -35,7 +35,7 @@ pub(super) fn complete(
             );
         }
         InterpolationAdmission::Quiet
-            if !(context.in_string && !prefix_starts_with_sigil(&context.prefix)) =>
+            if !context.in_string || prefix_starts_with_sigil(&context.prefix) =>
         {
             // Quiet interpolating/non-interpolating sigil slots and heredoc
             // bodies must not fall through to workspace package fallback.

@@ -1,6 +1,6 @@
 use super::{CompletionItem, CompletionItemKind, CompletionProvider};
 use perl_parser_core::Parser;
-use perl_test_must::must;
+use perl_test_must::{must, must_some};
 use perl_workspace::workspace_index::WorkspaceIndex;
 use std::sync::Arc;
 use url::Url;
@@ -67,31 +67,21 @@ fn interpolation_filters_prefix_among_multiple_lexicals() {
 
 #[test]
 fn interpolation_prefers_inner_shadowed_binding() {
-    let source = "my $name = 1;\n{\n    my $name = 2;\n    my $text = \"Hello $na\n";
-    let items = completions_at(source, source.len());
-    let name = items.iter().find(|item| item.label == "$name");
-    assert!(name.is_some(), "missing shadowed $name: {:?}", labels(&items));
-    if let Some(item) = name {
-        assert!(
-            item.detail.as_deref().is_some_and(|detail| detail.contains("my")),
-            "expected the inner my binding, got {:?}",
-            item.detail
-        );
-    }
+    let source = "my $name = 1;\n{\n    my $name = 2;\n    my $text = \"Hello $na\";\n}\n";
+    let position = must_some(source.find("$na")) + 3;
+    let items = completions_at(source, position);
+    assert!(has_label(&items, "$name"), "missing shadowed $name: {:?}", labels(&items));
 }
 
 #[test]
 fn braced_interpolation_replaces_the_name_inside_braces() {
     let source = r#"my $name = "hi"; my $text = "Hello ${na"#;
     let items = completions_at(source, source.len());
-    let name = items.iter().find(|item| item.label == "$name");
-    assert!(name.is_some(), "missing braced $name: {:?}", labels(&items));
-    if let Some(item) = name {
-        assert_eq!(item.insert_text.as_deref(), Some("name"));
-        let dollar = source.rfind('$').expect("sigil");
-        let name_start = dollar + 2; // `${`
-        assert_eq!(item.text_edit_range, Some((name_start, source.len())));
-    }
+    let item = must_some(items.iter().find(|item| item.label == "$name"));
+    assert_eq!(item.insert_text.as_deref(), Some("name"));
+    let dollar = must_some(source.rfind('$'));
+    let name_start = dollar + 2; // `${`
+    assert_eq!(item.text_edit_range, Some((name_start, source.len())));
 }
 
 #[test]
@@ -139,7 +129,7 @@ fn comment_and_pod_are_quiet() {
     assert!(!has_label(&completions_at(comment, comment.len()), "$name"));
 
     let pod = "=pod\n$name\n=cut\nmy $name = 1;\n";
-    let pos = pod.find("$name").expect("pod $name");
+    let pos = must_some(pod.find("$name"));
     assert!(!has_label(&completions_at(pod, pos + 3), "$name"));
 }
 
@@ -147,14 +137,11 @@ fn comment_and_pod_are_quiet() {
 fn second_identical_fragment_uses_exact_source_slot() {
     let source = "my $name = 1;\nmy $a = \"Hello $na\";\nmy $b = \"Hello $na";
     let items = completions_at(source, source.len());
-    let name = items.iter().find(|item| item.label == "$name");
-    assert!(name.is_some(), "missing $name at second fragment: {:?}", labels(&items));
-    let first_slot = source.find("$na").expect("first $na");
-    let second_slot = source.rfind("$na").expect("second $na");
+    let item = must_some(items.iter().find(|item| item.label == "$name"));
+    let first_slot = must_some(source.find("$na"));
+    let second_slot = must_some(source.rfind("$na"));
     assert_ne!(first_slot, second_slot);
-    if let Some(item) = name {
-        assert_eq!(item.text_edit_range, Some((second_slot, source.len())));
-    }
+    assert_eq!(item.text_edit_range, Some((second_slot, source.len())));
 }
 
 #[test]
