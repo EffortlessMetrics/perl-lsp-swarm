@@ -207,6 +207,201 @@ class PrPlanTests(unittest.TestCase):
         self.assertEqual("static_floor", lanes[1]["learned_source"])
         self.assertEqual(5, lanes[2]["base_lem"])
 
+    def _write_history(self, root: Path, payload: object, name: str = "ci-lane-history.json") -> Path:
+        path = root / name
+        if isinstance(payload, str):
+            path.write_text(payload, encoding="utf-8")
+        else:
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_load_learned_history_accepts_a_v1_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                {
+                    "schema_version": 1,
+                    "lanes": {"rust_small": {"learned": True, "p50": 20.0}},
+                },
+            )
+            payload = pr_plan.load_learned_history(path)
+
+        self.assertEqual(1, payload["schema_version"])
+        self.assertIn("rust_small", payload["lanes"])
+
+    def test_load_learned_history_refuses_a_future_schema_even_when_lanes_survive(
+        self,
+    ) -> None:
+        """The check is the envelope version, not whether a `lanes` key remains.
+
+        A v2 producer that still used `lanes` but renamed per-record fields
+        would otherwise be consumed as v1 and rewrite `base_lem` (#15320).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                {
+                    "schema_version": 2,
+                    "lanes": {
+                        "rust_small": {
+                            "learned": True,
+                            "p50": 1.0,
+                            "static_floor": 999.0,
+                        }
+                    },
+                },
+            )
+            with self.assertRaises(SystemExit) as raised:
+                pr_plan.load_learned_history(path)
+
+        self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+        self.assertIn("2", str(raised.exception))
+
+    def test_load_learned_history_refuses_non_integer_schema_versions(self) -> None:
+        """bool is an int subclass and 1.0 == 1, so bare `!= 1` would admit
+        JSON `true` / `1.0` and let their lane numbers rewrite `base_lem`.
+        """
+        for forged_version in (True, 1.0):
+            with self.subTest(forged_version=forged_version):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = self._write_history(
+                        Path(tmp),
+                        {
+                            "schema_version": forged_version,
+                            "lanes": {
+                                "rust_small": {
+                                    "learned": True,
+                                    "p50": 868.0,
+                                    "static_floor": 999.0,
+                                }
+                            },
+                        },
+                    )
+                    with self.assertRaises(SystemExit) as raised:
+                        pr_plan.load_learned_history(path)
+                self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+
+    def test_load_learned_history_refuses_a_payload_with_no_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                {"lanes": {"rust_small": {"learned": True, "p50": 20.0}}},
+            )
+            with self.assertRaises(SystemExit) as raised:
+                pr_plan.load_learned_history(path)
+
+        self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+
+    def test_load_learned_history_refuses_non_object_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(Path(tmp), [{"lanes": {}}])
+            with self.assertRaises(SystemExit) as raised:
+                pr_plan.load_learned_history(path)
+
+        self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+        self.assertIn("list", str(raised.exception))
+
+    def test_load_learned_history_still_tolerates_absent_and_corrupt_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual({}, pr_plan.load_learned_history(root / "absent.json"))
+
+            corrupt = self._write_history(root, "{not json", name="corrupt.json")
+            self.assertEqual({}, pr_plan.load_learned_history(corrupt))
+
+    def test_supported_history_version_is_pinned_here_not_by_the_producer(self) -> None:
+        self.assertEqual(1, pr_plan.HISTORY_SCHEMA_VERSION)
+        self.assertNotIn("SCHEMA_VERSION", vars(pr_plan))
+
+    def test_main_fail_closes_on_unsupported_history_schema_before_applying_estimates(
+        self,
+    ) -> None:
+        """Production path: pr-plan.yml feeds this file into pr_plan.py.
+
+        A v2 payload that still carries `lanes` must not write a plan that
+        substituted those numbers into `base_lem`.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            budget = root / "ci-budget.toml"
+            budget.write_text(
+                """
+[budget]
+default_limit_lem = 35
+elevated_limit_lem = 75
+hard_limit_lem = 125
+linux_minute_rate_usd = 0.008
+""",
+                encoding="utf-8",
+            )
+            lanes = root / "ci-lanes.toml"
+            lanes.write_text(
+                """
+[lane.rust_small]
+default_pr = true
+base_lem = 10
+blocking = true
+""",
+                encoding="utf-8",
+            )
+            risk_packs = root / "ci-risk-packs.toml"
+            risk_packs.write_text("", encoding="utf-8")
+            trust_lanes = root / "trust-lanes.toml"
+            trust_lanes.write_text("", encoding="utf-8")
+            history = self._write_history(
+                root,
+                {
+                    "schema_version": 2,
+                    "lanes": {
+                        "rust_small": {
+                            "learned": True,
+                            "p50": 20.0,
+                            "static_floor": 999.0,
+                        }
+                    },
+                },
+            )
+            output = root / "ci-plan.json"
+
+            old_argv = sys.argv
+            old_discover = pr_plan.discover_changed_files
+            try:
+                pr_plan.discover_changed_files = lambda _base, _head: {
+                    "status": "known",
+                    "files": ["scripts/ci/pr_plan.py"],
+                    "digest": "test-digest-history-envelope",
+                }
+                sys.argv = [
+                    "pr_plan.py",
+                    "--base",
+                    "origin/main",
+                    "--head",
+                    "HEAD",
+                    "--labels-json",
+                    "[]",
+                    "--budget",
+                    str(budget),
+                    "--lanes",
+                    str(lanes),
+                    "--risk-packs",
+                    str(risk_packs),
+                    "--trust-lanes",
+                    str(trust_lanes),
+                    "--history",
+                    str(history),
+                    "--json-out",
+                    str(output),
+                ]
+                with redirect_stdout(io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        pr_plan.main()
+            finally:
+                sys.argv = old_argv
+                pr_plan.discover_changed_files = old_discover
+
+            self.assertIn("unsupported ci-lane-history schema", str(raised.exception))
+            self.assertFalse(output.exists(), "fail-closed must not emit a plan")
+
     def test_main_writes_plan_summary_and_trust_lane_for_pr_plan_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
