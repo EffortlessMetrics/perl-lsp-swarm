@@ -1,30 +1,35 @@
-# Perl LSP installer for Windows
+﻿# Perl LSP installer for Windows
 #
-# IMPORTANT: the copy served from the `master` branch of the publication repo
-# (`raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1`) is
-# STILL THE OLD NON-PARSABLE FILE. The PS 5.1 parse fix below (25 parse errors ->
-# 0, and this file is now pure ASCII with no BOM) exists only in THIS repository.
-# It reaches users when #4348 lands the audited publication join. Until then,
-# fetching from `master` gives you the old file and the old 25 parse errors.
-# Fetch this repository at a reviewed commit SHA instead:
-#   irm "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp-swarm/<commit-sha>/install.ps1" -OutFile install.ps1
+# This development copy carries the current checksum behavior: it requires the
+# release SHA256SUMS manifest and fails closed without it. The published
+# PowerShell script is a separate, older revision with documented checksum
+# limitations; use only the immutable revision and invocation documented in
+# README.md and docs/how-to/INSTALLATION.md. Do not assume perl-lsp/master is
+# equivalent to this file.
 #
-# The asset-name defect that made the published copy build a 404 URL is fixed
-# (#5461, closed): this file resolves the `perllsp-<version>-...zip` asset name
-# that releases actually ship.
+# Two concrete reasons that matters for Windows PowerShell 5.1:
 #
-# The piped one-liner is still NOT a supported install path, for a different
-# reason: first-party install-surface policy forbids publishing an
-# `install.ps1 | iex` invocation (see install_surface_check), and a bare piped
-# invocation omits the remote-bootstrap wrapper's identity pair — a full
-# 40-character commit SHA plus a reviewed SHA-256 digest. A one-liner could
-# carry both values, but no reviewed pair is published for this script.
+#   1. The PS 5.1 parse fix lives only in THIS repository. The copy served from
+#      the publication repo's `master` branch
+#      (raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1)
+#      is still the older non-ASCII file, which Windows PowerShell 5.1 cannot
+#      parse (25 parse errors). This file is pure ASCII, so 5.1 parses it with
+#      zero errors. The fix reaches users when #4348 lands the audited
+#      publication join; until then, fetch this repository at a reviewed commit
+#      SHA rather than from `master`.
+#   2. First-party install-surface policy forbids publishing an
+#      `install.ps1 | iex` invocation (see install_surface_check), and a bare
+#      piped invocation omits the remote-bootstrap wrapper's identity pair — a
+#      full 40-character commit SHA plus a reviewed SHA-256 digest. A one-liner
+#      could carry both values, but no reviewed pair is published for this
+#      script.
+#
 # Fetch, review, then run:
-#   irm "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/<commit-sha>/install.ps1" -OutFile install.ps1
+#   irm "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp-swarm/<commit-sha>/install.ps1" -OutFile install.ps1
 #   notepad .\install.ps1
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #
-# Run it from a clone or a downloaded copy:
+# Run it from a clone or a reviewed downloaded copy:
 #   .\install.ps1                                    # latest, default dir
 #   .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
 
@@ -1029,6 +1034,13 @@ if (-not ($IsArm64Host -or $HostArch -eq "AMD64")) {
 # Resolve the version before selecting a target. Target selection now depends
 # on which assets a specific release actually carries, so the tag has to be
 # known first.
+
+# #16541: X.Y.Z semver core, mirroring PLSP_SEMVER_RE in scripts/install.sh
+# (#8367): no leading zeroes, optional prerelease/build suffix with its
+# restricted alphabet. Applied to the explicit -Version pin before any URL is
+# built.
+$SemverPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
+
 if ($Version -eq "latest") {
     try {
         $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
@@ -1038,7 +1050,15 @@ if ($Version -eq "latest") {
         Write-Error "Failed to fetch latest release: $_"
     }
 } else {
-    $Tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
+    # #16541: reject an invalid pin before any URL is built; previously
+    # anything non-"latest" was accepted and survived to a bare 404. Strip one
+    # optional leading "v" (-creplace is case-sensitive, matching the POSIX
+    # ${VERSION#v}) and apply the same semver core as scripts/install.sh.
+    $VersionSpec = $Version -creplace '^v', ''
+    if ($VersionSpec -notmatch $SemverPattern) {
+        Write-Error "Invalid -Version '$Version': expected a full X.Y.Z semver (for example 0.17.0 or v0.17.0, with optional prerelease/build metadata). Check the release page for an existing tag: https://github.com/$Repo/releases"
+    }
+    $Tag = "v$VersionSpec"
 }
 
 $VersionNum = $Tag.TrimStart("v")
@@ -1140,7 +1160,8 @@ try {
     try {
         Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
     } catch {
-        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $_"
+        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $($_.Exception.Message)
+Check the release page for an existing tag: https://github.com/$Repo/releases"
         throw
     }
 

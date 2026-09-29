@@ -6,28 +6,15 @@
 //! - Server MUST NOT crash on startup with invalid config.
 //! - Error messages MUST NOT contain raw Rust panic traces.
 //! - Server MUST remain responsive after the config error.
-//! - A malformed `.perl-lsp.toml` MUST surface a `window/showMessage` that
-//!   names the remedy.
+//! - A malformed `.perl-lsp.toml` MUST surface exactly one bounded
+//!   `window/showMessage` Warning naming the file, so the user can fix it.
 //!
 //! The startup case proves process survival through `didOpen`; it does not claim
 //! that a configuration or tool-resolution transition has settled.
-//!
-//! The bad-tool-path cases below are transport characterization: they prove the
-//! server survives, and they pin no user-visible message. The user-visible half
-//! of "bad configuration" — that a user who mistypes their config file is
-//! actually told what to do about it — is covered by
-//! `scenario_05_malformed_project_config_warns_with_a_remedy`, which is what a
-//! user hits on a first run with a hand-written `.perl-lsp.toml` (#16549).
-//!
-//! Not covered here, and deliberately not claimed: warning *suppression*. The
-//! broken-config popup is deduped per session (#16548), but a workspace-rooted
-//! session reads `.perl-lsp.toml` once at initialize, so the repeat that dedup
-//! suppresses is only reachable from a rootless session — and `ScenarioConfig`
-//! always sends a `rootUri`, so this harness cannot drive that path at all.
 
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::{
-    FormatResult, ScenarioConfig, UxCiTier, UxComponent, UxEvidenceClass, UxHarness,
+    FormatResult, LspEvent, ScenarioConfig, UxCiTier, UxComponent, UxEvidenceClass, UxHarness,
     binary_available, missing_binary_skip, run_ux_scenario_with_evidence_class,
 };
 use serde_json::Value;
@@ -36,22 +23,18 @@ use std::time::Duration;
 const WORKFLOW_ID: &str = "bad_config_resilience";
 const SCENARIO_FILE: &str = "ux_scenario_05_bad_config.rs";
 
-/// A `.perl-lsp.toml` the TOML parser cannot read: the `[perl` table header is
-/// never closed, so parsing fails before any field is considered.
-///
-/// Deliberately a *syntax* error rather than an unknown key. An unknown key
-/// deserializes into `#[serde(default)] ProjectConfig` and is silently ignored,
-/// which would make this case a test of nothing.
-const MALFORMED_PROJECT_CONFIG: &str = "[perl\ninclude_paths = [\"lib\"\n";
+/// Distinctive tail of the single-file config warning
+/// (`load_and_apply_project_config`, `MessageType::Warning` arm).
+const FIX_THE_FILE_GUIDANCE: &str = "Fix the error in .perl-lsp.toml";
 
-/// The remedy half of the project-config warning, shared verbatim by the
-/// single-file and folder emit paths (`runtime/lifecycle/workspace.rs`).
-///
-/// Pinning the remedy rather than the whole sentence is deliberate. A refactor
-/// that kept a vague "invalid configuration" and dropped "Fix the error in
-/// .perl-lsp.toml and reload the window" leaves the user with no next action,
-/// and that is the regression this needs to catch.
-const PROJECT_CONFIG_REMEDY: &str = "Fix the error in .perl-lsp.toml";
+/// A TOML table header left unclosed, so the project config parse fails.
+const MALFORMED_PROJECT_CONFIG: &str = "[perl\nversion = \"5.20\"\n";
+
+/// Bound on the event-driven wait for the config warning. `didOpen` is a
+/// notification with no response to synchronize on, so the wait replaces a
+/// sleep; the warning is emitted during the didOpen-time project config
+/// refresh, never later.
+const CONFIG_WARNING_WAIT: Duration = Duration::from_secs(15);
 
 fn config_with_bad_tool_paths() -> ScenarioConfig {
     ScenarioConfig::default()
@@ -59,8 +42,47 @@ fn config_with_bad_tool_paths() -> ScenarioConfig {
         .env("PERLCRITIC_PATH", "/nonexistent/path/to/perlcritic")
 }
 
-fn config_with_malformed_project_config() -> ScenarioConfig {
+fn config_with_malformed_project_toml() -> ScenarioConfig {
     ScenarioConfig::default().with_file(".perl-lsp.toml", MALFORMED_PROJECT_CONFIG)
+}
+
+fn config_message_events(events: &[LspEvent]) -> Vec<&LspEvent> {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(event, LspEvent::WindowMessage { message, .. }
+                | LspEvent::LogMessage { message, .. }
+                if message.contains(".perl-lsp.toml"))
+        })
+        .collect()
+}
+
+#[test]
+fn scenario_05_wrong_severity_config_duplicate_still_counts_twice() -> Result<()> {
+    let message = format!("{FIX_THE_FILE_GUIDANCE}: invalid table");
+    let events = [
+        LspEvent::WindowMessage { message_type: 2, message: message.clone() },
+        LspEvent::WindowMessage { message_type: 1, message },
+    ];
+    anyhow::ensure!(
+        config_message_events(&events).len() == 2,
+        "a wrong-severity config duplicate evaded the count"
+    );
+    Ok(())
+}
+
+#[test]
+fn scenario_05_wrong_channel_config_duplicate_still_counts_twice() -> Result<()> {
+    let message = format!("{FIX_THE_FILE_GUIDANCE}: invalid table");
+    let events = [
+        LspEvent::WindowMessage { message_type: 2, message: message.clone() },
+        LspEvent::LogMessage { message_type: 2, message },
+    ];
+    anyhow::ensure!(
+        config_message_events(&events).len() == 2,
+        "a wrong-channel config duplicate evaded the count"
+    );
+    Ok(())
 }
 
 fn ensure_no_panic_trace(message: &str) -> Result<()> {
@@ -189,11 +211,11 @@ fn scenario_05_format_with_bad_perltidy_path_returns_graceful_error() {
 }
 
 #[test]
-fn scenario_05_malformed_project_config_warns_with_a_remedy() {
+fn scenario_05_malformed_project_config_emits_one_bounded_warning_naming_the_file() {
     run_ux_scenario_with_evidence_class(
         WORKFLOW_ID,
         SCENARIO_FILE,
-        "scenario_05_malformed_project_config_warns_with_a_remedy",
+        "scenario_05_malformed_project_config_emits_one_bounded_warning_naming_the_file",
         UxCiTier::Pr,
         Some(UxComponent::Infra),
         UxEvidenceClass::TransportCharacterization,
@@ -202,41 +224,73 @@ fn scenario_05_malformed_project_config_warns_with_a_remedy() {
                 return Err(missing_binary_skip().into());
             }
 
-            let harness = UxHarness::new(config_with_malformed_project_config())
-                .context("Failed to create UX harness with a malformed .perl-lsp.toml")?;
+            let source = "my $x = 1;\n";
+            let harness = UxHarness::new(config_with_malformed_project_toml())
+                .context("Failed to create UX harness with malformed .perl-lsp.toml")?;
 
+            // Single-file mode: the didOpen-time project config refresh parses
+            // the seeded `.perl-lsp.toml`, fails, and must surface one bounded
+            // Warning naming the file.
             harness
-                .open_file("malformed_config.pl", "my $x = 1;\n")
-                .context("didOpen should succeed with a malformed .perl-lsp.toml")?;
+                .open_file("config_warning.pl", source)
+                .context("didOpen should succeed even with a malformed project config")?;
 
-            // The three transport cases in this file all pass against a server
-            // that says nothing at all, because they only assert that nothing
-            // crashed. A user who mistypes their config needs to be told which
-            // file to fix and that a reload applies it (#16549). The remedy is
-            // delivered as `window/showMessage` — the assertion deliberately
-            // rejects `window/logMessage`, which a user never sees, so the
-            // acceptance cannot pass on a message only a log captured.
-            let warned = harness
+            // Event-driven settle for the asynchronous didOpen notification.
+            let observed = harness
                 .client
-                .wait_for_raw_events(Duration::from_secs(15), |events| {
+                .wait_for_events(CONFIG_WARNING_WAIT, |events| {
                     events
                         .iter()
-                        .any(|msg| {
-                            msg["method"].as_str() == Some("window/showMessage")
-                                && msg["params"]["message"]
-                                    .as_str()
-                                    .is_some_and(|message| message.contains(PROJECT_CONFIG_REMEDY))
+                        .any(|event| {
+                            matches!(event, LspEvent::WindowMessage { message, .. }
+                                if message.contains(".perl-lsp.toml"))
                         })
                         .then_some(())
                 })
-                .is_ok();
+                .map_err(|end| {
+                    anyhow::anyhow!("malformed .perl-lsp.toml produced no config warning: {end:?}")
+                });
+            recorder.check("config warning observed after didOpen", observed.is_ok())?;
+            observed?;
+
+            // Hover round-trip proves the server processed the didOpen before the
+            // final count, and that it stays responsive after the config failure.
+            harness
+                .hover("config_warning.pl", 0, 3)
+                .context("server became unresponsive after the malformed config warning")?;
+            recorder.check("hover round-trip completed after config warning", true)?;
+
+            let events = harness.client.peek_events();
+            let warnings = config_message_events(&events);
+
             recorder
-                .check("a malformed .perl-lsp.toml surfaces a warning naming the remedy", warned)?;
+                .check("exactly one config warning naming .perl-lsp.toml", warnings.len() == 1)?;
+            anyhow::ensure!(
+                warnings.len() == 1,
+                "expected exactly one .perl-lsp.toml message, got {}: {warnings:?}",
+                warnings.len()
+            );
+            let Some(LspEvent::WindowMessage { message_type: 2, message }) =
+                warnings.first().copied()
+            else {
+                anyhow::bail!("the sole .perl-lsp.toml message must be a Warning popup");
+            };
+            anyhow::ensure!(
+                message.contains(FIX_THE_FILE_GUIDANCE),
+                "config warning must tell the user to fix .perl-lsp.toml \
+                 ({FIX_THE_FILE_GUIDANCE}): {message}"
+            );
+            recorder.check(
+                "config warning carries the fix-the-file guidance",
+                message.contains(FIX_THE_FILE_GUIDANCE),
+            )?;
+            ensure_no_panic_trace(message)?;
 
             harness.assert_no_crash();
+            recorder.check("no crash signatures in event log", true)?;
             Ok(())
         },
-    )
+    );
 }
 
 #[cfg(test)]

@@ -1013,6 +1013,12 @@ pub struct Binding {
     pub name: String,
     /// Source range of the binding declaration token.
     pub range: SourceLocation,
+    /// First source offset at which references can see this binding.
+    ///
+    /// A declaration with an initializer becomes visible after the entire
+    /// declaration: `my $x = $x` reads an outer `$x` on the right. Parameter
+    /// and catch bindings without a declaration item begin after their token.
+    pub visible_from: usize,
     /// Storage class represented by the declaration.
     pub storage: StorageClass,
     /// Package context active for this binding, when known.

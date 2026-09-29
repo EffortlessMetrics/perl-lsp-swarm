@@ -15,28 +15,18 @@
 
 set -euo pipefail
 
-# Every remote-bootstrap failure is the same dead end: the identity pair the
-# wrapper needs is not published yet, and nothing in the message says so, or
-# says what works today (#16542). One remedy for all of them, so the text
-# cannot drift between call sites.
-bootstrap_remedy() {
-    cat >&2 <<'REMEDY'
-
-The identity-bound bootstrap needs PERL_LSP_INSTALLER_REF and
-PERL_LSP_INSTALLER_SHA256 as a reviewed pair. The pair is published together
-at release closeout, and has not been published yet - so this path cannot
-complete, and no value of either variable will change that.
-
-The manual archive install works today:
-  https://github.com/EffortlessMetrics/perl-lsp/releases
-See docs/how-to/INSTALLATION.md ("Installer Script (macOS and Linux)") for the
-manual-archive procedure, and "Fastest Path" for the one-line version.
-REMEDY
-}
-
+# Remote-bootstrap aborts share one remedy so the unpublished-packet pointer
+# cannot drift across the missing-ref, bad-ref, HTTP, and digest-mismatch sites
+# (#16542). Clone-local exec never reaches this function.
 bootstrap_fail() {
     echo "Error: $*" >&2
-    bootstrap_remedy
+    # echo is a builtin: the no-sha PATH probe has no cat, and a piped
+    # bootstrap must still print the remedy after the typed error.
+    echo >&2
+    echo "Identity-bound bootstrap requires the ref+digest pair published at" >&2
+    echo "release closeout. That packet has not been published yet." >&2
+    echo "The manual archive install works today:" >&2
+    echo "see docs/how-to/INSTALLATION.md (macos-and-linux-manual-archive)." >&2
     exit 1
 }
 
