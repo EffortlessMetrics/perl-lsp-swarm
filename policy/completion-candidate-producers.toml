@@ -90,7 +90,19 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
-source_digest = "sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f"
+# Re-anchor 2026-09-29 (#16853): a silent `package` reopen no longer discards the
+# class model an earlier segment produced. The only scan-root change is
+# completion/workspace.rs, where `current_document_package_facts` now merges
+# per-segment class models through the semantic analyzer's canonical
+# `merge_reopened_class_models` instead of letting the last segment win. A new
+# test-only module in the same file is excluded above, and the analyzer crate is
+# not a scan root. No producer add/remove/re-channel: no new candidate-channel
+# function, no changed entry or delegations, and the finalizer route is
+# untouched. This widens what the existing workspace method row can report for a
+# reopened package — an inherited or composed method that was previously dropped
+# is now reachable — so it is a source re-audit, not a claim that completion
+# behavior is unchanged. Projection diff is digest-only.
+source_digest = "sha256:788216e08b45e8ab361079cbb7d165379d759480ddfe6e653b50088e1d271245"
 
 [[delegations]]
 module = "dancer2"
