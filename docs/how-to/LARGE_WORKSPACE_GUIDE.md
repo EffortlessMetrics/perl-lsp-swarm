@@ -361,8 +361,6 @@ Tune these via the LSP configuration:
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 5000,
-      "maxTotalSymbols": 250000
     }
   }
 }
@@ -371,7 +369,7 @@ Tune these via the LSP configuration:
 ### AST Cache Behaviour
 
 After parsing, the server stores ASTs in a `BoundedLruCache` keyed by URI. The cache
-evicts least-recently-used entries when it reaches `astCacheMaxEntries`. Key facts:
+evicts least-recently-used entries under its internal cache bounds. Key facts:
 
 - **Cache hit**: No reparse, constant time lookup
 - **Cache miss**: Full reparse from source string (O(n) in source length)
@@ -379,7 +377,6 @@ evicts least-recently-used entries when it reaches `astCacheMaxEntries`. Key fac
 - **Large files**: A single 10 000-line file can consume 5–20 MB of AST cache memory
 
 If the cache is too large, memory grows; if too small, latency spikes. A good starting
-point is `astCacheMaxEntries = 100` (roughly 1 AST per open editor tab, plus headroom).
 
 To check effective cache behaviour, look for the `ast_cache` span in trace logs:
 
@@ -392,7 +389,7 @@ TRACE perl_lsp::workspace: ast_cache miss uri="file:///lib/Bar.pm" reason=evicte
 
 **Unbounded symbol accumulation**
 
-Symbols are never removed unless the file is closed or `maxTotalSymbols` is hit. If
+Symbols are never removed unless the file is closed or its internal symbol budget is hit. If
 your workflow opens many files and never closes them, the index grows unboundedly.
 Ensure editors send `textDocument/didClose` on buffer close.
 
@@ -475,7 +472,6 @@ let mut map = HashMap::with_capacity(expected_symbol_count);
 | Workspace root too broad | Set a narrower `includePaths` |
 | `useSystemInc: true` on large `@INC` | Set `useSystemInc: false` |
 | Network filesystem | Copy sources to local SSD for development |
-| `maxIndexedFiles` not capped | Set `maxIndexedFiles` to a sensible limit |
 | Deep `node_modules` or `vendor` in path | Add ignore patterns for non-Perl dirs |
 
 ### High Memory After Hours of Use
@@ -509,9 +505,7 @@ system swap activity increases.
 
 | Cause | Fix |
 |-------|-----|
-| `astCacheMaxEntries` too high | Reduce to 50–100 |
 | Files never closed (`didClose` not sent) | Check editor LSP plugin version |
-| Unbounded symbol accumulation | Cap with `maxTotalSymbols` |
 | String duplication | Profile with DHAT, apply `StringInterner` |
 
 ### Slow Completion Latency
@@ -541,7 +535,6 @@ system swap activity increases.
 | `completionCap` too high (thousands of items) | Reduce to 50–100 |
 | Symbol lookup doing linear scan | Verify dual-index is built (check for `index_file` errors in log) |
 | `resolutionTimeout` too permissive | Reduce to 25–50 ms |
-| Cache miss on every keystroke | Increase `astCacheMaxEntries` |
 
 ### Degraded After Long Sessions
 
@@ -569,12 +562,9 @@ are exceeded or when incremental updates fail to apply cleanly.
    ```
 
 3. If the server frequently enters `Degraded`, it is hitting resource limits. Review
-   `maxTotalSymbols` and `maxIndexedFiles` in your configuration.
+   your workspace scope (`.perl-lspignore`) and memory-budget settings.
 
 **Remediation**:
-
-- Increase `maxTotalSymbols` if the workspace is legitimately large
-- Reduce `maxIndexedFiles` and add explicit `includePaths` to stay in `Ready`
 - File a bug if `Degraded` is entered without hitting documented limits
 
 ### Diagnosis Workflow
@@ -587,7 +577,7 @@ Is startup slow (>30s)?
   No  → continue
 
 Is RSS growing over time?
-  Yes → run DHAT, check astCacheMaxEntries, check for missing didClose
+  Yes → run DHAT, check the AST cache memory budget, check for missing didClose
   No  → continue
 
 Is completion latency >500ms?

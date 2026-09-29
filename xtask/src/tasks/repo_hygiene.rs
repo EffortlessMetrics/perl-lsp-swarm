@@ -13,7 +13,11 @@ use serde::{Deserialize, Serialize};
 use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::utils::project_root;
 
-const SCHEMA_VERSION: &str = "repo-hygiene.v1";
+// v2 adds the `TOOL_UNAVAILABLE` per-tool result class. The aggregate `status`
+// vocabulary is unchanged, but a strict v1 reader validating the per-tool
+// `result` field would reject the new value, so the version moves with the
+// serialized vocabulary rather than staying pinned to the old one (#15235).
+const SCHEMA_VERSION: &str = "repo-hygiene.v2";
 const CLAIM_BOUNDARY: &str = "Changed-file Taplo formatting/syntax checks and typos checks for the exact resolved range; not whole-repository historical cleanliness, semantic policy validation, or release readiness";
 const TOOL_CONFIG_FILES: &[&str] = &["aqua.yaml", "taplo.toml", ".typos.toml"];
 const AQUA_VERIFICATION_ENV: &[&str] = &[
@@ -29,6 +33,15 @@ const TAPLO_CONFIG_ENV: &str = "TAPLO_CONFIG";
 pub enum ResultClass {
     Pass,
     PolicyFinding,
+    /// The tool could not be obtained or interrogated at all, so no content
+    /// verdict exists for the checked files.
+    ///
+    /// This is deliberately distinct from `NotProven`: a missing binary must
+    /// not be readable as a dirty candidate (#15235). It still aggregates to
+    /// `NotProven` in `overall_status`, so a missing tool never becomes a clean
+    /// result and never weakens a gate — the difference is confined to the
+    /// reason a consumer reads, not to whether the check failed.
+    ToolUnavailable,
     NotProven,
     NotApplicable,
 }
@@ -251,21 +264,52 @@ fn run_aqua(root: &Path, tool: &str, args: &[String]) -> ToolResult {
         Ok(output) => output,
         Err(error) => {
             return ToolResult {
-                result: ResultClass::NotProven,
+                result: ResultClass::ToolUnavailable,
                 command: rendered,
                 detail: format!("could not start Aqua: {error}"),
             };
         }
     };
     let detail = command_detail(&output.stdout, &output.stderr);
-    let result = if output.status.success() {
-        ResultClass::Pass
-    } else if args.len() == 1 && args[0] == "--version" {
-        ResultClass::NotProven
+    if output.status.success() {
+        return ToolResult { result: ResultClass::Pass, command: rendered, detail };
+    }
+    if args.len() == 1 && args[0] == "--version" {
+        // Aqua ran but the tool is not usable (missing download, checksum
+        // failure, unsupported platform). That is an absent tool, not a
+        // finding about the changed files (#15235).
+        return ToolResult { result: ResultClass::ToolUnavailable, command: rendered, detail };
+    }
+    // A nonzero content-check exit is the tool's own finding only while the
+    // tool is still obtainable (#15235 review): Aqua can lose the pinned
+    // executable between the version probe and this invocation, and that
+    // later loss must never be read as dirty files. Re-probe once and
+    // reclassify a lost tool as unavailable.
+    let probe = run_aqua(root, tool, &["--version".to_string()]);
+    let result = classify_aqua_exit(args, probe.result == ResultClass::Pass);
+    let detail = if result == ResultClass::ToolUnavailable {
+        format!(
+            "{detail}\naqua could not re-obtain {tool} after the content check failed (probe: {})",
+            probe.detail
+        )
     } else {
-        ResultClass::PolicyFinding
+        detail
     };
     ToolResult { result, command: rendered, detail }
+}
+
+/// Classify a nonzero Aqua exit for `args`, given whether the tool could
+/// still be obtained afterwards.
+///
+/// A `--version` probe that fails is always an unavailable tool. For a
+/// content invocation, a nonzero exit is the tool's own finding only when a
+/// follow-up probe still obtains the tool; a probe that now fails means Aqua
+/// lost the pinned executable, so no content verdict exists.
+fn classify_aqua_exit(args: &[String], tool_still_obtainable: bool) -> ResultClass {
+    if args.len() == 1 && args[0] == "--version" {
+        return ResultClass::ToolUnavailable;
+    }
+    if tool_still_obtainable { ResultClass::PolicyFinding } else { ResultClass::ToolUnavailable }
 }
 
 fn overall_status(taplo: &[ToolResult], typos: Option<&ToolResult>) -> ResultClass {
@@ -277,7 +321,13 @@ fn overall_status(taplo: &[ToolResult], typos: Option<&ToolResult>) -> ResultCla
             applicable = true;
         }
         match result.result {
-            ResultClass::NotProven => return ResultClass::NotProven,
+            // An absent tool is not proven work, so the aggregate verdict stays
+            // exactly what it was before `ToolUnavailable` existed. The reason
+            // survives on the individual `ToolResult`; the gate outcome does not
+            // change (#15235).
+            ResultClass::NotProven | ResultClass::ToolUnavailable => {
+                return ResultClass::NotProven;
+            }
             ResultClass::PolicyFinding => finding = true,
             ResultClass::Pass | ResultClass::NotApplicable => {}
         }
@@ -514,14 +564,93 @@ mod tests {
     }
 
     #[test]
-    fn missing_tool_result_is_not_proven() -> Result<()> {
+    fn missing_tool_is_reported_as_unavailable_and_still_not_proven() -> Result<()> {
         let result = ToolResult {
-            result: ResultClass::NotProven,
+            result: ResultClass::ToolUnavailable,
             command: "aqua exec -- taplo --version".to_string(),
             detail: "could not start Aqua".to_string(),
         };
-        ensure!(result.result == ResultClass::NotProven);
+        // The reason is carried, not inferred: an absent binary is not a
+        // finding about the changed files (#15235).
+        ensure!(result.result == ResultClass::ToolUnavailable);
+        // …and the gate outcome is unchanged. A missing tool is still unproven
+        // work, never a clean result.
         ensure!(overall_status(std::slice::from_ref(&result), None) == ResultClass::NotProven);
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_tool_is_distinguishable_from_a_dirty_candidate() -> Result<()> {
+        let unavailable = ToolResult {
+            result: ResultClass::ToolUnavailable,
+            command: "aqua exec -- typos --version".to_string(),
+            detail: "could not start Aqua".to_string(),
+        };
+        let dirty = ToolResult {
+            result: ResultClass::PolicyFinding,
+            command: "aqua exec -- typos -- a.toml".to_string(),
+            detail: "typos: 1 finding".to_string(),
+        };
+
+        // The two causes are different classes, so a consumer reading the
+        // receipt can tell an absent tool from a content failure.
+        ensure!(unavailable.result != dirty.result);
+        // And they do not collapse into one another in the aggregate: the
+        // absent tool stays unproven while a real finding stays a finding.
+        ensure!(overall_status(std::slice::from_ref(&unavailable), None) == ResultClass::NotProven);
+        ensure!(overall_status(std::slice::from_ref(&dirty), None) == ResultClass::PolicyFinding);
+        // A missing tool is never promoted to a pass, even when every other
+        // check is green (#15235, docs/how-to/PORTABLE_CONTRACT_TOOLS.md).
+        let clean = ToolResult {
+            result: ResultClass::Pass,
+            command: "aqua exec -- taplo fmt --check -- a.toml".to_string(),
+            detail: "formatted".to_string(),
+        };
+        ensure!(
+            overall_status(&[clean.clone()], Some(&unavailable)) == ResultClass::NotProven,
+            "a green tool run must not mask an absent one"
+        );
+        ensure!(overall_status(std::slice::from_ref(&clean), None) == ResultClass::Pass);
+        Ok(())
+    }
+
+    #[test]
+    fn a_lost_tool_after_a_failed_content_check_is_unavailable_not_a_finding() -> Result<()> {
+        // #15235 review: Aqua can lose the pinned executable between the
+        // version probe and the content check. The content invocation's
+        // nonzero exit is the tool's own finding only while a follow-up
+        // version probe still succeeds; a lost tool is reclassified as
+        // unavailable, never as dirty files.
+        let content_args = tool_file_args(&["fmt", "--check"], &["a.toml".to_string()]);
+        ensure!(content_args.len() > 1, "content invocations never take the --version arm");
+        ensure!(classify_aqua_exit(&content_args, true) == ResultClass::PolicyFinding);
+        ensure!(classify_aqua_exit(&content_args, false) == ResultClass::ToolUnavailable);
+        ensure!(
+            classify_aqua_exit(&["--version".to_string()], false) == ResultClass::ToolUnavailable
+        );
+        ensure!(
+            classify_aqua_exit(&["--version".to_string()], true) == ResultClass::ToolUnavailable
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_tool_survives_the_receipt_as_its_own_class() -> Result<()> {
+        // The vocabulary and the published version move together: a strict v1
+        // reader would reject `TOOL_UNAVAILABLE`, so the receipt must not claim
+        // to still be v1 (#15235).
+        ensure!(SCHEMA_VERSION == "repo-hygiene.v2", "unexpected schema version: {SCHEMA_VERSION}");
+        // The discrimination has to reach the published receipt
+        // (target/receipts/repo-hygiene.json), not just the in-memory enum, or
+        // a reader of the artifact still cannot tell the two causes apart.
+        let receipt = ToolResult {
+            result: ResultClass::ToolUnavailable,
+            command: "aqua exec -- typos --version".to_string(),
+            detail: "could not start Aqua".to_string(),
+        };
+        let json = serde_json::to_value(&receipt)?;
+        ensure!(json["result"] == "TOOL_UNAVAILABLE", "unexpected receipt class: {json}");
+        ensure!(json["result"] != "POLICY_FINDING");
         Ok(())
     }
 
