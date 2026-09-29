@@ -4,6 +4,6 @@ kind: Fixed
 body: Accept the installer wrapper's fixed-slot VERSION and INSTALL_DIR positionals on the canonical POSIX script, with environment values winning per slot.
 time: 2026-09-29T00:20:00Z
 custom:
-  Issue: "16310"
+  PR: "16767"
   Slug: install-arg-surface-parity
   Breaking: "no"
