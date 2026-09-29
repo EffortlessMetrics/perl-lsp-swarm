@@ -3133,8 +3133,30 @@ impl LspServer {
                     }
                     #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
                     crate::runtime::readiness::notify_indexing_commit_gate(&indexing_commit_gate);
-                    let current_folders = current_workspace_folders.lock();
-                    if !path_is_in_current_workspace(&path, &current_folders) {
+                    // Scope the folder-membership recheck to its own guard
+                    // (#16651): this mutex must NOT be held across
+                    // `index_file` below. `index_file` blocks on the workspace
+                    // index's semantic-map write locks (`fact_shards.write()`
+                    // et al.) inside its commit, and a diagnostics publication
+                    // that took those same maps as a combined read
+                    // (`with_semantic_queries_for_uri`) resolves modules
+                    // through `workspace_folders.lock()` from inside its
+                    // callback — holding the folders lock here across the
+                    // commit made that pair a permanent ABBA deadlock: the
+                    // indexer waited on the semantic maps while the
+                    // diagnostics publisher waited on this lock, freezing
+                    // indexing mid-scan and wedging every subsequent request
+                    // (completion included) behind them. The membership check
+                    // is a point-in-time admission decision; it never needed
+                    // the commit to be atomic with folder state, and
+                    // open-buffer authority (#8041, #14186) is protected by
+                    // the transition critical section and the `is_open`
+                    // recheck below, not by this guard.
+                    let path_in_current_workspace = {
+                        let current_folders = current_workspace_folders.lock();
+                        path_is_in_current_workspace(&path, &current_folders)
+                    };
+                    if !path_in_current_workspace {
                         tracing::debug!(
                             path = %path.display(),
                             "Skipping file from workspace folder removed during indexing"

@@ -137,12 +137,9 @@ STASH_COUNT="$(git stash list 2>/dev/null | wc -l)"
 
 if [[ "$STASH_COUNT" -gt 0 ]]; then
     err "Git stash has $STASH_COUNT entries. Stash is SHARED across all worktrees — cross-contamination risk."
-    echo "    The stash list is a single global list. 'git stash pop' may restore another agent's changes."
-    echo "    Alternatives:"
-    echo "      Discard changes: git restore <file>"
-    echo "      Save WIP:        git commit -m 'wip' on the branch"
-    echo "      Abandon all:     git restore ."
-    echo "    Fix: Run 'git stash clear' to drop all stash entries, then re-run preflight"
+    echo "    The stash list is a single global list. Do not pop, drop, or clear another worktree's work."
+    echo "    Fix: Identify the owner of each stash entry and have that owner preserve or resolve"
+    echo "    their work. Do not edit until ownership and salvage are known; then re-run preflight."
     STASH_OK=false
 else
     ok "No git stash entries (stash is shared — safe)"

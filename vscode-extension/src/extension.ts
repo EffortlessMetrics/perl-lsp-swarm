@@ -17,7 +17,7 @@ import type {
 } from 'vscode-languageclient/node';
 import { PerlTestAdapter } from './testAdapter';
 import { activateDebugger, rewriteTestLensCommand } from './debugAdapter';
-import { BinaryDownloader, parseLocalVersion } from './downloader';
+import { BinaryDownloader, isDownloadCancellationMessage, parseLocalVersion } from './downloader';
 import {
   isPerlLanguageId,
   isSupportedPerlUriScheme,
@@ -55,7 +55,8 @@ import {
 } from './coexistenceAdvisory';
 import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
-import { generateBoilerplate } from './fileCreation';
+import { FileKind } from './fileCreation';
+import { createPerlScaffold } from './scaffoldCommands';
 import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
 import { HealthWidgetDataSource } from './healthWidgetDataSource';
@@ -1175,6 +1176,8 @@ async function runExtensionActivation(
     formatDocument: formatDocumentCommand,
     showIncPaths: showIncPathsCommand,
     openModule: openPerlModuleCommand,
+    createModule: () => createPerlScaffold(FileKind.Module).then(() => undefined),
+    createTest: () => createPerlScaffold(FileKind.Test).then(() => undefined),
     showParserAst: () =>
       showParserAstCommand({
         activeClient: client,
@@ -1229,8 +1232,12 @@ async function runExtensionActivation(
         return;
       }
       const downloader = new BinaryDownloader(context, outputChannel);
-      await context.globalState.update('perl-lsp.lastUpdateCheck', 0);
-      await downloader.checkForUpdateSilent();
+      // Force a real check (#16530): the former global-state reset only
+      // cleared the legacy `perl-lsp.lastUpdateCheck` key, while the interval
+      // guard reads the compatibility-scoped key, so a recent background
+      // check silently no-op'd this command for up to a day. `force` bypasses
+      // the interval guards and reports the outcome to the user.
+      await downloader.checkForUpdateSilent(true);
     },
   });
   // Onboarding/What's New and support surfaces are intentionally usable after
@@ -1372,15 +1379,6 @@ async function runExtensionActivation(
 
   const includePathGuidanceFolderWatcher = registerIncludePathGuidanceWorkspaceListener(context);
   activation.own('workspace_listeners', 'optional_degradable', includePathGuidanceFolderWatcher);
-
-  const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
-    try {
-      await populateCreatedFiles(event);
-    } catch (e) {
-      outputChannel.error('File creation handler error', e);
-    }
-  });
-  activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
 
   const arrowCompletionWatcher = vscode.workspace.onDidChangeTextDocument((event) => {
     maybeNudgeArrowCompletion(event);
@@ -2971,47 +2969,6 @@ export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent)
 }
 
 /**
- * Insert boilerplate into newly created Perl files that are still empty.
- *
- * `perl-lsp.autoPopulateNewFiles` is contributed `scope: "resource"`, so the
- * gate is resolved against each created URI rather than once for the whole
- * event (#14547). An unscoped `getConfiguration('perl-lsp')` cannot observe a
- * `workspaceFolderValue` at all, so a multi-root workspace where one folder
- * turns population off previously took the global value for every folder. The
- * read must stay inside the loop for the declared scope to mean anything.
- *
- * A URI outside every workspace folder resolves to the global/workspace value,
- * which is the same answer the hoisted read gave, as does an unset value. A
- * workspace opened as a single folder has no workspace-folder layer to select,
- * so it is unaffected too — but note that a `.code-workspace` listing exactly
- * one folder is mechanically multi-root and does have that layer, so a value
- * set on that folder now wins where it previously could not be seen.
- */
-export async function populateCreatedFiles(event: vscode.FileCreateEvent): Promise<void> {
-  for (const uri of event.files) {
-    const scoped = vscode.workspace.getConfiguration('perl-lsp', uri);
-    if (!scoped.get<boolean>('autoPopulateNewFiles', true)) {
-      continue;
-    }
-
-    const boilerplate = generateBoilerplate(uri.fsPath);
-    if (!boilerplate) {
-      continue;
-    }
-
-    const doc = await vscode.workspace.openTextDocument(uri);
-    if (doc.getText().length > 0) {
-      // File already has content — don't overwrite
-      continue;
-    }
-
-    const edit = new vscode.WorkspaceEdit();
-    edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
-    await vscode.workspace.applyEdit(edit);
-  }
-}
-
-/**
  * Probe the LSP binary directly and return diagnostic information.
  *
  * Runs the binary with `--version` (fast probe, 3s timeout). On failure,
@@ -3393,22 +3350,25 @@ async function reinstallServerBinary(
   const downloadedPath = await downloader.ensureBinary(true);
 
   if (!downloadedPath) {
-    vscode.window
-      .showErrorMessage(
-        'Could not reinstall perl-lsp. Check your internet connection and proxy settings, then try again.',
-        'Show Output',
-        'Open Settings',
-      )
-      .then((selection) => {
-        if (selection === 'Show Output') {
-          outputChannel.show();
-        }
-        if (selection === 'Open Settings') {
-          void vscode.commands.executeCommand('workbench.action.openSettings', 'http.proxy');
-        }
-      });
+    const cancelled = isDownloadCancellationMessage(downloader.getLastErrorMessage() ?? '');
+    if (!cancelled) {
+      vscode.window
+        .showErrorMessage(
+          'Could not reinstall perl-lsp. Check your internet connection and proxy settings, then try again.',
+          'Show Output',
+          'Open Settings',
+        )
+        .then((selection) => {
+          if (selection === 'Show Output') {
+            outputChannel.show();
+          }
+          if (selection === 'Open Settings') {
+            void vscode.commands.executeCommand('workbench.action.openSettings', 'http.proxy');
+          }
+        });
+    }
     if (wasRunning && previousServerPath) {
-      outputChannel.error('[reinstall] restoring previous binary after failed download');
+      outputChannel.info('[reinstall] restoring previous binary after incomplete download');
       languageClientLifecycle?.setServerPathOverride(previousServerPath);
       try {
         await restartServer(context);
@@ -3474,7 +3434,20 @@ async function reinstallServerBinary(
       // restartServer surfaces its own dialog/log.
     }
   } else {
-    vscode.window.showInformationMessage('perl-lsp was reinstalled successfully.', 'OK');
+    // A retry after first-install failure has no running client to restart,
+    // but still must resume the dormant lifecycle after health verification.
+    await restartServer(context);
+    if (languageClientLifecycle?.snapshot.state !== 'running') {
+      return {
+        ok: false,
+        serverPath: downloadedPath,
+        target,
+        source,
+        version,
+        checksumVerified: true,
+        error: 'server did not start after reinstall',
+      };
+    }
   }
 
   return {
