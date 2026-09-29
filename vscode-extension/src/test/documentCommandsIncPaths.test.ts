@@ -22,23 +22,20 @@ interface CapturedChannel {
   show: jest.Mock;
 }
 
-let measuredFrom = 0;
-
 function channelFactory(): jest.Mock {
   return vscode.window.createOutputChannel as unknown as jest.Mock;
 }
 
 function firstChannel(create: jest.Mock): CapturedChannel {
   const fromResult = create.mock.results[0]?.value as CapturedChannel | undefined;
-  const fromCall = create.mock.calls[0]?.[0] as CapturedChannel | undefined;
-  const channel = fromResult ?? fromCall;
-  expect(channel).toBeDefined();
-  return channel as CapturedChannel;
+  expect(fromResult).toBeDefined();
+  return fromResult as CapturedChannel;
 }
 
 async function invokeAndCapture(stdout: string): Promise<string> {
   const create = channelFactory();
-  // Ensure the channel exists before measuring where this call starts.
+  const channel = create.mock.results.length > 0 ? firstChannel(create) : undefined;
+  const measuredFrom = channel?.appendLine.mock.calls.length ?? 0;
   await showIncPathsCommand(fakeExec(stdout));
   const all = firstChannel(create).appendLine.mock.calls.map((call) => String(call[0]));
   return all.slice(measuredFrom).join('\n');
@@ -46,24 +43,18 @@ async function invokeAndCapture(stdout: string): Promise<string> {
 
 function fakeExec(stdout: string): ExecFileLike {
   return ((
-    _file: string,
+    file: string,
     _args: string[],
     _options: unknown,
     callback: (error: Error | null, stdout: string, stderr: string) => void,
   ) => {
+    expect(file).toBe('perl');
     callback(null, stdout, '');
   }) as unknown as ExecFileLike;
 }
 
 describe('showIncPathsCommand output scope', () => {
   it('states that the listing is the PATH perl before printing any path', async () => {
-    const create = channelFactory();
-    if (create.mock.results.length === 0) {
-      // First invocation in this module creates the channel.
-      await showIncPathsCommand(fakeExec('seed\n'));
-    }
-    measuredFrom = firstChannel(create).appendLine.mock.calls.length;
-
     const output = await invokeAndCapture('/usr/lib/perl5\n/site/lib\n');
 
     // The caveat has to be visible without scrolling: assert the first
@@ -84,13 +75,13 @@ describe('showIncPathsCommand output scope', () => {
     expect(output).toMatch(/NOT the set of roots/i);
   });
 
-  it('points at the command that does answer the server-effective question', async () => {
+  it('distinguishes the configuration report from a specific module lookup', async () => {
     const output = await invokeAndCapture('/usr/lib/perl5\n/site/lib\n');
 
-    // Quoted exactly as `package.nls.json` registers the palette entry
-    // (`command.showWorkspaceTrustReport.title`), so the pointer resolves by name
-    // rather than approximately.
+    expect(output).toContain('workspace configuration and policy');
     expect(output).toContain('Show Workspace Trust Report');
+    expect(output).toContain('specific module lookup');
+    expect(output).toContain('Explain Missing Module Lookup');
   });
 
   it('still lists the @INC entries themselves', async () => {
@@ -98,5 +89,14 @@ describe('showIncPathsCommand output scope', () => {
 
     expect(output).toContain('/usr/lib/perl5');
     expect(output).toContain('/site/lib');
+  });
+
+  it('checks each invocation without carrying forward earlier output', async () => {
+    const firstOutput = await invokeAndCapture('/only-first\n');
+    const output = await invokeAndCapture('/only-second\n');
+
+    expect(firstOutput).toContain('/only-first');
+    expect(output).toContain('/only-second');
+    expect(output).not.toContain('/only-first');
   });
 });

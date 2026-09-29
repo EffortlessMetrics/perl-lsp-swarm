@@ -138,10 +138,11 @@ export async function showIncPathsCommand(execFileOverride?: ExecFileLike): Prom
       }
       incPathsChannel.appendLine('');
       incPathsChannel.appendLine(
-        'This is NOT the set of roots perl-lsp searches. It omits workspace ' +
-          '`includePaths` and PERL5LIB policy, and may be a different Perl than the ' +
-          'one the server resolved. For the server-effective roots, run ' +
-          '"Perl: Show Workspace Trust Report".',
+        'This is NOT the set of roots perl-lsp uses for a file. Workspace ' +
+          "`includePaths`, PERL5LIB policy, lexical use lib, and the server's " +
+          'Perl probe can change module lookup. For workspace configuration and ' +
+          'policy, run "Perl: Show Workspace Trust Report". For a specific module ' +
+          'lookup, open a Perl file and run "Perl: Explain Missing Module Lookup".',
       );
       incPathsChannel.show();
       resolve();
