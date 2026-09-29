@@ -79,6 +79,19 @@ describe('package manifest demo project command (#1635)', () => {
     expect(fs.existsSync(path.join(demoRoot, 'lib', 'Utils.pm'))).toBe(true);
     expect(fs.existsSync(path.join(demoRoot, 'lib', 'Database.pm'))).toBe(true);
   });
+
+  test('both demo roots pin the same module search path', () => {
+    const bundledConfig = fs.readFileSync(
+      path.join(extRoot, 'assets', 'demo-project', '.perl-lsp.toml'),
+      'utf8',
+    );
+    const workspaceConfig = fs.readFileSync(
+      path.join(extRoot, '..', 'demo_workspace', '.perl-lsp.toml'),
+      'utf8',
+    );
+    expect(bundledConfig).toBe('[perl]\ninclude_paths = ["lib"]\n');
+    expect(workspaceConfig).toBe(bundledConfig);
+  });
 });
 
 describe('first-run demo content (#16591)', () => {
@@ -95,9 +108,11 @@ describe('first-run demo content (#16591)', () => {
 
   test('bundled demo has exactly the same files and bytes as the source demo', () => {
     const sourceFiles = filesUnder(sourceRoot).sort();
-    expect(sourceFiles).toEqual(['README.md', 'lib/Database.pm', 'lib/Utils.pm', 'main.pl'].map(
-      (file) => path.normalize(file),
-    ).sort());
+    expect(sourceFiles).toEqual(
+      ['.perl-lsp.toml', 'README.md', 'lib/Database.pm', 'lib/Utils.pm', 'main.pl']
+        .map((file) => path.normalize(file))
+        .sort(),
+    );
     expect(filesUnder(bundledRoot).sort()).toEqual(sourceFiles);
     for (const file of sourceFiles) {
       expect(fs.readFileSync(path.join(bundledRoot, file))).toEqual(

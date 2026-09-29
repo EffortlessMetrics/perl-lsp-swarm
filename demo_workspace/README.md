@@ -2,6 +2,8 @@
 
 Open `main.pl` and wait for the workspace index to become ready. The example runs
 without CPAN dependencies: `perl main.pl` prints a summary of five numbers.
+The checked-in `.perl-lsp.toml` tells the language server to resolve this
+project's modules from `lib/` when the demo folder is opened as a workspace.
 
 - Place the cursor after `Utils::` or `Database::` in `main.pl` to see functions
   defined by this project. Use `Utils::` for `load_data` and `process_data`, and
