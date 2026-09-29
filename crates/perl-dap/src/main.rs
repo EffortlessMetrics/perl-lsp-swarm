@@ -218,6 +218,11 @@ fn build_session_packet(program: &Path, text: &str) -> DebugSessionPacket {
 /// no signal why. (That tolerance is right for the live adapter, where the
 /// program may be produced later, which is why this is a one-shot-only guard.)
 ///
+/// The metadata checks alone are not enough: a regular file whose contents
+/// cannot be read (permissions) or decoded (not UTF-8) passes `is_file()` and
+/// would still produce a fact-free artifact with exit status 0, so the read
+/// happens here and its error propagates (#16553).
+///
 /// Failing rather than warning is deliberate: these outputs are read by
 /// scripts, and a warning on stderr is invisible to anything checking exit
 /// status. A missing program is a caller error, not a degraded mode (#16553).
@@ -242,7 +247,7 @@ fn require_readable_program(program: &Path) -> anyhow::Result<String> {
         return Err(anyhow::anyhow!("program '{displayed}' is not a regular file"));
     }
     std::fs::read_to_string(program)
-        .map_err(|error| anyhow::anyhow!("program '{displayed}' cannot be read: {error}"))
+        .map_err(|error| anyhow::anyhow!("program '{displayed}' cannot be read as text: {error}"))
 }
 
 fn resolve_socket_port(args: &perl_lsp_rs_core::runtime::launcher::TransportArgs) -> Option<u16> {
@@ -585,8 +590,30 @@ mod tests {
         std::fs::write(&program, "print 1;\n")?;
         let outcome = require_readable_program(&program);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(outcome.is_ok(), "a readable program must be accepted: {outcome:?}");
+        let text = outcome.expect("a readable program must be accepted");
+        assert_eq!(text, "print 1;\n", "the validated program text must be returned");
         Ok(())
+    }
+
+    #[test]
+    fn a_regular_file_with_undecodable_contents_is_refused() {
+        // `metadata().is_file()` passes for a regular file whose bytes are not
+        // valid UTF-8; only the read validates the contents. Letting it
+        // through would emit a fact-free artifact with exit status 0.
+        let dir =
+            std::env::temp_dir().join(format!("dap-undecodable-program-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("fixture directory must be creatable");
+        let program = dir.join("latin1.pl");
+        std::fs::write(&program, b"print \"caf\xe9\";\n").expect("fixture file must be writable");
+        let outcome = require_readable_program(&program);
+        let _ = std::fs::remove_dir_all(&dir);
+        let error =
+            outcome.expect_err("an undecodable regular file must be refused, not tolerated");
+        let message = error.to_string();
+        assert!(
+            message.contains("cannot be read as text"),
+            "the message must say the contents are unreadable as text, got: {message}"
+        );
     }
 
     #[test]
@@ -603,9 +630,9 @@ mod tests {
     #[test]
     fn a_directory_is_refused_because_it_is_not_a_readable_program() {
         // `fs::metadata` succeeds for a directory, so this is the case a naive
-        // `program.exists()` check would let through. `build_session_packet`
-        // would then silently drop it (read_to_string fails on a directory)
-        // and emit the very degenerate plan this guard exists to prevent.
+        // `program.exists()` check would let through. The read in this guard
+        // would then fail and the one-shot arm would emit the very degenerate
+        // plan this guard exists to prevent.
         let dir = std::env::temp_dir()
             .join(format!("dap-directory-not-a-program-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("fixture directory must be creatable");

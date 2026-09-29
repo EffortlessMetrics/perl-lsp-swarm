@@ -499,7 +499,11 @@ fn adversarial_distinct_client_values_still_warn_but_never_grow_retention()
 // -------------------------------------------------------------------------
 
 fn note_project_config(server: &LspServer, subject: &str) -> SessionWarningDecision {
-    server.session_warning_dedup.note_project_config(subject)
+    server.session_warning_dedup.emit_project_config_warning(
+        SessionWarningCode::ProjectConfigInvalid,
+        subject,
+        || true,
+    )
 }
 
 #[test]
@@ -572,4 +576,120 @@ fn project_config_saturation_still_emits() {
     assert_eq!(snapshot.project_config.entries, PER_FAMILY_ENTRY_CAP);
     assert_eq!(snapshot.project_config.high_water_entries, PER_FAMILY_ENTRY_CAP);
     assert_eq!(snapshot.project_config.emitted_without_retaining, 1);
+}
+
+// -------------------------------------------------------------------------
+// Project-config warning identity and delivery (PR #16566 review)
+//
+// The emitters key identities on the config file discovery selected and
+// distinguish load failures from invalid `[perl].version`, so a second
+// genuinely different problem must never be hidden behind the first one's
+// identity; and a warning whose delivery failed must stay eligible to re-fire
+// instead of being suppressed forever.
+// -------------------------------------------------------------------------
+
+fn emit_project_config(
+    server: &LspServer,
+    code: SessionWarningCode,
+    path: &str,
+    delivered: bool,
+) -> SessionWarningDecision {
+    server.session_warning_dedup.emit_project_config_warning(code, path, || delivered)
+}
+
+#[test]
+fn load_failure_and_invalid_version_in_one_file_are_distinct_identities() {
+    let server = LspServer::new();
+
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", true),
+        SessionWarningDecision::EmitFirst
+    );
+    // The same file, the other warning kind: fixing the parse error and then
+    // tripping an invalid `[perl].version` must warn again, not be suppressed
+    // behind the load-failure identity.
+    assert_eq!(
+        emit_project_config(
+            &server,
+            SessionWarningCode::ProjectConfigVersionInvalid,
+            "t.toml",
+            true
+        ),
+        SessionWarningDecision::EmitFirst
+    );
+    // And the kinds stay stable across repeats.
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", true),
+        SessionWarningDecision::Suppress
+    );
+    assert_eq!(
+        emit_project_config(
+            &server,
+            SessionWarningCode::ProjectConfigVersionInvalid,
+            "t.toml",
+            true
+        ),
+        SessionWarningDecision::Suppress
+    );
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 2, "one retained identity per kind");
+}
+
+#[test]
+fn a_failed_delivery_rolls_the_identity_back_for_retry() {
+    let server = LspServer::new();
+
+    // First occurrence attempts delivery; the (simulated) client never
+    // receives it.
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", false),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        server.session_warning_dedup_snapshot().project_config.entries,
+        0,
+        "a warning the client never received must not stay retained"
+    );
+
+    // The next occurrence therefore warns again instead of being suppressed
+    // forever, and a delivered warning is retained as usual.
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", true),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        emit_project_config(&server, SessionWarningCode::ProjectConfigInvalid, "t.toml", true),
+        SessionWarningDecision::Suppress
+    );
+}
+
+#[test]
+fn two_selected_config_paths_never_cross_suppress_through_the_emit_path() {
+    let server = LspServer::new();
+
+    // The emit path keys on the selected config path: two different broken
+    // files (e.g. two folders whose ancestor walk landed on different files)
+    // must each reach the client through the same code that dedups repeats.
+    assert_eq!(
+        emit_project_config(
+            &server,
+            SessionWarningCode::ProjectConfigInvalid,
+            "/a/.perl-lsp.toml",
+            true
+        ),
+        SessionWarningDecision::EmitFirst
+    );
+    assert_eq!(
+        emit_project_config(
+            &server,
+            SessionWarningCode::ProjectConfigInvalid,
+            "/b/.perl-lsp.toml",
+            true
+        ),
+        SessionWarningDecision::EmitFirst
+    );
+
+    let snapshot = server.session_warning_dedup_snapshot();
+    assert_eq!(snapshot.project_config.entries, 2);
 }

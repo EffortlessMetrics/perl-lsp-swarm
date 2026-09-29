@@ -286,9 +286,11 @@ source file reads a `tokio_unstable` cfg, so the invocation this guide used to c
 (`cargo run -p perl-lsp-rs --features tokio-console -- --stdio`) could never have worked:
 `perl-lsp-rs` publishes no executable target, and the feature does not exist.
 
-Use the `tracing` route above instead. It is supported today and answers the same
-question - which tasks hold locks, and for how long - at the granularity this repository
-actually instruments.
+Use the `tracing` route above for structured workspace and parser events. Use
+`PERL_LSP_TIMING` for the selected lock-wait and lock-hold durations this repository
+instruments (for example `didChange.lock_wait`); neither route identifies the task
+that owns a lock, and general live task/waker inspection remains unavailable in
+this tree.
 
 ### Interpreting Results
 

@@ -15,15 +15,10 @@
 
 set -euo pipefail
 
-fail() {
-    echo "Error: $*" >&2
-    exit 1
-}
-
 # Every remote-bootstrap failure is the same dead end: the identity pair the
 # wrapper needs is not published yet, and nothing in the message says so, or
 # says what works today (#16542). One remedy for all of them, so the text
-# cannot drift between the eight call sites.
+# cannot drift between call sites.
 bootstrap_remedy() {
     cat >&2 <<'REMEDY'
 
@@ -129,7 +124,7 @@ HTTP_STATUS="$(
         --output "$TMP_INSTALLER" \
         --write-out '%{http_code}' \
         "$CANONICAL_INSTALLER_URL"
-)" || fail "failed to fetch the canonical installer"
+)" || bootstrap_fail "failed to fetch the canonical installer"
 
 if [ "$HTTP_STATUS" != "200" ]; then
     bootstrap_fail "canonical installer request returned HTTP $HTTP_STATUS; redirects and non-success responses are rejected"
@@ -137,10 +132,10 @@ fi
 
 ACTUAL_SHA256=""
 if command -v sha256sum >/dev/null 2>&1; then
-    SHA_OUTPUT="$(sha256sum "$TMP_INSTALLER")" || fail "sha256sum failed"
+    SHA_OUTPUT="$(sha256sum "$TMP_INSTALLER")" || bootstrap_fail "sha256sum failed"
     ACTUAL_SHA256="${SHA_OUTPUT%% *}"
 elif command -v shasum >/dev/null 2>&1; then
-    SHA_OUTPUT="$(shasum -a 256 "$TMP_INSTALLER")" || fail "shasum failed"
+    SHA_OUTPUT="$(shasum -a 256 "$TMP_INSTALLER")" || bootstrap_fail "shasum failed"
     ACTUAL_SHA256="${SHA_OUTPUT%% *}"
 else
     bootstrap_fail "sha256sum or shasum is required to verify the canonical installer"

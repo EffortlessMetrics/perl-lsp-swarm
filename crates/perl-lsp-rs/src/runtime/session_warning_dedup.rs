@@ -102,6 +102,15 @@ pub(crate) enum SessionWarningCode {
     /// purposes - the user fixes the file, not the sentence.
     #[cfg(not(target_arch = "wasm32"))]
     ProjectConfigInvalid,
+    /// A loaded `.perl-lsp.toml` carried an unusable `[perl].version`
+    /// (subject: the offending config path fingerprint).
+    ///
+    /// A separate kind from [`SessionWarningCode::ProjectConfigInvalid`] so a
+    /// load-failure warning and an invalid-version warning for the same file
+    /// remain distinct: the user can fix one and then trip the other, and
+    /// each names a different remedy (PR #16566 review).
+    #[cfg(not(target_arch = "wasm32"))]
+    ProjectConfigVersionInvalid,
 }
 
 /// Closed set of static dimensions that distinguish identities inside one
@@ -355,7 +364,8 @@ impl SessionWarningDedupStore {
         )
     }
 
-    /// Decide whether a broken `.perl-lsp.toml` warning should be emitted.
+    /// Decide, emit, and roll back on failed delivery for one
+    /// `.perl-lsp.toml` warning.
     ///
     /// Suppression is keyed on the **config path** alone, fingerprinted: the
     /// same file warns once per session however many times it is re-read, and
@@ -363,15 +373,32 @@ impl SessionWarningDedupStore {
     /// body is not part of the identity, so a user who fixes one error and
     /// trips another in the same file is not spammed a second time — the
     /// remedy (fix the file, reload the window) is identical either way.
+    ///
+    /// The caller supplies the warning kind (`ProjectConfigInvalid` for a
+    /// load/apply failure, `ProjectConfigVersionInvalid` for an unusable
+    /// `[perl].version`) and the **selected** config path the warning is
+    /// about — the file discovery actually chose, not the search root or a
+    /// display name, so two different files never collide into one identity
+    /// and one file never splits into two (PR #16566 review).
+    ///
+    /// Delivery failures roll the retention back via [`Self::emit_once_with`]:
+    /// a warning the client never received must be eligible to re-fire on the
+    /// next occurrence instead of being suppressed forever.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn note_project_config(&self, config_path: &str) -> SessionWarningDecision {
-        self.note(
+    pub(crate) fn emit_project_config_warning(
+        &self,
+        code: SessionWarningCode,
+        config_path: &str,
+        emit: impl FnOnce() -> bool,
+    ) -> SessionWarningDecision {
+        self.emit_once_with(
             SessionWarningFamily::ProjectConfig,
             SessionWarningIdentity::fingerprinted(
-                SessionWarningCode::ProjectConfigInvalid,
+                code,
                 SessionWarningSubjectTag::None,
                 config_path,
             ),
+            emit,
         )
     }
 }

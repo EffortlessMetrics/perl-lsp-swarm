@@ -512,6 +512,7 @@ pub fn perl_lsp_rs_core::config::detect_dependency_include_paths(workspace_root:
 pub fn perl_lsp_rs_core::config::detect_dependency_include_paths_with_declaration(workspace_root: &std::path::Path, declaration_present: core::option::Option<bool>) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::detect_native_build_hints(workspace_root: &std::path::Path) -> perl_lsp_rs_core::config::NativeBuildHints
 pub fn perl_lsp_rs_core::config::discover_perltidy_profile(workspace_root: &std::path::Path) -> core::option::Option<alloc::string::String>
+pub fn perl_lsp_rs_core::config::discover_project_config_path(start_dir: &std::path::Path) -> core::option::Option<std::path::PathBuf>
 pub fn perl_lsp_rs_core::config::extract_build_pl_requirements(source: &str) -> alloc::vec::Vec<perl_lsp_rs_core::config::DeclaredDependency>
 pub fn perl_lsp_rs_core::config::extract_cpanfile_requirements(source: &str) -> alloc::vec::Vec<perl_lsp_rs_core::config::DeclaredDependency>
 pub fn perl_lsp_rs_core::config::extract_dist_ini_requirements(source: &str) -> alloc::vec::Vec<perl_lsp_rs_core::config::DeclaredDependency>
