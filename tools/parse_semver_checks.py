@@ -266,18 +266,28 @@ class BaselineLookup(Enum):
 def manifest_exists_at(rel_manifest: str, commit: str, runner=None) -> BaselineLookup:
     """Classify whether <commit>:<rel_manifest> exists in git history.
 
-    Exit 1 from `git cat-file -e` is the tool's "object does not exist"
-    outcome (baseline absence); any other non-zero exit is a git read
-    failure, which is not a disposition.
+    The probe is structured in two phases. First `git rev-parse --verify`
+    establishes that the baseline commit object itself is readable: if that
+    fails, the repository or the recorded baseline is broken and the outcome
+    is ERROR, never a disposition. Only inside a verified commit is the
+    manifest path probed with `git cat-file -e`, where any non-zero exit
+    means "path does not exist in that tree" (observed empirically: a missing
+    path in a valid tree exits 128, not 1) and classifies as ABSENT.
     """
     run = runner or subprocess.run
+    ref_proc = run(
+        ["git", "rev-parse", "--verify", "-q", f"{commit}^{{commit}}"],
+        cwd=REPO, capture_output=True,
+    )
+    if ref_proc.returncode != 0:
+        return BaselineLookup.ERROR
     proc = run(
         ["git", "cat-file", "-e", f"{commit}:{rel_manifest}"],
         cwd=REPO, capture_output=True,
     )
     if proc.returncode == 0:
         return BaselineLookup.PRESENT
-    if proc.returncode == 1:
+    if proc.returncode in (1, 128):
         return BaselineLookup.ABSENT
     return BaselineLookup.ERROR
 
@@ -552,7 +562,7 @@ def display_path(path: Path) -> str:
     try:
         return path.resolve().relative_to(REPO).as_posix()
     except ValueError:
-        return str(path)
+        return str(path.resolve())
 
 
 def main(argv: list[str] | None = None) -> int:

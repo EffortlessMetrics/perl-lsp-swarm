@@ -8,7 +8,9 @@ publication exit code must fail on any unresolved instrument error.
 
 #15897 hardening falsifiers: the cargo-semver-checks 0.47.0 exit-code
 contract (fail only for exit 1 with breaks, pass only for exit 0 clean),
-the typed baseline lookup (a git read failure is never baseline absence),
+the typed two-phase baseline lookup (invalid commit or unexpected git
+failure is never baseline absence; a missing path inside a verified commit
+is),
 the pre-write canonical publication gate, inline ratchet-list comment
 grammar, and duplicate crate rejection.
 """
@@ -17,7 +19,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -177,35 +181,78 @@ class FilteredRunGuardTests(unittest.TestCase):
 
 
 class BaselineAbsenceTests(unittest.TestCase):
-    def test_manifest_absent_at_baseline(self):
+    @staticmethod
+    def scripted_runner(script):
+        """Build a runner that dispatches on the git subcommand."""
         def fake_runner(cmd, **_kwargs):
             class P:
-                returncode = 1
+                returncode = script[cmd[1]]
             return P()
+        return fake_runner
 
+    def test_manifest_absent_at_baseline(self):
+        runner = self.scripted_runner({"rev-parse": 0, "cat-file": 128})
         self.assertIs(psc.manifest_exists_at("crates/perl-x/Cargo.toml",
-                                             BASELINE_COMMIT, runner=fake_runner),
+                                             BASELINE_COMMIT, runner=runner),
                       psc.BaselineLookup.ABSENT)
 
     def test_manifest_present_at_baseline(self):
-        def fake_runner(cmd, **_kwargs):
-            class P:
-                returncode = 0
-            return P()
-
+        runner = self.scripted_runner({"rev-parse": 0, "cat-file": 0})
         self.assertIs(psc.manifest_exists_at("crates/perl-ast/Cargo.toml",
-                                             BASELINE_COMMIT, runner=fake_runner),
+                                             BASELINE_COMMIT, runner=runner),
                       psc.BaselineLookup.PRESENT)
 
-    def test_git_read_failure_is_error_not_absent(self):
-        def fake_runner(cmd, **_kwargs):
-            class P:
-                returncode = 128
-            return P()
-
+    def test_invalid_baseline_commit_is_error_not_absent(self):
+        runner = self.scripted_runner({"rev-parse": 128, "cat-file": 128})
         self.assertIs(psc.manifest_exists_at("crates/perl-x/Cargo.toml",
-                                             BASELINE_COMMIT, runner=fake_runner),
+                                             BASELINE_COMMIT, runner=runner),
                       psc.BaselineLookup.ERROR)
+
+    def test_unexpected_cat_file_failure_is_error(self):
+        runner = self.scripted_runner({"rev-parse": 0, "cat-file": 5})
+        self.assertIs(psc.manifest_exists_at("crates/perl-x/Cargo.toml",
+                                             BASELINE_COMMIT, runner=runner),
+                      psc.BaselineLookup.ERROR)
+
+    def test_real_git_repo_missing_path_is_absent_not_error(self):
+        """Real-git falsifier for #16140: a valid commit with a missing path
+        exits 128 from `git cat-file -e` and must classify as ABSENT, not
+        ERROR, while an invalid commit object classifies as ERROR."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "t@example.com"],
+                           cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "t"],
+                           cwd=repo, check=True)
+            (repo / "crates" / "perl-ast").mkdir(parents=True)
+            (repo / "crates" / "perl-ast" / "Cargo.toml").write_text(
+                "[package]\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo,
+                           check=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                                  capture_output=True, text=True,
+                                  check=True).stdout.strip()
+
+            real_run = subprocess.run
+            def repo_runner(cmd, **kwargs):
+                return real_run(["git", *cmd[1:]], cwd=repo,
+                                capture_output=True)
+
+            self.assertIs(
+                psc.manifest_exists_at("crates/perl-ast/Cargo.toml", head,
+                                       runner=repo_runner),
+                psc.BaselineLookup.PRESENT)
+            self.assertIs(
+                psc.manifest_exists_at("crates/perl-new/Cargo.toml", head,
+                                       runner=repo_runner),
+                psc.BaselineLookup.ABSENT)
+            self.assertIs(
+                psc.manifest_exists_at("crates/perl-x/Cargo.toml",
+                                       "0000000000000000000000000000000000000001",
+                                       runner=repo_runner),
+                psc.BaselineLookup.ERROR)
 
     def test_not_applicable_result_shape(self):
         result = psc.crate_not_in_baseline("perl-source-identity",
