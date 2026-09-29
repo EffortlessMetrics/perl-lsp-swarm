@@ -989,11 +989,32 @@ pub fn admit(request: &HostTestRequest) -> (PreflightDisposition, Option<HostTes
     let structural =
         request.structural_status.clone().unwrap_or_else(StructuralStatusIdentity::unobserved);
 
-    if structural.verdict == "action_required" {
-        return (
-            PreflightDisposition::StructuralActionRequired,
-            Some(plan_from(request, structural)),
-        );
+    match structural.verdict.as_str() {
+        "action_required" => {
+            return (
+                PreflightDisposition::StructuralActionRequired,
+                Some(plan_from(request, structural)),
+            );
+        }
+        "unsupported" => {
+            return (
+                PreflightDisposition::UnsupportedPlatformOrProfile,
+                Some(plan_from(request, structural)),
+            );
+        }
+        "instrument_error" => {
+            return (
+                PreflightDisposition::InstrumentNotProven,
+                Some(plan_from(request, structural)),
+            );
+        }
+        "degraded" | "ready" | "unobserved" => {}
+        _ => {
+            return (
+                PreflightDisposition::InstrumentNotProven,
+                Some(plan_from(request, structural)),
+            );
+        }
     }
     match request.host_capability {
         Some(HostCapability::HostOrAuthUnavailable) => {
@@ -1218,9 +1239,11 @@ fn result_from_execution(
         failure_reason = Some(FailureReason::CleanupFailed);
     } else if execution.dispositions.host_instrument == CellDisposition::InstrumentFailure {
         failure_reason = Some(FailureReason::HostInstrumentFailed);
-    } else if evidence_class == EvidenceClass::InjectedTestExecutor
-        && (execution.dispositions.semantic == CellDisposition::NotAttempted
-            || execution.dispositions.semantic == CellDisposition::NotProven)
+    } else if execution.dispositions.host_instrument != CellDisposition::ObservedPass {
+        failure_reason = failure_reason.or(Some(FailureReason::InstrumentNotProven));
+    } else if !required_methods_observed(&execution)
+        || execution.dispositions.semantic == CellDisposition::NotAttempted
+        || execution.dispositions.semantic == CellDisposition::NotProven
     {
         failure_reason = failure_reason.or(Some(FailureReason::RequiredLspToolCallNotObserved));
     }
@@ -1296,6 +1319,11 @@ fn derive_terminal(
             return TerminalResult::NotProven;
         }
         return TerminalResult::Fail;
+    }
+    if execution.dispositions.host_instrument != CellDisposition::ObservedPass
+        || !required_methods_observed(execution)
+    {
+        return TerminalResult::NotProven;
     }
     if evidence_class == EvidenceClass::ActualHost {
         TerminalResult::Pass
@@ -1461,6 +1489,15 @@ fn expected_subject_classes() -> Vec<String> {
         "server:perllsp".to_string(),
         "operation_created_temporary_fixture".to_string(),
     ]
+}
+
+const REQUIRED_METHOD_CELLS: [&str; 4] =
+    ["definition", "references", "hover_or_document_symbols", "edit_requery"];
+
+fn required_methods_observed(execution: &InjectedExecution) -> bool {
+    REQUIRED_METHOD_CELLS
+        .iter()
+        .all(|method| execution.methods_observed.iter().any(|observed| observed == method))
 }
 
 fn later_observed_json(identities: &LaterObservedIdentities) -> Value {
@@ -1958,5 +1995,56 @@ mod claude_host_test_contract {
         unsupported.platform_supported = false;
         let (disposition, _) = admit(&unsupported);
         assert_eq!(disposition, PreflightDisposition::UnsupportedPlatformOrProfile);
+
+        let mut structural_unsupported = admitted_request(CompatibilityResult::Compatible);
+        structural_unsupported.structural_status = Some(StructuralStatusIdentity {
+            schema_version: STRUCTURAL_STATUS_SCHEMA.to_string(),
+            verdict: "unsupported".to_string(),
+            host_state: "present".to_string(),
+        });
+        let (disposition, _) = admit(&structural_unsupported);
+        assert_eq!(disposition, PreflightDisposition::UnsupportedPlatformOrProfile);
+
+        let mut instrument_error = admitted_request(CompatibilityResult::Compatible);
+        instrument_error.structural_status = Some(StructuralStatusIdentity {
+            schema_version: STRUCTURAL_STATUS_SCHEMA.to_string(),
+            verdict: "instrument_error".to_string(),
+            host_state: "error".to_string(),
+        });
+        let mut executor = CountingExecutor::injected(InjectedExecution::all_observed_pass());
+        let outcome = dispatch_request(&instrument_error, true, &mut executor);
+        assert_eq!(executor.calls, 0);
+        assert_eq!(
+            must_some_with(outcome.result, "result").preflight,
+            PreflightDisposition::InstrumentNotProven
+        );
+    }
+
+    #[test]
+    fn missing_method_or_instrument_evidence_cannot_pass() {
+        let mut missing_methods = InjectedExecution::all_observed_pass();
+        missing_methods.methods_observed.clear();
+        let mut executor = CountingExecutor::injected(missing_methods);
+        let outcome = dispatch_request(
+            &admitted_request(CompatibilityResult::Compatible),
+            true,
+            &mut executor,
+        );
+        let result = must_some_with(outcome.result, "result");
+        assert_ne!(result.terminal, TerminalResult::Pass);
+        assert_eq!(result.failure_reason, Some(FailureReason::RequiredLspToolCallNotObserved));
+
+        let mut unproven_instrument = InjectedExecution::all_observed_pass();
+        unproven_instrument.dispositions.host_instrument = CellDisposition::NotProven;
+        let mut executor = CountingExecutor::injected(unproven_instrument);
+        let outcome = dispatch_request(
+            &admitted_request(CompatibilityResult::Compatible),
+            true,
+            &mut executor,
+        );
+        let result = must_some_with(outcome.result, "result");
+        assert_ne!(result.terminal, TerminalResult::Pass);
+        assert_eq!(result.failure_reason, Some(FailureReason::InstrumentNotProven));
+        assert_ne!(result.terminal, TerminalResult::InstrumentFailure);
     }
 }
