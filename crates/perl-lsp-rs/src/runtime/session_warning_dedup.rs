@@ -66,7 +66,7 @@ pub(crate) enum SessionWarningFamily {
     /// Workspace-scoped Perl::Critic warnings (binary/profile/execution).
     #[cfg(not(target_arch = "wasm32"))]
     Critic,
-    /// Invalid enum values from editor-provided settings.
+    /// Invalid enum values from editor settings or project configuration.
     ClientSetting,
     /// AI backend warnings (authentication failures).
     AiBackend,
@@ -81,6 +81,8 @@ pub(crate) enum SessionWarningCode {
     /// Invalid enum value in an editor-provided setting
     /// (subject: setting tag + value type + normalized value fingerprint).
     ClientSettingInvalidValue,
+    /// Invalid value in project configuration, distinct from the editor setting channel.
+    ProjectConfigInvalidValue,
     /// AI inline-completion backend authentication failed
     /// (no variable subject).
     AiBackendAuthFailure,
@@ -331,6 +333,29 @@ impl SessionWarningDedupStore {
                 &subject,
             ),
         )
+    }
+
+    /// Emit a project-config rejection once per setting and value, retrying after
+    /// an outbound failure. Project and client settings have separate identities.
+    pub(crate) fn emit_project_setting_with(
+        &self,
+        setting: &str,
+        normalized_value: &str,
+        emit: impl FnOnce() -> bool,
+    ) -> SessionWarningDecision {
+        let Some(tag) = SessionWarningSubjectTag::from_client_setting(setting) else {
+            let decision = self.client_setting.state.lock().note_unrepresentable();
+            if matches!(decision, SessionWarningDecision::EmitWithoutRetaining) {
+                emit();
+            }
+            return decision;
+        };
+        let identity = SessionWarningIdentity::fingerprinted(
+            SessionWarningCode::ProjectConfigInvalidValue,
+            tag,
+            normalized_value,
+        );
+        self.emit_once_with(SessionWarningFamily::ClientSetting, identity, emit)
     }
 }
 

@@ -572,34 +572,31 @@ impl LspServer {
             } else {
                 entry.value.trim().to_ascii_lowercase()
             };
-            if matches!(
-                self.session_warning_dedup.note_client_setting(
-                    entry.setting,
-                    "string",
-                    &normalized_value
-                ),
-                super::super::session_warning_dedup::SessionWarningDecision::Suppress
-            ) {
-                continue;
-            }
-
+            let consequence = if entry.setting.starts_with("critic.") {
+                "The entire [critic] selection stays at its previous accepted values"
+            } else {
+                "The previous value is still in effect"
+            };
             let user_msg = format!(
                 "Perl LSP: {authority} sets {} to {:?}, which is not recognized; \
-                 the previous value is still in effect. Valid values: {}.",
-                entry.setting, entry.value, entry.valid_options
+                 {consequence}. Valid values: {}.",
+                entry.setting, entry.value, entry.valid_options,
             );
-            tracing::warn!(
-                setting = entry.setting,
-                value = %entry.value,
-                "project config value rejected; editor warning sent"
+            self.session_warning_dedup.emit_project_setting_with(
+                entry.setting,
+                &normalized_value,
+                || match self.show_message(MessageType::Warning, &user_msg) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::warn!(
+                            setting = entry.setting,
+                            error = %error,
+                            "Failed to send showMessage for rejected project config value"
+                        );
+                        false
+                    }
+                },
             );
-            if let Err(error) = self.show_message(MessageType::Warning, &user_msg) {
-                tracing::warn!(
-                    setting = entry.setting,
-                    error = %error,
-                    "Failed to send showMessage for rejected project config value"
-                );
-            }
         }
     }
 }
@@ -2606,7 +2603,10 @@ perlcritic_severity = 2
     fn single_file_critic_engine_rejection_warns_once_per_session()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
-        std::fs::write(temp.path().join(".perl-lsp.toml"), "[critic]\nengine = \"turbo\"\n")?;
+        std::fs::write(
+            temp.path().join(".perl-lsp.toml"),
+            "[critic]\nengine = \"turbo\"\nprofile = \"strict\"\n",
+        )?;
         let file = temp.path().join("main.pl");
         std::fs::write(&file, "use strict;\n")?;
         let uri = url::Url::from_file_path(&file)
@@ -2635,6 +2635,10 @@ perlcritic_severity = 2
         assert!(
             output.contains("turbo") && output.contains("native, legacy"),
             "the popup must name the rejected value and the accepted values; got: {output}"
+        );
+        assert!(
+            output.contains("entire [critic] selection stays at its previous accepted values"),
+            "a valid sibling is also discarded when the critic candidate fails: {output}"
         );
         Ok(())
     }

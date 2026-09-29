@@ -5288,6 +5288,21 @@ profile = "recommended"
         Ok(())
     }
 
+    #[test]
+    fn invalid_critic_engine_also_retains_valid_profile_sibling() {
+        let mut config = ServerConfig::default();
+        let prior_profile = config.native_critic_profile.clone();
+        let mut project = ProjectConfig::default();
+        project.critic.engine = Some("turbo".to_string());
+        project.critic.profile = Some("strict".to_string());
+
+        let rejected = project.apply_to_server_config(&mut config);
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].setting, "critic.engine");
+        assert_eq!(config.native_critic_profile, prior_profile);
+    }
+
     /// #16598: a fully valid project config returns no rejections, so the
     /// runtime emitter stays silent.
     #[test]
@@ -5448,7 +5463,7 @@ profile = "recommended"
 
         let rejected = project.apply_to_workspace_config(&mut workspace, &workspace_root);
 
-        assert!(workspace.include_paths.is_empty());
+        assert_eq!(workspace.include_paths, WorkspaceConfig::default().include_paths);
         assert_eq!(rejected.len(), 1);
         assert!(
             matches!(rejected[0].reason, RejectedIncludePathReason::SymlinkOutsideWorkspace(_)),
