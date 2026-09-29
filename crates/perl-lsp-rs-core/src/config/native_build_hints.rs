@@ -32,7 +32,7 @@ use super::metadata_dependencies::{DeclaredDependencySource, MetadataSourceRead}
 /// example a definition flag inside `LIBS`) are conservatively ignored rather
 /// than diagnosed: they are well-formed literals the static parser cannot
 /// resolve to the concrete input kind the field promises.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct NativeBuildHints {
     /// Native include directories discovered from static build-script hints.
     pub include_dirs: Vec<String>,
@@ -250,6 +250,21 @@ impl NativeBuildHints {
         [self.contributions[0].as_deref().cloned(), self.contributions[1].as_deref().cloned()]
     }
 }
+
+impl PartialEq for NativeBuildHints {
+    fn eq(&self, other: &Self) -> bool {
+        self.include_dirs == other.include_dirs
+            && self.libs_flags == other.libs_flags
+            && self.libs_alternatives == other.libs_alternatives
+            && self.define_flags == other.define_flags
+            && self.object_files == other.object_files
+            && self.myextlib_files == other.myextlib_files
+            && self.diagnostics == other.diagnostics
+            && self.limitations == other.limitations
+    }
+}
+
+impl Eq for NativeBuildHints {}
 
 fn merge_script_hints(
     contribution: &mut NativeBuildHintContribution,
@@ -1737,5 +1752,19 @@ Module::Build->new(
         assert!(hints.libs_flags.is_empty());
         assert_eq!(hints.limitations, vec![unreadable_limitation(NativeBuildScript::MakefilePl)]);
         assert_ne!(hints, NativeBuildHints::default());
+    }
+
+    #[test]
+    fn empty_parsed_script_equals_default_on_observable_fields() {
+        let hints = native_build_hints_from_reads(
+            &[
+                text(DeclaredDependencySource::MakefilePl, "WriteMakefile();\n"),
+                absent(DeclaredDependencySource::BuildPl),
+            ],
+            &NativeBuildHints::default(),
+        );
+
+        assert_eq!(hints, NativeBuildHints::default());
+        assert!(hints.limitations.is_empty());
     }
 }

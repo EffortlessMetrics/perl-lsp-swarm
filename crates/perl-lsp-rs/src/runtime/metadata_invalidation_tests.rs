@@ -1084,13 +1084,10 @@ fn readded_folder_loads_current_native_hints_not_the_previous_incarnation() {
         })))
         .expect("didChangeWorkspaceFolders params are valid");
 
-    // Re-add does not itself disk-refresh native hints until metadata refresh.
-    // Drive the same initialize-time route used for a new folder.
-    watched(&server, &[(&file_uri(&dir, "Makefile.PL"), CHANGED)]);
     assert_eq!(
         folder_native_hints(&server, &uri).include_dirs,
         vec!["xs/readded".to_string()],
-        "the re-added folder must observe current disk hints, not the prior incarnation"
+        "re-add itself loads current disk hints through load_and_apply_project_config"
     );
 }
 
