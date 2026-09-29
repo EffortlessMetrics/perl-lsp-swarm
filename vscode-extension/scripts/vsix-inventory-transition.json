@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 16531,
-  "reason": "Heal merge with main: union of main's #16744 reconciled Linux measurement with this claim's downloader union (progress-title plumbing, cancellation handling, staged-update confirmation and prompt suppression), whose bundled out/extension.js growth is re-measured from the exact merge-tip archive; totals and digests recomputed by propose-vsix-inventory-transition.",
-  "base_baseline_file_sha256": "3772422ae6a8dc6bd74d46c8b963e017a74dfe9513cd44a44ac12922150d27cb",
-  "candidate_baseline_file_sha256": "0bdf761d498b482f084de71f71caab596c4a8e901961073e0b57a9ff718ff246",
-  "base_inventory_sha256": "d893827a555e6cff2da2d5bee6329797def48684844fdd8543b5635aa7574ee9",
-  "candidate_inventory_sha256": "35d5777930d76c5739d97f617dbed32a54d8423429d4e6ea4f2dbc56c585a1a4"
+  "reason": "Second heal merge: main advanced by #16724 (demo-first-run VSIX union), so this claim's downloader-union measurement is re-taken on top of it from the exact merge-tip archive; totals and digests recomputed by propose-vsix-inventory-transition.",
+  "base_baseline_file_sha256": "d41ed817a5b282aec1462b2a1a2538bd630480d4c24ea2c0c9fab9f4c4fd5d23",
+  "candidate_baseline_file_sha256": "b1d09d64594aa026c3567c444a287028558f22c41a8f16dabfac977435aabd24",
+  "base_inventory_sha256": "97969d09252414a76a27e62b3351b8739c353d46fe44fdb0f6ae99e781e51d33",
+  "candidate_inventory_sha256": "5fa22020742db7683c660057b6a515b1f14cc270cab750727b2d0feaa2dfc81d"
 }

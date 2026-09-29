@@ -21,20 +21,55 @@ fail_case() {
     FAIL=$((FAIL + 1))
 }
 
-# #16542: every identity-bound piped-bootstrap abort must keep its typed first
-# line and then name both facts a stale curl|bash user needs: the ref+digest
-# packet is unpublished at release closeout, and the manual archive works today.
-# The original substring checks alone would pass a one-site append or a pointer
-# that omitted either fact.
+# #16542/#16715: every identity-bound piped-bootstrap abort must keep its typed
+# first line and then name both facts a stale curl|bash user needs: the
+# ref+digest packet is unpublished at release closeout, and the POSIX manual
+# archive works today. The destination must be the Linux/macOS procedure, not
+# the identity-bound wrapper heading or the Windows zip section. A check for
+# the words "manual archive" alone would pass that dead-end pointer.
+POSIX_MANUAL_ARCHIVE_HEADING='## macOS and Linux manual archive'
+POSIX_MANUAL_ARCHIVE_ANCHOR='macos-and-linux-manual-archive'
+
 has_unpublished_packet_pointer() {
     local text="$1"
     [[ "$text" == *"release closeout"* ]] \
         && [[ "$text" == *"manual archive"* ]] \
         && [[ "$text" == *"docs/how-to/INSTALLATION.md"* ]] \
+        && [[ "$text" == *"$POSIX_MANUAL_ARCHIVE_ANCHOR"* ]] \
         && {
             [[ "$text" == *"not yet published"* ]] \
                 || [[ "$text" == *"has not been published"* ]]
         }
+}
+
+posix_manual_archive_section() {
+    awk -v heading="$POSIX_MANUAL_ARCHIVE_HEADING" '
+        $0 == heading { on = 1 }
+        on && /^## / && $0 != heading { exit }
+        on { print }
+    ' "$ROOT/docs/how-to/INSTALLATION.md"
+}
+
+# The documented recovery names both GNU sha256sum and macOS shasum. The
+# fixture must follow whichever tool this host actually has.
+posix_sha256_sum() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1"
+    else
+        return 1
+    fi
+}
+
+posix_sha256_check() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -c -
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 -c -
+    else
+        return 1
+    fi
 }
 
 assert_identity_dead_end_is_actionable() {
@@ -324,6 +359,118 @@ if [ "$DOC_POINTER_HITS" -eq 1 ]; then
 else
     fail_case "unpublished-packet pointer is single-sourced in install.sh" \
         "expected exactly one docs/how-to/INSTALLATION.md pointer, got $DOC_POINTER_HITS"
+fi
+
+WRAPPER_POINTER="$(grep 'docs/how-to/INSTALLATION.md' "$WRAPPER" || true)"
+if [[ "$WRAPPER_POINTER" == *"$POSIX_MANUAL_ARCHIVE_ANCHOR"* ]] \
+    && [[ "$WRAPPER_POINTER" != *"installer-script-macos-and-linux"* ]]; then
+    pass "bootstrap pointer names the POSIX manual-archive heading"
+else
+    fail_case "bootstrap pointer names the POSIX manual-archive heading" \
+        "expected $POSIX_MANUAL_ARCHIVE_ANCHOR without installer-script-macos-and-linux: $WRAPPER_POINTER"
+fi
+
+# A wrapper-section pointer would still contain INSTALLATION.md and "manual
+# archive". The destination check must reject that dead end.
+DEAD_END_POINTER=$'release closeout\nhas not been published\nThe manual archive install works today:\nsee docs/how-to/INSTALLATION.md (installer-script-macos-and-linux).'
+if has_unpublished_packet_pointer "$DEAD_END_POINTER"; then
+    fail_case "wrapper heading is not an actionable POSIX destination" \
+        "has_unpublished_packet_pointer accepted installer-script-macos-and-linux"
+else
+    pass "wrapper heading is not an actionable POSIX destination"
+fi
+
+SECTION="$(posix_manual_archive_section)"
+if [[ "$SECTION" == "$POSIX_MANUAL_ARCHIVE_HEADING"$'\n'* ]] \
+    && [[ "$SECTION" == *'perllsp-${VERSION}-${TARGET}.tar.gz'* ]] \
+    && [[ "$SECTION" == *'SHA256SUMS'* ]] \
+    && [[ "$SECTION" == *'ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1'* ]] \
+    && [[ "$SECTION" == *'sha256sum'* ]] \
+    && [[ "$SECTION" == *'shasum'* ]] \
+    && [[ "$SECTION" == *'&& tar -xzf "$ASSET"'* ]] \
+    && [[ "$SECTION" == *'perl-dap'* ]] \
+    && [[ "$SECTION" != *'.zip'* ]] \
+    && [[ "$SECTION" != *'.exe'* ]]; then
+    pass "POSIX manual-archive section documents tar.gz plus SHA256SUMS"
+else
+    fail_case "POSIX manual-archive section documents tar.gz plus SHA256SUMS" \
+        "heading or matching asset/checksum/extract steps missing: $SECTION"
+fi
+
+# Follow the documented verify-then-extract steps on a local posix_nested_v1
+# fixture. No unpublished installer ref/digest and no GitHub download.
+FIXTURE="$TMP/manual-archive"
+mkdir -p "$FIXTURE/perllsp-0.17.0-x86_64-unknown-linux-gnu"
+printf 'fixture-perllsp\n' > "$FIXTURE/perllsp-0.17.0-x86_64-unknown-linux-gnu/perllsp"
+printf 'fixture-perl-dap\n' > "$FIXTURE/perllsp-0.17.0-x86_64-unknown-linux-gnu/perl-dap"
+printf 'fixture-readme\n' > "$FIXTURE/perllsp-0.17.0-x86_64-unknown-linux-gnu/README.md"
+ASSET="perllsp-0.17.0-x86_64-unknown-linux-gnu.tar.gz"
+(
+    cd "$FIXTURE"
+    tar -czf "$ASSET" perllsp-0.17.0-x86_64-unknown-linux-gnu
+    posix_sha256_sum "$ASSET" > SHA256SUMS
+    printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  perllsp-0.17.0-x86_64-pc-windows-msvc.zip\n' >> SHA256SUMS
+)
+EXTRACT="$TMP/manual-archive-extract"
+mkdir -p "$EXTRACT"
+(
+    cd "$EXTRACT"
+    cp "$FIXTURE/$ASSET" "$FIXTURE/SHA256SUMS" .
+    ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1
+    printf '%s\n' "$ROW" | posix_sha256_check && tar -xzf "$ASSET"
+)
+if grep -qx 'fixture-perllsp' "$EXTRACT/perllsp-0.17.0-x86_64-unknown-linux-gnu/perllsp" \
+    && grep -qx 'fixture-perl-dap' "$EXTRACT/perllsp-0.17.0-x86_64-unknown-linux-gnu/perl-dap"; then
+    pass "documented POSIX archive steps extract a local fixture without installer identity"
+else
+    fail_case "documented POSIX archive steps extract a local fixture without installer identity" \
+        "verify/extract did not produce the fixture binaries"
+fi
+
+MISSING_ROW="$TMP/manual-archive-missing-row"
+mkdir -p "$MISSING_ROW"
+cp "$FIXTURE/$ASSET" "$MISSING_ROW/"
+printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  other.tar.gz\n' \
+    > "$MISSING_ROW/SHA256SUMS"
+set +e
+MISSING_OUTPUT="$(
+    cd "$MISSING_ROW"
+    ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1
+    printf '%s\n' "$ROW" | posix_sha256_check && tar -xzf "$ASSET" || exit 1
+    echo EXTRACTED
+)"
+MISSING_STATUS=$?
+set -e
+if [ "$MISSING_STATUS" -ne 0 ] \
+    && [[ "$MISSING_OUTPUT" != *"EXTRACTED"* ]] \
+    && [ ! -e "$MISSING_ROW/perllsp-0.17.0-x86_64-unknown-linux-gnu" ]; then
+    pass "missing SHA256SUMS row fails closed before extract"
+else
+    fail_case "missing SHA256SUMS row fails closed before extract" \
+        "status=$MISSING_STATUS output=$MISSING_OUTPUT"
+fi
+
+MISMATCH="$TMP/manual-archive-mismatch"
+mkdir -p "$MISMATCH"
+cp "$FIXTURE/$ASSET" "$MISMATCH/"
+printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  %s\n' "$ASSET" \
+    > "$MISMATCH/SHA256SUMS"
+set +e
+MISMATCH_OUTPUT="$(
+    cd "$MISMATCH"
+    ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1
+    printf '%s\n' "$ROW" | posix_sha256_check && tar -xzf "$ASSET" || exit 1
+    echo EXTRACTED
+)"
+MISMATCH_STATUS=$?
+set -e
+if [ "$MISMATCH_STATUS" -ne 0 ] \
+    && [[ "$MISMATCH_OUTPUT" != *"EXTRACTED"* ]] \
+    && [ ! -e "$MISMATCH/perllsp-0.17.0-x86_64-unknown-linux-gnu" ]; then
+    pass "checksum mismatch fails closed before extract"
+else
+    fail_case "checksum mismatch fails closed before extract" \
+        "status=$MISMATCH_STATUS output=$MISMATCH_OUTPUT"
 fi
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS" "$FAIL"

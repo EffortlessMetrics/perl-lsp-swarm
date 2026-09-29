@@ -670,6 +670,120 @@ fn test_post_merge_workflow_guards_stale_queued_run_publication()
     Ok(())
 }
 
+/// Collect the `gh("pr", ...)` helper invocations of one Python `run:` body
+/// that do not pass an explicit repository flag. The arguments are plain
+/// string literals at each call site, so a bounded window per call site is
+/// enough to decide.
+fn python_gh_pr_calls_without_explicit_repo(run: &str) -> Vec<String> {
+    let mut calls = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = run[index..].find("gh(") {
+        let start = index + offset;
+        let rest = &run[start..];
+        // Collapse whitespace so a multi-line call reads as one line, then
+        // require the first argument to be the `pr` subcommand.
+        let normalized = rest.chars().take(400).collect::<String>();
+        let normalized = normalized.split_whitespace().collect::<Vec<&str>>().join(" ");
+        if !normalized.starts_with("gh( \"pr\"") && !normalized.starts_with("gh(\"pr\"") {
+            index = start + "gh(".len();
+            continue;
+        }
+        let end = rest.find(")\n").map(|position| position + 1).unwrap_or(rest.len());
+        let call = rest[..end.min(rest.len())].trim();
+        if !call.contains("--repo") && !call.contains("GH_REPO") {
+            calls.push(call.to_string());
+        }
+        index = start + "gh(".len();
+    }
+    calls
+}
+
+/// Every `gh pr` invocation in a checkout-free job must carry explicit
+/// repository context. Implicit repository discovery shells out to git, and a
+/// job without `actions/checkout` has no worktree to discover: run
+/// 36298260514 failed the former `close-superseded` job with "failed to run
+/// git: fatal: not a git repository". The surviving `supersede-stale` sweep
+/// passes `--repo`; this test pins that rule for every current and future
+/// checkout-free job in this workflow — including Python call sites, which
+/// route `gh` through a `subprocess.run(["gh", *arguments])` helper the
+/// shell-token scan cannot see (#16538 review).
+#[test]
+fn test_post_merge_workflow_checkout_free_gh_pr_calls_carry_repo()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let workflow_path = root.join(".github/workflows/post-merge-status.yml");
+    let content = fs::read_to_string(&workflow_path)?;
+    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+
+    let mut violations: Vec<String> = Vec::new();
+    for (name, job) in jobs {
+        let Some(steps) = job.get("steps").and_then(Value::as_sequence) else {
+            continue;
+        };
+        let has_checkout = steps.iter().any(|step| {
+            step.get("uses")
+                .and_then(Value::as_str)
+                .is_some_and(|uses| uses.starts_with("actions/checkout@"))
+        });
+        if has_checkout {
+            continue;
+        }
+        for step in steps {
+            let Some(run) = step.get("run").and_then(Value::as_str) else {
+                continue;
+            };
+            // Join shell continuation lines so `--repo` wrapped onto a
+            // continuation is still attributed to its command.
+            let mut joined = String::new();
+            for line in run.lines() {
+                if let Some(without_continuation) = line.strip_suffix('\\') {
+                    joined.push_str(without_continuation);
+                    joined.push(' ');
+                } else {
+                    joined.push_str(line);
+                    joined.push('\n');
+                }
+            }
+            for line in joined.lines() {
+                let tokens: Vec<&str> = line.split_whitespace().collect();
+                let invokes_gh_pr =
+                    tokens.windows(2).any(|pair| pair[0] == "gh" && pair[1] == "pr");
+                if !invokes_gh_pr {
+                    continue;
+                }
+                let has_explicit_repo = tokens.iter().any(|token| {
+                    matches!(*token, "--repo" | "-R")
+                        || token.starts_with("--repo=")
+                        || token.starts_with("-R")
+                        || token.starts_with("GH_REPO=")
+                });
+                if !has_explicit_repo {
+                    violations.push(format!("{name:?}: {line}"));
+                }
+            }
+            // Python call sites: a `subprocess.run(["gh", *arguments])` helper
+            // never appears as shell tokens, so scan its `gh("pr", ...)`
+            // invocations for the same explicit-context rule (#16538 review).
+            for call in python_gh_pr_calls_without_explicit_repo(run) {
+                violations.push(format!("{name:?} (python): {call}"));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "checkout-free jobs must pass explicit repository context to every \
+         `gh pr` call: without a checkout, `gh` cannot discover the repository \
+         and fails with \"fatal: not a git repository\" (run 36298260514):\n{}",
+        violations.join("\n")
+    );
+    Ok(())
+}
+
 /// The post-merge workflow must commit files in docs/project/status/ — NOT CURRENT_STATUS.md alone.
 #[test]
 fn test_post_merge_workflow_commits_status_directory() -> Result<(), Box<dyn std::error::Error>> {
