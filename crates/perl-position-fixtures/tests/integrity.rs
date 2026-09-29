@@ -113,7 +113,25 @@ fn byte_and_projection_negative_controls_fail_closed() -> Result<(), String> {
         manifest.clone(),
         "ls",
         |case| case.tags.retain(|tag| tag != "ropey_control"),
-        "Ropey control tag",
+        "required tag inventory",
+    )?;
+    rejected(
+        manifest.clone(),
+        "astral",
+        |case| case.tags.retain(|tag| tag != "decisive"),
+        "required tag inventory",
+    )?;
+    rejected(
+        manifest.clone(),
+        "astral",
+        |case| case.tags.push("unreviewed".into()),
+        "required tag inventory",
+    )?;
+    rejected(
+        manifest.clone(),
+        "invalid_leading_start",
+        |case| case.chunks.push("all_byte_cuts".into()),
+        "invalid UTF-8 ingress facts differ",
     )?;
     rejected(
         manifest.clone(),
@@ -259,7 +277,7 @@ fn byte_and_projection_negative_controls_fail_closed() -> Result<(), String> {
         manifest.clone(),
         "invalid_leading_middle",
         |case| case.subject = Some(case.id.clone()),
-        "decode/source-domain",
+        "invalid UTF-8 ingress facts differ",
     )?;
     rejected(
         manifest.clone(),

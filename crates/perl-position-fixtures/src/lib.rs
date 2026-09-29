@@ -66,6 +66,56 @@ const REQUIRED_CASE_IDS: &[&str] = &[
     "unicode_for_bom",
     "vt",
 ];
+// Tags are a consumer-facing filter contract, including both membership and
+// order in list/explain output. Keep this literal v1 inventory independent of
+// the generator and manifest so a missing or added tag cannot hide a case.
+const REQUIRED_TAGS: &[(&str, &[&str])] = &[
+    ("ascii", &["basic", "small"]),
+    ("ascii_for_bom", &["bom", "parser_subject", "small"]),
+    ("astral", &["unicode", "crlf", "small", "decisive"]),
+    ("bare_cr", &["newline", "bare_cr", "small"]),
+    ("bmp", &["unicode", "small"]),
+    ("bom_after_lf", &["bom", "newline", "small"]),
+    ("bom_ascii", &["bom", "presentation", "small"]),
+    ("bom_only", &["bom", "presentation", "small"]),
+    ("bom_unicode", &["bom", "presentation", "unicode", "small"]),
+    ("combining", &["unicode", "small"]),
+    ("consecutive_lf", &["newline", "small"]),
+    ("crcrlf", &["newline", "crlf", "small"]),
+    ("crlf", &["newline", "crlf", "small"]),
+    ("double_bom", &["bom", "presentation", "small"]),
+    ("empty", &["basic", "small"]),
+    ("empty_for_bom", &["bom", "parser_subject", "small"]),
+    ("ff", &["ropey_control", "small"]),
+    ("invalid_continuation_end", &["invalid_utf8", "ingress"]),
+    ("invalid_continuation_middle", &["invalid_utf8", "ingress"]),
+    ("invalid_continuation_start", &["invalid_utf8", "ingress"]),
+    ("invalid_leading_end", &["invalid_utf8", "ingress"]),
+    ("invalid_leading_middle", &["invalid_utf8", "ingress"]),
+    ("invalid_leading_start", &["invalid_utf8", "ingress"]),
+    ("invalid_truncated_end", &["invalid_utf8", "ingress"]),
+    ("invalid_truncated_middle", &["invalid_utf8", "ingress"]),
+    ("invalid_truncated_start", &["invalid_utf8", "ingress"]),
+    ("large_line", &["generated_boundary", "newline"]),
+    ("lf", &["newline", "small"]),
+    ("lfcr", &["newline", "bare_cr", "small"]),
+    ("ls", &["ropey_control", "small"]),
+    ("many_lines", &["generated_boundary", "newline"]),
+    ("mixed", &["newline", "crlf", "small"]),
+    ("multiple_terminal_lf", &["newline", "small"]),
+    ("nel", &["ropey_control", "small"]),
+    ("newline_only", &["newline", "small"]),
+    ("nonleading_bom", &["bom", "small"]),
+    ("nul", &["basic", "small"]),
+    ("ps", &["ropey_control", "small"]),
+    ("repeated", &["basic", "small"]),
+    ("single_bom_for_double", &["bom", "parser_subject", "small"]),
+    ("terminal_cr", &["newline", "bare_cr", "small"]),
+    ("terminal_lf", &["newline", "small"]),
+    ("unicode_crlf", &["newline", "crlf", "unicode", "small"]),
+    ("unicode_for_bom", &["bom", "parser_subject", "unicode", "small"]),
+    ("vt", &["ropey_control", "small"]),
+];
 const REQUIRED_RELATIONS: &[(&str, &str, &str)] = &[
     ("ascii", "identity", "ascii"),
     ("bom_after_lf", "identity", "bom_after_lf"),
@@ -75,7 +125,6 @@ const REQUIRED_RELATIONS: &[(&str, &str, &str)] = &[
     ("double_bom", "strip_leading_bom", "single_bom_for_double"),
     ("nonleading_bom", "identity", "nonleading_bom"),
 ];
-const ROPEY_CONTROL_IDS: &[&str] = &["ff", "ls", "nel", "ps", "vt"];
 
 /// Versioned collection of exact source subjects and literal expectations.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -478,7 +527,7 @@ pub fn validate(manifest: &Manifest) -> Result<(), String> {
         return Err("required versioned case inventory differs".into());
     }
     let mut ids = BTreeSet::new();
-    for case in &manifest.cases {
+    for (index, case) in manifest.cases.iter().enumerate() {
         if !ids.insert(case.id.as_str())
             || case.raw_identity != "literal-hex/v1"
             || case.tags.is_empty()
@@ -488,10 +537,13 @@ pub fn validate(manifest: &Manifest) -> Result<(), String> {
         if case.exhaustive == matches!(case.id.as_str(), "large_line" | "many_lines") {
             return Err(format!("{}: exhaustive coverage class differs", case.id));
         }
-        if ROPEY_CONTROL_IDS.contains(&case.id.as_str())
-            && !case.tags.iter().any(|tag| tag == "ropey_control")
+        let (tagged_id, required_tags) = REQUIRED_TAGS
+            .get(index)
+            .ok_or_else(|| "required tag inventory incomplete".to_string())?;
+        if *tagged_id != case.id.as_str()
+            || !case.tags.iter().map(String::as_str).eq(required_tags.iter().copied())
         {
-            return Err(format!("{}: Ropey control tag missing", case.id));
+            return Err(format!("{}: required tag inventory differs", case.id));
         }
         let bytes = raw_bytes(case)?;
         let digest: String =
@@ -509,7 +561,8 @@ pub fn validate(manifest: &Manifest) -> Result<(), String> {
                     && case.parser_points.is_empty()
                     && case.parser_queries.is_empty()
                     && case.wire.is_empty()
-                    && case.refusals.is_empty() =>
+                    && case.refusals.is_empty()
+                    && case.chunks.is_empty() =>
             {
                 let start = decode_error.valid_up_to();
                 let end = start + decode_error.error_len().unwrap_or(bytes.len() - start);
@@ -528,6 +581,9 @@ pub fn validate(manifest: &Manifest) -> Result<(), String> {
                     return Err(format!("{}: decoder error class/span differs", case.id));
                 }
                 continue;
+            }
+            ("invalid_utf8_ingress", Err(_)) => {
+                return Err(format!("{}: invalid UTF-8 ingress facts differ", case.id));
             }
             ("valid_utf8", Ok(source)) if case.subject.as_deref() == Some(case.id.as_str()) => {
                 if case.decode_error.is_some() {
@@ -690,28 +746,20 @@ fn validate_text(case: &Case, source: &str) -> Result<(), String> {
         return Err(error("parser point queries differ or incomplete"));
     }
     let mut expected = Vec::new();
+    let mut utf16_lengths = Vec::with_capacity(expected_lines.len());
     for (row, &(start, content_end, _, _)) in expected_lines.iter().enumerate() {
         let content = &source[start..content_end];
-        for (offset, _) in content.char_indices().chain(std::iter::once((content.len(), '\0'))) {
-            let prefix = &content[..offset];
+        let mut utf16_column = 0;
+        let mut utf16_boundaries = BTreeSet::new();
+        for (offset, ch) in content.char_indices().chain(std::iter::once((content.len(), '\0'))) {
+            utf16_boundaries.insert(utf16_column);
             expected.push(("utf-8", "incoming", row, offset, "exact", Some(start + offset)));
-            expected.push((
-                "utf-16",
-                "incoming",
-                row,
-                prefix.encode_utf16().count(),
-                "exact",
-                Some(start + offset),
-            ));
+            expected.push(("utf-16", "incoming", row, utf16_column, "exact", Some(start + offset)));
             expected.push(("utf-8", "outgoing", row, offset, "exact", Some(start + offset)));
-            expected.push((
-                "utf-16",
-                "outgoing",
-                row,
-                prefix.encode_utf16().count(),
-                "exact",
-                Some(start + offset),
-            ));
+            expected.push(("utf-16", "outgoing", row, utf16_column, "exact", Some(start + offset)));
+            if offset < content.len() {
+                utf16_column += ch.len_utf16();
+            }
         }
         for column in 0..content.len() {
             if !content.is_char_boundary(column) {
@@ -725,12 +773,10 @@ fn validate_text(case: &Case, source: &str) -> Result<(), String> {
                 ));
             }
         }
-        let utf16_len = content.encode_utf16().count();
+        let utf16_len = utf16_column;
+        utf16_lengths.push(utf16_len);
         for column in 0..utf16_len {
-            if !content
-                .char_indices()
-                .any(|(offset, _)| content[..offset].encode_utf16().count() == column)
-            {
+            if !utf16_boundaries.contains(&column) {
                 expected.push((
                     "utf-16",
                     "incoming",
@@ -760,13 +806,15 @@ fn validate_text(case: &Case, source: &str) -> Result<(), String> {
     }
     expected.push(("utf-8", "incoming", expected_lines.len(), 0, "invalid_line", None));
     expected.push(("utf-16", "incoming", expected_lines.len(), 0, "invalid_line", None));
-    for (row, &(_, content_end, separator_end, _)) in expected_lines.iter().enumerate() {
+    for (row, (&(start, content_end, separator_end, _), &utf16_len)) in
+        expected_lines.iter().zip(&utf16_lengths).enumerate()
+    {
         if separator_end > content_end + 1 {
             expected.push((
                 "utf-8",
                 "outgoing",
                 row,
-                content_end + 1 - expected_lines[row].0,
+                content_end + 1 - start,
                 "invalid_separator_interior",
                 None,
             ));
@@ -774,7 +822,7 @@ fn validate_text(case: &Case, source: &str) -> Result<(), String> {
                 "utf-16",
                 "outgoing",
                 row,
-                source[expected_lines[row].0..content_end].encode_utf16().count() + 1,
+                utf16_len + 1,
                 "invalid_separator_interior",
                 None,
             ));
@@ -809,12 +857,10 @@ fn validate_text(case: &Case, source: &str) -> Result<(), String> {
                 let Some(&(start, content_end, _, _)) = expected_lines.get(row) else {
                     return true;
                 };
-                let content = &source[start..content_end];
-                let end = if encoding == "utf-8" {
-                    content.len()
-                } else {
-                    content.encode_utf16().count()
+                let Some(&utf16_len) = utf16_lengths.get(row) else {
+                    return false;
                 };
+                let end = if encoding == "utf-8" { content_end - start } else { utf16_len };
                 let mid = end / 2;
                 let _ = direction;
                 column == 0 || column == mid || column == end || column == end + 1
