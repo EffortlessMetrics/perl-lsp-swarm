@@ -2347,7 +2347,7 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
     for cargo in &report.cargo_toolchains {
         out.push_str(&format!("  - {}: {}", cargo.flavor, cargo.status));
         if let Some(path) = &cargo.path {
-            out.push_str(&format!(" | {path}"));
+            out.push_str(&format!(" | {}", display_path_text(path)));
         }
         if let Some(version) = &cargo.version {
             out.push_str(&format!(" | {version}"));
@@ -2403,7 +2403,7 @@ fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
     match &report.perl_identity.path {
         Some(path) => {
             out.push_str("  resolved: ");
-            out.push_str(path);
+            out.push_str(&display_path_text(path));
             if let Some(version) = &report.perl_identity.version {
                 out.push_str(&format!(" ({version})"));
             }
@@ -2518,9 +2518,10 @@ fn display_path_text(text: &str) -> String {
 /// actually occur: an object created through the extended namespace can bear
 /// either, and the plain spelling of both points somewhere else.
 #[cfg(windows)]
-const RESERVED_DEVICE_NAMES: [&str; 22] = [
+const RESERVED_DEVICE_NAMES: [&str; 28] = [
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "COM9", "COM¹", "COM²", "COM³", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+    "LPT9", "LPT¹", "LPT²", "LPT³",
 ];
 
 /// Whether the plain (non-extended) namespace can express `plain` as the very
@@ -3810,6 +3811,12 @@ mod tests {
             r"\\?\C:\code\con.txt",
             r"\\?\C:\code\COM1",
             r"\\?\C:\code\LPT9.log",
+            r"\\?\C:\code\COM¹",
+            r"\\?\C:\code\com².txt",
+            r"\\?\C:\code\COM³",
+            r"\\?\UNC\server\share\LPT¹",
+            r"\\?\C:\code\lpt².log",
+            r"\\?\C:\code\LPT³",
             r"\\?\UNC\share\aux",
         ] {
             assert_eq!(
@@ -3818,6 +3825,8 @@ mod tests {
                 "{text} would name a different object plainly"
             );
         }
+        assert_eq!(display_path_text(r"\\?\C:\code\COM0"), r"C:\code\COM0");
+        assert_eq!(display_path_text(r"\\?\C:\code\COM¹x"), r"C:\code\COM¹x");
     }
 
     #[cfg(windows)]
@@ -5243,6 +5252,36 @@ mod tests {
         assert!(rendered.contains(BASH_PREREQUISITE_LINE));
         assert!(rendered.contains("Claim boundary:"));
         assert!(rendered.matches("Fix:").count() >= 4);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dev_environment_paths_are_pasteable_without_changing_json_identity() -> TestResult {
+        use serde_json::Value;
+
+        let mut report = synthetic_dev_environment_report();
+        let cargo_path = r"\\?\C:\Users\dev\.cargo\bin\cargo.exe";
+        let perl_path = r"\\?\C:\Strawberry\perl\bin\perl.exe";
+        report.cargo_toolchains.get_mut(0).ok_or("native Cargo row missing")?.path =
+            Some(cargo_path.to_string());
+        report.perl_identity.path = Some(perl_path.to_string());
+
+        let rendered = render_dev_environment_report(&report);
+        assert!(rendered.contains(r"native_shell: present | C:\Users\dev\.cargo\bin\cargo.exe"));
+        assert!(rendered.contains(r"resolved: C:\Strawberry\perl\bin\perl.exe"));
+        assert!(!rendered.contains(r"\\?\"));
+
+        let json = serde_json::to_value(&report)?;
+        assert_eq!(
+            json.pointer("/cargo_toolchains/0/path").and_then(Value::as_str),
+            Some(cargo_path)
+        );
+        assert_eq!(json.pointer("/perl_identity/path").and_then(Value::as_str), Some(perl_path));
+
+        report.cargo_toolchains.get_mut(0).ok_or("native Cargo row missing")?.path =
+            Some(r"\\?\C:\code\COM¹\cargo.exe".to_string());
+        assert!(render_dev_environment_report(&report).contains(r"\\?\C:\code\COM¹\cargo.exe"));
+        Ok(())
     }
 
     #[test]
