@@ -1130,6 +1130,19 @@ mod tests {
     }
 
     #[test]
+    fn empty_heredoc_retains_zero_length_raw_closure_row() -> Result<(), String> {
+        let source = "print <<'my$x=1;';\nmy$x=1;\n__DATA__\nmy$x=1;\n";
+        let regions = scan_heredoc_regions(source);
+        let terminator_start = offset_of(source, "my$x=1;\n__DATA__")
+            .ok_or("fixture must contain the terminator line")?;
+
+        assert_eq!(regions.len(), 1, "one empty heredoc expected: {regions:?}");
+        assert_eq!(regions[0].start, terminator_start);
+        assert_eq!(regions[0].end, terminator_start);
+        Ok(())
+    }
+
+    #[test]
     fn indented_terminator_only_closes_a_tilde_heredoc() {
         let indented = "my $x = <<~EOF;\nbody\n    EOF\ntail();\n";
         let plain = "my $x = <<EOF;\nbody\n    EOF\ntail();\n";

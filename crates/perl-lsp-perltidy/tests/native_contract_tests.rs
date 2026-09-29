@@ -16,10 +16,23 @@ fn native_format_config_defaults_to_native_safe_profile() {
     assert_eq!(config.indent_width, 4);
     assert!(!config.use_tabs);
     assert_eq!(config.final_newline, FinalNewline::Preserve);
+    assert!(!config.trim_trailing_whitespace);
     assert_eq!(config.trailing_comma, TrailingComma::Preserve);
     assert_eq!(config.brace_placement, BracePlacement::SameLine);
     assert_eq!(config.else_placement, ElsePlacement::Cuddled);
     assert_eq!(config.keyword_spacing, KeywordSpacing::Space);
+}
+
+#[test]
+fn native_format_config_deserializes_previous_shape_without_trim_flag() -> TestResult {
+    let mut value = serde_json::to_value(FormatConfig::default())?;
+    let object = value.as_object_mut().ok_or("format config must serialize as an object")?;
+    object.remove("trim_trailing_whitespace");
+
+    let restored: FormatConfig = serde_json::from_value(value)?;
+
+    assert!(!restored.trim_trailing_whitespace);
+    Ok(())
 }
 
 #[test]

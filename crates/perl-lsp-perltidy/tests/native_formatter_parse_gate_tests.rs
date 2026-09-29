@@ -64,7 +64,7 @@ fn native_formatter_reports_utf16_parse_error_range() {
 #[test]
 fn native_formatter_refuses_pod_until_preservation_pass_exists() {
     let formatter = NativeFormatter::new();
-    let source = "=pod\n\n=head1 NAME\n\n=cut\n\nmy $x = 1;\n";
+    let source = "=pod\n\n=head1 NAME\n\n=cut\n";
     let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
 
     let result = formatter.format_document(source, &config);
@@ -73,6 +73,179 @@ fn native_formatter_refuses_pod_until_preservation_pass_exists() {
     assert_eq!(result.formatted, source);
     assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
     assert!(result.diagnostics[0].message.contains("POD"));
+}
+
+#[test]
+fn native_formatter_trims_only_safe_eof_after_pod() -> Result<(), Box<dyn std::error::Error>> {
+    let formatter = NativeFormatter::new();
+    let source = "=pod\n\n=head1 NAME\n\n=cut\n\nmy $x = 1;\n";
+    let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
+
+    let result = formatter.format_document(source, &config);
+
+    assert_eq!(result.formatted, "=pod\n\n=head1 NAME\n\n=cut\n\nmy $x = 1;");
+    assert_eq!(result.edits.len(), 1);
+    let edit = &result.edits[0];
+    assert_eq!(edit.range.start.line, 6);
+    assert_eq!(edit.range.end.line, 7);
+    let applied = apply_edits_exact(
+        source,
+        &[EditSpec::new(
+            edit.range.start.line,
+            edit.range.start.character,
+            edit.range.end.line,
+            edit.range.end.character,
+            edit.new_text.clone(),
+        )],
+        PositionEncoding::Utf16CodeUnits,
+    )?;
+    assert_eq!(applied, result.formatted);
+    assert!(formatter.format_document(&result.formatted, &config).edits.is_empty());
+    Ok(())
+}
+
+#[test]
+fn native_formatter_trims_safe_line_only_when_heredoc_body_has_spaces()
+-> Result<(), Box<dyn std::error::Error>> {
+    let formatter = NativeFormatter::new();
+    let source = "my $before = 1;  \nmy $text = <<'EOF';\nraw  \nEOF\n";
+    let config = FormatConfig { trim_trailing_whitespace: true, ..FormatConfig::default() };
+
+    let result = formatter.format_document(source, &config);
+
+    assert_eq!(result.formatted, "my $before = 1;\nmy $text = <<'EOF';\nraw  \nEOF\n");
+    assert_eq!(result.edits.len(), 1);
+    assert_eq!(result.edits[0].range.start.line, 0);
+    let edit = &result.edits[0];
+    let applied = apply_edits_exact(
+        source,
+        &[EditSpec::new(
+            edit.range.start.line,
+            edit.range.start.character,
+            edit.range.end.line,
+            edit.range.end.character,
+            edit.new_text.clone(),
+        )],
+        PositionEncoding::Utf16CodeUnits,
+    )?;
+    assert_eq!(applied, result.formatted);
+    assert!(formatter.format_document(&result.formatted, &config).edits.is_empty());
+    Ok(())
+}
+
+#[test]
+fn native_formatter_trim_config_applies_to_clean_document() {
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig { trim_trailing_whitespace: true, ..FormatConfig::default() };
+    let source = "my $x = 1;  \n";
+
+    let result = formatter.format_document(source, &config);
+
+    assert_eq!(result.formatted, "my $x = 1;\n");
+    assert_eq!(result.edits.len(), 1);
+}
+
+#[test]
+fn native_formatter_insert_final_newline_preserves_existing_terminal_run() {
+    let formatter = NativeFormatter::new();
+    let config = FormatConfig { final_newline: FinalNewline::Insert, ..FormatConfig::default() };
+
+    for ending in ["\n\n", "\r\n\r\n"] {
+        let source = format!("my $q = qw(a);{ending}my $x = 1;{ending}");
+        let result = formatter.format_document(&source, &config);
+
+        assert_eq!(result.formatted, source, "Insert must preserve an existing terminal run");
+        assert!(result.edits.is_empty(), "no terminal bytes need an edit: {result:?}");
+
+        let clean_source = format!("my $x = 1;{ending}");
+        let clean_result = formatter.format_document(&clean_source, &config);
+        assert_eq!(clean_result.formatted, clean_source);
+        assert!(clean_result.edits.is_empty());
+    }
+}
+
+#[test]
+fn native_formatter_trim_eof_uses_cr_aware_utf16_position() -> Result<(), Box<dyn std::error::Error>>
+{
+    let formatter = NativeFormatter::new();
+    let source = "my $q = qw(a);\rmy $x = 1;\nmy $y = 2;\n\n";
+    let config = FormatConfig { final_newline: FinalNewline::Trim, ..FormatConfig::default() };
+
+    let result = formatter.format_document(source, &config);
+
+    assert_eq!(result.formatted, "my $q = qw(a);\rmy $x = 1;\nmy $y = 2;");
+    assert_eq!(result.edits.len(), 1);
+    let edit = &result.edits[0];
+    assert_eq!(edit.range.start, TextPosition::new(2, 10));
+    let applied = apply_edits_exact(
+        source,
+        &[EditSpec::new(
+            edit.range.start.line,
+            edit.range.start.character,
+            edit.range.end.line,
+            edit.range.end.character,
+            edit.new_text.clone(),
+        )],
+        PositionEncoding::Utf16CodeUnits,
+    )?;
+    assert_eq!(applied, result.formatted);
+    Ok(())
+}
+
+#[test]
+fn native_formatter_scoped_line_after_bare_cr_uses_lsp_coordinates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let formatter = NativeFormatter::new();
+    let source = "my $q = qw(a);\rmy$z=3;\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert_eq!(result.formatted, "my $q = qw(a);\rmy $z = 3;\n");
+    assert_eq!(result.edits.len(), 1);
+    let edit = &result.edits[0];
+    assert_eq!(edit.range.start, TextPosition::new(1, 0));
+    assert_eq!(edit.range.end, TextPosition::new(1, 7));
+    let applied = apply_edits_exact(
+        source,
+        &[EditSpec::new(
+            edit.range.start.line,
+            edit.range.start.character,
+            edit.range.end.line,
+            edit.range.end.character,
+            edit.new_text.clone(),
+        )],
+        PositionEncoding::Utf16CodeUnits,
+    )?;
+    assert_eq!(applied, result.formatted);
+    Ok(())
+}
+
+#[test]
+fn native_range_trim_refuses_heredoc_body_selected_without_opener() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'EOF';\nraw  \nEOF\n";
+    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(1, 5));
+    let config = FormatConfig { trim_trailing_whitespace: true, ..FormatConfig::default() };
+
+    let result = formatter.format_range(source, range, &config);
+
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
+}
+
+#[test]
+fn native_range_trim_refuses_mixed_eol_empty_heredoc_terminator() {
+    let formatter = NativeFormatter::new();
+    let source = "my $x=1;\rprint <<\"my$x=1;\";\nmy$x=1;\nmy $y=2;\n__DATA__\nmy$x=1;\n";
+    let range = TextRange::new(TextPosition::new(2, 0), TextPosition::new(2, 7));
+    let config = FormatConfig { trim_trailing_whitespace: true, ..FormatConfig::default() };
+
+    let result = formatter.format_range(source, range, &config);
+
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
 }
 
 #[test]
@@ -174,6 +347,48 @@ fn native_formatter_refuses_unterminated_heredoc_despite_safe_prefix() {
     assert_eq!(result.formatted, source);
     assert!(result.edits.is_empty());
     assert!(!result.diagnostics.is_empty());
+}
+
+#[test]
+fn native_formatter_preserves_empty_heredoc_terminator_that_looks_like_code() {
+    let formatter = NativeFormatter::new();
+    let source = "print <<'my$x=1;';\nmy$x=1;\n__DATA__\nmy$x=1;\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert_eq!(result.formatted, source, "empty heredoc terminator and DATA tail are opaque");
+    assert!(result.edits.is_empty(), "opaque lines must not acquire scoped edits: {result:?}");
+}
+
+#[test]
+fn native_formatter_edits_before_empty_heredoc_without_touching_terminator()
+-> Result<(), Box<dyn std::error::Error>> {
+    let formatter = NativeFormatter::new();
+    let source = "my$before=1;\nprint <<'my$x=1;';\nmy$x=1;\n__DATA__\nmy$x=1;\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert_eq!(
+        result.formatted,
+        "my $before = 1;\nprint <<'my$x=1;';\nmy$x=1;\n__DATA__\nmy$x=1;\n"
+    );
+    assert_eq!(result.edits.len(), 1);
+    let edit = &result.edits[0];
+    assert_eq!(edit.range.start.line, 0);
+    assert_eq!(edit.range.end.line, 0);
+    let applied = apply_edits_exact(
+        source,
+        &[EditSpec::new(
+            edit.range.start.line,
+            edit.range.start.character,
+            edit.range.end.line,
+            edit.range.end.character,
+            edit.new_text.clone(),
+        )],
+        PositionEncoding::Utf16CodeUnits,
+    )?;
+    assert_eq!(applied, result.formatted);
+    Ok(())
 }
 
 #[test]
@@ -341,6 +556,18 @@ fn native_formatter_refuses_commented_format_declaration_and_body() {
 }
 
 #[test]
+fn native_formatter_reports_parse_error_before_format_body_refusal() {
+    let formatter = NativeFormatter::new();
+    let source = "format STDOUT =\n.\nmy $x = ;\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert_eq!(result.diagnostics[0].code, "native.format.parse_error");
+}
+
+#[test]
 fn native_formatter_does_not_treat_bitshift_as_heredoc() {
     let formatter = NativeFormatter::new();
     let source = "my $x = 1 << 2;";
@@ -460,12 +687,15 @@ fn document_format_still_bails_on_regex_anywhere_in_document() {
 #[test]
 fn range_format_clean_lines_succeeds_when_heredoc_is_elsewhere_in_document() {
     let formatter = NativeFormatter::new();
-    // Line 0 has a heredoc start; line 1 is a clean declaration.
-    let source = "print <<'EOF';\nmy $x = 1;\n";
-    let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+    // The declaration follows the complete heredoc terminator.
+    let source = "print <<'EOF';\nraw\nEOF\nmy$x=1;\n";
+    let range = TextRange::new(TextPosition::new(3, 0), TextPosition::new(4, 0));
 
     let result = formatter.format_range(source, range, &FormatConfig::default());
 
+    assert_eq!(result.formatted, "print <<'EOF';\nraw\nEOF\nmy $x = 1;\n");
+    assert_eq!(result.edits.len(), 1);
+    assert_eq!(result.edits[0].range.start.line, 3);
     assert!(
         result.diagnostics.iter().all(|d| d.code != "native.format.literal_preserve_region"),
         "should not bail with literal_preserve_region when heredoc is outside the range; \
