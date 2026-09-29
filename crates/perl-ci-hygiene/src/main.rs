@@ -81,6 +81,9 @@ fn run() -> Result<i32> {
             commands::doc_links::check_doc_links(&repo_root, docs_dir.as_deref())?
         }
         CliCommand::CheckDocDrift => commands::doc_drift::check_doc_drift(&repo_root)?,
+        CliCommand::CheckDocJson { docs_dir } => {
+            commands::doc_json::check_doc_json(&repo_root, docs_dir.as_deref())?
+        }
         CliCommand::Preflight => cmd_preflight(&repo_root)?,
         CliCommand::TestCapped { cargo_args } => cmd_test_capped(&repo_root, &cargo_args)?,
         CliCommand::E2eGate { cargo_args } => cmd_e2e_gate(&repo_root, &cargo_args)?,
