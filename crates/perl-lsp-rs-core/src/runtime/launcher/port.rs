@@ -1,7 +1,7 @@
-//! `--port` token validation for the launcher prevalidate path.
+//! `--port` token validation shared by launcher prevalidate and clap.
 //!
 //! Names the accepted TCP range (0-65535) instead of forwarding
-//! `ParseIntError`'s Display into user-facing output (#16526).
+//! `ParseIntError`'s Display into user-facing output (#16526, #16562).
 
 use super::LaunchParseError;
 
@@ -11,7 +11,7 @@ const PORT_OUT_OF_RANGE: &str = "Expected a port in 0-65535.";
 /// Rejection reason for a `--port` token that is not an unsigned whole number.
 const PORT_NOT_A_NUMBER: &str = "Expected a whole number in 0-65535.";
 
-/// Accept a `u16` port token, or reject it with an actionable range reason.
+/// Parse a `u16` port token, or reject it with an actionable range reason.
 ///
 /// Classification is by token shape rather than a wider-integer re-parse: an
 /// ASCII-digit token (optionally signed) that `u16` refused is out of range,
@@ -19,15 +19,23 @@ const PORT_NOT_A_NUMBER: &str = "Expected a whole number in 0-65535.";
 /// stays on the range side. Negative zero (`-0`, `-000`) is a spelling of 0
 /// that `u16` rejects because of the minus, so it is reported as not a number
 /// rather than as out of range.
-pub(super) fn validate_port_token(raw_port: &str) -> Result<(), LaunchParseError> {
-    if raw_port.parse::<u16>().is_ok() {
-        return Ok(());
+///
+/// This is the sole grammar/range authority for `--port`. Launcher
+/// prevalidation and the shared clap `value_parser` both delegate here so
+/// `perllsp` and `perl-dap` cannot accept or reject different token classes.
+pub(super) fn parse_port_token(raw_port: &str) -> Result<u16, LaunchParseError> {
+    match raw_port.parse::<u16>() {
+        Ok(port) => Ok(port),
+        Err(_) => Err(LaunchParseError::InvalidPort {
+            raw_port: raw_port.to_string(),
+            reason: port_rejection_reason(raw_port).to_string(),
+        }),
     }
+}
 
-    Err(LaunchParseError::InvalidPort {
-        raw_port: raw_port.to_string(),
-        reason: port_rejection_reason(raw_port).to_string(),
-    })
+/// Accept a `u16` port token, or reject it with an actionable range reason.
+pub(super) fn validate_port_token(raw_port: &str) -> Result<(), LaunchParseError> {
+    parse_port_token(raw_port).map(|_| ())
 }
 
 fn port_rejection_reason(raw_port: &str) -> &'static str {
@@ -47,7 +55,8 @@ fn is_numeric_out_of_range(raw_port: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{PORT_NOT_A_NUMBER, PORT_OUT_OF_RANGE, port_rejection_reason, validate_port_token};
-    use crate::runtime::launcher::{LaunchParseError, TransportMode, parse_args};
+    use crate::runtime::launcher::{LaunchParseError, LspArgs, TransportMode, parse_args};
+    use clap::Parser;
     use perl_tdd_support::{must, must_err};
 
     #[test]
@@ -216,6 +225,89 @@ mod tests {
     fn accepted_tokens_do_not_produce_invalid_port() {
         for raw in ["0", "65535", "+0", "+65535", "0000", "08080"] {
             assert!(validate_port_token(raw).is_ok(), "should accept {raw}");
+            assert_eq!(
+                must(super::parse_port_token(raw)),
+                must(raw.parse::<u16>()),
+                "accepted token {raw} must yield the same u16 clap will store"
+            );
+        }
+    }
+
+    /// The shared `TransportArgs.port` clap parser must consume the same
+    /// authority as launcher prevalidation. `LspArgs::try_parse_from` skips
+    /// `prevalidate_cli_values`, so a clap-only `u16` parse is a realistic
+    /// wrong implementation (#16562).
+    #[test]
+    fn shared_clap_parser_states_the_accepted_range_instead_of_parse_int_error() {
+        struct Case {
+            argv: &'static [&'static str],
+            reason: &'static str,
+        }
+
+        let cases = [
+            Case { argv: &["perl-lsp", "--port", "65536"], reason: PORT_OUT_OF_RANGE },
+            Case { argv: &["perl-lsp", "--port=65536"], reason: PORT_OUT_OF_RANGE },
+            Case { argv: &["perl-lsp", "--port", "99999"], reason: PORT_OUT_OF_RANGE },
+            Case {
+                argv: &["perl-lsp", "--port", "99999999999999999999999999"],
+                reason: PORT_OUT_OF_RANGE,
+            },
+            Case { argv: &["perl-lsp", "--port", "-1"], reason: PORT_OUT_OF_RANGE },
+            Case { argv: &["perl-lsp", "--port=-1"], reason: PORT_OUT_OF_RANGE },
+            Case { argv: &["perl-lsp", "--port", "abc"], reason: PORT_NOT_A_NUMBER },
+            Case { argv: &["perl-lsp", "--port=abc"], reason: PORT_NOT_A_NUMBER },
+            Case { argv: &["perl-lsp", "--port", "0x10"], reason: PORT_NOT_A_NUMBER },
+        ];
+
+        for case in cases {
+            let error = must_err(LspArgs::try_parse_from(case.argv.iter().copied()));
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains(case.reason),
+                "argv={:?} missing reason {reason:?} in {rendered}",
+                case.argv,
+                reason = case.reason
+            );
+            assert!(
+                !rendered.contains("fit in target type"),
+                "leaked ParseIntError wording for {:?}: {rendered}",
+                case.argv
+            );
+            assert!(
+                !rendered.contains("invalid digit found in string"),
+                "leaked ParseIntError wording for {:?}: {rendered}",
+                case.argv
+            );
+            assert!(
+                !rendered.contains("cannot parse integer from empty string"),
+                "leaked ParseIntError wording for {:?}: {rendered}",
+                case.argv
+            );
+            assert!(
+                !rendered.contains("0..="),
+                "leaked Rust range syntax for {:?}: {rendered}",
+                case.argv
+            );
+        }
+    }
+
+    #[test]
+    fn shared_clap_parser_and_prevalidate_agree_on_token_acceptance() {
+        let accepted = ["0", "65535", "+0", "+65535", "0000", "08080", "1"];
+        for raw in accepted {
+            assert!(validate_port_token(raw).is_ok(), "canonical validator must accept {raw}");
+            let parsed = must(LspArgs::try_parse_from(["perl-lsp", "--port", raw]));
+            let expected = must(raw.parse::<u16>());
+            assert_eq!(parsed.transport.port, Some(expected), "clap accepted {raw}");
+        }
+
+        let rejected = ["65536", "99999", "abc", "-1", "+65536", "0x10", "8080.0"];
+        for raw in rejected {
+            assert!(validate_port_token(raw).is_err(), "canonical validator must reject {raw}");
+            assert!(
+                LspArgs::try_parse_from(["perl-lsp", "--port", raw]).is_err(),
+                "shared clap parser must reject {raw}"
+            );
         }
     }
 }
