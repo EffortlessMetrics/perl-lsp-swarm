@@ -6,8 +6,10 @@
 //!
 //! `latest` is the active slot consulted by lookup. `history` retains earlier
 //! same-scope declarations so their unused/shadowing records are not dropped
-//! when a later binding becomes active (#15056). Sequential analysis follows
-//! source order, so a visible redeclaration always replaces `latest`.
+//! when a later binding becomes active (#15056). The active slot is replaced
+//! only when the incoming declaration is textually later (or first); `our` /
+//! `local` skip pending maps, so modifier analysis can install a later binding
+//! before an earlier one.
 
 use super::index_to_sigil;
 use rustc_hash::FxHashMap;
@@ -56,13 +58,19 @@ impl VisibleBindings {
         self.latest.borrow()[idx].as_ref().is_some_and(|map| map.contains_key(name))
     }
 
-    /// Install `variable` as the active visible slot and append it to history.
+    /// Install `variable` into history, and into `latest` when `replace_latest`.
     ///
-    /// Sequential (non-pending) analysis follows source order, so the newly
-    /// declared binding is the later one. Callers on the pending path must not
-    /// use this method.
-    pub(super) fn declare(&self, idx: usize, name: &str, variable: Rc<Variable>) {
-        {
+    /// `replace_latest` is the textual later-wins guard: `our`/`local` skip the
+    /// pending path, so a statement-modifier condition (analyzed first, textually
+    /// later) must not be overwritten by the earlier statement declaration.
+    pub(super) fn declare(
+        &self,
+        idx: usize,
+        name: &str,
+        variable: Rc<Variable>,
+        replace_latest: bool,
+    ) {
+        if replace_latest {
             let mut latest = self.latest.borrow_mut();
             latest[idx]
                 .get_or_insert_with(FxHashMap::default)

@@ -275,3 +275,39 @@ fn modifier_declaration_stays_invisible_to_its_statement() -> TestResult {
     );
     Ok(())
 }
+
+fn has_uninit_x(issues: &[ScopeIssue]) -> bool {
+    issues.iter().any(|i| {
+        i.kind == IssueKind::UninitializedVariable
+            && (i.variable_name == "$x" || i.variable_name.ends_with("::x"))
+    })
+}
+
+/// `our` skips pending maps, so both modifier declarations hit the visible
+/// table. Condition-first analysis installs the textually later binding first;
+/// the earlier statement declaration must not replace it.
+///
+/// Oracle: `perl -we 'use strict; our $x if our $x = 2; print $x;'` prints `2`.
+#[test]
+fn our_modifier_keeps_textually_later_initialized_binding() -> TestResult {
+    let issues = analyze("use strict;\nour $x if our $x = 2;\nprint $x;\n")?;
+    assert!(
+        !has_uninit_x(&issues),
+        "later initialized `our` in the condition must own the subsequent read; got: {issues:?}"
+    );
+    Ok(())
+}
+
+/// Opposite `our` ordering: the textually later condition is uninitialized.
+///
+/// Oracle: `perl -we 'use strict; our $x = 2 if our $x; print $x;'`
+/// → `Use of uninitialized value $x in print`.
+#[test]
+fn our_modifier_keeps_textually_later_uninitialized_binding() -> TestResult {
+    let issues = analyze("use strict;\nour $x = 2 if our $x;\nprint $x;\n")?;
+    assert!(
+        has_uninit_x(&issues),
+        "later uninitialized `our` in the condition must own the subsequent read; got: {issues:?}"
+    );
+    Ok(())
+}

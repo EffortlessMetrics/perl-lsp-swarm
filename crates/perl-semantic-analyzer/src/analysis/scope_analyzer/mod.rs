@@ -241,9 +241,10 @@ impl Scope {
             .map(|var| var.declaration_offset);
 
         let redeclaration = already_visible_offset.is_some() || already_pending_offset.is_some();
-        // Textual later-wins stays on the pending path, where statement-modifier
-        // analysis visits the condition (textually later) before the statement.
-        // Sequential visible analysis follows source order and always installs.
+        // Textual later-wins: statement-modifier analysis visits the condition
+        // (textually later) before the statement. `my`/`state` use the pending
+        // path; `our`/`local` skip it and must apply the same offset guard on
+        // the visible table so the later binding still owns subsequent lookup.
         let textually_later = match (already_visible_offset, already_pending_offset) {
             (Some(visible), Some(pending)) => offset > visible.max(pending),
             (Some(visible), None) => offset > visible,
@@ -278,7 +279,12 @@ impl Scope {
                     .push(variable);
             }
         } else {
-            self.bindings.declare(idx, name, variable);
+            self.bindings.declare(
+                idx,
+                name,
+                variable,
+                textually_later || already_visible_offset.is_none(),
+            );
         }
 
         if redeclaration {
