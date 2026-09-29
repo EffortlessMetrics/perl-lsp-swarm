@@ -147,6 +147,24 @@ struct WorkspaceSymbolObservation {
     budget: Duration,
 }
 
+// Local runs use a print macro; CI needs descriptor IO to bypass libtest capture.
+// Keep both paths explicit so the source-policy exception is operative.
+#[expect(
+    clippy::print_stderr,
+    reason = "policy:allow-ux-ws-symbol-receipt-15988: one path-free success receipt must survive libtest capture in CI logs"
+)]
+fn emit_workspace_symbol_probe_receipt(receipt: &Value) -> Result<()> {
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let stderr = std::io::stderr();
+        let mut output = stderr.lock();
+        serde_json::to_writer(&mut output, receipt)?;
+        output.write_all(b"\n")?;
+    } else {
+        eprintln!("{receipt}");
+    }
+    Ok(())
+}
+
 fn workspace_symbols_with_budget(
     harness: &UxHarness,
     deadline: Instant,
@@ -442,8 +460,7 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
     }
     harness.assert_no_crash();
 
-    // Libtest captures print macros and tracing has no subscriber in this suite.
-    // Write one bounded, path-free receipt so successful timing stays in the job log.
+    // One reviewed stderr exception keeps the passing timing visible in CI.
     let receipt = json!({
         "kind": "workspace_symbol_readiness_probe",
         "test": "ux_latency_workspace_symbols_sees_open_document_symbols",
@@ -458,7 +475,7 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
         "after_ready_budget_ms": after_ready.budget.as_millis(),
         "after_ready_alpha": after_ready_has_alpha,
     });
-    std::io::stderr().write_all(format!("{receipt}\n").as_bytes())?;
+    emit_workspace_symbol_probe_receipt(&receipt)?;
 
     Ok(())
 }
