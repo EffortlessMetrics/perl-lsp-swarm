@@ -27,6 +27,15 @@ impl LspServer {
                 format!("server request `{method}` is deferred until initialization completes"),
             ));
         }
+        // `initialized` stays true on the terminal connection. Progress create
+        // and other reverse requests must still refuse after shutdown so a
+        // producer paused in I/O cannot emit a frame after drain (#8386).
+        if self.client_session.shutdown_received.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                format!("server request `{method}` refused: session is shut down"),
+            ));
+        }
 
         let id = self.next_server_request_id();
         self.outbound_sink().send_request(id, method, params)?;
@@ -247,6 +256,37 @@ mod tests {
             })
             .ok_or_else(|| format!("expected workspace/configuration request: {messages:?}"))?;
         assert_eq!(request.get("id").and_then(Value::as_i64), Some(i64::from(request_id.as_i32())));
+        Ok(())
+    }
+
+    #[test]
+    fn send_request_after_shutdown_is_refused_and_emits_no_frame() -> TestResult {
+        let (server, output) = server_with_output_capture();
+        assert_eq!(
+            server.client_session.begin_shutdown(),
+            crate::runtime::client_session::ShutdownAdmission::First
+        );
+
+        let error = match server.send_request("workspace/configuration", json!({"items": []})) {
+            Ok(id) => {
+                return Err(format!(
+                    "post-shutdown server request must be rejected, got id {id:?}"
+                )
+                .into());
+            }
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::NotConnected,
+            "exact NotConnected on shutdown send_request boundary"
+        );
+        assert!(
+            error.to_string().contains("shut down"),
+            "rejection should name the shutdown boundary: {error}"
+        );
+        thread::sleep(Duration::from_millis(50));
+        assert!(output.messages()?.is_empty(), "no server request frame may escape after shutdown");
         Ok(())
     }
 

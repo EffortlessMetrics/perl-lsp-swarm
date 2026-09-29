@@ -237,6 +237,7 @@ impl LspServer {
         title: &str,
         message: Option<&str>,
     ) -> io::Result<()> {
+        self.refuse_progress_if_shutdown("progress begin")?;
         let mut value = json!({
             "kind": "begin",
             "title": title,
@@ -270,6 +271,7 @@ impl LspServer {
         message: Option<&str>,
         percentage: Option<u32>,
     ) -> io::Result<()> {
+        self.refuse_progress_if_shutdown("progress report")?;
         let mut value = json!({
             "kind": "report",
         });
@@ -299,6 +301,7 @@ impl LspServer {
     /// * `token` - The progress token
     /// * `message` - Optional final message text
     pub fn report_progress_end(&self, token: &str, message: Option<&str>) -> io::Result<()> {
+        self.refuse_progress_if_shutdown("progress end")?;
         let mut value = json!({
             "kind": "end",
         });
@@ -405,6 +408,16 @@ impl LspServer {
     /// infrastructure which auto-generates request IDs.
     fn send_request_internal(&self, method: &str, params: Value) -> io::Result<()> {
         self.send_request(method, params).map(|_| ())
+    }
+
+    fn refuse_progress_if_shutdown(&self, what: &str) -> io::Result<()> {
+        if self.client_session.shutdown_received.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                format!("{what} refused: session is shut down"),
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(test)]

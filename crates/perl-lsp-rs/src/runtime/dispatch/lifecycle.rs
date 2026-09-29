@@ -450,7 +450,52 @@ mod tests {
         use std::sync::Barrier;
         use std::thread;
 
-        let server = Arc::new(LspServer::new());
+        use parking_lot::Mutex;
+        use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
+        use std::io::Write;
+        use std::time::Duration;
+
+        #[derive(Clone, Default)]
+        struct OutputCapture {
+            buffer: Arc<Mutex<Vec<u8>>>,
+        }
+
+        impl OutputCapture {
+            fn messages(&self) -> Result<Vec<Value>, String> {
+                let bytes = self.buffer.lock().clone();
+                let mut framer = ContentLengthFramer::new();
+                framer.push(&bytes);
+                let mut messages = Vec::new();
+                while let Some(body) = framer.try_next().map_err(|e| e.to_string())? {
+                    messages
+                        .push(serde_json::from_slice::<Value>(&body).map_err(|e| e.to_string())?);
+                }
+                Ok(messages)
+            }
+        }
+
+        impl Write for OutputCapture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.buffer.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        fn method_count(messages: &[Value], method: &str) -> usize {
+            messages
+                .iter()
+                .filter(|message| message.get("method").and_then(Value::as_str) == Some(method))
+                .count()
+        }
+
+        let output = OutputCapture::default();
+        let server = Arc::new(LspServer::with_output(Arc::new(Mutex::new(
+            Box::new(output.clone()) as Box<dyn Write + Send>,
+        ))));
         server
             .handle_initialize(None)
             .map_err(|e| format!("initialize request should succeed: {e}"))?;
@@ -473,12 +518,28 @@ mod tests {
 
         entered.wait();
         server.handle_shutdown_dispatch().map_err(|e| format!("shutdown should succeed: {e}"))?;
+        thread::sleep(Duration::from_millis(50));
+        let after_shutdown = output.messages()?;
+        let create_before = method_count(&after_shutdown, "window/workDoneProgress/create");
+        let progress_before = method_count(&after_shutdown, "$/progress");
         release.wait();
         let begun = producer.join().map_err(|_| "progress producer thread panicked")?;
+        thread::sleep(Duration::from_millis(50));
+        let after_producer = output.messages()?;
         assert!(begun.is_none(), "post-shutdown create must not start a progress frame");
         assert!(
             server.client_session.progress_tokens.lock().is_empty(),
             "late create must not retain a session-owned progress token"
+        );
+        assert_eq!(
+            method_count(&after_producer, "window/workDoneProgress/create"),
+            create_before,
+            "shutdown must refuse the outbound create request, not only token retention: {after_producer:?}"
+        );
+        assert_eq!(
+            method_count(&after_producer, "$/progress"),
+            progress_before,
+            "shutdown must not emit $/progress after drain: {after_producer:?}"
         );
         Ok(())
     }
