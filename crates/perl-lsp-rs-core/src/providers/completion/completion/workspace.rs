@@ -1882,10 +1882,12 @@ fn collect_all_package_members_with_source(
                     result.push(symbol);
                 }
             }
-            // Current-buffer source wins for explicit methods; still consume
-            // persisted generated members (Moo `has` readers, etc.) so
-            // indexing the same package does not drop workspace facts.
+            // Current-buffer source wins on name collision. Still consume
+            // persisted generated members and non-colliding explicit index
+            // methods so a split-file package does not drop workspace facts
+            // (#16809 combined with defining-class invocant completion).
             push_index_method_symbols(index.get_generated_package_members(pkg), seen_names, result);
+            push_index_method_symbols(index.get_package_members(pkg), seen_names, result);
         } else {
             push_index_method_symbols(
                 index
@@ -2238,6 +2240,45 @@ sub own_method { 1 }
         assert!(
             names.contains(&"name"),
             "indexed generated reader must remain after current-document composition, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn collect_all_keeps_indexed_explicit_members_for_current_document_package() {
+        let indexed = r#"
+package User;
+sub indexed_only { 1 }
+sub own_method { "index" }
+"#;
+        let current = r#"
+package User;
+sub own_method { "current" }
+sub consume { 1 }
+"#;
+        let index = Arc::new(WorkspaceIndex::new());
+        must(index.index_file(must(Url::parse("file:///workspace/User.pm")), indexed.to_string()));
+        let members = collect_all_package_members_with_source(index.as_ref(), "User", current);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"consume"),
+            "current-document method must still be collected, got {names:?}"
+        );
+        assert!(
+            names.contains(&"indexed_only"),
+            "non-colliding explicit index method must remain after current-document composition, got {names:?}"
+        );
+        assert!(
+            names.contains(&"own_method"),
+            "colliding own_method must still be collected, got {names:?}"
+        );
+        let own_uri = members
+            .iter()
+            .find(|member| member.name == "own_method")
+            .map(|member| member.uri.as_str());
+        assert_eq!(
+            own_uri,
+            Some(""),
+            "current-document own_method must win the name collision, got {own_uri:?}"
         );
     }
 }

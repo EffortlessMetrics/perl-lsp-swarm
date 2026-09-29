@@ -2286,11 +2286,7 @@ sub validate_input { }
 "#;
     index.index_file(module_uri, module_code.to_string())?;
 
-    // Current-document package facts win for this package after #16850, so the
-    // methods this invocant should offer live in the open buffer.
     let code = r#"package MyService;
-sub process_request { }
-sub validate_input { }
 method run {
 my $self = shift;
 $self->"#;
@@ -2353,7 +2349,6 @@ sub handle { }
 
     // Only `run` is in the edited file; `handle` lives only in the workspace index.
     let code = r#"package MyHandler;
-sub handle { }
 method run {
 my $this = shift;
 $this->"#;
@@ -2394,7 +2389,6 @@ sub own_method { }
 
     let code = r#"package Child;
 use parent 'Parent';
-sub own_method { }
 method run {
 my $self = shift;
 $self->"#;
@@ -2452,7 +2446,6 @@ use parent 'Parent';
 
     let code = r#"package Child;
 use parent 'Parent';
-sub own_method { }
 method run {
 my $self = shift;
 $self->"#;
@@ -3174,7 +3167,6 @@ use parent 'Parent';
 
     let code = r#"package Child;
 use parent 'Parent';
-sub own_method { }
 method run {
 my $self = shift;
 $self->"#;

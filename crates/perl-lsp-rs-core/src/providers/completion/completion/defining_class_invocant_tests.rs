@@ -177,14 +177,7 @@ fn reassigned_self_prefers_constructor_assignment() {
 #[test]
 fn list_declared_self_completion_offers_defining_class_methods()
 -> Result<(), Box<dyn std::error::Error>> {
-    let source = concat!(
-        "package Animal;\n",
-        "sub name { }\n",
-        "method speak {\n",
-        "    my ($self) = @_;\n",
-        "    $self->\n",
-        "}\n"
-    );
+    let source = "package Animal;\nmethod speak {\n    my ($self) = @_;\n    $self->\n}\n";
     let completions = completions_for(source, "$self->", animal_index()?)?;
     assert!(
         has_label(&completions, "speak") && exact_invocant_method(&completions, "name"),
@@ -202,14 +195,7 @@ fn list_declared_self_completion_offers_defining_class_methods()
 #[test]
 fn class_invocant_completion_offers_defining_class_methods()
 -> Result<(), Box<dyn std::error::Error>> {
-    let source = concat!(
-        "package Animal;\n",
-        "sub name { }\n",
-        "method new {\n",
-        "    my $class = shift;\n",
-        "    $class->\n",
-        "}\n"
-    );
+    let source = "package Animal;\nmethod new {\n    my $class = shift;\n    $class->\n}\n";
     let completions = completions_for(source, "$class->", animal_index()?)?;
     assert!(
         exact_invocant_method(&completions, "name"),
@@ -225,7 +211,7 @@ fn class_invocant_completion_offers_defining_class_methods()
 
 #[test]
 fn inherited_self_completion_offers_parent_methods() -> Result<(), Box<dyn std::error::Error>> {
-    let source = "package Dog;\nuse parent 'Animal';\nsub fetch { }\nmethod greet {\n    my $self = shift;\n    $self->\n}\n";
+    let source = "package Dog;\nuse parent 'Animal';\nmethod greet {\n    my $self = shift;\n    $self->\n}\n";
     let completions = completions_for(source, "$self->", animal_index()?)?;
     assert!(
         has_label(&completions, "speak") && has_label(&completions, "fetch"),
@@ -300,7 +286,6 @@ fn list_declared_this_uses_canonical_receiver_facts() {
 fn earlier_package_self_does_not_take_later_package() {
     let source = concat!(
         "package Animal;\n",
-        "sub name { }\n",
         "method speak {\n",
         "    my ($self) = @_;\n",
         "    $self->\n",
@@ -338,7 +323,6 @@ fn earlier_package_self_completion_does_not_offer_later_package_methods()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = concat!(
         "package Animal;\n",
-        "sub name { }\n",
         "method speak {\n",
         "    my ($self) = @_;\n",
         "    $self->\n",
