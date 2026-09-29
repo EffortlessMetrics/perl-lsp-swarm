@@ -70,6 +70,15 @@ pub(crate) enum SessionWarningFamily {
     ClientSetting,
     /// AI backend warnings (authentication failures).
     AiBackend,
+    /// A workspace `.perl-lsp.toml` could not be loaded or applied
+    /// (subject: the offending config path, fingerprinted).
+    ///
+    /// The remedy is "fix the file and reload the window", so a broken profile
+    /// is a persistent condition for the whole session: re-emitting the same
+    /// warning on every `didOpen` trains the user to dismiss the one message
+    /// that matters (#16548).
+    #[cfg(not(target_arch = "wasm32"))]
+    ProjectConfig,
 }
 
 /// Stable internal reason/category for a session warning.
@@ -78,22 +87,30 @@ pub(crate) enum SessionWarningFamily {
 /// warning wording and remediation stay owned by the domain call sites.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SessionWarningCode {
-    /// `perlcritic` binary missing from PATH (no variable subject).
-    #[cfg(not(target_arch = "wasm32"))]
-    CriticMissingBinary,
-    /// Configured Perl::Critic profile path does not exist
-    /// (subject: configured profile string fingerprint).
-    #[cfg(not(target_arch = "wasm32"))]
-    CriticMissingProfile,
-    /// Perl::Critic execution failed (subject: error text fingerprint).
-    #[cfg(not(target_arch = "wasm32"))]
-    CriticExecutionFailed,
     /// Invalid enum value in an editor-provided setting
     /// (subject: setting tag + value type + normalized value fingerprint).
     ClientSettingInvalidValue,
     /// AI inline-completion backend authentication failed
     /// (no variable subject).
     AiBackendAuthFailure,
+    /// A workspace `.perl-lsp.toml` failed to load or apply
+    /// (subject: the offending config path fingerprint).
+    ///
+    /// The message body is deliberately **not** part of the identity: the
+    /// warning wording stays owned by the domain call site, and two different
+    /// parse errors in the same file are the same condition for suppression
+    /// purposes - the user fixes the file, not the sentence.
+    #[cfg(not(target_arch = "wasm32"))]
+    ProjectConfigInvalid,
+    /// A loaded `.perl-lsp.toml` carried an unusable `[perl].version`
+    /// (subject: the offending config path fingerprint).
+    ///
+    /// A separate kind from [`SessionWarningCode::ProjectConfigInvalid`] so a
+    /// load-failure warning and an invalid-version warning for the same file
+    /// remain distinct: the user can fix one and then trip the other, and
+    /// each names a different remedy (PR #16566 review).
+    #[cfg(not(target_arch = "wasm32"))]
+    ProjectConfigVersionInvalid,
 }
 
 /// Closed set of static dimensions that distinguish identities inside one
@@ -253,6 +270,8 @@ pub(crate) struct SessionWarningDedupStore {
     critic: FamilyStore,
     client_setting: FamilyStore,
     ai_backend: FamilyStore,
+    #[cfg(not(target_arch = "wasm32"))]
+    project_config: FamilyStore,
 }
 
 impl SessionWarningDedupStore {
@@ -262,6 +281,8 @@ impl SessionWarningDedupStore {
             SessionWarningFamily::Critic => &self.critic,
             SessionWarningFamily::ClientSetting => &self.client_setting,
             SessionWarningFamily::AiBackend => &self.ai_backend,
+            #[cfg(not(target_arch = "wasm32"))]
+            SessionWarningFamily::ProjectConfig => &self.project_config,
         }
     }
 
@@ -342,6 +363,44 @@ impl SessionWarningDedupStore {
             ),
         )
     }
+
+    /// Decide, emit, and roll back on failed delivery for one
+    /// `.perl-lsp.toml` warning.
+    ///
+    /// Suppression is keyed on the **config path** alone, fingerprinted: the
+    /// same file warns once per session however many times it is re-read, and
+    /// a second broken file still warns because its path differs. The error
+    /// body is not part of the identity, so a user who fixes one error and
+    /// trips another in the same file is not spammed a second time — the
+    /// remedy (fix the file, reload the window) is identical either way.
+    ///
+    /// The caller supplies the warning kind (`ProjectConfigInvalid` for a
+    /// load/apply failure, `ProjectConfigVersionInvalid` for an unusable
+    /// `[perl].version`) and the **selected** config path the warning is
+    /// about — the file discovery actually chose, not the search root or a
+    /// display name, so two different files never collide into one identity
+    /// and one file never splits into two (PR #16566 review).
+    ///
+    /// Delivery failures roll the retention back via [`Self::emit_once_with`]:
+    /// a warning the client never received must be eligible to re-fire on the
+    /// next occurrence instead of being suppressed forever.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn emit_project_config_warning(
+        &self,
+        code: SessionWarningCode,
+        config_path: &str,
+        emit: impl FnOnce() -> bool,
+    ) -> SessionWarningDecision {
+        self.emit_once_with(
+            SessionWarningFamily::ProjectConfig,
+            SessionWarningIdentity::fingerprinted(
+                code,
+                SessionWarningSubjectTag::None,
+                config_path,
+            ),
+            emit,
+        )
+    }
 }
 
 /// Pressure/bound counters for one warning family (#9183 pressure row).
@@ -378,6 +437,10 @@ pub struct SessionWarningDedupSnapshot {
     pub client_setting: SessionWarningFamilyCounters,
     /// AI-backend family counters.
     pub ai_backend: SessionWarningFamilyCounters,
+    /// Project-config family counters (absent on WASM targets, where the
+    /// project-config loaders do not exist).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub project_config: SessionWarningFamilyCounters,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -389,6 +452,8 @@ impl SessionWarningDedupStore {
             critic: self.critic.counters(),
             client_setting: self.client_setting.counters(),
             ai_backend: self.ai_backend.counters(),
+            #[cfg(not(target_arch = "wasm32"))]
+            project_config: self.project_config.counters(),
         }
     }
 }

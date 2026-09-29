@@ -15,10 +15,15 @@ pub struct FactId(pub u64);
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SemanticFactKind {
+    /// A declaration fact (package/sub/variable definition).
     Declaration,
+    /// An occurrence fact (reference/read/write/call site).
     Occurrence,
+    /// An import fact.
     Import,
+    /// A module-level fact.
     Module,
+    /// A dynamic or compatibility boundary fact.
     Boundary,
     /// Callable return relation and exit coverage.
     CallableResult,
@@ -43,7 +48,9 @@ pub enum SemanticFactKind {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SourceGeneration {
+    /// The producer identified the exact source snapshot.
     Known(String),
+    /// The generation is unknown; never treat the fact as exact.
     Unknown,
 }
 
@@ -65,15 +72,38 @@ impl SourceGeneration {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SemanticProvenance {
+    /// Provenance carried from the producing layer.
     Known(Provenance),
+    /// Provenance was not preserved across the boundary.
     Unknown,
+}
+
+impl SemanticProvenance {
+    /// Whether this provenance is precise enough to back an exact answer.
+    ///
+    /// One allowlist serves every exact-capable consumer in this crate so the
+    /// envelope classifier and the semantic-query contract cannot drift apart.
+    #[must_use]
+    pub fn is_exact_grade(&self) -> bool {
+        matches!(
+            self,
+            Self::Known(
+                Provenance::ExactAst
+                    | Provenance::DesugaredAst
+                    | Provenance::SemanticAnalyzer
+                    | Provenance::LiteralRequireImport
+            )
+        )
+    }
 }
 
 /// Confidence that preserves an explicit unknown state at the transport boundary.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SemanticConfidence {
+    /// Confidence carried from the producing layer.
     Known(Confidence),
+    /// Confidence was not preserved across the boundary.
     Unknown,
 }
 
@@ -81,12 +111,19 @@ pub enum SemanticConfidence {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SemanticProducer {
+    /// The parser layer.
     Parser,
+    /// The HIR layer.
     Hir,
+    /// The compiler PIR (tooling intermediate representation) analysis layer.
     PirA,
+    /// The semantic analyzer layer.
     SemanticAnalyzer,
+    /// The workspace index.
     WorkspaceIndex,
+    /// A framework adapter.
     FrameworkAdapter,
+    /// The producer is unknown.
     Unknown,
 }
 
@@ -94,12 +131,19 @@ pub enum SemanticProducer {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum LifecyclePhase {
+    /// `BEGIN` compile-time phase.
     Begin,
+    /// `UNITCHECK` phase.
     UnitCheck,
+    /// `CHECK` phase.
     Check,
+    /// `INIT` phase.
     Init,
+    /// `END` phase.
     End,
+    /// Normal runtime execution.
     Runtime,
+    /// The phase could not be determined.
     Unknown,
 }
 
@@ -107,9 +151,13 @@ pub enum LifecyclePhase {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SemanticFreshness {
+    /// Verified current for this request.
     Fresh,
+    /// Known older than the request's generation.
     Stale,
+    /// Freshness could not be established.
     Unknown,
+    /// Freshness does not apply to this fact.
     NotApplicable,
 }
 
@@ -117,9 +165,13 @@ pub enum SemanticFreshness {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SourceAnchor {
+    /// Stable anchor identity, when the workspace has minted one.
     pub anchor_id: Option<AnchorId>,
+    /// File containing the range.
     pub file_id: FileId,
+    /// Start of the range in bytes.
     pub start_byte: u32,
+    /// End of the range in bytes.
     pub end_byte: u32,
 }
 
@@ -140,16 +192,27 @@ impl SourceAnchor {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SemanticReasonCode {
+    /// Backed exactly by current source bytes.
     ExactSource,
+    /// Generated from source by a reviewed synthesis rule.
     GeneratedFromSource,
+    /// A dynamic value prevents exactness.
     DynamicValue,
+    /// A compatibility boundary limits the answer.
     CompatibilityBoundary,
+    /// An unsupported effect refuses promotion.
     UnsupportedEffect,
+    /// No source generation was recorded.
     MissingGeneration,
+    /// Provenance was not preserved.
     UnknownProvenance,
+    /// Confidence was not preserved.
     UnknownConfidence,
+    /// The lifecycle phase is unknown.
     UnknownLifecycle,
+    /// An invalidation dependency is stale.
     StaleDependency,
+    /// Unrecognized reason code; deserialization fails closed to this value.
     #[serde(other)]
     Unknown,
 }
@@ -158,13 +221,21 @@ pub enum SemanticReasonCode {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum BoundaryKind {
+    /// A value computed at runtime.
     DynamicValue,
+    /// A module name computed at runtime (`require $expr`).
     DynamicRequire,
+    /// An include path modified at runtime (`@INC`).
     DynamicIncludePath,
+    /// Compile-time code execution affects the fact.
     CompileTimeExecution,
+    /// A symbolic reference (`&{$name}`).
     SymbolicReference,
+    /// A compatibility shim or legacy surface.
     Compatibility,
+    /// The outside environment (filesystem, `%ENV`).
     ExternalEnvironment,
+    /// An effect the fact layer does not model.
     Unsupported,
 }
 
@@ -172,7 +243,9 @@ pub enum BoundaryKind {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum BoundaryDisposition {
+    /// Permit the fact as a degraded answer.
     Degrade,
+    /// Refuse promotion of the fact.
     Refuse,
 }
 
@@ -180,9 +253,13 @@ pub enum BoundaryDisposition {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BoundaryLink {
+    /// The linked boundary fact, when it carries its own envelope.
     pub boundary_id: Option<FactId>,
+    /// Classification of the boundary.
     pub kind: BoundaryKind,
+    /// Whether the boundary degrades or refuses.
     pub disposition: BoundaryDisposition,
+    /// Reason code explaining the boundary effect.
     pub reason_code: SemanticReasonCode,
 }
 
@@ -203,7 +280,9 @@ impl BoundaryLink {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct InvalidationDependency {
+    /// Stable identity of the dependency (source file or module).
     pub dependency_key: String,
+    /// Generation the dependency was observed at.
     pub generation: SourceGeneration,
 }
 
@@ -219,9 +298,13 @@ impl InvalidationDependency {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SemanticFactStatus {
+    /// Safe to use as an exact answer.
     Exact,
+    /// Usable, but limited by an explicit reason.
     Degraded,
+    /// Not safe to use; promotion was refused.
     Refused,
+    /// Known stale relative to the consuming request.
     Stale,
 }
 
@@ -229,21 +312,35 @@ pub enum SemanticFactStatus {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticFactEnvelope {
+    /// Stable identity for this fact.
     pub fact_id: FactId,
+    /// Backing entity, when the fact is entity-scoped.
     pub entity_id: Option<EntityId>,
+    /// Fact kind.
     pub kind: SemanticFactKind,
+    /// Source range and anchor for the fact.
     pub anchor: SourceAnchor,
+    /// Source snapshot the fact was derived from.
     pub source_generation: SourceGeneration,
+    /// Enclosing scope, when known.
     pub scope_id: Option<ScopeId>,
+    /// Owning package, when known.
     pub package: Option<String>,
+    /// Compile/runtime lifecycle phase.
     pub lifecycle: LifecyclePhase,
+    /// Subsystem that created or adapted the fact.
     pub producer: SemanticProducer,
+    /// Provenance with explicit unknown state.
     pub provenance: SemanticProvenance,
+    /// Confidence with explicit unknown state.
     pub confidence: SemanticConfidence,
+    /// Freshness for the consuming request.
     pub freshness: SemanticFreshness,
+    /// Boundary limiting the fact, when present.
     pub boundary: Option<BoundaryLink>,
     #[serde(deserialize_with = "deserialize_dependencies")]
     invalidation_dependencies: Vec<InvalidationDependency>,
+    /// Why the fact is exact, degraded, or refused.
     pub reason_code: SemanticReasonCode,
 }
 
@@ -324,15 +421,7 @@ impl SemanticFactEnvelope {
     }
 
     fn has_exact_provenance(&self) -> bool {
-        matches!(
-            self.provenance,
-            SemanticProvenance::Known(
-                Provenance::ExactAst
-                    | Provenance::DesugaredAst
-                    | Provenance::SemanticAnalyzer
-                    | Provenance::LiteralRequireImport
-            )
-        )
+        self.provenance.is_exact_grade()
     }
 
     /// Classify the envelope for a provider decision.
@@ -488,16 +577,27 @@ pub enum CallableResultCompleteness {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CallableResultLimitation {
+    /// Observed only in scalar context.
     ScalarContext,
+    /// Observed only in list context.
     ListContext,
+    /// Observed only in void context.
     VoidContext,
+    /// A conditional exit bounded the relation.
     ConditionalControl,
+    /// Loop control (`last`/`next`) bounded the relation.
     LoopControl,
+    /// Exception control (`die`/`croak`) bounded the relation.
     ExceptionControl,
+    /// A dynamic return value limited materialization.
     DynamicValue,
+    /// Syntax recovery limited the extraction.
     RecoveredSyntax,
+    /// Generated code without exact source bytes.
     GeneratedNoSource,
+    /// The work budget was exhausted before full analysis.
     BudgetExhausted,
+    /// An unsupported construct limited the relation.
     Unsupported,
 }
 

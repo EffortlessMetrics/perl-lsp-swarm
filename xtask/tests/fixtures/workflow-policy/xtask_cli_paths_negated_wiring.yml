@@ -1,0 +1,17 @@
+name: fixture-xtask-cli-paths-negated-wiring
+# A broad glob taken back by an exclusion: `xtask/**` would have covered both
+# files, but `!xtask/src/main.rs` removes one of them again.
+on:
+  pull_request:
+    paths:
+      - 'xtask/**'
+      - '!xtask/src/main.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo xtask example-contract check

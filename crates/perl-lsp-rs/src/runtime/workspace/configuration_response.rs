@@ -3,7 +3,10 @@ use perl_lsp_rs_core::config::{
     ExternalIncludePathAuthority, UnauthorizedExternalIncludePathSource,
     WorkspaceConfigUpdateContext,
 };
+use perl_uri::uri_to_fs_path;
 use serde_json::Value;
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 fn apply_workspace_config_layer(
     config: &mut perl_lsp_rs_core::config::WorkspaceConfig,
@@ -36,7 +39,7 @@ pub(super) fn apply_workspace_configuration_results(
     results: &[Value],
     request_id: i64,
     init_options_perl: Option<&Value>,
-) {
+) -> BTreeSet<PathBuf> {
     // Result-array position is not provenance (#4998): no `workspace/configuration`
     // response item carries independently verified user/machine authority, so both
     // the unscoped and per-folder items are classified untrusted here. A future
@@ -125,9 +128,13 @@ pub(super) fn apply_workspace_configuration_results(
             );
         }
 
-        folder.effective_workspace_config = effective_config;
-        folder.refresh_workspace_metadata();
+        folder.replace_effective_workspace_config(effective_config);
     }
+
+    folders
+        .iter()
+        .filter_map(|folder| folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -231,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn refreshes_declared_dependencies_from_folder_metadata()
+    fn configuration_result_application_preserves_facts_for_consumer_refresh()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         std::fs::write(temp.path().join("cpanfile"), "requires 'JSON::PP', '4.16';\n")?;
@@ -252,6 +259,8 @@ mod tests {
             44,
             None,
         );
+
+        folders[0].refresh_workspace_metadata();
 
         assert!(
             folders[0]

@@ -2,7 +2,7 @@ use super::*;
 use crate::providers::file_completion::CWD_LOCK as FILE_COMPLETION_CWD_LOCK;
 use perl_parser_core::Parser;
 use perl_semantic_analyzer::analysis::symbol::{ScopeKind, SymbolExtractor};
-use perl_tdd_support::{must, must_some};
+use perl_test_must::{must, must_some, must_some_with};
 use perl_workspace::workspace_index::WorkspaceIndex;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -924,6 +924,329 @@ Point->new(
 
     let x_item = must_some(completions.iter().find(|item| item.label == "x"));
     assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
+}
+
+/// A lone `-` that starts an operand must not be rewritten into an arrow
+/// prefix, while a `-` after a real (balanced-paren) receiver must keep
+/// routing to method completion.
+///
+/// Controlling issue: #15466.
+#[test]
+fn test_dash_trigger_ignores_lone_minus_but_keeps_call_chain_receiver()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `Point->new(-` — the minus opens an operand, not an arrow, so the dash
+    // trigger must answer with no completions at all. The cursor sits right
+    // after the `-` so the lone-dash branch actually runs, and the context
+    // prefix assert distinguishes that reject path from an arrow rewrite.
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param = 0;
+}
+
+Point->new(-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    assert!(
+        completions.is_empty(),
+        "a lone minus inside constructor arguments must not be rewritten as an arrow; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "",
+        "the operand minus must keep the ordinary empty prefix, not an arrow rewrite"
+    );
+
+    // `$factory->build()-` — the `-` follows a balanced-paren call receiver,
+    // so it is the first char of `->` and the rewrite must survive: the scan
+    // keeps the `)` neighbor, the prefix carries the whole chain, and method
+    // completion — not the generic prefix dump — answers the request.
+    let code = r#"
+package MyService;
+sub process { }
+sub validate { }
+package MyFactory;
+sub build { }
+my $factory = MyFactory->create;
+$factory->build()-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = Arc::new(WorkspaceIndex::new());
+    // Canonical initial-name fixture seeding (#16449 burndown): index_file is
+    // a one-line forward to index_initial_file; this seeds initial on-disk
+    // state, so call the canonical API directly.
+    index.index_initial_file(
+        Url::parse("file:///workspace/MyFactory.pm")?,
+        "package MyFactory;\nsub build { }\n1;\n".to_string(),
+    )?;
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "$factory->build()->",
+        "a dash after a balanced-paren call receiver must keep the arrow rewrite"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "build"),
+        "a dash after a balanced-paren call receiver must still offer method completions; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "arrayref" || item.label == "hashref"),
+        "the rewritten call-chain receiver must route to method completion, not the generic dump; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+
+    // `1 -` — binary subtraction with no receiver: no method completions.
+    let code = "1 -";
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.is_empty(),
+        "a subtraction minus must not offer method completions; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+
+    // `Point->new(foo-` — `method_receiver_start` stops at the open paren and
+    // hands back the lowercase bareword `foo`, but a bareword that can only be
+    // an operand head must not become a `foo->` receiver mid-argument. The
+    // ordinary (empty) prefix keeps the dash trigger silent.
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param = 0;
+}
+
+Point->new(foo-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    assert!(
+        completions.is_empty(),
+        "a bareword operand inside constructor arguments must not be rewritten as an arrow; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    let context = provider.analyze_context(code, code.len() - 1);
+    assert_eq!(
+        context.prefix, "",
+        "the bareword operand must keep the ordinary empty prefix, not `foo->`"
+    );
+    Ok(())
+}
+
+/// A named `:param(external_name)` is the keyword `new` actually accepts, so
+/// the completion must offer the explicit name instead of the field name.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_uses_explicit_param_name() {
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param(across) = 0;
+field $y :param = 0;
+}
+
+Point->new(
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len());
+
+    let across = must_some(completions.iter().find(|item| item.label == "across"));
+    assert_eq!(across.insert_text.as_deref(), Some("across => "));
+    assert_eq!(across.detail.as_deref(), Some("Object::Pad constructor parameter"));
+
+    assert!(
+        !completions.iter().any(|item| {
+            item.label == "x" && item.detail.as_deref() == Some("Object::Pad constructor parameter")
+        }),
+        "the field name must not be offered as a constructor keyword once :param names one"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "y"),
+        "a bare :param still completes under the field name"
+    );
+}
+
+/// A literal constructor key must be quoted before it is inserted as Perl.
+///
+/// `=>` auto-quotes only a plain identifier. Verified on perl 5.38.2 that
+/// `C->new(foo-bar => 1)` dies with `Bareword "foo" not allowed while
+/// "strict subs" in use`, `C->new(Foo::bar => 1)` dies under `use strict`,
+/// and `C->new($dyn => 1)` inserts the variable's *value* rather than the key.
+/// Inserting any of them unquoted silently changes which constructor argument
+/// the user is naming.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_quotes_literal_keys() {
+    for (key, expected_insert) in [
+        // A plain identifier is left bare: `=>` already quotes it.
+        ("plain_key", "plain_key => "),
+        ("_leading", "_leading => "),
+        ("mixed123", "mixed123 => "),
+        // Everything else has to be quoted.
+        ("foo-bar", "'foo-bar' => "),
+        ("Foo::bar", "'Foo::bar' => "),
+        ("1bad", "'1bad' => "),
+        ("get()", "'get()' => "),
+    ] {
+        let code = format!(
+            "\nuse Object::Pad;\n\nclass Point {{\nfield $x :param({key}) = 0;\n}}\n\nPoint->new(\n"
+        );
+
+        let mut parser = Parser::new(&code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new_with_index_and_source(&ast, &code, None);
+        let completions = provider.get_completions(&code, code.len());
+
+        let item = must_some(completions.iter().find(|item| {
+            item.label == key && item.detail.as_deref() == Some("Object::Pad constructor parameter")
+        }));
+        assert_eq!(
+            item.insert_text.as_deref(),
+            Some(expected_insert),
+            "`:param({key})` must insert `{expected_insert}`"
+        );
+        assert_eq!(item.label, key, "the label keeps the key as the source wrote it");
+        assert_eq!(item.filter_text.as_deref(), Some(key), "filtering keeps the decoded key");
+    }
+}
+
+/// A literal constructor key stays reachable while the user types the
+/// identifier head of that key, and the edit replaces what was typed.
+///
+/// Offering `foo-bar` only at the bare `->new(` caret would make the key
+/// visible but unusable in practice: a user who starts typing it would lose
+/// it. This pins the reachable window that the quoting work depends on.
+///
+/// Boundary, deliberately not asserted here: once the caret follows the `-`
+/// itself, the caret is a bareword operand head, not an arrow, so
+/// `analyze_context` keeps the ordinary prefix and the dash trigger answers
+/// with no completions at all — no key survives that caret either. #15466
+/// owns that boundary (the operand-shaped-receiver rule in `analyze_context`).
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_survives_an_identifier_prefix() {
+    let code = "\nuse Object::Pad;\n\nclass Point {\nfield $x :param(foo-bar) = 0;\nfield $y :param = 0;\n}\n\nPoint->new(foo";
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, code.len());
+
+    let item = must_some(completions.iter().find(|item| item.label == "foo-bar"));
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("'foo-bar' => "),
+        "the typed identifier head must still reach the quoted literal key"
+    );
+    assert_eq!(
+        item.text_edit_range,
+        Some((code.len() - "foo".len(), code.len())),
+        "accepting the item must replace the typed `foo`, not append after it"
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "y"),
+        "the typed prefix must still filter out the keys it does not match; got {:?}",
+        completions.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+    );
+}
+
+/// The `=>` auto-quote discriminator: only a leading `_`/ASCII letter
+/// followed by `_`/ASCII-alphanumeric characters keeps the bare form.
+///
+/// Each boundary the analyzer cannot trace needs a named input: a leading
+/// underscore, a full alphanumeric run, and underscores inside the tail.
+/// Anything else (empty, leading digit, hyphens, spaces, sigils, colons,
+/// non-ASCII) must take the quoted form.
+#[test]
+fn test_is_bareword_constructor_key_discriminates_identifier_boundaries() {
+    for (key, expected) in [
+        // Leading-underscore boundary (`first == '_'`).
+        ("_", true),
+        ("_foo", true),
+        ("_9lives", true),
+        // Full alphanumeric-run boundary.
+        ("a", true),
+        ("plain", true),
+        ("abc123", true),
+        ("Z", true),
+        // Underscore inside the tail (`character == '_'`).
+        ("a_b", true),
+        ("foo__bar", true),
+        ("_a_b9", true),
+        // Non-identifier keys take the quoted form.
+        ("", false),
+        ("9abc", false),
+        ("foo-bar", false),
+        ("foo bar", false),
+        ("$dyn", false),
+        ("Foo::bar", false),
+        ("it's", false),
+        ("café", false),
+    ] {
+        assert_eq!(
+            super::is_bareword_constructor_key(key),
+            expected,
+            "`{key}` bareword classification must be `{expected}`"
+        );
+    }
+}
+
+/// Sigils, spaces, apostrophes, and backslashes survive quoting intact.
+///
+/// These keys cannot reach the provider through the current parser, which
+/// collapses internal trivia (#14998), so they are exercised at the rendering
+/// seam directly. The quoting must already be correct for when they can.
+#[test]
+fn test_constructor_key_insertion_escapes_quotes_and_backslashes() {
+    for (key, expected) in [
+        ("$dyn", "'$dyn' => "),
+        ("foo@arr", "'foo@arr' => "),
+        ("external name", "'external name' => "),
+        ("$dyn + 1", "'$dyn + 1' => "),
+        // A single quote must be escaped, or the inserted string terminates early.
+        ("it's", "'it\\'s' => "),
+        // A backslash must be escaped, or it escapes the closing quote.
+        ("back\\slash", "'back\\\\slash' => "),
+        ("trailing\\", "'trailing\\\\' => "),
+    ] {
+        assert_eq!(
+            super::constructor_key_insertion(key),
+            expected,
+            "`{key}` must be inserted as `{expected}`"
+        );
+    }
 }
 
 #[test]
@@ -3124,7 +3447,7 @@ Tools->import(qw(alpha));
     let provider = CompletionProvider::new_with_index_and_source(&ast, before, Some(index.clone()));
     let before_completions = provider.get_completions_with_path(
         before,
-        before.find("al\n").unwrap() + 2,
+        must_some(before.find("al\n")) + 2,
         Some(importer_uri.as_str()),
     );
     assert!(
@@ -5359,19 +5682,60 @@ fn test_hash_key_completion_empty_prefix() {
 }
 
 #[test]
-fn test_hash_key_completion_does_not_fire_for_hashref_deref() {
-    // $ref->{ho<cursor> -- hashref deref, must NOT suggest hash keys
+fn test_hashref_key_role_does_not_fabricate_uncollectable_keys() {
+    // $ref->{ho<cursor> -- the hashref form is the same hash-key role (#5159),
+    // but `my $ref = {host => ...}` is not a shape collect_hash_keys_from_source
+    // can read (%var = (...) literals and $ref->{key} = assignments only), so
+    // no key may be fabricated for it.
     let code = "my $ref = {host => 'localhost'};\n$ref->{ho";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let provider = CompletionProvider::new(&ast);
     let completions = provider.get_completions(code, code.len());
-    // Must not return a Property-kinded "host" completion (hash key detection
-    // must bail when `->` precedes the `{`)
     assert!(
         !completions.iter().any(|c| c.label == "host" && c.kind == CompletionItemKind::Property),
         "hashref deref `$ref->{{ho` must not produce Property-kinded 'host' completion; got: {:?}",
         completions.iter().map(|c| (&c.label, &c.kind)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn hash_key_classifier_recognizes_the_hashref_form() {
+    // The variable scan must step over the `->` arrow; #5159 removed the
+    // bail-out, so `$ref->{` classifies exactly like `$ref{`.
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$ref->{ho", 9),
+        Some(("ref".to_string(), "ho".to_string()))
+    );
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$ref->{", 7),
+        Some(("ref".to_string(), String::new()))
+    );
+    // The direct form is unchanged.
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$hash{ap", 8),
+        Some(("hash".to_string(), "ap".to_string()))
+    );
+    // Double-sigil derefs stay refused.
+    assert_eq!(CompletionProvider::detect_hash_key_context("$$ref{ap", 8), None);
+}
+
+#[test]
+fn hash_key_classifier_refuses_a_brace_inside_comment_string_or_regex() {
+    // The finding shape: the only `{` before the cursor sits in an earlier
+    // comment line. The later line is ordinary code and must keep enrichment.
+    let comment = "# $hash{\napi";
+    assert_eq!(CompletionProvider::detect_hash_key_context(comment, comment.len()), None);
+
+    // Same for a brace inside a string literal.
+    let string = "my $s = \"%hash{\";\napi";
+    assert_eq!(CompletionProvider::detect_hash_key_context(string, string.len()), None);
+
+    // Live syntax one line above still classifies.
+    let live = "my %hash = (api => 1);\n$hash{ap";
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context(live, live.len()),
+        Some(("hash".to_string(), "ap".to_string()))
     );
 }
 
@@ -8287,7 +8651,7 @@ sub helper { }
     );
 
     // Constants should have Constant kind
-    let pi = completions.iter().find(|c| c.label == "PI").unwrap();
+    let pi = must_some(completions.iter().find(|c| c.label == "PI"));
     assert_eq!(
         pi.kind,
         crate::providers::completion_item::CompletionItemKind::Constant,
@@ -8834,13 +9198,15 @@ fn block_form_package_at_scope_end_is_main() {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let table = SymbolExtractor::new().extract(&ast);
-    let scope_end = table
-        .scopes
-        .values()
-        .filter(|scope| scope.kind == ScopeKind::Package)
-        .map(|scope| scope.location.end)
-        .max()
-        .expect("block-form package scope");
+    let scope_end = must_some_with(
+        table
+            .scopes
+            .values()
+            .filter(|scope| scope.kind == ScopeKind::Package)
+            .map(|scope| scope.location.end)
+            .max(),
+        "block-form package scope",
+    );
     assert_eq!(
         CompletionContext::detect_current_package(&table, scope_end),
         "main",
@@ -9316,7 +9682,7 @@ fn test_foreach_iterator_scoped_to_loop() {
     // The analyzer genuinely lacks the binding: confirm the producer gap
     // rather than an admission rejection, so #7423/#7424 own the fix.
     assert!(
-        provider.symbol_table.symbols.get("loop_item").is_none(),
+        !provider.symbol_table.symbols.contains_key("loop_item"),
         "analyzer now records foreach iterators — revisit this seam for real admission coverage"
     );
 

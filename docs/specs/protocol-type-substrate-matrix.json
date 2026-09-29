@@ -184,11 +184,6 @@
         },
         {
           "min_hops": 2,
-          "package": "perl-kwalitee",
-          "reachability": "dev_only_chain"
-        },
-        {
-          "min_hops": 2,
           "package": "perl-lexer",
           "reachability": "normal_chain"
         },
@@ -226,6 +221,11 @@
           "min_hops": 3,
           "package": "perl-pragma",
           "reachability": "normal_chain"
+        },
+        {
+          "min_hops": 2,
+          "package": "perl-release-readiness",
+          "reachability": "dev_only_chain"
         },
         {
           "min_hops": 2,

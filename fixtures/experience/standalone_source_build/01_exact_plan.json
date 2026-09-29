@@ -1,0 +1,166 @@
+{
+  "schema_version": "standalone_source_build.vector.v1",
+  "plan": {
+    "schema_version": "standalone_source_build.v1",
+    "transaction_id": "tx-11514-1",
+    "attempt_id": "attempt-1",
+    "registry": {
+      "protocol": "crates.io_sparse",
+      "index": "sparse+https://index.crates.io/",
+      "identity": "crates.io"
+    },
+    "package": {
+      "name": "perllsp",
+      "version": "0.18.0",
+      "checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "source": {
+      "kind": "registry_package",
+      "resolved_source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "lockfile_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "dependency_graph_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "target": {
+      "platform": "linux",
+      "triple": "x86_64-unknown-linux-gnu",
+      "libc": "gnu"
+    },
+    "toolchain": {
+      "rustc": "1.95.0",
+      "cargo": "1.95.0",
+      "rustc_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "cargo_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "linker_tools_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "features": {
+      "default_features": true,
+      "enabled": []
+    },
+    "product_unit": "advanced_source_server_only",
+    "execution": {
+      "mode": "advanced_explicit_source",
+      "code_execution": "build_scripts_and_proc_macros_may_execute",
+      "isolation_claim": "not_a_security_sandbox",
+      "archive_fallback": "forbidden",
+      "authority": "unelevated_user",
+      "consent_policy_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "disclosure_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "network": {
+      "materialization": "canonical_registry_only",
+      "build": "forbidden"
+    },
+    "configuration": {
+      "policy": "closed_initial_v1",
+      "cargo_home": "fresh_attempt_private",
+      "rustup_home": "identified_toolchain_only",
+      "cargo_config": "no_ambient_hierarchy",
+      "registry_credentials": "forbidden",
+      "proxy_ca": "forbidden",
+      "rustflags": "forbidden",
+      "rustdocflags": "forbidden",
+      "rustc_wrapper": "forbidden",
+      "rustc_workspace_wrapper": "forbidden",
+      "linker": "identified_toolchain_only",
+      "runner": "forbidden",
+      "path": "identified_toolchain_only",
+      "git_config": "forbidden",
+      "target_cache": "fresh_attempt_private",
+      "incremental": "disabled",
+      "build_script_environment": "inherited_allowlist_only",
+      "redactions": [
+        "credentials",
+        "tokens",
+        "complete_environment",
+        "private_paths"
+      ],
+      "toolchain_lookup_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+      "inherited_environment_allowlist": [
+        "CARGO_HOME",
+        "CARGO_TARGET_DIR",
+        "PATH"
+      ]
+    },
+    "resource_policy": {
+      "deadline_seconds": 1800,
+      "max_parallel_jobs": 1,
+      "cancellation": "forced_with_cleanup",
+      "cleanup": "attempt_private_only_preserve_destination"
+    },
+    "policy_id": "standalone-source-build.v1",
+    "profile": "release",
+    "resolved_subject_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "roots": {
+      "cargo_home": "attempt-1-cargo_home",
+      "build": "attempt-1-build",
+      "target": "attempt-1-target",
+      "staging": "attempt-1-staging",
+      "destination": "destination-user-1"
+    }
+  },
+  "evidence": {
+    "kind": "synthetic_contract_control",
+    "parent": {
+      "transaction_id": "tx-11514-1",
+      "attempt_id": "attempt-1",
+      "resolved_subject_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "target": {
+        "platform": "linux",
+        "triple": "x86_64-unknown-linux-gnu",
+        "libc": "gnu"
+      },
+      "product_unit": "advanced_source_server_only",
+      "roots": {
+        "cargo_home": "attempt-1-cargo_home",
+        "build": "attempt-1-build",
+        "target": "attempt-1-target",
+        "staging": "attempt-1-staging",
+        "destination": "destination-user-1"
+      },
+      "resolved_source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "plan_sha256": "ba0f37b0763ac81e7adc286a4d5325d517297502b70c32226bf7847ac458f5c6",
+    "transaction_id": "tx-11514-1",
+    "attempt_id": "attempt-1",
+    "resolved_source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "package_checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "lockfile_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "dependency_graph": {
+      "status": "matched",
+      "identity_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "toolchain": {
+      "status": "matched",
+      "identity": {
+        "rustc": "1.95.0",
+        "cargo": "1.95.0",
+        "rustc_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "cargo_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "linker_tools_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+      }
+    },
+    "instrument": {
+      "status": "matched",
+      "identity_sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    "configuration_enforcement": {
+      "status": "matched",
+      "identity_sha256": "3beaafddadde2553033b1fbdd1c7b67c5c0ef294077b641250cd992ad9c335f0"
+    },
+    "consent": {
+      "state": "recorded",
+      "transaction_id": "tx-11514-1",
+      "attempt_id": "attempt-1",
+      "plan_sha256": "ba0f37b0763ac81e7adc286a4d5325d517297502b70c32226bf7847ac458f5c6",
+      "disclosure_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "consent_policy_sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    "materialization_network": "canonical_registry_only",
+    "build_network": "none"
+  },
+  "expectation": {
+    "result": "plan_valid"
+  }
+}

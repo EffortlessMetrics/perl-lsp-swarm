@@ -34,12 +34,28 @@ fn loaded() -> Result<LoadedManifest> {
     load_manifest()
 }
 
+fn probe() -> Result<(RepoTreeSource, Option<String>)> {
+    Ok((RepoTreeSource::from_project_root()?, Some(current_head()?)))
+}
+
+/// HEAD of the executing checkout, so a test can build a coherent probe.
+fn current_head() -> Result<String> {
+    Ok(tree_binding("HEAD")?.tree_head)
+}
+
 fn normalize_raw(raw: &RawObservation) -> Result<LiveSnapshot> {
-    normalize(raw, &loaded()?)
+    let (source, head) = probe()?;
+    normalize(raw, &loaded()?, &TreeProbe { source: &source, head, dirty: false })
 }
 
 fn normalize_text(text: &str) -> Result<LiveSnapshot> {
-    normalize(&raw_from_text(text)?, &loaded()?)
+    normalize_raw(&raw_from_text(text)?)
+}
+
+fn normalize_clean_surface() -> Result<LiveSnapshot> {
+    let mut raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    normalize_raw(&raw)
 }
 
 fn node<'a>(snapshot: &'a LiveSnapshot, node_id: &str) -> Result<&'a NodeLive> {
@@ -80,6 +96,147 @@ fn open_candidate() -> CandidateView {
 }
 
 // ---------------------------------------------------------------------------
+// Probed-tree identity (#11626 review finding on #15094).
+// ---------------------------------------------------------------------------
+
+/// A stored fixture records a synthetic head, so its observation never
+/// describes the executing checkout. The join is still emitted, but every node
+/// must say the implementation states came from a different tree.
+#[test]
+fn a_fixture_observation_marks_its_states_as_probed_from_another_tree() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    for node in &snapshot.semantic.nodes {
+        assert!(
+            node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE),
+            "node {} must record the probed-tree mismatch: {:?}",
+            node.node_id,
+            node.limitations
+        );
+    }
+    Ok(())
+}
+
+/// The opposite direction: when the observation's head IS the probed tree, no
+/// node carries the limitation. Without this the assertion above would pass on
+/// an implementation that always sets it.
+#[test]
+fn a_coherent_observation_carries_no_probed_tree_limitation() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    let snapshot = normalize_raw(&raw)?;
+    for node in &snapshot.semantic.nodes {
+        assert!(
+            !node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE),
+            "node {} must not claim a mismatch when heads agree: {:?}",
+            node.node_id,
+            node.limitations
+        );
+    }
+    Ok(())
+}
+
+/// A matching HEAD is insufficient when the probe reads a mutable working
+/// tree: dirty content cannot be shown equivalent to the commit-only record.
+#[test]
+fn a_dirty_probe_fails_closed_even_when_heads_agree() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    let (source, head) = probe()?;
+    let snapshot = normalize(&raw, &loaded()?, &TreeProbe { source: &source, head, dirty: true })?;
+    if !snapshot
+        .semantic
+        .nodes
+        .iter()
+        .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE))
+    {
+        color_eyre::eyre::bail!("dirty probe must fail closed even when HEADs agree");
+    }
+    if node(&snapshot, "M07A")?.action != "NOT_PROVEN" {
+        color_eyre::eyre::bail!("dirty probe must gate tree-dependent START actions");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_dirty_manifest_fails_closed_even_without_dirty_path_rows() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    raw.git_local.manifest_dirty = true;
+    let (source, head) = probe()?;
+    let snapshot = normalize(&raw, &loaded()?, &TreeProbe { source: &source, head, dirty: false })?;
+    if !snapshot
+        .semantic
+        .nodes
+        .iter()
+        .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE))
+    {
+        color_eyre::eyre::bail!("manifest-dirty observation must fail closed");
+    }
+    Ok(())
+}
+
+/// An unestablishable probed head fails closed rather than silently claiming
+/// the observation and the tree agree.
+#[test]
+fn an_unknown_probed_head_fails_closed() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    let (source, _) = probe()?;
+    let snapshot =
+        normalize(&raw, &loaded()?, &TreeProbe { source: &source, head: None, dirty: false })?;
+    assert!(
+        snapshot
+            .semantic
+            .nodes
+            .iter()
+            .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE)),
+        "an unknown probed head must not read as agreement"
+    );
+    if node(&snapshot, "M07A")?.action != "NOT_PROVEN" {
+        color_eyre::eyre::bail!("an unknown probed head must gate tree-dependent START actions");
+    }
+    Ok(())
+}
+
+#[test]
+fn mismatched_tree_gates_start_but_keeps_candidate_action() -> Result<()> {
+    let mut mismatched_raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    mismatched_raw.git_local.head = Some("f".repeat(40));
+    let snapshot = normalize_raw(&mismatched_raw)?;
+    let start_leaf = node(&snapshot, "M07A")?;
+    if start_leaf.action != "NOT_PROVEN"
+        || !start_leaf
+            .limitations
+            .iter()
+            .any(|limitation| limitation == PROBED_FROM_A_DIFFERENT_TREE)
+        || start_leaf.c02_state != "not_proven"
+        || start_leaf.c02_reasons != vec![PROBED_FROM_A_DIFFERENT_TREE.to_string()]
+    {
+        color_eyre::eyre::bail!(
+            "a mismatched ready leaf must not START: action={} limitations={:?}",
+            start_leaf.action,
+            start_leaf.limitations
+        );
+    }
+    let explain = render_explain(&snapshot, &loaded()?, "M07A")?;
+    let expected_state = format!("c02_state: not_proven reasons={PROBED_FROM_A_DIFFERENT_TREE}");
+    if !explain.contains(&expected_state) || explain.contains("c02_state: ready") {
+        color_eyre::eyre::bail!(
+            "mismatched-tree explain must expose the effective NOT_PROVEN state: {explain}"
+        );
+    }
+    let candidate_snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let candidate = node(&candidate_snapshot, "M01")?;
+    if candidate.action != "REVIEW" {
+        color_eyre::eyre::bail!(
+            "a candidate-only review action should remain actionable: {}",
+            candidate.action
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Read-only law (falsifier 18).
 // ---------------------------------------------------------------------------
 
@@ -100,7 +257,6 @@ fn observation_inventory_is_read_only() {
             "apply",
             "restore",
             "stash",
-            "gh api",
             "pr merge",
             "pr close",
             "pr edit",
@@ -119,6 +275,196 @@ fn observation_inventory_is_read_only() {
     }
     assert!(observation_command_inventory().iter().any(|entry| entry.starts_with("git ")));
     assert!(observation_command_inventory().iter().any(|entry| entry.starts_with("gh ")));
+    // `gh api` is a general-purpose HTTP client and cannot be blanket-trusted.
+    // The only admitted shape is the gated GraphQL read: every other `gh api`
+    // entry is mutative until proven otherwise.
+    for entry in observation_command_inventory() {
+        if entry.starts_with("gh api") {
+            assert!(
+                entry.starts_with("gh api graphql -f query="),
+                "the only admitted gh api shape is the gated read-only GraphQL query, got {entry:?}"
+            );
+        }
+    }
+}
+
+/// The list leg must not be weaker than the GraphQL leg it is now joined with:
+/// a valid-but-not-a-list response is an instrument failure, never an empty
+/// population. Includes the opposite-direction control, because a gate that
+/// rejects everything would also pass the negative cases.
+#[test]
+fn a_non_array_pr_list_response_is_instrument_failure_not_absence() -> Result<()> {
+    // Opposite direction first: an empty array is a real, usable observation
+    // of zero PRs and must stay Ok.
+    assert!(list_rows("[]", "open").map_err(|e| e.to_string()).is_ok());
+    let rows = list_rows(r#"[{"number":1},{"number":2}]"#, "open")
+        .map_err(|error| color_eyre::eyre::eyre!("a populated list must parse: {error}"))?;
+    assert_eq!(rows.len(), 2);
+
+    // A syntactically valid non-array root cannot establish absence. `gh`
+    // returns an object for several non-list outcomes, and an empty open
+    // window additionally reports `open_truncated == false`, so accepting one
+    // of these would prove "no candidate exists" from a response that never
+    // listed anything.
+    for body in [
+        r#"{"message":"Not Found","documentation_url":"..."}"#,
+        r#"{}"#,
+        r#""unexpected string""#,
+        "null",
+        "0",
+        "false",
+    ] {
+        let error = list_rows(body, "open")
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("{body} must fail the instrument"))?;
+        assert!(
+            error.to_string().contains("not the expected array"),
+            "expected a shape failure for {body}, got: {error}"
+        );
+    }
+
+    // Malformed JSON stays a failure too.
+    assert!(list_rows("{ not json", "open").is_err());
+    Ok(())
+}
+
+/// The read-only law for GraphQL lives in the document, not the HTTP verb:
+/// `gh api graphql` is a POST either way.
+#[test]
+fn graphql_read_only_law_is_carried_by_the_document() {
+    // The document this observer actually sends must pass its own gate.
+    assert!(args_read_only(
+        "gh",
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={GH_REVIEW_GRAPHQL}"),
+            "-F",
+            "owner=EffortlessMetrics",
+            "-F",
+            "name=perl-lsp-swarm",
+            "-F",
+            "pr=14237",
+        ],
+    ));
+
+    for rejected in [
+        // A write operation, transported identically to a query.
+        "query=mutation { addComment(input: {}) { clientMutationId } }",
+        // A write smuggled in behind a legitimate-looking read.
+        "query=query Read { viewer { login } } mutation Write { closePullRequest { id } }",
+        "query=subscription Watch { x }",
+        // No operation keyword at all.
+        "query=",
+        "query={ viewer { login } }",
+        // Not a query field.
+        "mutation=mutation { x }",
+    ] {
+        assert!(
+            !args_read_only("gh", &["api", "graphql", "-f", rejected]),
+            "expected rejection for {rejected:?}"
+        );
+    }
+
+    // Flags outside the observation contract are rejected wholesale, and a
+    // variable may never carry a second document.
+    assert!(!args_read_only("gh", &["api", "graphql", "-X", "POST", "-f", "query=query A { b }"]));
+    assert!(!args_read_only("gh", &["api", "graphql", "--input", "body.json"]));
+    assert!(!args_read_only("gh", &["api", "graphql"]));
+    assert!(!args_read_only(
+        "gh",
+        &["api", "graphql", "-f", "query=query A { b }", "-F", "x=mutation { y }"],
+    ));
+    // Exactly one document; a second `-f query=` is a rejected shape.
+    assert!(!args_read_only(
+        "gh",
+        &["api", "graphql", "-f", "query=query A { b }", "-f", "query=query C { d }"],
+    ));
+    // A non-graphql api path stays rejected.
+    assert!(!args_read_only("gh", &["api", "repos/x/y/pulls"]));
+
+    // `gh` lifts `query` and `operationName` out of the variable map into the
+    // top level of the request body, so they are not variables at all and must
+    // not pass the inert-variable shape check.
+    for reserved in ["query=Something", "operationName=Something"] {
+        assert!(
+            !args_read_only("gh", &["api", "graphql", "-f", "query=query A { b }", "-F", reserved]),
+            "reserved top-level field {reserved:?} must not pass as an inert variable"
+        );
+    }
+}
+
+/// `explain` must not print a fact as observed and then summarize it as
+/// unavailable in the same report.
+#[test]
+fn explain_unavailable_summary_matches_the_observed_facts() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let manifest = loaded()?;
+
+    // E00A's sole candidate is PR 2002: its review sits on a superseded
+    // commit (currency IS observed — the answer is "no") while its thread page
+    // is truncated (resolution is genuinely unprovable). The summary must
+    // separate the two rather than lumping both under "unavailable".
+    let mixed = render_explain(&snapshot, &manifest, "E00A")?;
+    assert!(mixed.contains("reviewed_commit_is_head: no"), "{mixed}");
+    assert!(mixed.contains("truncated=true"), "{mixed}");
+    assert!(
+        !mixed.contains("reviewed-commit comparison"),
+        "the comparison succeeded here and must not be summarized as unavailable: {mixed}"
+    );
+    assert!(
+        mixed.contains("review threads"),
+        "a truncated thread page is genuinely unavailable and must be named: {mixed}"
+    );
+    // Semantic currency is unconditionally unavailable, comparison or not.
+    assert!(mixed.contains("review-head currency"), "{mixed}");
+    // Behavior receipts have no producer (#11619) and stay unconditional.
+    assert!(mixed.contains("behavior receipts"), "{mixed}");
+
+    // E00C holds two candidates: 2004 is fully observed, 2003 has no review
+    // instrument at all. The node-level summary takes the weaker candidate, so
+    // both facts are named — conservative, and not a contradiction with 2004's
+    // own observed lines above it.
+    let mixed_candidates = render_explain(&snapshot, &manifest, "E00C")?;
+    assert!(mixed_candidates.contains("reviewed_commit_is_head: yes"), "{mixed_candidates}");
+    assert!(mixed_candidates.contains("reviewed-commit comparison"), "{mixed_candidates}");
+    assert!(mixed_candidates.contains("review threads"), "{mixed_candidates}");
+    Ok(())
+}
+
+/// Review facts are fetched after the PR list, so the head they describe must
+/// be the head the list reported or they bind to nothing.
+#[test]
+fn review_facts_do_not_bind_across_a_moved_head() {
+    let listed = "a".repeat(40);
+    let moved = "b".repeat(40);
+
+    assert!(review_facts_bind_to_listed_head(&listed, &listed));
+    // A push landed between the list read and the review read.
+    assert!(!review_facts_bind_to_listed_head(&listed, &moved));
+    // An unusable oid on either side binds nothing.
+    assert!(!review_facts_bind_to_listed_head("", &listed));
+    assert!(!review_facts_bind_to_listed_head(&listed, ""));
+    assert!(!review_facts_bind_to_listed_head("", ""));
+}
+
+/// A review page that did not cover every review cannot prove currency: the
+/// omitted review is exactly the one that might be stale.
+#[test]
+fn truncated_review_page_cannot_prove_currency() {
+    let head = "a".repeat(40);
+    // Every *observed* review is on the head, but the page was incomplete.
+    assert_eq!(
+        review_commit_matches_head(&head, &[review_at(Some(&head)), review_at(Some(&head))], true),
+        None,
+        "an incomplete review page must never report currency"
+    );
+    // The same observation with a complete page does prove it.
+    assert_eq!(
+        review_commit_matches_head(&head, &[review_at(Some(&head)), review_at(Some(&head))], false),
+        Some(true)
+    );
 }
 
 #[test]
@@ -140,6 +486,8 @@ fn non_read_only_commands_are_rejected_before_spawning() -> Result<()> {
         ("gh", vec!["pr", "review", "3001", "--approve"]),
         ("gh", vec!["issue", "close", "11627"]),
         ("gh", vec!["api", "-X", "POST", "repos/x/y/pulls"]),
+        ("gh", vec!["api", "graphql", "-f", "query=mutation { closePullRequest { id } }"]),
+        ("gh", vec!["api", "graphql", "-X", "POST", "-f", "query=query A { b }"]),
         ("curl", vec!["https://example.invalid"]),
     ] {
         let refusal = run_observation(None, program, &args)
@@ -159,7 +507,9 @@ fn read_only_shapes_pass_the_gate() {
     assert!(args_read_only("git", &["status", "--porcelain"]));
     assert!(args_read_only("git", &["for-each-ref", "refs/heads/"]));
     assert!(args_read_only("git", &["ls-remote", "origin", "refs/heads/*"]));
-    assert!(args_read_only("git", &["merge-base", "--is-ancestor", "a", "HEAD"]));
+    // No merge-base shape: ancestry resolves through the shared
+    // `xtask::git_ancestry` authority now, not through an observation spawn
+    // (#14557), so the read-only allowlist no longer carries it.
     assert!(args_read_only("git", &["worktree", "list", "--porcelain"]));
     assert!(args_read_only("git", &["remote", "get-url", "origin"]));
     assert!(args_read_only("gh", &["pr", "list", "--state", "open"]));
@@ -425,6 +775,242 @@ fn merge_ready_requires_threads_receipts_and_currency() {
     assert!(classified.reasons.contains(&"review_threads_unresolved".to_string()));
 }
 
+fn review_at(commit: Option<&str>) -> ReviewFacts {
+    ReviewFacts {
+        author_login: "reviewer".to_string(),
+        state: "APPROVED".to_string(),
+        submitted_at: Some("2026-08-30T00:00:00Z".to_string()),
+        commit_oid: commit.map(str::to_string),
+    }
+}
+
+/// The commit comparison is exact and fail-closed. It is a diagnostic: the
+/// classifier must never turn it into a currency verdict (see
+/// `semantic_currency_is_never_derived_from_a_head_sha`).
+#[test]
+fn reviewed_commit_comparison_is_bound_to_the_observed_commit() {
+    let head = "a".repeat(40);
+    let stale = "b".repeat(40);
+
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(&head))], false), Some(true));
+    // The head moved after the review was submitted: definitively not current.
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(&stale))], false), Some(false));
+    // One stale review among current ones still blocks currency.
+    assert_eq!(
+        review_commit_matches_head(
+            &head,
+            &[review_at(Some(&head)), review_at(Some(&stale))],
+            false
+        ),
+        Some(false)
+    );
+    // Unbindable inputs stay unprovable — never Some(true), and never
+    // Some(false) either: "cannot tell" must not raise head_moved_after_review.
+    assert_eq!(review_commit_matches_head(&head, &[review_at(None)], false), None);
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(""))], false), None);
+    assert_eq!(review_commit_matches_head("", &[review_at(Some(&head))], false), None);
+    assert_eq!(review_commit_matches_head(&head, &[], false), None);
+    // An incomplete review page cannot prove currency: the omitted review is
+    // exactly the one that might be stale.
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(&head))], true), None);
+}
+
+/// An unobserved or truncated thread page can never read as resolved.
+#[test]
+fn thread_resolution_never_passes_on_partial_observation() {
+    let observed = |total: usize, unresolved: usize, truncated: bool| ReviewThreadFacts {
+        observed: true,
+        total,
+        unresolved,
+        truncated,
+    };
+
+    assert_eq!(threads_resolved(&observed(3, 0, false)), Some(true));
+    assert_eq!(threads_resolved(&observed(3, 1, false)), Some(false));
+    // Zero threads observed is a real "nothing unresolved".
+    assert_eq!(threads_resolved(&observed(0, 0, false)), Some(true));
+    // Truncated: no unresolved thread was *seen*, which is not the same as
+    // none existing.
+    assert_eq!(threads_resolved(&observed(500, 0, true)), None);
+    // No instrument ran at all.
+    assert_eq!(threads_resolved(&ReviewThreadFacts::default()), None);
+}
+
+/// The typed blockers must name only what is actually unobservable. Behavior
+/// receipts have no producer in this tree (#11619) and stay blocking; thread
+/// resolution stops being claimed as unobservable once it is observed.
+#[test]
+fn observed_thread_resolution_stops_being_reported_as_a_blocker() {
+    let mut facts = facts_base();
+    let mut candidate = open_candidate();
+    candidate.review_decision = "APPROVED".to_string();
+    candidate.has_reviews = true;
+    candidate.threads_resolved = Some(true);
+    facts.open_bound = vec![candidate.clone()];
+
+    let classified = classify(&facts);
+    // Still not merge-ready: receipts remain a real blocker.
+    assert_eq!(classified.action, Action::NotProven);
+    assert!(
+        classified.limitations.contains(&"behavior_receipts_not_observable".to_string()),
+        "receipts have no producer yet and must stay a typed blocker"
+    );
+    assert!(!classified.limitations.contains(&"review_threads_not_observable".to_string()));
+
+    // When the thread instrument genuinely could not bind it, the blocker
+    // comes back.
+    candidate.threads_resolved = None;
+    facts.open_bound = vec![candidate];
+    let classified = classify(&facts);
+    assert!(classified.limitations.contains(&"review_threads_not_observable".to_string()));
+}
+
+/// The repository's currentness authority is explicit that a head SHA is not a
+/// review-validity token: `docs/agents/REVIEW_CURRENTNESS.md` ("Review is
+/// semantic, not exact-head", "A SHA change by itself appears nowhere in this
+/// table") and `AGENTS.md` ("head SHA change alone -> no review invalidation").
+///
+/// So a differing reviewed commit is reported as a diagnostic and never as an
+/// invalidated review, and semantic currency stays a typed blocker.
+#[test]
+fn semantic_currency_is_never_derived_from_a_head_sha() {
+    let mut facts = facts_base();
+    let mut candidate = open_candidate();
+    candidate.has_reviews = true;
+    // The reviewed commit is not the head — e.g. a later formatting-only push.
+    candidate.reviewed_commit_is_head = Some(false);
+    candidate.threads_resolved = Some(true);
+    facts.open_bound = vec![candidate.clone()];
+
+    let classified = classify(&facts);
+    assert_eq!(classified.action, Action::Review);
+    // The diagnostic is reported...
+    assert!(classified.reasons.contains(&"reviewed_commit_differs_from_head".to_string()));
+    // ...but it must never assert that the review was invalidated.
+    assert!(
+        !classified.flags.contains(&"head_moved_after_review".to_string()),
+        "a SHA delta alone must not assert review invalidation: {:?}",
+        classified.flags
+    );
+    // Semantic currency remains unobservable regardless of the comparison.
+    assert!(classified.limitations.contains(&"review_head_currency_not_observable".to_string()));
+
+    // The same holds when the reviewed commit IS the head: matching SHAs do
+    // not prove the review is semantically current either.
+    candidate.reviewed_commit_is_head = Some(true);
+    facts.open_bound = vec![candidate];
+    let classified = classify(&facts);
+    assert!(
+        classified.limitations.contains(&"review_head_currency_not_observable".to_string()),
+        "a matching SHA must not manufacture currency: {:?}",
+        classified.limitations
+    );
+    assert!(!classified.reasons.contains(&"reviewed_commit_differs_from_head".to_string()));
+}
+
+/// End-to-end: the observed review facts survive raw -> snapshot normalization
+/// and derive the same way the classifier consumes them.
+#[test]
+fn corpus_carries_observed_review_facts_through_normalization() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let pr = |number: u64| {
+        snapshot
+            .semantic
+            .github
+            .prs
+            .iter()
+            .find(|pr| pr.number == number)
+            .unwrap_or_else(|| panic!("fixture PR {number} must normalize"))
+    };
+
+    // 2004: review bound to the observed head, every thread observed+resolved.
+    let approved = pr(2004);
+    assert_eq!(approved.latest_reviews[0].commit_oid.as_deref(), Some(approved.head_oid.as_str()));
+    assert!(approved.review_threads.observed);
+    assert!(!approved.review_threads.truncated);
+    assert_eq!(
+        review_commit_matches_head(
+            &approved.head_oid,
+            &approved.latest_reviews,
+            approved.review_page_truncated
+        ),
+        Some(true)
+    );
+    assert_eq!(threads_resolved(&approved.review_threads), Some(true));
+
+    // 2002: review left on a superseded commit, thread page truncated.
+    let stale = pr(2002);
+    assert_ne!(stale.latest_reviews[0].commit_oid.as_deref(), Some(stale.head_oid.as_str()));
+    assert_eq!(
+        review_commit_matches_head(
+            &stale.head_oid,
+            &stale.latest_reviews,
+            stale.review_page_truncated
+        ),
+        Some(false)
+    );
+    assert!(stale.review_threads.truncated);
+    assert_eq!(
+        threads_resolved(&stale.review_threads),
+        None,
+        "a truncated thread page must never resolve"
+    );
+
+    // The production constructor is where currency could most easily be
+    // re-derived from the commit comparison by accident, so pin it directly:
+    // #2001's review IS on its head, and the currency input must still be
+    // None. A matching SHA is not semantic currency.
+    let view = candidate_view(pr(2001));
+    assert_eq!(
+        view.reviewed_commit_is_head,
+        Some(true),
+        "the diagnostic comparison must still be reported"
+    );
+    assert_eq!(
+        view.review_on_head, None,
+        "candidate_view must never derive semantic currency from a head SHA"
+    );
+
+    // The REVIEW route through the whole pipeline: M01's candidate #2001 has
+    // an opinionated review bound to its head and every thread resolved. The
+    // observed thread resolution must reach the classifier, while review-head
+    // currency stays a typed blocker even though the SHAs match — matching
+    // commits do not manufacture semantic currency.
+    let m01 = node(&snapshot, "M01")?;
+    assert_eq!(m01.action, "REVIEW");
+    assert!(
+        !m01.limitations.iter().any(|limitation| limitation == "review_threads_not_observable"),
+        "observed thread resolution must not be reported as a blocker: {:?}",
+        m01.limitations
+    );
+    assert!(
+        m01.limitations
+            .iter()
+            .any(|limitation| limitation == "review_head_currency_not_observable"),
+        "semantic currency is never derivable from a head SHA: {:?}",
+        m01.limitations
+    );
+    assert!(
+        !m01.action_reasons.iter().any(|reason| reason == "reviewed_commit_differs_from_head"),
+        "this candidate's review IS on the head commit: {:?}",
+        m01.action_reasons
+    );
+
+    // A candidate with no review instrument at all keeps both facts unobserved.
+    let unobserved = pr(2003);
+    assert!(!unobserved.review_threads.observed);
+    assert_eq!(threads_resolved(&unobserved.review_threads), None);
+    assert_eq!(
+        review_commit_matches_head(
+            &unobserved.head_oid,
+            &unobserved.latest_reviews,
+            unobserved.review_page_truncated
+        ),
+        None
+    );
+    Ok(())
+}
+
 #[test]
 fn main_movement_alone_changes_no_action() -> Result<()> {
     // Falsifier 17: classification consumes no main-SHA input, so unrelated
@@ -449,14 +1035,22 @@ fn main_movement_alone_changes_no_action() -> Result<()> {
 fn corpus_classifies_every_expected_action() -> Result<()> {
     let snapshot = normalize_text(CORPUS_FIXTURE)?;
     let expect = [
-        ("C01", "WAIT", "landed_current_tree_no_writer_action"),
+        ("C01", "NOT_PROVEN", "c02_state_not_actionable:not_proven"),
         ("C02", "WAIT", "landed_current_tree_no_writer_action"),
-        ("C03", "BLOCKED", "hard_dep_not_landed:C02"),
+        // C03's implementation is on the tree and its semantic probe (#11626)
+        // now sees it, so it is landed rather than statically blocked on C02.
+        ("C03", "NOT_PROVEN", "c02_state_not_actionable:not_proven"),
         ("CTRL", "STOP", "controller_selected_as_implementation"),
         ("E00A", "REPAIR", "review_changes_requested"),
         ("E00C", "RECONCILE", "multiple_bound_candidates_need_bounded_ownership_decision"),
-        ("M01", "REVIEW", "review_pending"),
-        ("M07A", "RECONCILE", "unique_work_surface:local_branch:wip/10573-context-contract"),
+        // M01: this branch gives fixture PR #2001 an opinionated review bound
+        // to its head, so the corpus exercises the REVIEW route with observed
+        // facts rather than `review_pending`. Currency stays unproven because
+        // it is never derived from a head SHA.
+        ("M01", "REVIEW", "review_head_currency_not_proven"),
+        // M07A: main's C02 probe rewrite moved this node's state; keep main's
+        // expectation rather than this branch's pre-merge value.
+        ("M07A", "NOT_PROVEN", "c02_state_not_actionable:not_proven"),
         ("M07B", "RECONCILE", "closed_candidate_unique_work_needs_salvage_decision"),
         ("M07C", "RECONCILE", "binding_agreement_failed_needs_bounded_ownership_decision"),
         ("L09A", "WAIT", "merge_commit_not_ancestor_of_observed_head"),
@@ -482,11 +1076,16 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
         "merged-but-absent commit must stay pending-probe"
     );
     assert!(node(&snapshot, "C02")?.candidate_flags.contains(&"merged_current_tree".to_string()));
-    // Falsifier 7: stray issue closure/labels changed nothing (M01 still
-    // classified from the train + candidate facts; C03 still BLOCKED).
+    // Falsifier 7: stray issue closure/labels changed nothing — M01 and C03
+    // are still classified from the train + candidate facts alone. C03's
+    // action follows its #11626 current-tree probe, never its issue state.
     let m01 = node(&snapshot, "M01")?;
     assert_eq!(m01.action, "REVIEW");
-    assert!(node(&snapshot, "C03")?.action == "BLOCKED");
+    assert_eq!(
+        node(&snapshot, "C03")?.action,
+        "NOT_PROVEN",
+        "C03 cannot use a mismatched current-tree probe"
+    );
     // Surfaces are diagnostics that never outvote the candidate: M01 keeps its
     // remote surface while its action stays REVIEW.
     assert!(m01.surfaces.iter().any(|surface| surface.kind == "remote_branch"));
@@ -509,7 +1108,7 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
 
 #[test]
 fn clean_surface_fixture_start_and_unbound_surface_reconcile() -> Result<()> {
-    let snapshot = normalize_text(CLEAN_SURFACE_FIXTURE)?;
+    let snapshot = normalize_clean_surface()?;
     // A pushed, clean, name-associated branch is an ownership decision, not a
     // silent START (the branch may be this node's unique work).
     let m01 = node(&snapshot, "M01")?;
@@ -553,6 +1152,42 @@ fn normalization_is_deterministic_and_observed_at_stays_outside_the_digest() -> 
 }
 
 #[test]
+/// A snapshot written before #14237 must be rejected as an *older schema*,
+/// never as a tampered one.
+///
+/// Those fields are `#[serde(default)]`, so a version-1 file still
+/// deserializes — but its stored digest was computed over the old canonical
+/// representation, so recomputing it after load necessarily disagrees. Left at
+/// version 1 that disagreement came out of the tamper-detection path, which
+/// accuses an honest operator of altering their snapshot and hides the real
+/// remedy (re-run `refresh`). The version check must run first and own it.
+#[test]
+fn a_pre_change_snapshot_is_rejected_as_older_schema_not_as_tampering() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    assert_eq!(snapshot.schema_version, LIVE_SCHEMA_VERSION);
+    assert!(LIVE_SCHEMA_VERSION > 1, "the representation changed, so the version must too");
+
+    // Stand in for a file written by the previous schema: same schema name,
+    // the version it carried, and a digest that cannot match the new
+    // representation.
+    let mut legacy = snapshot.clone();
+    legacy.schema_version = 1;
+    let temp = std::env::temp_dir().join("module-train-live-legacy-v1.json");
+    std::fs::write(&temp, serde_json::to_vec(&legacy)?)?;
+
+    let error = load_snapshot(&temp)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("a superseded schema version must fail closed"))?;
+    let text = error.to_string();
+    assert!(text.contains("schema_version mismatch"), "got: {text}");
+    assert!(
+        !text.contains("digest drift"),
+        "an older snapshot is not tampering, and must not be reported as it: {text}"
+    );
+    Ok(())
+}
+
+#[test]
 fn snapshot_validation_detects_tampering() -> Result<()> {
     let snapshot = normalize_text(CORPUS_FIXTURE)?;
     let manifest = loaded()?;
@@ -579,7 +1214,7 @@ fn snapshot_validation_detects_tampering() -> Result<()> {
         .iter()
         .position(|node| node.node_id == "M07A")
         .ok_or_else(|| color_eyre::eyre::eyre!("M07A present"))?;
-    drift.semantic.nodes[index].action = "MERGE_READY_RECOMMENDATION".to_string();
+    drift.semantic.nodes[index].action = "START".to_string();
     let semantic_value = serde_json::to_value(&drift.semantic)?;
     drift.semantic_digest = canonical_digest(&semantic_value)?;
     let bytes = serde_json::to_vec(&drift)?;
@@ -590,6 +1225,68 @@ fn snapshot_validation_detects_tampering() -> Result<()> {
         .err()
         .ok_or_else(|| color_eyre::eyre::eyre!("stored action drift must fail validation"))?;
     assert!(error.to_string().contains("disagrees with re-derived"), "got: {error}");
+    Ok(())
+}
+
+#[test]
+fn cross_tree_validation_rejects_false_stored_state() -> Result<()> {
+    // Devin review, PR #15094: the validator substitutes honest not_proven
+    // values for cross-tree nodes during re-derivation; a snapshot rebuilt
+    // with a self-consistent digest around a false stored state must not be
+    // laundered through that substitution.
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let manifest = loaded()?;
+    let marker = "c02_implementation_probed_from_a_different_tree";
+
+    let mut forged = snapshot.clone();
+    // Mark every node (the producer's marker is snapshot-wide) and forge the
+    // false stored state on the first; the stored-state check must catch it.
+    for node in &mut forged.semantic.nodes {
+        node.limitations.push(marker.to_string());
+        node.limitations.sort();
+    }
+    let node = &mut forged.semantic.nodes[0];
+    node.c02_state = "ready".to_string();
+    node.c02_reasons = Vec::new();
+    let semantic_value = serde_json::to_value(&forged.semantic)?;
+    forged.semantic_digest = canonical_digest(&semantic_value)?;
+
+    let error = validate_snapshot(&forged, &manifest)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("false cross-tree state must fail validation"))?;
+    assert!(
+        error.to_string().contains("must record not_proven"),
+        "the failure must name the honest-record invariant, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn cross_tree_marker_must_be_snapshot_wide() -> Result<()> {
+    // Devin review, PR #15094: the producer computes the cross-tree condition
+    // once per snapshot, so a marker on only some nodes is itself evidence of
+    // a stale or tampered record — and an unmarked node would skip the
+    // stored-state check.
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let manifest = loaded()?;
+    let marker = "c02_implementation_probed_from_a_different_tree";
+
+    // The corpus observation is cross-tree, so every node already carries the
+    // marker and the honest not_proven record. Removing the marker from one
+    // node creates the mixed set a stale or tampered producer would emit.
+    let mut forged = snapshot.clone();
+    let node = &mut forged.semantic.nodes[1];
+    node.limitations.retain(|limitation| limitation != marker);
+    let semantic_value = serde_json::to_value(&forged.semantic)?;
+    forged.semantic_digest = canonical_digest(&semantic_value)?;
+
+    let error = validate_snapshot(&forged, &manifest)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("a mixed marker set must fail validation"))?;
+    assert!(
+        error.to_string().contains("snapshot-wide"),
+        "the failure must name the uniformity invariant, got: {error}"
+    );
     Ok(())
 }
 
@@ -644,6 +1341,7 @@ fn instrument_failures_are_not_proven_never_absence() -> Result<()> {
 #[test]
 fn git_remote_failure_degrades_only_remote_facts() -> Result<()> {
     let mut raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
     let record = serde_json::from_value::<InstrumentRecord>(serde_json::json!({
         "source": "test", "state": "failed", "detail": "forced by test"
     }))?;
@@ -671,6 +1369,7 @@ fn gone_upstream_counts_as_unpushed_unique_work() -> Result<()> {
     // branch is unique work and must gate START exactly like any other
     // unpushed surface (falsifier 9 family).
     let mut raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
     raw.git_local.branches[0].upstream = Some("origin/tooling/8497-requests".to_string());
     raw.git_local.branches[0].ahead = Some(0);
     raw.git_local.branches[0].behind = None;
@@ -697,11 +1396,11 @@ fn tracking_parser_recognizes_gone_and_mixed_forms() {
 }
 
 #[test]
-fn ancestry_probe_is_allowlist_gated_too() {
-    // The ancestry path is the one non-string adapter; it must reject any
-    // argument shape outside the read-only allowlist exactly like the choke
-    // point does (structural read-only law covers every spawn path). The
-    // hostile "oid" never reaches git: exit-1/0 would mean it spawned.
+fn ancestry_probe_rejects_hostile_oid_before_git() {
+    // The ancestry path resolves through the shared authority, but the oid
+    // shape gate stays in this module: the hostile "oid" never reaches any
+    // probe. A `ProbeFailed` carrying the refusal is the only acceptable
+    // outcome.
     match run_git_ancestry(Path::new("."), "abc; rm -rf /") {
         Ancestry::ProbeFailed(reason) => {
             assert!(
@@ -742,6 +1441,26 @@ fn gh_queries_are_bound_to_the_checkout_repository() {
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
         assert!(args_read_only("gh", &borrowed), "repo-bound gh shapes stay read-only: {args:?}");
     }
+
+    // The GraphQL read carries the same origin-derived selector, split into
+    // the document's typed owner/name variables rather than a --repo flag. It
+    // must be just as repo-bound: an unqualified query would observe whatever
+    // repository the ambient environment names.
+    let graphql = gh_graphql_review_args(3001, "EffortlessMetrics", "perl-lsp-swarm");
+    assert!(
+        graphql.iter().any(|arg| arg == "owner=EffortlessMetrics"),
+        "graphql query must carry the origin-derived owner: {graphql:?}"
+    );
+    assert!(
+        graphql.iter().any(|arg| arg == "name=perl-lsp-swarm"),
+        "graphql query must carry the origin-derived name: {graphql:?}"
+    );
+    assert!(
+        graphql.iter().any(|arg| arg == "pr=3001"),
+        "graphql query must carry the exact PR number: {graphql:?}"
+    );
+    let borrowed: Vec<&str> = graphql.iter().map(String::as_str).collect();
+    assert!(args_read_only("gh", &borrowed), "the graphql shape stays read-only: {graphql:?}");
 }
 
 #[test]
@@ -899,16 +1618,16 @@ fn written_snapshot_round_trips_through_check_next_explain() -> Result<()> {
     assert!(next.contains("M07A"));
     assert!(next.contains("at most one action per writer/conflict surface"));
     // START remains reachable on a clean frontier (clean-surface fixture).
-    let clean = normalize_text(CLEAN_SURFACE_FIXTURE)?;
+    let clean = normalize_clean_surface()?;
     let clean_next = render_next(&clean);
     assert!(
-        clean_next.contains("START (3)"),
+        clean_next.contains("START (2)"),
         "clean frontier must START its ready leaves: {clean_next}"
     );
 
     let explain = render_explain(&reloaded, &loaded()?, "C03")?;
     assert!(explain.contains("module-train live explain C03"));
-    assert!(explain.contains("action: BLOCKED"));
+    assert!(explain.contains("action: NOT_PROVEN"));
     assert!(explain.contains("closeout route"));
     assert!(render_explain(&reloaded, &loaded()?, "NOPE").is_err());
     Ok(())

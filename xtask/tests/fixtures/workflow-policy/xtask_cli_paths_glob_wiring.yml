@@ -1,0 +1,17 @@
+name: fixture-xtask-cli-paths-glob-wiring
+# `paths:` entries are filter patterns, not literals. `xtask/**` already selects
+# both CLI wiring files, so spelling them out would be redundant.
+on:
+  pull_request:
+    paths:
+      - 'xtask/**'
+      - '.github/workflows/xtask-cli-paths-glob-wiring.yml'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo xtask example-contract check

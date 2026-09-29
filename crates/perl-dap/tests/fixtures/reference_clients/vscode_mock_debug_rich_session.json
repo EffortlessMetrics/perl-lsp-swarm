@@ -89,9 +89,7 @@
       "requestSeq": 109,
       "command": "disconnect",
       "expectSuccess": true,
-      "expectedEventsAfter": [
-        { "event": "terminated" }
-      ]
+      "forbiddenEventsAfter": ["terminated"]
     }
   ]
 }

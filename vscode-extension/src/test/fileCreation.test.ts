@@ -1,146 +1,31 @@
-/**
- * Unit tests for smart file creation with package boilerplate.
- *
- * Tests cover the pure logic exported from fileCreation.ts:
- *   - inferPackageName: derive Perl package name from file path
- *   - generateBoilerplate: produce correct file content for .pm and .t files
- *
- * Issue: #2056
- */
+import * as path from 'path';
+import { FileKind, scaffoldContent } from '../fileCreation';
 
-import { inferPackageName, generateBoilerplate, FileKind } from '../fileCreation';
-
-// ---------------------------------------------------------------------------
-// inferPackageName
-// ---------------------------------------------------------------------------
-describe('inferPackageName', () => {
-  test('derives package from lib/ path', () => {
-    expect(inferPackageName('/project/lib/Foo/Bar.pm')).toBe('Foo::Bar');
-  });
-
-  test('derives package from nested lib/ path', () => {
-    expect(inferPackageName('/project/lib/My/Long/Module.pm')).toBe('My::Long::Module');
-  });
-
-  test('derives package from top-level lib/ module', () => {
-    expect(inferPackageName('/project/lib/Foo.pm')).toBe('Foo');
-  });
-
-  test('derives package from lib/ with Windows-style separators', () => {
-    // path.sep may be / on Linux; test cross-platform via explicit slashes
-    expect(inferPackageName('C:\\project\\lib\\Foo\\Bar.pm')).toBe('Foo::Bar');
-  });
-
-  test('falls back to basename without extension when no lib/ anchor', () => {
-    expect(inferPackageName('/project/Foo/Bar.pm')).toBe('Bar');
-  });
-
-  test('returns null for .t files (no package name)', () => {
-    expect(inferPackageName('/project/t/foo.t')).toBeNull();
-  });
-
-  test('returns null for non-.pm files', () => {
-    expect(inferPackageName('/project/lib/Foo.pl')).toBeNull();
-  });
-
-  test('handles deep lib anchor correctly', () => {
-    expect(inferPackageName('/home/user/myapp/lib/App/Controller/Root.pm')).toBe(
-      'App::Controller::Root',
-    );
-  });
+test('module declaration follows the owning lib tree', () => {
+  const content = scaffoldContent(FileKind.Module, '/project', '/project/lib/Foo/Bar.pm');
+  expect(content).toContain('package Foo::Bar;');
+  expect(content).toContain('use strict;');
+  expect(content?.trimEnd()).toMatch(/1;$/);
 });
 
-// ---------------------------------------------------------------------------
-// generateBoilerplate — .pm files
-// ---------------------------------------------------------------------------
-describe('generateBoilerplate for .pm files', () => {
-  test('returns FileKind.Module for .pm extension', () => {
-    const result = generateBoilerplate('/project/lib/Foo/Bar.pm')!;
-    expect(result.kind).toBe(FileKind.Module);
-  });
-
-  test('includes correct package declaration', () => {
-    const result = generateBoilerplate('/project/lib/Foo/Bar.pm')!;
-    expect(result.content).toContain('package Foo::Bar;');
-  });
-
-  test('includes use strict', () => {
-    const result = generateBoilerplate('/project/lib/Foo/Bar.pm')!;
-    expect(result.content).toContain('use strict;');
-  });
-
-  test('includes use warnings', () => {
-    const result = generateBoilerplate('/project/lib/Foo/Bar.pm')!;
-    expect(result.content).toContain('use warnings;');
-  });
-
-  test('ends with 1;', () => {
-    const result = generateBoilerplate('/project/lib/Foo/Bar.pm')!;
-    expect(result.content.trimEnd()).toMatch(/1;$/);
-  });
-
-  test('package declaration appears before use strict', () => {
-    const result = generateBoilerplate('/project/lib/Foo/Bar.pm')!;
-    const pkgIdx = result.content.indexOf('package');
-    const strictIdx = result.content.indexOf('use strict');
-    expect(pkgIdx).toBeLessThan(strictIdx);
-  });
-
-  test('uses fallback basename when no lib/ anchor', () => {
-    const result = generateBoilerplate('/project/MyModule.pm')!;
-    expect(result.content).toContain('package MyModule;');
-  });
+test('a test scaffold has no package declaration', () => {
+  const content = scaffoldContent(FileKind.Test, '/project', '/project/t/example.t');
+  expect(content).toContain('use Test::More;');
+  expect(content).not.toContain('package ');
+  expect(content?.trimEnd()).toMatch(/done_testing;$/);
 });
 
-// ---------------------------------------------------------------------------
-// generateBoilerplate — .t files
-// ---------------------------------------------------------------------------
-describe('generateBoilerplate for .t files', () => {
-  test('returns FileKind.Test for .t extension', () => {
-    const result = generateBoilerplate('/project/t/foo.t')!;
-    expect(result.kind).toBe(FileKind.Test);
-  });
-
-  test('includes use strict', () => {
-    const result = generateBoilerplate('/project/t/foo.t')!;
-    expect(result.content).toContain('use strict;');
-  });
-
-  test('includes use warnings', () => {
-    const result = generateBoilerplate('/project/t/foo.t')!;
-    expect(result.content).toContain('use warnings;');
-  });
-
-  test('includes use Test::More', () => {
-    const result = generateBoilerplate('/project/t/foo.t')!;
-    expect(result.content).toContain('use Test::More;');
-  });
-
-  test('ends with done_testing', () => {
-    const result = generateBoilerplate('/project/t/foo.t')!;
-    expect(result.content.trimEnd()).toMatch(/done_testing;$/);
-  });
-
-  test('does not include a package declaration', () => {
-    const result = generateBoilerplate('/project/t/foo.t')!;
-    expect(result.content).not.toContain('package ');
-  });
-
-  test('does not include 1; terminator', () => {
-    const result = generateBoilerplate('/project/t/foo.t')!;
-    expect(result.content).not.toContain('\n1;');
-  });
+test.each([
+  ['/project/other/Foo.pm', FileKind.Module],
+  ['/project/lib/Foo-Bar.pm', FileKind.Module],
+  ['/project/lib/Foo.pl', FileKind.Module],
+  ['/other/lib/Foo.pm', FileKind.Module],
+  ['/project/lib/Foo.pm', FileKind.Test],
+] as const)('rejects ambiguous or ineligible target %s', (target, kind) => {
+  expect(scaffoldContent(kind, '/project', target)).toBeNull();
 });
 
-// ---------------------------------------------------------------------------
-// generateBoilerplate — unsupported extensions
-// ---------------------------------------------------------------------------
-describe('generateBoilerplate for unsupported files', () => {
-  test('returns null for .pl files', () => {
-    expect(generateBoilerplate('/project/script.pl')).toBeNull();
-  });
-
-  test('returns null for .pod files', () => {
-    expect(generateBoilerplate('/project/doc.pod')).toBeNull();
-  });
+test('a backslash in a POSIX module filename is never read as a separator', () => {
+  if (path.sep !== '/') return; // On Windows a backslash is a real separator.
+  expect(scaffoldContent(FileKind.Module, '/project', '/project/lib/Foo\\Bar.pm')).toBeNull();
 });

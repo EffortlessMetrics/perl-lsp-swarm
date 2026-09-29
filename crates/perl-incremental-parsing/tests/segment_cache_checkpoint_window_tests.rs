@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Comprehensive tests for segment-based token cache and two-sided checkpoint window.
 //!
 //! This test module covers incremental parsing improvements from issue #3527.
@@ -397,7 +398,7 @@ fn test_find_after_exact_match() {
 
     // Find checkpoint at exact position
     let cp = cache.find_after(200);
-    assert_eq!(must_some(cp).position, 200);
+    assert_eq!(must_some(cp).position(), 200);
 }
 
 /// Test find_after() between checkpoints.
@@ -412,7 +413,7 @@ fn test_find_after_between_checkpoints() {
 
     // Find checkpoint after position 150
     let cp = cache.find_after(150);
-    assert_eq!(must_some(cp).position, 200);
+    assert_eq!(must_some(cp).position(), 200);
 }
 
 /// Test find_after() before first checkpoint.
@@ -427,7 +428,7 @@ fn test_find_after_before_first() {
 
     // Find checkpoint after position 50
     let cp = cache.find_after(50);
-    assert_eq!(must_some(cp).position, 100);
+    assert_eq!(must_some(cp).position(), 100);
 }
 
 /// Test find_after() after last checkpoint.
@@ -467,11 +468,11 @@ fn test_find_after_single_checkpoint() {
 
     // Find checkpoint before position
     let cp = cache.find_after(50);
-    assert_eq!(must_some(cp).position, 100);
+    assert_eq!(must_some(cp).position(), 100);
 
     // Find checkpoint at exact position
     let cp = cache.find_after(100);
-    assert_eq!(must_some(cp).position, 100);
+    assert_eq!(must_some(cp).position(), 100);
 
     // Find checkpoint after position
     let cp = cache.find_after(150);
@@ -492,7 +493,7 @@ fn test_find_after_many_checkpoints() {
     for i in 0..99 {
         let pos = i * 10 + 5; // Between checkpoints
         let cp = cache.find_after(pos);
-        assert_eq!(must_some(cp).position, (i + 1) * 10);
+        assert_eq!(must_some(cp).position(), (i + 1) * 10);
     }
 }
 
@@ -510,8 +511,8 @@ fn test_find_after_and_before_together() {
     let before = cache.find_before(250);
     let after = cache.find_after(250);
 
-    assert_eq!(must_some(before).position, 200);
-    assert_eq!(must_some(after).position, 300);
+    assert_eq!(must_some(before).position(), 200);
+    assert_eq!(must_some(after).position(), 300);
 }
 
 /// Test adding checkpoints out of order preserves searchable order.
@@ -526,8 +527,8 @@ fn test_find_after_with_unsorted_insertions_and_replacement() {
     cache.add(LexerCheckpoint::at_position(200));
 
     assert_eq!(cache.len(), 3);
-    assert_eq!(must_some(cache.find_before(250)).position, 200);
-    assert_eq!(must_some(cache.find_after(150)).position, 200);
+    assert_eq!(must_some(cache.find_before(250)).position(), 200);
+    assert_eq!(must_some(cache.find_after(150)).position(), 200);
 }
 
 /// Test cache eviction keeps both boundary anchors searchable.
@@ -541,8 +542,8 @@ fn test_find_after_eviction_preserves_boundaries() {
     }
 
     assert_eq!(cache.len(), 3);
-    assert_eq!(must_some(cache.find_before(usize::MAX)).position, 400);
-    assert_eq!(must_some(cache.find_after(0)).position, 0);
+    assert_eq!(must_some(cache.find_before(usize::MAX)).position(), 400);
+    assert_eq!(must_some(cache.find_after(0)).position(), 0);
     assert!(cache.find_after(401).is_none(), "expected no checkpoint beyond final boundary");
 }
 
@@ -561,7 +562,7 @@ fn test_find_after_after_edit() {
 
     // Find checkpoint after original position 200 (now at 210)
     let cp = cache.find_after(210);
-    assert_eq!(must_some(cp).position, 210);
+    assert_eq!(must_some(cp).position(), 210);
 }
 
 // =========================================================================

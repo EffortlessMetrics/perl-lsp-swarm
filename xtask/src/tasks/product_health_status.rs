@@ -1793,14 +1793,15 @@ pub fn assemble_fixture(root: &Path) -> Result<Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must, must_some, must_with};
     use std::fs;
 
     fn root() -> PathBuf {
-        crate::utils::project_root().unwrap()
+        must(crate::utils::project_root())
     }
 
     fn tempdir() -> PathBuf {
-        tempfile::tempdir().unwrap().keep()
+        must(tempfile::tempdir()).keep()
     }
 
     fn sha256_of(text: &str) -> String {
@@ -1831,7 +1832,7 @@ mod tests {
     }
 
     fn loaded(packet: SourcePacket) -> LoadedPacket {
-        let canonical = serde_json::to_string(&packet).unwrap();
+        let canonical = must(serde_json::to_string(&packet));
         let invalid_reason = detail_privacy_reason(&packet);
         LoadedPacket {
             file: format!("{}.json", packet.packet_id),
@@ -1876,13 +1877,12 @@ mod tests {
 
     #[test]
     fn product_health_status_fixture_assembly_is_deterministic_and_matches_golden() {
-        let status = assemble_fixture(&root()).unwrap();
-        let again = assemble_fixture(&root()).unwrap();
-        assert_eq!(status_bytes(&status).unwrap(), status_bytes(&again).unwrap());
-        let golden =
-            fs::read(root().join(FIXTURE_DIR).join("expected").join("status.json")).unwrap();
+        let status = must(assemble_fixture(&root()));
+        let again = must(assemble_fixture(&root()));
+        assert_eq!(must(status_bytes(&status)), must(status_bytes(&again)));
+        let golden = must(fs::read(root().join(FIXTURE_DIR).join("expected").join("status.json")));
         assert_eq!(
-            status_bytes(&status).unwrap(),
+            must(status_bytes(&status)),
             golden,
             "committed golden status must equal freshly assembled bytes"
         );
@@ -1923,13 +1923,13 @@ mod tests {
             RailResult::Pass,
             PacketState::Current,
         ))];
-        let first = assemble(&registry, &packets, &[]).unwrap();
+        let first = must(assemble(&registry, &packets, &[]));
         let mut reversed = registry.clone();
         reversed.rails.reverse();
         reversed.adapters.reverse();
         let mut shuffled = packets.clone();
         shuffled.reverse();
-        let second = assemble(&reversed, &shuffled, &[]).unwrap();
+        let second = must(assemble(&reversed, &shuffled, &[]));
         assert_eq!(first.semantic_digest, second.semantic_digest);
     }
 
@@ -1937,9 +1937,9 @@ mod tests {
 
     #[test]
     fn product_health_status_every_declared_rail_stays_present_with_a_typed_state() {
-        let status = assemble_fixture(&root()).unwrap();
-        let fixture = fs::read_to_string(root().join(FIXTURE_DIR).join("registry.json")).unwrap();
-        let registry: Registry = serde_json::from_str(&fixture).unwrap();
+        let status = must(assemble_fixture(&root()));
+        let fixture = must(fs::read_to_string(root().join(FIXTURE_DIR).join("registry.json")));
+        let registry: Registry = must(serde_json::from_str(&fixture));
         let declared: BTreeSet<&str> = registry.rails.iter().map(|r| r.rail_id.as_str()).collect();
         let assembled: BTreeSet<&str> =
             status.rails.iter().map(|r| r.rail.rail_id.as_str()).collect();
@@ -1968,9 +1968,9 @@ mod tests {
             )),
             loaded(packet("pb", "fixture.b", "subject-b", RailResult::Pass, PacketState::Current)),
         ];
-        let status = assemble(&registry, &packets, &[]).unwrap();
-        let a = status.rails.iter().find(|r| r.rail.rail_id == "fixture.a").unwrap();
-        let b = status.rails.iter().find(|r| r.rail.rail_id == "fixture.b").unwrap();
+        let status = must(assemble(&registry, &packets, &[]));
+        let a = must_some(status.rails.iter().find(|r| r.rail.rail_id == "fixture.a"));
+        let b = must_some(status.rails.iter().find(|r| r.rail.rail_id == "fixture.b"));
         assert_eq!(a.rail.result, RailResult::Failed);
         assert_eq!(a.currentness_state, "current_exact");
         assert_eq!(b.rail.result, RailResult::Pass);
@@ -1981,14 +1981,16 @@ mod tests {
     fn product_health_status_prose_and_non_packet_files_are_never_truth() {
         let dir = tempdir();
         let sources = dir.join("sources");
-        fs::create_dir_all(&sources).unwrap();
-        fs::write(sources.join("convenient.md"), "fixture.parser: PASS (authored status document)")
-            .unwrap();
+        must(fs::create_dir_all(&sources));
+        must(fs::write(
+            sources.join("convenient.md"),
+            "fixture.parser: PASS (authored status document)",
+        ));
         let registry = fixture_registry_one_rail("exact:fixture", RailResult::NotProven);
-        let (packets, unparseable) = load_packets(&sources).unwrap();
+        let (packets, unparseable) = must(load_packets(&sources));
         assert!(packets.is_empty());
         assert!(unparseable.is_empty());
-        let status = assemble(&registry, &packets, &unparseable).unwrap();
+        let status = must(assemble(&registry, &packets, &unparseable));
         let rail = &status.rails[0];
         assert_eq!(rail.currentness_state, "source_unavailable");
         assert_eq!(rail.rail.result, RailResult::NotProven);
@@ -2014,7 +2016,7 @@ mod tests {
             RailResult::Pass,
             PacketState::Current,
         );
-        let status = assemble(&registry, &[loaded(passing)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(passing)], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.currentness_state, "source_unavailable");
         assert_eq!(rail.rail.result, RailResult::NotProven);
@@ -2032,7 +2034,7 @@ mod tests {
             PacketState::Current,
         );
         alien.schema = "fixture.v99".to_owned();
-        let status = assemble(&registry, &[loaded(alien)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(alien)], &[]));
         assert_eq!(status.rails[0].currentness_state, "source_unavailable");
         assert!(
             status
@@ -2060,7 +2062,7 @@ mod tests {
             RailResult::Failed,
             PacketState::Current,
         );
-        let status = assemble(&registry, &[loaded(newest_pass), loaded(older_red)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(newest_pass), loaded(older_red)], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.currentness_state, "conflicting_current_sources");
         assert_eq!(rail.rail.result, RailResult::ConflictingCurrentSources);
@@ -2076,7 +2078,7 @@ mod tests {
             RailResult::Pass,
             PacketState::Current,
         );
-        let status = assemble(&registry, &[loaded(wrong_stage)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(wrong_stage)], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.currentness_state, "source_subject_mismatch");
         assert_eq!(rail.rail.result, RailResult::Invalid);
@@ -2102,7 +2104,7 @@ mod tests {
             RailResult::Pass,
             PacketState::Current,
         );
-        let status = assemble(&registry, &[loaded(rich), loaded(bare)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(rich), loaded(bare)], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.rail.result, RailResult::Pass);
         assert!(rail.rail.limitations.is_empty(), "another source's limitations must not backfill");
@@ -2126,7 +2128,7 @@ mod tests {
             RailResult::Failed,
             PacketState::Current,
         );
-        let status = assemble(&registry, &[loaded(old_pass), loaded(current_red)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(old_pass), loaded(current_red)], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.currentness_state, "current_exact");
         assert_eq!(rail.rail.result, RailResult::Failed);
@@ -2156,8 +2158,8 @@ mod tests {
             RailResult::Failed,
             PacketState::Current,
         );
-        let first = assemble(&registry, &[loaded(a.clone()), loaded(b.clone())], &[]).unwrap();
-        let second = assemble(&registry, &[loaded(b), loaded(a)], &[]).unwrap();
+        let first = must(assemble(&registry, &[loaded(a.clone()), loaded(b.clone())], &[]));
+        let second = must(assemble(&registry, &[loaded(b), loaded(a)], &[]));
         assert_eq!(first.rails[0].currentness_state, "conflicting_current_sources");
         assert_eq!(first.semantic_digest, second.semantic_digest);
     }
@@ -2180,7 +2182,7 @@ mod tests {
             RailResult::Pass,
             PacketState::Current,
         );
-        let status = assemble(&registry, &[loaded(successor), loaded(predecessor)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(successor), loaded(predecessor)], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.currentness_state, "current_exact");
         assert_eq!(rail.rail.result, RailResult::Failed);
@@ -2202,7 +2204,7 @@ mod tests {
         );
         let mut two = one.clone();
         two.source_result = RailResult::Failed;
-        let status = assemble(&registry, &[loaded(one), loaded(two)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(one), loaded(two)], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.currentness_state, "conflicting_current_sources");
         assert!(status.findings.iter().any(|f| f.code == "changed_byte_identity"));
@@ -2223,7 +2225,7 @@ mod tests {
         first.file = "a.json".to_owned();
         let mut second = loaded(two);
         second.file = "b.json".to_owned();
-        let status = assemble(&registry, &[first, second], &[]).unwrap();
+        let status = must(assemble(&registry, &[first, second], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.currentness_state, "current_exact");
         assert_eq!(rail.rail.result, RailResult::Pass);
@@ -2237,7 +2239,7 @@ mod tests {
         let registry = fixture_registry_one_rail("exact:fixture", RailResult::NotProven);
         let stale =
             packet("s", "fixture.parser", "fixture-subject", RailResult::Pass, PacketState::Stale);
-        let status = assemble(&registry, &[loaded(stale)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(stale)], &[]));
         assert_eq!(status.rails[0].currentness_state, "stale_only");
         assert_eq!(status.rails[0].rail.result, RailResult::Stale);
 
@@ -2248,7 +2250,7 @@ mod tests {
             RailResult::Pass,
             PacketState::Historical,
         );
-        let status = assemble(&registry, &[loaded(historical)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(historical)], &[]));
         assert_eq!(status.rails[0].currentness_state, "historical_only");
         assert_eq!(status.rails[0].rail.result, RailResult::NoCurrentSource);
 
@@ -2264,7 +2266,7 @@ mod tests {
             PacketState::Historical,
         );
         let status =
-            assemble(&registry, &[loaded(mixed_stale), loaded(mixed_historical)], &[]).unwrap();
+            must(assemble(&registry, &[loaded(mixed_stale), loaded(mixed_historical)], &[]));
         assert_eq!(status.rails[0].currentness_state, "no_current_source");
         assert_eq!(status.rails[0].rail.result, RailResult::NoCurrentSource);
 
@@ -2276,7 +2278,7 @@ mod tests {
             RailResult::Pass,
             PacketState::Current,
         );
-        let status = assemble(&registry, &[loaded(other)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(other)], &[]));
         assert_eq!(status.rails[0].currentness_state, "source_subject_missing");
         assert_eq!(status.rails[0].rail.result, RailResult::NotProven);
     }
@@ -2300,7 +2302,7 @@ mod tests {
             RailResult::Pass,
             PacketState::Current,
         );
-        let status = assemble(&registry, &[loaded(passing)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(passing)], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.currentness_state, "adapter_unavailable");
         assert_eq!(rail.rail.result, RailResult::Unsupported);
@@ -2318,11 +2320,11 @@ mod tests {
             PacketState::Current,
         );
         leaky.detail.insert("transcript".to_owned(), "x".repeat(DETAIL_VALUE_BOUND + 1));
-        let status = assemble(&registry, &[loaded(leaky)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(leaky)], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.currentness_state, "invalid_only");
         assert_eq!(rail.rail.result, RailResult::Invalid);
-        let bytes = serde_json::to_string(&status).unwrap();
+        let bytes = must(serde_json::to_string(&status));
         assert!(
             !bytes.contains(&"x".repeat(64)),
             "unbounded private value must not leak into status"
@@ -2336,7 +2338,7 @@ mod tests {
             PacketState::Current,
         );
         meta.digest = "not-a-digest".to_owned();
-        let status = assemble(&registry, &[loaded(meta)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(meta)], &[]));
         assert_eq!(status.rails[0].currentness_state, "invalid_only");
     }
 
@@ -2344,21 +2346,20 @@ mod tests {
     fn product_health_status_unknown_envelope_fields_are_not_decoded() {
         let registry = fixture_registry_one_rail("exact:fixture", RailResult::NotProven);
         let dir = tempdir().join("sources");
-        fs::create_dir_all(&dir).unwrap();
-        let mut json = serde_json::to_value(packet(
+        must(fs::create_dir_all(&dir));
+        let mut json = must(serde_json::to_value(packet(
             "p",
             "fixture.parser",
             "fixture-subject",
             RailResult::Pass,
             PacketState::Current,
-        ))
-        .unwrap();
-        json.as_object_mut().unwrap().insert("score".to_owned(), serde_json::json!(97));
-        fs::write(dir.join("p.json"), serde_json::to_string(&json).unwrap()).unwrap();
-        let (packets, unparseable) = load_packets(&dir).unwrap();
+        )));
+        must_some(json.as_object_mut()).insert("score".to_owned(), serde_json::json!(97));
+        must(fs::write(dir.join("p.json"), must(serde_json::to_string(&json))));
+        let (packets, unparseable) = must(load_packets(&dir));
         assert!(packets.is_empty());
         assert_eq!(unparseable.len(), 1);
-        let status = assemble(&registry, &packets, &unparseable).unwrap();
+        let status = must(assemble(&registry, &packets, &unparseable));
         assert_eq!(status.rails[0].currentness_state, "source_unavailable");
         assert!(status.findings.iter().any(|f| f.code == "packet_unparseable"));
     }
@@ -2385,7 +2386,7 @@ mod tests {
         );
         current_red.detail.insert("pr_open".to_owned(), "#99999".to_owned());
         // Both still current: closure markers must not demote `old`.
-        let status = assemble(&registry, &[loaded(closed), loaded(current_red)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(closed), loaded(current_red)], &[]));
         assert_eq!(status.rails[0].currentness_state, "conflicting_current_sources");
     }
 
@@ -2393,7 +2394,7 @@ mod tests {
 
     #[test]
     fn product_health_status_authorization_is_structurally_false_and_tamper_detected() {
-        let status = assemble_fixture(&root()).unwrap();
+        let status = must(assemble_fixture(&root()));
         for rail in &status.rails {
             assert!(!rail.support_authorized);
             assert!(!rail.release_authorized);
@@ -2401,12 +2402,12 @@ mod tests {
         }
         let mut tampered = status.clone();
         tampered.rails[0].support_authorized = true;
-        let raw = serde_json::to_value(&tampered).unwrap();
+        let raw = must(serde_json::to_value(&tampered));
         assert!(validate_status(&tampered, &raw).is_err());
 
         let mut rewritten = status.clone();
         rewritten.rails[0].rail.result = RailResult::Pass;
-        let raw = serde_json::to_value(&rewritten).unwrap();
+        let raw = must(serde_json::to_value(&rewritten));
         assert!(
             validate_status(&rewritten, &raw).is_err(),
             "digest recomputation must catch a rewritten snapshot"
@@ -2414,29 +2415,29 @@ mod tests {
 
         let mut rollup_edited = status.clone();
         rollup_edited.rollup.required_satisfied.push("phantom".to_owned());
-        let raw = serde_json::to_value(&rollup_edited).unwrap();
+        let raw = must(serde_json::to_value(&rollup_edited));
         assert!(validate_status(&rollup_edited, &raw).is_err());
 
         let mut wrong_schema = status.clone();
         wrong_schema.schema = "product_health_status.v2".to_owned();
-        let raw = serde_json::to_value(&wrong_schema).unwrap();
+        let raw = must(serde_json::to_value(&wrong_schema));
         assert!(validate_status(&wrong_schema, &raw).is_err());
     }
 
     #[test]
     fn product_health_status_no_scalar_score_or_global_verdict_exists() {
-        let status = assemble_fixture(&root()).unwrap();
-        let json = serde_json::to_value(&status).unwrap();
+        let status = must(assemble_fixture(&root()));
+        let json = must(serde_json::to_value(&status));
         let text = json.to_string();
         for forbidden in
             ["score", "percentage", "percent", "maturity", "traffic_light", "verdict", "readiness"]
         {
             assert!(!text.contains(forbidden), "status must not contain `{forbidden}`");
         }
-        let rollup = json.get("rollup").unwrap().as_object().unwrap();
+        let rollup = must_some(must_some(json.get("rollup")).as_object());
         for key in rollup.keys() {
             assert!(
-                rollup.get(key).unwrap().as_array().is_some(),
+                must_some(rollup.get(key)).as_array().is_some(),
                 "rollup key `{key}` must be an exact named set, not a scalar"
             );
         }
@@ -2444,16 +2445,18 @@ mod tests {
 
     #[test]
     fn product_health_status_landed_validators_accept_the_assembled_output() {
-        let status = assemble_fixture(&root()).unwrap();
+        let status = must(assemble_fixture(&root()));
         let rebuilt = Registry {
             schema: "product_health_rail_registry.v1".to_owned(),
             adapters: status.adapters.clone(),
             rails: status.rails.iter().map(|r| r.rail.clone()).collect(),
         };
-        validate_registry(&rebuilt)
-            .expect("assembled rails must round-trip through #12359 validators");
-        let raw = serde_json::to_value(&status).unwrap();
-        validate_status(&status, &raw).unwrap();
+        must_with(
+            validate_registry(&rebuilt),
+            "assembled rails must round-trip through #12359 validators",
+        );
+        let raw = must(serde_json::to_value(&status));
+        must(validate_status(&status, &raw));
     }
 
     // -- immutability -----------------------------------------------------------
@@ -2463,41 +2466,37 @@ mod tests {
         let dir = tempdir();
         let registry = fixture_registry_one_rail("exact:fixture", RailResult::NotProven);
         let sources = dir.join("sources");
-        fs::create_dir_all(&sources).unwrap();
-        fs::write(
+        must(fs::create_dir_all(&sources));
+        must(fs::write(
             sources.join("p.json"),
-            serde_json::to_string(&packet(
+            must(serde_json::to_string(&packet(
                 "p",
                 "fixture.parser",
                 "fixture-subject",
                 RailResult::Pass,
                 PacketState::Current,
-            ))
-            .unwrap(),
-        )
-        .unwrap();
+            ))),
+        ));
         let registry_path = dir.join("registry.json");
-        fs::write(&registry_path, serde_json::to_string(&registry).unwrap()).unwrap();
+        must(fs::write(&registry_path, must(serde_json::to_string(&registry))));
         let output = dir.join("status.json");
 
-        build_command(&registry_path, &output).unwrap();
-        build_command(&registry_path, &output).unwrap(); // idempotent identical write
+        must(build_command(&registry_path, &output));
+        must(build_command(&registry_path, &output)); // idempotent identical write
 
         // A different assembly must not overwrite the immutable snapshot.
-        fs::write(
+        must(fs::write(
             sources.join("p.json"),
-            serde_json::to_string(&packet(
+            must(serde_json::to_string(&packet(
                 "p",
                 "fixture.parser",
                 "fixture-subject",
                 RailResult::Failed,
                 PacketState::Current,
-            ))
-            .unwrap(),
-        )
-        .unwrap();
+            ))),
+        ));
         assert!(build_command(&registry_path, &output).is_err());
-        let stored: Status = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        let stored: Status = must(serde_json::from_slice(&must(fs::read(&output))));
         assert_eq!(stored.rails[0].rail.result, RailResult::Pass);
     }
 
@@ -2505,12 +2504,12 @@ mod tests {
 
     #[test]
     fn product_health_status_diff_reports_only_semantic_changes() {
-        let before = assemble_fixture(&root()).unwrap();
+        let before = must(assemble_fixture(&root()));
         let mut after = before.clone();
-        let rail = after.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.compiler").unwrap();
+        let rail = must_some(after.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.compiler"));
         rail.rail.result = RailResult::Pass;
         after.rollup = rollup_from_rails(&after.rails);
-        after.semantic_digest = semantic_digest_of(&after).unwrap();
+        after.semantic_digest = must(semantic_digest_of(&after));
 
         let identical = compute_diff(&before, &before);
         assert!(identical.identical);
@@ -2532,7 +2531,7 @@ mod tests {
             subject: String::new(),
             detail: String::new(),
         });
-        quiet.semantic_digest = semantic_digest_of(&quiet).unwrap();
+        quiet.semantic_digest = must(semantic_digest_of(&quiet));
         let report = compute_diff(&after, &quiet);
         assert!(
             report
@@ -2545,12 +2544,12 @@ mod tests {
     #[test]
     fn product_health_status_show_projects_only_declared_rails() {
         let dir = tempdir();
-        let status = assemble_fixture(&root()).unwrap();
+        let status = must(assemble_fixture(&root()));
         let path = dir.join("status.json");
-        fs::write(&path, status_bytes(&status).unwrap()).unwrap();
+        must(fs::write(&path, must(status_bytes(&status))));
 
-        show_command(&path, None, "text").unwrap();
-        show_command(&path, Some("fixture.parser"), "json").unwrap();
+        must(show_command(&path, None, "text"));
+        must(show_command(&path, Some("fixture.parser"), "json"));
         assert!(show_command(&path, Some("fixture.missing"), "text").is_err());
         assert!(show_command(&path, None, "markdown").is_err());
     }
@@ -2571,40 +2570,43 @@ mod tests {
             RailResult::Pass,
             PacketState::Current,
         );
-        let status = assemble(&registry, &[loaded(plain)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(plain)], &[]));
         let rail = &status.rails[0];
         assert_eq!(rail.rail.result, RailResult::PassWithDeclaredLimitations);
         assert!(!rail.rail.limitations.is_empty());
-        let raw = serde_json::to_value(&status).unwrap();
-        validate_status(&status, &raw)
-            .expect("assembled snapshot must satisfy its own check after narrowing");
+        let raw = must(serde_json::to_value(&status));
+        must_with(
+            validate_status(&status, &raw),
+            "assembled snapshot must satisfy its own check after narrowing",
+        );
     }
 
     #[test]
     fn product_health_status_check_rejects_incoherent_state_result_pairs() {
-        let status = assemble_fixture(&root()).unwrap();
+        let status = must(assemble_fixture(&root()));
 
         // Non-current state paired with a green result, digest recomputed.
         let mut tampered = status.clone();
-        let rail = tampered.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.dap").unwrap();
+        let rail = must_some(tampered.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.dap"));
         rail.rail.result = RailResult::Pass;
         tampered.rollup = rollup_from_rails(&tampered.rails);
-        tampered.semantic_digest = semantic_digest_of(&tampered).unwrap();
-        let raw = serde_json::to_value(&tampered).unwrap();
+        tampered.semantic_digest = must(semantic_digest_of(&tampered));
+        let raw = must(serde_json::to_value(&tampered));
         assert!(validate_status(&tampered, &raw).is_err(), "stale rail cannot turn green");
 
         // current_exact stripped of its source identity.
         let mut tampered = status.clone();
-        let rail = tampered.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.parser").unwrap();
+        let rail =
+            must_some(tampered.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.parser"));
         rail.source_result = None;
-        let raw = serde_json::to_value(&tampered).unwrap();
+        let raw = must(serde_json::to_value(&tampered));
         assert!(validate_status(&tampered, &raw).is_err(), "current rail needs source result");
 
         // Non-current rail carrying current source identity.
         let mut tampered = status.clone();
-        let rail = tampered.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.dap").unwrap();
+        let rail = must_some(tampered.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.dap"));
         rail.source_result = Some(RailResult::Pass);
-        let raw = serde_json::to_value(&tampered).unwrap();
+        let raw = must(serde_json::to_value(&tampered));
         assert!(validate_status(&tampered, &raw).is_err());
     }
 
@@ -2614,8 +2616,8 @@ mod tests {
         let oversized = "s".repeat(PACKET_IDENTITY_BOUND * 4);
         let wrong =
             packet("p", "fixture.parser", &oversized, RailResult::Pass, PacketState::Current);
-        let status = assemble(&registry, &[loaded(wrong)], &[]).unwrap();
-        let bytes = serde_json::to_string(&status).unwrap();
+        let status = must(assemble(&registry, &[loaded(wrong)], &[]));
+        let bytes = must(serde_json::to_string(&status));
         assert!(!bytes.contains(&"s".repeat(PACKET_IDENTITY_BOUND * 2)));
         assert!(
             status
@@ -2642,7 +2644,7 @@ mod tests {
             RailResult::Pass,
             PacketState::Current,
         );
-        let status = assemble(&registry, &[loaded(ghost), loaded(real)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(ghost), loaded(real)], &[]));
         assert!(
             status.findings.iter().any(|f| f.code == "undeclared_rail_packet"
                 && f.detail.contains("fixture.undeclared-rail"))
@@ -2671,17 +2673,18 @@ mod tests {
         );
         b.digest = sha256_of("b");
         b.supersedes = Some("a".to_owned());
-        let status = assemble(&registry, &[loaded(a), loaded(b)], &[]).unwrap();
+        let status = must(assemble(&registry, &[loaded(a), loaded(b)], &[]));
         let history = &status.rails[0].history;
-        let a_ref = history.iter().find(|h| h.packet_id == "a").unwrap();
-        let b_ref = history.iter().find(|h| h.packet_id == "b").unwrap();
+        let a_ref = must_some(history.iter().find(|h| h.packet_id == "a"));
+        let b_ref = must_some(history.iter().find(|h| h.packet_id == "b"));
         assert_eq!(a_ref.superseded_by.as_deref(), Some("b"));
         assert_eq!(b_ref.superseded_by, None);
 
         // Committed fixture: compiler-old was superseded by the current
         // compiler-now packet.
-        let fixture = assemble_fixture(&root()).unwrap();
-        let compiler = fixture.rails.iter().find(|r| r.rail.rail_id == "fixture.compiler").unwrap();
+        let fixture = must(assemble_fixture(&root()));
+        let compiler =
+            must_some(fixture.rails.iter().find(|r| r.rail.rail_id == "fixture.compiler"));
         assert!(
             compiler.history.iter().any(|h| h.packet_id == "compiler-old"
                 && h.superseded_by.as_deref() == Some("compiler-now"))
@@ -2690,13 +2693,11 @@ mod tests {
 
     #[test]
     fn product_health_status_check_rejects_unknown_nested_keys() {
-        let status = assemble_fixture(&root()).unwrap();
-        let mut raw = serde_json::to_value(&status).unwrap();
-        raw["findings"][0]
-            .as_object_mut()
-            .unwrap()
+        let status = must(assemble_fixture(&root()));
+        let mut raw = must(serde_json::to_value(&status));
+        must_some(raw["findings"][0].as_object_mut())
             .insert("note".to_owned(), serde_json::json!("unauthenticated"));
-        let reparsed: Status = serde_json::from_value(raw.clone()).unwrap();
+        let reparsed: Status = must(serde_json::from_value(raw.clone()));
         assert!(
             validate_status(&reparsed, &raw).is_err(),
             "unknown nested keys are unauthenticated bytes"
@@ -2705,11 +2706,11 @@ mod tests {
 
     #[test]
     fn product_health_status_diff_reports_non_field_semantic_changes() {
-        let before = assemble_fixture(&root()).unwrap();
+        let before = must(assemble_fixture(&root()));
         let mut after = before.clone();
-        let rail = after.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.parser").unwrap();
+        let rail = must_some(after.rails.iter_mut().find(|r| r.rail.rail_id == "fixture.parser"));
         rail.rail.claim_ceiling = "narrower ceiling".to_owned();
-        after.semantic_digest = semantic_digest_of(&after).unwrap();
+        after.semantic_digest = must(semantic_digest_of(&after));
         let report = compute_diff(&before, &after);
         assert!(!report.identical);
         assert!(
@@ -2736,9 +2737,24 @@ mod tests {
             RailResult::Pass,
             PacketState::Current,
         ))];
-        let first = assemble(&registry, &packets, &[]).unwrap();
-        let second = assemble(&equivalent, &packets, &[]).unwrap();
+        let first = must(assemble(&registry, &packets, &[]));
+        let second = must(assemble(&equivalent, &packets, &[]));
         assert_eq!(first.semantic_digest, second.semantic_digest);
         assert_eq!(first.adapters, second.adapters);
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some:")]
+    fn product_health_status_converted_option_assertion_still_fails_when_rail_is_absent() {
+        let status = must(assemble_fixture(&root()));
+        let _ = must_some(status.rails.iter().find(|r| r.rail.rail_id == "fixture.missing-rail"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must:")]
+    fn product_health_status_converted_result_assertion_still_fails_when_assemble_is_err() {
+        let mut registry = fixture_registry_one_rail("exact:fixture", RailResult::NotProven);
+        registry.schema = "product_health_rail_registry.v2".to_owned();
+        let _ = must(assemble(&registry, &[], &[]));
     }
 }

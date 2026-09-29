@@ -11,9 +11,11 @@ permissions:
 
 jobs:
   validate-title:
-    runs-on:
-      group: em-ci-nano
-      labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
+    # This metadata-only pull_request_target check must remain available even
+    # when the optional self-hosted nano pool is offline. It never checks out
+    # or executes candidate contents, so a hosted runner preserves the trust
+    # boundary while making the required context live.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Check PR title

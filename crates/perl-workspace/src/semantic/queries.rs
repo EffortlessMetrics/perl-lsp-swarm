@@ -97,6 +97,21 @@ impl QueryContext {
     }
 }
 
+/// Source span of a semantic anchor, resolved from a fact snapshot.
+///
+/// Byte offsets are used deliberately: they are independent of the line/column
+/// encoding a consumer happens to use, so they can be compared against spans
+/// produced by other layers without an encoding conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorSourceSpan {
+    /// Normalized URI of the source that owns the anchor.
+    pub source_uri: String,
+    /// Inclusive start byte offset of the anchor span.
+    pub start_byte: u32,
+    /// Exclusive end byte offset of the anchor span.
+    pub end_byte: u32,
+}
+
 // ── SemanticQueries trait ──
 
 /// Workspace-level semantic query facade.
@@ -111,6 +126,17 @@ pub trait SemanticQueries {
     /// associated entity and occurrence facts.
     fn symbol_at(&self, file_id: FileId, byte_offset: u32) -> Option<(EntityFact, OccurrenceFact)>;
 
+    /// Return the occurrence covering `byte_offset`, whether or not the
+    /// producer bound an entity to it.
+    ///
+    /// `symbol_at` collapses "occurrence published, no entity resolved" into
+    /// `None`; this lookup keeps the published occurrence visible so callers
+    /// can distinguish it from "no occurrence at this position". Defaults to
+    /// `None` for facades that cannot make the distinction.
+    fn occurrence_at(&self, _file_id: FileId, _byte_offset: u32) -> Option<OccurrenceFact> {
+        None
+    }
+
     /// Return ranked definition candidates for a symbol.
     ///
     /// Candidates are sorted by [`DefinitionRank`] (best first), then
@@ -123,6 +149,24 @@ pub trait SemanticQueries {
     /// Returns all non-definition occurrences that reference the given
     /// entity, preserving occurrence kind classification.
     fn references(&self, entity_id: EntityId) -> Vec<OccurrenceFact>;
+
+    /// Resolve `anchor_id` to its owning source URI and byte span.
+    ///
+    /// Implementations must answer from the fact snapshot this facade already
+    /// borrows. Callers frequently run inside
+    /// `WorkspaceIndex::with_semantic_queries_for_uri`, which holds the
+    /// `fact_shards` read lock for the whole callback; resolving an anchor by
+    /// re-entering `WorkspaceIndex` from there re-acquires that same
+    /// non-reentrant, write-preferring lock and deadlocks against a queued
+    /// reindex.
+    ///
+    /// Returns `None` when the anchor has no resolvable source span (generated
+    /// or virtual members), when the span is degenerate, or when more than one
+    /// shard claims the same `anchor_id`. Duplicate IDs must fail closed rather
+    /// than returning whichever shard `HashMap` iteration happens to hit first.
+    fn anchor_source_span(&self, _anchor_id: AnchorId) -> Option<AnchorSourceSpan> {
+        None
+    }
 
     /// Return symbols visible at a given file position and scope.
     fn visible_symbols_at(
@@ -497,7 +541,52 @@ impl<'a> WorkspaceSemanticQueries<'a> {
 }
 
 impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
+    /// Resolve the anchor from the borrowed shard snapshot.
+    ///
+    /// This never touches `WorkspaceIndex`, so it is safe to call from inside
+    /// `with_semantic_queries_for_uri` while the `fact_shards` read lock is
+    /// held. A degenerate span, or the same `anchor_id` appearing in more than
+    /// one shard, is reported as unresolved rather than as an arbitrary
+    /// first-hit location.
+    fn anchor_source_span(&self, anchor_id: AnchorId) -> Option<AnchorSourceSpan> {
+        let mut found = None;
+        for shard in self.fact_shards.values() {
+            for anchor in shard.anchors.iter().filter(|anchor| anchor.id == anchor_id) {
+                if anchor.span_end_byte <= anchor.span_start_byte {
+                    return None;
+                }
+                let next = AnchorSourceSpan {
+                    source_uri: shard.source_uri.clone(),
+                    start_byte: anchor.span_start_byte,
+                    end_byte: anchor.span_end_byte,
+                };
+                if found.replace(next).is_some() {
+                    return None;
+                }
+            }
+        }
+        found
+    }
+
     fn symbol_at(&self, file_id: FileId, byte_offset: u32) -> Option<(EntityFact, OccurrenceFact)> {
+        let occurrence = self.occurrence_at(file_id, byte_offset)?;
+
+        // Resolve the entity from the occurrence's entity_id. The declaring
+        // shard may differ from the referencing file: cross-file inherited
+        // calls bind the parent's entity at the canonical fact boundary, so
+        // the EntityFact must be looked up across the workspace, not assumed
+        // to live in the referencing file's own shard.
+        let entity_id = occurrence.entity_id?;
+        let entity = self
+            .fact_shards
+            .values()
+            .flat_map(|shard| shard.entities.iter())
+            .find(|e| e.id == entity_id)?;
+
+        Some((entity.clone(), occurrence))
+    }
+
+    fn occurrence_at(&self, file_id: FileId, byte_offset: u32) -> Option<OccurrenceFact> {
         let shard = self.shard_for_file(file_id)?;
 
         // Find the anchor that encloses the byte offset.
@@ -508,13 +597,7 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         })?;
 
         // Find an occurrence at this anchor.
-        let occurrence = shard.occurrences.iter().find(|o| o.anchor_id == anchor.id)?;
-
-        // Resolve the entity from the occurrence's entity_id.
-        let entity_id = occurrence.entity_id?;
-        let entity = shard.entities.iter().find(|e| e.id == entity_id)?;
-
-        Some((entity.clone(), occurrence.clone()))
+        shard.occurrences.iter().find(|o| o.anchor_id == anchor.id).cloned()
     }
 
     fn definitions(&self, symbol: &str, context: &QueryContext) -> Vec<DefinitionCandidate> {
@@ -1720,6 +1803,65 @@ mod tests {
         Ok(())
     }
 
+    // ── anchor_source_span tests ──
+
+    fn colliding_anchor_shard(uri: &str, file_id: FileId, start: u32, end: u32) -> FileFactShard {
+        make_shard(
+            uri,
+            file_id,
+            vec![AnchorFact {
+                id: AnchorId(42),
+                file_id,
+                span_start_byte: start,
+                span_end_byte: end,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn anchor_source_span_resolves_unique_id() -> Result<(), Box<dyn std::error::Error>> {
+        let (_file_id, shard) = simple_shard();
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        let span = queries.anchor_source_span(AnchorId(10)).ok_or("unique anchor must resolve")?;
+        assert_eq!(span.source_uri, "file:///lib/Foo.pm");
+        assert_eq!(span.start_byte, 0);
+        assert_eq!(span.end_byte, 15);
+        Ok(())
+    }
+
+    #[test]
+    fn anchor_source_span_fails_closed_for_duplicate_ids_across_shards()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Distinct spans so a first-hit implementation would return whichever
+        // shard HashMap iteration happens to yield first. Fail-closed must not
+        // let iteration order manufacture a source-backed identity.
+        let shard_a = colliding_anchor_shard("file:///lib/A.pm", FileId(1), 0, 7);
+        let shard_b = colliding_anchor_shard("file:///lib/B.pm", FileId(2), 10, 17);
+        let mut shards = HashMap::new();
+        shards.insert(shard_a.source_uri.clone(), shard_a);
+        shards.insert(shard_b.source_uri.clone(), shard_b);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        assert!(
+            queries.anchor_source_span(AnchorId(42)).is_none(),
+            "duplicate AnchorId across shards must fail closed rather than pick a HashMap winner"
+        );
+        Ok(())
+    }
+
     // ── symbol_at tests ──
 
     #[test]
@@ -1768,6 +1910,71 @@ mod tests {
 
         let result = queries.symbol_at(FileId(999), 0);
         assert!(result.is_none(), "should return None for unknown file");
+        Ok(())
+    }
+
+    // ── occurrence_at tests ──
+
+    /// The state `occurrence_at` exists for: a producer published an occurrence
+    /// but bound no entity to it. `symbol_at` collapses that to `None`; the
+    /// occurrence-only lookup must keep the published fact visible.
+    #[test]
+    fn occurrence_at_returns_entity_less_occurrence() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(1);
+        let anchor_id = AnchorId(10);
+        let shard = make_shard(
+            "file:///lib/Foo.pm",
+            file_id,
+            vec![AnchorFact {
+                id: anchor_id,
+                file_id,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![OccurrenceFact {
+                id: OccurrenceId(200),
+                kind: OccurrenceKind::Call,
+                entity_id: None,
+                anchor_id,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+        );
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        assert!(
+            queries.symbol_at(file_id, 5).is_none(),
+            "symbol_at collapses the entity-less occurrence to None"
+        );
+        let occurrence = queries
+            .occurrence_at(file_id, 5)
+            .ok_or("occurrence_at must report the published occurrence")?;
+        assert_eq!(occurrence.id, OccurrenceId(200));
+        assert_eq!(occurrence.entity_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn occurrence_at_returns_none_for_uncovered_position() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (file_id, shard) = simple_shard();
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        assert!(queries.occurrence_at(file_id, 30).is_none());
         Ok(())
     }
 
@@ -2457,6 +2664,113 @@ mod tests {
         let candidates = queries.method_candidates("Child", "greet");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].canonical_name, "Parent::greet");
+        Ok(())
+    }
+
+    #[test]
+    fn inherited_method_identity_is_shared_by_candidates_definitions_and_references()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_child = FileId(1);
+        let file_parent = FileId(2);
+        let parent_anchor = AnchorId(20);
+        let call_anchor = AnchorId(30);
+        let method_id = EntityId(200);
+
+        let shard_child = make_shard(
+            "file:///lib/Child.pm",
+            file_child,
+            vec![AnchorFact {
+                id: call_anchor,
+                file_id: file_child,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![OccurrenceFact {
+                id: OccurrenceId(300),
+                kind: OccurrenceKind::Call,
+                entity_id: Some(method_id),
+                anchor_id: call_anchor,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+        );
+
+        let shard_parent = make_shard(
+            "file:///lib/Parent.pm",
+            file_parent,
+            vec![AnchorFact {
+                id: parent_anchor,
+                file_id: file_parent,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![EntityFact {
+                id: method_id,
+                kind: EntityKind::Method,
+                canonical_name: "Parent::greet".to_string(),
+                anchor_id: Some(parent_anchor),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard_child.source_uri.clone(), shard_child.clone());
+        shards.insert(shard_parent.source_uri.clone(), shard_parent.clone());
+
+        let mut package_graph = PackageGraphIndex::new();
+        package_graph.add_edges(
+            "file:///lib/Child.pm",
+            file_child,
+            vec![PackageEdge::new(
+                "Child".to_string(),
+                "Parent".to_string(),
+                PackageEdgeKind::Inherits,
+                Some(AnchorId(1)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )],
+        );
+
+        let mut reference_index = ReferenceIndex::new();
+        reference_index.add_file(&shard_child);
+        let import_export_index = ImportExportIndex::new();
+        let queries = WorkspaceSemanticQueries::with_package_graph(
+            &reference_index,
+            &import_export_index,
+            &shards,
+            &package_graph,
+        );
+
+        let candidate = queries
+            .method_candidates("Child", "greet")
+            .into_iter()
+            .next()
+            .ok_or("inherited method candidate should resolve")?;
+        let definition = queries
+            .definitions("Parent::greet", &QueryContext::new(file_child, None, Some(10)))
+            .into_iter()
+            .next()
+            .ok_or("inherited method definition should resolve")?;
+        let references = queries.references(method_id);
+
+        assert_eq!(candidate.entity_id, method_id);
+        assert_eq!(definition.entity_id, method_id);
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].entity_id, Some(method_id));
+        assert_eq!(references[0].anchor_id, call_anchor);
         Ok(())
     }
 

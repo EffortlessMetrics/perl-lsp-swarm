@@ -8,13 +8,15 @@
 //! - **Ready state**: Full workspace index + text search across all files
 //! - **Building/Degraded state**: Same-file semantic analysis + open document scan
 
-use super::super::{DocumentHighlightProvider, LspServer, Value, byte_to_utf16_col, json};
+use super::super::{DocumentHighlightProvider, LspServer, Value, json};
+use super::reference_text::{
+    TextReferenceQuery, finalize_reference_locations, search_document_texts_for_references,
+};
 use crate::protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri};
 use crate::runtime::window::RequestProgressGuard;
 use crate::state::{reference_search_deadline, references_cap};
-use crate::util::{is_word_boundary, token_under_cursor};
+use crate::util::token_under_cursor;
 use std::collections::BinaryHeap;
-use std::sync::OnceLock;
 use std::time::Instant;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
@@ -27,6 +29,10 @@ use perl_lsp_rs_core::providers::navigation::references_shadow::{
     ReferencesCutoverResult, find_references_live_source_backed,
 };
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+use perl_lsp_rs_core::providers::semantic_port::{
+    SemanticQueriesResolveSource, accepted_generation_basis, resolve_at_position, stable_basis_view,
+};
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_semantic_facts::AnchorId;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
@@ -35,8 +41,6 @@ use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 use crate::runtime::readiness::IndexReadinessPolicy;
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
-
-static QUALIFIED_NAME_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
 const REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS: usize = 128;
 const REFERENCE_TEXT_FALLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -49,7 +53,7 @@ const REFERENCE_TEXT_FALLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// existing fallback cascade. Flip to `false` to restore the pre-P8 routing
 /// boundary without changing the fallback tiers.
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-const ENABLE_PIR_A_LEXICAL_REFERENCES_LIVE: bool = true;
+const ENABLE_SEMANTIC_SOURCE_BACKED_REFERENCES_LIVE: bool = true;
 
 fn lsp_location_count(value: Option<&Value>) -> usize {
     match value {
@@ -74,7 +78,7 @@ struct ReferencesDecisionTraceContext {
 /// results — a signal that would be lost if collapsed into `WorkspaceExact`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReferencesAnsweringTier {
-    /// Tier 1 — live compiler source-backed references (most precise).
+    /// Tier 1 — live semantic source-backed references (most precise).
     SemanticSourceBacked,
     /// Tiers 2, 4, 5 — workspace index `find_refs`/`find_def`/`find_references` only.
     WorkspaceExact,
@@ -110,6 +114,9 @@ pub(crate) enum SourceBackedReferenceDecline {
     WorkspaceIndexUnavailable,
     /// The workspace index is stale relative to the request document.
     WorkspaceIndexStale,
+    /// The accepted view moved between generation-basis capture and the guarded
+    /// semantic read, so the basis would mislabel the resolved facts.
+    WorkspaceIndexMovedDuringResolve,
     /// Semantic queries could not be opened for the request URI.
     SemanticQueriesUnavailableForUri,
     /// Entity resolution did not produce one exact entity.
@@ -120,12 +127,24 @@ pub(crate) enum SourceBackedReferenceDecline {
     DeclarationAnchorUnavailable,
     /// The declaration anchor had no wire location.
     DeclarationLocationUnavailable,
+    /// The declaration wire location carried a URI that is not a valid protocol URI.
+    ///
+    /// Distinct from [`Self::DeclarationLocationUnavailable`]: an anchor was found and
+    /// produced a location, but its URI could not be converted without naming a
+    /// different resource, so the attempt declines rather than emitting one.
+    DeclarationLocationUriInvalid,
     /// The declaration location could not be serialized for the wire response.
     DeclarationSerializationFailed,
     /// The initialized lexical declaration gate rejected the source shape.
     InitializedLexicalGateRejected,
     /// An occurrence had no wire location anchor.
     OccurrenceLocationUnavailable,
+    /// An occurrence wire location carried a URI that is not a valid protocol URI.
+    ///
+    /// Distinct from [`Self::OccurrenceLocationUnavailable`]: the anchor produced a
+    /// location, but its URI could not be converted without naming a different
+    /// resource, so the attempt declines rather than emitting one.
+    OccurrenceLocationUriInvalid,
     /// An occurrence location could not be serialized for the wire response.
     OccurrenceSerializationFailed,
     /// The exact path produced no locations after filtering.
@@ -155,6 +174,9 @@ impl SourceBackedReferenceAttempt {
                     SourceBackedReferenceDecline::WorkspaceIndexStale => {
                         ("workspace_index_stale", false, 0, None)
                     }
+                    SourceBackedReferenceDecline::WorkspaceIndexMovedDuringResolve => {
+                        ("workspace_index_moved", false, 0, None)
+                    }
                     SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri => {
                         ("semantic_queries", false, 0, None)
                     }
@@ -171,6 +193,9 @@ impl SourceBackedReferenceAttempt {
                     SourceBackedReferenceDecline::DeclarationLocationUnavailable => {
                         ("declaration_location", false, 0, None)
                     }
+                    SourceBackedReferenceDecline::DeclarationLocationUriInvalid => {
+                        ("declaration_location_uri", false, 0, None)
+                    }
                     SourceBackedReferenceDecline::DeclarationSerializationFailed => {
                         ("declaration_serialization", false, 0, None)
                     }
@@ -179,6 +204,9 @@ impl SourceBackedReferenceAttempt {
                     }
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable => {
                         ("occurrence_location", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::OccurrenceLocationUriInvalid => {
+                        ("occurrence_location_uri", false, 0, None)
                     }
                     SourceBackedReferenceDecline::OccurrenceSerializationFailed => {
                         ("occurrence_serialization", false, 0, None)
@@ -296,6 +324,83 @@ impl ReferencesAnsweringTier {
         }
     }
 
+    /// Freshness of the facts this tier answered from, relative to the request.
+    ///
+    /// Written to the provider-decision receipt, so it must be derived rather than
+    /// asserted: a receipt that always reports `fresh` cannot distinguish an answer
+    /// computed over current source from one computed over a workspace index that
+    /// the handler already observed to be stale (#14156; principle 2,
+    /// "Tamper-evident + fail-closed", of `docs/reference/SCOREBOARD_DOCTRINE.md`).
+    ///
+    /// `index_state` is the `"full" | "partial" | "none"` label captured at the
+    /// branch point, which is downgraded to `"none"` when the workspace index is
+    /// stale for any open document.
+    ///
+    /// `"none"` conflates a positively-observed stale index with an absent one, so
+    /// this reports `unknown` rather than `stale`: understating what we know is
+    /// fail-closed, whereas claiming `stale` would replace one false precision with
+    /// another. Splitting those cases requires `index_state` to carry the
+    /// distinction and is deliberately not attempted here.
+    pub(crate) fn freshness(self, index_state: &str) -> &'static str {
+        match self {
+            // These two answer from the current file's own text and parsed AST
+            // rather than from the workspace index, so no cached index stands
+            // between the request and the source they answered from. Index
+            // staleness — the axis this derivation keys on — cannot make them
+            // wrong, which is why they do not consult `index_state`.
+            //
+            // They read a snapshot, though, not the live buffer:
+            // `handle_references_inner` clones the document under the documents
+            // lock and drops it, and `symbol_key`, `offset`, and `needle` all
+            // derive from that generation (see the consistency note at the
+            // `doc_owned` capture). A `didChange` racing in after the capture
+            // leaves the answer computed over generation N while the map moves
+            // to N+1, and this arm still reports `fresh`. That is the
+            // document-generation half of the same residual window #14320 covers
+            // for the index, and it needs the same remedy: the generation that
+            // actually answered carried to the receipt boundary. Do not read
+            // this arm as a claim that no mid-request edit can affect them.
+            Self::OpenDocumentText | Self::SemanticAnalyzer => "fresh",
+            // `WorkspaceExact`, `WorkspaceMixed`, and `PartialIndex` answer from
+            // the workspace index, so they are only as current as it is. `Empty`
+            // joins them because a "no references" claim is exactly as complete
+            // as the index coverage behind it.
+            //
+            // `SemanticSourceBacked` belongs here too, despite reading compiler
+            // facts rather than raw index entries: it resolves them through
+            // `workspace_index.with_semantic_queries_for_uri`, so its cross-file
+            // facts are index-derived and can be invalidated by an edit. The
+            // source-backed path declines outright on an index it observes to be
+            // stale (`SourceBackedReferenceDecline::WorkspaceIndexStale`), so in
+            // the ordinary case it only ever answers over a full index and this
+            // branch yields `fresh`. Deriving from `index_state` rather than
+            // asserting `fresh` is what makes it fail closed when the receipt
+            // boundary revalidates that state away underneath it.
+            //
+            // `WorkspaceText` is grouped here for reachability, not data source:
+            // its results come from `bounded_open_document_snapshot`, a scan of
+            // the live open buffers, so it is current in the same sense as
+            // `OpenDocumentText`. It is only ever reached from inside the
+            // `IndexAccessMode::Full` arm, where this branch yields `fresh`
+            // anyway, so the two groupings are indistinguishable today. If that
+            // path ever becomes reachable under a lesser index state, move it to
+            // the live-source arm above rather than letting it report `unknown`
+            // for an answer read from live buffers.
+            Self::SemanticSourceBacked
+            | Self::WorkspaceExact
+            | Self::WorkspaceMixed
+            | Self::WorkspaceText
+            | Self::PartialIndex
+            | Self::Empty => {
+                if index_state == "full" {
+                    "fresh"
+                } else {
+                    "unknown"
+                }
+            }
+        }
+    }
+
     /// Fallback state normalized by the provider-decision receipt model.
     pub(crate) fn fallback_state(self, result_count: usize) -> &'static str {
         if result_count == 0 {
@@ -331,7 +436,7 @@ pub(crate) fn classify_combined_tier(
 
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 fn may_use_source_backed_references(symbol_is_variable: bool, include_declaration: bool) -> bool {
-    !symbol_is_variable || (ENABLE_PIR_A_LEXICAL_REFERENCES_LIVE && !include_declaration)
+    !symbol_is_variable || (ENABLE_SEMANTIC_SOURCE_BACKED_REFERENCES_LIVE && !include_declaration)
 }
 
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -348,101 +453,6 @@ fn line_has_initialized_lexical_declaration(line: &str, sigil: char, name: &str)
         }
     }
     false
-}
-
-fn get_qualified_name_regex() -> Option<&'static regex::Regex> {
-    QUALIFIED_NAME_RE
-        .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
-        .as_ref()
-        .ok()
-}
-
-fn search_document_texts_for_references<'a, I>(documents: I, needle: &str, cap: usize) -> Vec<Value>
-where
-    I: IntoIterator<Item = (&'a str, &'a str)>,
-{
-    if needle.is_empty() || cap == 0 {
-        return Vec::new();
-    }
-
-    let needle_bytes = needle.as_bytes();
-    let mut out = Vec::new();
-
-    'docs: for (doc_uri, doc_text) in documents {
-        for (line_num, line) in doc_text.lines().enumerate() {
-            let line_bytes = line.as_bytes();
-            let mut start = 0usize;
-            while let Some(idx) = line[start..].find(needle) {
-                let byte_pos = start + idx;
-                if is_word_boundary(line_bytes, byte_pos, needle_bytes.len()) {
-                    let start_utf16 = byte_to_utf16_col(line, byte_pos);
-                    let end_utf16 = byte_to_utf16_col(line, byte_pos + needle_bytes.len());
-                    out.push(json!({
-                        "uri": doc_uri,
-                        "range": {
-                            "start": {
-                                "line": line_num,
-                                "character": start_utf16,
-                            },
-                            "end": {
-                                "line": line_num,
-                                "character": end_utf16,
-                            },
-                        },
-                    }));
-                    if out.len() >= cap {
-                        break 'docs;
-                    }
-                }
-                start = byte_pos + needle_bytes.len();
-            }
-        }
-    }
-
-    out.sort_by_key(|loc| {
-        (
-            loc["uri"].as_str().unwrap_or("").to_string(),
-            loc["range"]["start"]["line"].as_u64().unwrap_or(0),
-            loc["range"]["start"]["character"].as_u64().unwrap_or(0),
-        )
-    });
-    out.dedup();
-    out.truncate(cap);
-    out
-}
-
-fn should_skip_text_reference_match(
-    line: &str,
-    match_start: usize,
-    sigil: Option<char>,
-    include_declaration: bool,
-) -> bool {
-    if include_declaration {
-        return false;
-    }
-
-    let Some(sigil) = sigil else {
-        return false;
-    };
-
-    let symbol_start = line
-        .get(..match_start)
-        .and_then(|prefix| prefix.char_indices().next_back())
-        .and_then(|(idx, ch)| (ch == sigil).then_some(idx))
-        .unwrap_or(match_start);
-    let Some(prefix) = line.get(..symbol_start) else {
-        return false;
-    };
-
-    let statement_prefix =
-        prefix.rfind([';', '{', '}']).map(|idx| &prefix[idx + 1..]).unwrap_or(prefix);
-    if statement_prefix.contains('=') {
-        return false;
-    }
-
-    statement_prefix
-        .split(|ch: char| !ch.is_ascii_alphabetic() && ch != '_')
-        .any(|token| matches!(token, "my" | "our" | "state" | "local"))
 }
 
 impl LspServer {
@@ -488,6 +498,7 @@ impl LspServer {
     fn record_references_provider_decision_trace(
         &self,
         context: Option<&ReferencesDecisionTraceContext>,
+        request_id: Option<&Value>,
         result: Option<&Value>,
         tier: ReferencesAnsweringTier,
         index_state: &str,
@@ -505,6 +516,42 @@ impl LspServer {
             ("fallback", "no_result")
         } else {
             ("acted", "live_provider_result")
+        };
+        // The request may have routed through a full index and then yielded to an
+        // open-document edit before this receipt is written. Revalidate the
+        // request-local index claim here so index-backed and empty answers report
+        // `none` rather than a stale `full` snapshot. Live-source tiers retain
+        // their tier semantics: their freshness stays `fresh` even when this
+        // recheck downgrades the incidental index state carried in the receipt.
+        //
+        // This NARROWS the window; it does not close it. The call below is a
+        // point-in-time boolean, not a generation-bound join with the answer or
+        // with the write that follows, so an edit landing between this check and
+        // the trace write still produces a `fresh` receipt — the same false
+        // currency, in a shorter interval. `handle_references_revalidates_index_
+        // state_after_open_document_edit` proves the edit-before-recheck ordering
+        // only; there is no barrier-driven edit-after-recheck control, because
+        // there is no seam to place one against.
+        //
+        // Closing it needs the index/source generation that actually answered to
+        // be carried to this point and committed against the current generation
+        // under one synchronization boundary (or the receipt emitted from an
+        // immutable request snapshot). That is #14320, deliberately not attempted
+        // here: it is a concurrency-ownership change on a hot path, not a receipt
+        // repair, and this candidate's claim is scoped to the sentinel removal.
+        let index_state = {
+            #[cfg(feature = "workspace")]
+            {
+                if index_state == "full" && self.workspace_index_stale_for_any_open_document() {
+                    "none"
+                } else {
+                    index_state
+                }
+            }
+            #[cfg(not(feature = "workspace"))]
+            {
+                index_state
+            }
         };
         let fallback_state = tier.fallback_state(result_count);
         // Confidence is high only when the semantic source-backed tier answered.
@@ -532,50 +579,65 @@ impl LspServer {
             },
         };
 
-        self.record_provider_decision_trace(
-            "references",
-            &json!({
-                "provider": "references",
-                "provider_action": "textDocument/references",
-                "decision": decision,
-                "reason": reason,
-                "uri": context.uri,
-                "line": context.line,
-                "character": context.character,
-                "include_declaration": context.include_declaration,
-                "result_count": result_count,
-                "index_result_count": index_result_count,
-                "text_result_count": text_result_count,
-                "source_backed_result_count": source_backed_result_count,
-                "fact_source": tier.fact_source(),
-                "confidence": confidence,
-                "freshness": "fresh",
-                "source_backed": tier.is_source_backed(),
-                "source_backed_state": tier.source_backed_state(),
-                "answering_tier": tier.as_str(),
-                "index_state": index_state,
-                "latency_us": latency_us,
-                "fallback_state": fallback_state,
-                "dynamic_boundary": false,
-                "trace_only_no_live_behavior_change": true,
-                "source_backed_attempted": source_backed_attempted,
-                "source_backed_outcome": source_backed_outcome,
-                "source_backed_decline_stage": source_backed_decline_stage,
-                "source_backed_symbol_at_found": source_backed_symbol_at_found,
-                "source_backed_exact_candidate_count": source_backed_exact_candidate_count,
-                "source_backed_cutover_result": source_backed_cutover_result,
-                "scanned_documents": fallback_receipt.scanned_documents,
-                "scanned_bytes": fallback_receipt.scanned_bytes,
-                "scan_budget_documents": fallback_receipt.scan_budget_documents,
-                "scan_budget_bytes": fallback_receipt.scan_budget_bytes,
-                "budget_exhausted": fallback_receipt.budget_exhausted,
-                "deadline_exhausted": fallback_receipt.deadline_exhausted,
-                "cancellation_observed": fallback_receipt.cancellation_observed,
-                "fallback_completeness": fallback_receipt.fallback_completeness,
-                "fallback_reason": fallback_receipt.fallback_reason,
-                "claim_boundary": "records existing references response only; no broader live references cutover"
-            }),
-        );
+        let mut receipt = json!({
+            "provider": "references",
+            "provider_action": "textDocument/references",
+            "decision": decision,
+            "reason": reason,
+            "uri": context.uri,
+            "line": context.line,
+            "character": context.character,
+            "include_declaration": context.include_declaration,
+            "result_count": result_count,
+            "index_result_count": index_result_count,
+            "text_result_count": text_result_count,
+            "source_backed_result_count": source_backed_result_count,
+            "fact_source": tier.fact_source(),
+            "confidence": confidence,
+            "freshness": tier.freshness(index_state),
+            "source_backed": tier.is_source_backed(),
+            "source_backed_state": tier.source_backed_state(),
+            "answering_tier": tier.as_str(),
+            "index_state": index_state,
+            "latency_us": latency_us,
+            "fallback_state": fallback_state,
+            "dynamic_boundary": false,
+            "trace_only_no_live_behavior_change": true,
+            "source_backed_attempted": source_backed_attempted,
+            "source_backed_outcome": source_backed_outcome,
+            "source_backed_decline_stage": source_backed_decline_stage,
+            "source_backed_symbol_at_found": source_backed_symbol_at_found,
+            "source_backed_exact_candidate_count": source_backed_exact_candidate_count,
+            "source_backed_cutover_result": source_backed_cutover_result,
+            "scanned_documents": fallback_receipt.scanned_documents,
+            "scanned_bytes": fallback_receipt.scanned_bytes,
+            "scan_budget_documents": fallback_receipt.scan_budget_documents,
+            "scan_budget_bytes": fallback_receipt.scan_budget_bytes,
+            "budget_exhausted": fallback_receipt.budget_exhausted,
+            "deadline_exhausted": fallback_receipt.deadline_exhausted,
+            "cancellation_observed": fallback_receipt.cancellation_observed,
+            "fallback_completeness": fallback_receipt.fallback_completeness,
+            "fallback_reason": fallback_receipt.fallback_reason,
+            "claim_boundary": "records existing references response only; no broader live references cutover"
+        });
+        if let Some(request_id) = request_id
+            && let Some(object) = receipt.as_object_mut()
+        {
+            object.insert("request_id".to_string(), request_id.clone());
+        }
+        self.record_provider_decision_trace("references", &receipt);
+    }
+
+    fn invalidate_references_trace_for_request(&self, request_id: Option<&Value>) {
+        let Some(request_id) = request_id else {
+            return;
+        };
+        let mut traces = self.provider_decision_traces.lock();
+        let remove =
+            traces.get("references").and_then(|trace| trace.get("request_id")) == Some(request_id);
+        if remove {
+            traces.remove("references");
+        }
     }
 
     /// Handle textDocument/references request with lifecycle-aware dispatch
@@ -600,7 +662,14 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let _progress = RequestProgressGuard::new(self, "references", "Finding references");
-        let trace_context = Self::references_decision_trace_context(params.as_ref())?;
+        let trace_context = match Self::references_decision_trace_context(params.as_ref()) {
+            Ok(context) => context,
+            Err(error) => {
+                self.invalidate_references_trace_for_request(request_id);
+                return Err(error);
+            }
+        };
+        let outcome = self.handle_references_inner(params, request_id);
         let (
             result,
             tier,
@@ -610,9 +679,16 @@ impl LspServer {
             latency_us,
             source_backed_attempt,
             fallback_receipt,
-        ) = self.handle_references_inner(params, request_id)?;
+        ) = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.invalidate_references_trace_for_request(request_id);
+                return Err(error);
+            }
+        };
         self.record_references_provider_decision_trace(
             trace_context.as_ref(),
+            request_id,
             result.as_ref(),
             tier,
             index_state,
@@ -657,6 +733,16 @@ impl LspServer {
         let cap = references_cap();
         let mut source_backed_attempt: Option<SourceBackedReferenceAttempt> = None;
         let mut fallback_receipt = ReferenceTextFallbackReceipt::default();
+        // Function-scoped copy of the index access state observed at the branch
+        // point. The deeper `index_state` binding is not in scope at the terminal
+        // no-result return, which used to hard-code "none" there and so reported a
+        // full index as absent whenever the answer came back empty (#14156).
+        // "none" remains the correct default for a request that never reaches
+        // index routing at all.
+        #[cfg(feature = "workspace")]
+        let mut observed_index_state: &'static str = "none";
+        #[cfg(not(feature = "workspace"))]
+        let observed_index_state: &'static str = "none";
         let fallback_budget = ReferenceTextFallbackBudget {
             max_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
             max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
@@ -725,6 +811,7 @@ impl LspServer {
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let offset = self.pos16_to_offset(doc, line, character);
+
                     let needle = token_under_cursor(&doc.text, line as usize, character as usize)
                         .unwrap_or_default();
 
@@ -774,8 +861,76 @@ impl LspServer {
                             IndexAccessMode::Partial(_) => "partial",
                             IndexAccessMode::None => "none",
                         };
+                        // Carry the observed state out to the terminal no-result
+                        // return, which is below this block's scope.
+                        observed_index_state = index_state;
                         let workspace_symbol_key =
                             symbol_key.as_ref().map(super::to_workspace_symbol_key);
+
+                        // #1849: a cursor on a package-prefix component of a
+                        // fully-qualified sub name -- `Foo`, or the `::`, in
+                        // `Foo::bar()` -- does not name the sub `bar`, so it has no
+                        // references to report for it.
+                        //
+                        // This must run before any tier consumes the symbol key.
+                        // `symbol_at_cursor_with_source` above always takes the
+                        // final `::` component regardless of cursor position, and
+                        // every tier below (semantic source-backed, index
+                        // `find_refs`, partial index, text fallback) is driven by
+                        // that key. Guarding only the qualified-name regex fallback
+                        // further down leaves the earlier tiers answering with the
+                        // sub's references.
+                        //
+                        // Restricted to a *bare sub* key on purpose. Only there do
+                        // the `::` components name separate things, so only there is
+                        // the cursor's component the deciding fact. A package
+                        // variable (`$Foo::bar`, sigil `Some`) and a package name
+                        // (`use My::Module`, `SymKind::Pack`) are each one symbol
+                        // whose spelling merely contains `::`; the cursor refers to
+                        // the same symbol wherever it sits inside them, and
+                        // suppressing those would drop references the server
+                        // correctly reports today.
+                        //
+                        // It sits after `index_state` is derived so the decision
+                        // receipt still reports the index access mode actually
+                        // observed. The classification itself is a fact about the
+                        // buffer's own text and the cursor's own symbol; it consults
+                        // no index.
+                        //
+                        // Classify over the whole line, not a radius window: a
+                        // window can end inside a long middle component, which makes
+                        // that component look like the final one and lets the wrong
+                        // target through. A Perl qualified name cannot span a line
+                        // break, so the line always contains the whole name.
+                        let bare_sub_key = workspace_symbol_key.as_ref().filter(|key| {
+                            key.sigil.is_none()
+                                && matches!(key.kind, crate::workspace_index::SymKind::Sub)
+                        });
+                        if let Some(bare_sub_key) = bare_sub_key {
+                            // The question the guard actually asks is "does the
+                            // cursor sit on the token that names the sub every tier
+                            // below is about to search for?" -- the same question
+                            // `rename.rs` asks before editing, through the predicate
+                            // the two share (#14757).
+                            let cursor_is_off_the_named_sub =
+                                super::navigation::cursor_is_off_named_symbol(
+                                    &doc.text,
+                                    offset,
+                                    Some(&*bare_sub_key.name),
+                                );
+                            if cursor_is_off_the_named_sub {
+                                return Ok((
+                                    Some(json!([])),
+                                    ReferencesAnsweringTier::Empty,
+                                    index_state,
+                                    0,
+                                    0,
+                                    start.elapsed().as_micros(),
+                                    source_backed_attempt.clone(),
+                                    fallback_receipt.clone(),
+                                ));
+                            }
+                        }
 
                         match access_mode {
                             IndexAccessMode::Full(coordinator) => {
@@ -814,7 +969,10 @@ impl LspServer {
                                                 source_backed_attempt = Some(
                                                     SourceBackedReferenceAttempt::Exact(Vec::new()),
                                                 );
-                                                live_locations.truncate(cap);
+                                                live_locations = finalize_reference_locations(
+                                                    live_locations,
+                                                    cap,
+                                                );
                                                 // Precompute before the tracing macro so these
                                                 // expressions are unconditionally instrumented
                                                 // rather than lazily evaluated only when the
@@ -824,11 +982,11 @@ impl LspServer {
                                                 tracing::debug!(
                                                     ref_count,
                                                     elapsed = ?elapsed,
-                                                    "References: returned live source-backed compiler facts"
+                                                    "References: returned live semantic source-backed facts"
                                                 );
                                                 let result_count = live_locations.len();
                                                 return Ok((
-                                                    Some(to_json_array(&live_locations)),
+                                                    Some(Value::Array(live_locations)),
                                                     ReferencesAnsweringTier::SemanticSourceBacked,
                                                     index_state,
                                                     result_count,
@@ -917,92 +1075,54 @@ impl LspServer {
                                         typed_request_id.as_ref(),
                                     )?;
 
-                                    let mut enhanced_locations = Vec::new();
-                                    let symbol_name = &symbol_key.name;
-                                    let package_name = &symbol_key.pkg;
-
-                                    // Search patterns: both "symbol_name" and "package::symbol_name"
-                                    let patterns = vec![
-                                        format!(r"\b{}\b", regex::escape(symbol_name)),
-                                        format!(
-                                            r"\b{}::{}\b",
-                                            regex::escape(package_name),
-                                            regex::escape(symbol_name)
-                                        ),
-                                    ];
-
-                                    'pattern_loop: for pattern in patterns {
-                                        self.check_references_cancellation(
-                                            typed_request_id.as_ref(),
-                                            &mut fallback_receipt,
-                                        )?;
-                                        // Check deadline between patterns
-                                        if start.elapsed() >= deadline {
-                                            fallback_receipt.deadline_exhausted = true;
-                                            fallback_receipt.fallback_completeness = "partial";
-                                            fallback_receipt.fallback_reason = Some(
-                                                "reference_scan_deadline_during_search".to_owned(),
-                                            );
-                                            tracing::debug!(
-                                                "References: deadline exceeded during text search"
-                                            );
-                                            break 'pattern_loop;
-                                        }
-                                        if let Ok(search_regex) = regex::Regex::new(&pattern) {
-                                            for (doc_uri, doc_text) in &docs_snapshot {
-                                                self.check_references_cancellation(
-                                                    typed_request_id.as_ref(),
-                                                    &mut fallback_receipt,
-                                                )?;
-                                                // Early exit on cap
-                                                if enhanced_locations.len() >= cap {
-                                                    break 'pattern_loop;
-                                                }
-                                                let lines: Vec<&str> = doc_text.lines().collect();
-                                                for (line_num, line) in lines.iter().enumerate() {
-                                                    for mat in search_regex.find_iter(line) {
-                                                        if should_skip_text_reference_match(
-                                                            line,
-                                                            mat.start(),
-                                                            symbol_key.sigil,
-                                                            include_declaration,
-                                                        ) {
-                                                            continue;
-                                                        }
-                                                        // Convert byte offsets to UTF-16 columns for LSP compliance
-                                                        let start_utf16 =
-                                                            byte_to_utf16_col(line, mat.start());
-                                                        let end_utf16 =
-                                                            byte_to_utf16_col(line, mat.end());
-                                                        enhanced_locations.push(json!({
-                                                            "uri": doc_uri,
-                                                            "range": {
-                                                                "start": {
-                                                                    "line": line_num,
-                                                                    "character": start_utf16,
-                                                                },
-                                                                "end": {
-                                                                    "line": line_num,
-                                                                    "character": end_utf16,
-                                                                },
-                                                            },
-                                                        }));
-                                                    }
-                                                }
-                                            }
-                                        }
+                                    self.check_references_cancellation(
+                                        typed_request_id.as_ref(),
+                                        &mut fallback_receipt,
+                                    )?;
+                                    if start.elapsed() >= deadline {
+                                        fallback_receipt.deadline_exhausted = true;
+                                        fallback_receipt.fallback_completeness = "partial";
+                                        fallback_receipt.fallback_reason = Some(
+                                            "reference_scan_deadline_during_search".to_owned(),
+                                        );
+                                        tracing::debug!(
+                                            "References: deadline exceeded during text search"
+                                        );
                                     }
+                                    let index_count = workspace_locations.len();
+                                    let enhanced_locations = if fallback_receipt.deadline_exhausted
+                                    {
+                                        Vec::new()
+                                    } else {
+                                        // Identifier-boundary scan treats `:` as a separator, so
+                                        // `Pkg::name` is a hit for needle `name`. Kind filtering
+                                        // drops hash keys; identity dedup collapses overlap with
+                                        // index hits. Scan past `cap` by the current index size so
+                                        // index+text duplicates cannot exhaust the budget before
+                                        // merge (#16638).
+                                        search_document_texts_for_references(
+                                            docs_snapshot.iter().map(|(doc_uri, doc_text)| {
+                                                (doc_uri.as_str(), doc_text.as_str())
+                                            }),
+                                            TextReferenceQuery {
+                                                needle: symbol_key.name.as_ref(),
+                                                sigil: symbol_key.sigil,
+                                                include_declaration,
+                                            },
+                                            cap.saturating_add(index_count),
+                                        )
+                                    };
 
                                     // Combine workspace index results with text search results.
                                     // Capture counts BEFORE extending so classify_combined_tier
                                     // knows whether each source contributed — a mixed result
                                     // (WorkspaceMixed) must not be collapsed into WorkspaceExact.
-                                    let index_count = workspace_locations.len();
+                                    // Dedup before cap so identical index+text pairs cannot
+                                    // consume the budget (#16638).
                                     let text_count = enhanced_locations.len();
                                     workspace_locations.extend(enhanced_locations);
-                                    let mut all_combined_locations = workspace_locations;
-                                    // Cap results
-                                    all_combined_locations.truncate(cap);
+                                    let all_combined_locations =
+                                        finalize_reference_locations(workspace_locations, cap);
 
                                     if !all_combined_locations.is_empty() {
                                         tracing::debug!(
@@ -1012,7 +1132,7 @@ impl LspServer {
                                             "Found total references via combined search"
                                         );
                                         return Ok((
-                                            Some(to_json_array(&all_combined_locations)),
+                                            Some(Value::Array(all_combined_locations)),
                                             classify_combined_tier(index_count, text_count),
                                             index_state,
                                             index_count,
@@ -1065,35 +1185,50 @@ impl LspServer {
                                 }
 
                                 // Regex-based fallback for fully-qualified symbols like Package::sub references
-                                let radius = 50;
+                                //
+                                // Uses the same whole-line window as the
+                                // cursor-component guard above, so both see the same
+                                // match and derive `pkg`/`name` from the complete
+                                // qualified name. A radius window could clip a long
+                                // name here and yield a truncated package.
                                 let (text_start, text_around) =
-                                    self.get_text_window_around_offset(&doc.text, offset, radius);
-                                let cursor_in_text =
-                                    offset.min(doc.text.len()).saturating_sub(text_start);
+                                    crate::util::line_window_around_offset(&doc.text, offset);
+                                let cursor_in_text = offset.saturating_sub(text_start);
 
                                 // Use cached regex to avoid per-request compilation overhead
-                                if let Some(qualified_name_re) = get_qualified_name_regex() {
-                                    for captures in qualified_name_re.captures_iter(&text_around) {
+                                // `navigation.rs` owns the one copy of this
+                                // pattern. This file kept a byte-identical second
+                                // `OnceLock` until #14757; the guard above and
+                                // this fallback must see the same match, and two
+                                // owners is the drift that costs.
+                                if let Ok(qualified_name_re) = super::navigation::get_fqn_regex() {
+                                    for captures in qualified_name_re.captures_iter(text_around) {
                                         if let Some(m) = captures.get(1)
                                             && cursor_in_text >= m.start()
                                             && cursor_in_text <= m.end()
                                         {
                                             let parts: Vec<&str> = m.as_str().split("::").collect();
                                             if parts.len() >= 2 {
-                                                // Only search for references when the cursor
-                                                // is on the final component (sub/function name).
-                                                // If the cursor is on a package-prefix component
-                                                // (e.g. `Foo` in `Foo::bar`), skip this match
-                                                // so we do not return references to the wrong
-                                                // symbol.
-                                                let cursor_rel =
-                                                    cursor_in_text.saturating_sub(m.start());
-                                                let last_sep_offset =
-                                                    m.as_str().rfind("::").map_or(0, |p| p + 2);
-                                                if cursor_rel < last_sep_offset {
+                                                // The cursor must be on this match's *final*
+                                                // component for it to name the sub whose
+                                                // references we are about to report (#1849).
+                                                //
+                                                // The guard earlier in this function does not
+                                                // cover every path here. It runs only when the
+                                                // resolved symbol is a bare sub, so a prefix
+                                                // cursor whose symbol key is absent or of another
+                                                // kind -- a `Foo::bar` inside a comment or string,
+                                                // an unresolved module name -- reaches this
+                                                // fallback unclassified. Without this check the
+                                                // package prefix in `# see Foo::bar for info`
+                                                // reports `sub bar`'s references.
+                                                let final_component_start =
+                                                    m.as_str().rfind("::").map_or(0, |i| i + 2);
+                                                if cursor_in_text
+                                                    < m.start() + final_component_start
+                                                {
                                                     break;
                                                 }
-
                                                 let name =
                                                     parts.last().copied().unwrap_or("").to_string();
                                                 let pkg = parts[..parts.len() - 1].join("::");
@@ -1165,71 +1300,43 @@ impl LspServer {
                                                         typed_request_id.as_ref(),
                                                     )?;
 
-                                                let mut all_locations = Vec::new();
-                                                let qualified_name = format!("{}::{}", pkg, name);
-                                                let Ok(search_regex) = regex::Regex::new(&format!(
-                                                    r"\b{}\b",
-                                                    regex::escape(&qualified_name)
-                                                )) else {
+                                                self.check_references_cancellation(
+                                                    typed_request_id.as_ref(),
+                                                    &mut fallback_receipt,
+                                                )?;
+                                                if start.elapsed() >= deadline {
+                                                    fallback_receipt.deadline_exhausted = true;
+                                                    fallback_receipt.fallback_completeness =
+                                                        "partial";
+                                                    fallback_receipt.fallback_reason = Some(
+                                                        "reference_scan_deadline_during_search"
+                                                            .to_owned(),
+                                                    );
                                                     continue;
-                                                };
-
-                                                'doc_scan: for (doc_uri, doc_text) in docs_snapshot
-                                                {
-                                                    self.check_references_cancellation(
-                                                        typed_request_id.as_ref(),
-                                                        &mut fallback_receipt,
-                                                    )?;
-                                                    // Check deadline
-                                                    if start.elapsed() >= deadline {
-                                                        fallback_receipt.deadline_exhausted = true;
-                                                        fallback_receipt.fallback_completeness =
-                                                            "partial";
-                                                        fallback_receipt.fallback_reason = Some(
-                                                            "reference_scan_deadline_during_search"
-                                                                .to_owned(),
-                                                        );
-                                                        break 'doc_scan;
-                                                    }
-                                                    let lines: Vec<&str> =
-                                                        doc_text.lines().collect();
-                                                    for (line_num, line) in lines.iter().enumerate()
-                                                    {
-                                                        for mat in search_regex.find_iter(line) {
-                                                            // Convert byte offsets to UTF-16 columns for LSP compliance
-                                                            let start_utf16 = byte_to_utf16_col(
-                                                                line,
-                                                                mat.start(),
-                                                            );
-                                                            let end_utf16 =
-                                                                byte_to_utf16_col(line, mat.end());
-                                                            all_locations.push(json!({
-                                                                "uri": doc_uri,
-                                                                "range": {
-                                                                    "start": {
-                                                                        "line": line_num,
-                                                                        "character": start_utf16,
-                                                                    },
-                                                                    "end": {
-                                                                        "line": line_num,
-                                                                        "character": end_utf16,
-                                                                    },
-                                                                },
-                                                            }));
-                                                            // Early exit if we hit the cap
-                                                            if all_locations.len() >= cap {
-                                                                break 'doc_scan;
-                                                            }
-                                                        }
-                                                    }
                                                 }
+                                                let qualified_name = format!("{}::{}", pkg, name);
+                                                let all_locations =
+                                                    search_document_texts_for_references(
+                                                        docs_snapshot.iter().map(
+                                                            |(doc_uri, doc_text)| {
+                                                                (
+                                                                    doc_uri.as_str(),
+                                                                    doc_text.as_str(),
+                                                                )
+                                                            },
+                                                        ),
+                                                        TextReferenceQuery {
+                                                            needle: &qualified_name,
+                                                            sigil: None,
+                                                            include_declaration,
+                                                        },
+                                                        cap,
+                                                    );
 
                                                 if !all_locations.is_empty() {
                                                     let text_count = all_locations.len();
-                                                    // Truncate to cap
-                                                    all_locations.truncate(cap);
                                                     return Ok((
-                                                        Some(to_json_array(&all_locations)),
+                                                        Some(Value::Array(all_locations)),
                                                         ReferencesAnsweringTier::WorkspaceText,
                                                         index_state,
                                                         0,
@@ -1311,7 +1418,13 @@ impl LspServer {
                                         docs_snapshot.iter().map(|(doc_uri, doc_text)| {
                                             (doc_uri.as_str(), doc_text.as_str())
                                         }),
-                                        &needle,
+                                        TextReferenceQuery {
+                                            needle: &needle,
+                                            sigil: workspace_symbol_key
+                                                .as_ref()
+                                                .and_then(|key| key.sigil),
+                                            include_declaration,
+                                        },
                                         cap,
                                     );
                                     if !open_doc_locations.is_empty() {
@@ -1322,7 +1435,7 @@ impl LspServer {
                                         );
                                         let result_count = open_doc_locations.len();
                                         return Ok((
-                                            Some(to_json_array(&open_doc_locations)),
+                                            Some(Value::Array(open_doc_locations)),
                                             ReferencesAnsweringTier::OpenDocumentText,
                                             index_state,
                                             0,
@@ -1349,10 +1462,8 @@ impl LspServer {
                     let references = analyzer.find_all_references(offset, include_declaration);
 
                     if !references.is_empty() {
-                        // Cap same-file references
                         let locations: Vec<Value> = references
                             .iter()
-                            .take(cap)
                             .map(|loc| {
                                 let (start_line, start_char) = self.offset_to_pos16(doc, loc.start);
                                 let (end_line, end_char) = self.offset_to_pos16(doc, loc.end);
@@ -1372,6 +1483,7 @@ impl LspServer {
                                 })
                             })
                             .collect();
+                        let locations = finalize_reference_locations(locations, cap);
 
                         tracing::debug!(
                             count = locations.len(),
@@ -1379,7 +1491,7 @@ impl LspServer {
                             "References: returned same-file results"
                         );
                         return Ok((
-                            Some(to_json_array(&locations)),
+                            Some(Value::Array(locations)),
                             ReferencesAnsweringTier::SemanticAnalyzer,
                             index_state,
                             0,
@@ -1396,7 +1508,7 @@ impl LspServer {
         Ok((
             Some(json!([])),
             ReferencesAnsweringTier::Empty,
-            "none",
+            observed_index_state,
             0,
             0,
             start.elapsed().as_micros(),
@@ -1548,89 +1660,131 @@ impl LspServer {
             );
         }
 
-        // Resolve the semantic outcome plus the declaration anchor when either
-        // the caller wants it included or the P8 lexical slice needs to prove
-        // this entity is an initialized lexical declaration.
-        let semantic_resolution = workspace_index
-            .with_semantic_queries_for_uri(uri, |file_id, queries| {
-                let ctx = QueryContext::new(file_id, None, Some(byte_offset));
+        // Resolve the legacy locations BEFORE entering the callback: the live
+        // cutover path must not re-enter `WorkspaceIndex` while
+        // `with_semantic_queries_for_uri` holds its read guards (#15644).
+        let legacy_locations = workspace_index.find_references(symbol);
 
-                // Two-step entity resolution: prefer the typed occurrence at
-                // the cursor, fall back to a uniquely-matching definition
-                // candidate.  When resolving via definitions we keep the
-                // anchor around so we can include it as the declaration site.
-                let symbol_at = queries.symbol_at(file_id, byte_offset);
-                let symbol_at_found = symbol_at.is_some();
-                let entity_id =
-                    match symbol_at.as_ref().and_then(|(_, occurrence)| occurrence.entity_id) {
-                        Some(entity_id) => entity_id,
-                        None => {
-                            let exact_candidates: Vec<_> = queries
-                                .definitions(symbol, &ctx)
-                                .into_iter()
-                                .filter(|candidate| {
-                                    candidate.confidence == perl_semantic_facts::Confidence::High
-                                        && matches!(
+        // One shared basis for this request (#8977). The semantic view it
+        // resolves against must describe the same snapshot: a writer that
+        // commits between basis capture and the guarded view would let the
+        // outcome claim a generation it never saw. `stable_basis_view` (#5116,
+        // #8977) brackets the pair on `write_version` and retries within a
+        // bound; exhaustion is an explicit decline, not a torn result.
+        const VIEW_BASIS_ATTEMPTS: u8 = 3;
+        let Some((_resolve_generation, semantic_resolution)) = stable_basis_view(
+            || accepted_generation_basis(workspace_index.as_ref(), uri),
+            || workspace_index.write_version(),
+            |resolve_generation| {
+                // Resolve the semantic outcome plus the declaration anchor when either
+                // the caller wants it included or the P8 lexical slice needs to prove
+                // this entity is an initialized lexical declaration.
+                workspace_index
+                    .with_semantic_queries_for_uri(uri, |file_id, queries| {
+                        let ctx = QueryContext::new(file_id, None, Some(byte_offset));
+
+                        // Two-step entity resolution: prefer the typed occurrence at
+                        // the cursor, fall back to a uniquely-matching definition
+                        // candidate.  When resolving via definitions we keep the
+                        // anchor around so we can include it as the declaration site.
+                        //
+                        // The cursor stage is the shared provider-neutral rule (#8977)
+                        // rather than a references-private reading of `symbol_at`, so
+                        // definition and references start from one occurrence identity.
+                        // `bound_entity_id` reports what the producer published without
+                        // asserting exactness, which keeps this path's acceptance
+                        // identical to the previous `occurrence.entity_id` read.
+                        //
+                        // The name-keyed `definitions` fallback below stays here, in
+                        // the provider: it matches by spelling, so it is deliberately
+                        // not admitted as an exact identity by the shared layer.
+                        let resolve_source = SemanticQueriesResolveSource::new(&queries);
+                        let resolved_at_cursor = resolve_at_position(
+                            &resolve_source,
+                            file_id,
+                            byte_offset,
+                            resolve_generation,
+                            false,
+                        );
+                        let symbol_at_found = resolved_at_cursor.occurrence_was_published();
+                        let entity_id = match resolved_at_cursor.bound_entity_id() {
+                            Some(entity_id) => entity_id,
+                            None => {
+                                let exact_candidates: Vec<_> = queries
+                                    .definitions(symbol, &ctx)
+                                    .into_iter()
+                                    .filter(|candidate| {
+                                        candidate.confidence
+                                            == perl_semantic_facts::Confidence::High
+                                            && matches!(
                                         candidate.provenance,
                                         perl_semantic_facts::Provenance::ExactAst
                                             | perl_semantic_facts::Provenance::ImportExportInference
                                             | perl_semantic_facts::Provenance::LiteralRequireImport
-                                    ) && workspace_index
-                                        .semantic_anchor_wire_location(candidate.anchor_id)
-                                        .is_some()
-                                })
-                                .collect();
-                            match exact_candidates.as_slice() {
-                                [candidate] => candidate.entity_id,
-                                _ => {
-                                    return Some(Err(
-                                        SourceBackedReferenceDecline::EntityUnresolved {
-                                            symbol_at_found,
-                                            exact_candidate_count: exact_candidates.len(),
-                                        },
-                                    ));
+                                    ) && queries
+                                            .anchor_source_span(candidate.anchor_id)
+                                            .is_some()
+                                    })
+                                    .collect();
+                                match exact_candidates.as_slice() {
+                                    [candidate] => candidate.entity_id,
+                                    _ => {
+                                        return Some(Err(
+                                            SourceBackedReferenceDecline::EntityUnresolved {
+                                                symbol_at_found,
+                                                exact_candidate_count: exact_candidates.len(),
+                                            },
+                                        ));
+                                    }
                                 }
                             }
-                        }
-                    };
+                        };
 
-                // Find the declaration anchor for this entity.  We accept the
-                // anchor from `symbol_at` if the occurrence is a definition
-                // kind, or look up a high-confidence definition candidate
-                // otherwise.
-                let decl_anchor: Option<AnchorId> = if include_declaration || sigil.is_some() {
-                    use perl_semantic_facts::OccurrenceKind;
-                    let from_symbol_at = symbol_at
-                        .as_ref()
-                        .filter(|(_, occ)| occ.kind == OccurrenceKind::Definition)
-                        .map(|(_, occ)| occ.anchor_id);
-                    from_symbol_at.or_else(|| {
-                        queries
-                            .definitions(symbol, &ctx)
-                            .into_iter()
-                            .filter(|c| {
-                                c.confidence == perl_semantic_facts::Confidence::High
-                                    && c.entity_id == entity_id
-                                    && workspace_index
-                                        .semantic_anchor_wire_location(c.anchor_id)
-                                        .is_some()
-                            })
-                            .map(|c| c.anchor_id)
-                            .next()
+                        // Find the declaration anchor for this entity.  We accept the
+                        // anchor from the resolved cursor occurrence if it is a
+                        // definition kind, or look up a high-confidence definition
+                        // candidate otherwise.  Reading it off the shared resolution
+                        // (#8977) rather than re-querying `symbol_at` keeps this
+                        // request to one cursor-identity step.
+                        let decl_anchor: Option<AnchorId> =
+                            if include_declaration || sigil.is_some() {
+                                use perl_semantic_facts::OccurrenceKind;
+                                let from_resolved_cursor = resolved_at_cursor
+                                    .published_occurrence()
+                                    .filter(|resolved| resolved.role == OccurrenceKind::Definition)
+                                    .map(|resolved| resolved.occurrence_anchor_id);
+                                from_resolved_cursor.or_else(|| {
+                                    queries
+                                        .definitions(symbol, &ctx)
+                                        .into_iter()
+                                        .filter(|c| {
+                                            c.confidence == perl_semantic_facts::Confidence::High
+                                                && c.entity_id == entity_id
+                                                && queries.anchor_source_span(c.anchor_id).is_some()
+                                        })
+                                        .map(|c| c.anchor_id)
+                                        .next()
+                                })
+                            } else {
+                                None
+                            };
+
+                        let outcome = find_references_live_source_backed(
+                            legacy_locations.clone(),
+                            &queries,
+                            symbol,
+                            entity_id,
+                        );
+                        Some(Ok((outcome, decl_anchor)))
                     })
-                } else {
-                    None
-                };
-
-                let outcome = find_references_live_source_backed(
-                    workspace_index.as_ref(),
-                    &queries,
-                    symbol,
-                    entity_id,
-                );
-                Some(Ok((outcome, decl_anchor)))
-            })
-            .flatten();
+                    .flatten()
+            },
+            VIEW_BASIS_ATTEMPTS,
+        ) else {
+            return SourceBackedReferenceAttempt::Declined(
+                SourceBackedReferenceDecline::WorkspaceIndexMovedDuringResolve,
+            );
+        };
         let Some(semantic_resolution) = semantic_resolution else {
             return SourceBackedReferenceAttempt::Declined(
                 SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri,
@@ -1700,7 +1854,11 @@ impl LspServer {
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
                 );
             };
-            let location: lsp_types::Location = wire_location.into();
+            let Ok(location) = lsp_types::Location::try_from(wire_location) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::OccurrenceLocationUriInvalid,
+                );
+            };
             let Ok(location) = serde_json::to_value(location) else {
                 return SourceBackedReferenceAttempt::Declined(
                     SourceBackedReferenceDecline::OccurrenceSerializationFailed,
@@ -1715,7 +1873,11 @@ impl LspServer {
             && let Some(anchor_id) = decl_anchor
             && let Some(wire_location) = workspace_index.semantic_anchor_wire_location(anchor_id)
         {
-            let decl_location: lsp_types::Location = wire_location.into();
+            let Ok(decl_location) = lsp_types::Location::try_from(wire_location) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationLocationUriInvalid,
+                );
+            };
             let Ok(decl_value) = serde_json::to_value(&decl_location) else {
                 return SourceBackedReferenceAttempt::Declined(
                     SourceBackedReferenceDecline::DeclarationSerializationFailed,
@@ -1748,7 +1910,7 @@ impl LspServer {
                 "provider": "references",
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": null,
+                "source_backed_receipt": null,
                 "no_live_behavior_change": true,
                 "note": "references runtime proof unavailable without workspace semantic queries"
             })))
@@ -1761,7 +1923,7 @@ impl LspServer {
                     "provider": "references",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "references runtime proof missing request params"
                 })));
@@ -1780,20 +1942,26 @@ impl LspServer {
                     "provider": "references",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "references runtime proof found no symbol at request position"
                 })));
             };
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-            let compiler_receipt_and_cutover = if self.workspace_index_stale_for_any_open_document()
+            let source_backed_receipt_and_cutover = if self
+                .workspace_index_stale_for_any_open_document()
             {
                 None
             } else {
                 match route_index_access(self.coordinator()) {
                     IndexAccessMode::Full(coordinator) => {
                         let index = coordinator.index();
+                        // Resolve the legacy locations BEFORE entering the
+                        // callback: the cutover path must not re-enter
+                        // `WorkspaceIndex` while `with_semantic_queries_for_uri`
+                        // holds its read guards (#15644).
+                        let legacy_locations = index.find_references(&symbol);
                         index
                         .with_semantic_queries_for_uri(uri, |file_id, queries| {
                             let ctx = QueryContext::new(file_id, None, Some(byte_offset));
@@ -1807,7 +1975,7 @@ impl LspServer {
                                         .map(|candidate| candidate.entity_id)
                                 })?;
                             let outcome = find_references_live_source_backed(
-                                index.as_ref(),
+                                legacy_locations,
                                 &queries,
                                 &symbol,
                                 entity_id,
@@ -1815,7 +1983,7 @@ impl LspServer {
                             let live_cutover =
                                 matches!(outcome.result, ReferencesCutoverResult::Exact(_));
                             let mut receipt = outcome.receipt;
-                            let compiler_result_count = receipt.new_result.match_count;
+                            let source_backed_result_count = receipt.new_result.match_count;
                             let behavior_note = if live_cutover && include_declaration {
                                 "partial live exact/imported references cutover (includeDeclaration=true)"
                             } else if live_cutover {
@@ -1824,8 +1992,8 @@ impl LspServer {
                                 "legacy fallback"
                             };
                             receipt.notes.push(format!(
-                                "references runtime proof: live_provider_results={live_provider_count}; compiler_fact_candidates={}; compiler_result_count={}; {behavior_note}",
-                                compiler_result_count, compiler_result_count,
+                                "references runtime proof: live_provider_results={live_provider_count}; source_backed_candidates={}; source_backed_result_count={}; {behavior_note}",
+                                source_backed_result_count, source_backed_result_count,
                             ));
                             Some((receipt, live_cutover))
                         })
@@ -1834,7 +2002,7 @@ impl LspServer {
                     IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
             };
-            let (compiler_receipt, live_cutover) = match compiler_receipt_and_cutover {
+            let (source_backed_receipt, live_cutover) = match source_backed_receipt_and_cutover {
                 Some((receipt, live_cutover)) => (Some(receipt), live_cutover),
                 None => (None, false),
             };
@@ -1844,7 +2012,7 @@ impl LspServer {
                 "symbol": symbol,
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": compiler_receipt,
+                "source_backed_receipt": source_backed_receipt,
                 "no_live_behavior_change": !live_cutover,
                 "live_cutover": if live_cutover {
                     Some("partial_exact_imported")
@@ -1948,7 +2116,11 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
-    /// Non-blocking references handler with fallback
+    /// Test-only references fallback provider. With the outer dispatch
+    /// fallback removed (#5108), no production caller remains: dispatch is an
+    /// adapter, not a fallback planner. Compiled out of production builds,
+    /// mirroring `on_definition` (#5108) and `on_folding_range` (#13981).
+    #[cfg(any(test, feature = "test-fallbacks"))]
     pub(crate) fn on_references(
         &self,
         params: serde_json::Value,
@@ -1982,7 +2154,7 @@ impl LspServer {
         )?;
         let out = search_document_texts_for_references(
             docs_snapshot.iter().map(|(doc_uri, doc_text)| (doc_uri.as_str(), doc_text.as_str())),
-            &needle,
+            TextReferenceQuery { needle: &needle, sigil: None, include_declaration: true },
             references_cap(),
         );
 
@@ -2025,6 +2197,156 @@ mod tests {
         assert!(!ReferencesAnsweringTier::OpenDocumentText.is_source_backed());
         assert!(!ReferencesAnsweringTier::SemanticAnalyzer.is_source_backed());
         assert!(!ReferencesAnsweringTier::Empty.is_source_backed());
+        Ok(())
+    }
+
+    /// Exhaustive oracle for the derived receipt freshness (#14156).
+    ///
+    /// Every tier is listed explicitly rather than looped, so a new tier variant
+    /// forces an author to state its freshness instead of inheriting a default.
+    #[test]
+    fn answering_tier_freshness_is_derived_from_tier_and_index_state() -> Result<(), Box<dyn Error>>
+    {
+        use ReferencesAnsweringTier as Tier;
+
+        // Live-source tiers read the live open buffer and the live parsed AST, so
+        // they stay fresh even when the workspace index is stale or missing.
+        // `SemanticSourceBacked` is deliberately NOT in this group: it resolves its
+        // facts through `workspace_index.with_semantic_queries_for_uri`, so they are
+        // index-derived and must fail closed with the index.
+        for index_state in ["full", "partial", "none"] {
+            assert_eq!(
+                Tier::OpenDocumentText.freshness(index_state),
+                "fresh",
+                "open-document text search reads the live buffer ({index_state})"
+            );
+            assert_eq!(
+                Tier::SemanticAnalyzer.freshness(index_state),
+                "fresh",
+                "same-file semantic analysis reads the live buffer ({index_state})"
+            );
+        }
+
+        // Index-backed tiers are only as current as the index behind them.
+        // `SemanticSourceBacked` is included: its compiler facts are resolved
+        // through the workspace index, so an index the receipt boundary has
+        // revalidated away must not leave it claiming currency.
+        for tier in [
+            Tier::SemanticSourceBacked,
+            Tier::WorkspaceExact,
+            Tier::WorkspaceMixed,
+            Tier::WorkspaceText,
+            Tier::PartialIndex,
+        ] {
+            assert_eq!(
+                tier.freshness("full"),
+                "fresh",
+                "{tier:?} over a full index is current for the request"
+            );
+            assert_eq!(
+                tier.freshness("partial"),
+                "unknown",
+                "{tier:?} cannot claim currency over a partial index"
+            );
+            assert_eq!(
+                tier.freshness("none"),
+                "unknown",
+                "{tier:?} cannot claim currency over a stale or absent index"
+            );
+        }
+
+        // The load-bearing row: an empty answer's completeness rests on index
+        // coverage, so a stale index must not be reported as a fresh "no results".
+        assert_eq!(Tier::Empty.freshness("full"), "fresh");
+        assert_eq!(Tier::Empty.freshness("partial"), "unknown");
+        assert_eq!(
+            Tier::Empty.freshness("none"),
+            "unknown",
+            "an empty result over a stale index must not claim freshness"
+        );
+
+        Ok(())
+    }
+
+    /// Counter-assertion for the freshness field, which is what
+    /// `docs/reference/SCOREBOARD_DOCTRINE.md` asks for under "Pitfalls"
+    /// ("Integrity is a discipline, not a system... one counter-assertion per
+    /// scoreboard — a fixture that must yield the opposite value, so a hardcode
+    /// fails"): the same tier must yield opposite values across index states,
+    /// and different tiers must disagree under one index state. A hardcode of
+    /// either polarity fails this test.
+    #[test]
+    fn answering_tier_freshness_is_not_a_constant() -> Result<(), Box<dyn Error>> {
+        use ReferencesAnsweringTier as Tier;
+
+        assert_ne!(
+            Tier::WorkspaceExact.freshness("full"),
+            Tier::WorkspaceExact.freshness("none"),
+            "freshness must vary with index state for an index-backed tier"
+        );
+        assert_ne!(
+            Tier::SemanticAnalyzer.freshness("none"),
+            Tier::WorkspaceExact.freshness("none"),
+            "freshness must vary by tier under one index state"
+        );
+
+        // Both canonical values this derivation can emit are actually reachable,
+        // so neither branch is dead.
+        assert_eq!(Tier::SemanticAnalyzer.freshness("none"), "fresh");
+        assert_eq!(Tier::WorkspaceText.freshness("none"), "unknown");
+
+        Ok(())
+    }
+
+    /// Every emitted value must belong to the canonical `ProviderDecisionFreshness`
+    /// vocabulary (`perl-lsp-rs-core::providers::provider_decision`), so the receipt
+    /// cannot drift into a private spelling.
+    ///
+    /// The permitted set is serialized from the real enum rather than restated
+    /// here: a hand-copied list would keep passing if the canonical serde
+    /// spelling were renamed, which is exactly the drift this test exists to
+    /// catch.
+    #[test]
+    fn answering_tier_freshness_stays_in_the_canonical_vocabulary() -> Result<(), Box<dyn Error>> {
+        use ReferencesAnsweringTier as Tier;
+        use perl_lsp_rs_core::providers::provider_decision::ProviderDecisionFreshness;
+
+        let canonical: Vec<String> = [
+            ProviderDecisionFreshness::Fresh,
+            ProviderDecisionFreshness::Stale,
+            ProviderDecisionFreshness::Unknown,
+            ProviderDecisionFreshness::NotApplicable,
+        ]
+        .iter()
+        .map(|variant| {
+            serde_json::to_value(variant)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .ok_or_else(|| format!("{variant:?} did not serialize to a JSON string"))
+        })
+        .collect::<Result<_, _>>()?;
+        let canonical: Vec<&str> = canonical.iter().map(String::as_str).collect();
+        let canonical = canonical.as_slice();
+
+        for tier in [
+            Tier::SemanticSourceBacked,
+            Tier::WorkspaceExact,
+            Tier::WorkspaceMixed,
+            Tier::WorkspaceText,
+            Tier::PartialIndex,
+            Tier::OpenDocumentText,
+            Tier::SemanticAnalyzer,
+            Tier::Empty,
+        ] {
+            for index_state in ["full", "partial", "none"] {
+                let value = tier.freshness(index_state);
+                assert!(
+                    canonical.contains(&value),
+                    "{tier:?}/{index_state} emitted {value:?}, outside ProviderDecisionFreshness"
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -2119,6 +2441,13 @@ mod tests {
                 None,
             ),
             (
+                SourceBackedReferenceDecline::DeclarationLocationUriInvalid,
+                "declaration_location_uri",
+                false,
+                0,
+                None,
+            ),
+            (
                 SourceBackedReferenceDecline::DeclarationSerializationFailed,
                 "declaration_serialization",
                 false,
@@ -2135,6 +2464,13 @@ mod tests {
             (
                 SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
                 "occurrence_location",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::OccurrenceLocationUriInvalid,
+                "occurrence_location_uri",
                 false,
                 0,
                 None,
@@ -2212,56 +2548,6 @@ mod tests {
             !line_has_initialized_lexical_declaration("my $other = $value;", '$', "value"),
             "RHS usages do not make the target variable's declaration initialized"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn should_skip_text_reference_match_omits_variable_declarations_when_requested()
-    -> Result<(), Box<dyn Error>> {
-        let line = "my $total = 1;";
-        let match_start = line.find("total").ok_or("missing total match")?;
-
-        assert!(
-            should_skip_text_reference_match(line, match_start, Some('$'), false),
-            "includeDeclaration=false must omit lexical declaration matches"
-        );
-        assert!(
-            !should_skip_text_reference_match(line, match_start, Some('$'), true),
-            "includeDeclaration=true must keep declaration matches"
-        );
-        assert!(
-            !should_skip_text_reference_match(line, match_start, None, false),
-            "subroutine/bareword text matches are not variable declarations"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn should_skip_text_reference_match_keeps_initializer_rhs_usages() -> Result<(), Box<dyn Error>>
-    {
-        let line = "my $other = $total;";
-        let match_start = line.find("total").ok_or("missing total match")?;
-
-        assert!(
-            !should_skip_text_reference_match(line, match_start, Some('$'), false),
-            "RHS usages inside a declaration statement are still references"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn should_skip_text_reference_match_omits_variable_list_declaration_targets()
-    -> Result<(), Box<dyn Error>> {
-        let line = "for my ($first, $total) {";
-        let match_start = line.find("total").ok_or("missing total match")?;
-
-        assert!(
-            should_skip_text_reference_match(line, match_start, Some('$'), false),
-            "declaration targets inside variable lists must be omitted"
-        );
-
         Ok(())
     }
 
@@ -2663,6 +2949,326 @@ mod tests {
         Ok(())
     }
 
+    /// A full index that produces no references must survive to the receipt as
+    /// `full`/`fresh`, not be reported as an absent index (#14156).
+    ///
+    /// The terminal no-result return previously hard-coded `index_state` to
+    /// `"none"`, so an empty answer looked identical whether the workspace index
+    /// was complete or missing. Both requests here run against the same server
+    /// and the same healthy index: one resolves references, one does not, and the
+    /// index state must be `"full"` for both. This is also what makes the
+    /// `Empty`/`"full"` row of the freshness oracle production-reachable rather
+    /// than a rule that no request can exercise.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_references_preserves_full_index_state_through_the_empty_tier()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let uri = "file:///test/full-index-empty.pl";
+        let text = "my $value = 1;\nmy $other = $value;\n";
+
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": text}
+        })))?;
+
+        let receipt_for = |character: u32| -> Result<serde_json::Value, Box<dyn Error>> {
+            server.test_handle_references(Some(serde_json::json!({
+                "textDocument": {"uri": uri, "version": 1},
+                "position": {"line": 0, "character": character},
+                "context": {"includeDeclaration": true}
+            })))?;
+            let explanation = server
+                .handle_execute_command(Some(serde_json::json!({
+                    "command": "perl.explainProviderDecision",
+                    "arguments": [{"provider": "references"}]
+                })))?
+                .ok_or("missing explain-provider-decision response")?;
+            explanation
+                .get("request_receipt")
+                .cloned()
+                .ok_or_else(|| "missing request_receipt".into())
+        };
+
+        // Establishes that this server really does have a full workspace index:
+        // an index-backed tier answers and reports it.
+        let answered = receipt_for(5)?;
+        assert_eq!(
+            answered.get("index_state").and_then(serde_json::Value::as_str),
+            Some("full"),
+            "the fixture server has a full workspace index"
+        );
+        assert_eq!(answered.get("freshness").and_then(serde_json::Value::as_str), Some("fresh"));
+
+        // Same server, same index, a position that resolves nothing. The empty
+        // answer must not claim the index was absent.
+        let empty = receipt_for(0)?;
+        assert_eq!(empty.get("answering_tier").and_then(serde_json::Value::as_str), Some("empty"));
+        assert_eq!(empty.get("result_count").and_then(serde_json::Value::as_u64), Some(0));
+        assert_eq!(
+            empty.get("index_state").and_then(serde_json::Value::as_str),
+            Some("full"),
+            "an empty answer must report the index state actually observed"
+        );
+        assert_eq!(
+            empty.get("freshness").and_then(serde_json::Value::as_str),
+            Some("fresh"),
+            "an empty answer over a complete index is a current, trustworthy negative"
+        );
+
+        Ok(())
+    }
+
+    /// A document edit after index routing must invalidate a captured full state
+    /// before the decision receipt is written. The two cases exercise both
+    /// index-backed results and the terminal empty tier; neither relies on a
+    /// timing race because the edit is inserted between the inner route and the
+    /// production receipt writer (#14163).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_references_revalidates_index_state_after_open_document_edit()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        fn run_after_edit(
+            server: &LspServer,
+            params: serde_json::Value,
+            text: &str,
+        ) -> Result<serde_json::Value, Box<dyn Error>> {
+            let trace_context = LspServer::references_decision_trace_context(Some(&params))?;
+            let (
+                result,
+                tier,
+                index_state,
+                index_result_count,
+                text_result_count,
+                latency_us,
+                source_backed_attempt,
+                fallback_receipt,
+            ) = server.handle_references_inner(Some(params), None)?;
+
+            assert_eq!(index_state, "full", "the request must route through the full index first");
+            server
+                .test_replace_document_without_index(
+                    "file:///test/edit-after-reference-routing.pl",
+                    text,
+                    2,
+                )
+                .map_err(std::io::Error::other)?;
+            assert!(server.workspace_index_stale_for_any_open_document());
+
+            server.record_references_provider_decision_trace(
+                trace_context.as_ref(),
+                None,
+                result.as_ref(),
+                tier,
+                index_state,
+                index_result_count,
+                text_result_count,
+                latency_us,
+                source_backed_attempt.as_ref(),
+                &fallback_receipt,
+            );
+
+            server
+                .handle_execute_command(Some(serde_json::json!({
+                    "command": "perl.explainProviderDecision",
+                    "arguments": [{"provider": "references"}]
+                })))?
+                .ok_or_else(|| "missing explain-provider-decision response".into())
+        }
+
+        let text = "my $value = 1;\nmy $other = $value;\n";
+        let uri = "file:///test/edit-after-reference-routing.pl";
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        server.test_apply_did_open(uri, text, 1)?;
+        let indexed = server.handle_references_inner(
+            Some(serde_json::json!({
+                "textDocument": {"uri": uri, "version": 1},
+                "position": {"line": 0, "character": 5},
+                "context": {"includeDeclaration": true}
+            })),
+            None,
+        )?;
+        assert_eq!(indexed.2, "full");
+        assert!(
+            matches!(
+                indexed.1,
+                ReferencesAnsweringTier::WorkspaceExact
+                    | ReferencesAnsweringTier::WorkspaceMixed
+                    | ReferencesAnsweringTier::WorkspaceText
+            ),
+            "expected an index-backed answer before the edit, got {:?}",
+            indexed.1
+        );
+
+        let indexed_receipt = run_after_edit(
+            &server,
+            serde_json::json!({
+                "textDocument": {"uri": uri, "version": 1},
+                "position": {"line": 0, "character": 5},
+                "context": {"includeDeclaration": true}
+            }),
+            text,
+        )?;
+        let indexed_receipt = indexed_receipt
+            .get("request_receipt")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing index-backed request receipt")?;
+        assert_eq!(
+            indexed_receipt.get("index_state").and_then(serde_json::Value::as_str),
+            Some("none"),
+            "an edit after routing must invalidate the captured full index state"
+        );
+        assert_eq!(
+            indexed_receipt.get("freshness").and_then(serde_json::Value::as_str),
+            Some("unknown"),
+            "an index-backed receipt must fail closed after a concurrent edit"
+        );
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        server.test_apply_did_open(uri, text, 1)?;
+        let empty_receipt = run_after_edit(
+            &server,
+            serde_json::json!({
+                "textDocument": {"uri": uri, "version": 1},
+                "position": {"line": 0, "character": 0},
+                "context": {"includeDeclaration": true}
+            }),
+            text,
+        )?;
+        let empty_receipt = empty_receipt
+            .get("request_receipt")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing empty request receipt")?;
+        assert_eq!(
+            empty_receipt.get("answering_tier").and_then(serde_json::Value::as_str),
+            Some("empty")
+        );
+        assert_eq!(
+            empty_receipt.get("index_state").and_then(serde_json::Value::as_str),
+            Some("none"),
+            "an edit after routing must invalidate the empty receipt's full state"
+        );
+        assert_eq!(
+            empty_receipt.get("freshness").and_then(serde_json::Value::as_str),
+            Some("unknown"),
+            "an empty receipt must fail closed after a concurrent edit"
+        );
+
+        Ok(())
+    }
+
+    /// End-to-end counter-assertion that the receipt's `freshness` is wired to the
+    /// derivation rather than emitted as a literal (#14156).
+    ///
+    /// Both requests run against the *same* server with the *same* stale index, so
+    /// `index_state` is `"none"` for both and the only thing that differs is which
+    /// tier answered. A hardcoded `"fresh"` fails the empty case; a hardcoded
+    /// `"unknown"`, or a derivation keyed on `index_state` alone, fails the
+    /// semantic-analyzer case.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_references_derives_receipt_freshness_from_the_answering_tier()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let uri = "file:///test/freshness-references.pl";
+        let text = "my $value = 1;\nmy $other = $value;\n";
+
+        make_document_index_stale(&server, uri, text)?;
+
+        let receipt_for = |character: u32| -> Result<serde_json::Value, Box<dyn Error>> {
+            server.test_handle_references(Some(serde_json::json!({
+                "textDocument": {"uri": uri, "version": 2},
+                "position": {"line": 0, "character": character},
+                "context": {"includeDeclaration": true}
+            })))?;
+            let explanation = server
+                .handle_execute_command(Some(serde_json::json!({
+                    "command": "perl.explainProviderDecision",
+                    "arguments": [{"provider": "references"}]
+                })))?
+                .ok_or("missing explain-provider-decision response")?;
+            explanation
+                .get("request_receipt")
+                .cloned()
+                .ok_or_else(|| "missing request_receipt".into())
+        };
+
+        // Cursor on `$value`: the same-file semantic analyzer answers from the live
+        // open buffer, so the answer really is current despite the stale index.
+        let live = receipt_for(5)?;
+        assert_eq!(
+            live.get("index_state").and_then(serde_json::Value::as_str),
+            Some("none"),
+            "the index is stale for this document"
+        );
+        assert_eq!(
+            live.get("answering_tier").and_then(serde_json::Value::as_str),
+            Some("semantic_analyzer")
+        );
+        assert_eq!(
+            live.get("freshness").and_then(serde_json::Value::as_str),
+            Some("fresh"),
+            "an answer read from the live buffer is current for the request"
+        );
+
+        // Cursor on the `my` keyword: no tier resolves a symbol, so the receipt
+        // reports an empty result. That "no references" claim is only as complete
+        // as the workspace index behind it, which is stale here — so it must not be
+        // reported as fresh. This is the row that was previously a lie.
+        let empty = receipt_for(0)?;
+        assert_eq!(
+            empty.get("index_state").and_then(serde_json::Value::as_str),
+            Some("none"),
+            "the same stale index backs both requests"
+        );
+        assert_eq!(empty.get("answering_tier").and_then(serde_json::Value::as_str), Some("empty"));
+        assert_eq!(
+            empty.get("result_count").and_then(serde_json::Value::as_u64),
+            Some(0),
+            "the empty tier returned no locations"
+        );
+        assert_eq!(
+            empty.get("freshness").and_then(serde_json::Value::as_str),
+            Some("unknown"),
+            "an empty answer over a stale index must not claim freshness"
+        );
+
+        assert_ne!(
+            live.get("freshness"),
+            empty.get("freshness"),
+            "freshness must discriminate between the two tiers under one index state"
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn handle_references_inner_call_presence_observer_rejects_stale_request_version()
     -> Result<(), Box<dyn Error>> {
@@ -2994,110 +3600,267 @@ mod tests {
         Ok(())
     }
 
-    fn location_start(location: &Value) -> Result<(u64, u64), Box<dyn Error>> {
-        let line = location["range"]["start"]["line"].as_u64().ok_or("missing start line")?;
-        let character =
-            location["range"]["start"]["character"].as_u64().ok_or("missing start character")?;
-        Ok((line, character))
-    }
-
+    /// #1849: a cursor on a package-prefix component of a fully-qualified name
+    /// answers on the `empty` tier, not on a tier derived from the final
+    /// component's symbol key.
+    ///
+    /// This pins the seam the integration regression in
+    /// `tests/navigation_regression_tests.rs` observes from the outside: before
+    /// the fix the same cursor answered on `workspace_exact` (or another
+    /// symbol-key-driven tier) with the sub's references.
     #[test]
-    fn search_document_texts_for_references_boundary_discriminator_input_that_hits_the_boundary_needle_is_empty_or_cap_zero_returns_empty()
+    fn handle_references_empty_tier_when_cursor_on_qualified_name_prefix()
     -> Result<(), Box<dyn Error>> {
-        let docs = [("file:///refs.pl", "$var\n")];
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
 
+        let uri = "file:///test/qualified_prefix.pl";
+        //         0         1
+        //         0123456789012345678
+        // line 4: my $r = Foo::bar();
+        let text = concat!(
+            "package Foo;\n",        // 0
+            "sub bar { 1 }\n",       // 1
+            "package main;\n",       // 2
+            "\n",                    // 3
+            "my $r = Foo::bar();\n", // 4
+        );
+
+        // `character` 8 is `F` of the `Foo` prefix; 13 is `b` of the final
+        // component `bar`. The final-component case is the negative control: it
+        // must NOT report the empty tier, otherwise the prefix assertion would
+        // pass for the trivial reason that this fixture resolves nothing at all.
+        let receipt_at = |character: u64| -> Result<(String, String), Box<dyn Error>> {
+            let output = Arc::new(Mutex::new(
+                Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+            ));
+            let server = LspServer::with_output(output);
+            server.test_apply_did_open(uri, text, 1)?;
+            server.test_handle_references(Some(serde_json::json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 4, "character": character},
+                "context": {"includeDeclaration": true}
+            })))?;
+
+            let explanation = server
+                .handle_execute_command(Some(serde_json::json!({
+                    "command": "perl.explainProviderDecision",
+                    "arguments": [{"provider": "references"}]
+                })))?
+                .ok_or("missing explain-provider-decision response")?;
+            let receipt = explanation
+                .get("request_receipt")
+                .and_then(serde_json::Value::as_object)
+                .ok_or("missing request_receipt")?;
+            let field = |key: &str| -> Result<String, Box<dyn Error>> {
+                Ok(receipt
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| format!("missing {key}"))?
+                    .to_owned())
+            };
+            Ok((field("answering_tier")?, field("index_state")?))
+        };
+
+        let (final_component_tier, final_component_index_state) = receipt_at(13)?;
+        assert_ne!(
+            final_component_tier, "empty",
+            "negative control failed: cursor on the final component `bar` must be \
+             answered by a real tier, got `{final_component_tier}`"
+        );
+
+        let (prefix_tier, prefix_index_state) = receipt_at(8)?;
         assert_eq!(
-            search_document_texts_for_references(
-                docs.iter().map(|(uri, text)| (*uri, *text)),
-                "",
-                10,
-            )
-            .len(),
-            0,
-            "empty needle must not produce references",
+            prefix_tier, "empty",
+            "cursor on the `Foo` prefix of `Foo::bar` must answer on the empty tier, \
+             got `{prefix_tier}` -- the prefix component does not name the sub `bar`"
+        );
+
+        // The prefix path returns early, but it must still report the index access
+        // mode it actually observed. Both requests run against the same server and
+        // document, so a divergence here means the early return is inventing an
+        // index state rather than reporting one -- which would make
+        // `perl.explainProviderDecision` misdescribe the workspace on exactly the
+        // path this change added.
+        assert_eq!(
+            prefix_index_state, final_component_index_state,
+            "the prefix early return reported index_state `{prefix_index_state}` while \
+             the same document and server reported `{final_component_index_state}` for a \
+             final-component cursor; the receipt must not falsify the observed index state"
         );
 
         Ok(())
     }
 
-    #[test]
-    fn search_document_texts_for_references_boundary_discriminator_input_that_hits_the_boundary_cap_zero_returns_empty()
-    -> Result<(), Box<dyn Error>> {
-        let docs = [("file:///refs.pl", "$var\n")];
-
-        assert_eq!(
-            search_document_texts_for_references(
-                docs.iter().map(|(uri, text)| (*uri, *text)),
-                "var",
-                0,
-            )
-            .len(),
-            0,
-            "zero cap must not produce references",
-        );
-
-        Ok(())
+    fn location_identity_key(
+        location: &Value,
+    ) -> Result<(String, u64, u64, u64, u64), Box<dyn Error>> {
+        Ok((
+            location["uri"].as_str().ok_or("missing uri")?.to_string(),
+            location["range"]["start"]["line"].as_u64().ok_or("missing start line")?,
+            location["range"]["start"]["character"].as_u64().ok_or("missing start character")?,
+            location["range"]["end"]["line"].as_u64().ok_or("missing end line")?,
+            location["range"]["end"]["character"].as_u64().ok_or("missing end character")?,
+        ))
     }
 
-    #[test]
-    fn search_document_texts_for_references_boundary_discriminator_input_that_hits_the_boundary_out_len_reaches_cap_stops_scan()
-    -> Result<(), Box<dyn Error>> {
-        let docs = [("file:///refs.pl", "$var $var $var\n")];
-
-        assert_eq!(
-            search_document_texts_for_references(
-                docs.iter().map(|(uri, text)| (*uri, *text)),
-                "var",
-                2,
-            )
-            .len(),
-            2,
-            "cap-limited scan must stop at two references",
-        );
-
-        Ok(())
+    fn line_text_at<'a>(
+        docs: &'a [(&'a str, &'a str)],
+        location: &Value,
+    ) -> Result<&'a str, Box<dyn Error>> {
+        let uri = location["uri"].as_str().ok_or("missing uri")?;
+        let line = location["range"]["start"]["line"].as_u64().ok_or("missing line")? as usize;
+        let text = docs
+            .iter()
+            .find(|(doc_uri, _)| *doc_uri == uri)
+            .map(|(_, text)| *text)
+            .ok_or("missing document for location")?;
+        Ok(text.lines().nth(line).ok_or("missing line text")?)
     }
 
+    /// Production-path contract for #16638: `textDocument/references` on `sub name`
+    /// must retain method/declaration sites, drop hash-key literals, and not
+    /// repeat identical `(uri, range)` pairs.
     #[test]
-    fn search_document_texts_for_references_keeps_word_boundaries() -> Result<(), Box<dyn Error>> {
-        let docs = [("file:///refs.pl", "my $var = 1;\nmy $variant = $var;\n")];
+    fn handle_references_filters_hash_keys_and_dedupes_identical_locations()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
 
-        let refs = search_document_texts_for_references(
-            docs.iter().map(|(uri, text)| (*uri, *text)),
-            "var",
-            10,
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+
+        let classic_uri = "file:///test/Classic.pm";
+        let consumer_uri = "file:///test/consumer_classic.pl";
+        let classic = concat!(
+            "package Classic;\n",
+            "\n",
+            "sub new {\n",
+            "    my ($class, %args) = @_;\n",
+            "    my $self = { name => $args{name} // 'anon' };\n",
+            "    bless $self, $class;\n",
+            "    return $self;\n",
+            "}\n",
+            "\n",
+            "sub name {\n",
+            "    my ($self) = @_;\n",
+            "    return $self->{name};\n",
+            "}\n",
+            "\n",
+            "sub describe {\n",
+            "    my ($self) = @_;\n",
+            "    return \"Classic: \" . $self->name;\n",
+            "}\n",
         );
-        if refs.len() != 2 {
-            return Err(format!("expected 2 references, got {}", refs.len()).into());
+        let consumer = concat!(
+            "use Classic;\n",
+            "my $obj = Classic->new(name => 'x');\n",
+            "my $n = $obj->name;\n",
+        );
+        server.test_apply_did_open(classic_uri, classic, 1)?;
+        server.test_apply_did_open(consumer_uri, consumer, 1)?;
+
+        let result = server
+            .test_handle_references(Some(serde_json::json!({
+                "textDocument": {"uri": classic_uri},
+                "position": {"line": 9, "character": 4},
+                "context": {"includeDeclaration": true}
+            })))?
+            .ok_or("missing references result")?;
+        let locations = result.as_array().ok_or("references must return an array")?;
+        if locations.is_empty() {
+            return Err("sub name must have references".into());
         }
 
-        for location in &refs {
-            if location_start(location)? == (1, 4) {
-                return Err("embedded match in $variant must not be reported".into());
+        let docs = [(classic_uri, classic), (consumer_uri, consumer)];
+        let mut identities = Vec::new();
+        let mut saw_declaration = false;
+        let mut saw_method_call = false;
+        for location in locations {
+            let identity = location_identity_key(location)?;
+            let line = line_text_at(&docs, location)?;
+            if line.contains("name =>") || line.contains("{name}") {
+                return Err(format!("hash-key line leaked into sub-name references: {line}").into());
+            }
+            if line.contains("sub name") {
+                saw_declaration = true;
+            }
+            if line.contains("->name") {
+                saw_method_call = true;
+            }
+            identities.push(identity);
+        }
+        if !saw_declaration {
+            return Err("sub name declaration was dropped".into());
+        }
+        if !saw_method_call {
+            return Err("method-call sites were dropped by the hash-key filter".into());
+        }
+        let mut sorted = identities.clone();
+        sorted.sort();
+        sorted.dedup();
+        if sorted.len() != identities.len() {
+            return Err(format!(
+                "identical (uri, range) locations were published twice: {identities:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_references_variable_query_does_not_absorb_same_named_sub()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+
+        let uri = "file:///test/Auto.pm";
+        let text = concat!(
+            "package Dyn::Auto;\n",
+            "our $AUTOLOAD;\n",
+            "sub AUTOLOAD {\n",
+            "    my $method = $AUTOLOAD;\n",
+            "    return $method;\n",
+            "}\n",
+        );
+        server.test_apply_did_open(uri, text, 1)?;
+
+        let result = server
+            .test_handle_references(Some(serde_json::json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 1, "character": 6},
+                "context": {"includeDeclaration": true}
+            })))?
+            .ok_or("missing references result")?;
+        let locations = result.as_array().ok_or("references must return an array")?;
+        let docs = [(uri, text)];
+        for location in locations {
+            let line = line_text_at(&docs, location)?;
+            if line.contains("sub AUTOLOAD") {
+                return Err(format!(
+                    "$AUTOLOAD references absorbed the same-named sub declaration: {line}"
+                )
+                .into());
             }
         }
-
-        Ok(())
-    }
-
-    #[test]
-    fn search_document_texts_for_references_reports_utf16_columns() -> Result<(), Box<dyn Error>> {
-        let docs = [("file:///refs.pl", "my $heart = \"♥\"; $heart\n")];
-
-        let refs = search_document_texts_for_references(
-            docs.iter().map(|(uri, text)| (*uri, *text)),
-            "heart",
-            10,
-        );
-        if refs.len() != 2 {
-            return Err(format!("expected 2 references, got {}", refs.len()).into());
+        if !locations.iter().any(|location| {
+            line_text_at(&docs, location).is_ok_and(|line| line.contains("$AUTOLOAD"))
+        }) {
+            return Err("$AUTOLOAD usages were dropped".into());
         }
-
-        let starts: Vec<_> = refs.iter().map(location_start).collect::<Result<_, _>>()?;
-        if starts != vec![(0, 4), (0, 18)] {
-            return Err(format!("unexpected UTF-16 starts: {starts:?}").into());
-        }
-
         Ok(())
     }
 

@@ -1,16 +1,18 @@
-//! Conservative checker for provably tautological Rust assertions (#14061).
+//! Conservative checker for provably tautological Rust assertions (#14061 / #14058).
 //!
 //! Inventory is the existing `crates`/`xtask`/`examples`/`tests` source tree.
 //! Detection is a syn AST walk of `assert!`/`assert_eq!` (and debug variants).
-//! False negatives are accepted; false positives are not.
+//! False negatives are accepted; false positives are not. Function-call
+//! receivers and type-unknown `assert_eq!` identities are skipped because
+//! they are not proven tautologies.
 
 mod detect;
 mod disposition;
+mod expr;
 mod inventory;
 mod scan;
 
 use crate::utils::project_root;
-use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail};
 use disposition::DispositionLedger;
 use inventory::collect_rust_files;
@@ -48,8 +50,7 @@ pub fn run(args: CheckTautologyArgs) -> Result<()> {
         Some(root) => root,
         None => project_root()?,
     };
-    let as_of = Utc::now().date_naive();
-    let report = scan_root(&root, args.policy.as_deref(), as_of)?;
+    let report = scan_root(&root, args.policy.as_deref())?;
     print_report(&report);
 
     if let Some(receipt_path) = args.receipt.as_deref() {
@@ -73,8 +74,72 @@ pub fn run(args: CheckTautologyArgs) -> Result<()> {
     Ok(())
 }
 
-fn scan_root(root: &Path, policy: Option<&Path>, as_of: NaiveDate) -> Result<ScanReport> {
-    let ledger = load_ledger(root, policy, as_of)?;
+pub(crate) fn cadence_rows(path: &Path) -> Result<Vec<disposition::CadenceRow>> {
+    disposition::cadence_rows(path)
+}
+
+/// Cadence rows annotated with scanner liveness.
+///
+/// Structural validation comes from the ledger, but a disposition matching no
+/// current scanner finding must not project as evidence-backed owner work:
+/// `check-tautology` rejects that row as unused. Such rows are returned with
+/// their unused reason so cadence reports them as `Invalid` instead of proof.
+/// Scan errors fail closed: an unreadable or unparsable governed source is not
+/// a zero-finding result.
+pub(crate) fn cadence_rows_with_liveness(
+    root: &Path,
+    path: &Path,
+) -> Result<Vec<(disposition::CadenceRow, Option<String>)>> {
+    let ledger = DispositionLedger::load(path)?;
+    // Walk the governed sources directly instead of reusing `scan_root`: the
+    // shared scan retains (removes) suppressed findings before returning, but
+    // liveness needs the pre-suppression finding set to tell matched rows
+    // apart from unused ones.
+    let mut findings = Vec::new();
+    let mut scan_errors = Vec::new();
+    for file in inventory::collect_rust_files(root)? {
+        let relative =
+            file.strip_prefix(root).unwrap_or(file.as_path()).to_string_lossy().replace('\\', "/");
+        match read_governed_source(&file) {
+            Ok(source) => match scan::scan_file(&relative, &source) {
+                Ok(found) => findings.extend(found),
+                Err(error) => {
+                    scan_errors.push(format!("{relative}: unparsable governed input: {error}"));
+                }
+            },
+            Err(error) => {
+                scan_errors.push(format!("{relative}: unreadable governed input: {error}"))
+            }
+        }
+    }
+    // Unused dispositions are the liveness signal this entry exists to
+    // project, not a scan failure: anything else fails closed instead of
+    // passing as zero findings.
+    if !scan_errors.is_empty() {
+        bail!(
+            "tautology liveness scan failed: {}; this is not a zero-finding result",
+            scan_errors.join("; ")
+        );
+    }
+    let unused_ids: std::collections::BTreeSet<String> =
+        ledger.unused_for(&findings).into_iter().collect();
+    Ok(ledger
+        .cadence_rows()
+        .into_iter()
+        .map(|row| {
+            let reason = unused_ids.contains(&row.id).then(|| {
+                format!(
+                    "tautology disposition `{}` matches no current scanner finding; check-tautology rejects it as unused",
+                    row.id
+                )
+            });
+            (row, reason)
+        })
+        .collect())
+}
+
+fn scan_root(root: &Path, policy: Option<&Path>) -> Result<ScanReport> {
+    let ledger = load_ledger(root, policy)?;
     let files = collect_rust_files(root)?;
     let mut report = ScanReport { files_scanned: files.len(), ..ScanReport::default() };
 
@@ -103,14 +168,14 @@ fn scan_root(root: &Path, policy: Option<&Path>, as_of: NaiveDate) -> Result<Sca
     Ok(report)
 }
 
-fn load_ledger(root: &Path, policy: Option<&Path>, as_of: NaiveDate) -> Result<DispositionLedger> {
+fn load_ledger(root: &Path, policy: Option<&Path>) -> Result<DispositionLedger> {
     let default_path = root.join("policy/tautology-dispositions.toml");
     let path = match policy {
         Some(path) => resolve_policy_path(root, path),
         None if default_path.is_file() => default_path,
         None => return Ok(DispositionLedger::empty()),
     };
-    DispositionLedger::load(&path, as_of)
+    DispositionLedger::load(&path)
 }
 
 fn resolve_policy_path(root: &Path, policy: &Path) -> PathBuf {
@@ -163,12 +228,11 @@ mod tests {
 
     use super::detect::RuleId;
     use super::{scan_file, scan_root};
-    use chrono::NaiveDate;
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
 
-    const PATH_SECURITY_HIT: &str = r#"
+    const PATH_SECURITY_TWO_CALL_HIT: &str = r#"
         fn sanitize_completion_path_input(_path: &str) -> Option<String> { None }
         #[test]
         fn test_traversal_encoded_dot_segments_completion() {
@@ -180,9 +244,15 @@ mod tests {
         }
     "#;
 
-    fn as_of() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 8, 30).expect("date")
-    }
+    const PATH_SECURITY_BOUND_TAUTOLOGY: &str = r#"
+        fn sanitize_completion_path_input(_path: &str) -> Option<String> { None }
+        #[test]
+        fn test_traversal_encoded_dot_segments_completion() {
+            let value: Option<String> = sanitize_completion_path_input("..%2f..%2fetc%2fpasswd");
+            assert!(value.is_some() || value.is_none());
+            assert!(sanitize_completion_path_input("../foo").is_none());
+        }
+    "#;
 
     fn write_rs(root: &std::path::Path, relative: &str, source: &str) {
         let path = root.join(relative);
@@ -193,17 +263,29 @@ mod tests {
     }
 
     #[test]
-    fn path_security_hit_is_red_before_repair() {
-        let findings =
-            scan_file("crates/perl-parser-core/src/syntax/path_security.rs", PATH_SECURITY_HIT)
-                .expect("parse");
+    fn path_security_bound_option_tautology_is_red() {
+        let findings = scan_file(
+            "crates/perl-parser-core/src/syntax/path_security.rs",
+            PATH_SECURITY_BOUND_TAUTOLOGY,
+        )
+        .expect("parse");
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule, RuleId::OptionSomeOrNone);
         assert!(findings[0].line >= 1);
     }
 
     #[test]
-    fn repaired_path_security_boundary_stays_green_and_reinsertion_is_red() {
+    fn original_two_call_path_security_shape_is_conservatively_skipped() {
+        let findings = scan_file(
+            "crates/perl-parser-core/src/syntax/path_security.rs",
+            PATH_SECURITY_TWO_CALL_HIT,
+        )
+        .expect("parse");
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn repaired_path_security_boundary_stays_green_and_bound_reinsertion_is_red() {
         let repaired = r#"
             fn sanitize_completion_path_input(path: &str) -> Option<String> {
                 Some(path.to_string())
@@ -225,10 +307,8 @@ mod tests {
                     sanitize_completion_path_input("..%2f..%2fetc%2fpasswd"),
                     Some("..%2f..%2fetc%2fpasswd".to_string())
                 );"#,
-            r#"assert!(
-                    sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_some()
-                        || sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_none()
-                );"#,
+            r#"let value: Option<String> = sanitize_completion_path_input("..%2f..%2fetc%2fpasswd");
+                assert!(value.is_some() || value.is_none());"#,
         );
         let findings = scan_file("path_security.rs", &reinserted).expect("parse reinsertion");
         assert_eq!(findings.len(), 1);
@@ -238,16 +318,27 @@ mod tests {
     #[test]
     fn opposite_direction_controls_stay_green() {
         let source = r#"
-            fn probe(result: Result<(), Expected>, item: Item, ready: bool) {
+            fn probe(result: Result<(), Expected>, item: Item, ready: bool, mut probe: Probe) {
                 assert!(result.is_ok() || matches!(result, Err(Expected::Deferred)));
                 assert!(item.code.is_some() || item.data.is_none());
                 let _ = ready || !ready;
                 tick();
                 assert!(tick() || !tick());
+                assert!(counter().is_some() || counter().is_none());
+                assert_eq!(f32::NAN, f32::NAN);
+                assert_eq!(f64::NAN, f64::NAN);
+                assert!(probe.is_some() || probe.is_none());
+                assert!(probe.is_some() || !probe.is_some());
             }
             enum Expected { Deferred }
             struct Item { code: Option<u8>, data: Option<u8> }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&mut self) -> bool { self.n += 1; false }
+                fn is_none(&self) -> bool { false }
+            }
             fn tick() -> bool { true }
+            fn counter() -> Option<u8> { None }
             // Historical example: assert!(value.is_some() || value.is_none());
         "#;
         let findings = scan_file("controls.rs", source).expect("parse");
@@ -267,7 +358,7 @@ mod tests {
             "crates/demo/tests/fixtures/hist.rs",
             "use Scalar::Util qw(looks_like_number);\nfn f(v: Option<u8>) { assert!(v.is_some() || v.is_none()); }\n",
         );
-        let report = scan_root(tmp.path(), None, as_of()).expect("scan");
+        let report = scan_root(tmp.path(), None).expect("scan");
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(report.findings.is_empty(), "{:?}", report.findings);
     }
@@ -285,7 +376,7 @@ mod tests {
             "crates/demo/tests/fixtures/hist.rs",
             "use Scalar::Util qw(looks_like_number);\nfn f(v: Option<u8>) { assert!(v.is_some() || v.is_none()); }\n",
         );
-        let report = scan_root(tmp.path(), None, as_of()).expect("scan");
+        let report = scan_root(tmp.path(), None).expect("scan");
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
         assert_eq!(report.findings[0].path, "crates/demo/src/lib.rs");
@@ -296,7 +387,7 @@ mod tests {
     fn unparsable_governed_file_is_instrument_failure() {
         let tmp = TempDir::new().expect("tempdir");
         write_rs(tmp.path(), "crates/demo/src/lib.rs", "fn broken( {");
-        let report = scan_root(tmp.path(), None, as_of()).expect("scan");
+        let report = scan_root(tmp.path(), None).expect("scan");
         assert!(report.findings.is_empty());
         assert_eq!(report.errors.len(), 1);
         assert!(report.errors[0].contains("unparsable"), "{:?}", report.errors);
@@ -311,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_disposition_fails_the_instrument() {
+    fn elapsed_disposition_stays_active_for_unchanged_subject() {
         let tmp = TempDir::new().expect("tempdir");
         write_rs(
             tmp.path(),
@@ -330,16 +421,44 @@ rule = "option-is-some-or-none"
 path = "crates/demo/src/lib.rs"
 owner = "parser-core"
 issue = "#14061"
-reason = "expired on purpose"
+reason = "elapsed lifecycle date on purpose"
 created = "2026-01-01"
 expires = "2026-01-02"
 "##,
         )
         .expect("ledger");
-        let error = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")), as_of())
-            .expect_err("expired ledger");
+        let report = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")))
+            .expect("elapsed lifecycle metadata remains valid");
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn malformed_expiry_fails_the_instrument() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_rs(tmp.path(), "crates/demo/src/lib.rs", "fn probe() {}\n");
+        fs::create_dir_all(tmp.path().join("policy")).expect("policy dir");
+        fs::write(
+            tmp.path().join("policy/ledger.toml"),
+            r##"
+schema_version = 1
+policy = "tautology-dispositions"
+[[disposition]]
+id = "tautology-demo"
+rule = "option-is-some-or-none"
+path = "crates/demo/src/lib.rs"
+owner = "parser-core"
+issue = "#14061"
+reason = "invalid lifecycle syntax"
+created = "2026-01-01"
+expires = "not-a-date"
+"##,
+        )
+        .expect("ledger");
+        let error = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")))
+            .expect_err("malformed expiry");
         let display = format!("{error:#}");
-        assert!(display.contains("expired"), "{display}");
+        assert!(display.contains("invalid expires date"), "{display}");
     }
 
     #[test]
@@ -368,8 +487,7 @@ expires = "2026-11-30"
 "##,
         )
         .expect("ledger");
-        let report =
-            scan_root(tmp.path(), Some(Path::new("policy/rel.toml")), as_of()).expect("scan");
+        let report = scan_root(tmp.path(), Some(Path::new("policy/rel.toml"))).expect("scan");
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(report.findings.is_empty(), "{:?}", report.findings);
     }
@@ -396,7 +514,7 @@ expires = "2026-11-30"
 "##,
         )
         .expect("ledger");
-        let error = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")), as_of())
+        let error = scan_root(tmp.path(), Some(&tmp.path().join("policy/ledger.toml")))
             .expect_err("ownerless ledger");
         let display = format!("{error:#}");
         assert!(display.contains("ownerless"), "{display}");

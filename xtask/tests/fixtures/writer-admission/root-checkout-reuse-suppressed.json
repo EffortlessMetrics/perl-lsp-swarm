@@ -19,7 +19,10 @@
   },
   "worktree_mapping": {
     "entries": [
-      { "path": "/repo", "branch": "impl/1234-feature" }
+      {
+        "path": "/repo",
+        "branch": "impl/1234-feature"
+      }
     ],
     "error": null
   },
@@ -41,6 +44,7 @@
   },
   "remote_branch": {
     "sha": null,
-    "error": null
+    "error": null,
+    "observed": true
   }
 }

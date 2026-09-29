@@ -1,6 +1,8 @@
 //! Exact normalized membership comparison between two runner plans.
 
-use crate::build::{runner_plan_digest, validate_runner_plan, validate_runner_plan_against};
+use crate::build::{
+    DeclaredPlanInputs, runner_plan_digest, validate_runner_plan, validate_runner_plan_against,
+};
 use crate::model::UpstreamTargetMatrix;
 use crate::runner_model::{
     InvocationCaptureStatus, MembershipParityStatus, RUNNER_PARITY_SCHEMA_VERSION, RunnerKind,
@@ -89,15 +91,21 @@ pub(crate) fn compare_runner_plans(
     Ok(report)
 }
 
+/// Compare two plans after independently reconstructing each side (#7737).
+///
+/// Each side carries its own declared reconstruction inputs so neither
+/// candidate can supply the authority that validates it.
 pub(crate) fn compare_runner_plans_against(
     matrix: &UpstreamTargetMatrix,
+    left_declared: &DeclaredPlanInputs,
     left: &RunnerPlan,
     left_raw_discovery: &[u8],
+    right_declared: &DeclaredPlanInputs,
     right: &RunnerPlan,
     right_raw_discovery: &[u8],
 ) -> Result<RunnerParityReport, String> {
-    validate_runner_plan_against(matrix, left_raw_discovery, left)?;
-    validate_runner_plan_against(matrix, right_raw_discovery, right)?;
+    validate_runner_plan_against(matrix, left_raw_discovery, left_declared, left)?;
+    validate_runner_plan_against(matrix, right_raw_discovery, right_declared, right)?;
     compare_runner_plans(left, right)
 }
 

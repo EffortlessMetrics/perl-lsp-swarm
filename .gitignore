@@ -226,6 +226,8 @@ plans/*
 !plans/lsp-freshness/implementation-plan.md
 !plans/spec-governance/
 !plans/spec-governance/implementation-plan.md
+!plans/install-route-classification/
+!plans/install-route-classification/implementation-plan.md
 scanner_comparison/
 issue_updates/
 

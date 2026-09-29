@@ -702,7 +702,7 @@ where
         NodeKind::MandatoryParameter { variable } => {
             find_nodes_recursive(variable, predicate, results);
         }
-        NodeKind::OptionalParameter { variable, default_value } => {
+        NodeKind::OptionalParameter { variable, default_value, .. } => {
             find_nodes_recursive(variable, predicate, results);
             find_nodes_recursive(default_value, predicate, results);
         }

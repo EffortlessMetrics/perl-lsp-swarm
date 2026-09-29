@@ -164,6 +164,16 @@ fn doctor_reports_workspace_setup() -> Result<(), Box<dyn std::error::Error>> {
     assert!(lib_entry.contains(".perl-lsp.toml include_paths"));
     assert_eq!(line_with_prefix("Effective @INC roots:"), Some("Effective @INC roots:"));
     assert_eq!(line_with_prefix("System @INC: "), Some("System @INC: disabled"));
+    assert_eq!(
+        line_with_prefix("v0.18 text/position envelope:"),
+        Some("v0.18 text/position envelope:")
+    );
+    assert_eq!(line_with_prefix("  decision: "), Some("  decision: full_document_utf16"));
+    assert_eq!(
+        line_with_prefix("  textDocumentSync.change: "),
+        Some("  textDocumentSync.change: full")
+    );
+    assert_eq!(line_with_prefix("  positionEncoding: "), Some("  positionEncoding: utf-16"));
     assert_eq!(line_with_prefix("Module lookup example:"), Some("Module lookup example:"));
     assert!(stdout.contains(
         "  use Foo::Bar; searches Foo/Bar.pm under the effective roots above, in order."

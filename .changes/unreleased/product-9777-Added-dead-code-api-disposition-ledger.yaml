@@ -1,0 +1,21 @@
+project: product
+component: Language intelligence
+kind: Added
+body: |
+  Record an explicit disposition for every public item on the bounded
+  `perl_parser::dead_code` compatibility surface, with a drift check that fails
+  when the record and the code disagree.
+
+  The ledger names what the surface cannot represent rather than implying it can:
+  two `DeadCodeType` variants that no producer ever constructs, an entry-point API
+  whose stored value is never read, a `confidence` field that is a single constant
+  on every finding, and six result states — including a partial analysis and an
+  incomplete computation — that arrive looking like ordinary results. Each claim is
+  held down by an executable fixture.
+
+  No analysis behavior changes.
+time: 2026-09-07T00:00:00Z
+custom:
+  PR: "0000"
+  Slug: "dead-code-api-disposition-ledger-9777"
+  Breaking: "no"

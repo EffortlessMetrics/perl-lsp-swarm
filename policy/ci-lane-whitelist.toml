@@ -453,7 +453,9 @@ expensive = false
 blocking_promotion_allowed = false
 duplicate_of = ["nightly:mutation"]
 review_after = "2026-06-07"
-expires = "2026-08-07"
+# 2026-08-07 had already passed while the lane stayed active (#16431 flagged
+# the stale date when the infra-retry arming was investigated).
+expires = "2026-12-31"
 
 [[lane]]
 id = "ripr_infra_retry"
@@ -466,9 +468,9 @@ default_pr = true
 runner = "ubuntu_latest"
 base_lem = 1
 owner = "testing"
-intent = "Bounded automatic same-head retry when the gate classifies a ripr lane kill as infra-no-proof (#6807, #12563, #12771)."
+intent = "Bounded automatic same-head retry when the gate classifies a ripr lane kill as infra-no-proof (#6807, #12563, #12771, #16431)."
 failure_mode = "A runner eviction otherwise false-reds the required ripr+ New Gap Gate with no terminal evidence for the SHA."
-proof_obligation = "Consume the gate's ripr-gate-classification artifact strictly as data; rerun-failed-jobs exactly once while run_attempt == 1; attempt >= 2 surfaces NOT_PROVEN loudly."
+proof_obligation = "Consume the gate's ripr-gate-classification artifact strictly as data; rerun-failed-jobs exactly once while run_attempt == 1; attempt >= 2 surfaces NOT_PROVEN loudly. The gate may classify from lane-log markers or from API-side evidence (check-run annotations / job steps-state fallback, #16431); this consumer stays classifier-agnostic."
 evidence = []
 allowed_triggers = ["workflow_run"]
 labels = ["ripr", "ci-reliability"]
@@ -513,12 +515,12 @@ default_pr = false
 runner = "ubuntu_24_04"
 base_lem = 45
 owner = "testing"
-intent = "Measure execution surface; also provides the required Codecov / Patch 95 check on merge_group runs."
+intent = "Measure execution surface; Codecov / Patch 95 is advisory on explicit nightly or manual runs."
 failure_mode = "Coverage drops or important code becomes unexecuted."
 proof_obligation = "Run cargo-llvm-cov and upload report."
 evidence = ["lcov.info", "Codecov"]
-allowed_triggers = ["schedule", "workflow_dispatch", "pull_request:labeled", "merge_group", "pull_request"]
-labels = ["ci:coverage", "coverage", "full-ci"]
+allowed_triggers = ["schedule", "workflow_dispatch"]
+labels = []
 expensive = true
 duplicate_of = []
 review_after = "2026-06-07"
@@ -714,7 +716,7 @@ tier = "on-demand"
 kind = "automation"
 blocking = false
 default_pr = false
-runner = "self_hosted_droid_review"
+runner = "ubuntu_24_04"
 base_lem = 2
 owner = "ci"
 intent = "Manual @droid review triggered by trusted contributors."
@@ -840,7 +842,7 @@ tier = "frontdoor"
 kind = "hygiene"
 blocking = true
 default_pr = true
-runner = "self_hosted_workflow_nano"
+runner = "ubuntu_24_04"
 base_lem = 1
 owner = "ci"
 intent = "Enforce PR title convention with real issue ref."
@@ -865,7 +867,7 @@ tier = "frontdoor"
 kind = "automation"
 blocking = false
 default_pr = false
-runner = "self_hosted_droid_review"
+runner = "ubuntu_24_04"
 base_lem = 4
 owner = "ci"
 intent = "Manual / dispatch Droid command (separate from droid_auto_review)."
@@ -1030,6 +1032,27 @@ review_after = "2027-01-22"
 expires = "2027-08-22"
 
 [[lane]]
+id = "authority_transfer_review"
+workflow = ".github/workflows/authority-transfer-review.yml"
+job = "authority-transfer-review"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = false
+default_pr = true
+runner = "ubuntu_24_04"
+base_lem = 3
+owner = "ci"
+intent = "Publish one advisory exact-head Authority Transfer Review context per PR over the #11793 review-surface denominator, executing only trusted base-branch validator code (#11795 AR02)."
+failure_mode = "A governed-surface change merges with stale, missing, or denominator-invalidated review evidence while an advisory context looked valid."
+proof_obligation = "Replay the evaluator self-test as an instrument self-test, prove exact base and inert head identity, then evaluate bounded changed paths against the checked #11793 manifest and projection; typed FAIL/NOT_PROVEN exits fail the advisory check."
+evidence = ["job output", "target/receipts/authority-transfer-review.json"]
+allowed_triggers = ["pull_request_target", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2027-02-25"
+expires = "2027-09-25"
+
+[[lane]]
 id = "policy_validators"
 workflow = ".github/workflows/policy-validators.yml"
 job = "validate"
@@ -1041,14 +1064,77 @@ runner = "self_hosted_workflow_nano"
 base_lem = 2
 owner = "ci"
 intent = "Validate CI policy ledgers when policy/, gate-policy, or validator scripts change."
-failure_mode = "Risk packs reference unknown lanes, gates have no lane mapping, bounded-result overflow invariants break, or TOML files break."
-proof_obligation = "Run validate_risk_packs.py, validate_gate_lane_mapping.py, validate_trust_lanes.py, check_bounded_result_overflow.py, and policy/*.toml parse-checks in --strict mode."
+failure_mode = "Risk packs reference unknown lanes, gates have no lane mapping, bounded-result overflow invariants break, TOML files break, or Dependabot config drifts from canonical contributor guides."
+proof_obligation = "Run validate_risk_packs.py, validate_gate_lane_mapping.py, validate_trust_lanes.py, check_bounded_result_overflow.py, validate_dependabot_contract.py, and policy/*.toml parse-checks in --strict mode."
 evidence = ["job logs"]
 allowed_triggers = ["pull_request", "workflow_dispatch"]
 expensive = false
 duplicate_of = []
 review_after = "2026-06-07"
 expires = "2026-11-07"
+
+[[lane]]
+id = "policy_validators_hosted"
+workflow = ".github/workflows/policy-validators.yml"
+job = "validate-hosted"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 2
+owner = "ci"
+intent = "Run the portable stdlib-only policy validators on GitHub-hosted capacity whenever the trusted nano lane does not succeed."
+failure_mode = "Runner outages leave portable policy validation without a proof path."
+proof_obligation = "Run the identical validator step list as the self-hosted validate job on ubuntu-24.04 system python3."
+evidence = ["job logs"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-02-18"
+
+[[lane]]
+id = "policy_validators_result"
+workflow = ".github/workflows/policy-validators.yml"
+job = "validate-result"
+tier = "frontdoor"
+kind = "control"
+blocking = true
+default_pr = false
+runner = "ubuntu_latest"
+base_lem = 1
+owner = "ci"
+intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status. Fail-overs to the hosted lane whenever the trusted lane does not succeed, and reports actionable deadline diagnostics when the trusted lane stays queued without a runner (#15854, #15900)."
+failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, a validator failure masks as a routing skip, a trusted-lane failure blocks a hosted success, or a queued-forever trusted lane leaves the run and its check permanently pending without diagnostics."
+proof_obligation = "Run both lanes; aggregate passes on agreement or on a hosted success whenever the trusted lane does not succeed (failure, skip, cancel, or outage timeout), and fail-closes on hosted failure or trusted/hosted divergence; report deadline diagnostics for a trusted lane still queued without a runner; run the fallback contract and aggregate decision-table tests."
+evidence = ["job output", "step-summary"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-02-18"
+
+[[lane]]
+id = "policy_validators_nano_reaper"
+workflow = ".github/workflows/policy-validators-nano-reaper.yml"
+job = "reap"
+tier = "frontdoor"
+kind = "control"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 1
+owner = "ci"
+intent = "Cancel Policy Validators trusted-lane jobs that stayed queued without a runner past the service window so affected runs reach an explicit terminal state (#15900)."
+failure_mode = "A queued-forever trusted lane leaves affected PR runs and their checks permanently pending without diagnostics."
+proof_obligation = "Find queued policy-validators trusted-lane jobs older than the service window, cancel them with actionable diagnostics naming the em-ci-nano group and the follow-up."
+evidence = ["job output", "step-summary"]
+allowed_triggers = ["schedule", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-03-18"
 
 [[lane]]
 id = "commit_checks"
@@ -1206,3 +1292,49 @@ expensive = false
 duplicate_of = []
 review_after = "2026-08-10"
 expires = "2026-12-10"
+
+[[lane]]
+id = "critic_rule_proof"
+workflow = ".github/workflows/critic-rule-proof.yml"
+job = "validate"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 8
+owner = "native-critic"
+intent = "Path-filtered checker for the versioned critic rule-proof manifest, fixture digests, identity/remediation authorities, live critic propositions, and generated status (#6973)."
+failure_mode = "Rule-proof schema, fixture digest, identity/alias, suppression, remediation, or live critic proposition drift lands without failing --check."
+proof_obligation = "Run cargo test -p xtask --locked --test critic_rule_proof and cargo xtask critic-rule-proof check."
+evidence = ["job output"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-11-26"
+expires = "2026-12-26"
+
+# =============================================================================
+# Default-branch baseline re-measurement
+# =============================================================================
+
+[[lane]]
+id = "content_anchored_baselines"
+workflow = ".github/workflows/content-anchored-baselines.yml"
+job = "measure"
+tier = "commit"
+kind = "policy"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 12
+owner = "ci"
+intent = "Re-measure the content-anchored baselines on every default-branch commit, so drift is dated to the commit that caused it rather than reported against the next pull request (#16264)."
+failure_mode = "A namespace reference or audited surface changes in a file outside the crates the scope-aware pull-request gates select, so nothing measures it before it lands."
+proof_obligation = "Run cargo xtask kwalitee-inventory --check and cargo test -p xtask --lib --locked ast_v2_lifecycle_audit against the pushed tree, with no path filter."
+evidence = ["job output"]
+allowed_triggers = ["push", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2027-03-20"
+expires = "2027-09-20"

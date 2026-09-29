@@ -198,4 +198,22 @@ describe('document command implementations', () => {
 
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith('editor.action.formatDocument');
   });
+
+  test('delegates formatting for an active perl5 alias editor (#7699)', async () => {
+    setActiveEditor(makeEditor({ languageId: 'perl5' }));
+
+    await formatDocumentCommand();
+
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('editor.action.formatDocument');
+    expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  test('still refuses formatting for a non-Perl editor', async () => {
+    setActiveEditor(makeEditor({ languageId: 'javascript' }));
+
+    await formatDocumentCommand();
+
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith('editor.action.formatDocument');
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith('No active Perl file to format');
+  });
 });

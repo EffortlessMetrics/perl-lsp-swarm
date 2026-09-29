@@ -385,6 +385,28 @@ pub fn get_text_around_offset(content: &str, offset: usize, radius: usize) -> St
     get_text_window_around_offset(content, offset, radius).1
 }
 
+/// Return the byte start of the line containing `offset`, and that whole line.
+///
+/// Unlike [`get_text_window_around_offset`], which clips to a fixed radius, this
+/// never truncates the line. Use it when the caller must see a *complete* token to
+/// classify it correctly and that token cannot span a line break -- a Perl
+/// `::`-qualified name, for example. A radius window can end in the middle of such
+/// a name and make a later component look like the final one.
+///
+/// `offset` is clamped into range and walked back to a UTF-8 character boundary, so
+/// an offset landing inside a multi-byte character cannot panic. Lines are split on
+/// `\n`, which is single-byte, so the returned bounds are always char boundaries.
+/// A trailing `\r` is left on the slice; qualified-name scanning stops at it anyway.
+pub fn line_window_around_offset(content: &str, offset: usize) -> (usize, &str) {
+    let mut offset = offset.min(content.len());
+    while offset > 0 && !content.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    let start = content[..offset].rfind('\n').map_or(0, |index| index + 1);
+    let end = content[offset..].find('\n').map_or(content.len(), |index| offset + index);
+    (start, &content[start..end])
+}
+
 /// Get text around an offset position and return the adjusted byte start.
 pub fn get_text_window_around_offset(
     content: &str,
@@ -539,8 +561,9 @@ mod tests {
     use super::{
         arg_starts_in_call_body, arg_starts_top_level, byte_to_line_col, byte_to_utf16_col,
         escape_markdown_text, extract_module_reference, find_matching_paren,
-        get_text_around_offset, get_text_window_around_offset, offset_to_position,
-        position_to_offset, slice_in_range, slice_until_stmt_end, smart_arg_anchor,
+        get_text_around_offset, get_text_window_around_offset, line_window_around_offset,
+        offset_to_position, position_to_offset, slice_in_range, slice_until_stmt_end,
+        smart_arg_anchor,
     };
     use lsp_types::Position;
 
@@ -660,6 +683,48 @@ mod tests {
         assert_eq!(start, 0);
         assert!(text_around.is_char_boundary(cursor_in_text));
         assert!(text_around[cursor_in_text..].starts_with("sub foo"));
+    }
+
+    #[test]
+    fn line_window_around_offset_returns_the_whole_line_however_long() {
+        // The point of this helper: a line far longer than any fixed radius comes
+        // back complete, so a caller classifying a `::`-qualified name sees all of it.
+        let long = format!("My::{}::process();", "A".repeat(200));
+        let content = format!("package main;\n{long}\nmy $x = 1;\n");
+        let line_start = "package main;\n".len();
+
+        let (start, line) = line_window_around_offset(&content, line_start + 4);
+
+        assert_eq!(start, line_start);
+        assert_eq!(line, long, "the full line must be returned, not a clipped window");
+    }
+
+    #[test]
+    fn line_window_around_offset_handles_first_last_and_unterminated_lines() {
+        let content = "alpha\nbeta\ngamma";
+
+        assert_eq!(line_window_around_offset(content, 0), (0, "alpha"));
+        // Offset at the newline itself still belongs to the line it terminates.
+        assert_eq!(line_window_around_offset(content, 5), (0, "alpha"));
+        assert_eq!(line_window_around_offset(content, 6), (6, "beta"));
+        // Final line has no trailing newline.
+        assert_eq!(line_window_around_offset(content, 12), (11, "gamma"));
+        // Offset past the end clamps rather than panicking.
+        assert_eq!(line_window_around_offset(content, 9999), (11, "gamma"));
+    }
+
+    #[test]
+    fn line_window_around_offset_snaps_offsets_inside_multibyte_characters() {
+        let content = "let 🦀 = 1;\nnext";
+        let crab_start = "let ".len();
+
+        // An offset landing inside the 4-byte crab must not panic and must resolve
+        // to that character's own line.
+        for inside in 1.."🦀".len() {
+            let (start, line) = line_window_around_offset(content, crab_start + inside);
+            assert_eq!(start, 0);
+            assert_eq!(line, "let 🦀 = 1;");
+        }
     }
 
     #[test]

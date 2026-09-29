@@ -96,6 +96,32 @@ semantics and individual capability proof.
 
 Editor-authoritative operation remains future work.
 
+### Reported failure cause
+
+`canReportFailureCause` declares that a peer speaks the machine-readable
+`cause` vocabulary on a `success: false` response — `debuggee`,
+`session_state`, `invalid_request`, `transport` (#14582).
+
+It is negotiated like every other capability and is the only thing that admits
+`PeerResponse.cause`: a cause from a peer that did not advertise it is dropped,
+because a `cause` key belonging to some other dialect is not evidence about this
+failure. A peer that advertises nothing is not degraded — its failures classify
+exactly as they did before the field existed.
+
+Two boundaries hold regardless of what a peer reports:
+
+- **The reason text is never read to classify.** The cause vocabulary exists so
+  that host triage does not depend on peer-authored free text, which a debuggee
+  frequently writes.
+- **No cause makes a peer failure an adapter defect.** A peer describes its own
+  side; letting a peer-supplied value reach the adapter-bug category would let a
+  debuggee route this adapter for repair by failing in the right shape.
+
+Unlike the capabilities above, this one gates *classification*, not a request,
+so it deliberately does not enter the DAP capability view — there is no
+`supportsX` an editor could consume. The host does not yet author causes on its
+own `success: false` replies to a peer; that direction is unclaimed.
+
 Helpers or examples that describe documented ptkdb behavior are upper-bound
 research material, not session defaults.
 

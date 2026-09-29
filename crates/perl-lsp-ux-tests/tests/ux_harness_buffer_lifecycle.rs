@@ -1,5 +1,7 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::print_stderr,
+    reason = "The focused buffer-lifecycle test reports a local non-execution reason when the required perllsp binary is unavailable."
+)]
 
 use anyhow::Result;
 use perl_lsp_ux_tests::{ScenarioConfig, UxHarness, binary_available};

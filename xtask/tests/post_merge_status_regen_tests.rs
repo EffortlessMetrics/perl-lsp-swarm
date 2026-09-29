@@ -70,6 +70,8 @@ fn assert_dispatch_loop_behavior(
     dispatch_run: &str,
     dispatch_order: &[String],
     branch: &str,
+    base_sha: &str,
+    head_sha: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::{Command, Output};
 
@@ -77,19 +79,26 @@ fn assert_dispatch_loop_behavior(
     let stub_dir = temp_dir.path().join("bin");
     fs::create_dir(&stub_dir)?;
     let stub_gh = stub_dir.join("gh");
+    // Record the full argument vector for every call and tolerate any arity:
+    // ci.yml's workflow_dispatch requires `-f base_sha=… -f head_sha=…`
+    // (#13019), so a five-arg stub would reject exactly the call this fixture
+    // must admit — and did, leaving this test red on main unobserved (#15100).
     fs::write(
         &stub_gh,
         "#!/usr/bin/env bash\n\
-         printf '%s|%s|%s|%s|%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" >> \"$GH_LOG\"\n\
-         if [ \"$#\" -ne 5 ]; then exit 2; fi\n\
-         if [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
+         printf '%s\\n' \"$*\" >> \"$GH_LOG\"\n\
+         if [ -n \"${FAIL_WORKFLOW:-}\" ] && [ \"$FAIL_WORKFLOW\" = \"${3:-}\" ]; then exit 1; fi\n",
     )?;
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = fs::metadata(&stub_gh)?.permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&stub_gh, permissions)?;
+    // Stub every dispatch call, not just the first: the ci.yml special case
+    // precedes the bare `elif` dispatch, and an unstubbed suffix would invoke
+    // the real gh — failing hermeticity and, on an authenticated machine,
+    // dispatching real workflows.
     let simulation_run =
-        dispatch_run.replacen("gh workflow run", &format!("{} workflow run", stub_gh.display()), 1);
+        dispatch_run.replace("gh workflow run", &format!("{} workflow run", stub_gh.display()));
     assert_ne!(simulation_run, dispatch_run, "dispatch step must invoke gh workflow run");
 
     let run_dispatch = |fail_workflow: Option<&str>, log_name: &str| {
@@ -104,6 +113,8 @@ fn assert_dispatch_loop_behavior(
             .arg(&simulation_run)
             .env("PATH", path)
             .env("BRANCH", branch)
+            .env("BASE_SHA", base_sha)
+            .env("GENERATED_HEAD_SHA", head_sha)
             .env("GH_LOG", &log_path);
         if let Some(fail_workflow) = fail_workflow {
             command.env("FAIL_WORKFLOW", fail_workflow);
@@ -134,9 +145,20 @@ fn assert_dispatch_loop_behavior(
         "all-success dispatch run failed: {}",
         String::from_utf8_lossy(&success_output.stderr)
     );
+    // ci.yml's workflow_dispatch requires the dispatched subject's exact
+    // base/head SHAs (#13019); every other required workflow declares no
+    // dispatch inputs and stays bare (#13355).
     let expected_calls = dispatch_order
         .iter()
-        .map(|workflow| format!("workflow|run|{workflow}|--ref|{branch}"))
+        .map(|workflow| {
+            if workflow == "ci.yml" {
+                format!(
+                    "workflow run {workflow} --ref {branch} -f base_sha={base_sha} -f head_sha={head_sha}"
+                )
+            } else {
+                format!("workflow run {workflow} --ref {branch}")
+            }
+        })
         .collect::<Vec<_>>();
     assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
 
@@ -157,6 +179,64 @@ fn project_root() -> PathBuf {
     // xtask is at <root>/xtask -- go up one level
     dir.pop();
     dir
+}
+
+fn post_merge_status_workflow_text() -> Result<String, Box<dyn std::error::Error>> {
+    let workflow_path = project_root().join(".github/workflows/post-merge-status.yml");
+    Ok(fs::read_to_string(&workflow_path)?)
+}
+
+fn parse_workflow(content: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    Ok(serde_yaml_ng::from_str(content)?)
+}
+
+fn status_generator_job(workflow: &Value) -> Result<&Value, Box<dyn std::error::Error>> {
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+    jobs.iter()
+        .find(|(_, job)| {
+            job.get("steps").and_then(Value::as_sequence).is_some_and(|steps| {
+                steps.iter().any(|step| {
+                    step.get("run")
+                        .and_then(Value::as_str)
+                        .is_some_and(|run| run.contains("update-status --write"))
+                })
+            })
+        })
+        .map(|(_, job)| job)
+        .ok_or_else(|| "no job in post-merge-status.yml runs `update-status --write`".into())
+}
+
+fn generator_timeout_minutes(workflow: &Value) -> Result<i64, Box<dyn std::error::Error>> {
+    status_generator_job(workflow)?
+        .get("timeout-minutes")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "the status generator job must declare numeric timeout-minutes".into())
+}
+
+/// Rewrite the first `timeout-minutes:` of the current generate-job value and
+/// confirm the parser still attributes the new value to that same job.
+fn with_generate_job_timeout(
+    source: &str,
+    minutes: i64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let current = generator_timeout_minutes(&parse_workflow(source)?)?;
+    let from = format!("    timeout-minutes: {current}\n");
+    let to = format!("    timeout-minutes: {minutes}\n");
+    let rewritten = source.replacen(&from, &to, 1);
+    if rewritten == source {
+        return Err("failed to rewrite generate job timeout-minutes".into());
+    }
+    let observed = generator_timeout_minutes(&parse_workflow(&rewritten)?)?;
+    if observed != minutes {
+        return Err(format!(
+            "rewriter changed a non-generator timeout; generate job still has timeout-minutes: {observed}"
+        )
+        .into());
+    }
+    Ok(rewritten)
 }
 
 fn assert_marker_count(
@@ -376,8 +456,28 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         "generated-PR dispatch step must continue after an individual failure and fail overall"
     );
 
+    // The ci.yml dispatch arm reads its subject identity from step env
+    // (#13355); both names must be declared so the simulated invocation is
+    // the one the workflow really makes.
+    let step_env = dispatch_step
+        .get("env")
+        .and_then(Value::as_mapping)
+        .ok_or("generated-PR dispatch step must declare env")?;
+    for required_env in ["BASE_SHA", "GENERATED_HEAD_SHA"] {
+        assert!(
+            step_env.keys().any(|key| key.as_str() == Some(required_env)),
+            "generated-PR dispatch step must declare {required_env} for the ci.yml subject inputs"
+        );
+    }
+
     #[cfg(unix)]
-    assert_dispatch_loop_behavior(dispatch_run, &dispatch_order, dispatch_branch)?;
+    assert_dispatch_loop_behavior(
+        dispatch_run,
+        &dispatch_order,
+        dispatch_branch,
+        "0123456789abcdef0123456789abcdef01234567",
+        "89abcdef0123456789abcdef0123456789abcdef",
+    )?;
 
     Ok(())
 }
@@ -512,6 +612,45 @@ fn test_post_merge_generator_job_is_read_only() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+/// #16568 action 1: the generate job's 20-minute ceiling killed slow-mode runs
+/// at job_start+20m (check-run annotation "The job has exceeded the maximum
+/// execution time of 20m0s"). The production value landed as 30 via #16673;
+/// this pin keeps a silent revert to 20 from going green.
+#[test]
+fn generate_job_timeout_minutes_is_thirty() -> Result<(), Box<dyn std::error::Error>> {
+    let workflow = parse_workflow(&post_merge_status_workflow_text()?)?;
+    assert_eq!(
+        generator_timeout_minutes(&workflow)?,
+        30,
+        "the job that runs `update-status --write` must keep timeout-minutes: 30. \
+         Slow-mode step 5 reached 19m39s against the 20m budget (#16568); \
+         hosted run 36525243589 later completed Generate bounded status payload \
+         in ~21m12s under the 30m ceiling."
+    );
+    Ok(())
+}
+
+/// Negative control: restoring the confirmed killer (`timeout-minutes: 20`)
+/// must be visible to the pin. A hardcoded `30` oracle would stay green here.
+#[test]
+fn generate_job_timeout_pin_rejects_the_confirmed_twenty_minute_killer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let killer = with_generate_job_timeout(&post_merge_status_workflow_text()?, 20)?;
+    let workflow = parse_workflow(&killer)?;
+    assert_eq!(
+        generator_timeout_minutes(&workflow)?,
+        20,
+        "the timeout pin must read the generate job's timeout-minutes; \
+         the confirmed killer is timeout-minutes: 20 (#16568)"
+    );
+    assert_ne!(
+        generator_timeout_minutes(&workflow)?,
+        30,
+        "a 20-minute generate budget must not satisfy the 30-minute pin"
+    );
+    Ok(())
+}
+
 /// #12606: queued runs may finish generating after newer commits landed on the
 /// default branch. The writer must refuse payloads that are no longer fresh
 /// against the live default-branch tip before any branch mutation, a
@@ -625,6 +764,120 @@ fn test_post_merge_workflow_guards_stale_queued_run_publication()
          or whose source is not provably behind main, must be left untouched"
     );
 
+    Ok(())
+}
+
+/// Collect the `gh("pr", ...)` helper invocations of one Python `run:` body
+/// that do not pass an explicit repository flag. The arguments are plain
+/// string literals at each call site, so a bounded window per call site is
+/// enough to decide.
+fn python_gh_pr_calls_without_explicit_repo(run: &str) -> Vec<String> {
+    let mut calls = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = run[index..].find("gh(") {
+        let start = index + offset;
+        let rest = &run[start..];
+        // Collapse whitespace so a multi-line call reads as one line, then
+        // require the first argument to be the `pr` subcommand.
+        let normalized = rest.chars().take(400).collect::<String>();
+        let normalized = normalized.split_whitespace().collect::<Vec<&str>>().join(" ");
+        if !normalized.starts_with("gh( \"pr\"") && !normalized.starts_with("gh(\"pr\"") {
+            index = start + "gh(".len();
+            continue;
+        }
+        let end = rest.find(")\n").map(|position| position + 1).unwrap_or(rest.len());
+        let call = rest[..end.min(rest.len())].trim();
+        if !call.contains("--repo") && !call.contains("GH_REPO") {
+            calls.push(call.to_string());
+        }
+        index = start + "gh(".len();
+    }
+    calls
+}
+
+/// Every `gh pr` invocation in a checkout-free job must carry explicit
+/// repository context. Implicit repository discovery shells out to git, and a
+/// job without `actions/checkout` has no worktree to discover: run
+/// 36298260514 failed the former `close-superseded` job with "failed to run
+/// git: fatal: not a git repository". The surviving `supersede-stale` sweep
+/// passes `--repo`; this test pins that rule for every current and future
+/// checkout-free job in this workflow — including Python call sites, which
+/// route `gh` through a `subprocess.run(["gh", *arguments])` helper the
+/// shell-token scan cannot see (#16538 review).
+#[test]
+fn test_post_merge_workflow_checkout_free_gh_pr_calls_carry_repo()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let workflow_path = root.join(".github/workflows/post-merge-status.yml");
+    let content = fs::read_to_string(&workflow_path)?;
+    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+
+    let mut violations: Vec<String> = Vec::new();
+    for (name, job) in jobs {
+        let Some(steps) = job.get("steps").and_then(Value::as_sequence) else {
+            continue;
+        };
+        let has_checkout = steps.iter().any(|step| {
+            step.get("uses")
+                .and_then(Value::as_str)
+                .is_some_and(|uses| uses.starts_with("actions/checkout@"))
+        });
+        if has_checkout {
+            continue;
+        }
+        for step in steps {
+            let Some(run) = step.get("run").and_then(Value::as_str) else {
+                continue;
+            };
+            // Join shell continuation lines so `--repo` wrapped onto a
+            // continuation is still attributed to its command.
+            let mut joined = String::new();
+            for line in run.lines() {
+                if let Some(without_continuation) = line.strip_suffix('\\') {
+                    joined.push_str(without_continuation);
+                    joined.push(' ');
+                } else {
+                    joined.push_str(line);
+                    joined.push('\n');
+                }
+            }
+            for line in joined.lines() {
+                let tokens: Vec<&str> = line.split_whitespace().collect();
+                let invokes_gh_pr =
+                    tokens.windows(2).any(|pair| pair[0] == "gh" && pair[1] == "pr");
+                if !invokes_gh_pr {
+                    continue;
+                }
+                let has_explicit_repo = tokens.iter().any(|token| {
+                    matches!(*token, "--repo" | "-R")
+                        || token.starts_with("--repo=")
+                        || token.starts_with("-R")
+                        || token.starts_with("GH_REPO=")
+                });
+                if !has_explicit_repo {
+                    violations.push(format!("{name:?}: {line}"));
+                }
+            }
+            // Python call sites: a `subprocess.run(["gh", *arguments])` helper
+            // never appears as shell tokens, so scan its `gh("pr", ...)`
+            // invocations for the same explicit-context rule (#16538 review).
+            for call in python_gh_pr_calls_without_explicit_repo(run) {
+                violations.push(format!("{name:?} (python): {call}"));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "checkout-free jobs must pass explicit repository context to every \
+         `gh pr` call: without a checkout, `gh` cannot discover the repository \
+         and fails with \"fatal: not a git repository\" (run 36298260514):\n{}",
+        violations.join("\n")
+    );
     Ok(())
 }
 

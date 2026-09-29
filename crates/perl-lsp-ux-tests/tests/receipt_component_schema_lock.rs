@@ -1,6 +1,6 @@
 //! Keep the checked-in receipt schema locked to the serialized UX contract.
 
-use perl_lsp_ux_tests::{UxComponent, UxFailureClass};
+use perl_lsp_ux_tests::{UxComponent, UxEvidenceClass, UxFailureClass};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -148,4 +148,46 @@ fn serialize_failure_class(class: UxFailureClass) -> TestResult<String> {
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| "serialized UX failure class must be a string".into())
+}
+
+#[test]
+fn receipt_schema_evidence_class_is_defined_once() -> TestResult {
+    let schema = receipt_schema()?;
+
+    // The shared definition is the only place the class list may appear.
+    let shared_classes =
+        string_set(&schema["$defs"]["evidence_class"]["enum"], "$defs.evidence_class enum")?;
+    assert!(!shared_classes.is_empty(), "$defs.evidence_class must enumerate the classes");
+
+    let mut taxonomy_classes = BTreeSet::new();
+    for class in UxEvidenceClass::ALL {
+        let serialized = serde_json::to_value(class)?
+            .as_str()
+            .map(str::to_owned)
+            .ok_or("serialized UX evidence class must be a string")?;
+        taxonomy_classes.insert(serialized);
+    }
+    assert_eq!(
+        shared_classes, taxonomy_classes,
+        "$defs.evidence_class drifted from the UxEvidenceClass taxonomy"
+    );
+
+    // The top-level property reuses the shared reference only.
+    let top_level = &schema["properties"]["evidence_class"];
+    assert_eq!(
+        top_level,
+        &serde_json::json!({ "$ref": "#/$defs/evidence_class" }),
+        "top-level evidence_class must reference the shared definition"
+    );
+
+    // The field must stay optional: receipts written before the field
+    // existed remain valid.
+    assert!(
+        !schema["required"]
+            .as_array()
+            .is_some_and(|required| required.contains(&serde_json::json!("evidence_class"))),
+        "evidence_class must remain optional in the receipt schema"
+    );
+
+    Ok(())
 }

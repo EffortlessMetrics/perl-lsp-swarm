@@ -483,12 +483,13 @@ gh release view "v${NEW_VERSION}"
 # crates.io
 cargo search perllsp --limit 1
 
-# Docker Hub
-docker pull effortlessmetrics/perl-lsp:${NEW_VERSION}
-docker run --rm effortlessmetrics/perl-lsp:${NEW_VERSION} perllsp --version
+# Docker Hub (the runtime is the only published image; the unsuffixed
+# tags carried the retired Rust build toolchain — #8980)
+docker pull effortlessmetrics/perl-lsp:${NEW_VERSION}-perl
+docker run --rm effortlessmetrics/perl-lsp:${NEW_VERSION}-perl --version
 
 # GHCR
-docker pull ghcr.io/effortlessmetrics/perl-lsp:${NEW_VERSION}
+docker pull ghcr.io/effortlessmetrics/perl-lsp-perl:${NEW_VERSION}
 
 # VSCode Marketplace (browser check)
 # https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs

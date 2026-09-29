@@ -99,6 +99,8 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
                 walk(target, out);
             }
         }
+        // Honest targetless goto has no coderef or label to surface.
+        NodeKind::TargetlessGoto { .. } => {}
 
         NodeKind::Unary { op, operand } if op == "\\" => {
             if !push_coderef_target(operand, (node.location.start, node.location.end), out) {
@@ -110,7 +112,7 @@ fn walk(node: &Node, out: &mut Vec<SymbolRef>) {
             push_variable_like_ref(node, sigil, name, out);
         }
 
-        NodeKind::Typeglob { name } => {
+        NodeKind::Typeglob { name, .. } => {
             // Dynamic typeglob `*{$expr}`: the parser preserves the brace
             // syntax verbatim in the name field (e.g. `name = "{$var}"`).
             // Such names do not correspond to any static symbol in the Perl
@@ -332,7 +334,8 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         // The parser encodes `*{$var}` as NodeKind::Typeglob { name: "{$var}" }.
         // Before the fix this would emit SymbolRef { name: "{$var}", kind: TypeglobReference }.
-        let node = Node::new(NodeKind::Typeglob { name: "{$var}".to_string() }, loc(0, 8));
+        let node =
+            Node::new(NodeKind::Typeglob { name: "{$var}".to_string(), body: None }, loc(0, 8));
         let program = Node::new(NodeKind::Program { statements: vec![node] }, loc(0, 8));
 
         let refs = extract_symbol_refs(&program);
@@ -349,7 +352,7 @@ mod tests {
     /// Edge case: `*{}` (empty braces) is also a dynamic form — do not emit.
     #[test]
     fn dynamic_typeglob_empty_braces_is_not_emitted() -> Result<(), Box<dyn std::error::Error>> {
-        let node = Node::new(NodeKind::Typeglob { name: "{}".to_string() }, loc(0, 3));
+        let node = Node::new(NodeKind::Typeglob { name: "{}".to_string(), body: None }, loc(0, 3));
         let program = Node::new(NodeKind::Program { statements: vec![node] }, loc(0, 3));
 
         let refs = extract_symbol_refs(&program);
@@ -364,7 +367,7 @@ mod tests {
     /// Sanity: static typeglob `*foo` must still be emitted after the fix.
     #[test]
     fn static_typeglob_is_still_emitted() -> Result<(), Box<dyn std::error::Error>> {
-        let node = Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4));
+        let node = Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4));
         let program = Node::new(NodeKind::Program { statements: vec![node] }, loc(0, 4));
 
         let refs = extract_symbol_refs(&program);
@@ -382,7 +385,10 @@ mod tests {
     fn dynamic_typeglob_string_literal_is_not_emitted() -> Result<(), Box<dyn std::error::Error>> {
         // The parser may encode *{"name"} as Typeglob { name: "{\"name\"}" }
         // (brace-delimited string).  Same dynamic-boundary rule applies.
-        let node = Node::new(NodeKind::Typeglob { name: "{\"name\"}".to_string() }, loc(0, 10));
+        let node = Node::new(
+            NodeKind::Typeglob { name: "{\"name\"}".to_string(), body: None },
+            loc(0, 10),
+        );
         let program = Node::new(NodeKind::Program { statements: vec![node] }, loc(0, 10));
 
         let refs = extract_symbol_refs(&program);
@@ -392,6 +398,25 @@ mod tests {
             brace_refs.is_empty(),
             "dynamic typeglob *{{\"literal\"}} must not produce a literal-brace SymbolRef; \
              got: {brace_refs:?}"
+        );
+        Ok(())
+    }
+
+    /// Regression (#15712): a computed call body `*{foo()}` now keeps the
+    /// braced dynamic spelling end to end — it must not fall through to a
+    /// static `TypeglobReference` named after the raw expression text.
+    #[test]
+    fn dynamic_typeglob_computed_call_body_is_not_emitted() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let node =
+            Node::new(NodeKind::Typeglob { name: "{foo()}".to_string(), body: None }, loc(0, 9));
+        let program = Node::new(NodeKind::Program { statements: vec![node] }, loc(0, 9));
+
+        let refs = extract_symbol_refs(&program);
+
+        assert!(
+            refs.is_empty(),
+            "computed typeglob *{{foo()}} must not produce a static SymbolRef; got: {refs:?}"
         );
         Ok(())
     }

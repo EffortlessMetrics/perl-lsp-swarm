@@ -58,17 +58,20 @@ Local `t/` paths and root `lib`, `dist`, `ext`, and `cpan` paths remain distinct
 
 ## Authority-check one plan
 
-A plan is not trusted merely because its digests look hexadecimal. Checking rebuilds it from the supplied matrix, target contract, raw discovery, and serialized scheduling declarations, then requires exact typed-state equality:
+A plan is not trusted merely because its digests look hexadecimal, and it is not trusted merely because it is internally consistent: a producer can change its target, runner, discovery frame, or declared scheduling and then recompute every digest it owns. Checking therefore rebuilds the plan from the supplied matrix, target contract, raw-discovery bytes, and the **declaration the checker supplies** — never from values read back out of the candidate — and then requires exact typed-state equality. `check-plan` takes the same target, runner, frame, and scheduling declaration as `build`:
 
 ```bash
 cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
   check-plan \
   .ci/perl-core-harness/upstream-targets-5.42.2.v1/ \
+  component_base \
+  test \
   target/perl-core/raw/base-test.txt \
-  target/perl-core/runner-plans/base-test.json
+  target/perl-core/runner-plans/base-test.json \
+  --frame canonical_repository_path
 ```
 
-Changing a selector, runner entrypoint, source item, source form, raw-discovery bytes, declared scheduling field, limitation, contract digest, or matrix fingerprint fails this check. This does not prove the runner actually used the declared scheduling values; that requires a runner-produced observation in a later slice.
+Changing a selector, runner entrypoint, source item, source form, raw-discovery bytes, declared scheduling field, limitation, contract digest, or matrix fingerprint fails this check, as does a plan whose target, runner, frame, or scheduling is not the one declared on the command line. Checking a plan built with `--jobs 4` therefore requires declaring `--jobs 4`. This does not prove the runner actually used the declared scheduling values; that requires a runner-produced observation in a later slice.
 
 ## Compare two authoritative plans
 
@@ -76,14 +79,19 @@ Changing a selector, runner entrypoint, source item, source form, raw-discovery 
 cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
   compare \
   .ci/perl-core-harness/upstream-targets-5.42.2.v1/ \
+  component_base \
+  test \
   target/perl-core/runner-plans/base-test.json \
   target/perl-core/raw/base-test.txt \
+  harness \
   target/perl-core/runner-plans/base-harness.json \
   target/perl-core/raw/base-harness.txt \
-  target/perl-core/runner-plans/base-parity.json
+  target/perl-core/runner-plans/base-parity.json \
+  --left-frame canonical_repository_path \
+  --right-frame canonical_repository_path --right-jobs 4 --right-state-ordering
 ```
 
-The command authority-checks both plans before comparing them. The parity receipt retains SHA-256 digests for the canonical typed content of the left and right plans plus exact digests for both raw-discovery byte streams. JSON whitespace or object-key spelling does not change a plan digest after parsing; a typed field change does.
+The command authority-checks both plans before comparing them. Each side declares its own runner, frame, and scheduling (`--left-*` and `--right-*`), so neither candidate supplies the authority that validates it. The parity receipt retains SHA-256 digests for the canonical typed content of the left and right plans plus exact digests for both raw-discovery byte streams. JSON whitespace or object-key spelling does not change a plan digest after parsing; a typed field change does.
 
 `membership_status: parity` requires exact set equality between two **distinct non-fallback upstream runner kinds**, normally `test` and `harness`. A missing or extra file produces `mismatch`. A direct-fallback input or same-runner comparison produces `not_proven`, even when the visible file sets match. The corresponding limitation is mandatory and a forged `parity` or `mismatch` report fails validation.
 
@@ -97,14 +105,19 @@ Every parity receipt must also carry `membership_parity_compares_declared_discov
 cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
   check-parity \
   .ci/perl-core-harness/upstream-targets-5.42.2.v1/ \
+  component_base \
+  test \
   target/perl-core/runner-plans/base-test.json \
   target/perl-core/raw/base-test.txt \
+  harness \
   target/perl-core/runner-plans/base-harness.json \
   target/perl-core/raw/base-harness.txt \
-  target/perl-core/runner-plans/base-parity.json
+  target/perl-core/runner-plans/base-parity.json \
+  --left-frame canonical_repository_path \
+  --right-frame canonical_repository_path --right-jobs 4 --right-state-ordering
 ```
 
-This rebuilds both plans from their authorities, recomputes the comparison, and requires the serialized parity report to equal that result exactly. A detached report cannot survive typed plan-content, discovery, order, declared scheduling, runner, or limitation changes.
+This rebuilds both plans from their declared authorities, recomputes the comparison, and requires the serialized parity report to equal that result exactly. A detached report cannot survive typed plan-content, discovery, order, declared scheduling, runner, or limitation changes.
 
 ## Current claim boundary
 

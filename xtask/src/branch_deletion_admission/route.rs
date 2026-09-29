@@ -67,6 +67,17 @@ pub fn branch_deletion_command(outcome: &AdmissionOutcome) -> Option<Vec<String>
     // deletion after every check has passed; the name is mutable config
     // re-resolved by git at mutation time. An outcome with no bound endpoint
     // gets no command — a snapshot is not an authorization.
+    if outcome.local_ref.is_some() {
+        return Some(vec![
+            "git".to_string(),
+            "update-ref".to_string(),
+            "--no-deref".to_string(),
+            "-d".to_string(),
+            format!("refs/heads/{}", outcome.branch),
+            admitted_sha.to_string(),
+        ]);
+    }
+
     let push_endpoint = outcome.push_endpoint.as_deref()?;
 
     Some(vec![
@@ -237,6 +248,11 @@ pub fn recheck_gate(admitted: &AdmissionOutcome, recheck: &AdmissionOutcome) -> 
     .chain((admitted.admitted_sha != recheck.admitted_sha).then(|| {
         format!("admitted tip ({:?} -> {:?})", admitted.admitted_sha, recheck.admitted_sha)
     }))
+    .chain(
+        (admitted.local_ref != recheck.local_ref).then(|| {
+            format!("deletion mode ({:?} -> {:?})", admitted.local_ref, recheck.local_ref)
+        }),
+    )
     .collect();
 
     if drift.is_empty() {

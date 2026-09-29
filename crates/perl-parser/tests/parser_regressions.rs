@@ -493,12 +493,8 @@ fn complex_foreach_with_modifiers() {
     assert_parses(code);
 }
 
-#[test]
-fn do_while_block_condition() {
-    // Perl supports do { ... } while/until CONDITION;
-    assert_parses_without_recovery_errors("do { $x++ } while $x < 10;");
-    assert_parses_without_recovery_errors("do { $x-- } until $x == 0;");
-}
+// The do-while condition and trailing-block regressions (#15649) moved to
+// their owning crate: crates/perl-parser-core/tests/do_while_trailing_block_tests.rs.
 
 #[test]
 fn state_variable_declaration() {

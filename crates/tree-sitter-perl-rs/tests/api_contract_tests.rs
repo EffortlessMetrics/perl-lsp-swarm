@@ -53,6 +53,7 @@ fn node_positions_use_zero_based_rows_and_byte_columns() {
     let tree = parse(source);
     let root = tree.root_node();
     let second_statement = must_some(root.child(1));
+    let second_text = must(second_statement.utf8_text(source.as_bytes()));
 
     let root_start = root.start_position();
     assert_eq!(root_start.row, 0);
@@ -66,9 +67,10 @@ fn node_positions_use_zero_based_rows_and_byte_columns() {
     assert_eq!(second_start.row, 1);
     assert_eq!(second_start.column, 0);
 
+    assert_eq!(second_text, "my $café = 2");
     let second_end = second_statement.end_position();
     assert_eq!(second_end.row, 1);
-    assert_eq!(second_end.column, 9);
+    assert_eq!(second_end.column, second_text.len());
 }
 
 #[test]

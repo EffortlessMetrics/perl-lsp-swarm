@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Removed
+body: "perl-semantic-analyzer's SemanticQueryFacade is now strictly per-file: the cross-file `visible_imports` method and the `VisibleImport` struct are removed from its public API, along with the facade's `WorkspaceIndex` import (#7588). The method only forwarded to `WorkspaceIndex::file_dependencies` and sorted the result — it never read the facade's own model — so it added no semantic value while forcing the analyzer-owned workspace store into the signature of an otherwise per-file layer. It was retired rather than relocated because no consumer exists: no production or test caller anywhere in the workspace outside its own two unit tests, and all nine crates.io reverse dependencies are first-party workspace crates, none of which reference either item. Cross-file dependency queries remain available on `WorkspaceIndex::file_dependencies`, which is unchanged, so no capability is lost. A recurrence guard in the module now fails if `WorkspaceIndex`, `workspace_index`, `std::fs` or `Parser::new` reappears in the facade's production code, proven non-vacuous by mutation."
+time: 2026-09-14T12:00:00Z
+custom:
+  PR: "15633"
+  Slug: query-facade-per-file-7588
+  Breaking: "yes"

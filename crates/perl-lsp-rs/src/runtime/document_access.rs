@@ -9,6 +9,23 @@ use super::{
     extract_text_based_symbols, get_text_around_offset, get_text_window_around_offset,
     offset_to_position, position_to_offset,
 };
+use serde_json::Value;
+
+/// Current document text that may answer a user-facing provider request.
+pub(crate) struct UserAnswerTextSnapshot {
+    pub text: String,
+    pub generation: u32,
+}
+
+/// Result of looking up source text for a user-facing answer.
+pub(crate) enum UserAnswerTextLookup {
+    /// URI is not in the open-document map.
+    NotOpen,
+    /// Document is open but Full-sync-required: predecessor text is evidence only.
+    Unavailable,
+    /// Current source may answer the user.
+    Current(UserAnswerTextSnapshot),
+}
 
 #[allow(dead_code)]
 impl LspServer {
@@ -65,6 +82,56 @@ impl LspServer {
         }
     }
 
+    /// Look up source text that may answer a user-facing provider request.
+    ///
+    /// Predecessor storage remains available through [`Self::get_document`] for
+    /// internal evidence. [`UserAnswerTextLookup::Unavailable`] means the current
+    /// generation is stable but explicitly unusable for user answers.
+    pub(crate) fn lookup_user_answer_text(&self, uri: &str) -> UserAnswerTextLookup {
+        let documents = self.documents_guard();
+        let Some(doc) = self.get_document(&documents, uri) else {
+            return UserAnswerTextLookup::NotOpen;
+        };
+        match doc.text_for_user_answers() {
+            Some(text) => UserAnswerTextLookup::Current(UserAnswerTextSnapshot {
+                text: text.to_string(),
+                generation: doc.current_generation(),
+            }),
+            None => UserAnswerTextLookup::Unavailable,
+        }
+    }
+
+    /// Copy source text that may answer a user-facing provider request.
+    pub(crate) fn snapshot_user_answer_text(&self, uri: &str) -> Option<UserAnswerTextSnapshot> {
+        match self.lookup_user_answer_text(uri) {
+            UserAnswerTextLookup::Current(snapshot) => Some(snapshot),
+            UserAnswerTextLookup::NotOpen | UserAnswerTextLookup::Unavailable => None,
+        }
+    }
+
+    /// True when `uri` still has a usable current snapshot at `generation`.
+    ///
+    /// Re-check after computing an answer so publication cannot cross a
+    /// Full-sync invalidation that landed while the provider was off-lock.
+    pub(crate) fn user_answer_text_is_current(&self, uri: &str, generation: u32) -> bool {
+        let documents = self.documents_guard();
+        self.get_document(&documents, uri)
+            .is_some_and(|doc| !doc.full_sync_required() && doc.current_generation() == generation)
+    }
+
+    /// Publish a computed user-facing JSON value only if the snapshot is still
+    /// the current usable document. `unavailable` is returned when predecessor
+    /// source must not be presented as current.
+    pub(crate) fn publish_user_answer_value(
+        &self,
+        uri: &str,
+        generation: u32,
+        value: Value,
+        unavailable: Value,
+    ) -> Value {
+        if self.user_answer_text_is_current(uri, generation) { value } else { unavailable }
+    }
+
     /// Helper to create a ContentModified error response
     pub(crate) fn content_modified() -> JsonRpcError {
         JsonRpcError {
@@ -92,17 +159,21 @@ impl LspServer {
     }
 
     /// Whether the workspace index snapshot for `uri` is older than the open
-    /// document generation.
+    /// document generation, or the document is in Full-sync desynchronization.
     pub(crate) fn workspace_index_stale_for_document(&self, uri: &str) -> bool {
         #[cfg(feature = "workspace")]
         {
-            let document_generation = {
+            let sampled = {
                 let documents = self.documents.lock();
-                self.get_document(&documents, uri).map(DocumentState::current_generation)
+                self.get_document(&documents, uri)
+                    .map(|document| (document.current_generation(), document.full_sync_required()))
             };
-            let Some(document_generation) = document_generation else {
+            let Some((document_generation, desync)) = sampled else {
                 return false;
             };
+            if desync {
+                return true;
+            }
             if document_generation == 0 {
                 return false;
             }
@@ -157,7 +228,10 @@ impl LspServer {
         for _attempt in 0..=1 {
             let sampled = self.edited_open_document_snapshot();
 
-            let stale = sampled.iter().any(|(uri, (generation, expected_to_index))| {
+            let stale = sampled.iter().any(|(uri, (generation, expected_to_index, desync))| {
+                if *desync {
+                    return true;
+                }
                 match coordinator.index().indexed_generation(uri) {
                     Some(indexed_generation) => indexed_generation < *generation,
                     None => *expected_to_index,
@@ -187,7 +261,9 @@ impl LspServer {
     /// as by value: an opened, closed, or newly edited document changes the map
     /// even when every URI common to both passes is unchanged.
     #[cfg(feature = "workspace")]
-    fn edited_open_document_snapshot(&self) -> std::collections::BTreeMap<String, (u32, bool)> {
+    fn edited_open_document_snapshot(
+        &self,
+    ) -> std::collections::BTreeMap<String, (u32, bool, bool)> {
         let documents = self.documents.lock();
         documents
             .iter()
@@ -195,7 +271,9 @@ impl LspServer {
                 let generation = document.current_generation();
                 let expected_to_index =
                     document.latest_parsed().is_some_and(|snapshot| snapshot.ast().is_some());
-                (generation > 0).then(|| (uri.clone(), (generation, expected_to_index)))
+                let desync = document.full_sync_required();
+                (generation > 0 || desync)
+                    .then(|| (uri.clone(), (generation, expected_to_index, desync)))
             })
             .collect()
     }
@@ -428,6 +506,70 @@ mod tests {
             "an edited definition target must block cross-file index navigation"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn full_sync_violation_fail_closes_workspace_facts_until_full_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/desync-caller.pl";
+        let target_uri = "file:///workspace/desync-target.pl";
+        let caller_text = "DesyncTarget::shared_entry();\n";
+        let target_v1 = "package DesyncTarget;\nsub shared_entry { 1 }\n";
+        let target_v2 = "package DesyncTarget;\nsub shared_entry { 2 }\n";
+
+        server.test_apply_did_open(caller_uri, caller_text, 1)?;
+        server.test_apply_did_open(target_uri, target_v1, 1)?;
+
+        server.test_index_live_file(caller_uri, caller_text, 1).map_err(std::io::Error::other)?;
+        server.test_index_live_file(target_uri, target_v1, 1).map_err(std::io::Error::other)?;
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "indexed didOpen documents start current"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": target_uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 16 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+
+        assert!(
+            server.workspace_index_stale_for_document(target_uri),
+            "Full-sync violation must stale the target's workspace facts"
+        );
+        assert!(
+            !server.workspace_index_stale_for_document(caller_uri),
+            "the unchanged caller must not be reported stale by the per-document helper"
+        );
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "Full-sync violation must fail-close cross-file index consumers"
+        );
+
+        server.test_apply_did_change(target_uri, target_v2, 3)?;
+        let recovered_gen = {
+            let docs = server.documents.lock();
+            docs.get(target_uri).ok_or("recovered target")?.current_generation()
+        };
+        server
+            .test_index_live_file(target_uri, target_v2, recovered_gen)
+            .map_err(std::io::Error::other)?;
+
+        assert!(
+            !server.workspace_index_stale_for_document(target_uri),
+            "full-document recovery plus index catch-up must clear per-document staleness"
+        );
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "full-document recovery plus index catch-up must restore a current workspace"
+        );
         Ok(())
     }
 

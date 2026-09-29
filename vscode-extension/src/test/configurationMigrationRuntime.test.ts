@@ -6,6 +6,7 @@ import {
 } from '../configurationMigrationRegistry';
 import {
   MigrationNoticeDedupe,
+  type MigrationRuntimeResult,
   interpretLegacyConfiguration,
   safeMigrationRuntimeSnapshot,
 } from '../configurationMigrationRuntime';
@@ -565,34 +566,31 @@ describe('configuration migration runtime', () => {
     });
   });
 
-  test('a registry the validator certifies is never blamed on the user as an unknown key', () => {
-    // The registry's uniqueness key spans the version window and value shape, so one
-    // setting may legitimately carry a row per historical era. Such a registry is valid,
-    // but this interpreter takes no version input and cannot choose between the eras.
-    const multiEra: ConfigurationMigrationRegistry = (() => {
-      const base = compatibleRegistry();
-      const row = base.rows[0];
-      if (row === undefined) {
-        throw new Error('compatibleRegistry must define one row');
-      }
-      return {
-        ...base,
-        rows: [
-          { ...row, migration_id: 'era_a', introduced_version: '0.15.0' },
-          {
-            ...row,
-            migration_id: 'era_b',
-            introduced_version: '0.16.0',
-            old_value_shape: 'string',
-          },
-        ],
-      };
-    })();
+  /**
+   * Build a same-key, same-scope two-era registry from the single-row fixture. Only the
+   * era bounds and the fields the test names differ, so any behavior change is attributable
+   * to the eras rather than to some other row difference.
+   */
+  const twoEraRegistry = (
+    first: Partial<ConfigurationMigrationRow>,
+    second: Partial<ConfigurationMigrationRow>,
+  ): ConfigurationMigrationRegistry => {
+    const base = compatibleRegistry();
+    const row = base.rows[0];
+    if (row === undefined) {
+      throw new Error('compatibleRegistry must define one row');
+    }
+    return {
+      ...base,
+      rows: [
+        { ...row, migration_id: 'era_a', ...first },
+        { ...row, migration_id: 'era_b', ...second },
+      ],
+    };
+  };
 
-    // Load-bearing: the two modules must not disagree about what a valid registry is.
-    expect(validateMigrationRegistry(multiEra)).toEqual([]);
-
-    const result = interpretLegacyConfiguration(multiEra, {
+  const interpretOldSetting = (registry: ConfigurationMigrationRegistry): MigrationRuntimeResult =>
+    interpretLegacyConfiguration(registry, {
       old_key: 'perl-lsp.oldSetting',
       source_scope: 'resource',
       legacy_value_present: true,
@@ -601,13 +599,153 @@ describe('configuration migration runtime', () => {
       current_value: null,
     });
 
-    expect(result).toMatchObject({
+  test('disjoint historical eras select the one covering the registry source release', () => {
+    // The fixture's source_public_release is 0.17.0, so only era_b speaks for it. Before
+    // eras were comparable this pair was reported as `legacy_registry_ambiguous`.
+    const disjoint = twoEraRegistry(
+      { introduced_version: '0.15.0', last_supported_version: '0.16.x' },
+      { introduced_version: '0.17.0', last_supported_version: '0.17.x' },
+    );
+
+    // Load-bearing: the two modules must not disagree about what a valid registry is.
+    expect(validateMigrationRegistry(disjoint)).toEqual([]);
+
+    const reversed: ConfigurationMigrationRegistry = {
+      ...disjoint,
+      rows: [...disjoint.rows].reverse(),
+    };
+
+    for (const candidate of [disjoint, reversed]) {
+      expect(interpretOldSetting(candidate)).toMatchObject({
+        migration_id: 'era_b',
+        status: 'compatible_legacy',
+        canonical_value_present: true,
+      });
+    }
+  });
+
+  test('an era that does not reach the source release is not the one selected', () => {
+    // Falsifies "pick whichever era sorts first" independently of row order: here the
+    // covering era is era_a, so a sort-order implementation would answer era_b.
+    const disjoint = twoEraRegistry(
+      { introduced_version: '0.17.0', last_supported_version: '0.17.x' },
+      { introduced_version: '0.18.0', last_supported_version: '0.18.x' },
+    );
+
+    expect(validateMigrationRegistry(disjoint)).toEqual([]);
+    expect(interpretOldSetting(disjoint)).toMatchObject({
+      migration_id: 'era_a',
+      status: 'compatible_legacy',
+    });
+  });
+
+  test('selection compares releases numerically across a digit boundary', () => {
+    // Under a lexicographic compare the 0.9 era would also "cover" 0.10.0, leaving two
+    // applicable rows and reporting ambiguity instead of selecting the 0.10 era.
+    const digitBoundary: ConfigurationMigrationRegistry = {
+      ...twoEraRegistry(
+        { introduced_version: '0.9.0', last_supported_version: '0.9.x' },
+        { introduced_version: '0.10.0', last_supported_version: '0.10.x' },
+      ),
+      source_public_release: '0.10.0',
+    };
+
+    expect(validateMigrationRegistry(digitBoundary)).toEqual([]);
+    expect(interpretOldSetting(digitBoundary)).toMatchObject({
+      migration_id: 'era_b',
+      status: 'compatible_legacy',
+    });
+  });
+
+  test('a registry the validator certifies is never blamed on the user as an unknown key', () => {
+    // Two legitimate disjoint eras, neither of which reaches this envelope's source
+    // release. There is no applicable historical policy, so interpretation fails closed —
+    // but the key is registered, and saying otherwise would send the user to fix the
+    // wrong thing.
+    const noCoveringEra = twoEraRegistry(
+      { introduced_version: '0.14.0', last_supported_version: '0.14.x' },
+      { introduced_version: '0.15.0', last_supported_version: '0.15.x' },
+    );
+
+    expect(validateMigrationRegistry(noCoveringEra)).toEqual([]);
+
+    expect(interpretOldSetting(noCoveringEra)).toMatchObject({
       status: 'invalid',
       canonical_value_present: false,
       notice_required: true,
-      // Not `legacy_key_not_registered`: the key is registered. Reporting a registry
-      // defect as an unknown user setting sends the user to fix the wrong thing.
-      reason_code: 'legacy_registry_ambiguous',
+      // Not `legacy_key_not_registered`: the key is registered. And not `ambiguous`: the
+      // eras are disjoint, so nothing is ambiguous — none of them simply applies here.
+      reason_code: 'legacy_registry_era_not_applicable',
+    });
+  });
+
+  test('a lone row at the resolved scope is refused when its era is superseded', () => {
+    // The era covering the source release is declared at a *different* scope, so filtering
+    // by scope leaves exactly one row — a superseded one. Consulting era coverage only when
+    // several rows survive the scope filter would accept it and apply 0.16-era policy to a
+    // registry that migrates from 0.17.0.
+    const supersededAtThisScope = twoEraRegistry(
+      { introduced_version: '0.16.0', last_supported_version: '0.16.x', old_scope: 'resource' },
+      {
+        introduced_version: '0.17.0',
+        last_supported_version: '0.17.x',
+        old_scope: 'machine',
+        security_trust_class: 'ordinary',
+      },
+    );
+
+    expect(validateMigrationRegistry(supersededAtThisScope)).toEqual([]);
+    expect(interpretOldSetting(supersededAtThisScope)).toMatchObject({
+      migration_id: null,
+      status: 'invalid',
+      canonical_value_present: false,
+      reason_code: 'legacy_registry_era_not_applicable',
+    });
+  });
+
+  test('a single-era key is still selected without any release comparison', () => {
+    // The negative control for the rule above: one era means no era choice, so a registry
+    // whose lone row does not cover its own source release behaves exactly as on main.
+    const singleStaleEra = (() => {
+      const base = compatibleRegistry();
+      const row = base.rows[0];
+      if (row === undefined) {
+        throw new Error('compatibleRegistry must define one row');
+      }
+      return {
+        ...base,
+        rows: [{ ...row, introduced_version: '0.14.0', last_supported_version: '0.14.x' }],
+      };
+    })();
+
+    expect(validateMigrationRegistry(singleStaleEra)).toEqual([]);
+    expect(interpretOldSetting(singleStaleEra)).toMatchObject({
+      migration_id: 'legacy_rename',
+      status: 'compatible_legacy',
+    });
+  });
+
+  test('a differing value shape does not license two eras the reader cannot separate', () => {
+    // `old_value_shape` is descriptive, not an executable discriminator, so it must not
+    // be what makes an overlapping pair admissible. This is the exact pair that validated
+    // clean while the check compared exact tuples instead of era extents.
+    const overlapping = twoEraRegistry(
+      { introduced_version: '0.15.0', last_supported_version: '0.17.x' },
+      {
+        introduced_version: '0.16.0',
+        last_supported_version: '0.17.x',
+        old_value_shape: 'string',
+      },
+    );
+
+    expect(validateMigrationRegistry(overlapping)).toContain(
+      'overlapping historical migration subject: perl-lsp.oldSetting',
+    );
+
+    // A registry the validator rejects must not be interpreted as user-facing policy.
+    expect(interpretOldSetting(overlapping)).toMatchObject({
+      status: 'invalid',
+      reason_code: 'legacy_registry_invalid',
     });
   });
 

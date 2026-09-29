@@ -4,8 +4,10 @@
 //! Wall-clock cancellation belongs to the caller or process supervisor and must
 //! not change the token stream for identical source and configuration.
 
-// When these limits are exceeded, the lexer emits UnknownRest, preserving all
-// previously parsed symbols while making the unlexed remainder explicit.
+// When a byte or step limit is exceeded, the lexer emits UnknownRest,
+// preserving all previously parsed symbols while making the unlexed remainder
+// explicit. MAX_DELIM_NEST is the exception: it stops earlier, at the nesting
+// site, with local recovery (#14389).
 /// Maximum source bytes consumed by one regex literal.
 pub(crate) const MAX_REGEX_BYTES: usize = 64 * 1024;
 
@@ -13,6 +15,12 @@ pub(crate) const MAX_REGEX_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_HEREDOC_BYTES: usize = 256 * 1024;
 
 /// Maximum delimiter nesting depth within one token.
+///
+/// Enforced by `consume_nested_opener` in the lexer's balanced-segment
+/// helper: once the depth budget is exhausted the opener is rejected and the
+/// balanced-segment helpers return `None` so the enclosing parser recovers
+/// locally. This early rejection — not an `UnknownRest` EOF jump — is the
+/// delimiter-nesting budget stop.
 pub(crate) const MAX_DELIM_NEST: usize = 128;
 
 /// Maximum number of pending heredocs queued by one statement.

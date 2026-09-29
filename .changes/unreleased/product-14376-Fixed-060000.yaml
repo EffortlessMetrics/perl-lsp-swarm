@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Fixed
+body: Release `toolchain_digest` now binds the immutable Cross container image digest for cross-compiled targets, so a changed build container can no longer produce an identical release toolchain identity.
+time: 2026-08-31T06:00:00Z
+custom:
+  PR: "14376"
+  Slug: cross-container-image-digest-toolchain-identity
+  Breaking: "no"

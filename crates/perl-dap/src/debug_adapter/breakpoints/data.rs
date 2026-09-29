@@ -1,7 +1,6 @@
 use super::{
-    DapMessage, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody, DataBreakpointRecord,
-    DebugAdapter, SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, Value,
-    is_valid_set_variable_name, lock_or_recover,
+    DapMessage, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody, DebugAdapter,
+    SetDataBreakpointsArguments, SetDataBreakpointsResponseBody, Value, is_valid_set_variable_name,
 };
 
 fn context_qualified_watchpoint_refusal(
@@ -63,13 +62,18 @@ impl DebugAdapter {
                 access_types: None,
             }
         } else {
-            // Preserve the context-free compatibility path. This name-only dataId
-            // remains a bounded legacy behavior, not proof that context-qualified
-            // or persistent watchpoint identity is implemented.
+            // #9091 fail-closed: native data breakpoints are unsupported until a
+            // watchpoint identity, backend install acknowledgement, and hit
+            // attribution can be proven. A syntactically valid Perl name is not a
+            // watchpoint identity, so no persistent dataId is minted — not even a
+            // context-free one that a client could mistake for a session-stable ID.
             DataBreakpointInfoResponseBody {
-                data_id: Some(args.name.clone()),
-                description: format!("Watch `{}` for write access", args.name),
-                access_types: Some(vec!["write".to_string()]),
+                data_id: None,
+                description:
+                    "Native data breakpoints are unsupported: no proven watchpoint identity, \
+                     install, or hit attribution exists, so no dataId is created (#9091)"
+                        .to_string(),
+                access_types: None,
             }
         };
 
@@ -116,109 +120,27 @@ impl DebugAdapter {
                 }
             };
 
-        // Store the data breakpoints.
-        {
-            let mut store =
-                lock_or_recover(&self.data_breakpoints, "debug_adapter.data_breakpoints");
-            *store = args
-                .breakpoints
-                .iter()
-                .map(|bp| DataBreakpointRecord {
-                    data_id: bp.data_id.clone(),
-                    access_type: bp.access_type.clone(),
-                    condition: bp.condition.clone(),
-                })
-                .collect();
-        }
-
-        // If session active, set watchpoints via the debugger.
-        // Build per-breakpoint verification results: only valid data_ids are
-        // sent to the debugger; invalid ones are reported as verified:false.
-        let mut verified_flags: Vec<(bool, Option<String>)> =
-            Vec::with_capacity(args.breakpoints.len());
-        {
-            let mut session_guard = lock_or_recover(&self.session, "debug_adapter.session");
-            if let Some(ref mut session) = *session_guard {
-                if let Some(stdin) = session.process.stdin.as_mut() {
-                    // Build commands: clear all watchpoints, then set each valid one.
-                    let mut commands = vec!["W *".to_string()];
-                    for bp in &args.breakpoints {
-                        // Defense-in-depth: reject newlines in data_id to prevent
-                        // debugger command injection via the `w {data_id}` command.
-                        if bp.data_id.contains('\n') || bp.data_id.contains('\r') {
-                            verified_flags
-                                .push((false, Some("dataId cannot contain newlines".to_string())));
-                            continue;
-                        }
-                        // Validate the data_id is a real Perl variable name so a
-                        // hostile client cannot smuggle arbitrary debugger commands
-                        // (e.g. `$x; system('id')`) into the `w` command.
-                        if !is_valid_set_variable_name(bp.data_id.trim()) {
-                            verified_flags.push((
-                                false,
-                                Some("Invalid dataId: must be a Perl variable name".to_string()),
-                            ));
-                            continue;
-                        }
-                        commands.push(format!("w {}", bp.data_id));
-                        verified_flags.push((true, None));
-                    }
-                    // Fire-and-forget: we don't need the output.
-                    let _ = self.send_framed_debugger_commands(stdin, &commands);
-                } else {
-                    // No stdin transport: nothing to send, but still validate so
-                    // the response reports accurate verification status.
-                    for bp in &args.breakpoints {
-                        if bp.data_id.contains('\n') || bp.data_id.contains('\r') {
-                            verified_flags
-                                .push((false, Some("dataId cannot contain newlines".to_string())));
-                        } else if !is_valid_set_variable_name(bp.data_id.trim()) {
-                            verified_flags.push((
-                                false,
-                                Some("Invalid dataId: must be a Perl variable name".to_string()),
-                            ));
-                        } else {
-                            verified_flags.push((true, None));
-                        }
-                    }
-                }
-            } else {
-                // No active session: validate only (no debugger to send to).
-                for bp in &args.breakpoints {
-                    if bp.data_id.contains('\n') || bp.data_id.contains('\r') {
-                        verified_flags
-                            .push((false, Some("dataId cannot contain newlines".to_string())));
-                    } else if !is_valid_set_variable_name(bp.data_id.trim()) {
-                        verified_flags.push((
-                            false,
-                            Some("Invalid dataId: must be a Perl variable name".to_string()),
-                        ));
-                    } else {
-                        verified_flags.push((true, None));
-                    }
-                }
-            }
-            // Session guard dropped here.
-        }
-
-        // Build response breakpoints — one per input, using per-breakpoint
-        // verification flags computed during validation.
+        // #9091 fail-closed: native data breakpoints are unsupported, so this
+        // request performs zero debugger mutation (no `W *`, no `w <name>`)
+        // and zero registry mutation: the retained watchpoint slot is neither
+        // read nor written here, so a rejected non-empty replacement and an
+        // empty replacement both leave any retained state byte-for-byte
+        // unchanged. The response below reports one unverified entry per
+        // input in request order without implying installation.
         let response_breakpoints: Vec<crate::protocol::Breakpoint> = args
             .breakpoints
             .iter()
             .enumerate()
-            .map(|(idx, _bp)| {
-                let (verified, message) = match verified_flags.get(idx) {
-                    Some((v, m)) => (*v, m.clone()),
-                    None => (false, None),
-                };
-                crate::protocol::Breakpoint {
-                    id: (idx as i64) + 1,
-                    verified,
-                    line: 0,
-                    column: None,
-                    message,
-                }
+            .map(|(idx, _bp)| crate::protocol::Breakpoint {
+                id: (idx as i64) + 1,
+                verified: false,
+                line: 0,
+                column: None,
+                message: Some(
+                    "Native data breakpoints are unsupported: no watchpoint was \
+                     installed and no debugger state was changed (#9091)"
+                        .to_string(),
+                ),
             })
             .collect();
 
@@ -238,6 +160,7 @@ impl DebugAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug_adapter::sync_utils::lock_or_recover;
 
     fn args(
         variables_reference: Option<i64>,
@@ -261,5 +184,57 @@ mod tests {
     #[test]
     fn context_free_request_retains_compatibility_path() {
         assert!(context_qualified_watchpoint_refusal(&args(None, None)).is_none());
+    }
+
+    fn legacy_record(
+        data_id: &str,
+    ) -> crate::debug_adapter::data_breakpoints::DataBreakpointRecord {
+        crate::debug_adapter::data_breakpoints::DataBreakpointRecord {
+            data_id: data_id.to_string(),
+            access_type: Some("write".to_string()),
+            condition: Some(format!("{data_id} > 0")),
+        }
+    }
+
+    /// #9091 canary: the fail-closed `setDataBreakpoints` boundary must not
+    /// mutate the retained watchpoint registry. A seeded legacy slot proves a
+    /// rejected non-empty replacement and an empty replacement both leave the
+    /// retained state byte-for-byte unchanged instead of relying on the slot
+    /// being structurally empty.
+    #[test]
+    fn rejected_replacements_leave_seeded_registry_byte_for_byte_unchanged() {
+        let adapter = DebugAdapter::new();
+        let seed = vec![legacy_record("legacy:$a"), legacy_record("legacy:$b")];
+        {
+            let mut store =
+                lock_or_recover(&adapter.data_breakpoints, "test:seed_data_breakpoints");
+            *store = seed.clone();
+        }
+
+        let non_empty = Some(serde_json::json!({
+            "breakpoints": [
+                { "dataId": "$value", "accessType": "write" },
+                { "dataId": "@array", "accessType": "read" }
+            ]
+        }));
+        let rejected = adapter.handle_set_data_breakpoints(1, 1, non_empty);
+        assert!(matches!(rejected, DapMessage::Response { success: true, .. }));
+        let after_non_empty = {
+            let store = lock_or_recover(&adapter.data_breakpoints, "test:read_after_non_empty");
+            store.clone()
+        };
+        assert_eq!(
+            after_non_empty, seed,
+            "rejected non-empty replacement mutated the retained registry"
+        );
+
+        let empty = Some(serde_json::json!({ "breakpoints": [] }));
+        let empty_replacement = adapter.handle_set_data_breakpoints(2, 2, empty);
+        assert!(matches!(empty_replacement, DapMessage::Response { success: true, .. }));
+        let after_empty = {
+            let store = lock_or_recover(&adapter.data_breakpoints, "test:read_after_empty");
+            store.clone()
+        };
+        assert_eq!(after_empty, seed, "empty replacement mutated the retained registry");
     }
 }

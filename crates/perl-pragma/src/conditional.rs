@@ -1,4 +1,7 @@
-use crate::{builtin_import_names, normalized_pragma_token, parse_perl_version, pragma_arg_items};
+use crate::{
+    builtin_import_names, looks_like_version_literal, normalized_pragma_token, parse_perl_version,
+    pragma_arg_items,
+};
 
 fn is_tracked_pragma_module(module: &str) -> bool {
     matches!(
@@ -40,12 +43,19 @@ fn conditional_target_tail_is_valid(module: &str, tail: &[String]) -> bool {
     }
 }
 
+// Flattened arguments do not preserve the target/import-list boundary. A terminal
+// version-like import argument can therefore conservatively invalidate admission;
+// resolving that ambiguity requires the canonical conditional application model.
 pub(crate) fn conditional_pragma_target(args: &[String]) -> Option<(&str, &[String])> {
     args.iter().enumerate().find_map(|(idx, arg)| {
         let module = normalized_pragma_token(arg);
         let tail = &args[idx + 1..];
-        if (is_tracked_pragma_module(module) || parse_perl_version(module).is_some())
-            && conditional_target_tail_is_valid(module, tail)
+        // The parser may split a malformed dotted target into `v5`, `.`,
+        // and a suffix. Retain it for authority invalidation even with a tail.
+        if (idx > 0
+            && (looks_like_version_literal(module) || parse_perl_version(module).is_some())
+            && (tail.is_empty() || tail.first().is_some_and(|token| token == ".")))
+            || (is_tracked_pragma_module(module) && conditional_target_tail_is_valid(module, tail))
         {
             Some((module, tail))
         } else {

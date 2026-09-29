@@ -29,6 +29,44 @@
       "type": "integer",
       "minimum": 0
     },
+    "subject": {
+      "type": "object",
+      "required": [
+        "mode",
+        "selection",
+        "path_identity_sha256",
+        "workflow_file_count",
+        "scan_completed",
+        "lane_whitelist_requested",
+        "isolation_registry_requested"
+      ],
+      "properties": {
+        "mode": {
+          "enum": ["repository", "fixture"]
+        },
+        "selection": {
+          "enum": ["explicit_root", "compiled_root", "fixture"]
+        },
+        "path_identity_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "workflow_file_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scan_completed": {
+          "type": "boolean"
+        },
+        "lane_whitelist_requested": {
+          "type": "boolean"
+        },
+        "isolation_registry_requested": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "issues": {
       "type": "array",
       "items": {

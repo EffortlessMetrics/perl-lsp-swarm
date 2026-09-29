@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: The workflow-contracts receipt now emits one self-describing schema token (workflow_contracts.v1), pinned by its wire schema and a drift-guard test, instead of a bare untyped "1" that could drift independently of the validator.
+time: 2026-08-18T12:00:00Z
+custom:
+  PR: "15768"
+  Slug: workflow-contracts-receipt-schema-token
+  Breaking: "no"

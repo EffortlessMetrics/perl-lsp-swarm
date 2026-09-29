@@ -47,6 +47,14 @@
 //! (`deny_unknown_fields` on [`crate::protocol::ValueFormat`]) — the single
 //! documented compatibility behavior for unsupported options. A format is never
 //! silently ignored while `supportsValueFormattingOptions` is advertised true.
+//!
+//! # #9581 capability floor
+//!
+//! Until the value-format re-enable gate passes (#9050 + #8364 + #9070 +
+//! #7342/#7345 + #9588 + #9590), `supportsValueFormattingOptions` is an
+//! explicit `false` wire row and a non-default `format` request (`hex: true`)
+//! is rejected by the dispatcher before any handler runs — this policy stays
+//! unit-proven here, ready for the re-enable PR to re-advertise.
 
 use crate::protocol::ValueFormat;
 use crate::types::Variable;

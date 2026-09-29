@@ -51,6 +51,11 @@
 //! | `if ($x) { … }`          | `Opaque { "If" }`     | `HirExpr::Branch`    |
 //! | `while ($x) { … }`       | `Opaque { "While" }`  | `HirExpr::Loop`      |
 //! | `return $x`               | `Opaque { "Return" }` | `HirExpr::Return`    |
+//! | `try { … } catch ($e) { … }` | `Opaque { "Try" }` | `HirExpr::Try`      |
+//!
+//! `lower_body` handles no block-bearing construct at all — it has no
+//! nested-block lowering path — so every row in this section is that same
+//! structural gap rather than four independent omissions.
 //!
 //! **§ D — Shared expression shapes and semantic divergence**
 //!
@@ -72,8 +77,8 @@ use std::error::Error;
 use perl_parser_core::{
     Parser,
     hir::{
-        AssignMode, BinaryOp, HirBody, HirExpr, HirFile, HirStmt, VariableKind, lower_ast,
-        lower_body,
+        AccessMode, AssignMode, BinaryOp, HirBody, HirExpr, HirFile, HirStmt, HirVariable,
+        VariableKind, lower_ast, lower_body,
     },
 };
 
@@ -142,6 +147,32 @@ fn let_init_rhs(body: &HirBody) -> Result<&HirExpr, Box<dyn Error>> {
     };
     body.expr(rhs_id)
         .ok_or_else(|| "Assign RHS expression is missing from arena".to_string().into())
+}
+
+/// Extract the LHS of the synthesized `Assign` inside a `HirStmt::Let` initializer.
+///
+/// The declaration target — the form that tells whether a lowerer resolved the
+/// variable or merely assumed a lexical one.
+fn let_init_lhs(body: &HirBody) -> Result<&HirExpr, Box<dyn Error>> {
+    let root = body.block(body.root_block).ok_or_else(|| "root block is missing".to_string())?;
+    let stmt_id = root.stmts.first().ok_or_else(|| "root block has no statements".to_string())?;
+    let stmt =
+        body.stmt(*stmt_id).ok_or_else(|| "first statement is missing from arena".to_string())?;
+    let init_id = match stmt {
+        HirStmt::Let { init, .. } => {
+            (*init).ok_or_else(|| "Let statement has no initializer".to_string())?
+        }
+        other => return Err(format!("expected HirStmt::Let, got {other:?}").into()),
+    };
+    let assign = body
+        .expr(init_id)
+        .ok_or_else(|| "Let initializer expression is missing from arena".to_string())?;
+    let lhs_id = match assign {
+        HirExpr::Assign { lhs, .. } => *lhs,
+        other => return Err(format!("expected HirExpr::Assign as Let init, got {other:?}").into()),
+    };
+    body.expr(lhs_id)
+        .ok_or_else(|| "Assign LHS expression is missing from arena".to_string().into())
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -377,6 +408,45 @@ fn gap_return_at_stmt_level_is_opaque_in_lower_body_but_structured_in_bb2()
     Ok(())
 }
 
+/// `try { … } catch ($e) { … }` — `NodeKind::Try` is a bare statement node.
+/// `lower_body` has no arm for it and falls through to `Opaque { "Try" }`.
+/// BodyBuilder2 emits `HirExpr::Try` with real region blocks (#15567).
+///
+/// This gap is the same shape as `If`/`While`/`Return` above: `lower_body` is
+/// the test-only mirror and handles no block-bearing construct, because it has
+/// no nested-block lowering path at all.
+///
+/// The BodyBuilder2 side is the load-bearing half. Before #15567, `Try` reached
+/// BodyBuilder2's *call-shaped* arm and produced
+/// `Call { args: [Opaque{Block}, …] }`, silently discarding every statement
+/// inside the try, catch, and finally regions. Asserting `HirExpr::Try` here
+/// keeps that regression from returning through the production lowerer.
+#[test]
+fn gap_try_at_stmt_level_is_opaque_in_lower_body_but_structured_in_bb2()
+-> Result<(), Box<dyn Error>> {
+    let source = "try { $x = 1; } catch ($e) { $x = 2; }";
+
+    let body = via_lower_body(source);
+    let lb_expr = first_expr_in_body(&body)?;
+    assert!(
+        matches!(lb_expr, HirExpr::Opaque { .. }),
+        "lower_body must emit HirExpr::Opaque for `try {{ … }} catch ($e) {{ … }}`, \
+         got {lb_expr:?}\n\
+         (If this fails, lower_body now handles Try — update §C gap table above)"
+    );
+
+    let file = via_lower_ast(source);
+    let bb2_body =
+        file.root_body().ok_or_else(|| "lower_ast must produce a root body".to_string())?;
+    let bb2_expr = first_expr_in_body(bb2_body)?;
+    assert!(
+        matches!(bb2_expr, HirExpr::Try { .. }),
+        "BodyBuilder2 must emit HirExpr::Try for `try {{ … }} catch ($e) {{ … }}`, \
+         got {bb2_expr:?} (a `Call` here is the #15567 region-dropping regression)"
+    );
+    Ok(())
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // § D  Parity zone — constructs both lowerers handle identically
 //
@@ -523,5 +593,100 @@ fn parity_let_declaration_both_produce_let_stmt_with_assign_init() -> Result<(),
             "BodyBuilder2: Let init must be HirExpr::Assign {{ Simple }}, got {init_expr:?}"
         );
     }
+    Ok(())
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// § E  Declaration-shaped legacy call divergence (issue #14669)
+//
+// `field $x = 1` parses with a declaration's shape but is a subroutine call.
+// Both lowerers classify the declarator as `DeclStorageClass::Unknown`, so the
+// `HirStmt::Let` matches; the argument does not. `BodyBuilder2` resolves it
+// against the visible scope and records the bare form as a read, while
+// `BodyBuilder` still assumes a lexical target and drops the bare argument
+// entirely.
+//
+// This gap is a consequence of repairing the production path alone. It is
+// recorded rather than repaired because `lower_body` is test-only and this file
+// is the inventory of exactly these divergences — see the header table.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// `field $x = 1` — `BodyBuilder` calls the argument a lexical target;
+/// `BodyBuilder2` resolves it and finds no visible lexical, so it is a package
+/// variable. Both agree the statement is a `Let` with `storage: Unknown`.
+#[test]
+fn gap_legacy_field_argument_is_lexical_in_lower_body_but_resolved_in_bb2()
+-> Result<(), Box<dyn Error>> {
+    let source = "field $x = 1;\n";
+
+    let lb_body = via_lower_body(source);
+    let lb_lhs = let_init_lhs(&lb_body)?;
+    assert!(
+        matches!(
+            lb_lhs,
+            HirExpr::Variable(HirVariable { kind: VariableKind::Lexical, name, .. })
+                if name == "x"
+        ),
+        "lower_body must still assume a lexical target named x, got {lb_lhs:?}"
+    );
+
+    let file = via_lower_ast(source);
+    let bb2_body = file.bodies.first().ok_or_else(|| "lower_ast body is required".to_string())?;
+    let bb2_lhs = let_init_lhs(bb2_body)?;
+    assert!(
+        matches!(
+            bb2_lhs,
+            HirExpr::Variable(HirVariable { kind: VariableKind::Package, name, .. })
+                if name == "x"
+        ),
+        "BodyBuilder2 must resolve the argument to package $x rather than assume \
+         lexical, got {bb2_lhs:?}"
+    );
+    Ok(())
+}
+
+/// Bare `field $x;` assigns nothing. `BodyBuilder` emits a `Let` with no
+/// initializer and no expression at all, losing the call-site reference;
+/// `BodyBuilder2` records the argument as a read.
+#[test]
+fn gap_bare_legacy_field_argument_is_dropped_in_lower_body_but_read_in_bb2()
+-> Result<(), Box<dyn Error>> {
+    let source = "field $x;\n";
+
+    let lb_body = via_lower_body(source);
+    let lb_root = lb_body
+        .block(lb_body.root_block)
+        .ok_or_else(|| "lower_body root block must exist".to_string())?;
+    let lb_stmt_id =
+        lb_root.stmts.first().ok_or_else(|| "lower_body root block needs a stmt".to_string())?;
+    let lb_stmt =
+        lb_body.stmt(*lb_stmt_id).ok_or_else(|| "lower_body stmt must be in arena".to_string())?;
+    assert!(
+        matches!(lb_stmt, HirStmt::Let { init: None, .. }),
+        "lower_body must still drop the bare argument, got {lb_stmt:?}"
+    );
+
+    let file = via_lower_ast(source);
+    let bb2_body = file.bodies.first().ok_or_else(|| "lower_ast body is required".to_string())?;
+    let root = bb2_body
+        .block(bb2_body.root_block)
+        .ok_or_else(|| "BodyBuilder2 root block must exist".to_string())?;
+    let stmt_id =
+        root.stmts.first().ok_or_else(|| "BodyBuilder2 root block needs a stmt".to_string())?;
+    let stmt =
+        bb2_body.stmt(*stmt_id).ok_or_else(|| "BodyBuilder2 stmt must be in arena".to_string())?;
+    let init_id = match stmt {
+        HirStmt::Let { init, .. } => {
+            (*init).ok_or_else(|| "BodyBuilder2 must keep the bare argument".to_string())?
+        }
+        other => return Err(format!("expected HirStmt::Let, got {other:?}").into()),
+    };
+    let arg = bb2_body
+        .expr(init_id)
+        .ok_or_else(|| "BodyBuilder2 argument must be in arena".to_string())?;
+    assert!(
+        matches!(arg, HirExpr::Variable(HirVariable { access: AccessMode::Read, .. })),
+        "BodyBuilder2 must record the bare argument as a read, got {arg:?}"
+    );
     Ok(())
 }

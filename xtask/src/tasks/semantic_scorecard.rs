@@ -1489,9 +1489,11 @@ package Parent;
 sub inherited { 1 }
 
 package Role;
+use Moo::Role;
 sub role_method { 1 }
 
 package Child;
+use Moo;
 use parent 'Parent';
 with 'Role';
 sub local { 1 }
@@ -1513,17 +1515,64 @@ sub local { 1 }
             .get("role_composition_edges")
             .ok_or_else(|| color_eyre::eyre::eyre!("missing role_composition_edges row"))?;
 
-        assert_eq!(package_graph_edges.total_facts, 2);
-        assert_eq!(inheritance_edges.total_facts, 1);
-        assert_eq!(role_edges.total_facts, 1);
+        if package_graph_edges.total_facts != 2
+            || inheritance_edges.total_facts != 1
+            || role_edges.total_facts != 1
+        {
+            bail!(
+                "activated fixture expected edges=2, inheritance=1, roles=1; got edges={}, inheritance={}, roles={}",
+                package_graph_edges.total_facts,
+                inheritance_edges.total_facts,
+                role_edges.total_facts
+            );
+        }
 
         let package_graph = artifact
             .readiness_rows
             .get("package_graph")
             .ok_or_else(|| color_eyre::eyre::eyre!("missing package graph readiness row"))?;
-        assert_eq!(package_graph.status, "pass");
-        assert_eq!(package_graph.value, "2");
-        assert!(!artifact.unavailable_rows.contains_key("package_graph"));
+        if package_graph.status != "pass"
+            || package_graph.value != "2"
+            || artifact.unavailable_rows.contains_key("package_graph")
+        {
+            bail!("activated package graph readiness must expose both measured edges");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn package_graph_rows_ignore_unactivated_with_and_keep_native_parent() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let manifest_path = write_fixture_set(
+            tmp.path(),
+            r#"{"fixture_family_version":1,"fixtures":[{"id":"plain_graph","family":"package graph","path":"graph.pl"}]}"#,
+            &[(
+                "graph.pl",
+                "package Parent; sub inherited { 1 }\npackage Role; sub role_method { 1 }\npackage Child; use parent 'Parent'; with 'Role';\n",
+            )],
+        )?;
+        let artifact = build_artifact(&manifest_path, load_manifest(&manifest_path)?)?;
+        for (name, expected) in
+            [("package_graph_edges", 1), ("inheritance_edges", 1), ("role_composition_edges", 0)]
+        {
+            let row = artifact
+                .fact_rows
+                .get(name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("missing {name} row"))?;
+            if row.total_facts != expected {
+                bail!("unactivated fixture {name}: expected {expected}, got {}", row.total_facts);
+            }
+        }
+        let package_graph = artifact
+            .readiness_rows
+            .get("package_graph")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing package graph readiness row"))?;
+        if package_graph.status != "pass"
+            || package_graph.value != "1"
+            || artifact.unavailable_rows.contains_key("package_graph")
+        {
+            bail!("unactivated package graph readiness must retain the native parent only");
+        }
         Ok(())
     }
 

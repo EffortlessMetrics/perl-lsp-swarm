@@ -415,6 +415,24 @@ fn text_document_content_refresh_uses_bounded_server_request_id() -> TestResult 
         Box::new(output.clone()) as Box<dyn Write + Send>
     )));
 
+    // Server-to-client requests are deferred until the `initialized`
+    // notification completes the lifecycle handshake (#7708), so the fixture
+    // must run initialize -> initialized before exercising the refresh path.
+    server
+        .handle_request(perl_lsp::JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+            method: "initialize".to_string(),
+            params: Some(json!({ "capabilities": {} })),
+        })
+        .ok_or_else(|| "initialize returned no response".to_string())?;
+    server.handle_request(perl_lsp::JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "initialized".to_string(),
+        params: Some(json!({})),
+    });
+
     server.request_text_document_content_refresh("perldoc://strict")?;
 
     let request = wait_for_method(&output, "workspace/textDocumentContent/refresh")?;

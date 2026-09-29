@@ -32,9 +32,11 @@ structural checker with fail-closed negative controls, two-run determinism
 proof, and an honest NOT_PROVEN boundary. The manifest is TOML/JSON-style
 checked data following the machine-readable precedent
 `.spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml`, using
-JSON so the checker needs no external parser. No validator command, generated
-repository artifact or CI surface is added: T02 owns the independent
-validator, and T02R owns revision governance.
+JSON so the checker needs no external parser. T01's landing added no
+validator command, generated repository artifact or CI surface: T02 owns the
+independent validator (landed as `cargo xtask issue-controllers` with the
+checked `train.projection.md` and its contract workflow), and T02R owns
+revision governance.
 
 ## Current state (honest, as of this bundle)
 

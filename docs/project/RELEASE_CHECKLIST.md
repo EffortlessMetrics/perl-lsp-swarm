@@ -129,18 +129,18 @@ for crate_name in allow:
 - [ ] Dispatch `release-orchestration.yml` with `version=NEW_VERSION`, `prerelease=false`, `skip_crates=false`, `skip_extension=false`, and `skip_docker=false`.
 - [ ] If a downstream publish stage fails, re-run orchestration with the relevant `skip_*` flags instead of tagging manually.
 - [ ] Let `release.yml`, `publish-crates.yml`, `publish-extension.yml`, and `docker-publish.yml` finish.
-- [ ] Confirm the release-published triggers for `brew-bump.yml`, `scoop-bump.yml`, and `chocolatey-bump.yml` fired as expected.
+- [ ] Confirm `release.yml`'s `Dispatch downstream package refresh workflows` step started `brew-bump.yml`, `scoop-bump.yml`, `chocolatey-bump.yml`, and `winget-bump.yml`. These are `workflow_dispatch` runs, not `release:published` runs — the orchestrated Release is published with `GITHUB_TOKEN`, which cannot start workflow runs (#15454). The step is skipped for prereleases.
 - [ ] After `brew-bump.yml` finishes, confirm the owned tap is updated or reported already current.
 
 ## Post-Release Verification
 
-Use [`docs/releases/RELEASE_CLOSEOUT_AUDIT.md`](../releases/RELEASE_CLOSEOUT_AUDIT.md) as the canonical re-runnable checklist. The items below are the minimum subset; the audit doc covers each channel in detail (including dispatch-only workflows that don't fire on `release:published` and require manual `gh workflow run`).
+Use [`docs/releases/RELEASE_CLOSEOUT_AUDIT.md`](../releases/RELEASE_CLOSEOUT_AUDIT.md) as the canonical re-runnable checklist. The items below are the minimum subset; the audit doc covers each channel in detail — including which `workflow_dispatch` workflows `release.yml` starts for you and which ones still need an operator `gh workflow run`.
 
 - [ ] `gh release view vNEW_VERSION` shows the expected release notes and assets.
 - [ ] `cargo search perl-lsp-rs --limit 1` resolves `perl-lsp-rs = "NEW_VERSION"`.
 - [ ] `cargo search perllsp --limit 1` resolves `perllsp = "NEW_VERSION"`.
 - [ ] The VS Code Marketplace and Open VSX listings show `NEW_VERSION`.
-- [ ] `docker pull effortlessmetrics/perl-lsp:NEW_VERSION` and `docker pull ghcr.io/effortlessmetrics/perl-lsp:NEW_VERSION` succeed.
+- [ ] `docker pull effortlessmetrics/perl-lsp:NEW_VERSION-perl` and `docker pull ghcr.io/effortlessmetrics/perl-lsp-perl:NEW_VERSION` succeed. (The runtime is the only published image; the unsuffixed tags carried the retired Rust build toolchain — #8980.)
 - [ ] `brew update`, `brew upgrade perllsp`, `perllsp --version`, and `perl-dap --version` show `NEW_VERSION`.
 - [ ] `cargo install perllsp` installs the new release and `perllsp --version` prints `NEW_VERSION`.
 - [ ] The smoke tests in [RELEASE.md](../../RELEASE.md) pass for the current release artifacts.

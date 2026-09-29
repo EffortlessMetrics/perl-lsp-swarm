@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
-"""Fail closed when release publishers can bypass common eligibility.
+"""Check the actual private producer and every public mutation job (#16762).
 
-The checker intentionally uses only the Python standard library. It validates
-the small load-bearing workflow fragments directly, then mutates each required
-edge/identity token to prove the check rejects the old race and common bypasses.
+This source checker proves bounded graph structure, never hosted execution or
+policy/authentication. Qualification remains NOT_PROVEN in the selected graph.
 """
-
-from __future__ import annotations
-
-import pathlib
+from pathlib import Path
 import re
 import sys
 
-WORKFLOW = pathlib.Path(".github/workflows/release-orchestration.yml")
-PUBLISHERS = {
-    "publish-crates": "publish-crates.yml",
-    "publish-extension": "publish-extension.yml",
-    "publish-docker": "docker-publish.yml",
-}
-
+WORKFLOW = Path(".github/workflows/release.yml")
+ORCHESTRATION = Path(".github/workflows/release-orchestration.yml")
+PUBLISHERS = ("publish-release", "dispatch-publishers")
 
 class GraphError(RuntimeError):
     """The checked release graph permits an ordering or identity bypass."""
@@ -47,169 +39,71 @@ def _require(block: str, token: str, message: str) -> None:
         raise GraphError(message)
 
 
-def validate_graph(workflow: str) -> None:
-    for job_name in (
-        "validate",
-        "create-tag",
-        "build-release",
-        "publication-eligibility",
-        *PUBLISHERS,
-        "summary",
-    ):
-        _job_block(workflow, job_name)
-
-    if re.search(r"(?m)^  trigger-release:\s*$", _jobs_text(workflow)):
-        raise GraphError("legacy fire-and-forget trigger-release job remains")
-
-    create_tag = _job_block(workflow, "create-tag")
-    _require(
-        create_tag,
-        "needs: validate",
-        "create-tag must depend on validated release inputs",
-    )
-
-    release = _job_block(workflow, "build-release")
-    _require(
-        release,
-        "needs: [validate, create-tag]",
-        "build-release must depend on validation and immutable tag creation",
-    )
-    _require(
-        release,
-        "--workflow release.yml",
-        "build-release does not gate the exact release workflow",
-    )
-    _require(
-        release,
-        '--expected-sha "$SOURCE_SHA"',
-        "build-release does not bind the exact expected source SHA",
-    )
-    for forbidden in PUBLISHERS.values():
-        if forbidden in release:
-            raise GraphError(
-                f"build-release still dispatches publisher {forbidden} beside the predecessor"
-            )
-
-    eligibility = _job_block(workflow, "publication-eligibility")
-    _require(
-        eligibility,
-        "needs: [validate, create-tag, build-release]",
-        "publication-eligibility must consume validation, tag, and release predecessor",
-    )
-    for token in (
-        "release-prerequisite-manifest.json",
-        "EXPECTED_SHA",
-        "EXPECTED_DIGEST",
-        "SHA256SUMS",
-        "sbom-spdx.json",
-    ):
-        _require(
-            eligibility,
-            token,
-            f"publication-eligibility lacks required proof token {token}",
-        )
-
-    for job_name, workflow_name in PUBLISHERS.items():
-        publisher = _job_block(workflow, job_name)
-        _require(
-            publisher,
-            "needs: [validate, publication-eligibility]",
-            f"{job_name} bypasses common publication eligibility",
-        )
-        _require(
-            publisher,
-            "release_workflow_gate.py",
-            f"{job_name} does not use the exact-run gate",
-        )
-        _require(
-            publisher,
-            f"--workflow {workflow_name}",
-            f"{job_name} dispatches the wrong workflow",
-        )
-        _require(
-            publisher,
-            '--expected-sha "$SOURCE_SHA"',
-            f"{job_name} does not bind the expected source SHA",
-        )
-
-    summary = _job_block(workflow, "summary")
-    for job_name in ("build-release", "publication-eligibility", *PUBLISHERS):
-        _require(summary, f"      - {job_name}\n", f"summary omits terminal job {job_name}")
+def validate_graph(workflow):
+    metadata = _job_block(workflow, "release-metadata")
+    candidate = _job_block(workflow, "candidate")
+    eligibility = _job_block(workflow, "publisher-eligibility")
+    _require(workflow, "      no_publish:\n", "private mode input missing")
+    _require(workflow.split("      transaction_id:")[0], "        default: true", "private mode must default closed")
+    _require(candidate, "    needs: [build, release-metadata]", "candidate bypasses build")
+    for forbidden in ("id-token: write", "attestations: write", "contents: write", "artifact-metadata: write", "environment:", "actions/attest@", "gh api -X POST", "git push"):
+        for block in (metadata, candidate, eligibility, _job_block(workflow, "build")):
+            if forbidden in block:
+                raise GraphError("pre-eligibility public authority: " + forbidden)
+    if "    if: ${{ always() }}" not in eligibility.splitlines():
+        raise GraphError("failed predecessors must reach terminal fan-in")
+    _require(eligibility, "    needs: [candidate, release-metadata]", "eligibility dependencies drift")
+    for token in ('test "$CANDIDATE_RESULT" = success', 'test "$METADATA_RESULT" = success',
+                  'scripts/ci/release_private_producer.py', '--expected-sha "$EXPECTED_SHA"',
+                  '--transaction-id "$TRANSACTION_ID"', '--run-attempt "$RUN_ATTEMPT"',
+                  '--policy policy/release-publication-admission.json',
+                  'run-id: ${{ inputs.source_context_run_id }}',
+                  'name: ${{ inputs.source_context_artifact_name }}',
+                  'inspect-source-context', '--digest "$CONTEXT_DIGEST"',
+                  'ref: ${{ steps.context.outputs.frozen_sha }}',
+                  'ref: ${{ steps.context.outputs.prepared_sha }}',
+                  '--frozen-root source-frozen --prepared-root source-prepared',
+                  "qualification=not_proven", 'if [ "$FAIL_BEFORE_PUBLISH" = true ]; then'):
+        _require(eligibility, token, "missing private fan-in law: " + token)
+    if "qualification=satisfied" in workflow:
+        raise GraphError("missing adapters cannot qualify publication")
+    condition = "    if: ${{ inputs.no_publish == false && needs.publisher-eligibility.outputs.qualification == 'satisfied' }}"
+    for name in PUBLISHERS:
+        publisher = _job_block(workflow, name)
+        _require(publisher, condition, "publisher bypasses private qualification: " + name)
+        needs = next((line for line in publisher.splitlines() if line.startswith("    needs:")), "")
+        if "publisher-eligibility" not in needs:
+            raise GraphError("publisher bypasses common predecessor: " + name)
+    # Mutation verbs/actions may occur only inside the explicitly gated jobs.
+    for match in re.finditer(r"(?m)^  ([A-Za-z0-9_-]+):$", workflow.split("jobs:\n", 1)[1]):
+        name = match.group(1)
+        if name in PUBLISHERS:
+            continue
+        block = _job_block(workflow, name)
+        if any(token in block for token in ("actions/attest@", "action-gh-release@", "gh api -X POST", "git push")):
+            raise GraphError("unregistered public mutation job: " + name)
 
 
-def _replace_once(text: str, old: str, new: str, mutation: str) -> str:
-    if text.count(old) != 1:
-        raise GraphError(
-            f"negative-control setup for {mutation} expected one {old!r}, got {text.count(old)}"
-        )
-    return text.replace(old, new, 1)
+def validate_dispatch(workflow):
+    trigger = _job_block(workflow, "trigger-release")
+    for field in ("source_context_run_id", "source_context_artifact_name", "source_context_sha256"):
+        _require(workflow.split("\njobs:\n", 1)[0], "      " + field + ":\n", "missing orchestration context input: " + field)
+        variable = field.upper()
+        _require(trigger, variable + ": ${{ inputs." + field + " }}", "missing exact context environment: " + field)
+        _require(trigger, '-f inputs[' + field + ']="$' + variable + '"', "missing exact context forwarding: " + field)
+    _require(trigger, '-f inputs[no_publish]=true', "orchestration must remain private")
 
 
-def _expect_failure(workflow: str, mutation: str) -> None:
-    if mutation == "publisher_bypass":
-        mutated = _replace_once(
-            workflow,
-            "  publish-crates:\n    name: Publish crates after eligibility\n    needs: [validate, publication-eligibility]",
-            "  publish-crates:\n    name: Publish crates after eligibility\n    needs: [validate]",
-            mutation,
-        )
-    elif mutation == "release_race":
-        mutated = _replace_once(
-            workflow,
-            "--workflow release.yml",
-            "--workflow release.yml\n            # forbidden sibling dispatch: publish-extension.yml",
-            mutation,
-        )
-    elif mutation == "missing_manifest":
-        mutated = _replace_once(workflow, '"sbom-spdx.json"', '""', mutation)
-    elif mutation == "wrong_publisher":
-        marker = "  publish-extension:\n"
-        prefix, suffix = workflow.split(marker, 1)
-        suffix = _replace_once(
-            suffix,
-            "--workflow publish-extension.yml",
-            "--workflow release.yml",
-            mutation,
-        )
-        mutated = prefix + marker + suffix
-    elif mutation == "legacy_trigger":
-        mutated = workflow.replace(
-            "  build-release:\n",
-            "  trigger-release:\n    runs-on: ubuntu-24.04\n    steps: []\n\n  build-release:\n",
-            1,
-        )
-    else:
-        raise GraphError(f"unknown negative-control mutation {mutation}")
-
+def main():
     try:
-        validate_graph(mutated)
-    except GraphError:
-        return
-    raise GraphError(f"negative control did not fail: {mutation}")
-
-
-def main() -> int:
-    try:
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        validate_graph(workflow)
-        for mutation in (
-            "publisher_bypass",
-            "release_race",
-            "missing_manifest",
-            "wrong_publisher",
-            "legacy_trigger",
-        ):
-            _expect_failure(workflow, mutation)
+        validate_graph(WORKFLOW.read_text(encoding="utf-8"))
+        validate_dispatch(ORCHESTRATION.read_text(encoding="utf-8"))
     except (GraphError, OSError) as error:
-        print(f"release prerequisite graph check failed: {error}", file=sys.stderr)
+        print("release prerequisite graph check failed: " + str(error), file=sys.stderr)
         return 1
-
-    print(
-        "release prerequisite graph: exact release predecessor, common eligibility, "
-        "and three downstream publisher gates are structurally enforced"
-    )
+    print("private prerequisite graph source laws valid; qualification NOT_PROVEN; hosted mutation counts NOT_PROVEN")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

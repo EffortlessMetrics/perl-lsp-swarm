@@ -45,13 +45,17 @@
 //!
 //! ```no_run
 //! use perl_source_identity::{
-//!     ContentDigest, ContentRevision, LogicalSourceId, ProjectId,
-//!     SourceGeneration, SourceIdentityEnvelope, WorkspaceRootId,
+//!     ContentDigest, ContentRevision, LogicalPathError, LogicalSourceId, ProjectId,
+//!     RootRelativeLogicalPath, SourceGeneration, SourceIdentityEnvelope, WorkspaceRootId,
 //! };
 //!
 //! let project = ProjectId::from_canonical_name("https://github.com/acme/widget");
 //! let root = WorkspaceRootId::from_project_and_root_key(&project, "abc123");
-//! let src = LogicalSourceId::from_root_and_path(&root, "lib/Widget.pm");
+//!
+//! // The path is validated, so a host absolute path or a `..` traversal cannot
+//! // become durable identity by accident.
+//! let path = RootRelativeLogicalPath::parse("lib/Widget.pm")?;
+//! let src = LogicalSourceId::from_root_and_logical_path(&root, &path);
 //!
 //! let content = b"package Widget;\n1;\n";
 //! let digest = ContentDigest::of_bytes(content);
@@ -67,6 +71,7 @@
 //!
 //! assert!(envelope.is_schema_supported());
 //! assert!(envelope.has_known_generation());
+//! # Ok::<(), LogicalPathError>(())
 //! ```
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
@@ -74,6 +79,7 @@ mod digest;
 mod envelope;
 mod generation;
 mod ids;
+mod logical_path;
 mod origin;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
@@ -81,6 +87,8 @@ mod origin;
 pub use digest::{CONTENT_DIGEST_SCHEMA_VERSION, ContentDigest};
 
 pub use ids::{LogicalSourceId, ProjectId, WorkspaceRootId};
+
+pub use logical_path::{LogicalPathError, RootRelativeLogicalPath};
 
 pub use generation::{ContentRevision, SourceGeneration};
 

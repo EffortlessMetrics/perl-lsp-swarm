@@ -16,6 +16,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from bash_binary import bash_binary  # noqa: E402  (path set above)
 MODULE_PATH = ROOT / "scripts/maintenance/verify_11983_reject_identities.py"
 SPEC = importlib.util.spec_from_file_location("verify_11983", MODULE_PATH)
 if SPEC is None or SPEC.loader is None:
@@ -76,7 +79,7 @@ fi
 cd /
 """
         result = subprocess.run(
-            ["bash"],
+            [bash_binary()],
             cwd=ROOT,
             input=harness.encode("utf-8"),
             capture_output=True,
@@ -175,7 +178,7 @@ fi
 test "$result" -eq {0 if expect_skip else 1}
 """
         result = subprocess.run(
-            ["bash", "-c", harness],
+            [bash_binary(), "-c", harness],
             cwd=ROOT,
             env={
                 **os.environ,

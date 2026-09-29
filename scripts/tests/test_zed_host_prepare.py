@@ -1,3 +1,20 @@
+"""Automated unit tests for ``scripts.zed_host.prepare``.
+
+This file is **not** an interactive manual journey. It mocks subprocess
+boundaries and verifies manifest/observation binding offline so the
+production prepare pipeline has executable proof.
+
+The production ``scripts/zed_host/prepare.py`` and its companion
+``scripts/zed_host/process.py`` print an in-Zed observation checklist
+when invoked end-to-end with a real Zed host. That flow is a
+**documented manual journey** owned by ``docs/integrations/ZED_EXACT_SOURCE_HOST.md``;
+do not attempt to automate it without a separate researched claim.
+
+Classification (per #15394 / #15402):
+    * automated oracle — exercised by ``zed-integration-candidate.yml``.
+    * manual journey contract — ``docs/integrations/ZED_EXACT_SOURCE_HOST.md``.
+"""
+
 import json
 import tempfile
 import unittest

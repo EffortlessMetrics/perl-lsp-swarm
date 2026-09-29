@@ -46,6 +46,19 @@ mod tests {
     use super::{run_fmt_check, run_fmt_check_with};
     use color_eyre::eyre::{Result, eyre};
 
+    const MAX_CHILD_STDERR_BYTES: usize = 4096;
+
+    /// Bounds a failed child's stderr before it is quoted into a test
+    /// diagnostic. Only the test harness captures child stderr bytes: the
+    /// production runners inherit the child's streams and discard the `duct`
+    /// output, so this helper has no production consumer.
+    fn bounded_child_stderr(stderr: &[u8]) -> String {
+        let shown = stderr.get(..MAX_CHILD_STDERR_BYTES).unwrap_or(stderr);
+        let suffix =
+            if stderr.len() > MAX_CHILD_STDERR_BYTES { "\n[child stderr truncated]" } else { "" };
+        format!("{}{}", String::from_utf8_lossy(shown), suffix)
+    }
+
     #[test]
     fn ci_runner_fmt_check_uses_injected_package_formatter() -> Result<()> {
         let mut called = false;
@@ -71,14 +84,40 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn child_stderr_diagnostic_is_bounded() -> Result<()> {
+        let stderr = vec![b'x'; MAX_CHILD_STDERR_BYTES + 1];
+        let diagnostic = bounded_child_stderr(&stderr);
+        let suffix = "\n[child stderr truncated]";
+
+        if !diagnostic.ends_with(suffix) {
+            return Err(eyre!("bounded diagnostic did not report truncation"));
+        }
+        if diagnostic.len() > MAX_CHILD_STDERR_BYTES + suffix.len() {
+            return Err(eyre!("child stderr diagnostic exceeded its bound"));
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn ci_runner_fmt_check_routes_to_package_formatter() -> Result<()> {
-        let fake_cargo = crate::test_support::FakeCargo::install()?;
+        if crate::test_support::FakeCargo::child_requested() {
+            return run_fmt_check();
+        }
 
-        run_fmt_check()?;
+        let fake_cargo = crate::test_support::FakeCargoChild::run(
+            "tasks::ci::runner::tests::ci_runner_fmt_check_routes_to_package_formatter",
+        )?;
 
-        let invocations = fake_cargo.invocations();
+        if !fake_cargo.status().success() {
+            return Err(color_eyre::eyre::eyre!(
+                "fake cargo child failed: {}",
+                bounded_child_stderr(fake_cargo.stderr()),
+            ));
+        }
+
+        let invocations = fake_cargo.invocations()?;
         assert!(invocations.iter().any(|line| line == "metadata --format-version 1 --no-deps"));
         assert!(invocations.iter().any(|line| {
             line.starts_with("fmt --manifest-path ") && line.ends_with(" -- --check")

@@ -121,7 +121,7 @@ fn walk(
                 confidence: Confidence::Medium,
             });
         }
-        NodeKind::Typeglob { name } => {
+        NodeKind::Typeglob { name, .. } => {
             result.boundaries.push(DynamicBoundary {
                 file_id: file_id.clone(),
                 range: range_of(node, line_index),

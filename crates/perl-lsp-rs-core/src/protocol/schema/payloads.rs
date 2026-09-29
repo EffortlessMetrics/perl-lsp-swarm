@@ -280,6 +280,11 @@ fn content_change_event(method: &str, path: &str, value: &Value) -> Result<(), S
 pub(super) fn did_change_params(method: &str, value: &Value) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), "$.params", value)?;
     versioned_text_document_identifier(method, object.get("textDocument"))?;
+    did_change_content_changes(method, value)
+}
+
+pub(super) fn did_change_content_changes(method: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), "$.params", value)?;
     let changes = match object.get("contentChanges") {
         Some(Value::Array(changes)) => changes,
         Some(otherwise) => {

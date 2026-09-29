@@ -27,6 +27,8 @@ pub enum DiagnosticCategory {
     Heredoc,
     /// Version compatibility (PL900-PL999)
     VersionCompatibility,
+    /// Canonical regex-analysis findings (PL1000-PL1099)
+    RegexAnalysis,
 }
 
 impl fmt::Display for DiagnosticCategory {
@@ -42,6 +44,7 @@ impl fmt::Display for DiagnosticCategory {
             Self::Import => write!(f, "Import"),
             Self::Heredoc => write!(f, "Heredoc"),
             Self::VersionCompatibility => write!(f, "Version Compatibility"),
+            Self::RegexAnalysis => write!(f, "Regex Analysis"),
         }
     }
 }
@@ -94,6 +97,15 @@ impl DiagnosticCode {
             | Self::LoopControlUndefinedLabel => DiagnosticCategory::BestPractices,
 
             Self::VersionIncompatFeature => DiagnosticCategory::VersionCompatibility,
+
+            Self::RegexBacktrackingRisk
+            | Self::RegexAnalysisLimit
+            | Self::RegexModifierInvalid
+            | Self::RegexModifierNoEffect
+            | Self::RegexModifierUnavailable
+            | Self::RegexCaptureInvalid
+            | Self::RegexCaptureUnavailable
+            | Self::RegexAnalysisIncomplete => DiagnosticCategory::RegexAnalysis,
 
             Self::DeprecatedDefined | Self::DeprecatedArrayBase => DiagnosticCategory::Deprecated,
 

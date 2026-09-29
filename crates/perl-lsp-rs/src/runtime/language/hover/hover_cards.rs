@@ -88,3 +88,37 @@ pub(super) fn phase_block_hover(phase: &str) -> Option<Value> {
         },
     }))
 }
+
+/// Indexed workspace-qualified callable (`Pkg::sub`). Must not include install advice.
+pub(super) fn qualified_callable_hover(
+    kind_label: &str,
+    signature: &str,
+    package: &str,
+    documentation: Option<&str>,
+) -> Value {
+    let doc = documentation
+        .filter(|text| !text.is_empty())
+        .map(|text| format!("\n\n{}", escape_markdown_text(text)))
+        .unwrap_or_default();
+    json!({
+        "contents": {
+            "kind": "markdown",
+            "value": format!(
+                "**{kind_label}**\n\n`{signature}`\n\nDefined in `{package}`{doc}"
+            ),
+        },
+    })
+}
+
+/// Fallback when a qualified callable is not an indexed workspace sub.
+///
+/// Intentionally not the missing-module card: an unresolved `Pkg::sub()` is
+/// not a CPAN module to `cpanm`.
+pub(super) fn unresolved_qualified_token_hover(qualified: &str) -> Value {
+    json!({
+        "contents": {
+            "kind": "markdown",
+            "value": format!("**Perl**: `{qualified}`"),
+        },
+    })
+}

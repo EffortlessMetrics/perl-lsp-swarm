@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { workspaceTrustClientRuntimeState } from './workspaceTrustRuntimeState';
+import { isPerlLanguageId } from './languageIdentity';
 
 export type LspExecuteCommandClient = {
   sendRequest<T>(method: string, params: unknown): Promise<T>;
@@ -103,7 +104,7 @@ function providerDecisionArgument(provider: string): Record<string, unknown> {
 
 function activeSafeDeletePreviewArgument(): Record<string, unknown> | undefined {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     return undefined;
   }
 
@@ -427,7 +428,7 @@ export async function explainMissingModuleLookupCommand(
   options: DiagnosticCommandOptions = {},
 ): Promise<unknown | undefined> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('Explain Missing Module Lookup requires an active Perl file.');
     return undefined;
   }
@@ -552,7 +553,7 @@ export async function previewPackageRenameCommand(
   options: DiagnosticCommandOptions = {},
 ): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('Preview Package Rename requires an active Perl file.');
     return;
   }
@@ -575,7 +576,7 @@ export async function previewPackageRenameCommand(
 
 async function activePackageRenamePreviewArgument(): Promise<Record<string, unknown> | undefined> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     return undefined;
   }
 

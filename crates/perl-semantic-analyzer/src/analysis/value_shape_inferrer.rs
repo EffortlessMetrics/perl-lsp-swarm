@@ -177,13 +177,10 @@ impl InferrerState {
             // `bless $ref, 'Pkg'` — bless call.
             NodeKind::FunctionCall { name, args } if name == "bless" => {
                 // Second argument is the package name.
-                if let Some(pkg_node) = args.get(1) {
-                    if let Some(pkg) = string_value(pkg_node) {
-                        return Some(ValueShape::Object {
-                            package: pkg,
-                            confidence: Confidence::Low,
-                        });
-                    }
+                if let Some(pkg_node) = args.get(1)
+                    && let Some(pkg) = string_value(pkg_node)
+                {
+                    return Some(ValueShape::Object { package: pkg, confidence: Confidence::Low });
                 }
                 // `bless $ref` with no explicit package — uses current package.
                 if args.len() == 1 {
@@ -352,10 +349,10 @@ mod tests {
         expected_package: &str,
     ) -> Option<Confidence> {
         results.iter().find_map(|(_, shape)| {
-            if let ValueShape::Object { package, confidence } = shape {
-                if package == expected_package {
-                    return Some(*confidence);
-                }
+            if let ValueShape::Object { package, confidence } = shape
+                && package == expected_package
+            {
+                return Some(*confidence);
             }
             None
         })

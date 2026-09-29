@@ -709,7 +709,8 @@ static PARSE_EFFECT_SINKS_V1: &[ParseEffectSinkRowV1] = &[
         store: SinkStoreV1::DOCUMENTS_MAP,
         owns_mutation_sites: true,
         mutation_boundary: "minimal_state/minimal_state_from_rope guard inserts, replace_text_state advances, \
-            and the scoped documents.insert(doc_state) sites in didChange/didOpen lifecycle code",
+            the scoped documents.insert(doc_state) sites in didChange/didOpen lifecycle code, and the \
+            Full-sync violation reinstall that writes the same last-good DocumentState after marking desync",
         currentness_comparison: CurrentnessComparisonV1::SameThreadAdmissionPreAcceptance,
         terminal_policy: ClearReplacePolicyV1::replace_on_success_clear_on_failure(),
         focused_proof_filter: "parse_effect_sink",
@@ -967,7 +968,7 @@ const CALL_SITE_LEDGER: &[CallSiteLedgerEntry] = &[
     CallSiteLedgerEntry {
         file: "crates/perl-lsp-rs/src/runtime/text_sync.rs",
         needle: "documents.insert(normalized_uri.clone(), doc_state)",
-        expected_count: 5,
+        expected_count: 6,
         effect_id: "didopen-guard.minimal-document-admission",
     },
     // Accepted-snapshot publication (normal didOpen route).

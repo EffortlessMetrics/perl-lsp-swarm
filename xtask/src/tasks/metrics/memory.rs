@@ -71,7 +71,7 @@ pub fn run(config: MemoryMetricsConfig) -> Result<()> {
     let receipt = MemoryPlateauReceipt {
         check: "memory-plateau",
         kind: "memory_plateau",
-        schema_version: "1",
+        schema_version: "memory_plateau.v1",
         event: config.event,
         verdict: if plateau.passed { "pass" } else { "fail" },
         scenario: config.scenario,
@@ -163,5 +163,72 @@ pub fn infer_scenario(workload_json: &Path) -> Result<String> {
         }
         "pr-smoke-doc-churn" => Ok("lsp_doc_churn_delete_smoke".to_string()),
         other => Ok(other.replace('-', "_")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `memory_plateau` receipt is a registered gate receipt, so its
+    /// `schema_version` must stay a string under
+    /// `.ci/receipts/schemas/common-gate-receipt.schema.json`. The #15358
+    /// drift is that it emitted the bare `"1"` — no `.v1` suffix — unlike
+    /// every other repo schema version. The project-wide convention is
+    /// `"<receipt>.v<N>"` (`actual_host_receipt.rs`,
+    /// `compiler_lexical_cutline.rs`, `emacs_eglot_upstream_patch.rs`), so
+    /// the fix is the semantic string `"memory_plateau.v1"`, not the u32
+    /// peer family the metrics producers use outside the gate-receipt
+    /// registry. See #15358.
+    #[test]
+    fn memory_plateau_receipt_emits_semantic_schema_version() -> Result<()> {
+        let temp = tempfile::tempdir().wrap_err_with(|| {
+            format!("failed to create tempdir at {}", std::env::temp_dir().display())
+        })?;
+        let workload = temp.path().join("nightly-doc-churn.json");
+        let plateau = temp.path().join("plateau.json");
+        let receipt = temp.path().join("memory.receipt.json");
+
+        fs::write(
+            &workload,
+            r#"{"n_files":500,"n_changes":10,"workspace_symbol":false,"delete_after_close":false,"settle_seconds":2.5}"#,
+        )
+        .wrap_err_with(|| format!("failed to write {}", workload.display()))?;
+        fs::write(
+            &plateau,
+            r#"{"samples":12,"tail_growth_kb":152,"tail_growth_pct":0.012,"median_tail_slope_kb_per_file":0.69,"passed":true}"#,
+        )
+        .wrap_err_with(|| format!("failed to write {}", plateau.display()))?;
+
+        let config = MemoryMetricsConfig {
+            scenario: "lsp_doc_churn_delete".to_string(),
+            workload_json: workload.clone(),
+            plateau_json: plateau.clone(),
+            receipt: Some(receipt.clone()),
+            commit: Some("abc123".to_string()),
+            event: "local".to_string(),
+            markdown: false,
+        };
+        run(config)?;
+
+        let raw = fs::read_to_string(&receipt)
+            .wrap_err_with(|| format!("failed to read {}", receipt.display()))?;
+        let value: serde_json::Value = serde_json::from_str(&raw)
+            .wrap_err_with(|| format!("invalid JSON in {}", receipt.display()))?;
+
+        assert_eq!(
+            value["schema_version"],
+            serde_json::Value::from("memory_plateau.v1"),
+            "memory_plateau receipt must emit semantic schema_version \"memory_plateau.v1\" \
+             to match the project-wide gate-receipt convention; got {}",
+            value["schema_version"]
+        );
+        assert!(
+            value["schema_version"].is_string(),
+            "memory_plateau receipt schema_version must stay a JSON string: \
+             common-gate-receipt.schema.json declares it `\"type\": \"string\"`"
+        );
+        assert_eq!(value["kind"], serde_json::Value::from("memory_plateau"));
+        Ok(())
     }
 }

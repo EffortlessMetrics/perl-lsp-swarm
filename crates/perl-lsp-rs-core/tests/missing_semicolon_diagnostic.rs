@@ -18,11 +18,13 @@ use perl_lsp_rs_core::providers::diagnostics::{
 use perl_parser::Parser;
 
 /// The issue's reproduction. `perl -c` rejects it: `syntax error … near "print"`.
-const MISSING_SEMICOLON: &str = "my $x = 1\nprint \"hi\";\n";
+const MISSING_SEMICOLON: &str = "my $π = 1\nprint \"hi\";\n";
 
 /// Byte offset of `print` — the token that proves the previous statement was
 /// never terminated, and where both surfaces must point.
-const PRINT_OFFSET: usize = 10;
+// `π` occupies two UTF-8 bytes, so `print` begins at byte 11 (not the
+// single-code-point/UTF-16-style offset 10).
+const PRINT_OFFSET: usize = 11;
 
 fn diagnostics(source: &str) -> Vec<Diagnostic> {
     let output = Parser::new(source).parse_with_recovery();

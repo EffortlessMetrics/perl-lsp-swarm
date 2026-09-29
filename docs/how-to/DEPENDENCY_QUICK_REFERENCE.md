@@ -7,16 +7,12 @@ Quick commands and workflows for handling dependency updates.
 ### View Dependabot PRs
 
 ```bash
-# All dependency PRs
-gh pr list --label "dependencies"
+# All dependency PRs (labels are disabled in this repo; filter by author)
+gh pr list --author "app/dependabot"
 
-# Ready to merge (CI passing)
+# CI-passing candidates (discovery only; inspect the version delta before merge)
 gh pr list --author "app/dependabot" --search "status:success"
 
-# By ecosystem
-gh pr list --label "cargo"
-gh pr list --label "github-actions"
-gh pr list --label "npm"
 ```
 
 ### Merge Dependabot PRs
@@ -25,9 +21,8 @@ gh pr list --label "npm"
 # Auto-merge single PR (after CI passes)
 gh pr merge <pr-number> --auto --squash
 
-# Batch merge all passing patch updates
-gh pr list --author "app/dependabot" --label "patch" --search "status:success" --json number --jq '.[].number' | \
-  xargs -I {} gh pr merge {} --auto --squash
+# Author + status is not a patch classifier. Do not pipe that query into
+# auto-merge because it also selects minor and major updates.
 
 # Manual merge with review
 gh pr checkout <pr-number>
@@ -103,25 +98,27 @@ gh pr comment <pr-number> -b "@dependabot ignore this major version"
 # Check for new Dependabot PRs
 gh pr list --author "app/dependabot"
 
-# Review security updates
-gh pr list --author "app/dependabot" --label "security"
+# Fixes for Dependabot alerts arrive as ordinary Dependabot PRs; browse the
+# alerts themselves under Security -> Dependabot alerts.
+gh pr list --author "app/dependabot"
 ```
 
 ### Weekly: Batch Review (Monday)
 
 ```bash
 # 1. List all new dependency PRs
-gh pr list --label "dependencies" --json number,title,labels
+gh pr list --author "app/dependabot" --json number,title
 
-# 2. Merge passing patch updates
-gh pr list --author "app/dependabot" --search "status:success" --json number --jq '.[].number' | \
-  xargs -I {} gh pr merge {} --auto --squash
+# 2. Inspect each candidate's version table and checks
+gh pr view <pr-number>
+gh pr checks <pr-number>
 
-# 3. Review minor updates
-gh pr list --label "dependencies" --search "minor" --json number,title
+# 3. Enable auto-merge only for a reviewed patch or security PR
+gh pr merge <pr-number> --auto --squash
 
-# 4. Schedule major updates for dedicated review
-gh pr list --label "dependencies" --search "major" --json number,title
+# 4. Triage the rest by the highest semver impact in each PR body/version table:
+#    x.y.Z -> patch, x.Y.0 -> minor (review changelog), X.0.0 -> major
+#    (dedicated review)
 ```
 
 ### Monthly: Audit
@@ -240,6 +237,14 @@ gh pr comment <pr-number> -b "@dependabot ignore this dependency"
 
 ### Common `.github/dependabot.yml` Patterns
 
+**14-day admission cooldown**:
+```yaml
+cooldown:
+  default-days: 14
+```
+
+Every managed ecosystem row carries this scalar for normal version updates. Dependabot security updates bypass the updater cooldown; package-manager-native age gates are separate.
+
 **Add dependency group**:
 ```yaml
 groups:
@@ -266,10 +271,17 @@ schedule:
   time: "09:00"
 ```
 
-**Add labels**:
+**Disable Dependabot labels**:
 ```yaml
+# Disable all Dependabot labels, including GitHub's defaults.
+labels: []
+```
+
+**Or apply custom labels**:
+```yaml
+# Each name must already exist in the repository; otherwise Dependabot
+# ignores it and reports that it could not be found.
 labels:
-  - "dependencies"
   - "custom-label"
 ```
 
@@ -277,6 +289,7 @@ labels:
 
 - Full Guide: [docs/how-to/DEPENDENCY_MANAGEMENT.md](DEPENDENCY_MANAGEMENT.md)
 - Dependabot Config: [.github/dependabot.yml](../../.github/dependabot.yml)
+- Dependabot Options: https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference
 - Cargo Book: https://doc.rust-lang.org/cargo/
 - Semantic Versioning: https://semver.org/
 
@@ -288,3 +301,5 @@ labels:
 gh repo set-default
 gh api --method PUT repos/:owner/:repo/subscription -f subscribed=true -f ignored=false
 ```
+
+Dependency version updates use a 14-day admission window. See the [release-age boundary](DEPENDENCY_MANAGEMENT.md#release-age-boundary) for updater versus npm resolver behavior and security exceptions.

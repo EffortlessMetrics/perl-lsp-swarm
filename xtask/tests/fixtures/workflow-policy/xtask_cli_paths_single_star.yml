@@ -1,0 +1,16 @@
+name: fixture-xtask-cli-paths-single-star
+# A single `*` must not cross a `/`. `xtask/*` selects files directly under
+# `xtask/`, so it reaches neither wiring file and both stay unenumerated.
+on:
+  pull_request:
+    paths:
+      - 'xtask/*'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo xtask example-contract check

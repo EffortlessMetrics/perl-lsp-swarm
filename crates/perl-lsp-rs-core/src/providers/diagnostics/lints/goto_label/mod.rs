@@ -27,6 +27,9 @@ pub fn check_goto_labels(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     walk_node(root, &mut |node| {
+        // The lint only applies to targeted `goto LABEL` nodes. The new
+        // childless `TargetlessGoto` variant has no label, so the existing
+        // pattern match naturally no-ops it without an extra arm.
         let NodeKind::Goto { target, .. } = &node.kind else {
             return;
         };

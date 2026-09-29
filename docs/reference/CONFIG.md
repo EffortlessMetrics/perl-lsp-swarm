@@ -136,7 +136,7 @@ per folder. See [Configuration Precedence](#configuration-precedence).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `include_paths` | `string[]` | `[]` | Additional include paths for module resolution, relative to workspace root. An empty list leaves the built-in defaults (`lib`, `.`, `local/lib/perl5`) unchanged. |
-| `version` | `string` | (none) | Perl version hint, e.g. `"5.38"`. Parsed but not yet wired to diagnostics; reserved for future use. |
+| `version` | `string` | (none) | Per-folder Perl version hint, e.g. `"5.38"`, used as the PL900 fallback target when source has no `use VERSION` declaration. Malformed values produce an actionable configuration diagnostic and are never used as a fallback target. |
 
 #### `[diagnostics]` — Linting
 
@@ -183,7 +183,7 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | `boolean` | (unset) | Enable or disable LSP formatting. When unset, the server default (`true`) applies. |
-| `engine` | `"native"`, `"compat"`, `"perltidy-compat"`, `"external-legacy"`, `"external-perltidy"`, `"perltidy"`, `"off"`, `"disabled"`, or `"none"` | `"native"` | Selects the formatter engine. `native` runs the Rust-native formatter, `compat` / `perltidy-compat` run native formatting with compatibility defaults, `external-*` / `perltidy` use the external perltidy adapter, and `off` / `disabled` / `none` disable formatting. Unrecognized values are ignored and a warning is logged. |
+| `engine` | `"native"`, `"external-legacy"`, `"external-perltidy"`, `"perltidy"`, `"off"`, `"disabled"`, or `"none"` | `"native"` | Selects the formatter engine. `native` runs the Rust-native formatter, `external-*` / `perltidy` use the external perltidy adapter, and `off` / `disabled` / `none` disable formatting. Unrecognized values are ignored and a warning is logged. The retired `"compat"` / `"perltidy-compat"` tokens (#7129) are rejected the same way; they never had behavior of their own, and the deprecation window (#15624) closed before any release accepted them. |
 | `perltidy_profile` | `string` | (unset) | Path to a `.perltidyrc` profile. Used by the external perltidy adapter and by compatibility reporting. |
 | `perltidy_maximum_line_length` | `integer` | (unset) | Maximum line length for formatting compatibility options. |
 | `perltidy_indent_columns` | `integer` | (unset) | Indent width in spaces. |
@@ -205,7 +205,8 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 # All keys are optional. Unknown keys are silently ignored.
 
 [perl]
-# Perl version hint (reserved for future diagnostic targeting)
+# Per-folder PL900 fallback target when source has no `use VERSION` declaration.
+# Source declarations win; invalid values fail closed.
 version = "5.38"
 
 # Module search paths relative to workspace root.
@@ -495,14 +496,17 @@ edits regardless of the selected engine.
 
 | Property | Value |
 |---|---|
-| Type | `"native"\|"compat"\|"off"` |
+| Type | `"native"\|"off"` |
 | Default | `"native"` |
 
 Formatter engine for LSP formatting requests:
 
 - `native` uses the Rust-native formatter.
-- `compat` uses the native formatter with compatibility-oriented defaults.
 - `off` disables formatting.
+
+The retired `"compat"` alias is rejected here (#7129/#15624): it never
+selected a different engine or produced different output — it always ran the
+native formatter. Set the value to `"native"` instead.
 
 External formatter aliases are project-configuration values, not accepted
 through the generic LSP client-settings channel. Use the project `[formatting]`
@@ -739,17 +743,12 @@ decrease them for resource-constrained environments.
 
 | Key | Default | Description |
 |---|---|---|
-| `astCacheMaxEntries` | `100` | AST cache size (LRU eviction) |
-| `astCacheTtlSecs` | `300` | AST cache TTL in seconds |
-| `symbolCacheMaxEntries` | `1000` | Symbol cache size |
 
 #### Index limits
 
 | Key | Default | Description |
 |---|---|---|
-| `maxIndexedFiles` | `10000` | Maximum files indexed for workspace features |
 | `maxSymbolsPerFile` | `5000` | Maximum symbols indexed per file |
-| `maxTotalSymbols` | `500000` | Maximum total symbols across all indexed files |
 | `parseStormThreshold` | `10` | Pending parse count before degradation |
 | `maxFileSizeBytes` | `1048576` | Skip files larger than this in bytes (default: 1 MB). Files over the limit are stored with an empty AST and no diagnostics. |
 
@@ -757,7 +756,6 @@ decrease them for resource-constrained environments.
 
 | Key | Default | Description |
 |---|---|---|
-| `workspaceScanDeadlineMs` | `30000` | Initial workspace folder scan budget |
 | `fileIndexDeadlineMs` | `5000` | Single file indexing budget |
 | `referenceSearchDeadlineMs` | `2000` | Reference search budget |
 | `regexScanDeadlineMs` | `1000` | Regex scan budget |
@@ -769,9 +767,6 @@ decrease them for resource-constrained environments.
     "limits": {
       "workspaceSymbolCap": 300,
       "referencesCap": 1000,
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 2000000,
-      "workspaceScanDeadlineMs": 60000
     }
   }
 }
@@ -979,12 +974,28 @@ PERL_LSP_FILE_WATCHERS=false perllsp --stdio
 
 ### `PERL_LSP_TIMING`
 
-Enable phase-1 latency instrumentation. Values: `off` (default), `spans`
-(human-readable timing spans), `json` (machine-readable JSON).
+Enable phase-1 latency instrumentation. Every sink writes JSONL — one JSON
+object per line.
+
+| Value | Effect |
+|---|---|
+| unset, empty, `off`, `0`, `false` | disabled (default) |
+| `stderr`, `1`, `true` | JSONL to stderr |
+| `json` | JSONL to stderr (the same sink; there is no separate JSON format) |
+| `spans` | accepted for compatibility; **not implemented** — emits one warning-level notice (unless filtered by `RUST_LOG`), then behaves as `json` |
+| a file path | JSONL appended to that file, created if absent |
 
 ```bash
-PERL_LSP_TIMING=spans perllsp --stdio
+PERL_LSP_TIMING=stderr perllsp --stdio
+PERL_LSP_TIMING=./timing.jsonl perllsp --stdio
 ```
+
+Any value that is none of the modes above is treated as a **file path** and
+created if it does not exist, so quote it if it contains spaces or shell
+metacharacters.
+
+`spans` was previously documented here as "human-readable timing spans". That
+output does not exist; there is no human-readable span formatter in the server.
 
 ### `PERL_LSP_INCREMENTAL`
 
@@ -1055,7 +1066,6 @@ launch `perllsp --stdio`.
 | `perl-lsp.enableFormatting` | `boolean` | `true` | Document formatting. Native formatting is built in; external perltidy is compatibility mode. |
 | `perl-lsp.formatOnSave` | `boolean` | `false` | Auto-format on save. The extension formats through the whole-document provider; server-owned `willSaveWaitUntil` formatting is withdrawn (#11955) until #8092 proves one save owner. |
 | `perl-lsp.enableTestIntegration` | `boolean` | `true` | Test::More and Test2 integration. |
-| `perl-lsp.autoPopulateNewFiles` | `boolean` | `true` | Insert package boilerplate into new `.pm` files and Test::More boilerplate into new `.t` files. Files with existing content are not modified. |
 
 ### Perl-specific
 
@@ -1198,9 +1208,6 @@ perllsp --features-json --feature-profile production
     "limits": {
       "workspaceSymbolCap": 300,
       "referencesCap": 1000,
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 2000000,
-      "workspaceScanDeadlineMs": 120000
     }
   }
 }
@@ -1220,8 +1227,6 @@ perllsp --features-json --feature-profile production
     "limits": {
       "workspaceSymbolCap": 100,
       "referencesCap": 200,
-      "astCacheMaxEntries": 50,
-      "maxIndexedFiles": 5000,
       "referenceSearchDeadlineMs": 1000
     }
   }

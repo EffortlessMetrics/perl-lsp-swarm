@@ -20,7 +20,6 @@ const LEDGER_HEADER: &[&str] =
 /// decision belongs to which surface, so a swapped feature cell, a flipped
 /// disposition, or a replaced owner cannot pass while both sets stay equal.
 const EXPECTED_LEDGER_DECISIONS: &[(&str, &str, &str, &str)] = &[
-    ("command-tooltip-non-codelens", "`Command.tooltip`", "implementation-owner", "#13633"),
     (
         "generated-code-action-tags",
         "`CodeAction.tags` and `CodeActionTag.LLMGenerated`",
@@ -37,7 +36,13 @@ const EXPECTED_LEDGER_DECISIONS: &[(&str, &str, &str, &str)] = &[
     ("notebook-318-additions", "Notebook 3.18 additions", "accepted-disposition", "n/a"),
     (
         "relative-pattern-document-selector",
-        "`RelativePattern` watcher registrations",
+        "Document-filter `relative pattern` (text-document filters)",
+        "accepted-disposition",
+        "n/a",
+    ),
+    (
+        "relative-pattern-notebook-selector",
+        "Notebook document-filter `relative pattern`",
         "accepted-disposition",
         "n/a",
     ),

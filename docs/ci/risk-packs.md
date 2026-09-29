@@ -9,9 +9,9 @@ Risk packs route extra proof to PRs that touch known-risky surfaces. Defined in
 
 ## Catalog
 
-| Risk pack | Surface | Default lanes | Deep lanes (label-gated) |
+| Risk pack | Surface | Default lanes | Deep lanes (full-ci where applicable) |
 |---|---|---|---|
-| `parser` | parser, lexer, token, AST, tree-sitter, corpus, POD, regex, position support | `pr_smoke`, `merge_gate_shards`, `ripr_advisory` | `mutation`, `fuzz`, `coverage` |
+| `parser` | parser, lexer, token, AST, tree-sitter, corpus, POD, regex, position support | `pr_smoke`, `merge_gate_shards`, `ripr_advisory` | `mutation`, `fuzz` |
 | `lsp_provider` | LSP, completion, diagnostics, navigation, refactoring, dead-code, formatting, UX harness | `pr_smoke`, `merge_gate_shards`, `ux_tests`, `ripr_advisory` | `real_repo_latency`, `vscode_smoke_matrix` |
 | `workspace_index` | module resolution, pragma state, semantic facts, indexing | `merge_gate_shards`, `lsp_memory_smoke`, `windows_guardrails`, `ripr_advisory` | `memory_plateau`, `real_repo_latency` |
 | `retained_state` | long-lived maps, caches, queues, sessions | `lsp_memory_smoke`, `ripr_advisory` | `memory_plateau` |
@@ -25,6 +25,10 @@ Risk packs route extra proof to PRs that touch known-risky surfaces. Defined in
 | `docs_only` | prose / markdown / status | `docs_gate` | — |
 
 ---
+
+Coverage is intentionally absent from risk-pack deep lanes and labels. The
+`ci-nightly.yml::test-coverage` job is schedule/manual-only, so the PR Plan
+must not select it for parser changes or a `full-ci` label.
 
 ## How risk packs activate
 

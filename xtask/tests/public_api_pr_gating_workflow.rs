@@ -8,6 +8,64 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[test]
+fn ratchet_reader_rejects_missing_unreadable_empty_and_duplicate_lists()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workflow = fs::read_to_string(project_root()?.join(".github/workflows/ci.yml"))?;
+    let function = workflow
+        .split("          def ratchet_crates():")
+        .nth(1)
+        .and_then(|rest| rest.split("          def derive_prefixes():").next())
+        .ok_or("missing selector ratchet reader")?;
+    let source = format!(
+        "def ratchet_crates():{}",
+        function
+            .lines()
+            .map(|line| { format!("\n{}", line.strip_prefix("          ").unwrap_or(line)) })
+            .collect::<String>()
+    );
+    let harness = r#"
+import contextlib, io, pathlib, sys, tempfile
+exec(sys.argv[1])
+with tempfile.TemporaryDirectory() as directory:
+    root = pathlib.Path(directory)
+    cases = [
+        ('missing', None, 'cannot read'),
+        ('directory', None, 'cannot read'),
+        ('empty', '# only comments\n\n', 'lists no crates'),
+        ('duplicate', 'perl-parser\n perl-parser # repeated\n', 'duplicate'),
+        ('valid', '# facades\n perl-parser # parser\n\nperl-lsp\n', None),
+    ]
+    for name, content, diagnostic in cases:
+        path = root / name
+        if name == 'directory':
+            path.mkdir()
+        elif content is not None:
+            path.write_text(content, encoding='utf-8')
+        RATCHET_LIST = str(path)
+        errors = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(errors):
+                result = ratchet_crates()
+        except SystemExit as error:
+            if diagnostic is None or error.code != 1 or diagnostic not in errors.getvalue():
+                raise RuntimeError((name, error.code, errors.getvalue()))
+        else:
+            if diagnostic is not None or result != ('perl-parser', 'perl-lsp'):
+                raise RuntimeError((name, result, 'unexpected acceptance'))
+"#;
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let output = std::process::Command::new(python).args(["-c", harness, &source]).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "selector reader proof failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -111,7 +169,7 @@ fn active_if_expression(section: &str) -> Option<String> {
         }
         let expression = trimmed.strip_prefix("if:").map_or(trimmed, str::trim);
         let active = expression.split_once('#').map_or(expression, |(value, _)| value).trim();
-        if !active.is_empty() && active != "|" {
+        if !active.is_empty() && active != "|" && active != ">" && active != ">-" {
             parts.push(active);
         }
     }
@@ -145,7 +203,7 @@ fn public_api_job_runs(
         // false, so an unspecified selector must not consume the runner.
         "workflow_dispatch" => dispatch_public_api,
         "schedule" => true,
-        "pull_request" if labels.iter().any(|candidate| *candidate == label) => match action {
+        "pull_request" if labels.contains(&label) => match action {
             Some("opened" | "synchronize" | "reopened" | "ready_for_review") => true,
             Some("labeled") => event_label == Some(label),
             _ => false,
@@ -161,13 +219,8 @@ fn pull_request_activity_types(workflow: &str) -> Option<Vec<&str>> {
         if line.len() - line.trim_start().len() != 4 {
             return None;
         }
-        let Some(values) = trimmed.strip_prefix("types:").map(str::trim) else {
-            return None;
-        };
-        let Some(values) = values.strip_prefix('[').and_then(|values| values.strip_suffix(']'))
-        else {
-            return None;
-        };
+        let values = trimmed.strip_prefix("types:").map(str::trim)?;
+        let values = values.strip_prefix('[').and_then(|values| values.strip_suffix(']'))?;
         Some(
             values.split(',').map(str::trim).map(|value| value.trim_matches(['\'', '"'])).collect(),
         )
@@ -237,6 +290,428 @@ fn job_timeout_minutes(section: &str) -> Option<u64> {
     section
         .lines()
         .find_map(|line| line.trim().strip_prefix("timeout-minutes:")?.trim().parse().ok())
+}
+
+/// Restricted GitHub-expression evaluator for the public-api-pr event matrix.
+///
+/// The subset is comparison (`==` / `!=`), `&&`, `||`, parentheses, quoted
+/// strings, and dotted identifiers. It exists so the live workflow and
+/// constructed wrong jobs are judged by the same oracle, including the
+/// #16815 case where a job-level `push` gate still settles as a scoped-noop
+/// because every expensive step stays `api_scope == true`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApiRatchetOutcome {
+    Skip,
+    ScopedNoop,
+    FullCheck,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ApiRatchetScenario {
+    event: &'static str,
+    git_ref: &'static str,
+    run_ci: bool,
+    is_latest: bool,
+    api_scope: bool,
+}
+
+fn bool_word(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
+fn unwrap_github_expr(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    trimmed
+        .strip_prefix("${{")
+        .and_then(|inner| inner.strip_suffix("}}"))
+        .map(str::trim)
+        .unwrap_or(trimmed)
+}
+
+fn scenario_vars(scenario: &ApiRatchetScenario) -> std::collections::BTreeMap<String, String> {
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("github.event_name".into(), scenario.event.into());
+    vars.insert("github.ref".into(), scenario.git_ref.into());
+    vars.insert("needs.draft-pr-check.outputs.run_ci".into(), bool_word(scenario.run_ci).into());
+    vars.insert(
+        "needs.draft-pr-check.outputs.api_scope".into(),
+        bool_word(scenario.api_scope).into(),
+    );
+    vars.insert(
+        "needs.preflight-latest-check.outputs.is_latest".into(),
+        bool_word(scenario.is_latest).into(),
+    );
+    vars
+}
+
+struct ExprCursor<'a> {
+    src: &'a str,
+    i: usize,
+}
+
+impl<'a> ExprCursor<'a> {
+    fn new(src: &'a str) -> Self {
+        Self { src, i: 0 }
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(rest) = self.src.get(self.i..) {
+            let Some(ch) = rest.chars().next() else {
+                return;
+            };
+            if !ch.is_whitespace() {
+                return;
+            }
+            self.i += ch.len_utf8();
+        }
+    }
+
+    fn starts_with(&self, token: &str) -> bool {
+        self.src.get(self.i..).is_some_and(|rest| rest.starts_with(token))
+    }
+
+    fn take(&mut self, token: &str) -> bool {
+        self.skip_ws();
+        if self.starts_with(token) {
+            self.i += token.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn ident(&mut self) -> Option<&'a str> {
+        self.skip_ws();
+        let rest = self.src.get(self.i..)?;
+        let len = rest
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '.' || *ch == '-')
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if len == 0 {
+            return None;
+        }
+        let ident = rest.get(..len)?;
+        if !ident.chars().next()?.is_ascii_alphabetic() && ident.chars().next()? != '_' {
+            return None;
+        }
+        self.i += len;
+        Some(ident)
+    }
+
+    fn string(&mut self) -> Result<Option<String>, String> {
+        self.skip_ws();
+        if !self.take("'") {
+            return Ok(None);
+        }
+        let rest = self.src.get(self.i..).ok_or("truncated string")?;
+        let end = rest.find('\'').ok_or("unterminated string")?;
+        let value = rest.get(..end).ok_or("unterminated string")?.to_string();
+        self.i += end + 1;
+        Ok(Some(value))
+    }
+}
+
+fn eval_github_expr(
+    expr: &str,
+    vars: &std::collections::BTreeMap<String, String>,
+) -> Result<bool, String> {
+    let unwrapped = unwrap_github_expr(expr);
+    if unwrapped.is_empty() {
+        return Err("empty GitHub expression".into());
+    }
+    let mut cursor = ExprCursor::new(unwrapped);
+    let value = parse_or(&mut cursor, vars)?;
+    cursor.skip_ws();
+    if cursor.i != cursor.src.len() {
+        return Err(format!("trailing expression tokens: {}", &cursor.src[cursor.i..]));
+    }
+    Ok(value)
+}
+
+fn parse_or(
+    cursor: &mut ExprCursor<'_>,
+    vars: &std::collections::BTreeMap<String, String>,
+) -> Result<bool, String> {
+    let mut value = parse_and(cursor, vars)?;
+    while cursor.take("||") {
+        let rhs = parse_and(cursor, vars)?;
+        value = value || rhs;
+    }
+    Ok(value)
+}
+
+fn parse_and(
+    cursor: &mut ExprCursor<'_>,
+    vars: &std::collections::BTreeMap<String, String>,
+) -> Result<bool, String> {
+    let mut value = parse_cmp(cursor, vars)?;
+    while cursor.take("&&") {
+        let rhs = parse_cmp(cursor, vars)?;
+        value = value && rhs;
+    }
+    Ok(value)
+}
+
+fn parse_cmp(
+    cursor: &mut ExprCursor<'_>,
+    vars: &std::collections::BTreeMap<String, String>,
+) -> Result<bool, String> {
+    let left = parse_primary_value(cursor, vars)?;
+    cursor.skip_ws();
+    if cursor.take("==") {
+        let right = parse_primary_value(cursor, vars)?;
+        return Ok(left == right);
+    }
+    if cursor.take("!=") {
+        let right = parse_primary_value(cursor, vars)?;
+        return Ok(left != right);
+    }
+    Ok(left == "true")
+}
+
+fn parse_primary_value(
+    cursor: &mut ExprCursor<'_>,
+    vars: &std::collections::BTreeMap<String, String>,
+) -> Result<String, String> {
+    cursor.skip_ws();
+    if cursor.take("(") {
+        let value = parse_or(cursor, vars)?;
+        if !cursor.take(")") {
+            return Err("missing closing parenthesis".into());
+        }
+        return Ok(bool_word(value).into());
+    }
+    if let Some(string) = cursor.string()? {
+        return Ok(string);
+    }
+    let ident = cursor
+        .ident()
+        .ok_or_else(|| format!("expected identifier or string at {}", &cursor.src[cursor.i..]))?;
+    match ident {
+        "true" | "false" => Ok(ident.into()),
+        _ => Ok(vars.get(ident).cloned().unwrap_or_default()),
+    }
+}
+
+fn job_env_bindings(job: &str) -> std::collections::BTreeMap<String, String> {
+    let Some(section) = mapping_section(job, "env", 4) else {
+        return std::collections::BTreeMap::new();
+    };
+    let mut bindings = std::collections::BTreeMap::new();
+    for line in section.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("env:") {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent <= 4 {
+            break;
+        }
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        bindings.insert(format!("env.{}", key.trim()), value.trim().to_string());
+    }
+    bindings
+}
+
+struct WorkflowStep {
+    name: String,
+    if_expr: Option<String>,
+    run: String,
+    continue_on_error: bool,
+}
+
+fn parse_job_steps(job: &str) -> Vec<WorkflowStep> {
+    let Some(steps) = mapping_section(job, "steps", 4) else {
+        return Vec::new();
+    };
+    let mut parsed = Vec::new();
+    let mut current: Option<WorkflowStep> = None;
+    let mut in_run = false;
+    let mut run_parts = Vec::new();
+
+    let flush_run = |step: &mut WorkflowStep, run_parts: &mut Vec<String>| {
+        if !run_parts.is_empty() {
+            step.run = run_parts.join("\n");
+            run_parts.clear();
+        }
+    };
+
+    for line in steps.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if in_run {
+                run_parts.push(String::new());
+            }
+            continue;
+        }
+        if trimmed.starts_with("steps:") {
+            continue;
+        }
+        if indent <= 4 && !trimmed.starts_with('#') {
+            break;
+        }
+        if indent == 6 && trimmed.starts_with("- ") {
+            if let Some(mut step) = current.take() {
+                flush_run(&mut step, &mut run_parts);
+                parsed.push(step);
+            }
+            in_run = false;
+            let name = trimmed.strip_prefix("- name:").map(str::trim).unwrap_or("").to_string();
+            current = Some(WorkflowStep {
+                name,
+                if_expr: None,
+                run: String::new(),
+                continue_on_error: false,
+            });
+            continue;
+        }
+        let Some(step) = current.as_mut() else {
+            continue;
+        };
+        if indent == 8 && trimmed.starts_with("if:") {
+            in_run = false;
+            let expr = trimmed.trim_start_matches("if:").trim();
+            if expr == "|" || expr == ">" || expr == ">-" {
+                step.if_expr = Some(String::new());
+            } else {
+                step.if_expr = Some(unwrap_github_expr(expr).to_string());
+            }
+            continue;
+        }
+        if indent > 8
+            && let Some(existing) = step.if_expr.as_mut()
+        {
+            let active = trimmed.split_once('#').map_or(trimmed, |(value, _)| value).trim();
+            if !active.is_empty()
+                && (existing.is_empty()
+                    || existing.ends_with("&&")
+                    || existing.ends_with("||")
+                    || active.starts_with("&&")
+                    || active.starts_with("||")
+                    || active.starts_with('(')
+                    || existing.ends_with('('))
+            {
+                if !existing.is_empty() {
+                    existing.push(' ');
+                }
+                existing.push_str(active);
+                continue;
+            }
+        }
+        if indent == 8 && trimmed.starts_with("run:") {
+            in_run = true;
+            run_parts.clear();
+            let rest = trimmed.trim_start_matches("run:").trim();
+            if rest != "|" && rest != ">" && rest != ">-" && !rest.is_empty() {
+                run_parts.push(rest.to_string());
+                in_run = false;
+            }
+            continue;
+        }
+        if indent == 8 && trimmed.starts_with("continue-on-error:") {
+            in_run = false;
+            step.continue_on_error = trimmed.contains("true");
+            continue;
+        }
+        if in_run && indent >= 10 {
+            run_parts.push(line[10.min(line.len())..].to_string());
+            continue;
+        }
+        if indent == 8 {
+            in_run = false;
+        }
+    }
+    if let Some(mut step) = current {
+        flush_run(&mut step, &mut run_parts);
+        parsed.push(step);
+    }
+    parsed
+}
+
+fn evaluate_env_vars(
+    job: &str,
+    scenario: &ApiRatchetScenario,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut vars = scenario_vars(scenario);
+    for (key, raw) in job_env_bindings(job) {
+        let value = if unwrap_github_expr(&raw) == raw {
+            raw
+        } else {
+            bool_word(eval_github_expr(&raw, &vars)?).to_string()
+        };
+        vars.insert(key, value);
+    }
+    Ok(vars)
+}
+
+fn step_applies(
+    step: &WorkflowStep,
+    vars: &std::collections::BTreeMap<String, String>,
+) -> Result<bool, String> {
+    match step.if_expr.as_deref() {
+        None => Ok(true),
+        Some(expr) => eval_github_expr(expr, vars),
+    }
+}
+
+fn api_ratchet_outcome(
+    job: &str,
+    scenario: &ApiRatchetScenario,
+) -> Result<ApiRatchetOutcome, String> {
+    if let Some(job_if) = active_if_expression(job) {
+        let vars = evaluate_env_vars(job, scenario)?;
+        if !eval_github_expr(&job_if, &vars)? {
+            return Ok(ApiRatchetOutcome::Skip);
+        }
+    }
+    let vars = evaluate_env_vars(job, scenario)?;
+    let steps = parse_job_steps(job);
+    let mut full = false;
+    let mut noop = false;
+    for step in &steps {
+        if !step_applies(step, &vars)? {
+            continue;
+        }
+        if step.continue_on_error {
+            return Err(format!("step {} continues on error", step.name));
+        }
+        if step.run.lines().any(|line| line.trim() == "just public-api-check") {
+            full = true;
+        }
+        if step.name.contains("Scoped no-op") || step.run.contains("scoped-noop") {
+            noop = true;
+        }
+    }
+    match (full, noop) {
+        (true, false) => Ok(ApiRatchetOutcome::FullCheck),
+        (false, true) => Ok(ApiRatchetOutcome::ScopedNoop),
+        (false, false) => Err("job ran but neither ratchet nor scoped-noop applied".into()),
+        (true, true) => Err("job ran both the ratchet and the scoped-noop".into()),
+    }
+}
+
+fn expect_outcome(
+    job: &str,
+    scenario: ApiRatchetScenario,
+    expected: ApiRatchetOutcome,
+) -> Result<(), String> {
+    let actual = api_ratchet_outcome(job, &scenario)?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "event={} ref={} run_ci={} latest={} api_scope={} expected {expected:?} got {actual:?}",
+            scenario.event,
+            scenario.git_ref,
+            scenario.run_ci,
+            scenario.is_latest,
+            scenario.api_scope
+        ))
+    }
 }
 
 #[test]
@@ -336,7 +811,7 @@ fn ci_yml_runs_both_compatibility_rails_on_pull_requests() -> Result<(), Box<dyn
         );
         assert!(
             section.contains("github.event_name == 'pull_request'"),
-            "rails are PR-scoped; schedule/manual coverage stays on ci-nightly.yml"
+            "both rails keep the pull_request scoped-noop path; schedule/manual coverage stays on ci-nightly.yml"
         );
         assert!(
             section.contains("needs.preflight-latest-check.outputs.is_latest == 'true'"),
@@ -364,6 +839,14 @@ fn ci_yml_runs_both_compatibility_rails_on_pull_requests() -> Result<(), Box<dyn
         semver.contains("cargo-semver-checks --version 0.47.0 --locked"),
         "semver-pr must pin the same cargo-semver-checks version as the nightly lane"
     );
+    assert!(
+        public_api.contains("github.event_name == 'push'"),
+        "public-api-pr must admit push so landed SHAs are ratcheted (#16815)"
+    );
+    assert!(
+        !semver.contains("github.event_name == 'push'"),
+        "semver-pr stays PR-only; main-push ratchet is public-api-pr's claim"
+    );
 
     Ok(())
 }
@@ -384,18 +867,24 @@ fn scope_selection_is_job_level_and_never_label_gated() -> Result<(), Box<dyn st
         "ci.yml excludes the labeled event on purpose; labels must not gate its jobs"
     );
 
-    let trigger_facade_paths = [
-        "crates/perl-parser/",
-        "crates/perl-lexer/",
-        "crates/perl-parser-core/",
-        "crates/perl-lsp-rs/",
-        "crates/perl-uri/",
-        "crates/perl-dap/",
-        "crates/perllsp/",
+    // #14607: the crates the rails check directly are not restated in the
+    // workflow; the selector reads the same single list the recipes read.
+    for anchor in [
         ".ci/public-api-baselines/",
-    ];
-    for facade_path in trigger_facade_paths {
-        assert!(workflow.contains(facade_path), "scope selector must cover {facade_path}");
+        "\"ratchet-crates.txt\"",
+        "def ratchet_crates():",
+        "for crate in ratchet_crates():",
+    ] {
+        assert!(
+            workflow.contains(anchor),
+            "scope selector must derive from the ratchet list: {anchor}"
+        );
+    }
+    for stale_literal in ["\"crates/perl-parser/\",", "\"crates/perllsp/\","] {
+        assert!(
+            !workflow.contains(stale_literal),
+            "scope selector must not restate the ratchet crate list: {stale_literal}"
+        );
     }
     assert!(
         workflow.contains("api_scope=true") && workflow.contains("api_scope=false"),
@@ -453,8 +942,268 @@ fn registry_records_the_new_advisory_contexts() -> Result<(), Box<dyn std::error
             row.contains("applicability = \"conditional\""),
             "{context} follows the prerequisite-selected applicability convention"
         );
+        if job == "public-api-pr" {
+            assert!(
+                row.contains("events = [\"pull_request\", \"push\"]"),
+                "{context} must be reachable on pull_request and push (#16815)"
+            );
+            assert!(
+                row.contains("#16815"),
+                "{context} policy reason must name the main-push ratchet claim"
+            );
+        } else {
+            assert!(
+                row.contains("events = [\"pull_request\"]") && !row.contains("\"push\""),
+                "{context} stays pull_request-only"
+            );
+        }
     }
 
+    Ok(())
+}
+
+const PR_ONLY_JOB_IF: &str = r#"
+  public-api-pr:
+    if: github.event_name == 'pull_request' && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    steps:
+      - name: Scoped no-op summary
+        if: needs.draft-pr-check.outputs.api_scope != 'true'
+        run: echo scoped-noop
+      - name: Check public API surface
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        run: just public-api-check
+"#;
+
+const PUSH_JOB_IF_STILL_SCOPE_GATED: &str = r#"
+  public-api-pr:
+    if: (github.event_name == 'pull_request' || github.event_name == 'push') && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    steps:
+      - name: Scoped no-op summary
+        if: needs.draft-pr-check.outputs.api_scope != 'true'
+        run: echo scoped-noop
+      - name: Check public API surface
+        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        run: just public-api-check
+"#;
+
+const PUSH_OR_SCOPE_STEP_GATED: &str = r#"
+  public-api-pr:
+    if: (github.event_name == 'pull_request' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))) && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    env:
+      RUN_API_RATCHET: ${{ github.event_name == 'push' || needs.draft-pr-check.outputs.api_scope == 'true' }}
+    steps:
+      - name: Scoped no-op summary
+        if: env.RUN_API_RATCHET != 'true'
+        run: echo scoped-noop
+      - name: Check public API surface
+        if: env.RUN_API_RATCHET == 'true'
+        run: just public-api-check
+"#;
+
+const PUSH_OR_SCOPE_WITH_EXPRESSION_IN_RUN: &str = r#"
+  public-api-pr:
+    if: (github.event_name == 'pull_request' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))) && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    env:
+      RUN_API_RATCHET: ${{ github.event_name == 'push' || needs.draft-pr-check.outputs.api_scope == 'true' }}
+    steps:
+      - name: Scoped no-op summary
+        if: env.RUN_API_RATCHET != 'true'
+        run: echo "- event: `${{ github.event_name }}`"
+      - name: Check public API surface
+        if: env.RUN_API_RATCHET == 'true'
+        run: just public-api-check
+"#;
+
+fn reject_github_expressions_in_run_source(job: &str) -> Result<(), String> {
+    for step in parse_job_steps(job) {
+        if let Some(line) = step.run.lines().find(|line| line.contains("${{")) {
+            return Err(format!(
+                "step {} embeds a GitHub expression in run source; pass it through env: {line}",
+                step.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn matrix_ready_job(job: &str) -> Result<(), String> {
+    reject_github_expressions_in_run_source(job)?;
+    let pr_full = ApiRatchetScenario {
+        event: "pull_request",
+        git_ref: "refs/pull/1/merge",
+        run_ci: true,
+        is_latest: true,
+        api_scope: true,
+    };
+    let pr_noop = ApiRatchetScenario {
+        event: "pull_request",
+        git_ref: "refs/pull/1/merge",
+        run_ci: true,
+        is_latest: true,
+        api_scope: false,
+    };
+    let pr_draft = ApiRatchetScenario {
+        event: "pull_request",
+        git_ref: "refs/pull/1/merge",
+        run_ci: false,
+        is_latest: true,
+        api_scope: true,
+    };
+    let main_push_out_of_scope = ApiRatchetScenario {
+        event: "push",
+        git_ref: "refs/heads/main",
+        run_ci: true,
+        is_latest: true,
+        api_scope: false,
+    };
+    let main_push_superseded = ApiRatchetScenario {
+        event: "push",
+        git_ref: "refs/heads/main",
+        run_ci: true,
+        is_latest: false,
+        api_scope: false,
+    };
+    let master_push = ApiRatchetScenario {
+        event: "push",
+        git_ref: "refs/heads/master",
+        run_ci: true,
+        is_latest: true,
+        api_scope: false,
+    };
+    let merge_group = ApiRatchetScenario {
+        event: "merge_group",
+        git_ref: "refs/heads/gh-readonly-queue/main/pr-1",
+        run_ci: true,
+        is_latest: true,
+        api_scope: false,
+    };
+    let dispatch = ApiRatchetScenario {
+        event: "workflow_dispatch",
+        git_ref: "refs/heads/main",
+        run_ci: true,
+        is_latest: true,
+        api_scope: false,
+    };
+    let schedule = ApiRatchetScenario {
+        event: "schedule",
+        git_ref: "refs/heads/main",
+        run_ci: true,
+        is_latest: true,
+        api_scope: false,
+    };
+    expect_outcome(job, pr_full, ApiRatchetOutcome::FullCheck)?;
+    expect_outcome(job, pr_noop, ApiRatchetOutcome::ScopedNoop)?;
+    expect_outcome(job, pr_draft, ApiRatchetOutcome::Skip)?;
+    expect_outcome(job, main_push_out_of_scope, ApiRatchetOutcome::FullCheck)?;
+    expect_outcome(job, main_push_superseded, ApiRatchetOutcome::Skip)?;
+    expect_outcome(job, master_push, ApiRatchetOutcome::FullCheck)?;
+    expect_outcome(job, merge_group, ApiRatchetOutcome::Skip)?;
+    expect_outcome(job, dispatch, ApiRatchetOutcome::Skip)?;
+    expect_outcome(job, schedule, ApiRatchetOutcome::Skip)?;
+    Ok(())
+}
+
+#[test]
+fn public_api_pr_event_matrix_rejects_pr_only_and_push_scoped_noop() -> Result<(), String> {
+    let pr_only = matrix_ready_job(PR_ONLY_JOB_IF);
+    if pr_only.is_ok() {
+        return Err("a PR-only job if must fail the main-push full-check cell".into());
+    }
+    let still_scoped = matrix_ready_job(PUSH_JOB_IF_STILL_SCOPE_GATED);
+    if still_scoped.is_ok() {
+        return Err("admitting push at job if while leaving steps on api_scope must fail".into());
+    }
+    let interpolated_run = matrix_ready_job(PUSH_OR_SCOPE_WITH_EXPRESSION_IN_RUN);
+    if interpolated_run.is_ok() {
+        return Err("interpolating github.event_name into run source must fail".into());
+    }
+    matrix_ready_job(PUSH_OR_SCOPE_STEP_GATED)?;
+    Ok(())
+}
+
+#[test]
+fn public_api_pr_live_workflow_covers_the_event_matrix() -> Result<(), Box<dyn std::error::Error>> {
+    let workflow = read(&project_root()?, ".github/workflows/ci.yml")?;
+    let public_api = job_section(&workflow, "public-api-pr")
+        .ok_or("ci.yml must define the public-api-pr rail")?;
+    matrix_ready_job(public_api)?;
+    if !job_binds_tested_candidate_sha(public_api) {
+        return Err(
+            "public-api-pr must checkout and verify the exact candidate SHA on the full-check path"
+                .into(),
+        );
+    }
+    for step in parse_job_steps(public_api) {
+        if let Some(expr) = step.if_expr.as_deref()
+            && !expr.contains("env.RUN_API_RATCHET")
+        {
+            return Err(format!(
+                "step {} must key off RUN_API_RATCHET, not a private copy of api_scope: {expr}",
+                step.name
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn public_api_pr_run_sources_pass_github_context_through_env()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workflow = read(&project_root()?, ".github/workflows/ci.yml")?;
+    let public_api = job_section(&workflow, "public-api-pr")
+        .ok_or("ci.yml must define the public-api-pr rail")?;
+    let mut saw_scoped_noop = false;
+    let mut saw_identity = false;
+    for step in parse_job_steps(public_api) {
+        if step.name.contains("Scoped no-op") {
+            saw_scoped_noop = true;
+            if !step.run.contains("$EVENT_NAME") || !step.run.contains("$API_SCOPE") {
+                return Err(
+                    "scoped-noop summary must print EVENT_NAME and API_SCOPE from env".into()
+                );
+            }
+        }
+        if step.name.contains("Verify tested candidate identity") {
+            saw_identity = true;
+            if !step.run.contains("$EVENT_NAME") || !step.run.contains("$TESTED_SHA") {
+                return Err("identity summary must print EVENT_NAME and TESTED_SHA from env".into());
+            }
+        }
+    }
+    if !saw_scoped_noop {
+        return Err("public-api-pr must keep a scoped-noop summary step".into());
+    }
+    if !saw_identity {
+        return Err("public-api-pr must keep an exact-head identity step".into());
+    }
+    if !public_api.contains("EVENT_NAME: ${{ github.event_name }}") {
+        return Err("EVENT_NAME must bind github.event_name as env data".into());
+    }
+    if !public_api.contains("API_SCOPE: ${{ needs.draft-pr-check.outputs.api_scope }}") {
+        return Err("API_SCOPE must bind draft-pr-check.api_scope as env data".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn draft_guard_keeps_api_scope_as_a_pr_diff_selector() -> Result<(), Box<dyn std::error::Error>> {
+    let workflow = read(&project_root()?, ".github/workflows/ci.yml")?;
+    let guard =
+        job_section(&workflow, "draft-pr-check").ok_or("ci.yml must define draft-pr-check")?;
+    let non_pr = guard
+        .split(r#"if [ "${{ github.event_name }}" != "pull_request" ]; then"#)
+        .nth(1)
+        .and_then(|rest| rest.split("elif").next())
+        .ok_or("draft-pr-check must keep an explicit non-PR branch")?;
+    assert!(
+        non_pr.contains("api_scope=false"),
+        "non-PR events must not pretend a push has an API-scoped PR diff"
+    );
+    assert!(
+        !non_pr.contains("api_scope=true"),
+        "push must not overload api_scope; public-api-pr owns the main-push full check"
+    );
     Ok(())
 }
 
@@ -520,7 +1269,7 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
     let without_labeled = nightly.replace(", labeled", "");
     let without_labeled_activities = pull_request_activity_types(&without_labeled)
         .ok_or("labeled-removal fixture must retain a pull_request activity list")?;
-    if without_labeled_activities.iter().any(|activity| *activity == "labeled") {
+    if without_labeled_activities.contains(&"labeled") {
         return Err("removing labeled activity must fail the dispatch contract".into());
     }
     for false_positive in ["unlabeled", "labeled-extra"] {
@@ -529,7 +1278,7 @@ fn nightly_public_api_label_is_governed_and_provisioned() -> Result<(), Box<dyn 
         );
         let fixture_activities = pull_request_activity_types(&fixture)
             .ok_or("false-positive fixture must retain a pull_request activity list")?;
-        if fixture_activities.iter().any(|activity| *activity == "labeled") {
+        if fixture_activities.contains(&"labeled") {
             return Err(format!(
                 "{false_positive} must not satisfy the exact labeled activity contract"
             )

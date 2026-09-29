@@ -8,8 +8,10 @@
 #![allow(clippy::print_stdout)]
 
 use anyhow::{Context, Result, anyhow, bail};
+use chrono::{NaiveDate, Utc};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
@@ -38,6 +40,13 @@ struct Cli {
 
     #[arg(long)]
     write_status: bool,
+
+    /// Date used to resolve disposition expiry. Defaults to the current UTC date.
+    ///
+    /// Expiry is deliberately excluded from the generated projection so the
+    /// checked-in status stays deterministic; it is resolved here instead.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    as_of: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -55,6 +64,13 @@ struct ProofPolicy {
     proof_classes: Vec<ProofClass>,
     dimensions: Vec<Dimension>,
     campaigns: Vec<Campaign>,
+    /// Vocabulary deliberately retained without a campaign exercising it.
+    ///
+    /// Empty is the closed state. Every entry is an unresolved obligation, so a
+    /// non-empty set makes derived closure `false` however the source spells
+    /// `complete`.
+    #[serde(default)]
+    dispositions: Vec<Disposition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,6 +83,44 @@ struct ProofClass {
     circular_output_allowed: bool,
     missing_effect: MissingEffect,
     owner_issue: String,
+    /// Roles the evidence under this class is allowed to play.
+    ///
+    /// Separate from `authority`: authority says who produced the evidence,
+    /// role says what it may be read as. Independently authored structural
+    /// expectations, compiler-generated snapshots, and execution receipts are
+    /// not interchangeable even when they serialize alike.
+    evidence_roles: Vec<EvidenceRole>,
+    /// Required when, and only when, more than one role is admitted.
+    #[serde(default)]
+    multi_role_claim_ceiling: Option<String>,
+}
+
+/// One typed record retaining a declared vocabulary item that no campaign exercises.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct Disposition {
+    item_kind: ItemKind,
+    item_id: String,
+    status: DispositionStatus,
+    reason: String,
+    owner_issue: String,
+    basis: DispositionBasis,
+    /// ISO-8601 date through which the disposition stays current.
+    ///
+    /// The boundary is inclusive: the row is still current *on* this date and
+    /// expires the day after, matching `review_after` in
+    /// `xtask/src/tasks/generated_policy.rs`.
+    review_after: String,
+    /// The condition that ends the disposition, independent of the calendar.
+    exit_condition: String,
+    claim_effect: ClaimEffect,
+    /// Required when, and only when, `claim_effect` is `claims_limited`.
+    ///
+    /// Without it `claims_limited` would carry no more machine-checkable
+    /// information than `excluded_from_claims` while permitting claims to
+    /// proceed — the same hole `multi_role_claim_ceiling` closes for roles.
+    #[serde(default)]
+    claims_limited_ceiling: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,6 +177,69 @@ enum MissingEffect {
     BlocksClaimWhenObservable,
 }
 
+/// What a piece of evidence may be read as, independent of who produced it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum EvidenceRole {
+    /// Expectations authored against the specification rather than the compiler.
+    IndependentStructuralExpectation,
+    /// Output the compiler itself produced, accepted as a change detector only.
+    CompilerGeneratedSnapshot,
+    /// The observed result of running something.
+    ExecutionReceipt,
+    /// Behavior observed from real Perl.
+    RealPerlOracleObservation,
+    /// The result of injecting one defect and requiring a verifier to reject it.
+    VerifierMutationResult,
+    /// Source-order, identity, and invalidation fixtures for effects and world state.
+    EffectsWorldFixture,
+    /// Profile-stamped execution compared against declared reference behavior.
+    EirDifferentialResult,
+    /// Cross-family interaction output from the composition harness.
+    CompositionResult,
+    /// A diagnostic the implementation emitted about itself.
+    ImplementationDiagnosticReceipt,
+}
+
+/// Which declared vocabulary a disposition retains.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum ItemKind {
+    ProofClass,
+    Dimension,
+    ConceptFamily,
+}
+
+/// Why the item is retained without being exercised.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum DispositionStatus {
+    /// A named owner issue must supply the campaign.
+    DeferredToOwner,
+    /// A prerequisite must land before the item can be exercised.
+    SequencingBlocked,
+    /// The item is scheduled for removal once its consumers move.
+    SupersededPendingRemoval,
+}
+
+/// Whether the retention is a semantic or an ordering decision.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum DispositionBasis {
+    Semantic,
+    Sequencing,
+}
+
+/// What the retention does to claims that would otherwise rely on the item.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum ClaimEffect {
+    /// No claim may rest on the item while it is retained.
+    ExcludedFromClaims,
+    /// Claims may proceed under an explicitly narrowed ceiling.
+    ClaimsLimited,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct ConceptLedgerIndex {
     schema_version: String,
@@ -177,12 +294,91 @@ impl StableName for MissingEffect {
     }
 }
 
+impl StableName for EvidenceRole {
+    fn stable_name(self) -> &'static str {
+        match self {
+            Self::IndependentStructuralExpectation => "independent_structural_expectation",
+            Self::CompilerGeneratedSnapshot => "compiler_generated_snapshot",
+            Self::ExecutionReceipt => "execution_receipt",
+            Self::RealPerlOracleObservation => "real_perl_oracle_observation",
+            Self::VerifierMutationResult => "verifier_mutation_result",
+            Self::EffectsWorldFixture => "effects_world_fixture",
+            Self::EirDifferentialResult => "eir_differential_result",
+            Self::CompositionResult => "composition_result",
+            Self::ImplementationDiagnosticReceipt => "implementation_diagnostic_receipt",
+        }
+    }
+}
+
+impl StableName for ItemKind {
+    fn stable_name(self) -> &'static str {
+        match self {
+            Self::ProofClass => "proof_class",
+            Self::Dimension => "dimension",
+            Self::ConceptFamily => "concept_family",
+        }
+    }
+}
+
+impl StableName for DispositionStatus {
+    fn stable_name(self) -> &'static str {
+        match self {
+            Self::DeferredToOwner => "deferred_to_owner",
+            Self::SequencingBlocked => "sequencing_blocked",
+            Self::SupersededPendingRemoval => "superseded_pending_removal",
+        }
+    }
+}
+
+impl StableName for DispositionBasis {
+    fn stable_name(self) -> &'static str {
+        match self {
+            Self::Semantic => "semantic",
+            Self::Sequencing => "sequencing",
+        }
+    }
+}
+
+impl StableName for ClaimEffect {
+    fn stable_name(self) -> &'static str {
+        match self {
+            Self::ExcludedFromClaims => "excluded_from_claims",
+            Self::ClaimsLimited => "claims_limited",
+        }
+    }
+}
+
+/// Roles an authority is allowed to produce.
+///
+/// This is the compatibility rule the issue requires to be explicit: an
+/// `independent_gold` class can never admit compiler output or an execution
+/// receipt, however its rows are spelled.
+fn authority_admissible_roles(authority: Authority) -> &'static [EvidenceRole] {
+    match authority {
+        Authority::IndependentGold => &[EvidenceRole::IndependentStructuralExpectation],
+        Authority::CompilerSnapshot => &[
+            EvidenceRole::CompilerGeneratedSnapshot,
+            EvidenceRole::ImplementationDiagnosticReceipt,
+        ],
+        Authority::MutationFixture => &[EvidenceRole::VerifierMutationResult],
+        Authority::IndependentFixture => &[EvidenceRole::EffectsWorldFixture],
+        Authority::EirDifferential => {
+            &[EvidenceRole::EirDifferentialResult, EvidenceRole::ExecutionReceipt]
+        }
+        Authority::RealPerlOracle => {
+            &[EvidenceRole::RealPerlOracleObservation, EvidenceRole::ExecutionReceipt]
+        }
+        Authority::CompositionHarness => &[EvidenceRole::CompositionResult],
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ProofClassContract {
     authority: Authority,
     claim_stages: &'static [ClaimStage],
     circular_output_allowed: bool,
     missing_effect: MissingEffect,
+    evidence_roles: &'static [EvidenceRole],
 }
 
 fn proof_class_contract(class_id: &str) -> Result<ProofClassContract> {
@@ -198,6 +394,7 @@ fn proof_class_contract(class_id: &str) -> Result<ProofClassContract> {
             ],
             circular_output_allowed: false,
             missing_effect: MissingEffect::BlocksClaim,
+            evidence_roles: &[EvidenceRole::IndependentStructuralExpectation],
         },
         "negative_gold" => ProofClassContract {
             authority: Authority::IndependentGold,
@@ -210,6 +407,7 @@ fn proof_class_contract(class_id: &str) -> Result<ProofClassContract> {
             ],
             circular_output_allowed: false,
             missing_effect: MissingEffect::BlocksClaim,
+            evidence_roles: &[EvidenceRole::IndependentStructuralExpectation],
         },
         "boundary_gold" => ProofClassContract {
             authority: Authority::IndependentGold,
@@ -222,48 +420,59 @@ fn proof_class_contract(class_id: &str) -> Result<ProofClassContract> {
             ],
             circular_output_allowed: false,
             missing_effect: MissingEffect::BlocksClaim,
+            evidence_roles: &[EvidenceRole::IndependentStructuralExpectation],
         },
         "recovery_gold" => ProofClassContract {
             authority: Authority::IndependentGold,
             claim_stages: &[ClaimStage::Parser, ClaimStage::BodyHir, ClaimStage::Provider],
             circular_output_allowed: false,
             missing_effect: MissingEffect::BlocksClaim,
+            evidence_roles: &[EvidenceRole::IndependentStructuralExpectation],
         },
         "hir_snapshot" => ProofClassContract {
             authority: Authority::CompilerSnapshot,
             claim_stages: &[ClaimStage::FlatHir, ClaimStage::BodyHir],
             circular_output_allowed: true,
             missing_effect: MissingEffect::BlocksStage,
+            evidence_roles: &[EvidenceRole::CompilerGeneratedSnapshot],
         },
         "pir_snapshot" => ProofClassContract {
             authority: Authority::CompilerSnapshot,
             claim_stages: &[ClaimStage::PirA],
             circular_output_allowed: true,
             missing_effect: MissingEffect::BlocksStage,
+            evidence_roles: &[EvidenceRole::CompilerGeneratedSnapshot],
         },
         "verifier_mutation" => ProofClassContract {
             authority: Authority::MutationFixture,
             claim_stages: &[ClaimStage::PirA, ClaimStage::Eir, ClaimStage::Provider],
             circular_output_allowed: false,
             missing_effect: MissingEffect::BlocksClaim,
+            evidence_roles: &[EvidenceRole::VerifierMutationResult],
         },
         "effects_world_fixture" => ProofClassContract {
             authority: Authority::IndependentFixture,
             claim_stages: &[ClaimStage::EffectsWorld, ClaimStage::Provider],
             circular_output_allowed: false,
             missing_effect: MissingEffect::BlocksClaim,
+            evidence_roles: &[EvidenceRole::EffectsWorldFixture],
         },
         "eir_differential" => ProofClassContract {
             authority: Authority::EirDifferential,
             claim_stages: &[ClaimStage::Eir],
             circular_output_allowed: false,
             missing_effect: MissingEffect::BlocksExecutionClaim,
+            evidence_roles: &[EvidenceRole::EirDifferentialResult, EvidenceRole::ExecutionReceipt],
         },
         "real_perl_oracle" => ProofClassContract {
             authority: Authority::RealPerlOracle,
             claim_stages: &[ClaimStage::EffectsWorld, ClaimStage::Eir, ClaimStage::Provider],
             circular_output_allowed: false,
             missing_effect: MissingEffect::BlocksClaimWhenObservable,
+            evidence_roles: &[
+                EvidenceRole::RealPerlOracleObservation,
+                EvidenceRole::ExecutionReceipt,
+            ],
         },
         "composition_coverage" => ProofClassContract {
             authority: Authority::CompositionHarness,
@@ -276,6 +485,7 @@ fn proof_class_contract(class_id: &str) -> Result<ProofClassContract> {
             ],
             circular_output_allowed: false,
             missing_effect: MissingEffect::BlocksClaim,
+            evidence_roles: &[EvidenceRole::CompositionResult],
         },
         _ => bail!("unknown compiler proof class {:?}", class_id),
     };
@@ -321,19 +531,8 @@ impl ProofPolicy {
             }
         }
         validate_issue("controller_issue", &self.controller_issue)?;
-        match self.closure_authority.as_deref() {
-            Some(authority) if !self.complete => {
-                bail!(
-                    "incomplete compiler proof policy must not carry closure_authority {authority:?}"
-                );
-            }
-            Some(authority) => {
-                validate_closure_authority(authority, &self.controller_issue)?;
-            }
-            None if self.complete => {
-                bail!("complete compiler proof policy requires closure_authority");
-            }
-            None => {}
+        if let Some(authority) = self.closure_authority.as_deref() {
+            validate_closure_authority(authority, &self.controller_issue)?;
         }
         if self.proof_classes.is_empty() || self.dimensions.is_empty() || self.campaigns.is_empty()
         {
@@ -382,16 +581,22 @@ impl ProofPolicy {
             }
         }
 
-        let concept_families = concepts
-            .concepts
-            .iter()
-            .map(|concept| concept.family.as_str())
-            .collect::<BTreeSet<_>>();
+        let concept_families = concept_family_index(concepts)?;
         let mut campaign_ids = BTreeSet::new();
+        let mut campaign_member_sets = BTreeMap::<CampaignMembers, &str>::new();
         for campaign in &self.campaigns {
             campaign.validate(&class_ids, &dimension_ids, &concept_families)?;
             if !campaign_ids.insert(campaign.campaign_id.as_str()) {
                 bail!("duplicate proof campaign {:?}", campaign.campaign_id);
+            }
+            if let Some(existing) =
+                campaign_member_sets.insert(campaign.members(), campaign.campaign_id.as_str())
+            {
+                bail!(
+                    "campaigns {:?} and {:?} declare the same exact member set",
+                    existing,
+                    campaign.campaign_id
+                );
             }
         }
 
@@ -410,23 +615,104 @@ impl ProofPolicy {
             .iter()
             .flat_map(|campaign| campaign.concept_families.iter().map(String::as_str))
             .collect::<BTreeSet<_>>();
-        if referenced_classes != class_ids {
+
+        self.validate_dispositions(&class_ids, &dimension_ids, &concept_families)?;
+        let dispositioned = self.dispositioned_ids();
+        for (kind, declared, exercised) in [
+            (ItemKind::ProofClass, &class_ids, &referenced_classes),
+            (ItemKind::Dimension, &dimension_ids, &referenced_dimensions),
+            (ItemKind::ConceptFamily, &concept_families, &referenced_families),
+        ] {
+            let retained = dispositioned.get(&kind).cloned().unwrap_or_default();
+            let contradictory =
+                exercised.iter().filter(|item| retained.contains(**item)).collect::<Vec<_>>();
+            if !contradictory.is_empty() {
+                bail!(
+                    "{} dispositions contradict campaign coverage: {:?}",
+                    kind.stable_name(),
+                    contradictory
+                );
+            }
+            let covered = exercised
+                .union(&retained.iter().copied().collect::<BTreeSet<_>>())
+                .copied()
+                .collect::<BTreeSet<_>>();
+            if &covered != declared {
+                bail!(
+                    "proof policy has {} entries that are neither exercised nor dispositioned: {:?}",
+                    kind.stable_name(),
+                    declared.difference(&covered).copied().collect::<Vec<_>>()
+                );
+            }
+        }
+
+        let derived = self.derived_complete();
+        if self.complete != derived {
             bail!(
-                "proof policy has unexercised proof classes: {:?}",
-                class_ids.difference(&referenced_classes).copied().collect::<Vec<_>>()
+                "compiler proof policy declares complete={} but closed state derives complete={}; \
+                 closure requires a controller-bound closure_authority and zero retained dispositions",
+                self.complete,
+                derived
             );
         }
-        if referenced_dimensions != dimension_ids {
-            bail!(
-                "proof policy has unexercised dimensions: {:?}",
-                dimension_ids.difference(&referenced_dimensions).copied().collect::<Vec<_>>()
-            );
+        Ok(())
+    }
+
+    /// Closure is derived, never asserted.
+    ///
+    /// A disposition is by construction an unresolved obligation, so any
+    /// retained row keeps the policy open no matter what the source says.
+    fn derived_complete(&self) -> bool {
+        self.closure_authority.is_some() && self.dispositions.is_empty()
+    }
+
+    fn dispositioned_ids(&self) -> BTreeMap<ItemKind, BTreeSet<&str>> {
+        let mut index = BTreeMap::<ItemKind, BTreeSet<&str>>::new();
+        for disposition in &self.dispositions {
+            index.entry(disposition.item_kind).or_default().insert(disposition.item_id.as_str());
         }
-        if referenced_families != concept_families {
-            bail!(
-                "proof policy has unexercised concept families: {:?}",
-                concept_families.difference(&referenced_families).copied().collect::<Vec<_>>()
-            );
+        index
+    }
+
+    fn validate_dispositions(
+        &self,
+        proof_classes: &BTreeSet<&str>,
+        dimensions: &BTreeSet<&str>,
+        concept_families: &BTreeSet<&str>,
+    ) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        for disposition in &self.dispositions {
+            disposition.validate(proof_classes, dimensions, concept_families)?;
+            if !seen.insert((disposition.item_kind, disposition.item_id.as_str())) {
+                bail!(
+                    "duplicate disposition for {} {:?}",
+                    disposition.item_kind.stable_name(),
+                    disposition.item_id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Reject a disposition whose review date has passed at `as_of`.
+    ///
+    /// Kept out of `validate` so the generated projection stays deterministic:
+    /// an expired row is a command failure, not a doc that can be regenerated
+    /// back to green.
+    fn check_currentness(&self, as_of: NaiveDate) -> Result<()> {
+        for disposition in &self.dispositions {
+            let review_after = parse_date("review_after", &disposition.review_after)?;
+            if review_after < as_of {
+                bail!(
+                    "disposition for {} {:?} expired on {} (as of {}); re-decide it against {:?} \
+                     rather than advancing the date",
+                    disposition.item_kind.stable_name(),
+                    disposition.item_id,
+                    disposition.review_after,
+                    as_of,
+                    disposition.exit_condition
+                );
+            }
         }
         Ok(())
     }
@@ -436,8 +722,12 @@ impl ProofPolicy {
         normalized.proof_classes.sort_by(|left, right| left.class_id.cmp(&right.class_id));
         normalized.dimensions.sort_by(|left, right| left.dimension_id.cmp(&right.dimension_id));
         normalized.campaigns.sort_by(|left, right| left.campaign_id.cmp(&right.campaign_id));
+        normalized.dispositions.sort_by(|left, right| {
+            (left.item_kind, &left.item_id).cmp(&(right.item_kind, &right.item_id))
+        });
         for proof_class in &mut normalized.proof_classes {
             proof_class.claim_stages.sort();
+            proof_class.evidence_roles.sort();
         }
         for dimension in &mut normalized.dimensions {
             dimension.values.sort();
@@ -448,6 +738,16 @@ impl ProofPolicy {
             campaign.proof_classes.sort();
         }
         normalized
+    }
+
+    /// Digest every load-bearing policy field, including the ones the tables omit.
+    ///
+    /// Comparing rendered text alone cannot see a changed `purpose` or campaign
+    /// `claim_boundary`, so an edit to either used to leave the status current.
+    fn policy_digest(&self) -> Result<String> {
+        let canonical = toml::to_string(&self.canonicalized())
+            .context("serialize canonical compiler proof policy for digest")?;
+        Ok(digest(&canonical))
     }
 
     fn render_markdown(&self, concepts: &ConceptLedgerIndex) -> Result<String> {
@@ -472,7 +772,10 @@ impl ProofPolicy {
         line(&mut output, &format!("- Policy: `{}`", normalized.policy_id))?;
         line(&mut output, &format!("- Controller: {}", normalized.controller_issue))?;
         line(&mut output, &format!("- Concept schema: `{}`", normalized.concept_ledger_schema))?;
-        line(&mut output, &format!("- Policy vocabulary closed: `{}`", normalized.complete))?;
+        line(
+            &mut output,
+            &format!("- Policy vocabulary closed: `{}` (derived)", normalized.derived_complete()),
+        )?;
         if let Some(authority) = &normalized.closure_authority {
             line(&mut output, &format!("- Closure authority: `{authority}`"))?;
         } else {
@@ -481,6 +784,15 @@ impl ProofPolicy {
         line(&mut output, &format!("- Proof classes: `{}`", normalized.proof_classes.len()))?;
         line(&mut output, &format!("- Composition dimensions: `{}`", normalized.dimensions.len()))?;
         line(&mut output, &format!("- Campaigns: `{}`", normalized.campaigns.len()))?;
+        line(
+            &mut output,
+            &format!("- Retained dispositions: `{}`", normalized.dispositions.len()),
+        )?;
+        line(&mut output, &format!("- Policy digest: `{}`", normalized.policy_digest()?))?;
+        line(
+            &mut output,
+            &format!("- Concept projection digest: `{}`", concept_projection_digest(concepts)),
+        )?;
         line(&mut output, "")?;
         line(&mut output, &format!("**Claim boundary:** {}", normalized.claim_boundary))?;
         line(&mut output, "")?;
@@ -514,6 +826,46 @@ impl ProofPolicy {
         }
         line(&mut output, "")?;
 
+        line(&mut output, "## Evidence-role compatibility")?;
+        line(&mut output, "")?;
+        line(
+            &mut output,
+            "Authority says who produced the evidence; role says what it may be read as.",
+        )?;
+        line(&mut output, "")?;
+        line(
+            &mut output,
+            "| Proof class | Admitted roles | Roles the authority allows | Claim ceiling |",
+        )?;
+        line(&mut output, "| --- | --- | --- | --- |")?;
+        for proof_class in &normalized.proof_classes {
+            let admitted = proof_class
+                .evidence_roles
+                .iter()
+                .map(|role| format!("`{}`", role.stable_name()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let allowed = authority_admissible_roles(proof_class.authority)
+                .iter()
+                .map(|role| format!("`{}`", role.stable_name()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            line(
+                &mut output,
+                &format!(
+                    "| `{}` | {} | {} | {} |",
+                    proof_class.class_id,
+                    admitted,
+                    allowed,
+                    proof_class
+                        .multi_role_claim_ceiling
+                        .as_deref()
+                        .map_or_else(|| "—".to_string(), table_cell)
+                ),
+            )?;
+        }
+        line(&mut output, "")?;
+
         line(&mut output, "## Composition dimensions")?;
         line(&mut output, "")?;
         line(&mut output, "| Dimension | Values | Owner | Claim boundary |")?;
@@ -529,7 +881,10 @@ impl ProofPolicy {
                 &mut output,
                 &format!(
                     "| `{}` | {} | {} | {} |",
-                    dimension.dimension_id, values, dimension.owner_issue, dimension.claim_boundary
+                    dimension.dimension_id,
+                    values,
+                    dimension.owner_issue,
+                    table_cell(&dimension.claim_boundary)
                 ),
             )?;
         }
@@ -551,6 +906,94 @@ impl ProofPolicy {
                     campaign.owner_issue
                 ),
             )?;
+        }
+        line(&mut output, "")?;
+
+        line(&mut output, "## Reverse coverage")?;
+        line(&mut output, "")?;
+        line(
+            &mut output,
+            "Every declared item is exercised by a campaign or retained under a typed disposition.",
+        )?;
+        line(&mut output, "")?;
+        line(&mut output, "| Vocabulary | Declared | Exercised | Dispositioned |")?;
+        line(&mut output, "| --- | ---: | ---: | ---: |")?;
+        let dispositioned = normalized.dispositioned_ids();
+        let ledger_families = concept_family_index(concepts)?;
+        for (kind, declared, exercised) in [
+            (
+                ItemKind::ProofClass,
+                normalized.proof_classes.len(),
+                normalized
+                    .campaigns
+                    .iter()
+                    .flat_map(|campaign| campaign.proof_classes.iter())
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+            ),
+            (
+                ItemKind::Dimension,
+                normalized.dimensions.len(),
+                normalized
+                    .campaigns
+                    .iter()
+                    .flat_map(|campaign| campaign.dimensions.iter())
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+            ),
+            (
+                ItemKind::ConceptFamily,
+                ledger_families.len(),
+                normalized
+                    .campaigns
+                    .iter()
+                    .flat_map(|campaign| campaign.concept_families.iter())
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+            ),
+        ] {
+            let retained = dispositioned.get(&kind).map_or(0, BTreeSet::len);
+            line(
+                &mut output,
+                &format!("| `{}` | {declared} | {exercised} | {retained} |", kind.stable_name()),
+            )?;
+        }
+        line(&mut output, "")?;
+
+        line(&mut output, "## Retained dispositions")?;
+        line(&mut output, "")?;
+        if normalized.dispositions.is_empty() {
+            line(
+                &mut output,
+                "None. Every declared item is exercised, so the policy retains no unresolved obligation.",
+            )?;
+        } else {
+            line(
+                &mut output,
+                "| Item | Kind | Status | Basis | Owner | Review after | Exit condition | Claim effect | Claim ceiling | Reason |",
+            )?;
+            line(&mut output, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")?;
+            for disposition in &normalized.dispositions {
+                line(
+                    &mut output,
+                    &format!(
+                        "| `{}` | `{}` | `{}` | `{}` | {} | `{}` | {} | `{}` | {} | {} |",
+                        disposition.item_id,
+                        disposition.item_kind.stable_name(),
+                        disposition.status.stable_name(),
+                        disposition.basis.stable_name(),
+                        disposition.owner_issue,
+                        disposition.review_after,
+                        table_cell(&disposition.exit_condition),
+                        disposition.claim_effect.stable_name(),
+                        disposition
+                            .claims_limited_ceiling
+                            .as_deref()
+                            .map_or_else(|| "—".to_string(), table_cell),
+                        table_cell(&disposition.reason)
+                    ),
+                )?;
+            }
         }
         line(&mut output, "")?;
 
@@ -631,8 +1074,68 @@ impl ProofClass {
                 contract.missing_effect
             );
         }
-        Ok(())
+        self.validate_evidence_roles(&contract)
     }
+
+    /// Enforce the evidence-role compatibility rule and its claim ceiling.
+    ///
+    /// Two independent guards, because they fail on different mistakes: the
+    /// authority rule rejects a role the producer could never play, and the
+    /// pinned set rejects a reviewed row drifting to a different one.
+    fn validate_evidence_roles(&self, contract: &ProofClassContract) -> Result<()> {
+        validate_unique("evidence_roles", &self.class_id, &self.evidence_roles)?;
+        if self.evidence_roles.is_empty() {
+            bail!("proof class {} must name at least one evidence role", self.class_id);
+        }
+        let admissible =
+            authority_admissible_roles(self.authority).iter().copied().collect::<BTreeSet<_>>();
+        for role in &self.evidence_roles {
+            if !admissible.contains(role) {
+                bail!(
+                    "proof class {} admits evidence role {:?}, which authority {:?} cannot produce",
+                    self.class_id,
+                    role.stable_name(),
+                    self.authority.stable_name()
+                );
+            }
+        }
+        let actual = self.evidence_roles.iter().copied().collect::<BTreeSet<_>>();
+        let expected = contract.evidence_roles.iter().copied().collect::<BTreeSet<_>>();
+        if actual != expected {
+            bail!(
+                "proof class {} has evidence roles {:?}; expected {:?}",
+                self.class_id,
+                stable_names(&actual),
+                stable_names(&expected)
+            );
+        }
+        match (&self.multi_role_claim_ceiling, self.evidence_roles.len() > 1) {
+            (Some(ceiling), true) if ceiling.trim().is_empty() => {
+                bail!(
+                    "proof class {} admits several evidence roles and needs a non-empty multi_role_claim_ceiling",
+                    self.class_id
+                );
+            }
+            (None, true) => {
+                bail!(
+                    "proof class {} admits evidence roles {:?} and must declare a multi_role_claim_ceiling",
+                    self.class_id,
+                    stable_names(&actual)
+                );
+            }
+            (Some(_), false) => {
+                bail!(
+                    "proof class {} admits one evidence role and must not declare a multi_role_claim_ceiling",
+                    self.class_id
+                );
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn stable_names<T: StableName + Copy>(values: &BTreeSet<T>) -> Vec<&'static str> {
+    values.iter().map(|value| value.stable_name()).collect()
 }
 
 impl Dimension {
@@ -703,8 +1206,152 @@ impl Campaign {
         if !self.proof_classes.iter().any(|value| value == "composition_coverage") {
             bail!("campaign {} must include composition_coverage", self.campaign_id);
         }
+        let distinct_families =
+            self.concept_families.iter().map(|family| family_key(family)).collect::<BTreeSet<_>>();
+        if distinct_families.len() < 2 {
+            bail!(
+                "campaign {} names {} concept families that resolve to one family; an alias cannot satisfy the cross-family requirement",
+                self.campaign_id,
+                self.concept_families.len()
+            );
+        }
         Ok(())
     }
+
+    fn members(&self) -> CampaignMembers {
+        CampaignMembers {
+            concept_families: self.concept_families.iter().cloned().collect(),
+            dimensions: self.dimensions.iter().cloned().collect(),
+            proof_classes: self.proof_classes.iter().cloned().collect(),
+        }
+    }
+}
+
+/// The exact member sets that make a campaign a distinct proof obligation.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CampaignMembers {
+    concept_families: BTreeSet<String>,
+    dimensions: BTreeSet<String>,
+    proof_classes: BTreeSet<String>,
+}
+
+impl Disposition {
+    fn validate(
+        &self,
+        proof_classes: &BTreeSet<&str>,
+        dimensions: &BTreeSet<&str>,
+        concept_families: &BTreeSet<&str>,
+    ) -> Result<()> {
+        validate_id("disposition item", &self.item_id)?;
+        validate_issue("owner_issue", &self.owner_issue)?;
+        for (name, value) in
+            [("reason", self.reason.as_str()), ("exit_condition", self.exit_condition.as_str())]
+        {
+            if value.trim().is_empty() {
+                bail!(
+                    "disposition for {} {:?} has an empty {name}",
+                    self.item_kind.stable_name(),
+                    self.item_id
+                );
+            }
+        }
+        parse_date("review_after", &self.review_after)?;
+        let declared = match self.item_kind {
+            ItemKind::ProofClass => proof_classes,
+            ItemKind::Dimension => dimensions,
+            ItemKind::ConceptFamily => concept_families,
+        };
+        if !declared.contains(self.item_id.as_str()) {
+            bail!("disposition names unknown {} {:?}", self.item_kind.stable_name(), self.item_id);
+        }
+        match (self.claim_effect, self.claims_limited_ceiling.as_deref()) {
+            (ClaimEffect::ClaimsLimited, None) => bail!(
+                "disposition for {} {:?} limits claims and must declare a claims_limited_ceiling",
+                self.item_kind.stable_name(),
+                self.item_id
+            ),
+            (ClaimEffect::ClaimsLimited, Some(ceiling)) if ceiling.trim().is_empty() => bail!(
+                "disposition for {} {:?} has an empty claims_limited_ceiling",
+                self.item_kind.stable_name(),
+                self.item_id
+            ),
+            (ClaimEffect::ExcludedFromClaims, Some(_)) => bail!(
+                "disposition for {} {:?} excludes every claim and must not declare a claims_limited_ceiling",
+                self.item_kind.stable_name(),
+                self.item_id
+            ),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Make one free-text policy value safe to place in a Markdown table cell.
+///
+/// Policy prose is arbitrary text. An unescaped `|` opens an extra column and a
+/// newline ends the row early, and because `--check` compares the committed file
+/// against this same output, a corrupted table would still read as current.
+fn table_cell(value: &str) -> String {
+    let mut cell = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '|' => cell.push_str("\\|"),
+            '\n' | '\r' => {
+                if !cell.ends_with(' ') {
+                    cell.push(' ');
+                }
+            }
+            _ => cell.push(character),
+        }
+    }
+    cell.trim().to_string()
+}
+
+/// Collapse the spellings that would let one concept family appear twice.
+fn family_key(family: &str) -> String {
+    family.replace('-', "_")
+}
+
+/// Index the ledger families, refusing a ledger that presents one family twice.
+fn concept_family_index(concepts: &ConceptLedgerIndex) -> Result<BTreeSet<&str>> {
+    let mut by_key = BTreeMap::<String, &str>::new();
+    for concept in &concepts.concepts {
+        let family = concept.family.as_str();
+        if let Some(existing) = by_key.insert(family_key(family), family)
+            && existing != family
+        {
+            bail!(
+                "concept ledger presents {existing:?} and {family:?} as separate families, but they are aliases"
+            );
+        }
+    }
+    Ok(concepts.concepts.iter().map(|concept| concept.family.as_str()).collect())
+}
+
+/// Digest only the ledger facts this policy consumes.
+///
+/// Hashing the whole ledger would churn this status on every unrelated concept
+/// edit; the load-bearing projection is the schema and the family set.
+fn concept_projection_digest(concepts: &ConceptLedgerIndex) -> String {
+    let families = concepts
+        .concepts
+        .iter()
+        .map(|concept| concept.family.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(",");
+    digest(&format!("{}|{}|{}", concepts.schema_version, concepts.concepts.len(), families))
+}
+
+fn parse_date(name: &str, value: &str) -> Result<NaiveDate> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .with_context(|| format!("{name} must be an ISO-8601 date like 2026-12-01; got {value:?}"))
+}
+
+fn digest(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn main() -> Result<()> {
@@ -714,9 +1361,15 @@ fn main() -> Result<()> {
         bail!("--check and --write-status are mutually exclusive");
     }
 
+    let as_of = match cli.as_of.as_deref() {
+        Some(value) => parse_date("--as-of", value)?,
+        None => Utc::now().date_naive(),
+    };
+
     let policy = ProofPolicy::load(&cli.policy)?;
     let concepts = load_concepts(&cli.concept_ledger)?;
     let rendered = policy.render_markdown(&concepts)?;
+    policy.check_currentness(as_of)?;
 
     if cli.write_status {
         write_status(&cli.status, &rendered)?;
@@ -732,10 +1385,12 @@ fn main() -> Result<()> {
             );
         }
         println!(
-            "compiler proof policy valid: {} classes, {} dimensions, {} campaigns",
+            "compiler proof policy valid: {} classes, {} dimensions, {} campaigns, {} retained dispositions, closed={}",
             policy.proof_classes.len(),
             policy.dimensions.len(),
-            policy.campaigns.len()
+            policy.campaigns.len(),
+            policy.dispositions.len(),
+            policy.derived_complete()
         );
         return Ok(());
     }
@@ -1031,6 +1686,400 @@ mod tests {
         })?;
         assert!(error.contains("composition_coverage"), "unexpected error: {error}");
         assert!(error.contains("missing effect"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    /// A dimension no campaign names, plus the disposition that legitimately
+    /// retains it. Callers mutate one field to prove each guard.
+    fn retained_dimension(policy: &mut ProofPolicy) -> Disposition {
+        policy.dimensions.push(Dimension {
+            dimension_id: "retained_axis".to_string(),
+            values: vec!["first".to_string(), "second".to_string()],
+            owner_issue: "#6689".to_string(),
+            claim_boundary: "Retained pending its owning campaign.".to_string(),
+        });
+        Disposition {
+            item_kind: ItemKind::Dimension,
+            item_id: "retained_axis".to_string(),
+            status: DispositionStatus::SequencingBlocked,
+            reason: "The owning campaign lands with its concept slice.".to_string(),
+            owner_issue: "#6689".to_string(),
+            basis: DispositionBasis::Sequencing,
+            review_after: "2099-01-01".to_string(),
+            exit_condition: "A campaign names retained_axis.".to_string(),
+            claim_effect: ClaimEffect::ExcludedFromClaims,
+            claims_limited_ceiling: None,
+        }
+    }
+
+    fn as_of(value: &str) -> Result<NaiveDate> {
+        parse_date("as_of", value)
+    }
+
+    #[test]
+    fn unexercised_proof_class_fails_closed() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        for campaign in &mut policy.campaigns {
+            campaign.proof_classes.retain(|class| class != "recovery_gold");
+        }
+        let error = policy
+            .validate(&concepts()?)
+            .expect_err("an unexercised proof class must fail closed")
+            .to_string();
+        assert!(error.contains("recovery_gold"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn retained_vocabulary_needs_a_typed_disposition() -> Result<()> {
+        let concepts = concepts()?;
+
+        // Unexercised and undispositioned is the closed-policy failure.
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let disposition = retained_dimension(&mut policy);
+        let error = policy
+            .validate(&concepts)
+            .expect_err("retained vocabulary without a disposition must fail closed")
+            .to_string();
+        assert!(error.contains("retained_axis"), "unexpected error: {error}");
+
+        // A complete, owned, current disposition is the honest representation.
+        policy.dispositions.push(disposition);
+        policy.validate(&concepts)?;
+        policy.check_currentness(as_of("2026-09-13")?)?;
+        Ok(())
+    }
+
+    #[test]
+    fn ownerless_disposition_fails_closed() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.owner_issue = String::new();
+        policy.dispositions.push(disposition);
+        let error = policy
+            .validate(&concepts()?)
+            .expect_err("an ownerless disposition must fail closed")
+            .to_string();
+        assert!(error.contains("owner_issue"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn expired_disposition_fails_closed_without_rendering_a_date() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.review_after = "2026-01-01".to_string();
+        policy.dispositions.push(disposition);
+        let concepts = concepts()?;
+
+        // Structural validation stays date-independent, so the projection the
+        // gate compares against is deterministic: the row and its own
+        // review_after are visible, but no evaluation date is baked in...
+        policy.validate(&concepts)?;
+        let rendered = policy.render_markdown(&concepts)?;
+        assert!(rendered.contains("retained_axis"), "the retained row must stay visible");
+        assert!(rendered.contains("2026-01-01"), "the row must carry its own review date");
+
+        // ...but the expired row is still a command failure, so regenerating
+        // the status cannot return the policy to green.
+        let error = policy
+            .check_currentness(as_of("2026-09-13")?)
+            .expect_err("an expired disposition must fail closed")
+            .to_string();
+        assert!(error.contains("expired"), "unexpected error: {error}");
+        policy.check_currentness(as_of("2025-12-31")?)?;
+        Ok(())
+    }
+
+    #[test]
+    fn disposition_cannot_contradict_campaign_coverage() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        policy.dispositions.push(Disposition {
+            item_kind: ItemKind::ProofClass,
+            item_id: "positive_gold".to_string(),
+            status: DispositionStatus::DeferredToOwner,
+            reason: "Claims an exercised class is retained.".to_string(),
+            owner_issue: "#6689".to_string(),
+            basis: DispositionBasis::Semantic,
+            review_after: "2099-01-01".to_string(),
+            exit_condition: "Never; the class is already exercised.".to_string(),
+            claim_effect: ClaimEffect::ExcludedFromClaims,
+            claims_limited_ceiling: None,
+        });
+        let error = policy
+            .validate(&concepts()?)
+            .expect_err("dispositioning an exercised item must fail closed")
+            .to_string();
+        assert!(error.contains("contradict"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn disposition_naming_unknown_vocabulary_fails_closed() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.item_id = "no_such_axis".to_string();
+        policy.dispositions.push(disposition);
+        let error = policy
+            .validate(&concepts()?)
+            .expect_err("a disposition for unknown vocabulary must fail closed")
+            .to_string();
+        assert!(error.contains("no_such_axis"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn closure_cannot_be_declared_while_a_disposition_is_retained() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let disposition = retained_dimension(&mut policy);
+        policy.dispositions.push(disposition);
+        policy.complete = true;
+        policy.closure_authority = Some("issue:#6689/policy_closure_v1".to_string());
+        let error = policy
+            .validate(&concepts()?)
+            .expect_err("a retained disposition must keep the policy open")
+            .to_string();
+        assert!(error.contains("derives complete=false"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn independent_gold_cannot_admit_compiler_output_or_execution_receipts() -> Result<()> {
+        for intruder in [EvidenceRole::CompilerGeneratedSnapshot, EvidenceRole::ExecutionReceipt] {
+            let mut policy = ProofPolicy::from_str(POLICY)?;
+            let proof_class = policy
+                .proof_classes
+                .iter_mut()
+                .find(|proof_class| proof_class.class_id == "positive_gold")
+                .ok_or_else(|| anyhow!("committed policy has no positive gold class"))?;
+            proof_class.evidence_roles.push(intruder);
+            proof_class.multi_role_claim_ceiling = Some("Treated as equivalent.".to_string());
+            let error = policy
+                .validate(&concepts()?)
+                .expect_err("independent gold must not admit this role")
+                .to_string();
+            assert!(error.contains("positive_gold"), "unexpected error: {error}");
+            assert!(error.contains(intruder.stable_name()), "unexpected error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn multi_role_class_requires_an_explicit_claim_ceiling() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let proof_class = policy
+            .proof_classes
+            .iter_mut()
+            .find(|proof_class| proof_class.class_id == "real_perl_oracle")
+            .ok_or_else(|| anyhow!("committed policy has no real Perl oracle class"))?;
+        proof_class.multi_role_claim_ceiling = None;
+        let error = policy
+            .validate(&concepts()?)
+            .expect_err("a multi-role class without a ceiling must fail closed")
+            .to_string();
+        assert!(error.contains("multi_role_claim_ceiling"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn single_role_class_rejects_a_claim_ceiling() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let proof_class = policy
+            .proof_classes
+            .iter_mut()
+            .find(|proof_class| proof_class.class_id == "positive_gold")
+            .ok_or_else(|| anyhow!("committed policy has no positive gold class"))?;
+        proof_class.multi_role_claim_ceiling = Some("Unnecessary ceiling.".to_string());
+        assert!(policy.validate(&concepts()?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn evidence_role_drift_from_the_reviewed_set_fails_closed() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let proof_class = policy
+            .proof_classes
+            .iter_mut()
+            .find(|proof_class| proof_class.class_id == "hir_snapshot")
+            .ok_or_else(|| anyhow!("committed policy has no hir snapshot class"))?;
+        proof_class.evidence_roles = vec![EvidenceRole::ImplementationDiagnosticReceipt];
+        let error = policy
+            .validate(&concepts()?)
+            .expect_err("silently retyping a reviewed role must fail closed")
+            .to_string();
+        assert!(error.contains("evidence roles"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn aliased_concept_families_cannot_be_two_families() -> Result<()> {
+        let policy = ProofPolicy::from_str(POLICY)?;
+        let mut concept_index = concepts()?;
+        concept_index.concepts.push(ConceptIndexRow { family: "place-s".to_string() });
+        concept_index.concepts.push(ConceptIndexRow { family: "place_s".to_string() });
+        let error = policy
+            .validate(&concept_index)
+            .expect_err("aliased ledger families must fail closed")
+            .to_string();
+        assert!(error.contains("aliases"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn campaigns_cannot_share_an_exact_member_set() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut duplicate = policy
+            .campaigns
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow!("committed policy unexpectedly has no campaign"))?;
+        duplicate.campaign_id = "renamed_but_identical".to_string();
+        policy.campaigns.push(duplicate);
+        let error = policy
+            .validate(&concepts()?)
+            .expect_err("two campaigns with one member set must fail closed")
+            .to_string();
+        assert!(error.contains("same exact member set"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn unrendered_policy_fields_still_move_the_status_digest() -> Result<()> {
+        let concepts = concepts()?;
+        let policy = ProofPolicy::from_str(POLICY)?;
+        let baseline = policy.render_markdown(&concepts)?;
+
+        // `claim_boundary` and `purpose` carry policy meaning but appear in no
+        // rendered table, so before the digest an edit to either left the
+        // generated status byte-identical and the gate green.
+        let mut edited = policy.clone();
+        let campaign = edited
+            .campaigns
+            .first_mut()
+            .ok_or_else(|| anyhow!("committed policy unexpectedly has no campaign"))?;
+        campaign.claim_boundary = "Materially different boundary.".to_string();
+        assert_ne!(edited.render_markdown(&concepts)?, baseline);
+
+        let mut edited = policy.clone();
+        let proof_class = edited
+            .proof_classes
+            .first_mut()
+            .ok_or_else(|| anyhow!("committed policy unexpectedly has no proof class"))?;
+        proof_class.purpose = "Materially different purpose.".to_string();
+        assert_ne!(edited.render_markdown(&concepts)?, baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn concept_projection_change_moves_the_consumed_digest() -> Result<()> {
+        let baseline = concept_projection_digest(&concepts()?);
+        let mut concept_index = concepts()?;
+        concept_index.concepts.push(ConceptIndexRow { family: "calls".to_string() });
+        assert_ne!(concept_projection_digest(&concept_index), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn limited_claims_require_a_declared_ceiling() -> Result<()> {
+        let concepts = concepts()?;
+
+        // `claims_limited` lets claims proceed, so it must say how far.
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.claim_effect = ClaimEffect::ClaimsLimited;
+        policy.dispositions.push(disposition.clone());
+        let error = policy
+            .validate(&concepts)
+            .expect_err("a limiting disposition without a ceiling must fail closed")
+            .to_string();
+        assert!(error.contains("claims_limited_ceiling"), "unexpected error: {error}");
+
+        // An empty ceiling is the same hole spelled differently.
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut empty = retained_dimension(&mut policy);
+        empty.claim_effect = ClaimEffect::ClaimsLimited;
+        empty.claims_limited_ceiling = Some("   ".to_string());
+        policy.dispositions.push(empty);
+        assert!(policy.validate(&concepts).is_err());
+
+        // Declared, it validates.
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut declared = retained_dimension(&mut policy);
+        declared.claim_effect = ClaimEffect::ClaimsLimited;
+        declared.claims_limited_ceiling =
+            Some("Structural claims only; no execution claim may cite this axis.".to_string());
+        policy.dispositions.push(declared);
+        policy.validate(&concepts)?;
+        Ok(())
+    }
+
+    #[test]
+    fn excluded_claims_reject_a_spurious_ceiling() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.claims_limited_ceiling = Some("Unreachable ceiling.".to_string());
+        policy.dispositions.push(disposition);
+        let error = policy
+            .validate(&concepts()?)
+            .expect_err("a ceiling on a total exclusion must fail closed")
+            .to_string();
+        assert!(error.contains("must not declare"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn free_text_cannot_break_the_rendered_tables() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.claim_effect = ClaimEffect::ClaimsLimited;
+        disposition.reason = "Blocked by parser | owner pending".to_string();
+        disposition.exit_condition = "Parser lands\nThen rerun".to_string();
+        disposition.claims_limited_ceiling = Some("Structural | only".to_string());
+        policy.dispositions.push(disposition);
+
+        let rendered = policy.render_markdown(&concepts()?)?;
+        // `retained_axis` also names a dimension row, so select on the
+        // disposition table's own status column.
+        let row = rendered
+            .lines()
+            .find(|line| line.contains("retained_axis") && line.contains("sequencing_blocked"))
+            .ok_or_else(|| anyhow!("disposition row is missing from the rendered status"))?;
+
+        // The embedded newline must not have split the row.
+        assert!(row.contains("Then rerun"), "row lost its exit condition: {row}");
+        // Every literal pipe must be escaped, so the cell count matches the header.
+        let header = rendered
+            .lines()
+            .find(|line| line.starts_with("| Item | Kind |"))
+            .ok_or_else(|| anyhow!("disposition header is missing"))?;
+        assert_eq!(
+            unescaped_pipes(row),
+            unescaped_pipes(header),
+            "escaped row must keep the header's cell count:\n{header}\n{row}"
+        );
+        Ok(())
+    }
+
+    /// Count only the pipes that actually delimit cells.
+    fn unescaped_pipes(line: &str) -> usize {
+        let bytes = line.as_bytes();
+        line.char_indices()
+            .filter(|(index, character)| {
+                *character == '|' && (*index == 0 || bytes[index - 1] != b'\\')
+            })
+            .count()
+    }
+
+    #[test]
+    fn review_after_is_current_through_its_own_date() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.review_after = "2026-09-14".to_string();
+        policy.dispositions.push(disposition);
+
+        // Inclusive boundary: current on the date, expired the day after.
+        policy.check_currentness(as_of("2026-09-14")?)?;
+        assert!(policy.check_currentness(as_of("2026-09-15")?).is_err());
         Ok(())
     }
 

@@ -1,5 +1,5 @@
 // Generated projection of the binary-identity v1 Rust/schema contract. Do not hand-edit.
-// `binary_identity_protocol_contract.rs` verifies every current state/reason and literal.
+// `ripr_seam_proof_binary_identity.rs` verifies every current state/reason and literal.
 
 export const BINARY_IDENTITY_METHOD = 'perl/binaryIdentity' as const;
 export const BINARY_COMPATIBILITY_METHOD = 'perl/binaryCompatibility' as const;

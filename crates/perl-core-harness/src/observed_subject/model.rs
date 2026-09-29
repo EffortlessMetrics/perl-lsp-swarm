@@ -153,6 +153,16 @@ pub struct ObservedRunnerSubjectInput {
     /// Independently reconstructed runner plan (#7737); revalidated against
     /// matrix authority and byte-bound to the observed discovery stream.
     pub plan: RunnerPlan,
+    /// Scheduling the caller declared for this run (#7737).
+    ///
+    /// The observed discovery receipt carries no schedule, so the join compares
+    /// `plan.scheduling` against this independent declaration instead of
+    /// letting the candidate plan supply its own reconstruction input. The
+    /// declaration is not unchallengeable, though: where an accepted,
+    /// subject-bound #12284 invocation row observed its own `scheduling`, the
+    /// join refuses a declaration that row contradicts. Run-level upstream
+    /// scheduling state remains unobserved.
+    pub declared_scheduling: crate::runner_model::RunnerScheduling,
     /// Observed upstream discovery receipt (#12281/#12283).
     pub discovery: crate::observed_discovery::model::UpstreamDiscoveryReceiptV1,
     /// Effective-invocation trace receipt (#12284/#12285), parent-bound to

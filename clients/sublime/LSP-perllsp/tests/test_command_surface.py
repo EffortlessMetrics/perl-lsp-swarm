@@ -208,6 +208,216 @@ class CommandSurfaceContractTests(unittest.TestCase):
         self.assertIn("perl.runFile", rendered)
         self.assertIn("interpreter unavailable", rendered)
 
+    def test_bulk_fields_cannot_erase_control_or_result_fields(self) -> None:
+        # A bulk field sorting before the control keys must not consume the
+        # display budget: failure state, error reason, and next actions all
+        # survive, and the bulk field itself is individually bounded.
+        result = surface.format_result(
+            "Perl: Run Workspace Tests",
+            {
+                "bulk": "y" * (surface.MAX_OUTPUT_CHARS * 4),
+                "success": False,
+                "error": "3 tests failed",
+                "nextAction": "fix the failing tests",
+            },
+        )
+        self.assertIn("Success: no", result)
+        self.assertIn("Error: 3 tests failed", result)
+        self.assertIn("Next Action: fix the failing tests", result)
+        self.assertIn("of this field omitted by LSP-perllsp", result)
+        self.assertLessEqual(len(result), surface.MAX_OUTPUT_CHARS)
+
+    def test_render_order_is_independent_of_mapping_key_sort_position(self) -> None:
+        # Mutation control: even when every control field sorts after the
+        # bulk field (a_bulk < error < nextAction < success), rendering must
+        # keep failure state, reason, and next actions visible.
+        adversarial = surface.format_result(
+            "Perl: Run Current File",
+            {
+                "a_bulk": "z" * (surface.MAX_OUTPUT_CHARS * 4),
+                "success": False,
+                "status": "failed",
+                "error": "interpreter missing",
+                "reason": "the interpreter was not found",
+                "nextAction": "install Perl",
+            },
+        )
+        self.assertIn("Success: no", adversarial)
+        self.assertIn("Error: interpreter missing", adversarial)
+        self.assertIn("Status: failed", adversarial)
+        self.assertIn("Reason: the interpreter was not found", adversarial)
+        self.assertIn("Next Action: install Perl", adversarial)
+
+        # Nested bulk material is bounded too, so a giant detail row cannot
+        # push later control rows out of the envelope.
+        nested = surface.format_result(
+            "Perl: Run Critic Command (Compatibility Surface)",
+            {
+                "success": False,
+                "details": {"stdout": "q" * (surface.MAX_OUTPUT_CHARS * 4)},
+                "nextAction": "inspect the critic log",
+            },
+        )
+        self.assertIn("Success: no", nested)
+        self.assertIn("Next Action: inspect the critic log", nested)
+        self.assertIn("of this field omitted by LSP-perllsp", nested)
+        self.assertLessEqual(len(nested), surface.MAX_OUTPUT_CHARS)
+
+    def test_under_budget_results_render_completely_and_deterministically(self) -> None:
+        result = {"success": True, "stdout": "all green\n", "note": "kept"}
+        first = surface.format_result("Perl: Run Current File", result)
+        self.assertIn("Success: yes", first)
+        self.assertIn("all green", first)
+        self.assertIn("Note: kept", first)
+        self.assertNotIn("omitted by LSP-perllsp", first)
+        reordered = {"note": "kept", "stdout": "all green\n", "success": True}
+        self.assertEqual(first, surface.format_result("Perl: Run Current File", reordered))
+
+    def test_scalar_field_is_bounded_even_when_envelope_fits(self) -> None:
+        value = "x" * (surface.MAX_FIELD_CHARS + 100)
+        rendered = surface.format_result("Perl: Run Current File", {"output": value})
+        self.assertNotIn(value, rendered)
+        self.assertIn("omitted by LSP-perllsp", rendered)
+        output_line = next(line for line in rendered.splitlines() if line.startswith("Output: "))
+        self.assertLessEqual(len(output_line), surface.MAX_FIELD_CHARS)
+
+    def test_top_level_list_items_bound_the_rendered_field(self) -> None:
+        value = "x" * (surface.MAX_FIELD_CHARS + 100)
+        rendered = surface.format_result("Perl: Run Current File", [value])
+        item_line = next(line for line in rendered.splitlines() if line.startswith("  1: "))
+        self.assertLessEqual(len(item_line), surface.MAX_FIELD_CHARS)
+        self.assertIn("omitted by LSP-perllsp", rendered)
+
+    def test_under_budget_scalar_field_remains_complete(self) -> None:
+        value = "x" * (surface.MAX_FIELD_CHARS - 100)
+        rendered = surface.format_result("Perl: Run Current File", {"output": value})
+        self.assertIn(value, rendered)
+        self.assertNotIn("omitted by LSP-perllsp", rendered)
+
+    def test_top_level_string_result_is_bounded_as_its_own_field(self) -> None:
+        value = "x" * (surface.MAX_FIELD_CHARS + 100)
+        rendered = surface.format_result("Perl: Run Current File", value)
+        self.assertNotIn(value, rendered)
+        self.assertIn("omitted by LSP-perllsp", rendered)
+        # The field bound is independent of the much larger envelope bound.
+        self.assertLess(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+    def test_deeply_nested_result_is_gracefully_bounded(self) -> None:
+        result: object = "leaf"
+        for _ in range(1100):
+            result = {"nested": result}
+        rendered = surface.format_result("Perl: Run Current File", result)
+        self.assertIn("nested result omitted by LSP-perllsp", rendered)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+    def test_long_error_preserves_terminal_diagnosis(self) -> None:
+        diagnosis = "FATAL: compilation failed at line 99"
+        rendered = surface.format_result(
+            "Perl: Run Current File",
+            {"success": False, "error": "warning\n" * 1000 + diagnosis},
+        )
+        self.assertIn(diagnosis, rendered)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+        error = type("ServerError", (), {"message": "warning\n" * 10000 + diagnosis})()
+        rendered_error = surface.format_error("Perl: Run Current File", "perl.runFile", error)
+        self.assertIn(diagnosis, rendered_error)
+        self.assertLessEqual(len(rendered_error), surface.MAX_OUTPUT_CHARS)
+
+    def test_multiline_field_budget_includes_indentation_and_notice(self) -> None:
+        rendered = surface.format_result(
+            "Perl: Run Current File",
+            {"details": {"output": "a\n" * 30000}, "success": True},
+        )
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+        self.assertIn("of this field omitted by LSP-perllsp", rendered)
+
+    def test_nested_control_fields_survive_many_bulk_siblings(self) -> None:
+        result = {"success": False, "nextAction": "fix"}
+        result.update({f"bulk{index:02d}": {"text": "x" * 4090} for index in range(20)})
+        result["deep"] = {"success": False, "reason": "nested diagnosis"}
+        rendered = surface.format_result("Perl: Run Workspace Tests", result)
+        self.assertIn("Success: no", rendered)
+        self.assertIn("Reason: nested diagnosis", rendered)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+    def test_deeply_nested_controls_are_rendered_before_bulk_branches(self) -> None:
+        result = {f"bulk{index:02d}": {"payload": "x" * 4090} for index in range(20)}
+        result["envelope"] = {"details": {"diagnosis": {"error": "deep failure"}}}
+        rendered = surface.format_result("Perl: Run Workspace Tests", result)
+        self.assertIn("Error: deep failure", rendered)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+    def test_nested_list_items_are_bounded_as_complete_items(self) -> None:
+        result = [
+            {f"field{index:02d}": "y" * 4090 for index in range(20)},
+            {"status": "failed", "error": "later item diagnosis"},
+        ]
+        rendered = surface.format_result("Perl: Run Workspace Tests", result)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+        self.assertIn("later item diagnosis", rendered)
+
+    def test_oversized_top_level_list_preserves_later_details_and_notice(self) -> None:
+        # The first item is deliberately large enough to consume the global
+        # envelope.  A later control-bearing item must still be rendered, and
+        # the output must explain that bulk material was bounded.
+        result = [
+            {"stdout": "x" * (surface.MAX_OUTPUT_CHARS * 2)},
+            {"status": "failed", "error": "later list-item diagnosis"},
+        ]
+        rendered = surface.format_result("Perl: Run Workspace Tests", result)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+        self.assertIn("later list-item diagnosis", rendered)
+        self.assertIn("of this field omitted by LSP-perllsp", rendered)
+
+    def test_list_nested_control_survives_many_oversized_bulk_items(self) -> None:
+        result = [
+            {"details": {"stdout": "y" * (surface.MAX_FIELD_CHARS * 2)}}
+            for _ in range(20)
+        ]
+        result.append({"details": {"result": {"success": False, "reason": "nested failure"}}})
+        rendered = surface.format_result("Perl: Run Workspace Tests", result)
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+        self.assertIn("Success: no", rendered)
+        self.assertIn("Reason: nested failure", rendered)
+        self.assertIn("of this field omitted by LSP-perllsp", rendered)
+
+    def test_bounded_results_have_one_terminal_newline_and_exact_limit(self) -> None:
+        rendered = surface.format_result(
+            "Perl: Run Current File",
+            {
+                f"output_{index}": "z" * surface.MAX_FIELD_CHARS
+                for index in range(32)
+            },
+        )
+        self.assertTrue(rendered.endswith("\n"))
+        self.assertFalse(rendered.endswith("\n\n"))
+        self.assertEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+    def test_global_bound_is_hard_after_rendering(self) -> None:
+        rendered = surface.format_result(
+            "Perl: Run Current File",
+            {"success": False, "output": "z" * (surface.MAX_OUTPUT_CHARS * 4)},
+        )
+        self.assertLessEqual(len(rendered), surface.MAX_OUTPUT_CHARS)
+
+    def test_omission_notices_report_source_characters_excluded_by_the_notice(self) -> None:
+        source = "0123456789" * (surface.MAX_OUTPUT_CHARS // 10 + 100)
+
+        bounded = surface._bounded(source)
+        match = re.search(r"… (\d+) character\(s\) omitted by LSP-perllsp\.\n", bounded)
+        self.assertIsNotNone(match)
+        assert match is not None
+        prefix, _ = bounded.split("\n\n…", 1)
+        self.assertEqual(int(match.group(1)), len(source) - len(prefix))
+
+        with_tail = surface._bounded_with_tail(source)
+        match = re.search(r"… (\d+) character\(s\) omitted by LSP-perllsp\.\n$", with_tail)
+        self.assertIsNotNone(match)
+        assert match is not None
+        before_notice, _ = with_tail.rsplit("\n\n…", 1)
+        self.assertEqual(int(match.group(1)), len(source) - (len(before_notice) - 3))
+
     def test_navigation_target_is_deliberate(self) -> None:
         self.assertEqual(
             surface.navigation_target({"found": True, "path": "/workspace/t/example.t"}),

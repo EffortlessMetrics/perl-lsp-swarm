@@ -182,7 +182,10 @@ fn probe_inline_import(
     probe: &ModuleImportProbe,
 ) -> Result<ModuleImportProbeReport> {
     let (line, character) = position_after(probe.source, probe.marker)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.inline_completion_with_trigger_kind(probe.file, line, character, 1)?;
         for item in &items {
@@ -262,7 +265,15 @@ fn scenario_59_real_workspace_module_import_inline_completion_quality_receipt() 
             ] {
                 harness.open_file(path, source)?;
             }
-            std::thread::sleep(Duration::from_millis(500));
+            // Synchronize on the server's own analysis-readiness signal instead
+            // of a fixed sleep: on a cold CI runner the sleep let completion
+            // queries outrun the first analysis of the just-opened documents
+            // and starve the semantic context (#15870 family).
+            let _ = harness.wait_for_diagnostics(REACHABLE_PROBE_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(CANCELLED_LIB_PROBE_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(LOCAL_PROBE_PATH, Duration::from_secs(30));
+            let _ =
+                harness.wait_for_diagnostics(CANCELLED_LOCAL_PROBE_PATH, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);

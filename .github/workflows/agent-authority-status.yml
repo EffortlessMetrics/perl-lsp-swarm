@@ -2,7 +2,7 @@ name: Agent Authority Status
 
 # The path filters below are not hand-maintained: they must equal every
 # `documents[].path` in `docs/agents/authority_status.toml` plus this workflow
-# and its test. The registry asserts that each registered path exists, so a PR
+# and the tests it runs. The registry asserts that each registered path exists, so a PR
 # that deletes or renames a registered authority has to run this check --
 # otherwise `path exists` goes false on `main` with no gate having run.
 # `test_workflow_triggers_on_every_registered_path` enforces the equality.
@@ -42,10 +42,12 @@ on:
       - 'docs/reference/PIPELINE_GATES.md'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
       - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+      - 'docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md'
       - 'scripts/ci/check-pr-claim-currentness'
       - 'scripts/ci/check-pr-review-convergence-core'
       - 'scripts/reviews/claim-digest'
       - 'tests/test_agent_authority_status.py'
+      - 'tests/test_legacy_authority_banners.py'
   push:
     branches: [main]
     paths:
@@ -80,10 +82,12 @@ on:
       - 'docs/reference/PIPELINE_GATES.md'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
       - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+      - 'docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md'
       - 'scripts/ci/check-pr-claim-currentness'
       - 'scripts/ci/check-pr-review-convergence-core'
       - 'scripts/reviews/claim-digest'
       - 'tests/test_agent_authority_status.py'
+      - 'tests/test_legacy_authority_banners.py'
 
 permissions:
   contents: read

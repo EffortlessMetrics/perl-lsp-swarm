@@ -1,0 +1,14 @@
+project: product
+component: Developer experience
+kind: Changed
+body: >-
+  Worktree forensic JSON now uses worktree_forensic_evidence.v2 with typed
+  observation states and omitted absent fields. Select saved-evidence decoders
+  by schema_version or rerun inspection for v2; do not relabel v1 records.
+  Human classifications and unavailable details are retained, but plan digests
+  change with the serialized schema.
+time: 2026-09-10T00:17:04Z
+custom:
+  PR: "13515"
+  Slug: forensic-observation-v2
+  Breaking: "yes"

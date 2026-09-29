@@ -48,7 +48,15 @@ fn collect_remaining(lexer: &mut PerlLexer<'_>) -> Vec<Token> {
 }
 
 fn body_tokens(tokens: &[Token]) -> Vec<&Token> {
-    tokens.iter().filter(|token| matches!(&token.token_type, TokenType::HeredocBody(_))).collect()
+    tokens
+        .iter()
+        .filter(|token| {
+            matches!(
+                &token.token_type,
+                TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+            )
+        })
+        .collect()
 }
 
 fn body_slices<'a>(source: &'a str, tokens: &[Token]) -> Vec<&'a str> {
@@ -391,7 +399,12 @@ fn false_openers_are_inert_and_preserve_clean_continuation() -> R {
             tokens.iter().filter(|token| token.start < valid_opener_start).collect::<Vec<_>>();
         require(
             before_valid.iter().all(|token| {
-                !matches!(&token.token_type, TokenType::HeredocStart | TokenType::HeredocBody(_))
+                !matches!(
+                    &token.token_type,
+                    TokenType::HeredocStart
+                        | TokenType::HeredocBody(_)
+                        | TokenType::InterpolatedHeredocBody(_)
+                )
             }),
             format!("false opener queued or emitted a heredoc for {prefix:?}"),
         )?;
@@ -435,7 +448,12 @@ fn false_openers_are_inert_and_preserve_clean_continuation() -> R {
         require(
             tokens
                 .iter()
-                .filter(|token| !matches!(&token.token_type, TokenType::HeredocBody(_)))
+                .filter(|token| {
+                    !matches!(
+                        &token.token_type,
+                        TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+                    )
+                })
                 .all(|token| token.end <= body.end || token.start >= tail_start),
             format!("ordinary token overlaps the REAL terminator after {prefix:?}"),
         )?;

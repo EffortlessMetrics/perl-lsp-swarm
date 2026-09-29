@@ -51,11 +51,17 @@ fn test_set_breakpoints_rejects_newlines_in_condition() -> TestResult {
 
             println!("Breakpoint verification message: {}", message);
 
-            // Strictly assert that the security validation caught the newline
-            // This ensures that if the validation is removed, the test will fail (regression test)
-            assert_eq!(
-                message, "Breakpoint condition cannot contain newlines",
-                "Condition with newline was not rejected by validation logic (Risk of protocol injection)"
+            // #9578: conditional support is floored, so an injection attempt
+            // via `condition` is rejected even earlier — at the capability
+            // gate, before any condition content (including newlines) is
+            // inspected and before any store record exists. The floor refusal
+            // is the strictly-stronger fail-closed disposition; the
+            // store-level newline validation remains pinned by the breakpoint
+            // store suites for the #8988 re-enable path.
+            assert!(
+                message.contains("supportsConditionalBreakpoints") && message.contains("#9578"),
+                "Condition with newline must receive the #9578 conditional floor refusal \
+                 (Risk of protocol injection), got {message:?}"
             );
         }
         _ => return Err("Expected Response message".into()),
@@ -97,9 +103,12 @@ fn test_set_breakpoints_rejects_carriage_returns_in_condition() -> TestResult {
             let message = bp.get("message").and_then(|m| m.as_str()).unwrap_or("");
 
             assert!(!verified, "Breakpoint with carriage return should not be verified");
-            assert_eq!(
-                message, "Breakpoint condition cannot contain newlines",
-                "Condition with carriage return was not rejected"
+            // #9578: the capability gate rejects the entry before any
+            // condition content is inspected (see the newline test above).
+            assert!(
+                message.contains("supportsConditionalBreakpoints") && message.contains("#9578"),
+                "Condition with carriage return must receive the #9578 conditional floor \
+                 refusal, got {message:?}"
             );
         }
         _ => return Err("Expected Response message".into()),

@@ -31,6 +31,7 @@ mod misc;
 mod missing_module_lookup;
 mod moniker;
 mod navigation;
+mod reference_text;
 mod references;
 mod rename;
 mod semantic_tokens;
@@ -41,6 +42,8 @@ mod workspace_trust_report;
 
 #[cfg(test)]
 mod navigation_runtime_quality_tests;
+#[cfg(test)]
+mod producer_truth_guard_tests;
 #[cfg(test)]
 mod provider_decision_live_trace_tests;
 mod refactor_runtime_blocker_receipts;

@@ -10,6 +10,27 @@
 use perl_parser::{Node, NodeKind, Parser, SourceLocation};
 
 /// AC1: NodeKind enum includes Error variant with message, expected tokens, found token, and optional partial node
+
+/// Depth-first collection of every node whose kind satisfies `pred`.
+/// The #430 recovery nodes (`MissingExpression` from
+/// `recover_missing_infix_rhs`) are nested children (e.g. of a
+/// `VariableDeclaration`), not top-level statements, so searches must
+/// recurse (#15432).
+fn collect_nodes<'a>(node: &'a Node, pred: &dyn Fn(&NodeKind) -> bool, out: &mut Vec<&'a Node>) {
+    if pred(&node.kind) {
+        out.push(node);
+    }
+    for child in node.children() {
+        collect_nodes(child, pred, out);
+    }
+}
+
+fn find_missing_expression_nodes(ast: &Node) -> Vec<&Node> {
+    let mut out = Vec::new();
+    collect_nodes(ast, &|kind| matches!(kind, NodeKind::MissingExpression), &mut out);
+    out
+}
+
 #[test]
 fn parser_430_ac1_error_variant_structure() {
     let code = "my $x = ;"; // Missing expression after =
@@ -17,33 +38,16 @@ fn parser_430_ac1_error_variant_structure() {
     use perl_tdd_support::must;
     let ast = must(parser.parse());
 
-    // Debug: Print the AST structure
-    println!("AST: {:?}", ast);
-    println!("S-expression: {}", ast.to_sexp());
-
-    // Find the error node
-    let mut found_error = false;
-    if let NodeKind::Program { statements } = &ast.kind {
-        for stmt in statements {
-            println!("Statement kind: {:?}", stmt.kind.kind_name());
-            if let NodeKind::Error { message, expected, found, partial } = &stmt.kind {
-                // Verify message is present
-                assert!(!message.is_empty(), "Error message should not be empty");
-
-                // Verify expected tokens are specified (relaxed - may be empty in some cases)
-                println!("AC1: Error message: {}", message);
-                println!("AC1: Expected tokens: {:?}", expected);
-                println!("AC1: Found token: {:?}", found);
-                println!("AC1: Partial node: {:?}", partial.is_some());
-
-                // Note: The error node structure exists even if expected is empty
-                found_error = true;
-                break;
-            }
-        }
-    }
-
-    assert!(found_error, "Should find at least one Error node with complete structure");
+    // The documented recovery for a missing infix RHS is a zero-width
+    // MissingExpression node nested in the declaration (mod.rs recovery docs,
+    // helpers.rs recover_missing_infix_rhs) - not a top-level Error node.
+    let missing = find_missing_expression_nodes(&ast);
+    assert!(!missing.is_empty(), "Should contain a MissingExpression node for the missing RHS");
+    let node = missing[0];
+    assert!(
+        node.location.end >= node.location.start,
+        "MissingExpression location must be well-formed"
+    );
 }
 
 /// AC2: NodeKind enum includes MissingExpression, MissingStatement, MissingIdentifier, MissingBlock variants
@@ -67,29 +71,21 @@ fn parser_430_ac2_missing_node_variants_exist() {
 /// AC3: Parser can create error nodes that preserve source location information
 #[test]
 fn parser_430_ac3_error_nodes_preserve_location() {
-    let code = "my $x = ;\nprint 1;"; // Error on line 1
+    let code = "my $x = ;"; // Missing expression after =
     let mut parser = Parser::new(code);
     use perl_tdd_support::must;
     let ast = must(parser.parse());
 
-    let mut found_error = false;
-    if let NodeKind::Program { statements } = &ast.kind {
-        for stmt in statements {
-            if let NodeKind::Error { .. } = &stmt.kind {
-                // Verify location is captured (start is always >= 0 for usize)
-                assert!(stmt.location.end >= stmt.location.start, "End should be >= start");
-
-                println!(
-                    "AC3: Error node location: start={}, end={}",
-                    stmt.location.start, stmt.location.end
-                );
-                found_error = true;
-                break;
-            }
-        }
+    // The recovery node preserves its location: a missing expression is
+    // zero-width at the point of failure (start == end).
+    let missing = find_missing_expression_nodes(&ast);
+    assert!(!missing.is_empty(), "Should find a MissingExpression node with location information");
+    for node in &missing {
+        assert_eq!(
+            node.location.start, node.location.end,
+            "MissingExpression is zero-width at the failure point"
+        );
     }
-
-    assert!(found_error, "Should find error node with location information");
 }
 
 /// AC4: Parser method create_error_node() constructs error nodes with contextual information
@@ -101,53 +97,48 @@ fn parser_430_ac4_error_nodes_have_context() {
     use perl_tdd_support::must;
     let ast = must(parser.parse());
 
-    // Navigate to the error node inside the if block
-    let mut found_error = false;
-    if let NodeKind::Program { statements } = &ast.kind
-        && let Some(stmt) = statements.first()
-        && let NodeKind::If { then_branch, .. } = &stmt.kind
-        && let NodeKind::Block { statements } = &then_branch.kind
-    {
-        for inner_stmt in statements {
-            if let NodeKind::Error { message, .. } = &inner_stmt.kind {
-                // Verify contextual information - Error nodes have message field
-                assert!(!message.is_empty(), "Error should have descriptive message");
-                // Note: expected may be empty, error message provides context
-                println!("AC4: Error in context - message: {}", message);
-                // AC4 validated: create_error_node provides contextual information
-                found_error = true;
-                break;
-            }
-        }
-    }
-
-    assert!(found_error, "Should find error node with contextual information in if block");
+    // The recovery node inherits context from its parent chain: collect the
+    // if block, then search its statements specifically so containment under
+    // the if is proven rather than assumed from a full-tree search.
+    let mut if_nodes = Vec::new();
+    collect_nodes(&ast, &|kind| matches!(kind, NodeKind::If { .. }), &mut if_nodes);
+    assert!(!if_nodes.is_empty(), "Should find an If node in the AST");
+    let missing_in_if = find_missing_expression_nodes(if_nodes[0]);
+    assert!(
+        !missing_in_if.is_empty(),
+        "Should find a MissingExpression node with contextual information in if block"
+    );
+    assert!(
+        missing_in_if[0].location.start > 0,
+        "The recovery node must carry its source location"
+    );
 }
 
 /// AC5: Error nodes can contain partial valid AST nodes when phrase-level recovery succeeds
 #[test]
 fn parser_430_ac5_error_nodes_with_partial_ast() {
-    // This test validates that Error nodes can wrap partial valid trees
+    // Partial-AST recovery: the declaration survives with its valid variable
+    // child alongside the MissingExpression placeholder for the RHS (#430).
     let code = "my $x = ;"; // Assignment with missing RHS
     let mut parser = Parser::new(code);
     use perl_tdd_support::must;
     let ast = must(parser.parse());
 
-    let mut found_error = false;
-    if let NodeKind::Program { statements } = &ast.kind {
-        for stmt in statements {
-            if let NodeKind::Error { partial, .. } = &stmt.kind {
-                // The partial field should be available (even if None in this case)
-                println!("AC5: Error node has partial field: {:?}", partial.is_some());
-
-                // Structure exists for future phrase-level recovery
-                found_error = true;
-                break;
-            }
-        }
-    }
-
-    assert!(found_error, "Should find error node with partial field");
+    let mut decls = Vec::new();
+    collect_nodes(&ast, &|kind| matches!(kind, NodeKind::VariableDeclaration { .. }), &mut decls);
+    // Both conditions must hold within the SAME declaration: the valid
+    // variable child survives alongside the MissingExpression recovery node.
+    let has_partial_declaration = decls.iter().any(|decl| {
+        let has_variable =
+            decl.children().iter().any(|child| matches!(&child.kind, NodeKind::Variable { .. }));
+        let has_missing =
+            decl.children().iter().any(|child| matches!(&child.kind, NodeKind::MissingExpression));
+        has_variable && has_missing
+    });
+    assert!(
+        has_partial_declaration,
+        "The declaration must retain its valid variable child beside the recovery node"
+    );
 }
 
 /// AC6: Block parsing returns partial block AST with valid statements even when missing closing brace
@@ -250,12 +241,7 @@ fn parser_430_ac8_missing_expression_node() {
     let ast = must(parser.parse());
 
     // Check AST for Error or MissingExpression
-    let has_error_handling = match &ast.kind {
-        NodeKind::Program { statements } => statements
-            .iter()
-            .any(|s| matches!(s.kind, NodeKind::Error { .. } | NodeKind::MissingExpression)),
-        _ => false,
-    };
+    let has_error_handling = !find_missing_expression_nodes(&ast).is_empty();
 
     assert!(has_error_handling, "Should have error or missing expression handling");
     println!("AC8: Missing expression handling present");

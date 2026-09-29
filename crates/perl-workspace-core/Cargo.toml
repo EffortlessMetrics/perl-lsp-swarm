@@ -24,6 +24,9 @@ serde = { workspace = true }
 # serde_json: used for META.json distribution-metadata facts (PR 7). Leaf, allowed.
 serde_json = { workspace = true }
 
+[dev-dependencies]
+perl-test-must = { workspace = true }
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

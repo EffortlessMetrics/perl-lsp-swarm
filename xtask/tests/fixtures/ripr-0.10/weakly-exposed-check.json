@@ -1,0 +1,187 @@
+{
+  "base": "origin/main",
+  "findings": [
+    {
+      "activation": {
+        "missing_discriminators": [],
+        "observed_values": [
+          {
+            "context": "assertion_argument",
+            "line": 21,
+            "value": "\"/usr/lib/perl5/perl5db.pl\""
+          },
+          {
+            "context": "assertion_argument",
+            "line": 22,
+            "value": "\"/app/main.pl\""
+          },
+          {
+            "context": "function_argument",
+            "line": 27,
+            "value": "level = 5"
+          },
+          {
+            "context": "function_argument",
+            "line": 28,
+            "value": "level = 1"
+          }
+        ]
+      },
+      "assertion_texts": {
+        "21": "assert!(is_debugger_path(\"/usr/lib/perl5/perl5db.pl\"));",
+        "22": "assert!(!is_debugger_path(\"/app/main.pl\"));",
+        "27": "let _ = severity_label(5);",
+        "28": "assert!(!severity_label(1).is_empty());"
+      },
+      "classification": "weakly_exposed",
+      "confidence": 0.92,
+      "evidence": [
+        "A related test observes a value or effect near the changed behavior",
+        "Changed behavior appears to influence call effect: if level >= 2 { \"high\".to_string() } else { \"low\".to_string() }",
+        "Discriminator unconfirmed: no assertion text references this probe's changed expression (observation_unverified)",
+        "Reachable tests can plausibly activate this changed behavior",
+        "Related tests appear to reach severity_label: debugger_path_is_detected, severity_label_runs"
+      ],
+      "evidence_path": [
+        "reach yes: Related tests appear to reach severity_label: debugger_path_is_detected, severity_label_runs",
+        "infection yes: Reachable tests can plausibly activate this changed behavior",
+        "propagation yes: Changed behavior appears to influence call effect: if level >= 2 { \"high\".to_string() } else { \"low\".to_string() }",
+        "observation yes: A related test observes a value or effect near the changed behavior",
+        "discriminator weak: Discriminator unconfirmed: no assertion text references this probe's changed expression (observation_unverified)",
+        "local flow reaches call effect: if level >= 2 { \"high\".to_string() } else { \"low\".to_string() } (line 12)",
+        "related test src/lib.rs:20 debugger_path_is_detected uses weak relational check oracle: assert!(is_debugger_path(\"/usr/lib/perl5/perl5db.pl\"));",
+        "related test src/lib.rs:20 debugger_path_is_detected uses weak relational check oracle: assert!(!is_debugger_path(\"/app/main.pl\"));",
+        "related test src/lib.rs:26 severity_label_runs uses weak relational check oracle: assert!(!severity_label(1).is_empty());",
+        "observed assertion argument value \"/usr/lib/perl5/perl5db.pl\" at line 21",
+        "observed assertion argument value \"/app/main.pl\" at line 22",
+        "observed function argument value level = 5 at line 27",
+        "observed function argument value level = 1 at line 28"
+      ],
+      "flow_sinks": [
+        {
+          "kind": "call_effect",
+          "line": 12,
+          "text": "if level >= 2 { \"high\".to_string() } else { \"low\".to_string() }"
+        }
+      ],
+      "id": "probe:src_lib.rs:call_deletion:065a796b",
+      "language": "rust",
+      "missing": [
+        "No strong discriminator was detected"
+      ],
+      "missing_discriminators": [],
+      "observed_values": [
+        {
+          "context": "assertion_argument",
+          "line": 21,
+          "value": "\"/usr/lib/perl5/perl5db.pl\""
+        },
+        {
+          "context": "assertion_argument",
+          "line": 22,
+          "value": "\"/app/main.pl\""
+        },
+        {
+          "context": "function_argument",
+          "line": 27,
+          "value": "level = 5"
+        },
+        {
+          "context": "function_argument",
+          "line": 28,
+          "value": "level = 1"
+        }
+      ],
+      "oracle_kind": "relational_check",
+      "oracle_strength": "weak",
+      "probe": {
+        "delta": "effect",
+        "expression": "if level >= 2 { \"high\".to_string() } else { \"low\".to_string() }",
+        "family": "call_deletion",
+        "file": "./src/lib.rs",
+        "id": "probe:src_lib.rs:call_deletion:065a796b",
+        "line": 12
+      },
+      "recommended_next_step": "Strengthen the related assertion so it discriminates the changed behavior.",
+      "related_tests": [
+        {
+          "file": "src/lib.rs",
+          "line": 20,
+          "name": "debugger_path_is_detected",
+          "oracle": "assert!(is_debugger_path(\"/usr/lib/perl5/perl5db.pl\"));",
+          "oracle_kind": "relational_check",
+          "oracle_strength": "weak",
+          "relation_confidence": "medium",
+          "relation_reason": "same_test_file"
+        },
+        {
+          "file": "src/lib.rs",
+          "line": 20,
+          "name": "debugger_path_is_detected",
+          "oracle": "assert!(!is_debugger_path(\"/app/main.pl\"));",
+          "oracle_kind": "relational_check",
+          "oracle_strength": "weak",
+          "relation_confidence": "medium",
+          "relation_reason": "same_test_file"
+        },
+        {
+          "file": "src/lib.rs",
+          "line": 26,
+          "name": "severity_label_runs",
+          "oracle": "assert!(!severity_label(1).is_empty());",
+          "oracle_kind": "relational_check",
+          "oracle_strength": "weak",
+          "relation_confidence": "high",
+          "relation_reason": "direct_owner_call"
+        }
+      ],
+      "related_tests_total": 3,
+      "ripr": {
+        "discriminate": {
+          "confidence": "medium",
+          "state": "weak",
+          "summary": "Discriminator unconfirmed: no assertion text references this probe's changed expression (observation_unverified)"
+        },
+        "infect": {
+          "confidence": "medium",
+          "state": "yes",
+          "summary": "Reachable tests can plausibly activate this changed behavior"
+        },
+        "observe": {
+          "confidence": "medium",
+          "state": "yes",
+          "summary": "A related test observes a value or effect near the changed behavior"
+        },
+        "propagate": {
+          "confidence": "medium",
+          "state": "yes",
+          "summary": "Changed behavior appears to influence call effect: if level >= 2 { \"high\".to_string() } else { \"low\".to_string() }"
+        },
+        "reach": {
+          "confidence": "medium",
+          "state": "yes",
+          "summary": "Related tests appear to reach severity_label: debugger_path_is_detected, severity_label_runs"
+        }
+      },
+      "severity": "warning",
+      "stop_reasons": [],
+      "suggested_next_action": "Strengthen the related assertion so it discriminates the changed behavior."
+    }
+  ],
+  "mode": "draft",
+  "root": ".",
+  "schema_version": "0.2",
+  "summary": {
+    "changed_rust_files": 1,
+    "exposed": 0,
+    "findings": 1,
+    "infection_unknown": 0,
+    "no_static_path": 0,
+    "probes": 1,
+    "propagation_unknown": 0,
+    "reachable_unrevealed": 0,
+    "static_unknown": 0,
+    "weakly_exposed": 1
+  },
+  "tool": "ripr"
+}

@@ -6,6 +6,7 @@ mod heredoc_delimiter;
 mod interpolation_scan;
 mod line_scanning;
 mod operator_classification;
+mod quote_interpolation;
 mod regex_literal;
 mod word_classification;
 
@@ -13,5 +14,5 @@ pub(crate) use arc_text::{empty_arc, truncate_preview};
 pub(crate) use interpolation_scan::is_perl_punctuation_variable;
 pub(crate) use operator_classification::is_compound_operator;
 pub(crate) use word_classification::{
-    is_builtin_function, is_keyword_fast, is_quote_op_word_prefix,
+    is_builtin_function, is_keyword_fast, is_nullary_builtin, is_quote_op_word_prefix,
 };

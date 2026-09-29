@@ -16,8 +16,15 @@ const OUTLINE_PLACEHOLDER_RE = /<[^>\r\n]+>/y;
 const DEFAULT_STEP_DEFINITION_GLOB = '**/*.pm';
 const DEFAULT_EXCLUDE_GLOB = '{**/node_modules/**,**/blib/**}';
 const MAX_STEP_DEFINITION_FILES = 500;
-const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
-const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
+// Exported so the provider workspace scan (#9773) shares one envelope
+// authority instead of restating these bounds in a second module.
+export const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
+export const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
+// The aggregate envelope bounds what the scan READS, not only what it keeps:
+// a candidate rejected by the per-file cap has already consumed up to
+// `MAX_STEP_DEFINITION_FILE_BYTES + 1` bytes of I/O, so attempted reads are
+// counted against this budget and the scan refuses before the next read.
+export const MAX_STEP_DEFINITION_TOTAL_READ_BYTES = 16 * 1024 * 1024;
 // Rejecting ReDoS-shaped patterns bounds the cost of any single match, not the
 // number of matches. An accepted 16 MiB workspace can still hold hundreds of
 // thousands of individually linear-time step definitions, so the population
@@ -55,6 +62,10 @@ export interface WorkspaceStepDefinitionScan {
   sources: string[];
   complete: boolean;
 }
+
+export type BoundedFileRead =
+  | { bytes: Uint8Array; text: string; byteLength: number }
+  | { kind: 'over-file-cap' };
 
 interface CreateStepDefinitionArgs {
   featureUri: string;
@@ -376,13 +387,14 @@ async function createStepDefinitionFromFeature(args: CreateStepDefinitionArgs): 
 // the code-action provider.
 export async function collectWorkspaceStepDefinitionSources(
   workspaceFolder: vscode.WorkspaceFolder,
+  reader: typeof readBoundedFile = readBoundedFile,
 ): Promise<WorkspaceStepDefinitionScan> {
   let files: vscode.Uri[];
   try {
     files = await vscode.workspace.findFiles(
       new vscode.RelativePattern(workspaceFolder, DEFAULT_STEP_DEFINITION_GLOB),
       DEFAULT_EXCLUDE_GLOB,
-      MAX_STEP_DEFINITION_FILES,
+      MAX_STEP_DEFINITION_FILES + 1,
     );
   } catch {
     return { sources: [], complete: false };
@@ -396,13 +408,17 @@ export async function collectWorkspaceStepDefinitionSources(
   // workspace population may have been truncated. Treat the result as
   // incomplete even if every returned file can be read; otherwise a missing
   // definition in the unreturned tail could be misclassified as undefined.
-  let complete = files.length < MAX_STEP_DEFINITION_FILES;
+  let complete = files.length <= MAX_STEP_DEFINITION_FILES;
+  if (!complete) {
+    return { sources: [], complete: false };
+  }
 
   // Read sequentially under a global byte envelope. The previous concurrent
   // read had no per-file or aggregate bound, so a workspace could hold the
   // extension host open on arbitrarily large step-definition candidates.
   const sources: string[] = [];
   let acceptedBytes = 0;
+  let attemptedBytes = 0;
 
   for (const uri of candidateFiles) {
     if (acceptedBytes >= MAX_STEP_DEFINITION_TOTAL_BYTES) {
@@ -410,10 +426,31 @@ export async function collectWorkspaceStepDefinitionSources(
       break;
     }
 
-    const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    // A rejected candidate may consume the per-file limit plus one overflow
+    // byte before readBoundedFile can classify it. Refuse before the next
+    // attempt so this collector's read envelope covers attempted I/O too.
+    if (
+      attemptedBytes + MAX_STEP_DEFINITION_FILE_BYTES + 1 >
+      MAX_STEP_DEFINITION_TOTAL_READ_BYTES
+    ) {
+      complete = false;
+      break;
+    }
+
+    const read = await reader(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    attemptedBytes +=
+      read && 'kind' in read
+        ? MAX_STEP_DEFINITION_FILE_BYTES + 1
+        : read
+          ? read.byteLength
+          : MAX_STEP_DEFINITION_FILE_BYTES + 1;
     if (!read) {
       complete = false;
       continue;
+    }
+    if ('kind' in read) {
+      complete = false;
+      break;
     }
     if (acceptedBytes + read.byteLength > MAX_STEP_DEFINITION_TOTAL_BYTES) {
       complete = false;
@@ -442,17 +479,37 @@ export async function collectWorkspaceStepDefinitionSources(
  * Deciding on `lstat().size` and then calling `readFile` does not bound the
  * read: a workspace process can grow or replace the file in between, and
  * `readFile` allocates whatever is actually there. The size is therefore taken
- * from the already-open descriptor and enforced by the read itself. Returns
- * `null` for anything that is not a readable regular file within the limit,
- * including a symlink, which `O_NOFOLLOW` rejects.
+ * from the already-open descriptor and enforced by the read itself, and the
+ * read window contains no path observation that a hostile process could race.
+ * Returns bounded raw bytes plus a UTF-8 compatibility view, `over-file-cap`
+ * when the bounded read proves the file exceeds the limit, or `null` for
+ * anything that is not a readable regular file. Consumers that must honor
+ * editor encoding should decode the bytes through
+ * `vscode.workspace.decode` with the source URI. A pre-open `lstat` avoids opening known directories, FIFOs, devices,
+ * and links; descriptor `stat` and a post-read path check remain the race
+ * boundary. `O_NOFOLLOW` and `O_NONBLOCK` are used where the platform defines
+ * them. On win32, which has neither flag, this is a stable-entry check rather
+ * than atomic exclusion or a universal I/O deadline. Parent-directory
+ * symlink exclusion is not established.
  */
-async function readBoundedFile(
+export async function readBoundedFile(
   filePath: string,
   limit: number,
-): Promise<{ text: string; byteLength: number } | null> {
+): Promise<BoundedFileRead | null> {
+  try {
+    const pathEntry = await fs.promises.lstat(filePath);
+    if (!pathEntry.isFile()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
   let handle: fs.promises.FileHandle;
   try {
-    handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const flags =
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+    handle = await fs.promises.open(filePath, flags);
   } catch {
     return null;
   }
@@ -476,10 +533,16 @@ async function readBoundedFile(
     }
 
     if (filled > limit) {
+      return { kind: 'over-file-cap' };
+    }
+
+    const pathEntry = await fs.promises.lstat(filePath);
+    if (!pathEntry.isFile()) {
       return null;
     }
 
-    return { text: buffer.subarray(0, filled).toString('utf8'), byteLength: filled };
+    const bytes = buffer.subarray(0, filled);
+    return { bytes, text: bytes.toString('utf8'), byteLength: filled };
   } catch {
     return null;
   } finally {

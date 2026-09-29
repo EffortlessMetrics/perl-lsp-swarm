@@ -1,0 +1,18 @@
+project: product
+component: Tooling
+kind: Fixed
+body: >
+  Tighten CP00-PROOF-LEVEL-CONTRADICTION word-boundary rules so that a
+  proof-level term (`release`, `public`, `installed`, `packaged`,
+  `presentation`) embedded only as part of a hyphenated or
+  `_`-separated compound identifier (`source-release`, `source_release`,
+  `source_public_release`, `installed_proof_requirement`) does not
+  donate that term to a contradiction reading. This eliminates the
+  false positive on #15504 where an Acceptance bullet naming
+  `source-release` and a PR body discussing `any release in common`
+  were read as contradictory even though no proof level was required.
+time: 2026-09-15T16:45:00Z
+custom:
+  PR: "15505"
+  Slug: cp00-proof-level-hyphenated-compound
+  Breaking: "no"

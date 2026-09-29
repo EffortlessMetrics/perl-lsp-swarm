@@ -21,9 +21,9 @@ A clean challenge is valid. Do not manufacture a finding or edit.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains whether the cumulative candidate is ready for fixed review,
+The accountable root retains whether the cumulative candidate is ready for fixed review,
 which findings are material, whether proof/claim/authority changed, which challenge
 lenses are needed, and whether repair, simplification, issue return, claim split, or
 `NOT_PROVEN` is the honest result.
@@ -47,7 +47,7 @@ entered.
 
 ### Mutation owner and join
 
-One candidate writer integrates accepted mutable repairs. The lane root joins
+One candidate writer integrates accepted mutable repairs. The accountable root joins
 contradictions and findings, verifies load-bearing seams, and decides the cumulative
 challenge result. Reviewer verdicts do not authorize formal review or merge.
 

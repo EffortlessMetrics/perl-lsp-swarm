@@ -34,8 +34,18 @@ fn dap_mode_debug_format() {
 
 #[test]
 fn dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
-    let config =
-        DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
+    // Startup authority is mandatory (#8656): a server without trusted roots
+    // or an explicit unbounded acknowledgement fails closed.
+    let root = tempfile::tempdir()?;
+    let config = DapConfig {
+        log_level: "info".to_string(),
+        mode: DapMode::Native,
+        workspace_root: None,
+        launch_authority: perl_dap::LaunchAuthorityStartup {
+            trusted_roots: vec![root.path().to_path_buf()],
+            allow_unbounded: None,
+        },
+    };
     let server = DapServer::new(config)?;
     assert_eq!(server.config.mode, DapMode::Native);
     assert_eq!(server.config.log_level, "info");
@@ -45,16 +55,60 @@ fn dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn dap_server_creation_preserves_workspace_root() -> Result<(), Box<dyn std::error::Error>> {
-    let root = std::path::PathBuf::from("/workspace");
+    // The trusted root must exist so the #8656 startup authority resolves.
+    let root_dir = tempfile::tempdir()?;
+    let root = root_dir.path().to_path_buf();
     let config = DapConfig {
         log_level: "debug".to_string(),
         mode: DapMode::Native,
         workspace_root: Some(root.clone()),
+        launch_authority: perl_dap::LaunchAuthorityStartup::default(),
     };
     let server = DapServer::new(config)?;
     assert_eq!(server.config.mode, DapMode::Native);
     assert_eq!(server.config.workspace_root, Some(root));
     Ok(())
+}
+
+#[test]
+fn dap_server_without_launch_authority_still_constructs_for_management_flows() {
+    // #8656: without authority inputs the server still starts so boundary-free
+    // management flows keep working; launch requests are refused fail-closed
+    // (covered by the adapter-level launch tests).
+    let config = DapConfig {
+        log_level: "info".to_string(),
+        mode: DapMode::Native,
+        workspace_root: None,
+        launch_authority: perl_dap::LaunchAuthorityStartup::default(),
+    };
+    let server =
+        DapServer::new(config).expect("a server without authority inputs must still construct");
+    assert!(server.config.launch_authority.trusted_roots.is_empty());
+    assert!(server.config.launch_authority.allow_unbounded.is_none());
+}
+
+#[test]
+fn dap_server_trusted_root_that_does_not_exist_is_rejected() {
+    // #8656: trusted roots are canonicalized and validated at startup.
+    let missing = std::env::temp_dir().join(format!("pldap-missing-root-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&missing);
+    let config = DapConfig {
+        log_level: "info".to_string(),
+        mode: DapMode::Native,
+        workspace_root: None,
+        launch_authority: perl_dap::LaunchAuthorityStartup {
+            trusted_roots: vec![missing],
+            allow_unbounded: None,
+        },
+    };
+    let error = match DapServer::new(config) {
+        Ok(_) => panic!("a missing trusted root must be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("does not exist"),
+        "startup error should name the missing root; got: {error:?}"
+    );
 }
 
 // ── TcpAttachConfig ────────────────────────────────────────────────

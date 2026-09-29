@@ -143,8 +143,55 @@ impl TempRepo {
 
 fn fragment(body: &str) -> String {
     format!(
-        "project: product\ncomponent: Developer experience\nkind: Fixed\nbody: \"{body}\"\ncustom:\n  PR: \"1\"\n  Breaking: \"no\"\n"
+        "project: product\ncomponent: Developer experience\nkind: Fixed\nbody: \"{body}\"\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n  Breaking: \"no\"\n"
     )
+}
+
+/// Issue #13484: a hand-authored fragment with an empty `time:` and the
+/// HH:MM:SS orphaned as bare YAML (the #12549/#12648 signature) must block the
+/// commit-tier gate with a finding naming the fragment and the defect — before
+/// it can land and crash `changie batch` repo-wide at render time.
+#[test]
+fn empty_or_orphaned_time_blocks_the_staged_gate() -> Result<()> {
+    for (label, fragment_text) in [
+        (
+            "empty time",
+            "project: product\ncomponent: Developer experience\nkind: Fixed\nbody: \"valid release note body\"\ntime:\ncustom:\n  PR: \"1\"\n  Breaking: \"no\"\n",
+        ),
+        (
+            "orphaned bare time",
+            "project: product\ncomponent: Developer experience\nkind: Fixed\nbody: \"valid release note body\"\ntime:\n  13:55:13\ncustom:\n  PR: \"1\"\n  Breaking: \"no\"\n",
+        ),
+    ] {
+        let repo = TempRepo::init()?;
+        repo.stage_baseline(CONFIG)?;
+        let fragment_path = ".changes/unreleased/product-1-Fixed-000000.yaml";
+        repo.write(fragment_path, fragment_text)?;
+        repo.add(fragment_path)?;
+
+        let outcome = run_with_renderer(repo.root(), None, |_workspace, _projects| {
+            bail!("renderer must not run while a malformed fragment is staged")
+        })?;
+        match outcome {
+            CommitCheckOutcome::Flagged(report) => {
+                assert_eq!(report.posture, Posture::Blocked, "{label}");
+                assert!(
+                    report.result.contains("`time:`"),
+                    "{label}: blocking report must name the time defect: {}",
+                    report.result
+                );
+                assert!(
+                    report.result.contains(fragment_path),
+                    "{label}: blocking report must name the fragment: {}",
+                    report.result
+                );
+            }
+            CommitCheckOutcome::Pass(summary) => {
+                bail!("expected an empty/orphaned `time:` fragment to block: {label}: {summary}");
+            }
+        }
+    }
+    Ok(())
 }
 
 #[test]

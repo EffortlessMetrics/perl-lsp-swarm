@@ -25,8 +25,13 @@ import {
   WINDOWS_ARM64_TARGET,
   WINDOWS_X64_TARGET,
   isTransientManagedInstallError,
+  isDownloadCancellationMessage,
+  isNetworkErrorMessage,
   parseLocalVersion,
   hostManagedCompatibilityKeys,
+  readGitHubToken,
+  resolveGitHubAuthDisposition,
+  UPDATE_PROMPT_SUPPRESSED_KEY,
   __resetManagedInstallSingleflightForTesting,
 } from '../downloader';
 import {
@@ -82,8 +87,9 @@ interface DownloaderPrivateSurface {
 
 interface TestDownloader extends DownloaderPrivateSurface {
   getLocalBinaryPath(): string;
+  getLastErrorMessage(): string | undefined;
   ensureBinary(forceDownload?: boolean): Promise<string | null>;
-  checkForUpdateSilent(): Promise<void>;
+  checkForUpdateSilent(force?: boolean): Promise<void>;
   downloadFile(url: string, dest: string, timeoutMs?: number): Promise<void>;
 }
 
@@ -101,6 +107,41 @@ function makeContext(storagePath?: string): vscode.ExtensionContext {
     extensionPath: dir,
     subscriptions: [],
   } as unknown as vscode.ExtensionContext;
+}
+
+/** Put one environment variable back, including the "was unset" case. */
+function restoreEnv(name: 'GITHUB_TOKEN' | 'GH_TOKEN', value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
+/**
+ * Neutralize ambient GitHub credentials for the enclosing describe block.
+ *
+ * `GITHUB_TOKEN` and `GH_TOKEN` are routinely set on developer machines and CI
+ * runners, and `readGitHubToken` consults both. Without this, whether a test
+ * that never mentions credentials takes the authenticated path depends on the
+ * host environment. Tests that need a token assign one directly; these hooks
+ * put the ambient values back afterwards.
+ */
+function isolateGitHubTokenEnv(): void {
+  let priorGitHubToken: string | undefined;
+  let priorGhToken: string | undefined;
+
+  beforeEach(() => {
+    priorGitHubToken = process.env.GITHUB_TOKEN;
+    priorGhToken = process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+  });
+
+  afterEach(() => {
+    restoreEnv('GITHUB_TOKEN', priorGitHubToken);
+    restoreEnv('GH_TOKEN', priorGhToken);
+  });
 }
 
 function makeOutputChannel(): vscode.OutputChannel {
@@ -1208,6 +1249,30 @@ describe('Singleflight managed install', () => {
     expect(r2).toBe('/path/from/force');
   });
 
+  test('a force joiner receives the owning cancellation reason', async () => {
+    const owner = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    const joiner = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    const deferred = makeDeferred<string | null>();
+    jest.spyOn(owner, 'runEnsureBinary').mockReturnValue(deferred.promise);
+    const joinRun = jest.spyOn(joiner, 'runEnsureBinary');
+
+    const first = owner.ensureBinary(true);
+    const second = joiner.ensureBinary(true);
+    (owner as unknown as { lastErrorMessage: string }).lastErrorMessage = 'Download cancelled';
+    deferred.resolve(null);
+
+    expect(await first).toBeNull();
+    expect(await second).toBeNull();
+    expect(joiner.getLastErrorMessage()).toBe('Download cancelled');
+    expect(joinRun).not.toHaveBeenCalled();
+  });
+
   test('force during ensure waits for ensure to finish then runs its own install', async () => {
     const downloader = new BinaryDownloader(
       makeContext(),
@@ -1480,7 +1545,7 @@ describe('BinaryDownloader download stream lifecycle', () => {
   type DownloaderSeams = {
     downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void>;
     createWriteStream: (dest: string) => TestFile;
-    removePartialFile: (dest: string) => void;
+    removePartialFile: (dest: string) => Promise<void>;
     httpGet: (...args: unknown[]) => TestRequest;
   };
 
@@ -1606,6 +1671,8 @@ describe('BinaryDownloader download stream lifecycle', () => {
 // Release metadata fetch timeout
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader getLatestRelease timeout', () => {
+  isolateGitHubTokenEnv();
+
   type TestRequest = EventEmitter & {
     destroy: jest.Mock;
   };
@@ -2056,7 +2123,6 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     const response = makeResponse();
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
-    const priorToken = process.env.GITHUB_TOKEN;
     process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
 
     const vscode = require('vscode');
@@ -2102,16 +2168,189 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       return request;
     });
 
-    try {
-      await seams.getLatestRelease(1000);
-      expect(capturedOptions?.headers?.Authorization).toBeUndefined();
-    } finally {
-      if (priorToken === undefined) {
-        delete process.env.GITHUB_TOKEN;
-      } else {
-        process.env.GITHUB_TOKEN = priorToken;
-      }
+    await seams.getLatestRelease(1000);
+    expect(capturedOptions?.headers?.Authorization).toBeUndefined();
+  });
+
+  /**
+   * The credential decision is named rather than inferred (#15493): the reason
+   * the token was dropped reaches the log, and the token itself never does.
+   */
+  test('records why credentials were withheld without logging the token', async () => {
+    // This control reads the log, so it needs its own channel rather than the
+    // shared fixture's discarded one.
+    const channel = makeOutputChannel();
+    const localDownloader = new BinaryDownloader(
+      makeContext(),
+      channel,
+    ) as unknown as TestDownloader;
+    jest
+      .spyOn(localDownloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
+    const seams = localDownloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        if (key === 'proxyStrictSSL') {
+          return false;
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await seams.getLatestRelease(1000);
+    const logged = (channel.appendLine as unknown as jest.Mock).mock.calls
+      .map((call) => String(call[0]))
+      .join('\n');
+    expect(logged).toMatch(/withheld/i);
+    expect(logged).toMatch(/http\.proxyStrictSSL/);
+    expect(logged).not.toContain('test-token-should-not-leak');
+  });
+
+  test('sends GitHub bearer credentials when certificate validation is on', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    process.env.GITHUB_TOKEN = 'test-token-should-be-sent';
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        if (key === 'proxyStrictSSL') {
+          return true;
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    let capturedOptions: { headers?: Record<string, string> } | undefined;
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, options, callback) => {
+      capturedOptions = options as { headers?: Record<string, string> };
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await seams.getLatestRelease(1000);
+    expect(capturedOptions?.headers?.Authorization).toBe('Bearer test-token-should-be-sent');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitHub credential policy (#15493)
+// ---------------------------------------------------------------------------
+describe('GitHub API credential policy', () => {
+  isolateGitHubTokenEnv();
+
+  const apiUrl = 'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases';
+
+  test('attaches the credential to a GitHub API host over verified TLS', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: true, strictTls: true })).toBe(
+      'sent',
+    );
+  });
+
+  test('withholds the credential when certificate validation is disabled', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: true, strictTls: false })).toBe(
+      'withheld_unverified_tls',
+    );
+  });
+
+  test('reports the absent token separately from a transport refusal', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: false, strictTls: true })).toBe(
+      'no_token',
+    );
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: false, strictTls: false })).toBe(
+      'no_token',
+    );
+  });
+
+  test('never offers the credential to another host', () => {
+    for (const url of [
+      'https://api.github.com.evil.invalid/repos/x/y/releases',
+      'https://objects.githubusercontent.com/release.tar.gz',
+      'https://internal.invalid/releases',
+      'http://api.github.com/repos/x/y/releases',
+    ]) {
+      expect(resolveGitHubAuthDisposition({ url, hasToken: true, strictTls: true })).toBe(
+        'not_github_api_host',
+      );
     }
+  });
+
+  test('reads either supported token variable', () => {
+    expect(readGitHubToken()).toBeUndefined();
+
+    process.env.GH_TOKEN = 'gh-token';
+    expect(readGitHubToken()).toBe('gh-token');
+
+    process.env.GITHUB_TOKEN = 'github-token';
+    expect(readGitHubToken()).toBe('github-token');
+
+    process.env.GITHUB_TOKEN = '';
+    expect(readGitHubToken()).toBe('gh-token');
   });
 });
 
@@ -2599,32 +2838,65 @@ describe('checkForUpdateSilent', () => {
     );
   });
 
-  test('"Don\'t ask again" sets updateCheckInterval to 0', async () => {
-    const updateFn = jest.fn();
-    const vscode = require('vscode');
-    vscode.workspace.getConfiguration.mockReturnValue({
-      get: jest.fn((key: string, defaultValue?: unknown) => {
-        const cfg: Record<string, unknown> = {
-          channel: 'latest',
-          serverPath: '',
-          updateCheckInterval: 24,
-          autoUpdate: false,
-        };
-        return key in cfg ? cfg[key] : defaultValue;
-      }),
-      update: updateFn,
-    });
+  test('"Don\'t ask again" records the prompt-suppression key without touching updateCheckInterval', async () => {
+    // #16536: suppression used to write updateCheckInterval: 0 globally, which
+    // also disabled interval checks and any later perl-lsp.autoUpdate=true.
+    // It must suppress only the prompt.
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
       tag_name: 'v0.13.0',
       assets: [],
     });
+    const vscode = require('vscode');
     vscode.window.showInformationMessage.mockResolvedValue("Don't ask again");
 
     await downloader.checkForUpdateSilent();
 
-    // ConfigurationTarget.Global === 1 in the vscode mock
-    expect(updateFn).toHaveBeenCalledWith('updateCheckInterval', 0, 1);
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
+    expect(ctx.globalState.update).toHaveBeenCalledWith(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    expect(ctx.globalState._store.get(UPDATE_PROMPT_SUPPRESSED_KEY)).toBe(true);
+    // The configuration surface is never written by the prompt.
+    const configMock = vscode.workspace.getConfiguration.mock.results.at(-1)!.value;
+    expect(configMock.update).not.toHaveBeenCalled();
+    // And the scoped update-check timestamp still advances.
+    expect(ctx.globalState._store.get(scopedKey)).toEqual(expect.any(Number));
+  });
+
+  test('a suppressed prompt still lets interval checks run — but shows no prompt (#16536)', async () => {
+    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    const getLatestSpy = jest
+      .spyOn(downloader, 'getLatestRelease')
+      .mockResolvedValue({ tag_name: 'v0.13.0', assets: [] });
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent();
+
+    // The check itself still happens; only the notification is suppressed.
+    expect(getLatestSpy).toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+    expect(outputChannel.appendLine).toHaveBeenCalledWith(
+      expect.stringContaining('prompts are suppressed'),
+    );
+  });
+
+  test('a suppressed prompt does not disable autoUpdate (#16536)', async () => {
+    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    const ensureSpy = jest.spyOn(downloader, 'ensureBinary').mockResolvedValue('/path/to/perllsp');
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(ensureSpy).toHaveBeenCalledWith(true);
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
   test('silent failure — logs error but shows no notification on network error', async () => {
@@ -2760,12 +3032,167 @@ describe('checkForUpdateSilent', () => {
 
     expect(ensureSpy).toHaveBeenCalledWith(true);
   });
+
+  // #16530: the manual command used to reset only the legacy unscoped state
+  // key while the interval guard reads the compatibility-scoped key, so a
+  // recent background check silently no-op'd the command. The forced path
+  // bypasses the interval guards entirely.
+  test('forced check bypasses the interval guard even with a fresh scoped timestamp', async () => {
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
+    ctx.globalState._store.set(scopedKey, Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    const getLatestSpy = jest
+      .spyOn(downloader, 'getLatestRelease')
+      .mockResolvedValue({ tag_name: 'v0.12.0', assets: [] });
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(getLatestSpy).toHaveBeenCalled();
+  });
+
+  test('forced check bypasses the legacy unscoped timestamp seed too', async () => {
+    ctx.globalState._store.set('perl-lsp.lastUpdateCheck', Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    const getLatestSpy = jest
+      .spyOn(downloader, 'getLatestRelease')
+      .mockResolvedValue({ tag_name: 'v0.12.0', assets: [] });
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(getLatestSpy).toHaveBeenCalled();
+  });
+
+  test('forced check reports "You are up to date" when nothing newer exists', async () => {
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.12.0',
+      assets: [],
+    });
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'You are up to date (0.12.0).',
+    );
+  });
+
+  test('failed forced release fetch reports failure without delaying background checks', async () => {
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockRejectedValue(new Error('offline'));
+    const vscode = require('vscode');
+    vscode.window.showWarningMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(ctx.globalState._store.has(scopedKey)).toBe(false);
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('failed'),
+      'View Logs',
+    );
+  });
+
+  test.each([
+    ['configured server path', { serverPath: '/custom/perllsp' }, 'serverPath'],
+    ['missing managed binary', { serverPath: '' }, 'missing'],
+  ])('forced check explains %s instead of silently returning', async (_label, config, reason) => {
+    mockConfig(config);
+    if (reason === 'missing') fs.rmSync(tmpBinary);
+    const vscode = require('vscode');
+
+    await downloader.checkForUpdateSilent(true);
+
+    const notices = [
+      ...vscode.window.showInformationMessage.mock.calls,
+      ...vscode.window.showWarningMessage.mock.calls,
+    ];
+    expect(
+      notices.some((call: unknown[]) => typeof call[0] === 'string' && call[0].includes(reason)),
+    ).toBe(true);
+  });
+
+  test('background check stays silent when up to date even after a forced check ran', async () => {
+    // The no-prompt contract of the background path is unchanged by the
+    // forced reporting above.
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.12.0',
+      assets: [],
+    });
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent();
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('forced check explains that checks are disabled while channel is pinned to tag', async () => {
+    mockConfig({ channel: 'tag', versionTag: 'v0.12.0' });
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease');
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('tag'),
+    );
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('v0.12.0'),
+    );
+    expect(getLatestSpy).not.toHaveBeenCalled();
+  });
+
+  test('background path with channel pinned to tag stays silent', async () => {
+    mockConfig({ channel: 'tag', versionTag: 'v0.12.0' });
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease');
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent();
+
+    expect(getLatestSpy).not.toHaveBeenCalled();
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('forced check offers the update prompt even when prompts were suppressed', async () => {
+    // The manual command is explicit intent: "Don't ask again" governs
+    // automatic prompts, not a check the user just requested.
+    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.13.0',
+      assets: [],
+    });
+    const vscode = require('vscode');
+    vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+    await downloader.checkForUpdateSilent(true);
+
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('0.13.0'),
+      'Update',
+      'Dismiss',
+      "Don't ask again",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
 // ensureBinary error classification — actionable messages (#3274)
 // ---------------------------------------------------------------------------
 describe('ensureBinary error classification', () => {
+  isolateGitHubTokenEnv();
+
   let ctx: FullTestContext;
   let outputChannel: vscode.OutputChannel;
   let downloader: TestDownloader;
@@ -2812,7 +3239,9 @@ describe('ensureBinary error classification', () => {
   });
 
   function setupDownloadError(errorMessage: string) {
-    jest.spyOn(downloader, 'downloadWithProgress').mockRejectedValue(new Error(errorMessage));
+    return jest
+      .spyOn(downloader, 'downloadWithProgress')
+      .mockRejectedValue(new Error(errorMessage));
   }
 
   test('network timeout shows message containing proxy/VPN guidance and manual install path', async () => {
@@ -2898,6 +3327,260 @@ describe('ensureBinary error classification', () => {
     expect(call[0]).toMatch(/perl-lsp\.serverPath/);
   });
 
+  // #16534: a plain 403 is not always a rate limit — proxies, VPNs, and
+  // captive portals return 403 too, so the banner must not blame the rate
+  // limit unconditionally.
+  test('non-withheld HTTP 403 names GitHub/network-proxy and keeps both remedies', async () => {
+    setupDownloadError('Failed to download: HTTP 403');
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/blocked by GitHub or your network\/proxy/);
+    expect(message).not.toMatch(/HTTP 403 — GitHub rate limit/);
+    // The rate-limit sentence survives alongside the new proxy hint.
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).toMatch(/proxy or VPN/);
+    expect(message).toMatch(/http\.proxy/);
+    expect(message).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  // #16534: the network branch only matched ECONNREFUSED|ETIMEDOUT|timeout and
+  // every other transport failure fell through to the generic dialog.
+  test.each([
+    ['DNS failure', 'getaddrinfo ENOTFOUND api.github.com'],
+    ['DNS temporary failure', 'request failed, reason: getaddrinfo EAI_AGAIN api.github.com'],
+    ['unreachable network', 'connect ENETUNREACH 140.82.121.3:443'],
+    ['connection reset', 'read ECONNRESET'],
+    ['TLS certificate failure', 'unable to verify the first certificate'],
+    ['self-signed certificate', 'self signed certificate in certificate chain'],
+    ['timeout', 'Download timeout after 30 seconds'],
+    ['connection refused', 'connect ECONNREFUSED 140.82.121.3:443'],
+  ])('network failure (%s) renders the network-unreachable guidance', async (_label, error) => {
+    setupDownloadError(error);
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/network unreachable/i);
+    expect(message).toMatch(/Perl: Reinstall Server Binary/);
+    expect(message).toMatch(/VPN|proxy/i);
+    expect(message).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  /**
+   * A 403 is diagnosed against the credential decision the refused request
+   * actually used (#15493). Telling a user to set GITHUB_TOKEN is wrong advice
+   * when the token exists and was withheld because certificate validation is
+   * disabled — and the `proxyStrictSSL` remedy is equally wrong for a 403 from
+   * the archive or checksum download, which never carries credentials.
+   */
+  function withStrictSSL(strictSSL: boolean): void {
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockImplementation(() => ({
+      get: jest.fn((key: string, defaultValue?: unknown) =>
+        key === 'proxyStrictSSL' ? strictSSL : defaultValue,
+      ),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    }));
+  }
+
+  /**
+   * Drive a real release-metadata request that GitHub refuses with 403, so the
+   * remedy is derived from the disposition that request actually used rather
+   * than from a stubbed error string.
+   */
+  function setupReleaseMetadata403(): void {
+    (
+      downloader as unknown as { downloadWithProgress: { mockRestore?: () => void } }
+    ).downloadWithProgress.mockRestore?.();
+
+    jest
+      .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
+
+    jest
+      .spyOn(downloader as unknown as { httpGet: (...args: unknown[]) => unknown }, 'httpGet')
+      .mockImplementation((..._args: unknown[]) => {
+        const callback = _args[3] as (value: unknown) => void;
+        const response = new EventEmitter() as EventEmitter & {
+          statusCode: number;
+          headers: Record<string, string>;
+          destroy: jest.Mock;
+        };
+        response.statusCode = 403;
+        response.headers = {};
+        response.destroy = jest.fn();
+        callback(response);
+        process.nextTick(() => response.emit('end'));
+        const request = new EventEmitter() as EventEmitter & { destroy: jest.Mock };
+        request.destroy = jest.fn();
+        return request;
+      });
+  }
+
+  test('metadata 403 names proxyStrictSSL when a present token was withheld', async () => {
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(false);
+    setupReleaseMetadata403();
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/http\.proxyStrictSSL/);
+    // The user already set a token; repeating that advice sends them to the
+    // wrong setting.
+    expect(message).not.toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).not.toContain('test-token-should-not-leak');
+    expect(message).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  test('metadata 403 keeps the token advice when no token was withheld', async () => {
+    // Certificate validation is off, but there is no credential to withhold
+    // (the hooks cleared both variables), so the anonymous rate limit really is
+    // the whole story.
+    withStrictSSL(false);
+    setupReleaseMetadata403();
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).not.toMatch(/http\.proxyStrictSSL/);
+  });
+
+  test('metadata 403 keeps the token advice when the token was sent', async () => {
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(true);
+    setupReleaseMetadata403();
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).not.toMatch(/http\.proxyStrictSSL/);
+    expect(message).not.toContain('test-token-should-not-leak');
+  });
+
+  /**
+   * A force call that arrives while an ensure install is in flight waits for
+   * it, then runs its own. The 403 record belongs to the run that owns it: the
+   * waiting call must not inherit the in-flight run's disposition, and must not
+   * wipe it out from under that run either.
+   */
+  test('a force run joined behind an ensure does not inherit its 403 disposition', async () => {
+    type Seams = {
+      releaseMetadata403Disposition?: string;
+      runEnsureBinary: (forceDownload: boolean) => Promise<string | null>;
+    };
+    const seams = downloader as unknown as Seams;
+
+    let releaseEnsure!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+
+    let dispositionSeenByForceRun: string | undefined = 'never-ran';
+    const runSpy = jest.spyOn(seams, 'runEnsureBinary');
+    // The in-flight ensure records a metadata 403 while the force call waits.
+    runSpy.mockImplementationOnce(async () => {
+      await gate;
+      seams.releaseMetadata403Disposition = 'withheld_unverified_tls';
+      throw new Error('Release fetch failed: HTTP 403');
+    });
+    // The force call's own run must start from a clean record.
+    runSpy.mockImplementationOnce(async () => {
+      dispositionSeenByForceRun = seams.releaseMetadata403Disposition;
+      return null;
+    });
+
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    const ensureCall = downloader.ensureBinary(false).catch(() => null);
+    await Promise.resolve();
+    const forceCall = downloader.ensureBinary(true).catch(() => null);
+    await Promise.resolve();
+    releaseEnsure();
+    await ensureCall;
+    await forceCall;
+
+    expect(dispositionSeenByForceRun).toBeUndefined();
+  });
+
+  /**
+   * `checkForUpdateSilent` reaches `fetchReleaseMetadata` outside the
+   * singleflight contract. Only a download run reports a remedy, so only a
+   * download run may record one.
+   */
+  test('a metadata 403 outside an owned download run records nothing', async () => {
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(false);
+
+    type Seams = {
+      releaseMetadata403Disposition?: string;
+      fetchReleaseMetadata: (url: string, timeoutMs: number, token?: unknown) => Promise<unknown>;
+      httpGet: (...args: unknown[]) => unknown;
+    };
+    const seams = downloader as unknown as Seams;
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((..._args: unknown[]) => {
+      const callback = _args[3] as (value: unknown) => void;
+      const response = new EventEmitter() as EventEmitter & {
+        statusCode: number;
+        headers: Record<string, string>;
+        destroy: jest.Mock;
+      };
+      response.statusCode = 403;
+      response.headers = {};
+      response.destroy = jest.fn();
+      callback(response);
+      process.nextTick(() => response.emit('end'));
+      const request = new EventEmitter() as EventEmitter & { destroy: jest.Mock };
+      request.destroy = jest.fn();
+      return request;
+    });
+
+    // No ensureBinary around this call: it stands for the silent update check.
+    await expect(
+      seams.fetchReleaseMetadata(
+        'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases',
+        1000,
+      ),
+    ).rejects.toThrow();
+
+    expect(seams.releaseMetadata403Disposition).toBeUndefined();
+  });
+
+  test('non-metadata 403 keeps the generic advice even with a withheld credential', async () => {
+    // The archive and checksum downloads never carry credentials, so
+    // re-enabling certificate validation cannot resolve a 403 from them. The
+    // remedy must follow the refused request, not the current settings.
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(false);
+    setupDownloadError('Failed to download: HTTP 403');
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).not.toMatch(/http\.proxyStrictSSL/);
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+  });
+
   test('HTTP 404 shows not-found guidance with download URL', async () => {
     setupDownloadError('Failed to download: HTTP 404');
     const vscode = require('vscode');
@@ -2923,6 +3606,115 @@ describe('ensureBinary error classification', () => {
     expect(call[0]).toMatch(/checksum|corrupt|retry/i);
     expect(call[0]).toMatch(/perl-lsp\.serverPath/);
   });
+
+  // #16532: the checksum banner said "Please retry" with no retry affordance.
+  test('checksum retry uses the reinstall command that owns health and startup', async () => {
+    const downloadSpy = setupDownloadError(
+      'Security check failed: Checksum verification failed (file may be corrupted or tampered with).',
+    );
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage
+      .mockResolvedValueOnce('Retry Download')
+      .mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+    // Let the dialog handler dispatch the registered workflow.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const call = vscode.window.showErrorMessage.mock.calls[0];
+    const buttons: string[] = call.slice(1);
+    expect(buttons).toContain('Retry Download');
+    expect(vscode.commands.executeCommand).toHaveBeenCalledWith('perl-lsp.reinstall');
+    expect(downloadSpy.mock.calls.length).toBe(1);
+  });
+
+  test('missing SHA256SUMS metadata names the manifest and mirror setting without claiming corruption (#16532)', async () => {
+    // The downloaded bytes were never judged when the manifest itself is
+    // absent — the message must not read as "download may be corrupted".
+    setupDownloadError('Security check failed: No SHA256SUMS file found in release assets.');
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/SHA256SUMS/);
+    expect(message).toMatch(/perl-lsp\.downloadBaseUrl/);
+    expect(message).toMatch(/perl-lsp\.serverPath/);
+    expect(message).not.toMatch(/corrupt/i);
+  });
+
+  test('a missing SHA256SUMS entry for the asset is metadata-missing, not corruption (#16532)', async () => {
+    // Previously lumped into the corruption message; the manifest exists but
+    // has no usable entry for this archive.
+    setupDownloadError(
+      'Security check failed: Checksum for perllsp-x86_64-unknown-linux-gnu.tar.gz not found in SHA256SUMS file.',
+    );
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/SHA256SUMS/);
+    expect(message).toMatch(/perl-lsp\.downloadBaseUrl/);
+    expect(message).not.toMatch(/corrupt/i);
+    // Still routes to checksum guidance, never the generic dialog.
+    expect(message).toMatch(/checksum/i);
+    expect(message).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  test.each([
+    'Security check failed: Conflicting checksum entries for perllsp.tar.gz',
+    'Security check failed: Malformed checksum entry for perllsp.tar.gz',
+  ])('invalid manifest metadata never claims archive corruption: %s', async (error) => {
+    setupDownloadError(error);
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/SHA256SUMS/);
+    expect(message).toMatch(/metadata is missing or invalid/);
+    expect(message).not.toMatch(/corrupt/i);
+  });
+
+  test('a digest mismatch still reports possible corruption with retry guidance', async () => {
+    // The genuine verification-failure branch keeps its corruption verdict.
+    setupDownloadError(
+      'Security check failed: Checksum verification failed (file may be corrupted or tampered with).',
+    );
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/corrupt/i);
+    expect(message).toMatch(/retry/i);
+  });
+
+  // #16532: the cancel strings from the progress wrapper and the bounded
+  // transports matched no classification branch and landed in the generic
+  // failure dialog. Cancellation is a user choice, not a failure.
+  test.each(['Download cancelled', 'Archive download cancelled', 'Release fetch cancelled'])(
+    'cancellation ("%s") shows an info line, never the failure dialog',
+    async (cancelMessage) => {
+      setupDownloadError(cancelMessage);
+      const vscode = require('vscode');
+      vscode.window.showErrorMessage.mockResolvedValue(undefined);
+      vscode.window.showInformationMessage.mockResolvedValue(undefined);
+
+      const result = await downloader.ensureBinary();
+
+      expect(result).toBeNull();
+      expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+        'Perl LSP download cancelled.',
+      );
+    },
+  );
 
   test('checksum-not-found in SHA256SUMS shows corruption message (case-insensitive match)', async () => {
     // This error has capital-C "Checksum" — verifies the classifier uses case-insensitive matching
@@ -3000,5 +3792,65 @@ describe('ensureBinary error classification', () => {
     );
     const uriArg = vscode.env.openExternal.mock.calls[0][0];
     expect(uriArg.toString()).toMatch(/github\.com.*perl-lsp/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Download failure classifiers (#16532, #16534)
+// ---------------------------------------------------------------------------
+describe('download failure classifiers', () => {
+  test('isNetworkErrorMessage covers the widened transport failure set (#16534)', () => {
+    const networkFailures = [
+      'connect ECONNREFUSED 140.82.121.3:443',
+      'connect ETIMEDOUT 140.82.121.3:443',
+      'getaddrinfo ENOTFOUND api.github.com',
+      'getaddrinfo EAI_AGAIN api.github.com',
+      'connect ENETUNREACH 140.82.121.3:443',
+      'read ECONNRESET',
+      'Download timeout after 30 seconds',
+      'unable to verify the first certificate',
+      'SELF_SIGNED_CERT_IN_CHAIN',
+      'certificate is not yet valid',
+    ];
+    for (const message of networkFailures) {
+      expect(isNetworkErrorMessage(message)).toBe(true);
+    }
+  });
+
+  test('isNetworkErrorMessage does not claim unrelated failures', () => {
+    const notNetwork = [
+      'Download cancelled',
+      'Failed to download: HTTP 403',
+      'Failed to download: HTTP 404',
+      'Security check failed: No SHA256SUMS file found in release assets.',
+      'No binary found for platform: x86_64-unknown-linux-gnu',
+      'Failed to extract archive: tar exited with code 1',
+    ];
+    for (const message of notNetwork) {
+      expect(isNetworkErrorMessage(message)).toBe(false);
+    }
+  });
+
+  test('isDownloadCancellationMessage matches every bounded-transport cancel string (#16532)', () => {
+    const cancellations = [
+      'Download cancelled',
+      'Archive download cancelled',
+      'Release fetch cancelled',
+    ];
+    for (const message of cancellations) {
+      expect(isDownloadCancellationMessage(message)).toBe(true);
+    }
+  });
+
+  test('isDownloadCancellationMessage does not match real failures', () => {
+    const failures = [
+      'Download timeout after 30 seconds',
+      'Archive download exceeded 524288000 compressed bytes',
+      'Release fetch returned invalid JSON',
+      'cancelled by the server', // not a trailing cancel marker
+    ];
+    for (const message of failures) {
+      expect(isDownloadCancellationMessage(message)).toBe(false);
+    }
   });
 });

@@ -1,0 +1,38 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-09",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14551",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/14654"
+    ],
+    "subject_shas": [
+      "04572d1aaa538186b2023bb309b35ca7ac4b5357"
+    ],
+    "boundary": "Exact bounded claim-boundary paragraph from the historical PR; other sections are omitted. The synthetic issue acceptance isolates CP00-003; this is not full historical PR replay."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 14654,
+    "title": "fix: bounded required-work subject control",
+    "body": "## Claim Boundary\n\n**Not claimed:** that this guard is now complete. Three rounds found three more edges; the paired tests are the safeguard, not a proof of exhaustion.\n\nCloses #14653."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 14653,
+      "title": "Complete the named bounded change",
+      "body": "## Acceptance\nThe named change and its focused regression control are established."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 14653,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

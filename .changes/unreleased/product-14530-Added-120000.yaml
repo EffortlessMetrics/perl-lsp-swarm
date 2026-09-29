@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: Modules that declare their exports with Sub::Exporter's `-setup` hash now contribute those exports to importers, and a configuration that cannot be read statically records a dynamic export boundary instead of a partial export list.
+time: 2026-09-01T12:00:00Z
+custom:
+  PR: "14530"
+  Slug: sub-exporter-setup-export-declarations
+  Breaking: "no"

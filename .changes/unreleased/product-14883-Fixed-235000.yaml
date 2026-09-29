@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Split completion keywords by syntactic role so value positions still offer anonymous sub/do/eval while suppressing statement-only keywords like package.
+time: 2026-09-05T23:50:00Z
+custom:
+  PR: 14883
+  Slug: keyword-syntactic-role
+  Breaking: "no"

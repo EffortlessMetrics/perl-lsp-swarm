@@ -1,4 +1,4 @@
-import { parseStrictSemver, type ParsedSemver } from './strictSemver';
+import { compareStrictSemver, parseStrictSemver, type ParsedSemver } from './strictSemver';
 
 export type MigrationDisposition =
   | 'unchanged'
@@ -107,6 +107,101 @@ export function isValidCompatibilityWindow(value: unknown): value is Compatibili
     (window.post_expiry_disposition === 'action_required' ||
       window.post_expiry_disposition === 'invalid' ||
       window.post_expiry_disposition === 'inert')
+  );
+}
+
+/**
+ * One end of a row's historical era. The grammar is deliberately closed to two forms so
+ * that a bound has exactly one spelling: a strict release, or a whole minor series.
+ * `0.17.x` is not SemVer, which is why these bounds could not simply reuse
+ * `parseStrictSemver` when the envelope's release identities were tightened.
+ */
+export type MigrationEraBound =
+  | { kind: 'exact'; version: ParsedSemver }
+  | { kind: 'minor_series'; major: string; minor: string };
+
+/** An inclusive historical window: the releases whose settings a row speaks for. */
+export interface MigrationEra {
+  lower: MigrationEraBound;
+  upper: MigrationEraBound;
+}
+
+const MINOR_SERIES_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.x$/;
+
+/**
+ * Parse one era bound, or `null` when the spelling is outside the accepted grammar.
+ *
+ * A leading `v`, a prerelease tag, and build metadata are all refused rather than
+ * normalized away. A release era is not a prerelease, and `parseStrictSemver` *discards*
+ * build metadata — so accepting it would make `0.17.0` and `0.17.0+build.1` two spellings
+ * of one bound, and the registry's byte-stable serialization would then depend on which
+ * spelling an author happened to choose.
+ */
+export function parseMigrationEraBound(value: unknown): MigrationEraBound | null {
+  if (typeof value !== 'string' || value.startsWith('v') || value.includes('+')) return null;
+
+  const series = MINOR_SERIES_PATTERN.exec(value);
+  if (series) {
+    const major = series[1];
+    const minor = series[2];
+    if (major === undefined || minor === undefined) return null;
+    if (![major, minor].every((part) => Number.isSafeInteger(Number(part)))) return null;
+    return { kind: 'minor_series', major, minor };
+  }
+
+  const exact = parseStrictSemver(value);
+  if (exact === null || exact.prerelease.length > 0) return null;
+  return { kind: 'exact', version: exact };
+}
+
+/** The lowest release a bound admits when it opens an era. */
+function eraLowerPoint(bound: MigrationEraBound): ParsedSemver {
+  return bound.kind === 'exact'
+    ? bound.version
+    : { major: bound.major, minor: bound.minor, patch: '0', prerelease: [] };
+}
+
+function compareNumeric(left: string, right: string): number {
+  const leftValue = Number(left);
+  const rightValue = Number(right);
+  return leftValue === rightValue ? 0 : leftValue < rightValue ? -1 : 1;
+}
+
+/** True when `version` is at or below everything the bound admits when it closes an era. */
+function atOrBelowEraUpperBound(version: ParsedSemver, bound: MigrationEraBound): boolean {
+  if (bound.kind === 'exact') return compareStrictSemver(version, bound.version) <= 0;
+  // A minor series admits every patch it contains, so only the (major, minor) pair
+  // bounds it. An equal pair is inside the series whatever the patch or prerelease is.
+  const major = compareNumeric(version.major, bound.major);
+  return major === 0 ? compareNumeric(version.minor, bound.minor) <= 0 : major < 0;
+}
+
+/**
+ * Parse a row's historical era, or `null` when either bound is outside the grammar or the
+ * window is inverted. An inverted window admits no release at all, so reporting it as
+ * malformed is more useful than silently selecting nothing.
+ */
+export function parseMigrationEra(row: ConfigurationMigrationRow): MigrationEra | null {
+  const lower = parseMigrationEraBound(row.introduced_version);
+  const upper = parseMigrationEraBound(row.last_supported_version);
+  if (lower === null || upper === null) return null;
+  if (!atOrBelowEraUpperBound(eraLowerPoint(lower), upper)) return null;
+  return { lower, upper };
+}
+
+/** True when the era speaks for `version`. */
+export function migrationEraCoversVersion(era: MigrationEra, version: ParsedSemver): boolean {
+  return (
+    compareStrictSemver(version, eraLowerPoint(era.lower)) >= 0 &&
+    atOrBelowEraUpperBound(version, era.upper)
+  );
+}
+
+/** True when two eras claim any release in common. */
+export function migrationErasOverlap(left: MigrationEra, right: MigrationEra): boolean {
+  return (
+    atOrBelowEraUpperBound(eraLowerPoint(left.lower), right.upper) &&
+    atOrBelowEraUpperBound(eraLowerPoint(right.lower), left.upper)
   );
 }
 
@@ -267,7 +362,11 @@ export function findMigrationRows(
 export function validateMigrationRegistry(registry: ConfigurationMigrationRegistry): string[] {
   const errors: string[] = [];
   const migrationIds = new Set<string>();
-  const exactHistoricalSubjects = new Set<string>();
+  // Keyed by the subject rows actually compete on at interpretation time: the same key at
+  // the same scope. `old_value_shape` is deliberately not part of this key — the runtime
+  // has no executable shape discriminator, so a differing shape must not excuse two eras
+  // that a reader would be unable to tell apart.
+  const erasBySubject = new Map<string, MigrationEra[]>();
 
   const candidate: unknown = registry;
   if (!isSupportedMigrationRegistry(candidate)) {
@@ -286,11 +385,18 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
     }
     migrationIds.add(row.migration_id);
 
-    const exactSubject = `${row.old_key}\u0000${row.introduced_version}\u0000${row.last_supported_version}\u0000${row.old_value_shape}`;
-    if (exactHistoricalSubjects.has(exactSubject)) {
-      errors.push(`overlapping historical migration subject: ${row.old_key}`);
+    const era = parseMigrationEra(row);
+    if (era === null) {
+      errors.push(`migration historical era is not a valid window: ${row.migration_id}`);
+    } else {
+      const subject = `${row.old_key}\u0000${row.old_scope}`;
+      const declaredEras = erasBySubject.get(subject) ?? [];
+      if (declaredEras.some((other) => migrationErasOverlap(era, other))) {
+        errors.push(`overlapping historical migration subject: ${row.old_key}`);
+      }
+      declaredEras.push(era);
+      erasBySubject.set(subject, declaredEras);
     }
-    exactHistoricalSubjects.add(exactSubject);
 
     if (row.migration_disposition === 'removed_inert') {
       if (row.new_key_or_authority !== null || row.new_scope !== null) {

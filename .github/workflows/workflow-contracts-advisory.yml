@@ -30,6 +30,8 @@ on:
       - "xtask/src/tasks/workflow_policy_lint.rs"
       - "policy/workflow-contracts.toml"
       - ".ci/receipts/schemas/workflow-contracts.schema.json"
+      - "xtask/src/main.rs"
+      - "xtask/src/tasks/mod.rs"
   push:
     branches: [main]
     paths:
@@ -37,6 +39,8 @@ on:
       - "scripts/ci/test_codecov_test_results_workflows.py"
       - "xtask/src/tasks/workflows.rs"
       - "policy/workflow-contracts.toml"
+      - "xtask/src/main.rs"
+      - "xtask/src/tasks/mod.rs"
   workflow_dispatch: {}
 
 permissions:
@@ -73,7 +77,7 @@ jobs:
         run: python3 -m unittest scripts.ci.test_codecov_test_results_workflows
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
 

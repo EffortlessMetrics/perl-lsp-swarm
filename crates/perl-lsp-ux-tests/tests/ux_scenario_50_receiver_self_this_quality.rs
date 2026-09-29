@@ -169,7 +169,10 @@ fn probe_self_this_receiver(
     probe: &SelfThisReceiverProbe,
 ) -> Result<SelfThisReceiverReport> {
     let (line, character) = position_after(probe.source, probe.receiver_marker)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.completion(probe.file, line, character)?;
         for item in &items {
@@ -400,7 +403,13 @@ fn scenario_50_receiver_self_this_quality_receipt() {
                 };
                 harness.open_file(path, source)?;
             }
-            std::thread::sleep(Duration::from_millis(500));
+            // Synchronize on the server's own analysis-readiness signal instead
+            // of a fixed sleep: on a cold CI runner the sleep let completion
+            // queries outrun the first analysis of the just-opened documents
+            // (#15870 family).
+            let _ = harness.wait_for_diagnostics(PARENT_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(SELF_CHILD_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(THIS_CHILD_PATH, Duration::from_secs(30));
 
             let probes = self_this_receiver_probes();
             let mut reports = Vec::new();

@@ -1,3 +1,19 @@
+# Rust build toolchain — image role: ci_toolchain. NOT a product image.
+#
+# Disposition (#8980): retired from product publication. This image used to be
+# published under the unsuffixed `perl-lsp:<version>` tags on GHCR and Docker
+# Hub, so the obvious product reference resolved to a build toolchain that
+# ships no `perllsp`. It no longer publishes anywhere.
+#
+# The end-user runtime is .docker/perl-lsp/Dockerfile, published as
+# `effortlessmetrics/perl-lsp:<version>-perl` and `ghcr.io/<repo>-perl`.
+#
+# The one remaining consumer is the `trivy-docker-scan` job in
+# .github/workflows/ci-security.yml, which builds this file locally and scans
+# it as `perl-lsp-ci:<sha>`. It is not a reusable or distributed image: it
+# bakes in a copy of the repository source and builds as root. Do not give it
+# a product identity, and do not depend on it as a prebuilt base.
+
 FROM rust:1.95-slim-bookworm
 
 # Install system dependencies

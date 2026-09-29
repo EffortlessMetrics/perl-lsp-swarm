@@ -56,9 +56,9 @@ A clean proof review is valid. Do not add broad tests merely to demonstrate effo
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains the proof-sufficiency judgment and decides whether findings require
+The accountable root retains the proof-sufficiency judgment and decides whether findings require
 proof repair, issue correction, candidate work, or an explicit `NOT_PROVEN` boundary.
 A reviewer does not approve the claim or mutate proof merely by returning a clean
 result.
@@ -82,7 +82,7 @@ and uncertainty. Repeated conclusions from one source are not separate evidence.
 Reviewers are read-only by default. Accepted proof mutations return to the current proof
 writer through `$spec-to-test` or `$prepare-proof`.
 
-Join when the lane root can state:
+Join when the accountable root can state:
 
 - which realistic wrong implementations the proof excludes;
 - which oracle and production seam the result uses;
@@ -103,8 +103,9 @@ Use an issue/PR comment or review finding when a proof defect, external oracle,
 production-path fact, or `NOT_PROVEN` boundary will affect implementation, review,
 support, or later resumption. Localized candidate-test findings may use inline review.
 
-The integrating lane owner posts. A skill run that only answers a bounded proof question
-returns file/line-anchored findings as evidence and does not write to GitHub.
+The accountable root posts the joined durable conclusion. A skill run that only answers
+a bounded proof question returns file/line-anchored findings as evidence and does not
+write to GitHub unless its brief grants one specific bounded finding publication.
 
 Keep reviewer identity, topology, raw logs, temporary mutants, retries, and clean
 routine results runtime-local. Do not post one summary per reviewer or one comment per

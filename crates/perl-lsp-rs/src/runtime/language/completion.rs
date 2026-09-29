@@ -1035,18 +1035,27 @@ impl LspServer {
             return;
         }
 
+        // The core provider owns method and hash-key positions. This name-only
+        // workspace pass cannot validate receiver identity or key membership;
+        // appending its generic names would reintroduce impossible candidates
+        // after the core provider has selected the appropriate role (#9816).
+        let Some(text_before) = doc_text.get(..offset) else {
+            return;
+        };
+        let is_method_completion =
+            text_before.trim_end().rsplit_once("->").is_some_and(|(_, suffix)| {
+                suffix.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            });
+        if is_method_completion
+            || CompletionProvider::detect_hash_key_context(doc_text, offset).is_some()
+        {
+            return;
+        }
+
         match workspace_mode {
             IndexAccessMode::Full(coordinator) => {
                 let index = coordinator.index();
 
-                let text_before = &doc_text[..offset.min(doc_text.len())];
-                // Method context survives once a method name is partially typed:
-                // `$obj->` and `$obj->co` are both method-completion positions,
-                // while `$x->[0]` or plain identifiers are not.
-                let is_method_completion =
-                    text_before.trim_end().rsplit_once("->").is_some_and(|(_, suffix)| {
-                        suffix.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-                    });
                 let prefix = text_before
                     .chars()
                     .rev()
@@ -1109,15 +1118,6 @@ impl LspServer {
                 let mut seen: HashSet<String> =
                     completions.iter().map(|completion| completion.label.to_string()).collect();
 
-                // The runtime pass has no receiver facts of its own. When the
-                // core provider already attached receiver evidence to this
-                // response, keep its quiet name-only extras; otherwise label
-                // callable candidates honestly instead of emitting an
-                // unlabelled dynamic-boundary insertion (issue #11158).
-                let receiver_evidence_present = completions.iter().any(|completion| {
-                    completion.detail.as_deref().is_some_and(|detail| detail.contains("receiver:"))
-                });
-
                 for symbol in workspace_symbols {
                     if should_continue.is_some_and(|check| !check()) {
                         return;
@@ -1131,17 +1131,16 @@ impl LspServer {
                     // symbols, so emitting these as bare insertions can leave
                     // an unimported cross-file reference in the document.
                     // The core provider owns import-aware, current-file, and
-                    // qualified completions for these kinds; retain only the
-                    // module-name kinds here (issue #11158).
-                    if !is_method_completion
-                        && matches!(
-                            symbol.kind,
-                            crate::workspace_index::SymbolKind::Subroutine
-                                | crate::workspace_index::SymbolKind::Method
-                                | crate::workspace_index::SymbolKind::Constant
-                                | crate::workspace_index::SymbolKind::Export
-                        )
-                    {
+                    // qualified completions for these kinds. The method role
+                    // has already returned above (#9816); retain only other
+                    // eligible workspace names here (issue #11158).
+                    if matches!(
+                        symbol.kind,
+                        crate::workspace_index::SymbolKind::Subroutine
+                            | crate::workspace_index::SymbolKind::Method
+                            | crate::workspace_index::SymbolKind::Constant
+                            | crate::workspace_index::SymbolKind::Export
+                    ) {
                         continue;
                     }
 
@@ -1219,21 +1218,7 @@ impl LspServer {
 
                     let label = symbol.name.clone();
                     let qualified_name = Self::workspace_symbol_qualified_name(&symbol);
-                    let detail = if !receiver_evidence_present
-                        && matches!(
-                            symbol.kind,
-                            crate::workspace_index::SymbolKind::Subroutine
-                                | crate::workspace_index::SymbolKind::Method
-                                | crate::workspace_index::SymbolKind::Constant
-                                | crate::workspace_index::SymbolKind::Export
-                        ) {
-                        // Callable kinds only reach this pass through the
-                        // method-completion gate above, which carries no
-                        // receiver evidence; say so on the item.
-                        Some(format!("{qualified_name} — receiver: unknown, low confidence"))
-                    } else {
-                        Some(qualified_name.clone())
-                    };
+                    let detail = qualified_name.clone();
                     // Invariant: text_edit_range.is_some() ⟺ insert_text is the
                     // fully-qualified name.  The serializer (completion_item_to_lsp_value)
                     // depends on this to locate the newText from `item["insertText"]`.
@@ -1263,7 +1248,7 @@ impl LspServer {
                     completions.push(crate::completion::CompletionItem {
                         label: label.into(),
                         kind: Self::workspace_symbol_kind(&symbol),
-                        detail: detail.map(Into::into),
+                        detail: Some(detail.into()),
                         insert_text: insert_text.map(Into::into),
                         // Workspace enrichment is a fallback tier. Give it an
                         // explicit low-priority rank so unranked labels (for
@@ -1368,7 +1353,7 @@ impl LspServer {
 
     /// Format type information concisely for completion detail
     pub(crate) fn format_type_for_detail(t: &crate::type_inference::PerlType) -> String {
-        use perl_parser::type_inference::PerlType;
+        use perl_semantic_analyzer::analysis::type_inference::PerlType;
         match t {
             PerlType::Scalar(_) => "scalar".to_string(),
             PerlType::Array(_) => "array".to_string(),
@@ -1510,6 +1495,22 @@ impl LspServer {
         item
     }
 
+    fn empty_completion_list() -> Value {
+        json!({"isIncomplete": false, "items": []})
+    }
+
+    fn publish_completion_answer(&self, uri: &str, generation: Option<u32>, value: Value) -> Value {
+        match generation {
+            Some(generation) => self.publish_user_answer_value(
+                uri,
+                generation,
+                value,
+                Self::empty_completion_list(),
+            ),
+            None => Self::empty_completion_list(),
+        }
+    }
+
     /// Handle completion request
     pub(crate) fn handle_completion(
         &self,
@@ -1555,9 +1556,12 @@ impl LspServer {
             // just this one -- for the full analysis duration below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let doc_owned = {
+            let (doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
-                self.get_document(&documents, uri).cloned()
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
+                    None => (None, None),
+                }
             };
             // documents guard dropped here
             if timing_on {
@@ -1587,7 +1591,7 @@ impl LspServer {
                 // #5411 fixed for goto-definition -- a position the naive
                 // quote-counter classifies as both comment and string would
                 // wrongly skip this guard.
-                if perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text) {
+                if super::navigation::is_in_comment_naive(offset, &doc.text) {
                     break 'completion_response None;
                 }
 
@@ -1597,7 +1601,9 @@ impl LspServer {
                 // completion request arrived, leaving `current_parsed()` empty).
                 // For completions, a slightly-stale AST is always more useful than
                 // the symbol-table-free `lexical_complete` fallback (#11858).
-                let parsed = doc.current_parsed().or_else(|| doc.latest_parsed());
+                // Full-sync desynchronization is not pending parse: predecessor
+                // AST must not answer the user (#8129).
+                let parsed = doc.parsed_for_user_answers();
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
@@ -1687,18 +1693,22 @@ impl LspServer {
                     }
 
                     base_completions
+                } else if doc.full_sync_required() {
+                    Vec::new()
                 } else {
                     // Fallback: provide basic keyword completions when AST is unavailable
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
 
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    None,
-                );
+                if !doc.full_sync_required() {
+                    self.add_declared_dependency_completions(
+                        &mut completions,
+                        &doc.text,
+                        uri,
+                        offset,
+                        None,
+                    );
+                }
 
                 // Add workspace-wide completions using routing policy
                 #[cfg(feature = "workspace")]
@@ -1799,11 +1809,15 @@ impl LspServer {
                 ));
             }
             if let Some(response) = response {
-                return Ok(Some(response));
+                return Ok(Some(self.publish_completion_answer(
+                    uri,
+                    captured_generation,
+                    response,
+                )));
             }
         }
 
-        Ok(Some(json!({"isIncomplete": false, "items": []})))
+        Ok(Some(Self::empty_completion_list()))
     }
 
     /// Handle completion request with cancellation support
@@ -1894,9 +1908,12 @@ impl LspServer {
             // below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let doc_owned = {
+            let (doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
-                self.get_document(&documents, uri).cloned()
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
+                    None => (None, None),
+                }
             };
             // documents guard dropped here
             if timing_on {
@@ -1941,8 +1958,7 @@ impl LspServer {
                 // #5411 fixed for goto-definition -- a position the naive
                 // quote-counter classifies as both comment and string would
                 // wrongly skip this guard.
-                let in_comment =
-                    perl_lsp_rs_core::providers::rename::is_in_comment(offset, &doc.text);
+                let in_comment = super::navigation::is_in_comment_naive(offset, &doc.text);
 
                 // Test-only rendezvous: gives a regression test a
                 // deterministic window to land a cancellation here instead
@@ -1974,7 +1990,9 @@ impl LspServer {
                 // completion request arrived, leaving `current_parsed()` empty).
                 // For completions, a slightly-stale AST is always more useful than
                 // the symbol-table-free `lexical_complete` fallback (#11858).
-                let parsed = doc.current_parsed().or_else(|| doc.latest_parsed());
+                // Full-sync desynchronization is not pending parse: predecessor
+                // AST must not answer the user (#8129).
+                let parsed = doc.parsed_for_user_answers();
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
@@ -2035,6 +2053,8 @@ impl LspServer {
                         Some(uri),
                         &cancel_fn,
                     )
+                } else if doc.full_sync_required() {
+                    Vec::new()
                 } else {
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
@@ -2049,13 +2069,15 @@ impl LspServer {
                 }
 
                 let should_continue = || !token.is_cancelled_relaxed();
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    Some(&should_continue),
-                );
+                if !doc.full_sync_required() {
+                    self.add_declared_dependency_completions(
+                        &mut completions,
+                        &doc.text,
+                        uri,
+                        offset,
+                        Some(&should_continue),
+                    );
+                }
 
                 #[cfg(feature = "workspace")]
                 self.add_runtime_workspace_completions(
@@ -2181,10 +2203,14 @@ impl LspServer {
                 ))
             };
             if let Some(response) = response {
-                return Ok(Some(response));
+                return Ok(Some(self.publish_completion_answer(
+                    uri,
+                    captured_generation,
+                    response,
+                )));
             }
 
-            Ok(Some(json!({"isIncomplete": false, "items": []})))
+            Ok(Some(Self::empty_completion_list()))
         } else {
             self.handle_completion(params)
         }
@@ -2384,11 +2410,17 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let Some(mut item) = params else {
-            return Ok(None);
+            return Err(crate::protocol::invalid_params("Missing completion item parameters"));
         };
 
         // Extract the label and kind upfront (clone to avoid borrow issues)
-        let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let label = item
+            .get("label")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                crate::protocol::invalid_params("Missing or invalid completion item label")
+            })?
+            .to_string();
         let kind = item.get("kind").and_then(|v| v.as_u64()).unwrap_or(0);
         let has_doc = item.get("documentation").is_some();
         let label_details_support = self.client_capabilities.lock().label_details_support;
@@ -2554,8 +2586,13 @@ mod tests {
         let mut parser = perl_parser_core::Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
-        let activations =
-            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         let offset = source.find(needle).expect("fixture offset");
         let candidates =
@@ -3587,6 +3624,166 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn completion_does_not_use_predecessor_ast_while_full_sync_required()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/desync_completion.pl";
+        let v1 = "package DesyncCompletion;\nsub unique_pred_for_desync {}\nunique_pred_for_des\n";
+        let v2 = "package DesyncCompletion;\nsub unique_recovered_for_desync {}\nunique_recovered_for_des\n";
+
+        server.test_apply_did_open(uri, v1, 1)?;
+        server.test_index_file_in_building_state(uri, v1).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 2, "character": 20 }
+        })))?;
+        let fresh = explain_provider_decision(&server, "completion")?;
+        let fresh_receipt = fresh
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing fresh completion request receipt")?;
+        assert_eq!(
+            fresh_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(true),
+            "parsed document must expose AST to completion: {fresh:?}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 25 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "position": { "line": 2, "character": 20 }
+        })))?;
+        let desync = explain_provider_decision(&server, "completion")?;
+        let desync_receipt = desync
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing desync completion request receipt")?;
+        assert_eq!(
+            desync_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(false),
+            "predecessor AST must not answer completion while Full-sync is required: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("none"),
+            "desynchronized document must disable workspace-index completion: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("item_count").and_then(Value::as_u64),
+            Some(0),
+            "lexical and declared-dependency fallbacks must not answer from last-good text: {desync:?}"
+        );
+
+        server.test_apply_did_change(uri, v2, 3)?;
+        let recovered_gen = {
+            let docs = server.documents.lock();
+            docs.get(uri).ok_or("recovered completion document")?.current_generation()
+        };
+        server.test_index_live_file(uri, v2, recovered_gen).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 3 },
+            "position": { "line": 2, "character": 25 }
+        })))?;
+        let recovered = explain_provider_decision(&server, "completion")?;
+        let recovered_receipt = recovered
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing recovered completion request receipt")?;
+        assert_eq!(
+            recovered_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(true),
+            "full-document recovery must restore AST-backed completion: {recovered:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_does_not_publish_in_flight_predecessor_after_violation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/inflight_completion.pl";
+        let predecessor =
+            "package InflightCompletion;\nsub unique_pred_for_inflight {}\nunique_pred_for_inf\n";
+
+        server.test_apply_did_open(uri, predecessor, 1)?;
+        let snapshot = server
+            .snapshot_user_answer_text(uri)
+            .ok_or("open document must have a usable user-answer snapshot")?;
+        let computed = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 2, "character": 19 }
+            })))?
+            .ok_or("in-flight completion must return a result")?;
+        let live_labels = completion_item_labels(&computed)?;
+        assert!(
+            live_labels.iter().any(|label| label.contains("unique_pred_for_inflight")),
+            "in-flight completion must see the predecessor subroutine: {computed}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 28 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+        assert!(
+            !server.user_answer_text_is_current(uri, snapshot.generation),
+            "ranged violation must invalidate the captured user-answer generation"
+        );
+        let published = server.publish_completion_answer(uri, Some(snapshot.generation), computed);
+        let published_labels = completion_item_labels(&published)?;
+        assert!(
+            published_labels.is_empty(),
+            "in-flight predecessor completions must not publish after invalidation: {published}"
+        );
+
+        let live = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 2, "character": 19 }
+            })))?
+            .ok_or("live completion must return a result")?;
+        let live_after = completion_item_labels(&live)?;
+        assert!(
+            live_after.is_empty(),
+            "live completion after Full-sync violation must fail closed: {live}"
+        );
+        Ok(())
+    }
+
+    fn completion_item_labels(value: &Value) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let items = value
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or("completion must return an items array")?;
+        Ok(items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect())
+    }
+
     #[test]
     fn completion_provider_decision_claim_boundary_requires_shadow_receipt()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -4002,7 +4199,7 @@ mod tests {
     fn shared_request_context_is_built_once_for_both_completion_consumers()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::runtime::routing::IndexAccessMode;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
         use tempfile::TempDir;
         use url::Url;
@@ -4075,7 +4272,7 @@ mod tests {
     fn no_inc_context_is_assembled_when_no_consumer_needs_one()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::runtime::routing::IndexAccessMode;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
         use tempfile::TempDir;
         use url::Url;
@@ -5178,7 +5375,7 @@ mod tests {
     fn strategy_b_multi_folder_filters_cross_folder_var() {
         use crate::runtime::routing::IndexAccessMode;
         use crate::runtime::workspace_folder::WorkspaceFolderState;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
 
         let server = LspServer::default();
@@ -5228,7 +5425,7 @@ our $cross_folder_var_b;
     fn strategy_b_single_folder_skips_filter_includes_symbol() {
         use crate::runtime::routing::IndexAccessMode;
         use crate::runtime::workspace_folder::WorkspaceFolderState;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
 
         let server = LspServer::default();
@@ -5286,7 +5483,7 @@ our $single_root_var;
     ) -> Vec<(String, Option<String>, Option<(usize, usize)>)> {
         use crate::runtime::routing::IndexAccessMode;
         use crate::runtime::workspace_folder::WorkspaceFolderState;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
 
         let server = LspServer::default();
@@ -5325,6 +5522,41 @@ our $single_root_var;
                 )
             })
             .collect()
+    }
+
+    /// Core completion claims these structural roles before the runtime
+    /// workspace pass runs. A package variable valid at a normal sigil
+    /// position must not leak back into either role (#9816).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn runtime_workspace_pass_does_not_reopen_method_or_hash_key_roles() {
+        let uri = "file:///project/bin/app.pl";
+        let ordinary = run_workspace_pass_over_secrets_module(uri, "$api", None);
+        assert!(ordinary.iter().any(|(label, _, _)| label == "$api_token"));
+
+        for source in [
+            "my $obj; $obj->",
+            "my $obj; $obj->api",
+            "my $hash; $hash{",
+            "my $hash; $hash{api",
+            // The hashref form is the same hash-key role (#5159): enrichment
+            // must stay out of it too.
+            "my $ref; $ref->{",
+            "my $ref; $ref->{api",
+        ] {
+            let items = run_workspace_pass_over_secrets_module(uri, source, None);
+            assert!(items.is_empty(), "runtime fallback leaked into {source:?}: {items:?}");
+        }
+
+        // The gate concerns the role at the cursor, not an arrow or an
+        // earlier hash subscript elsewhere in the document.
+        for source in ["$obj->call();\n$api", "$hash{key};\n$api"] {
+            let items = run_workspace_pass_over_secrets_module(uri, source, None);
+            assert!(
+                items.iter().any(|(label, _, _)| label == "$api_token"),
+                "ordinary variable position after a completed access lost enrichment: {items:?}"
+            );
+        }
     }
 
     /// A package variable owned by an unimported module must be inserted fully

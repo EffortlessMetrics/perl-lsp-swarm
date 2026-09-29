@@ -59,6 +59,19 @@ impl PerlLexer<'_> {
         close: char,
         terminator: char,
     ) -> Option<usize> {
+        self.consume_balanced_segment_in_string_with_terminator(open, close, Some(terminator))
+    }
+
+    /// Consume a balanced segment while optionally honoring an outer recovery
+    /// boundary. Heredoc interpolation islands have no quote terminator, so
+    /// they pass `None` and may span physical lines.
+    #[inline]
+    pub(crate) fn consume_balanced_segment_in_string_with_terminator(
+        &mut self,
+        open: char,
+        close: char,
+        terminator: Option<char>,
+    ) -> Option<usize> {
         if self.current_char() != Some(open) {
             return None;
         }
@@ -73,12 +86,6 @@ impl PerlLexer<'_> {
                         self.advance();
                     }
                 }
-                c if c == terminator => {
-                    // Local recovery for interpolation tails in quoted strings:
-                    // stop at the closing quote so the outer string parser can
-                    // still terminate this token cleanly.
-                    return None;
-                }
                 c if c == open => {
                     if !self.consume_nested_opener(&mut depth) {
                         return None;
@@ -90,6 +97,15 @@ impl PerlLexer<'_> {
                     if depth == 0 {
                         return Some(self.position);
                     }
+                }
+                c if terminator == Some(c) => {
+                    // Local recovery for interpolation tails in quoted strings:
+                    // stop at the closing quote so the outer string parser can
+                    // still terminate this token cleanly. This check follows
+                    // the segment close so a paired quote delimiter can also
+                    // close an inner interpolation segment (for example the
+                    // `]` in `qq[$a[0]]`).
+                    return None;
                 }
                 _ => self.advance(),
             }
@@ -212,12 +228,33 @@ mod tests {
 
     #[test]
     fn double_quoted_string_recovers_after_depth_rejection() -> TestResult {
+        // The MAX_DELIM_NEST early rejection is the delimiter-nesting budget
+        // stop (#14389): the opener is refused, the string token terminates at
+        // its closing quote, and no UnknownRest EOF jump is emitted.
         let source = format!("my $x = \"${}tail\";", "{".repeat(MAX_DELIM_NEST + 1));
         let mut lexer = PerlLexer::new(&source);
         let tokens = lexer.collect_tokens();
         let last = tokens.last().ok_or_else(|| "lexer returned no tokens".to_string())?;
         if last.token_type != crate::TokenType::EOF {
             return Err(format!("depth rejection did not recover to EOF: {:?}", last.token_type));
+        }
+        if tokens.iter().any(|t| matches!(t.token_type, crate::TokenType::UnknownRest)) {
+            return Err(
+                "depth rejection must recover locally, not via an UnknownRest EOF jump".to_string()
+            );
+        }
+        let quote_pos =
+            source.find('"').ok_or_else(|| "source has no string literal".to_string())?;
+        let string_token = tokens
+            .iter()
+            .find(|t| t.start == quote_pos)
+            .ok_or_else(|| "no token starts at the opening double quote".to_string())?;
+        if string_token.end != source.len() - 1 {
+            return Err(format!(
+                "string token should end at the closing quote {}, got {}",
+                source.len() - 1,
+                string_token.end
+            ));
         }
         Ok(())
     }

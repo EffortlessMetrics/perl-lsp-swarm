@@ -211,7 +211,7 @@ After all workflows complete, verify:
 4. **Docker Images**
    - Verify images are pushed to ghcr.io
    - Verify images are pushed to Docker Hub
-   - Test `docker run effortlessmetrics/perl-lsp`
+   - Test `docker run effortlessmetrics/perl-lsp:latest-perl --version`
 
 5. **Package Managers**
    - Monitor Homebrew PR status
@@ -319,19 +319,23 @@ to audit the repo-side claims above.
 
 Multi-arch Docker images are published to:
 
-- GitHub Container Registry: `ghcr.io/EffortlessMetrics/perl-lsp`
-- Docker Hub: `effortlessmetrics/perl-lsp`
+- GitHub Container Registry: `ghcr.io/EffortlessMetrics/perl-lsp-perl`
+- Docker Hub: `effortlessmetrics/perl-lsp`, `-perl` suffixed tags
+
+The runtime is the only published image. The unsuffixed tags previously
+carried the `.docker/rust/Dockerfile` build toolchain, which contains no
+`perllsp`; it is retired from product publication (#8980).
 
 **Installation:**
 ```bash
 # From GitHub Container Registry
-docker pull ghcr.io/EffortlessMetrics/perl-lsp:latest
+docker pull ghcr.io/EffortlessMetrics/perl-lsp-perl:latest
 
 # From Docker Hub
-docker pull effortlessmetrics/perl-lsp:latest
+docker pull effortlessmetrics/perl-lsp:latest-perl
 
-# Run
-docker run --rm -v ${PWD}:/workspace effortlessmetrics/perl-lsp:latest
+# Run (stdio LSP transport; the entrypoint is perllsp)
+docker run --rm -i -v ${PWD}:/workspace effortlessmetrics/perl-lsp:latest-perl
 ```
 
 ### VSCode Extension
@@ -569,7 +573,7 @@ scoop install perl-lsp
 choco install perl-lsp
 
 # Using Docker
-docker pull effortlessmetrics/perl-lsp:latest
+docker pull effortlessmetrics/perl-lsp:latest-perl
 ```
 
 ### Changes
@@ -587,13 +591,13 @@ All binaries include SHA256 checksums in their packages.
 
 ### Downloads
 
-- [Linux x86_64 (GNU)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-x86_64-unknown-linux-gnu.tar.gz)
-- [Linux aarch64 (GNU)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-aarch64-unknown-linux-gnu.tar.gz)
-- [Linux x86_64 (musl)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-x86_64-unknown-linux-musl.tar.gz)
-- [Linux aarch64 (musl)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-aarch64-unknown-linux-musl.tar.gz)
-- [macOS x86_64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-x86_64-apple-darwin.tar.gz)
-- [macOS aarch64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-aarch64-apple-darwin.tar.gz)
-- [Windows x86_64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perl-lsp-{VERSION}-x86_64-pc-windows-msvc.zip)
+- [Linux x86_64 (GNU)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-x86_64-unknown-linux-gnu.tar.gz)
+- [Linux aarch64 (GNU)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-aarch64-unknown-linux-gnu.tar.gz)
+- [Linux x86_64 (musl)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-x86_64-unknown-linux-musl.tar.gz)
+- [Linux aarch64 (musl)](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-aarch64-unknown-linux-musl.tar.gz)
+- [macOS x86_64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-x86_64-apple-darwin.tar.gz)
+- [macOS aarch64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-aarch64-apple-darwin.tar.gz)
+- [Windows x86_64](https://github.com/EffortlessMetrics/perl-lsp/releases/download/v{VERSION}/perllsp-{VERSION}-x86_64-pc-windows-msvc.zip)
 ```
 
 ## Additional Resources

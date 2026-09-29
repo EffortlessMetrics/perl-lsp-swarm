@@ -7,23 +7,23 @@
 //!
 //! 1. the **accepted contract**, as implemented by [`LineRecordTable`] — the
 //!    ruling's decisive rows, plus the policy identity the ADR names;
-//! 2. the **legacy divergence map** — the pre-ruling row models still exposed by
-//!    `LineStartsCache::new`, `LineStartsCache::new_rope`, `LineIndex`, and
-//!    `offset_to_utf16_line_col`.
+//! 2. the **legacy divergence map** — the pre-ruling row model still exposed by
+//!    `PositionMapper`, the one legacy surface this crate has not yet migrated.
 //!
-//! The second group asserts behavior that ADR-0048 rules *against*. That is
-//! deliberate. Those surfaces are owned by #8687 (reconciliation) and
-//! #8716/#8259 (classification and recurrence blocking); this file makes the
+//! `LineStartsCache::new`, `LineStartsCache::new_rope`, and `LineIndex` were
+//! migrated to the ruling by the #4973 constructor convergence, and
+//! `offset_to_utf16_line_col` already matched it; their agreement is asserted
+//! below. `PositionMapper` remains owned by #8687 (reconciliation) and
+//! #8716/#8259 (classification and recurrence blocking); this file keeps that
 //! divergence executable and visible instead of leaving it to be rediscovered.
-//! Migrating a surface is expected to fail the corresponding test below, which is
-//! the intended review checkpoint — update the map in the same change.
+//! Migrating it is expected to fail the corresponding test below, which is the
+//! intended review checkpoint — update the map in the same change.
 //!
 //! Context: the committed property `prop_text_and_rope_offsets_agree` in
-//! `line_starts_cache_fuzz.rs` asserts `new` and `new_rope` agree, and passes
-//! only because its generator never emits VT, FF, NEL, LS, or PS. Adding
-//! `U+000B` to that corpus fails with `content = "\u{b}"`, `(0, 1)` vs `(1, 0)`.
-//! That corpus is intentionally left alone: widening it would turn a known,
-//! owner-assigned divergence into red `main`. It is asserted explicitly instead.
+//! `line_starts_cache_fuzz.rs` asserts `new` and `new_rope` agree. Its
+//! generator never emits VT, FF, NEL, LS, or PS, but after the constructor
+//! convergence those characters no longer divide the two constructors, so
+//! widening the corpus is no longer a red-`main` hazard.
 
 use perl_position_tracking::{
     LineIndex, LineRecord, LineRecordTable, LineStartsCache, PositionMapper, SOURCE_LINE_POLICY_ID,
@@ -64,7 +64,9 @@ fn bounds(record: LineRecord) -> (usize, usize, usize) {
 /// `PositionMapper` is included because it is the most production-reachable of
 /// these: LSP providers map through `byte_to_lsp_pos`, which resolves rows with
 /// `Rope::byte_to_line` (`mapper.rs`). Classifying it in the ADR without gating
-/// it here would leave a real provider-facing surface unpinned.
+/// it here would leave a real provider-facing surface unpinned. It is also the
+/// only surface still diverging from the ruling after the #4973 constructor
+/// convergence.
 fn legacy_last_rows(source: &str) -> LegacyRows {
     let rope = Rope::from_str(source);
     let end = source.len();
@@ -80,11 +82,11 @@ fn legacy_last_rows(source: &str) -> LegacyRows {
 /// Row index each legacy surface reports for the same byte offset.
 #[derive(Debug, PartialEq, Eq)]
 struct LegacyRows {
-    /// `LineStartsCache::new` — local scan, CR-aware.
+    /// `LineStartsCache::new` — LF-delimited under the ruling.
     str_cache: u32,
-    /// `LineStartsCache::new_rope` — Ropey line model.
+    /// `LineStartsCache::new_rope` — LF-delimited under the ruling.
     rope_cache: u32,
-    /// `LineIndex::new` — local scan, CR-aware.
+    /// `LineIndex::new` — LF-delimited under the ruling.
     line_index: u32,
     /// `PositionMapper::byte_to_lsp_pos` — Ropey line model, provider-facing.
     position_mapper: u32,
@@ -214,46 +216,48 @@ fn legacy_surfaces_agree_with_the_ruling_on_lf_and_crlf() {
     assert_eq!(legacy_last_rows("a\r\nb"), LegacyRows::all(1));
 }
 
-/// PINNED DIVERGENCE (#8687): the ruling makes bare CR content, so every entry
-/// here should become `0`. Four of the five surfaces still break on it.
+/// PINNED DIVERGENCE (#8687): the ruling makes bare CR content. The three
+/// constructor surfaces migrated with #4973 and now agree; only
+/// `PositionMapper` still breaks on bare CR.
 #[test]
 fn legacy_bare_cr_divergence_is_pinned() {
     let rows = legacy_last_rows("a\rb");
 
-    assert_eq!(rows.str_cache, 1, "LineStartsCache::new still breaks on bare CR");
-    assert_eq!(rows.rope_cache, 1, "LineStartsCache::new_rope still breaks on bare CR");
-    assert_eq!(rows.line_index, 1, "LineIndex still breaks on bare CR");
+    assert_eq!(rows.str_cache, 0, "LineStartsCache::new matches the ruling");
+    assert_eq!(rows.rope_cache, 0, "LineStartsCache::new_rope matches the ruling");
+    assert_eq!(rows.line_index, 0, "LineIndex matches the ruling");
     assert_eq!(rows.position_mapper, 1, "PositionMapper still breaks on bare CR");
     assert_eq!(rows.convert, 0, "offset_to_utf16_line_col already matches the ruling");
 
-    // The accepted contract disagrees with the first four.
+    // The accepted contract agrees with the migrated surfaces.
     assert_eq!(table("a\rb").line_count(), 1);
 }
 
-/// PINNED DIVERGENCE (#8687): only the Rope-backed surfaces inherit Ropey's
-/// Unicode line model. This is the seam masked by the fuzz corpus gap, and the
-/// one that can shift a row for a `U+2028` inside an ordinary Perl string —
-/// including through `PositionMapper`, which LSP providers map with.
+/// PINNED DIVERGENCE (#8687): after the #4973 constructor convergence, only
+/// `PositionMapper` still inherits Ropey's Unicode line model. This is the seam
+/// that can shift a row for a `U+2028` inside an ordinary Perl string, because
+/// LSP providers map through it.
 #[test]
 fn legacy_ropey_only_separator_divergence_is_pinned() {
     for (name, separator) in ROPEY_ONLY_SEPARATORS {
         let source = format!("a{separator}b");
         let rows = legacy_last_rows(&source);
 
-        assert_eq!(rows.rope_cache, 1, "{name}: new_rope still inherits Ropey's line model");
-        assert_eq!(rows.position_mapper, 1, "{name}: PositionMapper still inherits it too");
-        assert_eq!(rows.str_cache, 0, "{name}: LineStartsCache::new already matches the ruling");
-        assert_eq!(rows.line_index, 0, "{name}: LineIndex already matches the ruling");
+        assert_eq!(rows.rope_cache, 0, "{name}: new_rope matches the ruling");
+        assert_eq!(rows.position_mapper, 1, "{name}: PositionMapper still inherits it");
+        assert_eq!(rows.str_cache, 0, "{name}: LineStartsCache::new matches the ruling");
+        assert_eq!(rows.line_index, 0, "{name}: LineIndex matches the ruling");
         assert_eq!(rows.convert, 0, "{name}: convert.rs already matches the ruling");
 
         assert_eq!(table(&source).line_count(), 1, "{name}: accepted contract keeps one row");
     }
 }
 
-/// The exact minimal input that falsifies `prop_text_and_rope_offsets_agree` once
-/// VT enters its corpus. Pinned so the masked seam stays discoverable.
+/// The exact input that used to falsify `prop_text_and_rope_offsets_agree` once
+/// VT entered its corpus. The #4973 constructor convergence closed that seam:
+/// both constructors now treat VT as content, so they agree.
 #[test]
-fn vt_is_the_minimal_falsifier_between_the_two_constructors() {
+fn vt_no_longer_divides_the_two_constructors() {
     let source = "\u{0B}";
     let rope = Rope::from_str(source);
 
@@ -261,6 +265,6 @@ fn vt_is_the_minimal_falsifier_between_the_two_constructors() {
     let from_rope = LineStartsCache::new_rope(&rope).offset_to_position_rope(&rope, 1);
 
     assert_eq!(from_str, (0, 1), "VT is content for the string constructor");
-    assert_eq!(from_rope, (1, 0), "VT breaks a row for the Rope constructor");
-    assert_ne!(from_str, from_rope, "the two constructors must still be known to disagree");
+    assert_eq!(from_rope, (0, 1), "VT is content for the Rope constructor");
+    assert_eq!(from_str, from_rope, "the constructors now agree under the ruling");
 }

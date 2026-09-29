@@ -6,7 +6,9 @@
 //! parse per ranged edit, inline, before the handler returned). This
 //! receipt now installs the real off-lock parse worker for the AFTER
 //! scenario and proves the headline Phase-3 claim on the actual production
-//! wiring, not a synthetic stand-in:
+//! wiring, not a synthetic stand-in. v0.18 (#8129) transfers full documents;
+//! this receipt therefore drives full-document replacements rather than
+//! ranged inserts:
 //!
 //! - **AFTER** (`incremental_eager = false`, the default since #3412, now
 //!   WITH the async parse worker installed): `didChange` performs NO parse
@@ -21,10 +23,11 @@
 //!   doc comment in `runtime/text_sync.rs`) and so is NOT eligible for the
 //!   async worker path regardless of whether one is installed.
 //!
-//! Both scenarios drive ~20 **ranged** edits against a realistic ~78 KB file
-//! (not a full-document replacement) and then issue completion, hover,
-//! semantic-tokens, and references requests against the post-edit document,
-//! recording whether each returned and its first-response wall-time.
+//! Both scenarios drive ~20 **full-document** replacements against a realistic
+//! ~78 KB file (the v0.18 advertised envelope; ranged transfer is not applied)
+//! and then issue completion, hover, semantic-tokens, and references requests
+//! against the post-edit document, recording whether each returned and its
+//! first-response wall-time.
 //!
 //! CI asserts SHAPE only (a receipt is emitted per scenario, every provider
 //! returns). It never asserts hard latency budgets — the millisecond
@@ -35,7 +38,7 @@
 //! one (the final) generation publishes, and at least one job was
 //! discarded-or-coalesced from the burst. For the BEFORE (sync) scenario,
 //! shape assertions preserve the Phase-2 invariant: one synchronous full
-//! parse per ranged edit.
+//! parse per full-document replacement.
 //!
 //! Requires `--features expose_lsp_test_api` (test-only server entrypoints).
 //! **A bare `cargo test --test ux_neovim_ranged_typing_latency_receipt`
@@ -142,6 +145,10 @@ fn run_ranged_edit_scenario(label: &str, incremental_eager: bool) -> TestResult<
 
     let source = medium_fixture();
     let file_bytes = source.len();
+    let blank_line_at = source
+        .find("use warnings;\n")
+        .map(|idx| idx + "use warnings;\n".len())
+        .ok_or("medium fixture must contain the warnings preamble")?;
 
     // Open the medium file (version 1). didOpen is unaffected by Phase 3
     // (always synchronous), so this always completes with a fresh AST.
@@ -156,20 +163,17 @@ fn run_ranged_edit_scenario(label: &str, incremental_eager: bool) -> TestResult<
     // captured too -- see `runtime::timing::capture`.
     server.test_timing_capture_start();
 
-    // Send ~20 RANGED edits (zero-width insertions at the start of the blank
-    // line 3). Each is a small ranged change — NOT a full-document replacement.
+    // Send ~20 full-document replacements that grow a comment on the blank
+    // line after `use warnings;` (line 3). Line numbers of later helpers stay
+    // stable because the replacement never inserts a newline.
     let mut handler_times_ms: Vec<f64> = Vec::with_capacity(ranged_edits);
     for n in 0..ranged_edits {
         let version = 2 + i32::try_from(n)?;
+        let hashes = "#".repeat(n + 1);
+        let text = format!("{}{}{}", &source[..blank_line_at], hashes, &source[blank_line_at..]);
         let params = json!({
             "textDocument": { "uri": URI, "version": version },
-            "contentChanges": [{
-                "range": {
-                    "start": {"line": 3, "character": 0},
-                    "end": {"line": 3, "character": 0},
-                },
-                "text": "#"
-            }]
+            "contentChanges": [{ "text": text }]
         });
         let start = Instant::now();
         server.test_handle_did_change(Some(params))?;

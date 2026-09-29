@@ -34,27 +34,56 @@ const COMPLETION_FILE: &str = "complete.pl";
 const COMPLETION_SOURCE: &str = "pri\n";
 const COMPLETION_LABEL: &str = "print";
 
-/// Deadline+condition polling window for first useful results. Mirrors the
-/// crate's readiness deadlines (`UxHarness::wait_for_index_ready` callers use
-/// 20 s) and the 50 ms poll cadence of `UxHarness::wait_for_workspace_symbols`
-/// and `DiagnosticsTracker::wait_for_uri_matching`.
+/// Deadline for first useful results.
 const USEFUL_RESULT_TIMEOUT: Duration = Duration::from_secs(20);
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Pacing for *re-issued product requests* — see the disposition on
+/// [`retry_until_useful`]. This is not a synchronization interval: readiness is
+/// waited for through [`await_document_ready`] before any attempt runs.
+const RETRY_PACE: Duration = Duration::from_millis(50);
+/// Bound on the readiness wait below. Observed locally at ~260 ms against a
+/// debug server, so this is generous; it is deliberately much smaller than
+/// [`USEFUL_RESULT_TIMEOUT`] so that a server which never publishes readiness
+/// degrades to the request attempts quickly instead of consuming the budget
+/// those attempts need.
+const DOCUMENT_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Poll `attempt` until it reports a useful result, bounded by a wall-clock
+/// Block on the server's own `perl-lsp/active-document-ready` notification for
+/// `relative_path`.
+///
+/// This is the event-driven half of "wait until the answer can be useful": the
+/// scenario waits for the server to say the document is indexed rather than
+/// re-asking until an answer happens to appear. Without it, the first hover /
+/// completion request is issued while indexing is still in flight and only
+/// succeeds because a later retry catches up.
+///
+/// The result is intentionally ignored: readiness is an *optimization* for the
+/// attempts below, not an assertion. A server that never publishes it still
+/// gets its full [`USEFUL_RESULT_TIMEOUT`] worth of attempts, and the scenario
+/// still fails on the useful-result predicate rather than on a missing signal.
+fn await_document_ready(harness: &UxHarness, relative_path: &str) {
+    let uri = harness.workspace.uri(relative_path);
+    let _ = harness.wait_for_active_document_ready(&uri, DOCUMENT_READY_TIMEOUT);
+}
+
+/// Re-issue `attempt` until it reports a useful result, bounded by a wall-clock
 /// deadline instead of a fixed attempt count.
 ///
-/// Borrowed loop shape from `DiagnosticsTracker::wait_for_uri_matching` and
-/// `UxHarness::wait_for_workspace_symbols`: at least one attempt always runs
-/// before the deadline is tested, `Ok(None)` keeps polling at the crate's
-/// poll cadence, and `Err` propagates immediately (malformed content must not
-/// be retried away). Unlike those event-store pollers, `attempt` here blocks
-/// on whole LSP requests, so each attempt receives the remaining wall-clock
-/// budget and must bound its own blocking calls with it — the harness's
-/// independent per-request default (30 s) would otherwise let one slow
-/// attempt push the loop past the deadline. Returns the deadline-exhaustion
-/// error when no attempt produces a useful result before `timeout` elapses.
-fn poll_until_useful<T>(
+/// At least one attempt always runs before the deadline is tested, `Ok(None)`
+/// schedules another attempt, and `Err` propagates immediately (malformed
+/// content must not be retried away). Each attempt receives the remaining
+/// wall-clock budget and must bound its own blocking calls with it — the
+/// harness's independent per-request default (30 s) would otherwise let one
+/// slow attempt push the loop past the deadline.
+///
+/// # Timing disposition: product-owned retry, not harness synchronization
+///
+/// `attempt` issues a whole LSP *request*; hover and completion are
+/// request/response and publish no "now useful" notification a wait could
+/// block on, so a stale answer is only superseded by asking again. The
+/// observable readiness signal that *does* exist is consumed by
+/// [`await_document_ready`] before the first attempt, so on a warm server the
+/// first attempt succeeds and `RETRY_PACE` is never reached.
+fn retry_until_useful<T>(
     timeout: Duration,
     description: &str,
     mut attempt: impl FnMut(Duration) -> Result<Option<T>>,
@@ -77,7 +106,9 @@ fn poll_until_useful<T>(
         if let Some(useful) = attempt(remaining)? {
             return Ok(useful);
         }
-        std::thread::sleep(POLL_INTERVAL);
+        // ux-timing: product-retry — hover/completion publish no "now useful"
+        // notification; only a new request can supersede a stale answer.
+        std::thread::sleep(RETRY_PACE);
     }
 }
 
@@ -149,7 +180,8 @@ fn useful_static_variable_hover(result: &Value) -> Result<String> {
 }
 
 fn static_variable_hover_with_retry(harness: &UxHarness) -> Result<Value> {
-    poll_until_useful(USEFUL_RESULT_TIMEOUT, "useful hover for `$x` at test.pl:3:3", |budget| {
+    await_document_ready(harness, HOVER_FILE);
+    retry_until_useful(USEFUL_RESULT_TIMEOUT, "useful hover for `$x` at test.pl:3:3", |budget| {
         match harness.hover_with_timeout(HOVER_FILE, HOVER_LINE, HOVER_CHARACTER, budget)? {
             Some(result) => {
                 useful_static_variable_hover(&result)?;
@@ -223,8 +255,9 @@ fn includes_useful_completion(items: &[Value]) -> Result<bool> {
 }
 
 fn completion_with_retry(harness: &UxHarness) -> Result<Vec<Value>> {
+    await_document_ready(harness, COMPLETION_FILE);
     let mut last_items: Vec<Value> = Vec::new();
-    match poll_until_useful(
+    match retry_until_useful(
         USEFUL_RESULT_TIMEOUT,
         "protocol-valid `print` completion for `pri`",
         |budget| {

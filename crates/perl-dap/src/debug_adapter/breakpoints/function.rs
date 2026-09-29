@@ -7,12 +7,35 @@ impl DebugAdapter {
     /// Handle setFunctionBreakpoints request.
     ///
     /// Uses replace semantics and best-effort synchronization to the running debugger.
+    ///
+    /// #9578: while the capability is floored, every request shape — including
+    /// malformed and empty-list shapes — receives the identical deterministic
+    /// refusal before argument parsing, name resolution, registry mutation,
+    /// stored-state replacement, or any debugger command. The admission gate
+    /// reads the same single authority that advertises
+    /// `supportsFunctionBreakpoints`, so advertisement and admission can never
+    /// disagree in either promotion direction; the body below stays intact as
+    /// the #8645 re-enable surface.
     pub(in crate::debug_adapter) fn handle_set_function_breakpoints(
         &self,
         seq: i64,
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        if !crate::backend::capabilities::advertises_function_breakpoints() {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setFunctionBreakpoints".to_string(),
+                body: None,
+                message: Some(
+                    crate::backend::capabilities::FUNCTION_BREAKPOINTS_UNSUPPORTED_MESSAGE
+                        .to_string(),
+                ),
+            };
+        }
+
         let args: SetFunctionBreakpointsArguments =
             match arguments.and_then(|v| serde_json::from_value(v).ok()) {
                 Some(a) => a,

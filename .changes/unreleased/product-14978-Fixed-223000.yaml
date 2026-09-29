@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "perl-parser's `incremental` feature is self-contained again: `incremental/diagnostics.rs` imported `lsp_types::Diagnostic` unconditionally while the optional `lsp-types` dependency is selected only by `lsp-compat`, so `cargo check -p perl-parser --no-default-features --features incremental` failed with E0432 and the profile could not be built at all. The legacy `ReparseResult::diagnostics` compatibility slot and the `LineIndex` import that serves the already-gated `from_lsp_change` are now gated behind `lsp-compat` alongside the type they need, rather than making `incremental` pull in the wire dependency. Behavior is unchanged for every configuration that previously built: the slot is written empty at all four construction sites, is never populated or read, and `ReparseResult` is `#[non_exhaustive]`. `just check-all-targets` now compiles the wire-free parser profiles, so a wire type reachable without `lsp-compat` fails the required compile_all_targets gate instead of merging unseen — default and `--all-features` both enable `lsp-compat` and could never catch it."
+time: 2026-09-06T22:30:00Z
+custom:
+  PR: "14978"
+  Slug: perl-parser-incremental-wire-free-14975
+  Breaking: "no"

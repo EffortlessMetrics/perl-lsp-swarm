@@ -221,26 +221,67 @@ mod api_contract_validation_tests {
 mod quality_assurance_tests {
     use std::process::Command;
 
+    /// Build a nested cargo invocation that cannot contend on the outer
+    /// `cargo test` run's locks (#15663): "Blocking waiting for file lock"
+    /// waits surfaced in the captured stderr and failed the warning scan as
+    /// if the crate emitted warnings. The nested invocation gets its own
+    /// stable target dir (removing the build-dir lock overlap with the outer
+    /// run; the cache stays warm across runs) and runs `--offline` so it
+    /// never blocks on registry index/package-cache work.
+    fn nested_cargo_command(args: &[&str]) -> Command {
+        let mut command = Command::new("cargo");
+        command.args(args).arg("--offline");
+        let target_dir = std::env::temp_dir().join("perl-parser-qa-nested-target");
+        command.env("CARGO_TARGET_DIR", target_dir);
+        command
+    }
+
     /// Test that the crate builds without warnings after fixes
     #[test]
     fn test_build_without_warnings() -> Result<(), Box<dyn std::error::Error>> {
-        let output = Command::new("cargo").args(["build", "--package", "perl-parser"]).output()?;
+        let output = nested_cargo_command(&["build", "--package", "perl-parser"]).output()?;
 
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        // Should not contain compilation warnings
-        assert!(!stderr.contains("warning:"), "Build contains warnings: {}", stderr);
+        // The crate's own sources must compile warning-free. The scan is
+        // anchored to this crate because the isolated build compiles the
+        // whole dependency chain from source, and dependency crates carry
+        // pre-existing missing-docs warnings that are not this test's claim
+        // (workspace-wide warning hygiene is tracked on #15734).
+        assert!(
+            !warnings_anchored_in_this_crate(&stderr),
+            "perl-parser build contains warnings: {stderr}"
+        );
 
-        assert!(output.status.success(), "Build failed: {}", stderr);
+        assert!(output.status.success(), "Build failed: {stderr}");
 
         Ok(())
+    }
+
+    /// Whether the captured cargo output contains a compiler warning whose
+    /// anchor line names this crate's own sources. Path separators are
+    /// normalized so the check behaves the same on Windows and Unix.
+    fn warnings_anchored_in_this_crate(stderr: &str) -> bool {
+        let normalized = stderr.replace('\\', "/");
+        let lines: Vec<&str> = normalized.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            if line.starts_with("warning: ") {
+                let anchored = lines[index + 1..]
+                    .iter()
+                    .find(|candidate| candidate.trim_start().starts_with("-->"));
+                if anchored.is_some_and(|anchor| anchor.contains("crates/perl-parser/src")) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Test that tests pass after architectural repair
     #[test]
     fn test_test_suite_passes() -> Result<(), Box<dyn std::error::Error>> {
         let output =
-            Command::new("cargo").args(["test", "--package", "perl-parser", "--lib"]).output()?;
+            nested_cargo_command(&["test", "--package", "perl-parser", "--lib"]).output()?;
 
         assert!(
             output.status.success(),

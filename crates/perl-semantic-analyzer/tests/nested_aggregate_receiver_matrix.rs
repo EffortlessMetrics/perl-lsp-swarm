@@ -1,6 +1,6 @@
 use perl_semantic_analyzer::analysis::receiver_facts::{
-    ReceiverFact, ReceiverFactContext, ReceiverFallbackState, ReceiverKind,
-    receiver_fact_for_method_call,
+    ARRAY_INDEX_RECEIVER_REASON, DYNAMIC_HASH_KEY_RECEIVER_REASON, ReceiverFact,
+    ReceiverFactContext, ReceiverFallbackState, ReceiverKind, receiver_fact_for_method_call,
 };
 use perl_semantic_analyzer::analysis::type_facts::{DynamicBoundary, TypeEvidence};
 use perl_semantic_analyzer::analysis::type_inference::TypeInferenceEngine;
@@ -107,12 +107,17 @@ fn mixed_hashref_then_plain_hash_keeps_each_local_operator() -> Result<(), Strin
     assert!(!fact.evidence.iter().any(|evidence| {
         matches!(evidence, TypeEvidence::HashRefSlot { key, .. } if key == "staff")
     }));
-    assert!(fact.evidence.iter().any(|evidence| {
-        matches!(
-            evidence,
-            TypeEvidence::Heuristic { reason } if reason == "array index receiver"
-        )
-    }));
+    assert!(
+        fact.evidence
+            .iter()
+            .any(|evidence| evidence.is_heuristic_reason(ARRAY_INDEX_RECEIVER_REASON))
+    );
+    assert!(
+        !fact
+            .evidence
+            .iter()
+            .any(|evidence| evidence.is_heuristic_reason(DYNAMIC_HASH_KEY_RECEIVER_REASON))
+    );
     Ok(())
 }
 
@@ -128,12 +133,11 @@ fn dynamic_key_boundary_survives_later_static_steps() -> Result<(), String> {
     assert!(fact.candidate_packages.is_empty());
     assert_eq!(fact.dynamic_boundary, Some(DynamicBoundary::DynamicHashKey));
     assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
-    assert!(fact.evidence.iter().any(|evidence| {
-        matches!(
-            evidence,
-            TypeEvidence::Heuristic { reason } if reason == "hash receiver key is dynamic"
-        )
-    }));
+    assert!(
+        fact.evidence
+            .iter()
+            .any(|evidence| evidence.is_heuristic_reason(DYNAMIC_HASH_KEY_RECEIVER_REASON))
+    );
     Ok(())
 }
 

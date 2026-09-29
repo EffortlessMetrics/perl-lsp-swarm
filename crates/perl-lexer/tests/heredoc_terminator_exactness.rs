@@ -26,7 +26,12 @@ where
 fn body_slice<'a>(source: &'a str, tokens: &[Token]) -> R<&'a str> {
     let body = tokens
         .iter()
-        .find(|token| matches!(&token.token_type, TokenType::HeredocBody(_)))
+        .find(|token| {
+            matches!(
+                &token.token_type,
+                TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+            )
+        })
         .ok_or_else(|| missing("missing heredoc body token"))?;
     source
         .get(body.start..body.end)

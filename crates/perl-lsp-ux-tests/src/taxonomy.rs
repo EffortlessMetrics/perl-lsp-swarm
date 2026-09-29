@@ -161,6 +161,64 @@ mod ux_component_all_tests {
     }
 }
 
+/// Evidence class of a UX scenario row.
+///
+/// Defined once so UX/status projections can mechanically separate what a
+/// passing row proves. A [`UxEvidenceClass::TransportCharacterization`] row
+/// proves only that a transport path stayed responsive (no protocol error, no
+/// crash); it must never be counted as definition correctness, recovery
+/// exactness, first-correct-answer evidence, or any other semantic/provider
+/// proof class. Exactness replacements for characterization rows stay owned by
+/// their semantic-proof issues (e.g. #10675 for Scenario 24 post-edit
+/// navigation).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UxEvidenceClass {
+    /// The row carries semantic/provider proof and may feed correctness
+    /// projections such as exact-hit percentages.
+    #[default]
+    SemanticProof,
+    /// The row is transport-responsiveness characterization only. Empty
+    /// successful results are not evidence of correctness for this class.
+    TransportCharacterization,
+}
+
+impl UxEvidenceClass {
+    /// Every evidence class in canonical taxonomy order.
+    pub const ALL: &'static [UxEvidenceClass] =
+        &[UxEvidenceClass::SemanticProof, UxEvidenceClass::TransportCharacterization];
+
+    /// Whether this class may satisfy semantic/provider proof projections.
+    ///
+    /// Exhaustive over the variant set: adding a variant stops compilation
+    /// here until the new class states its semantic eligibility explicitly.
+    pub const fn supports_semantic_proof(self) -> bool {
+        matches!(self, UxEvidenceClass::SemanticProof)
+    }
+}
+
+/// Reject a semantic-proof claim made by a transport-characterization row.
+///
+/// Returns `Err` with an actionable message when `class` cannot satisfy
+/// `projection`. Callers building UX/status projections funnel every semantic
+/// attribution through this check so a characterization-only row cannot be
+/// represented as definition correctness, recovery exactness, or legitimate
+/// empty-result evidence without the owning semantic-proof issue's evidence.
+pub fn ensure_evidence_supports_projection(
+    class: UxEvidenceClass,
+    projection: &str,
+) -> Result<(), String> {
+    if class.supports_semantic_proof() {
+        return Ok(());
+    }
+    Err(format!(
+        "evidence class `{class:?}` cannot satisfy semantic projection `{projection}`: \
+         transport-characterization rows prove responsiveness only and need the \
+         owning semantic-proof issue's evidence"
+    ))
+}
+
 /// Map a failure class to its semantic route.
 pub fn route_for_failure_class(class: UxFailureClass) -> UxRoute {
     match class {
@@ -258,6 +316,58 @@ mod tests {
             serde_round_trip(variant)?;
         }
         Ok(())
+    }
+
+    // ── UxEvidenceClass classification contract ──────────────────────────
+
+    #[test]
+    fn serde_round_trip_ux_evidence_class() -> Result<(), Box<dyn std::error::Error>> {
+        let variants = [UxEvidenceClass::SemanticProof, UxEvidenceClass::TransportCharacterization];
+        for variant in &variants {
+            serde_round_trip(variant)?;
+        }
+
+        let serialized = serde_json::to_string(&UxEvidenceClass::TransportCharacterization)?;
+        assert_eq!(
+            serialized, "\"transport_characterization\"",
+            "evidence class serialization drifted from the receipt schema enum"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn transport_characterization_rejects_semantic_projections() {
+        assert!(UxEvidenceClass::SemanticProof.supports_semantic_proof());
+        assert!(!UxEvidenceClass::TransportCharacterization.supports_semantic_proof());
+
+        for projection in
+            ["definition_exact_hit", "hover_correct", "recovery_exactness", "first_correct"]
+        {
+            assert!(
+                ensure_evidence_supports_projection(UxEvidenceClass::SemanticProof, projection)
+                    .is_ok(),
+                "semantic proof must satisfy {projection}"
+            );
+            let rejection = ensure_evidence_supports_projection(
+                UxEvidenceClass::TransportCharacterization,
+                projection,
+            );
+            assert!(
+                matches!(&rejection, Err(message) if message.contains(projection)),
+                "transport characterization must not satisfy {projection}; got {rejection:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_class_all_lists_every_variant_exactly_once() {
+        let mut seen = UxEvidenceClass::ALL.to_vec();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            UxEvidenceClass::ALL.len(),
+            "UxEvidenceClass::ALL must not repeat variants"
+        );
     }
 
     // ── UxCiTier serde round-trip ────────────────────────────────────────

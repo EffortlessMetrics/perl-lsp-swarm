@@ -66,15 +66,18 @@ impl LspServer {
         let (text, snapshot_identity) = {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
-                Some(doc) => (
-                    doc.text_arc.to_string(),
-                    perl_lsp_rs_core::providers::inline_completion::InlineCompletionSnapshotIdentity {
-                        document_version: Some(i64::from(doc.version)),
-                        source_generation: Some(u64::from(
-                            doc.generation.load(std::sync::atomic::Ordering::Acquire),
-                        )),
-                    },
-                ),
+                Some(doc) => match doc.text_for_user_answers() {
+                    Some(text) => (
+                        text.to_string(),
+                        perl_lsp_rs_core::providers::inline_completion::InlineCompletionSnapshotIdentity {
+                            document_version: Some(i64::from(doc.version)),
+                            source_generation: Some(u64::from(
+                                doc.generation.load(std::sync::atomic::Ordering::Acquire),
+                            )),
+                        },
+                    ),
+                    None => return Ok(Some(json!(null))),
+                },
                 None => return Ok(Some(json!(null))),
             }
         };
@@ -314,11 +317,32 @@ impl LspServer {
             let cumulative_text =
                 session.current_text.lock().map(|t| t.clone()).unwrap_or_default();
 
-            // Evaluate the terminal cumulative text through the same shared
-            // seam. A filtered final is a typed decision: with fallback
-            // configured, the deterministic route owns the final content;
-            // without it, the final list is empty.
-            let outcome = if cumulative_text.is_empty() {
+            // A typed provider failure (response.failed / non-token-limited
+            // response.incomplete) means the accumulated text is NOT a usable
+            // candidate: the recovery path must never promote it to the final
+            // completion. Mirror the no-backend branch — with fallback
+            // configured the deterministic route owns the final content,
+            // otherwise the stream ends with an empty final. The terminal
+            // isFinal notification below is still always sent.
+            // A resource-budget refusal repudiates the candidate exactly as a
+            // provider failure does. The accumulated prefix is the part of a
+            // response the server refused to finish reading, so promoting it
+            // here would turn a deliberate refusal into a truncated final
+            // completion — the one outcome the budget exists to prevent.
+            let candidate_repudiated = matches!(
+                &stream_result,
+                Err(BackendError::Provider(_) | BackendError::BudgetExceeded(_))
+            );
+            // A backend error that produced no text at all leaves nothing to
+            // promote and nothing to evaluate. Without this the stream ends
+            // empty even when fallback is configured, so the user gets no
+            // suggestion at all rather than the deterministic one — the
+            // buffered route (`misc.rs`) already falls back on any backend
+            // error, and the two routes must not diverge. Reachable for every
+            // terminal-before-output error: `Saturated` (#8300), `RateLimited`,
+            // `Timeout`, `Transport`, `Auth`.
+            let failed_before_any_output = stream_result.is_err() && cumulative_text.is_empty();
+            let outcome = if candidate_repudiated || cumulative_text.is_empty() {
                 None
             } else {
                 Some(evaluate_external_candidates(
@@ -338,7 +362,18 @@ impl LspServer {
                     ai_fallback,
                 ))
             };
-            let final_decision = outcome.or(final_outcome.take());
+            let final_decision = if candidate_repudiated || failed_before_any_output {
+                // Repudiated output never becomes the candidate, and an
+                // error that produced nothing has no candidate at all: the
+                // deterministic route owns the final when configured.
+                if ai_fallback {
+                    Some(ExternalCompletionOutcome::FallbackRequired)
+                } else {
+                    Some(ExternalCompletionOutcome::FinalEmpty)
+                }
+            } else {
+                outcome.or(final_outcome.take())
+            };
 
             let final_items = match final_decision {
                 Some(ExternalCompletionOutcome::Accepted(list)) => list.items,
@@ -405,5 +440,80 @@ impl LspServer {
 
         // Final response is null -- all data was sent via $/progress
         Ok(Some(json!(null)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_lsp_rs_core::providers::inline_completion::{
+        BackendError, BackendRequest, InlineCompletionBackend, StreamChunk, StreamControl,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn ranged_violation(uri: &str, version: i32) -> Value {
+        json!({
+            "textDocument": { "uri": uri, "version": version },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "text": "x"
+            }]
+        })
+    }
+
+    struct CountingBackend {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl InlineCompletionBackend for CountingBackend {
+        fn stream(
+            &self,
+            _req: &BackendRequest,
+            _sink: &mut dyn FnMut(StreamChunk) -> StreamControl,
+        ) -> Result<(), BackendError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn streaming_inline_completion_fails_closed_after_ranged_did_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///desync-streaming.pl";
+        server.test_apply_did_open(uri, "my $value = ", 1)?;
+        server.test_configure_ai_completion(true, false);
+        let calls = Arc::new(AtomicUsize::new(0));
+        server
+            .test_install_ai_backend(Some(Arc::new(CountingBackend { calls: Arc::clone(&calls) })));
+
+        server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+
+        let result = server.handle_streaming_inline_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "position": { "line": 0, "character": 12 },
+            "partialResultToken": "stream-desync",
+            "context": { "triggerKind": 1 }
+        })))?;
+        assert_eq!(
+            result,
+            Some(json!(null)),
+            "Full-sync unavailability must terminate the stream empty rather than copy predecessor text"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "streaming backend must not run on predecessor text after a Full-sync violation"
+        );
+        assert_eq!(
+            server.stream_sessions().len(),
+            0,
+            "fail-closed streaming must not start a session on unavailable user-answer text"
+        );
+        Ok(())
     }
 }

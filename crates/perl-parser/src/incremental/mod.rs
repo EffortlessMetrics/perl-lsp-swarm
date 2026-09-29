@@ -125,6 +125,7 @@ fn unchanged_result(state: &IncrementalState) -> ReparseResult {
     ReparseResult {
         changed_ranges: Vec::new(),
         snapshot: state.snapshot().clone(),
+        #[cfg(feature = "lsp-compat")]
         diagnostics: Vec::new(),
         lex_restart,
         reparsed_bytes: 0,
@@ -192,6 +193,7 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
         let result = ReparseResult {
             changed_ranges: vec![reparse.range],
             snapshot: candidate.snapshot().clone(),
+            #[cfg(feature = "lsp-compat")]
             diagnostics: vec![],
             lex_restart: reparse.lex_restart,
             reparsed_bytes: candidate.source().len(),

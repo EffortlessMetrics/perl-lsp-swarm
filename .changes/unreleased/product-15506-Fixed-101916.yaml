@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Reject malformed document-change batches without replacing accepted buffer or parser state, while stopping obsolete editor completion streams.
+time: 2026-09-13T10:19:16Z
+custom:
+  PR: "15506"
+  Slug: raw-didchange-admission
+  Breaking: "no"

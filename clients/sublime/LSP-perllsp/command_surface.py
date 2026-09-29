@@ -8,6 +8,21 @@ from typing import Any, Collection, Iterable, Mapping, Sequence
 
 MAX_OUTPUT_CHARS = 64 * 1024
 
+# Individual bulk fields are budgeted so no single payload can consume the
+# global display budget and erase control/result fields rendered after it.
+# Control fields (success/error/reason/nextAction) additionally render ahead
+# of alphabetical order so failure semantics never depend on key sorting.
+MAX_FIELD_CHARS = 4 * 1024
+
+# Result payloads come from an external server and may contain arbitrarily
+# nested JSON-like values. Refuse to descend indefinitely so hostile input
+# produces a bounded diagnostic instead of a recursion error.
+MAX_RENDER_DEPTH = 64
+
+# Top-level result keys that carry control/result semantics rather than bulk
+# material. They always render first, in this declared order.
+CONTROL_RESULT_KEYS = ("success", "status", "error", "reason", "nextAction")
+
 
 class CommandSurfaceError(ValueError):
     pass
@@ -211,35 +226,189 @@ def _scalar(value: Any) -> str:
     return str(value)
 
 
-def _append_value(lines: list[str], label: str, value: Any, indent: int = 0) -> None:
+def _bounded_field(
+    text: str, *, max_chars: int = MAX_FIELD_CHARS, preserve_tail: bool = False
+) -> str:
+    """Bound one rendered scalar field so bulk material cannot consume the
+    global budget and erase control fields rendered after it."""
+    if len(text) <= max_chars:
+        return text
+    # Reserve the notice itself.  Error text commonly ends with the useful
+    # compiler diagnosis, so retain both ends when it is a control field.
+    notice = "\n… {} character(s) of this field omitted by LSP-perllsp."
+    omitted = max(1, len(text) - max_chars)
+    while True:
+        rendered_notice = notice.format(omitted)
+        keep = max_chars - len(rendered_notice) - (3 if preserve_tail else 0)
+        updated = len(text) - keep
+        if updated == omitted:
+            if preserve_tail:
+                head = keep // 2
+                tail = keep - head
+                return text[:head] + "\n…\n" + text[-tail:] + rendered_notice
+            return text[:keep] + rendered_notice
+        omitted = updated
+
+
+def _append_value(
+    lines: list[str],
+    label: str,
+    value: Any,
+    indent: int = 0,
+    *,
+    bound_fields: bool = False,
+    depth: int = 0,
+) -> None:
     prefix = "  " * indent
+    if depth >= MAX_RENDER_DEPTH:
+        lines.append(f"{prefix}{label}: … nested result omitted by LSP-perllsp.")
+        return
     if isinstance(value, Mapping):
         lines.append(f"{prefix}{label}:")
         if not value:
             lines.append(f"{prefix}  (empty)")
             return
-        for key in sorted(value, key=str):
-            _append_value(lines, _humanize(str(key)), value[key], indent + 1)
+        for key in _ordered_keys(value):
+            _append_value(
+                lines,
+                _humanize(str(key)),
+                value[key],
+                indent + 1,
+                bound_fields=bound_fields,
+                depth=depth + 1,
+            )
         return
     if isinstance(value, (list, tuple)):
         lines.append(f"{prefix}{label}: {len(value)} item(s)")
-        for index, item in enumerate(value[:50], start=1):
-            _append_value(lines, f"{index}", item, indent + 1)
+        # A result list is an envelope too.  Render control-bearing items
+        # before bulk items so the global bound cannot hide a later failure or
+        # next action merely because an earlier item is large.
+        ordered_items = _ordered_items(value)
+        for index, item in ordered_items[:50]:
+            # Bound each item as a unit.  Bounding only scalar leaves still
+            # permits one deeply nested mapping/list item to consume the
+            # complete envelope before later items (and their labels) render.
+            item_lines: list[str] = []
+            _append_value(
+                item_lines,
+                f"{index}",
+                item,
+                indent + 1,
+                bound_fields=bound_fields,
+                depth=depth + 1,
+            )
+            rendered_item = "\n".join(item_lines)
+            if bound_fields:
+                rendered_item = _bounded_field(rendered_item)
+            lines.extend(rendered_item.splitlines())
         if len(value) > 50:
             lines.append(f"{prefix}  … {len(value) - 50} additional item(s) omitted")
         return
     if isinstance(value, str) and "\n" in value:
-        lines.append(f"{prefix}{label}:")
-        lines.extend(f"{prefix}  {line}" for line in value.splitlines())
+        rendered_lines = value.splitlines()
+        field = "\n".join([f"{prefix}{label}:"] + [f"{prefix}  {line}" for line in rendered_lines])
+        if bound_fields:
+            field = _bounded_field(field, preserve_tail=label.lower() in {"error", "reason"})
+        lines.extend(field.splitlines())
         return
-    lines.append(f"{prefix}{label}: {_scalar(value)}")
+    rendered_scalar = _scalar(value)
+    field = f"{prefix}{label}: {rendered_scalar}"
+    if bound_fields:
+        field = _bounded_field(field, preserve_tail=label.lower() in {"error", "reason"})
+    lines.append(field)
+
+
+def _ordered_keys(value: Mapping) -> list[Any]:
+    """Control keys first in declared order, then every remaining key in
+    deterministic sorted order. Render order must never let a bulk payload
+    determine whether control semantics survive the output bound."""
+    keys = list(value)
+    control_present = [k for k in CONTROL_RESULT_KEYS if k in keys]
+    control_set = {str(k) for k in control_present}
+    # A nested mapping can itself carry a control result.  Bring those
+    # mappings forward too, otherwise a collection of large sibling payloads
+    # can hide the nested diagnosis behind the final envelope bound.
+    def contains_control(candidate: Any, depth: int = 0) -> bool:
+        if depth >= MAX_RENDER_DEPTH:
+            return False
+        if isinstance(candidate, (list, tuple)):
+            return any(contains_control(item, depth + 1) for item in candidate)
+        if not isinstance(candidate, Mapping):
+            return False
+        return any(
+            str(nested_key) in CONTROL_RESULT_KEYS
+            or contains_control(nested_value, depth + 1)
+            for nested_key, nested_value in candidate.items()
+        )
+
+    # A control can be several mapping levels below the envelope.  Promote
+    # the whole branch before bulk siblings, then let its own invocation of
+    # _ordered_keys put the control row first within that branch.
+    nested_controls = [
+        k
+        for k in keys
+        if str(k) not in control_set and contains_control(value[k])
+    ]
+    nested_set = {str(k) for k in nested_controls}
+    rest = sorted(
+        (k for k in keys if str(k) not in control_set and str(k) not in nested_set), key=str
+    )
+    return control_present + sorted(nested_controls, key=str) + rest
+
+
+def _ordered_items(value: Sequence[Any]) -> list[tuple[int, Any]]:
+    """Place items containing control/result fields before bulk items.
+
+    Keep the source index in the label so reordering is presentation-only and
+    callers can still identify the original result item.
+    """
+
+    def contains_control(candidate: Any, depth: int = 0) -> bool:
+        if depth >= MAX_RENDER_DEPTH:
+            return False
+        if isinstance(candidate, Mapping):
+            return any(
+                str(key) in CONTROL_RESULT_KEYS or contains_control(item, depth + 1)
+                for key, item in candidate.items()
+            )
+        if isinstance(candidate, (list, tuple)):
+            return any(contains_control(item, depth + 1) for item in candidate)
+        return False
+
+    indexed = list(enumerate(value, start=1))
+    return sorted(indexed, key=lambda pair: (not contains_control(pair[1]), pair[0]))
 
 
 def _bounded(text: str) -> str:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
+    # The notice consumes part of the output budget. Report source characters
+    # excluded by both the retained prefix and this notice.
     omitted = len(text) - MAX_OUTPUT_CHARS
-    return text[:MAX_OUTPUT_CHARS] + f"\n\n… {omitted} character(s) omitted by LSP-perllsp.\n"
+    while True:
+        notice = f"\n\n… {omitted} character(s) omitted by LSP-perllsp.\n"
+        keep = MAX_OUTPUT_CHARS - len(notice)
+        updated = len(text) - keep
+        if updated == omitted:
+            return text[:keep] + notice
+        omitted = updated
+
+
+def _bounded_with_tail(text: str) -> str:
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text
+    # Reserve the head/tail separator and terminal notice before calculating
+    # how many source characters were omitted.
+    omitted = len(text) - MAX_OUTPUT_CHARS
+    while True:
+        notice = f"\n\n… {omitted} character(s) omitted by LSP-perllsp.\n"
+        keep = MAX_OUTPUT_CHARS - len(notice) - 3
+        updated = len(text) - keep
+        if updated == omitted:
+            head = keep // 2
+            tail = keep - head
+            return text[:head] + "\n…\n" + text[-tail:] + notice
+        omitted = updated
 
 
 def format_result(caption: str, result: Any) -> str:
@@ -247,22 +416,33 @@ def format_result(caption: str, result: Any) -> str:
     if result is None:
         lines.append("Completed. The server returned no additional details.")
     elif isinstance(result, str):
-        lines.append(result)
+        # A top-level string is still one result field. Bound it independently
+        # of the envelope so a scalar cannot consume the display budget.
+        lines.append(_bounded_field(result))
     elif isinstance(result, Mapping):
-        # Render the success status first so the failure signal survives the
-        # output bound below; bounded detail rows cannot guarantee it.
-        for key in sorted(result, key=lambda item: (0 if str(item) == "success" else 1, str(item))):
-            _append_value(lines, _humanize(str(key)), result[key])
+        # Control/result semantics render ahead of bulk material so the
+        # output bound below can never erase failure state or next actions;
+        # bounded detail rows cannot guarantee it.
+        # Apply the per-field bound during the normal render, not only when
+        # the complete envelope later exceeds MAX_OUTPUT_CHARS.  A single
+        # scalar can fit inside the envelope while still crowding out the
+        # field-level safety contract.
+        for key in _ordered_keys(result):
+            _append_value(lines, _humanize(str(key)), result[key], bound_fields=True)
     elif isinstance(result, (list, tuple)):
-        _append_value(lines, "Results", result)
+        _append_value(lines, "Results", result, bound_fields=True)
     else:
         lines.append(_scalar(result))
+    # Every result shape has already been rendered with bounded fields/items.
+    # Keep the complete envelope here so list/tuple details are not discarded
+    # by a mapping-only overflow fallback; the final bound supplies the single
+    # envelope notice consistently for scalars, mappings, and sequences.
     return _bounded("\n".join(lines).rstrip() + "\n")
 
 
 def format_error(caption: str, command_id: str, error: Any) -> str:
     message = getattr(error, "message", None) or str(error)
-    return _bounded(
+    return _bounded_with_tail(
         f"{caption}\n{'=' * len(caption)}\n\n"
         f"Server command: {command_id}\n"
         f"Status: failed\n"

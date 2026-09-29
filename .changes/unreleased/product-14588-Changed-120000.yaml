@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Changed
+body: Non-Rust file-policy globs now honour path segment boundaries — `*` and `?` stop at `/` and only `**` crosses a directory — so a single-segment allowlist entry such as the Changie fragment rule `.changes/unreleased/*.yaml` governs exactly the directory it names instead of silently adopting every nested file beneath it. Coverage of the current tree is unchanged; the one entry that relied on the previous behaviour now declares its breadth explicitly.
+time: 2026-09-02T12:00:00Z
+custom:
+  PR: "14588"
+  Slug: non-rust-glob-segment-boundaries
+  Breaking: "no"

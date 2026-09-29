@@ -1,0 +1,30 @@
+project: product
+component: Compatibility
+kind: Fixed
+body: >-
+  The loaded-module reload transaction is now the only component that advances
+  the runtime-module generation clock: `reload_family::project_execution`
+  reports the transaction's `GenerationAdvance` instead of applying the clock
+  a second time, so one reload spends one generation and the published
+  previous/current witness describes that reload. The projector accepts one
+  transaction-owned `ReloadExecution`, keeping the terminal outcome and its
+  witness inseparable even when admission later reuses a numeric operation ID
+  after eviction. It refuses a transition with the wrong direction or
+  non-contiguous endpoints. Rust API break in `perl_dap::reload`:
+  `GenerationAdvance` changes from an enum to an opaque struct (its variants,
+  their fields, and every public constructor are removed; `is_contiguous()` is
+  added alongside the existing accessors, and a witness is now obtainable only
+  from `RuntimeModuleGenerationClock::apply`),
+  `ReloadExecution::{outcome, phase_reached, mutation_issued, mechanism,
+  generation}` are private, `RuntimeModuleGenerationClock::apply` takes the
+  transaction's operation identity, and `reload_family::project_execution`
+  replaces the old
+  `project_outcome(outcome, operation_id, &mut clock, reasons, remediation)`
+  signature with a transaction-owned execution. The DAP wire shape, JSON
+  schema, and generated TypeScript projection are unchanged, and the family
+  remains unadvertised, so no shipped debugger behavior changes.
+time: 2026-09-02T22:00:00Z
+custom:
+  PR: "14635"
+  Slug: dap-reload-single-clock-applier
+  Breaking: "yes"

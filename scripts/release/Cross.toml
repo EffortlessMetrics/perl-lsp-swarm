@@ -2,6 +2,33 @@
 # Cross withholds arbitrary host env unless build.env.passthrough authorizes it.
 # scripts/release_build_identity.py validates this closed enrollment and binds
 # the file bytes into toolchain_digest when runner=cross; CROSS_CONFIG points here.
+#
+# Container toolchain pinning (#7534). Host `rustc --version --verbose` and the
+# Cross client version describe the host, not the container that actually runs
+# the compiler, linker and sysroot for a cross target. Without an explicit
+# `image`, cross derives the image itself (0.2.5 src/docker/shared.rs:668-687):
+#
+#   let version = if include_str!(.../commit-info.txt).is_empty() {
+#       env!("CARGO_PKG_VERSION")   // "0.2.5" — installed from the registry
+#   } else { "main" };              // installed from a git checkout
+#   format!("ghcr.io/cross-rs/{target}:{version}")
+#
+# .github/workflows/release.yml installs cross with `cargo install --git --rev`,
+# and a cargo git checkout keeps a usable .git (both `git rev-parse --short HEAD`
+# and `git log -1` succeed there), so commit-info is non-empty and releases have
+# been resolving the ROLLING `:main` tag. The container toolchain could therefore
+# change under us with no input to toolchain_digest changing.
+#
+# Each cross target below pins the immutable digest that `:main` resolved to when
+# this was recorded, so the container in use is frozen rather than swapped. An
+# immutable image digest fixes the in-container compiler, linker and sysroot
+# transitively; release_build_identity.py binds the pin into toolchain_digest and
+# fails closed when a cross target is unpinned or pinned by a mutable tag.
+#
+# Deliberately NOT the `:0.2.5` tag: those images differ from `:main` for all
+# three targets, so pinning them would silently change the release toolchain.
+# Moving an image is a separate reviewed decision — resolve the new digest,
+# update the pin here, and toolchain_digest moves with it.
 
 [build.env]
 passthrough = [
@@ -12,3 +39,12 @@ passthrough = [
   "PERL_LSP_CANDIDATE_ID",
   "PERL_LSP_ARTIFACT_ROLE",
 ]
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:e2114604ce29f1114941c099d5d975609a9630f0294e1be84503e7bba84af9a1"
+
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl@sha256:d54fdde7f1b680901a0bb21a2952e4921172b94c17e48603ccbbaeca8b5ef7e8"
+
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl@sha256:d82cdcbff5bdf41d55b9b06c45d8a1d779d45403cdf3d7ea3eb165cb8eee3484"

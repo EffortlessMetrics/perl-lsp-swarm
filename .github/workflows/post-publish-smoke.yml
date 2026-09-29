@@ -62,9 +62,11 @@ jobs:
     steps:
       # The publish workflow writes this only after verifying the crates are
       # present in the crates.io sparse index, and never for a dry run, so its
-      # presence is evidence of a real publication. Missing artifact is not an
-      # error here: the run block below turns its absence into a refusal with a
-      # diagnostic, rather than falling back to guessing from the ref.
+      # presence is evidence of a real publication. This step fails both when
+      # the artifact is absent and when the artifact service or the network
+      # fails, and `continue-on-error` keeps the job alive through both: the
+      # run block below separates the two against the upstream run's artifact
+      # metadata (#15481) instead of trusting this step's outcome.
       - name: Download publication receipt
         if: github.event_name == 'workflow_run'
         continue-on-error: true
@@ -81,8 +83,16 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_VERSION: ${{ github.event.inputs.version }}
           WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
           RECEIPT_PATH: receipt/publication-receipt.json
+          # The artifact-name contract with the publish workflow; the resolver
+          # re-derives absence from the upstream run's artifact metadata
+          # (#15481), so it needs the same name the download step uses.
+          RECEIPT_ARTIFACT: publication-receipt
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # The artifact metadata probe (#15481) is an authenticated
+          # actions: read call; GH_TOKEN authorises gh for it.
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             VERSION="$DISPATCH_VERSION"
@@ -109,42 +119,124 @@ jobs:
             # (#9593). The receipt is written by the publish workflow after it
             # verifies the crates on the sparse index.
             if [ ! -f "$RECEIPT_PATH" ]; then
-              echo "::warning::Upstream run published no receipt; refusing to guess a version from the ref. Re-run this workflow by dispatch with an explicit version."
-              echo "should_run=false" >> "$GITHUB_OUTPUT"
-              echo "version=unknown" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            VERSION="$(python3 -c '
+              # An absent file is ambiguous (#15481): the download step above
+              # reports failure both when the upstream run published no
+              # receipt (a dry run, which publishes nothing and is a
+              # legitimate skip) and when the artifact service, the network,
+              # or auth broke (instrument failure reading as a skip). The
+              # step's own outcome cannot separate the two, so this branch
+              # consults a second, independent read of the upstream run: its
+              # artifact metadata, already within this workflow's actions
+              # read scope.
+              ARTIFACTS_QUERY_ERROR="$(mktemp)"
+              ARTIFACTS="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/artifacts?name=$RECEIPT_ARTIFACT" 2>"$ARTIFACTS_QUERY_ERROR")" || {
+                printf '::error::The artifact metadata query for upstream run %s failed (%s), so an absent %s receipt cannot be distinguished from a failed download. This is instrument failure, not a verified skip; failing closed. (#15481)\n' \
+                  "$WORKFLOW_RUN_ID" "$(tr '\n' ' ' < "$ARTIFACTS_QUERY_ERROR")" "$RECEIPT_ARTIFACT"
+                echo "should_run=false" >> "$GITHUB_OUTPUT"
+                echo "version=unknown" >> "$GITHUB_OUTPUT"
+                exit 1
+              }
+              ARTIFACT_COUNT="$(printf '%s' "$ARTIFACTS" | python3 -c '
           import json, sys
           try:
-              with open(sys.argv[1], encoding="utf-8") as handle:
-                  print(json.load(handle).get("version", ""))
+              data = json.load(sys.stdin)
           except Exception:
-              print("")
-          ' "$RECEIPT_PATH")"
+              raise SystemExit("artifact metadata is not readable JSON")
+          count = data.get("total_count")
+          if isinstance(count, bool) or not isinstance(count, int):
+              raise SystemExit("artifact metadata has no integer total_count; cannot distinguish an absent artifact from a broken metadata service")
+          print(count)
+          ')" || {
+                printf '::error::The artifact metadata response for upstream run %s is not readable, so an absent %s receipt cannot be distinguished from a failed download; failing closed. (#15481)\n' "$WORKFLOW_RUN_ID" "$RECEIPT_ARTIFACT"
+                echo "should_run=false" >> "$GITHUB_OUTPUT"
+                echo "version=unknown" >> "$GITHUB_OUTPUT"
+                exit 1
+              }
+              if [ "$ARTIFACT_COUNT" -eq 0 ]; then
+                # Metadata confirms the artifact was never uploaded: the
+                # publish run published nothing, normally a dry run. That is
+                # a legitimate skip, and it must stay one: failing it would
+                # turn every dry run red. The warning names what was absent
+                # and where it was expected, and says what the skip does not
+                # prove, so a non-dry-run producer failure stays visible.
+                echo "::warning::Upstream run $WORKFLOW_RUN_ID has no $RECEIPT_ARTIFACT artifact (metadata confirms it was never uploaded; expected it to land at $RECEIPT_PATH): nothing was published, normally a publish dry run. Skipping. If this run was not a dry run, the publish run failed to emit its receipt and this skip proves nothing; re-run by dispatch with an explicit version."
+                echo "should_run=false" >> "$GITHUB_OUTPUT"
+                echo "version=unknown" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              # The artifact exists, so the missing file can only be a failed
+              # read. Skipping here would present an unperformed proof as a
+              # benign outcome, the exact conflation #15481 names, so the job
+              # fails closed and the download step's log carries the
+              # transport or auth cause.
+              printf '::error::The %s artifact exists on upstream run %s, but the download failed (see the Download publication receipt step for the transport or auth cause). That is a failed read, not an absent receipt: refusing to skip or guess a version. (#15481)\n' \
+                "$RECEIPT_ARTIFACT" "$WORKFLOW_RUN_ID"
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "version=unknown" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            # A receipt that exists but cannot be read as this schema is a
+            # broken instrument, not a licence to skip. The reads below used to
+            # swallow every decode error into an empty string, and the empty
+            # version was then turned into `should_run=false` with `exit 0`:
+            # the job went green, the smoke test never ran, and nothing said so.
+            # A v2 producer renaming a field would have landed in exactly that
+            # branch (#15332). Refusing out loud is the point — the absence of
+            # a proof has to be as visible as a failed one. It is the same
+            # asymmetry the missing-file branch now resolves against artifact
+            # metadata (#15481): present-but-unintelligible means something was
+            # published and cannot be described, so it fails here outright.
+            #
+            # The subject is decoded here too, from the same read. The receipt
+            # records the commit the publish actually ran from, and the proof
+            # must execute that exact subject. Falling back to the default
+            # branch would issue a publication verdict using code that changed
+            # after the release — the same class of false proof this workflow
+            # exists to prevent, just moved from "which version" to "which
+            # code".
+            # The decoder writes the two fields to stdout, one per line, and its
+            # reason for refusing to stderr. Keeping the streams apart means
+            # stray interpreter output cannot shift the value lines, and the
+            # printable check below means neither field can supply the other's
+            # line or rewrite itself in transit. Both matter because the shell
+            # is not a faithful pipe: a newline would let one field supply the
+            # next one's line, and command substitution deletes NUL bytes with
+            # only a warning, so `0.<NUL>18.0` would arrive as `0.18.0` and be
+            # certified as a version the receipt never contained.
+            RECEIPT_ERROR="$(mktemp)"
+            RECEIPT_FIELDS="$(python3 -c '
+          import json, sys
+
+          expected = "publication_receipt.v1"
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              receipt = json.load(handle)
+          if not isinstance(receipt, dict):
+              raise SystemExit("receipt is not a JSON object")
+          found = receipt.get("schema_version")
+          if found != expected:
+              raise SystemExit(f"schema_version is {found!r}, expected {expected!r}")
+          for field in ("release_version", "subject_sha"):
+              value = receipt.get(field, "")
+              if not isinstance(value, str):
+                  raise SystemExit(f"{field} is {value!r}, expected a string")
+              if not value.isprintable() and value != "":
+                  raise SystemExit(f"{field} is not printable: {value!r}")
+              print(value)
+          ' "$RECEIPT_PATH" 2>"$RECEIPT_ERROR")" || {
+              printf '::error::Publication receipt at %s is not a readable publication_receipt.v1 envelope (%s). Refusing to certify a publication this run cannot describe.\n' \
+                "$RECEIPT_PATH" "$(tr '\n' ' ' < "$RECEIPT_ERROR")"
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "version=unknown" >> "$GITHUB_OUTPUT"
+              exit 1
+            }
+            VERSION="$(printf '%s\n' "$RECEIPT_FIELDS" | sed -n '1p')"
+            SUBJECT="$(printf '%s\n' "$RECEIPT_FIELDS" | sed -n '2p')"
             if [ -z "$VERSION" ]; then
-              echo "::error::Publication receipt at $RECEIPT_PATH carries no usable version."
+              echo "::error::Publication receipt at $RECEIPT_PATH carries no usable release version."
               echo "should_run=false" >> "$GITHUB_OUTPUT"
               echo "version=unknown" >> "$GITHUB_OUTPUT"
-              exit 0
+              exit 1
             fi
-            # The receipt records the commit the publish actually ran from, and
-            # the proof must execute that exact subject. Falling back to the
-            # default branch here would issue a publication verdict using code
-            # that changed after the release — the same class of false proof
-            # this workflow exists to prevent, just moved from "which version"
-            # to "which code". There are no receipts without this field: the
-            # producer has written `subject_sha` in the same printf as the
-            # version since the format was introduced, so its absence means a
-            # corrupt or tampered receipt, not an old one.
-            SUBJECT="$(python3 -c '
-          import json, sys
-          try:
-              with open(sys.argv[1], encoding="utf-8") as handle:
-                  print(json.load(handle).get("subject_sha", ""))
-          except Exception:
-              print("")
-          ' "$RECEIPT_PATH")"
             if ! [[ "$SUBJECT" =~ ^[0-9a-f]{40}$ ]]; then
               echo "::error::Publication receipt carries no usable subject SHA (got '${SUBJECT}'). Refusing to certify ${VERSION} using code that may postdate it."
               echo "should_run=false" >> "$GITHUB_OUTPUT"
@@ -194,7 +286,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust (stable)
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: stable
 

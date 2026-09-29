@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Changed
+body: Native stdio debugging can cancel a blocked evaluation and recover for later requests and replacement sessions; other debugger transports retain their existing cancellation limits.
+time: 2026-09-14T00:00:00Z
+custom:
+  PR: "15629"
+  Slug: native-stdio-evaluate-cancellation
+  Breaking: "no"

@@ -109,7 +109,7 @@ end
 ---@field public write_fails_before_shutdown integer
 -- Explicit opt-in local protocol trace (#11155): when enabled, verbose logs
 -- carry complete protocol payloads and may therefore contain source code,
--- local paths, configuration values and anything the server emits. Disabled
+-- file paths, configuration values and anything the server emits. Disabled
 -- by default; never enable it for canonical host or CI proof artifacts.
 ---@field public verbose boolean
 ---@field public initialized boolean
@@ -138,6 +138,11 @@ local Server = Object:extend()
 ---@field on_start? fun(server: lsp.server)
 ---@field requests_per_second number
 ---@field incremental_changes boolean
+---Explicit opt-in local protocol trace (#11155): verbose logs carry complete
+---protocol payloads and can therefore contain source code, file paths and
+---configuration values. Disabled by default; never enable it for canonical
+---host or CI proof artifacts.
+---@field verbose boolean
 Server.options = {
   ---Name of the server
   name = "",
@@ -173,7 +178,12 @@ Server.options = {
   ---which are more performant but don't advertise it, set to true to force
   ---incremental changes even if server doesn't advertise them
   incremental_changes = false,
-  ---True to debug the lsp client when developing it
+  ---True to debug the lsp client when developing it. Explicit opt-in local
+  ---protocol trace (#11155): verbose logs carry complete protocol payloads
+  ---and can therefore contain source code, file paths and configuration
+  ---values. Disabled by default; never enable it for canonical host or CI
+  ---proof artifacts. config.plugins.lsp.force_verbosity_off suppresses it
+  ---client-wide.
   verbose = false,
 }
 

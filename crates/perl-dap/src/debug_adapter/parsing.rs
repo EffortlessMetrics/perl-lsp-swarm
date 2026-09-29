@@ -173,24 +173,6 @@ impl DebugAdapter {
         (top_level, child_cache)
     }
 
-    /// Parse variables from recent debugger output using microcrate parser/renderer.
-    pub(super) fn parse_scope_variables_from_output(
-        &self,
-        variables_ref: i32,
-        start: usize,
-        count: usize,
-    ) -> (Vec<CachedVariable>, HashMap<i32, Vec<CachedVariable>>) {
-        let lines = self.snapshot_recent_output_lines();
-        Self::parse_scope_variables_from_lines(
-            &lines,
-            variables_ref,
-            start,
-            count,
-            DebuggerOutputOrigin::BestEffortDebuggeeOutput,
-            ParseIdentity::new(),
-        )
-    }
-
     /// Parse evaluate output from debugger lines into a DAP result payload.
     ///
     /// `allow_correlated_literal` may be true only when `lines` came from the
@@ -350,6 +332,8 @@ impl DebugAdapter {
 
 #[cfg(test)]
 mod tests {
+    use super::super::operation_broker::OperationBroker;
+    use super::super::patterns::DEBUGGER_FRAME_POLL_MS;
     use super::super::*;
     use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
     use std::thread;
@@ -359,19 +343,29 @@ mod tests {
     const FIXTURE_IDENTITY: ParseIdentity = ParseIdentity::new();
 
     #[test]
-    pub(super) fn test_parse_scope_variables_from_recent_output()
+    pub(super) fn test_parse_scope_variables_from_best_effort_lines()
     -> Result<(), Box<dyn std::error::Error>> {
-        let adapter = DebugAdapter::new();
-        adapter.push_recent_output_line_for_test("$foo = 42");
-        adapter.push_recent_output_line_for_test("@arr = (1, 2, 3)");
-        adapter.push_recent_output_line_for_test("%hash = {a => 1}");
-
-        let (vars, child_cache) = adapter.parse_scope_variables_from_output(11, 0, 20);
+        let lines = vec![
+            "$foo = 42".to_string(),
+            "@arr = (1, 2, 3)".to_string(),
+            "%hash = {a => 1}".to_string(),
+        ];
+        let (vars, child_cache) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            0,
+            20,
+            DebuggerOutputOrigin::BestEffortDebuggeeOutput,
+            ParseIdentity::new(),
+        );
         let names: Vec<&str> = vars.iter().map(|v| v.row.name.as_str()).collect();
-        assert!(names.contains(&"$foo"));
-        assert!(names.contains(&"@arr"));
-        assert!(names.contains(&"%hash"));
-        assert!(!child_cache.is_empty(), "expected child cache entries for expandable values");
+        if !names.contains(&"$foo")
+            || !names.contains(&"@arr")
+            || !names.contains(&"%hash")
+            || child_cache.is_empty()
+        {
+            return Err("best-effort lines lost scalar or expandable variables".into());
+        }
         Ok(())
     }
 
@@ -476,16 +470,6 @@ mod tests {
     }
 
     #[test]
-    pub(super) fn test_capture_framed_debugger_output_respects_cancellation() {
-        let adapter = DebugAdapter::new();
-        adapter.cancel_requested.store(true, Ordering::Release);
-
-        let capture = adapter.capture_framed_debugger_output("DAP_BEGIN_400", "DAP_END_400", 200);
-        assert!(capture.is_none(), "capture should stop when request is cancelled");
-        assert!(!adapter.cancel_requested.load(Ordering::Acquire));
-    }
-
-    #[test]
     pub(super) fn test_capture_framed_debugger_output_timeout_without_end_marker() {
         let adapter = DebugAdapter::new();
         adapter.push_recent_output_line_for_test(r#""DAP_BEGIN_500""#);
@@ -500,42 +484,36 @@ mod tests {
     #[test]
     pub(super) fn test_framed_capture_marker_scan_microbenchmark() {
         let mut lines = Vec::with_capacity(RECENT_OUTPUT_MAX_LINES);
+        let mut raw_lines = Vec::with_capacity(RECENT_OUTPUT_MAX_LINES);
         for idx in 0..(RECENT_OUTPUT_MAX_LINES - 4) {
             let raw = format!("DB<1> noise line {idx}");
             lines.push(RecentOutputLine {
                 id: idx as u64 + 1,
                 normalized: DebugAdapter::normalize_debugger_output_line(&raw),
-                raw,
             });
+            raw_lines.push(raw);
         }
         let begin_id = RECENT_OUTPUT_MAX_LINES as u64 - 3;
-        lines.push(RecentOutputLine {
-            id: begin_id,
-            raw: r#""DAP_BEGIN_900""#.to_string(),
-            normalized: r#""DAP_BEGIN_900""#.to_string(),
-        });
-        lines.push(RecentOutputLine {
-            id: begin_id + 1,
-            raw: "$x = 1".to_string(),
-            normalized: "$x = 1".to_string(),
-        });
-        lines.push(RecentOutputLine {
-            id: begin_id + 2,
-            raw: "$y = 2".to_string(),
-            normalized: "$y = 2".to_string(),
-        });
+        lines.push(RecentOutputLine { id: begin_id, normalized: r#""DAP_BEGIN_900""#.to_string() });
+        lines.push(RecentOutputLine { id: begin_id + 1, normalized: "$x = 1".to_string() });
+        lines.push(RecentOutputLine { id: begin_id + 2, normalized: "$y = 2".to_string() });
         lines.push(RecentOutputLine {
             id: begin_id + 3,
-            raw: r#""DAP_END_900""#.to_string(),
             normalized: r#""DAP_END_900""#.to_string(),
         });
 
+        raw_lines.extend([
+            r#""DAP_BEGIN_900""#.to_string(),
+            "$x = 1".to_string(),
+            "$y = 2".to_string(),
+            r#""DAP_END_900""#.to_string(),
+        ]);
         let iterations = 300;
         let full_scan_start = Instant::now();
         for _ in 0..iterations {
-            let normalized = lines
+            let normalized = raw_lines
                 .iter()
-                .map(|line| DebugAdapter::normalize_debugger_output_line(&line.raw))
+                .map(|line| DebugAdapter::normalize_debugger_output_line(line))
                 .collect::<Vec<_>>();
             let _ = normalized.iter().rposition(|line| line.contains("DAP_BEGIN_900")).and_then(
                 |begin_idx| {
@@ -553,10 +531,14 @@ mod tests {
             let mut saw_begin = false;
             for line in &lines {
                 if !saw_begin {
-                    if DebugAdapter::line_contains_full_marker(&line.normalized, "DAP_BEGIN_900") {
+                    if OperationBroker::line_contains_full_marker(&line.normalized, "DAP_BEGIN_900")
+                    {
                         saw_begin = true;
                     }
-                } else if DebugAdapter::line_contains_full_marker(&line.normalized, "DAP_END_900") {
+                } else if OperationBroker::line_contains_full_marker(
+                    &line.normalized,
+                    "DAP_END_900",
+                ) {
                     break;
                 }
             }
@@ -1044,7 +1026,7 @@ mod tests {
         adapter.push_recent_output_line_for_test("main::(/test/file1.pl:4):");
         adapter.push_recent_output_line_for_test("main::(/test/file2.pl:5):");
 
-        let response = adapter.handle_stack_trace(1, 1, None);
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         match response {
             DapMessage::Response { body: Some(body), .. } => {
                 if let Ok(trace_response) =

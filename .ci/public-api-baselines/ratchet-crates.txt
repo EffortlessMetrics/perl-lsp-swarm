@@ -1,0 +1,44 @@
+# API ratchet crate list (#14607).
+#
+# One crate per line. This file is the single authority for which workspace
+# crates the two API ratchets guard:
+#
+#   * `just public-api-check` / `just public-api-update` (committed
+#     `.ci/public-api-baselines/<crate>.txt` surfaces, cargo-public-api);
+#   * `just semver-check` / `just semver-check-all` and the hosted
+#     `Semver Compatibility (facade PR)` and nightly `API Compatibility`
+#     rails (cargo-semver-checks against the last release tag).
+#
+# Admission rule, enforced by `cargo xtask publish-manifest-check`:
+#
+#   * every crate whose manifest opts in with an explicit `publish = true`
+#     MUST be listed here (an explicit publish decision without a ratchet is
+#     an oversight, not a decision);
+#   * every listed crate MUST be in `[workspace.metadata.publish].allow` and
+#     MUST have a non-empty committed baseline;
+#   * no baseline may exist for a crate that is not listed.
+#
+# Allowlisted crates that are not listed are publishable by default and
+# deliberately unratcheted; adding one here (plus `just public-api-update`)
+# is the whole admission act. Blank lines are ignored and everything after a
+# `#` is a comment.
+
+# Facade crates (see docs/reference/STABILITY.md).
+perl-lsp-rs
+perllsp
+perl-parser
+perl-dap
+perl-uri
+
+# Parser stack crates the semver rail has always covered.
+perl-lexer
+perl-parser-core
+
+# Explicit `publish = true` crates.
+perl-module
+perl-semantic-facts
+perl-source-identity
+perl-symbol
+
+# Absorbed LSP core: allowlisted, and its breaks reach releases (#14607).
+perl-lsp-rs-core

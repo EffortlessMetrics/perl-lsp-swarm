@@ -23,6 +23,9 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::digest::{DomainHasher, validate_prefixed_wire, wire_error};
+#[cfg(doc)]
+use crate::logical_path::LogicalPathError;
+use crate::logical_path::RootRelativeLogicalPath;
 
 // ── Domain tags ──────────────────────────────────────────────────────────────
 
@@ -189,10 +192,16 @@ wire_id!(
 ///
 /// # Path requirements
 ///
-/// `root_relative_path` must be a forward-slash separated path relative to the
-/// workspace root, without a leading slash, and must not contain `..` segments.
-/// No path normalization is performed here; callers are responsible for
-/// supplying a canonical form.
+/// The path material must be a forward-slash separated path relative to the
+/// workspace root, without a leading slash, and must not contain `.` or `..`
+/// segments.
+///
+/// Prefer [`LogicalSourceId::from_root_and_logical_path`], which takes a
+/// [`RootRelativeLogicalPath`] and therefore cannot be handed material that
+/// breaks the rule. [`LogicalSourceId::from_root_and_path`] remains the
+/// low-level constructor over material a caller has *already* proven canonical;
+/// it does not check, so a caller that guesses wrong gets a well-formed ID for
+/// the wrong source.
 ///
 /// # Encoding
 ///
@@ -206,11 +215,51 @@ wire_id!(
 pub struct LogicalSourceId(String);
 
 impl LogicalSourceId {
-    /// Derive a logical source ID from its workspace root and root-relative path.
+    /// Derive a logical source ID from its workspace root and a **validated**
+    /// root-relative logical path.
     ///
-    /// The `root_relative_path` must be canonical (forward-slash separated, no
-    /// leading slash, no `..` segments). This crate does not enforce that
-    /// invariant; callers must normalize before calling.
+    /// This is the governed constructor: [`RootRelativeLogicalPath`] can only
+    /// exist if the canonical-form rules were checked, so noncanonical material
+    /// cannot reach a durable identity through this route.
+    ///
+    /// Infallible — the path argument already carries the proof.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use perl_source_identity::{
+    ///     LogicalSourceId, ProjectId, RootRelativeLogicalPath, WorkspaceRootId,
+    /// };
+    ///
+    /// let project = ProjectId::from_canonical_name("acme/widget");
+    /// let root = WorkspaceRootId::from_project_and_root_key(&project, "abc123");
+    /// let path = RootRelativeLogicalPath::parse("lib/Widget.pm")?;
+    /// let id = LogicalSourceId::from_root_and_logical_path(&root, &path);
+    ///
+    /// assert!(id.as_wire().starts_with("src:sha256:"));
+    /// # Ok::<(), perl_source_identity::LogicalPathError>(())
+    /// ```
+    #[must_use]
+    pub fn from_root_and_logical_path(
+        workspace_root_id: &WorkspaceRootId,
+        root_relative_path: &RootRelativeLogicalPath,
+    ) -> Self {
+        // Delegates to the primitive rather than hashing again: one digest
+        // implementation means adding this constructor cannot move the wire
+        // vectors #7652 published. `logical_id_constructors_agree_on_canonical_paths`
+        // pins that equivalence.
+        Self::from_root_and_path(workspace_root_id, root_relative_path.as_str())
+    }
+
+    /// Derive a logical source ID from its workspace root and root-relative path
+    /// **without checking** the path's canonical form.
+    ///
+    /// This is the low-level constructor over material already proven canonical.
+    /// Production callers should prefer
+    /// [`LogicalSourceId::from_root_and_logical_path`], which makes the proof a
+    /// type rather than a promise: the rules in [`LogicalPathError`] are exactly
+    /// the ways this constructor will happily mint a well-formed ID for the
+    /// wrong source, including a host absolute path or a `..` traversal.
     #[must_use]
     pub fn from_root_and_path(
         workspace_root_id: &WorkspaceRootId,
@@ -345,6 +394,77 @@ mod tests {
         let id_v2 = LogicalSourceId::from_root_and_path(&root, "lib/App.pm");
         // Content not involved — these must be equal regardless of file bytes.
         assert_eq!(id_v1, id_v2, "logical id is revision-independent");
+    }
+
+    // ── Governed constructor ──────────────────────────────────────────────────
+
+    /// The governed constructor must be a pure narrowing of the primitive: for
+    /// any already-canonical path the two must agree byte for byte, so adding
+    /// the validated route cannot move the wire vectors published by #7652.
+    #[test]
+    fn logical_id_constructors_agree_on_canonical_paths() {
+        let project = ProjectId::from_canonical_name("acme/widget");
+        let root = WorkspaceRootId::from_project_and_root_key(&project, "main");
+
+        for path in ["lib/Widget.pm", "script.pl", "t/unit/basic.t", "lib/My%20File.pm"] {
+            let validated = RootRelativeLogicalPath::parse(path);
+            assert!(validated.is_ok(), "{path:?} must validate, got {validated:?}");
+            let validated = validated.expect("asserted ok above");
+            assert_eq!(
+                LogicalSourceId::from_root_and_logical_path(&root, &validated).as_wire(),
+                LogicalSourceId::from_root_and_path(&root, path).as_wire(),
+                "governed and primitive constructors must agree for {path:?}"
+            );
+        }
+    }
+
+    /// The invariant the primitive only documented: these inputs mint
+    /// well-formed IDs today, and the governed route refuses them instead.
+    #[test]
+    fn governed_route_refuses_what_the_primitive_accepts() {
+        let project = ProjectId::from_canonical_name("acme/widget");
+        let root = WorkspaceRootId::from_project_and_root_key(&project, "main");
+
+        for path in [
+            "/home/alice/proj/lib/App.pm",
+            "../../etc/passwd",
+            "lib/../secret.pm",
+            "",
+            "lib//App.pm",
+        ] {
+            // The primitive is willing: it produces a well-formed durable ID.
+            let unchecked = LogicalSourceId::from_root_and_path(&root, path);
+            assert!(
+                unchecked.as_wire().starts_with("src:sha256:"),
+                "primitive mints a well-formed ID for {path:?} — that is the defect"
+            );
+            // The governed route refuses the same material.
+            assert!(
+                RootRelativeLogicalPath::parse(path).is_err(),
+                "{path:?} must not reach the governed constructor"
+            );
+        }
+    }
+
+    /// Two checkouts of one project at different host locations must agree on
+    /// the logical source, which is only possible when the path is genuinely
+    /// root-relative rather than host-absolute.
+    #[test]
+    fn root_relative_paths_are_host_location_independent() {
+        let project = ProjectId::from_canonical_name("acme/widget");
+        let root = WorkspaceRootId::from_project_and_root_key(&project, "abc123");
+        let path = RootRelativeLogicalPath::parse("lib/App.pm").expect("valid");
+
+        let from_alice_checkout = LogicalSourceId::from_root_and_logical_path(&root, &path);
+        let from_bob_checkout = LogicalSourceId::from_root_and_logical_path(&root, &path);
+        assert_eq!(from_alice_checkout, from_bob_checkout);
+
+        // Negative control: the host-absolute spellings the old derivation
+        // produced disagree, which is exactly what root-relativity fixes.
+        assert_ne!(
+            LogicalSourceId::from_root_and_path(&root, "home/alice/proj/lib/App.pm"),
+            LogicalSourceId::from_root_and_path(&root, "home/bob/proj/lib/App.pm"),
+        );
     }
 
     // ── Cross-type collision resistance ───────────────────────────────────────

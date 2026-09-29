@@ -10,7 +10,7 @@ The enhanced position tracking system provides accurate line/column mapping for 
 - **LSP-Compliant UTF-16 Support**: Accurate character counting for multi-byte Unicode characters and emoji
 - **Symmetric Position Conversion**: **Security-enhanced UTF-16 ↔ UTF-8 conversion with boundary validation**
 - **Multi-line Token Support**: Proper position tracking for tokens spanning multiple lines (strings, comments, heredocs)
-- **Line Ending Agnostic**: Handles CRLF, LF, and CR line endings consistently across platforms
+- **Explicit Line Contract**: LF terminates lines, CRLF is one separator, and bare CR remains source content
 - **Integration**: Seamless integration with parser context and LSP server for real-time editing
 - **Security**: **Overflow prevention and fractional position handling**
 - **Comprehensive Testing**: Enhanced test suite with UTF-16 security validation and mutation testing coverage
@@ -35,7 +35,7 @@ impl PositionTracker {
 
 // LineStartsCache for O(log n) lookups
 impl LineStartsCache {
-    /// Build cache with CRLF/LF/CR line ending support
+    /// Build a cache using the LF-delimited source-line contract
     pub fn new(text: &str) -> Self;
 
     /// Convert byte offset to (line, utf16_column) with boundary validation

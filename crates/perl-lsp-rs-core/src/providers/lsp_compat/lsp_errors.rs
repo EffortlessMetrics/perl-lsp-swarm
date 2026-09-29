@@ -15,7 +15,7 @@
 //! # Usage Examples
 //!
 //! ```rust
-//! use perl_lsp_providers::ide::lsp_compat::lsp_errors::LspError;
+//! use perl_lsp_rs_core::providers::lsp_compat::lsp_errors::LspError;
 //!
 //! let err = LspError {
 //!     code: -32602,

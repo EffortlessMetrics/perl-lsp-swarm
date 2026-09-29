@@ -64,6 +64,23 @@ pub struct HintLocation {
     pub range: (usize, usize),
 }
 
+/// Display text of an inlay hint `label`: a plain string, or the `value` of a
+/// single-part `InlayHintLabelPart[]`.
+///
+/// Parameter hints are emitted as one label part so `inlayHint/resolve` can
+/// attach a `location` without changing the label representation (#14679).
+/// Multi-part labels have no single borrowed text and yield `None`.
+pub fn inlay_hint_label_str(hint: &Value) -> Option<&str> {
+    match hint.get("label")? {
+        Value::String(text) => Some(text.as_str()),
+        Value::Array(parts) => match parts.as_slice() {
+            [part] => part.get("value")?.as_str(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Inlay hints provider.
 pub struct InlayHintsProvider;
 
@@ -97,7 +114,7 @@ impl InlayHintsProvider {
             .into_iter()
             .filter_map(|v| {
                 let pos = v["position"].clone();
-                let label = v["label"].as_str()?.to_string();
+                let label = inlay_hint_label_str(&v)?.to_string();
                 let kind = match v["kind"].as_u64().unwrap_or(1) {
                     2 => InlayHintKind::Parameter,
                     _ => InlayHintKind::Type,
@@ -130,7 +147,7 @@ impl InlayHintsProvider {
             .into_iter()
             .filter_map(|v| {
                 let pos = v["position"].clone();
-                let label = v["label"].as_str()?.to_string();
+                let label = inlay_hint_label_str(&v)?.to_string();
                 let kind = match v["kind"].as_u64().unwrap_or(1) {
                     2 => InlayHintKind::Parameter,
                     _ => InlayHintKind::Type,
@@ -469,9 +486,13 @@ pub fn parameter_hints_with_resolver(
 
                     // Embed function name and param index in data for
                     // later label.location resolution via inlayHint/resolve.
+                    // The label is an `InlayHintLabelPart[]` from the start so
+                    // `inlayHint/resolve` can attach `label.location` to the
+                    // existing part without changing the label's representation
+                    // (#14679; LSP 3.17 resolve fills advertised properties only).
                     let mut hint = json!({
                         "position": { "line": l, "character": c },
-                        "label": format!("{}:", param_names[i]),
+                        "label": [{ "value": format!("{}:", param_names[i]) }],
                         "kind": 2, // parameter
                         "paddingLeft": false,
                         "paddingRight": true,
@@ -550,7 +571,7 @@ pub fn parameter_hints_with_resolver(
 
                     out.push(json!({
                         "position": { "line": l, "character": c },
-                        "label": format!("{}:", param_names[i]),
+                        "label": [{ "value": format!("{}:", param_names[i]) }],
                         "kind": 2, // parameter
                         "paddingLeft": false,
                         "paddingRight": true,
@@ -873,7 +894,7 @@ mod tests {
         hints
             .iter()
             .filter(|h| h["data"]["functionName"].as_str().is_some_and(|n| n == method))
-            .filter_map(|h| h["label"].as_str())
+            .filter_map(|h| inlay_hint_label_str(h))
             .collect()
     }
 
@@ -971,11 +992,11 @@ mod tests {
         // beta:  → call-site i=1 → paramIndex = 2
         let alpha_hint = hints.iter().find(|h| {
             h["data"]["functionName"].as_str() == Some("compute")
-                && h["label"].as_str() == Some("alpha:")
+                && inlay_hint_label_str(h) == Some("alpha:")
         });
         let beta_hint = hints.iter().find(|h| {
             h["data"]["functionName"].as_str() == Some("compute")
-                && h["label"].as_str() == Some("beta:")
+                && inlay_hint_label_str(h) == Some("beta:")
         });
         assert_eq!(
             alpha_hint.and_then(|h| h["data"]["paramIndex"].as_u64()),
@@ -1066,7 +1087,7 @@ $obj->render("hello", 10);"#;
         let labels: Vec<&str> = hints
             .iter()
             .filter(|h| h["data"]["functionName"].as_str() == Some("greet"))
-            .filter_map(|h| h["label"].as_str())
+            .filter_map(|h| inlay_hint_label_str(h))
             .collect();
         assert!(
             labels.contains(&"name:"),
@@ -1091,7 +1112,7 @@ $obj->render("hello", 10);"#;
         let labels: Vec<&str> = hints
             .iter()
             .filter(|h| h["data"]["functionName"].as_str() == Some("greet"))
-            .filter_map(|h| h["label"].as_str())
+            .filter_map(|h| inlay_hint_label_str(h))
             .collect();
         assert!(
             labels.is_empty(),
@@ -1145,7 +1166,7 @@ $obj->render("hello", 10);"#;
     fn test_variable_declaration_num_hint() {
         let ast = ast_for("my $x = 42;");
         let hints = trivial_type_hints(&ast, &dummy_pos, None);
-        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        let labels: Vec<&str> = hints.iter().filter_map(|h| inlay_hint_label_str(h)).collect();
         assert!(
             labels.contains(&": Num"),
             "my $x = 42 should emit a : Num type hint, got: {labels:?}"
@@ -1156,7 +1177,7 @@ $obj->render("hello", 10);"#;
     fn test_variable_declaration_str_hint() {
         let ast = ast_for("my $s = \"hello\";");
         let hints = trivial_type_hints(&ast, &dummy_pos, None);
-        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        let labels: Vec<&str> = hints.iter().filter_map(|h| inlay_hint_label_str(h)).collect();
         assert!(
             labels.contains(&": Str"),
             "my $s = \"hello\" should emit a : Str type hint, got: {labels:?}"
@@ -1168,7 +1189,7 @@ $obj->render("hello", 10);"#;
         // my $uninit; should NOT emit a type hint.
         let ast = ast_for("my $uninit;");
         let hints = trivial_type_hints(&ast, &dummy_pos, None);
-        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        let labels: Vec<&str> = hints.iter().filter_map(|h| inlay_hint_label_str(h)).collect();
         assert!(
             !labels.iter().any(|l| l.starts_with(": ")),
             "my $uninit; (no initializer) should not emit any type hint, got: {labels:?}"
@@ -1180,7 +1201,7 @@ $obj->render("hello", 10);"#;
         // my $coderef = sub { ... } should emit : CodeRef.
         let ast = ast_for("my $coderef = sub { 1 };");
         let hints = trivial_type_hints(&ast, &dummy_pos, None);
-        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        let labels: Vec<&str> = hints.iter().filter_map(|h| inlay_hint_label_str(h)).collect();
         assert!(
             labels.contains(&": CodeRef"),
             "my $coderef = sub {{ ... }} should emit a : CodeRef type hint, got: {labels:?}"
@@ -1192,7 +1213,7 @@ $obj->render("hello", 10);"#;
         // my $ref = \@data should emit : Ref (#1692 acceptance).
         let ast = ast_for("my @data; my $ref = \\@data;");
         let hints = trivial_type_hints(&ast, &dummy_pos, None);
-        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        let labels: Vec<&str> = hints.iter().filter_map(|h| inlay_hint_label_str(h)).collect();
         assert!(
             labels.contains(&": Ref"),
             "my $ref = \\@data should emit a : Ref type hint, got: {labels:?}"

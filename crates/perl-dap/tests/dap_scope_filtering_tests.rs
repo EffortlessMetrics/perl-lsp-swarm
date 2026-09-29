@@ -41,6 +41,7 @@
 mod common;
 
 use common::{DapWorkflowSession, perl_available, workflow_timeout};
+use perl_dap::debug_adapter::DrainEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -54,20 +55,26 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 fn wait_stopped_reports_termination_and_bounded_output_metadata() -> TestResult {
     let (sender, receiver) = sync_channel(64);
     for seq in 1..=10 {
-        sender.send(DapMessage::Event {
-            seq,
-            event: "output".to_string(),
-            body: Some(json!({
-                "category": format!("category-{seq}-{}\nsecret", "x".repeat(80)),
-                "output": "sensitive debugger output"
-            })),
-        })?;
+        sender.send((
+            DapMessage::Event {
+                seq,
+                event: "output".to_string(),
+                body: Some(json!({
+                    "category": format!("category-{seq}-{}\nsecret", "x".repeat(80)),
+                    "output": "sensitive debugger output"
+                })),
+            },
+            DrainEpoch::Global,
+        ))?;
     }
-    sender.send(DapMessage::Event {
-        seq: 11,
-        event: "terminated".to_string(),
-        body: Some(json!({"reason": "debugger_eof"})),
-    })?;
+    sender.send((
+        DapMessage::Event {
+            seq: 11,
+            event: "terminated".to_string(),
+            body: Some(json!({"reason": "debugger_eof"})),
+        },
+        DrainEpoch::Global,
+    ))?;
 
     let session =
         DapWorkflowSession::with_receiver_for_test(receiver, std::time::Duration::from_secs(1));

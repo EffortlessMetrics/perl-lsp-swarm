@@ -317,6 +317,10 @@ fn normalized_repo_slug(url: &str) -> Option<String> {
 /// Resolves the exact commit describing the shared history of `revision` and
 /// HEAD inside the repository rooted at `root`. Fails closed so an unprovable
 /// comparator can never silently degrade into no comparison or a stale one.
+/// Common-ancestor validation goes through the shared `xtask::git_ancestry`
+/// authority: a bare `merge-base --is-ancestor` exit 1 is not proof of
+/// non-ancestry in a shallow or partial checkout holding a
+/// present-but-disconnected object (#14557).
 fn resolve_merge_base(root: &Path, revision: &str) -> Result<String> {
     let output =
         Command::new("git").current_dir(root).args(["merge-base", revision, "HEAD"]).output()?;
@@ -330,15 +334,23 @@ fn resolve_merge_base(root: &Path, revision: &str) -> Result<String> {
     if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(eyre!("git merge-base {revision} HEAD returned unexpected output: {sha}"));
     }
-    for probe in
-        [["--is-ancestor", sha.as_str(), "HEAD"], ["--is-ancestor", sha.as_str(), revision]]
-    {
-        let output =
-            Command::new("git").current_dir(root).args(["merge-base"]).args(probe).output()?;
-        if !output.status.success() {
-            return Err(eyre!(
-                "resolved comparator {sha} is not a common ancestor of {revision} and HEAD"
-            ));
+    for (ancestor, descendant) in [(sha.as_str(), "HEAD"), (sha.as_str(), revision)] {
+        let receipt = xtask::git_ancestry::is_ancestor(root, ancestor, descendant);
+        match &receipt.disposition {
+            xtask::git_ancestry::AncestryDisposition::Ancestor => {}
+            xtask::git_ancestry::AncestryDisposition::Diverged
+            | xtask::git_ancestry::AncestryDisposition::Unrelated => {
+                return Err(eyre!(
+                    "resolved comparator {sha} is not a common ancestor of {revision} and HEAD"
+                ));
+            }
+            _ => {
+                return Err(eyre!(
+                    "cannot prove comparator {sha} is a common ancestor of {revision} and HEAD: git ancestry is `{}` ({}); refusing a verdict from incomplete evidence",
+                    receipt.disposition.as_str(),
+                    receipt.reason
+                ));
+            }
         }
     }
     Ok(sha)

@@ -7,15 +7,60 @@ argument-hint: "[issue, branch, or candidate]"
 # Build candidate
 
 Existing coherent work enters midstream; do not replay completed chronology. Before
-creating another candidate, check only whether an equivalent current PR already
-implements the same claim. Do not inspect sibling lanes, touched-file overlap, or nearby
-symbols as a routine ownership check.
+creating another candidate, check the root-held claim frame first for an existing
+current candidate branch or worktree with a current writer — a candidate can exist
+before a PR is opened — and use the current-PR lookup only as an additional duplicate
+check on top of that. Do not inspect sibling claim frames, touched-file overlap,
+or nearby symbols as a routine ownership check.
+
+## Mutation admission
+
+Before the main Claude thread edits the candidate directly or delegates any candidate
+mutation, keep one admission whose semantic and mechanical keys identify the same exact
+claim/candidate/writer boundary.
+
+### Semantic key
+
+Carry the current root-held acceptance-and-rollback claim and semantic owner; governing
+authority, current facts and contradictions, and production or observable seam;
+acceptance surface; cheapest first falsifier and realistic negative control; proof
+ceiling, explicit `NOT_PROVEN` boundary, and deferred broader proof; and the named
+next/backward route.
+
+### Mechanical key
+
+Carry repository, common-dir, and remote identity; issue and claim identity; candidate
+branch; expected head and base; worktree; one writer; intended mutation; required
+postcondition; and the canonical writer admission/preflight decision when installed.
+Treat observed values as current evidence, not durable instructions.
+
+### Same-subject join
+
+Both keys must identify the same exact claim/candidate/writer boundary about to mutate.
+Semantic authority does not establish mechanical safety. Mechanical safety does not
+establish authority to implement another claim. Direct main-thread edits and delegated
+writer edits use the same join, and entry midstream does not bypass admission.
+
+Read-only research may precede admission. Immediately before mutation, re-derive or
+revalidate volatile mechanical identity. Do not mutate when either key is missing,
+stale, contradictory, or cross-subject. Do not infer either key, silently substitute a
+nearby candidate, or mint a second candidate to avoid resolving admission.
+
+Changed claim, authority, or scope routes to `prepare-issue`; weak or undiscriminating
+proof routes to `prepare-proof`; missing or stale mechanical evidence routes to writer
+admission/preflight. A collision or unsafe subject returns `WRITER_COLLISION` /
+`UNSAFE_WORKTREE`; unresolved identity or instrumentation returns `BLOCKED` /
+`NOT_PROVEN`.
+
+Keep this runtime-local unless it changes durable claim, authority, or proof state. It
+is not a stage record or second work database, and does not create a lease, scheduler,
+or tracked frontier.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains the material claim/non-goals and semantic owner, accepted
+The main Claude thread retains the material claim/non-goals and semantic owner, accepted
 implementation latitude, proof sufficiency, risk/rollback boundary, finding
 dispositions, material return-to-issue/proof decisions, and candidate sufficiency for PR
 convergence.
@@ -91,3 +136,5 @@ post one update per edit, test, agent, or normal skill transition.
 - `NO_BUILD_SUBJECT` → return the no-build disposition for proportional publication/review
 - `WRITER_COLLISION` / `UNSAFE_WORKTREE` → resolve the same-candidate mechanical hazard
 - `BLOCKED` / `NOT_PROVEN` → preserve the exact boundary
+
+> Self-authored reversible corrections follow the canonical [correction and disclosure contract](../../../docs/agents/DEVELOPMENT_METHOD.md); this reference does not override higher-precedence instructions.

@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Live definition, document-symbol, workspace-symbol, and references runtime proofs now identify themselves as semantic source-backed (`source_backed_receipt`) instead of claiming a compiler/PIR producer, with one recurrence guard covering all four cohorts.
+time: 2026-09-06T03:30:00Z
+custom:
+  PR: "14918"
+  Slug: live-runtime-source-backed-producer
+  Breaking: "no"

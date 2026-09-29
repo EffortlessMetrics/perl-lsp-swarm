@@ -6,7 +6,7 @@
 use super::super::{
     Arc, DocumentState, GLOBAL_CANCELLATION_REGISTRY, ImplementationProvider, JsonRpcError,
     JsonRpcId, LspServer, ParentMap, Parser, PerlLspCancellationToken, REQUEST_CANCELLED, Value,
-    json, location_from_path,
+    json,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{req_position, req_uri};
@@ -16,15 +16,251 @@ use perl_parser_core::source_file::is_binary_content;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
+// Only the test-fallbacks compatibility handler (`on_definition`) needs this
+// helper; production definition dispatch is a transparent adapter (#5108).
+#[cfg(any(test, feature = "test-fallbacks"))]
+use super::super::location_from_path;
+
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
+/// Identify inert single-quoted text from the current parsed generation.
+fn in_single_quoted_literal(
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+    offset: usize,
+) -> bool {
+    snapshot.is_some_and(|snapshot| {
+        snapshot.source_region_index().regions().iter().any(|region| {
+            region.kind == perl_parser_core::SourceRegionKind::StringLiteral
+                && region.contains_offset(offset)
+                && snapshot.source().as_bytes().get(region.start) == Some(&b'\'')
+        })
+    })
+}
+
+/// A line parser may recognize statement-looking text inside a multiline string.
+/// Accept its leading keyword only when the current parse marks that byte as code.
+fn statement_keyword_is_code(
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+    text: &str,
+    line_start: usize,
+) -> bool {
+    let Some(line) = text.get(line_start..) else { return false };
+    let keyword_offset = line_start + line.len().saturating_sub(line.trim_start().len());
+    snapshot.is_some_and(|snapshot| {
+        snapshot.source_region_index().classify_offset(keyword_offset).proven_kind()
+            == Some(perl_parser_core::SourceRegionKind::Code)
+    })
+}
+
+/// Accept plain, grouped, and `-norequire` parent/base lists with comma or
+/// fat-arrow separators before a quoted module name. `Use` stores expression
+/// tokens without argument spans, so a function-call opener must not be treated
+/// like the list's grouping parenthesis.
+fn standalone_parent_base_prefix(mut prefix: &str) -> bool {
+    prefix = prefix.trim_start();
+    if let Some(rest) = prefix.strip_prefix('(') {
+        prefix = rest.trim_start();
+    }
+    if let Some(after_flag) = prefix.strip_prefix("-norequire") {
+        let after_flag = after_flag.trim_start();
+        prefix = if let Some(rest) = after_flag.strip_prefix("=>") {
+            rest
+        } else if let Some(rest) = after_flag.strip_prefix(',') {
+            rest
+        } else {
+            return false;
+        };
+    }
+    prefix = prefix.trim_start();
+    if let Some(rest) = prefix.strip_prefix('(') {
+        prefix = rest;
+    }
+    loop {
+        prefix = prefix.trim_start();
+        if prefix.is_empty() {
+            return true;
+        }
+        if let Some(rest) = prefix.strip_prefix('\'') {
+            let Some(close) = rest.find('\'') else { return false };
+            prefix = &rest[close + 1..];
+        } else {
+            let token_end = prefix
+                .bytes()
+                .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':'))
+                .count();
+            if token_end == 0 {
+                return false;
+            }
+            prefix = &prefix[token_end..];
+        }
+        let separator = prefix.trim_start();
+        let Some(rest) = separator.strip_prefix(',').or_else(|| separator.strip_prefix("=>"))
+        else {
+            return false;
+        };
+        prefix = rest;
+    }
+}
+
+/// Permit early parent/base module lookup only for a complete quoted argument.
+/// The text scanner also sees tokens inside expressions such as 'Foo' . 'Bar',
+/// where neither literal names the module passed to parent/base.
+fn standalone_quoted_parent_base_argument(
+    snapshot: &crate::state::ParsedSnapshot,
+    text: &str,
+    offset: usize,
+) -> bool {
+    let (line_start, line_end) = perl_parser_core::text_line::line_bounds_at(text, offset);
+    if !statement_keyword_is_code(Some(snapshot), text, line_start) {
+        return false;
+    }
+    let Some(line) = text.get(line_start..line_end) else { return false };
+    let Some(head) = perl_module::parse_module_import_head(line) else { return false };
+    if !matches!(
+        head.kind,
+        perl_module::ModuleImportKind::UseParent | perl_module::ModuleImportKind::UseBase
+    ) {
+        return false;
+    }
+    let region_index = snapshot.source_region_index();
+    let Some(region) = region_index.regions().iter().find(|region| {
+        region.kind == perl_parser_core::SourceRegionKind::StringLiteral
+            && region.contains_offset(offset)
+            && text.as_bytes().get(region.start) == Some(&b'\'')
+            && text.as_bytes().get(region.end.saturating_sub(1)) == Some(&b'\'')
+    }) else {
+        return false;
+    };
+    let Some(quote_start) = region.start.checked_sub(line_start) else { return false };
+    let Some(quote_end) = region.end.checked_sub(line_start) else { return false };
+    let Some(before) = line.get(head.token_end..quote_start) else { return false };
+    if !standalone_parent_base_prefix(before) {
+        return false;
+    }
+    let Some(after) = line.get(quote_end..) else { return false };
+    let after = after.trim_start();
+    let after = after.strip_prefix(')').unwrap_or(after).trim_start();
+    after.starts_with("=>")
+        || after.as_bytes().first().is_none_or(|byte| matches!(byte, b',' | b';' | b'#'))
+}
+
+/// Find the parsed `use` statement that owns a cursor, including a member on
+/// a later physical line of its import list.
+fn use_statement_at_offset(node: &crate::ast::Node, offset: usize) -> Option<&crate::ast::Node> {
+    if offset < node.location.start || offset > node.location.end {
+        return None;
+    }
+    for child in crate::declaration::get_node_children(node) {
+        if let Some(owner) = use_statement_at_offset(child, offset) {
+            return Some(owner);
+        }
+    }
+    matches!(node.kind, crate::ast::NodeKind::Use { .. }).then_some(node)
+}
+
+/// A quoted member of a parsed `use` import list has a semantic Sub key from
+/// that same Use node. Require the statement keyword to be code so a quoted
+/// imitation cannot borrow a module target from a containing declaration.
+fn quoted_import_list_symbol(
+    ast: &crate::ast::Node,
+    snapshot: &crate::state::ParsedSnapshot,
+    source: &str,
+    offset: usize,
+) -> bool {
+    let Some(owner) = use_statement_at_offset(ast, offset) else { return false };
+    let crate::ast::NodeKind::Use { module, .. } = &owner.kind else { return false };
+    if snapshot.source_region_index().classify_offset(owner.location.start).proven_kind()
+        != Some(perl_parser_core::SourceRegionKind::Code)
+    {
+        return false;
+    }
+    let region_index = snapshot.source_region_index();
+    let Some(region) = region_index.regions().iter().find(|region| {
+        region.kind == perl_parser_core::SourceRegionKind::StringLiteral
+            && region.contains_offset(offset)
+            && source.as_bytes().get(region.start) == Some(&b'\'')
+            && source.as_bytes().get(region.end.saturating_sub(1)) == Some(&b'\'')
+    }) else {
+        return false;
+    };
+    let Some(argument_text) = source.get(region.start + 1..region.end - 1) else {
+        return false;
+    };
+    // The parser records tokens from expressions in `use` arguments
+    // separately. A literal followed by concatenation is only part of one
+    // argument, even when its text matches an imported symbol elsewhere.
+    let Some(before) = source.get(owner.location.start..region.start) else { return false };
+    let before = before.trim_end();
+    if !(before.ends_with('(') || before.ends_with(',') || before.ends_with(module)) {
+        return false;
+    }
+    let Some(after) = source.get(region.end..owner.location.end) else { return false };
+    if !after.trim_start().as_bytes().first().is_none_or(|byte| matches!(byte, b',' | b')' | b';'))
+    {
+        return false;
+    }
+    crate::declaration::symbol_at_cursor_with_source(
+        ast,
+        offset,
+        crate::declaration::current_package_at(ast, offset),
+        source,
+    )
+    .is_some_and(|key| {
+        key.kind == perl_semantic_analyzer::workspace_index::SymKind::Sub
+            && key.pkg.as_ref() == module
+            && key.name.as_ref() == argument_text
+    })
 }
 
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::navigation::definition_shadow::{
     DefinitionCutoverResult, goto_definition_live_exact_or_imported,
 };
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+use perl_lsp_rs_core::providers::semantic_port::{
+    ResolveAtOutcome, SemanticQueriesResolveSource, accepted_generation_basis, resolve_at_position,
+    stable_basis_view,
+};
+
+/// How the shared cursor identity (#8977) compares with the live name-keyed
+/// definition lookup for one request.
+///
+/// Trace only: the definition response is produced by the live path exactly as
+/// before. This records what the shared layer resolved, so a disagreement
+/// between "the entity under the cursor" and "the entity this spelling
+/// selected" is observable instead of silent.
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+fn definition_resolve_at_trace(
+    resolved: &ResolveAtOutcome,
+    live_entity_id: Option<perl_semantic_facts::EntityId>,
+) -> Value {
+    let resolved_entity_id = resolved.bound_entity_id();
+    let generation = resolved.generation();
+    json!({
+        "provider_action": "resolve_at_position",
+        "resolve_stage": resolved.stage(),
+        "resolve_reason": resolved.reason(),
+        "occurrence_published": resolved.occurrence_was_published(),
+        "resolved_entity_id": resolved_entity_id.map(|entity| entity.0),
+        "live_lookup_entity_id": live_entity_id.map(|entity| entity.0),
+        // Absent on either side means "not comparable", reported as no
+        // agreement rather than as agreement.
+        "agrees_with_live_lookup": match (resolved_entity_id, live_entity_id) {
+            (Some(resolved), Some(live)) => Some(resolved == live),
+            _ => None,
+        },
+        "document_generation": generation.map(|basis| format!("{:?}", basis.document_generation)),
+        "workspace_generation": generation.map(|basis| format!("{:?}", basis.workspace_generation)),
+        "generation_known": generation.map(|basis| basis.is_known()),
+        "trace_only_no_live_behavior_change": true,
+        "claim_boundary":
+            "records the shared cursor identity alongside the existing live definition result; \
+             no definition cutover",
+    })
+}
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_workspace::semantic::queries::QueryContext;
 
@@ -43,7 +279,8 @@ use self::core_modules::is_core_perl_module;
 use self::mojolicious_routes::resolve_mojolicious_route_definition;
 use self::xs_bootstrap::{extract_xs_bootstrap_target, xs_bootstrap_location};
 
-#[cfg(feature = "workspace")]
+// Ungated with `fqn_component_at_cursor`, which is reached from the rename and
+// find-references refusal guards in every build (#14757).
 static FQN_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
 #[cfg(feature = "workspace")]
@@ -51,6 +288,9 @@ static ARROW_METHOD_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock:
 
 #[cfg(feature = "workspace")]
 static PACKAGE_ARROW_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
+
+#[cfg(feature = "workspace")]
+static PACKAGE_METHOD_RECEIVER_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
 #[cfg(feature = "workspace")]
 static VAR_METHOD_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
@@ -113,6 +353,28 @@ fn lsp_location_count(value: Option<&Value>) -> usize {
         Some(Value::Array(items)) => items.len(),
         Some(Value::Object(obj)) if obj.contains_key("uri") || obj.contains_key("targetUri") => 1,
         _ => 0,
+    }
+}
+
+/// Naive comment-only heuristic for the goto-definition and completion
+/// guards (#5066/#5408/#5411): `true` when a `#` appears earlier on the
+/// same line.
+///
+/// This is deliberately NOT the rename candidate classifier and is
+/// deliberately not string-aware: a `#` inside a string literal still reads
+/// as a comment to this guard, and that trade-off is pinned by the guard
+/// regression tests. Rename's edit policy uses the generation-bound
+/// `SourceRegionIndex` instead (#4964).
+pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
+    let line_start =
+        if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
+    let line = &source[line_start..];
+
+    if let Some(comment_pos) = line.find('#') {
+        let comment_absolute = line_start + comment_pos;
+        position >= comment_absolute
+    } else {
+        false
     }
 }
 
@@ -351,8 +613,7 @@ fn type_definition_receipt_freshness(fact_source: &'static str) -> ProviderDecis
     }
 }
 
-#[cfg(feature = "workspace")]
-fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
+pub(super) fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
     FQN_RE
         .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
         .as_ref()
@@ -389,6 +650,25 @@ fn get_package_arrow_regex() -> Result<&'static regex::Regex, JsonRpcError> {
         .map_err(|err| {
             crate::protocol::internal_error(&format!(
                 "Failed to initialize package navigation regex: {err}"
+            ))
+        })
+}
+
+/// Package receiver followed by a method selector: an arrow-dereference that
+/// is not a method call (`Some::Module->()` invokes the bareword as a sub;
+/// `->[`, `->{`, `->$` dereference) must not classify as a receiver.
+#[cfg(feature = "workspace")]
+fn get_package_method_receiver_regex() -> Result<&'static regex::Regex, JsonRpcError> {
+    PACKAGE_METHOD_RECEIVER_RE
+        .get_or_init(|| {
+            regex::Regex::new(
+                r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*->\s*[A-Za-z_]",
+            )
+        })
+        .as_ref()
+        .map_err(|err| {
+            crate::protocol::internal_error(&format!(
+                "Failed to initialize package method receiver regex: {err}"
             ))
         })
 }
@@ -464,11 +744,15 @@ fn get_quoted_framework_module_regex() -> Result<&'static regex::Regex, JsonRpcE
 fn quoted_framework_module_at_cursor(
     text: &str,
     cursor: usize,
+    keyword_is_code: impl Fn(usize) -> bool,
 ) -> Result<Option<FrameworkModuleReference>, JsonRpcError> {
     for cap in get_quoted_framework_module_regex()?.captures_iter(text) {
         let Some(keyword) = cap.get(1) else {
             continue;
         };
+        if !keyword_is_code(keyword.start()) {
+            continue;
+        }
         let Some(module_match) = cap.get(2).or_else(|| cap.get(3)) else {
             continue;
         };
@@ -524,13 +808,20 @@ fn normalize_framework_module_reference(
 /// - non-`.pm` paths (e.g. `require "script.pl"`) and dynamic forms
 ///   (`require $var`) never resolve here, so they keep their documented
 ///   non-resolution behavior.
-fn literal_require_path_module_at_offset(text: &str, offset: usize) -> Option<String> {
+fn literal_require_path_module_at_offset(
+    text: &str,
+    offset: usize,
+    snapshot: Option<&crate::state::ParsedSnapshot>,
+) -> Option<String> {
     let mut cursor = offset.min(text.len());
     while cursor > 0 && !text.is_char_boundary(cursor) {
         cursor -= 1;
     }
 
     let line_start = text[..cursor].rfind('\n').map_or(0, |idx| idx + 1);
+    if !statement_keyword_is_code(snapshot, text, line_start) {
+        return None;
+    }
     let line_end = text[cursor..].find('\n').map_or(text.len(), |idx| cursor + idx);
     let line = &text[line_start..line_end];
     let cursor_in_line = cursor.saturating_sub(line_start);
@@ -959,15 +1250,36 @@ fn cursor_in_regex_capture(regex: &regex::Regex, text: &str, cursor: usize, grou
         .any(|cap| cap.get(group).is_some_and(|m| cursor >= m.start() && cursor <= m.end()))
 }
 
-#[cfg(feature = "workspace")]
+/// Which `::`-separated component of a fully-qualified name the cursor is on.
+///
+/// Shared with `references.rs` so go-to-definition and find-references answer the
+/// same question with one implementation instead of two drifting copies (#1849).
+///
+/// Not `#[cfg(feature = "workspace")]`: the classification is text-level -- one
+/// regex over one line, then a `::` split -- and consults no workspace index.
+/// `rename.rs` and `references.rs` both refuse wrong-symbol edits on it, and
+/// those refusals must not disappear from a build that merely lacks the index
+/// (#14757).
 #[derive(Debug, PartialEq, Eq)]
-enum FqnCursorComponent {
+pub(super) enum FqnCursorComponent {
+    /// The cursor is on a package component or on a `::` separator -- not on the
+    /// final component, so the match does not name the sub the caller is after.
     Prefix,
+    /// The cursor is on the final component, which names the sub.
     Final { package: String, name: String },
 }
 
-#[cfg(feature = "workspace")]
-fn fqn_component_at_cursor(
+/// Resolve which component of the fully-qualified name under `cursor` the cursor
+/// is on, or `None` when the cursor is not inside a `::`-qualified match.
+///
+/// `text` must contain the *complete* qualified name around `cursor`. The final
+/// component is identified by the last `::` in the match, so a `text` that clips
+/// the name partway through a component makes that component look final and
+/// reports `Final` where the truth is `Prefix`. Pass a whole line
+/// (`util::line_window_around_offset`) rather than a fixed-radius window: a Perl
+/// qualified name cannot span a line break, but it can easily be longer than a
+/// radius.
+pub(super) fn fqn_component_at_cursor(
     regex: &regex::Regex,
     text: &str,
     cursor: usize,
@@ -994,6 +1306,54 @@ fn fqn_component_at_cursor(
             Some(FqnCursorComponent::Final { package, name })
         }
     })
+}
+
+/// Whether the cursor at `offset` sits *off* the token that names `symbol_name`.
+///
+/// Rename and find-references both need this before acting on a resolved symbol:
+/// for a qualified name the resolver answers with the callable wherever the
+/// cursor is, so a cursor that is not on the callable's own token would edit --
+/// or report references for -- a symbol the user never pointed at (#9827,
+/// #1849). Both providers asked it with their own copy until #14757; this is the
+/// single implementation they now share.
+///
+/// Two cursor positions are off the named symbol:
+///
+/// * a **prefix** component, which never names the callable -- `Alpha` in
+///   `Alpha::target()` resolves to the sub `target`;
+/// * a **final** component whose text disagrees with the resolved symbol. In
+///   `Some::Module->new()` the qualified-name match stops at the `->`, so
+///   `Module` is that match's final component while the key names the method
+///   `new`. Testing only for `Prefix` lets that receiver through.
+///
+/// Everything else is on the symbol, or not a question this predicate answers:
+/// a final component that agrees, and a cursor outside any `::`-qualified match,
+/// are both `false`. `symbol_name` of `None` is `false` for a final component
+/// too -- with nothing to disagree with there is no disagreement to report.
+///
+/// Inherits `fqn_component_at_cursor`'s ASCII-only bound (#14616); fixing that
+/// now touches one place instead of three.
+pub(super) fn cursor_is_off_named_symbol(
+    text: &str,
+    offset: usize,
+    symbol_name: Option<&str>,
+) -> bool {
+    let Ok(regex) = get_fqn_regex() else {
+        return false;
+    };
+    // Classify over the whole line, not a radius window: a window can end inside
+    // a long middle component, which makes that component look like the final
+    // one and lets the wrong target through. A Perl qualified name cannot span a
+    // line break, so the line always contains the whole name.
+    let (line_start, line_text) = crate::util::line_window_around_offset(text, offset);
+    let cursor_in_line = offset.saturating_sub(line_start);
+    match fqn_component_at_cursor(regex, line_text, cursor_in_line) {
+        Some(FqnCursorComponent::Prefix) => true,
+        Some(FqnCursorComponent::Final { name, .. }) => {
+            symbol_name.is_some_and(|symbol_name| name.as_str() != symbol_name)
+        }
+        None => false,
+    }
 }
 
 impl LspServer {
@@ -1231,6 +1591,29 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
+    /// Emit the core-module goto-definition notice at most once per server
+    /// session. Returns whether *this* call emitted (#16551).
+    ///
+    /// Extracted from [`Self::handle_definition_inner`] so the once-per-session
+    /// contract is enforced in one place. A test that pokes
+    /// `core_module_notice_shown` directly would stay green if the `swap` guard
+    /// were deleted — it would be testing `AtomicBool` semantics rather than
+    /// the once-per-session behavior, which is the hole this extraction closes.
+    fn emit_core_module_notice_once(&self, module_name: &str) -> bool {
+        if self.core_module_notice_shown.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        let _ = self.log_message(
+            crate::runtime::window::MessageType::Info,
+            &format!(
+                "'{module_name}' is a Perl core module. \
+                 No source file is available for goto-definition. \
+                 Use hover (K) to view documentation."
+            ),
+        );
+        true
+    }
+
     /// Handle textDocument/definition request
     #[tracing::instrument(skip(self, params), name = "textDocument/definition")]
     pub(crate) fn handle_definition(
@@ -1307,9 +1690,16 @@ impl LspServer {
                     // also classified as a string.  This now blocks whenever the
                     // offset is inside a comment.
                     let text = &doc.text;
-                    if perl_lsp_rs_core::providers::rename::is_in_comment(offset, text) {
-                        return Ok(None);
+                    if is_in_comment_naive(offset, text) {
+                        return Ok(Some(Value::Null));
                     }
+                    let current_parsed = doc.current_parsed();
+                    let cursor_in_single_quoted_literal =
+                        in_single_quoted_literal(current_parsed.as_deref(), offset);
+                    let quoted_parent_base_argument = cursor_in_single_quoted_literal
+                        && current_parsed.as_ref().is_some_and(|snapshot| {
+                            standalone_quoted_parent_base_argument(snapshot, text, offset)
+                        });
 
                     let radius = 50;
                     let (text_start, text_around) =
@@ -1321,25 +1711,39 @@ impl LspServer {
                             |ast| crate::declaration::current_package_at(&ast, offset).to_string(),
                         );
 
-                    if let Some(module_name) =
-                        extract_xs_bootstrap_target(&text_around, cursor_in_text, &current_package)
-                    {
+                    if let Some(module_name) = extract_xs_bootstrap_target(
+                        &text_around,
+                        cursor_in_text,
+                        &current_package,
+                        |marker| {
+                            !cursor_in_single_quoted_literal
+                                || current_parsed.as_ref().is_some_and(|snapshot| {
+                                    snapshot
+                                        .source_region_index()
+                                        .kind_at_offset(text_start + marker)
+                                        == perl_parser_core::SourceRegionKind::Code
+                                })
+                        },
+                    ) {
                         Some((
                             EarlyDefinitionTarget::XsBootstrap(module_name),
                             doc.text_arc.to_string(),
                             offset,
                         ))
-                    } else if let Some(module_name) =
-                        self.extract_module_reference_extended(&text_around, cursor_in_text)
+                    } else if (!cursor_in_single_quoted_literal || quoted_parent_base_argument)
+                        && let Some(module_name) =
+                            self.extract_module_reference_extended(&text_around, cursor_in_text)
                     {
                         Some((
                             EarlyDefinitionTarget::UseModule(module_name),
                             doc.text_arc.to_string(),
                             offset,
                         ))
-                    } else if let Some(module_name) =
-                        literal_require_path_module_at_offset(text, offset)
-                    {
+                    } else if let Some(module_name) = literal_require_path_module_at_offset(
+                        text,
+                        offset,
+                        current_parsed.as_deref(),
+                    ) {
                         // Literal-path require (`require "Foo/Bar.pm"`): the
                         // quoted form cannot enter the bareword extraction
                         // chain, so normalize it here (#12559).
@@ -1348,9 +1752,19 @@ impl LspServer {
                             doc.text_arc.to_string(),
                             offset,
                         ))
-                    } else if let Some(module_name) =
-                        quoted_framework_module_at_cursor(&text_around, cursor_in_text)?
-                    {
+                    } else if let Some(module_name) = quoted_framework_module_at_cursor(
+                        &text_around,
+                        cursor_in_text,
+                        |keyword| {
+                            !cursor_in_single_quoted_literal
+                                || current_parsed.as_ref().is_some_and(|snapshot| {
+                                    snapshot
+                                        .source_region_index()
+                                        .kind_at_offset(text_start + keyword)
+                                        == perl_parser_core::SourceRegionKind::Code
+                                })
+                        },
+                    )? {
                         Some((
                             EarlyDefinitionTarget::FrameworkModule(module_name),
                             doc.text_arc.to_string(),
@@ -1361,7 +1775,9 @@ impl LspServer {
                         let mut package_name_result = None;
                         let package_pattern = get_package_arrow_regex()?;
                         for cap in package_pattern.captures_iter(&text_around) {
-                            if let Some(package_match) = cap.get(1) {
+                            if !cursor_in_single_quoted_literal
+                                && let Some(package_match) = cap.get(1)
+                            {
                                 let match_start = package_match.start();
                                 let match_end = package_match.end();
                                 if cursor_in_text >= match_start && cursor_in_text <= match_end {
@@ -1479,18 +1895,19 @@ impl LspServer {
                                 },
                             }])));
                         } else if is_core_perl_module(&module_name) {
-                            // Core pragma — not on disk in the user's workspace, so no file jump
+                            // Core pragma - not on disk in the user's workspace, so no file jump
                             // is possible.  Log an info message to the LSP output channel
                             // (visible in the VSCode Output panel) so users can discover that
                             // hover (K) shows documentation for core modules.
-                            let _ = self.log_message(
-                                crate::runtime::window::MessageType::Info,
-                                &format!(
-                                    "'{module_name}' is a Perl core module. \
-                                     No source file is available for goto-definition. \
-                                     Use hover (K) to view documentation."
-                                ),
-                            );
+                            //
+                            // Once per session: goto-definition is a per-request action, so an
+                            // unguarded notice repeats every time the user presses F12 on
+                            // `use strict`, filling the Output panel with a line they have
+                            // already read. The fact - "this module has no source" - does not
+                            // change between invocations, so neither does the need to say so
+                            // (#16551). The per-module detail stays in the debug log, which is
+                            // not user-facing, so nothing is actually lost.
+                            self.emit_core_module_notice_once(&module_name);
                             tracing::debug!(
                                 module = %module_name,
                                 "core pragma requested via goto-def — no file target"
@@ -1583,6 +2000,12 @@ impl LspServer {
                 let _analyze_span =
                     crate::runtime::timing::ScopedSpan::start("provider.navigation.analyze", uri);
                 let offset = self.pos16_to_offset(doc, line, character);
+                // Use the current parse generation to identify inert quoted
+                // text. Explicit quoted targets (module paths and framework
+                // references) have already had their own routing above.
+                let parsed = doc.current_parsed();
+                let cursor_in_single_quoted_literal =
+                    in_single_quoted_literal(parsed.as_deref(), offset);
                 let radius = 50;
                 let (text_start, text_around) =
                     self.get_text_window_around_offset(&doc.text, offset, radius);
@@ -1590,7 +2013,8 @@ impl LspServer {
 
                 let goto_label_re = get_goto_label_regex()?;
                 for cap in goto_label_re.captures_iter(&text_around) {
-                    if let Some(label_match) = cap.get(1)
+                    if !cursor_in_single_quoted_literal
+                        && let Some(label_match) = cap.get(1)
                         && cursor_in_text >= label_match.start()
                         && cursor_in_text <= label_match.end()
                         && let Some((target_start, target_end)) =
@@ -1614,7 +2038,9 @@ impl LspServer {
                     }
                 }
 
-                if let Some(mason_location) = self.resolve_mason_definition(uri, &doc.text, offset)
+                if !cursor_in_single_quoted_literal
+                    && let Some(mason_location) =
+                        self.resolve_mason_definition(uri, &doc.text, offset)
                     && let Some(lsp_location) =
                         crate::workspace_index::lsp_adapter::to_lsp_location(&mason_location)
                 {
@@ -1622,8 +2048,7 @@ impl LspServer {
                 }
 
                 #[cfg(feature = "workspace")]
-                if workspace_index_is_fresh() {
-                    let parsed = doc.current_parsed();
+                if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
                         && let Some(coordinator) = self.coordinator()
                     {
@@ -1730,11 +2155,32 @@ impl LspServer {
                 #[cfg(feature = "workspace")]
                 {
                     let fqn_regex = get_fqn_regex()?;
-                    if let Some(component) =
-                        fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text)
+                    if !cursor_in_single_quoted_literal
+                        && let Some(component) =
+                            fqn_component_at_cursor(fqn_regex, &text_around, cursor_in_text)
                     {
                         match component {
                             FqnCursorComponent::Final { package, name } => {
+                                // `Some::Module` is the final component of the
+                                // qualified-name match in `Some::Module->new()`,
+                                // but it is the method call's receiver. Looking
+                                // up Some::Module as a callable can jump to an
+                                // unrelated `sub Module` in package Some (#14776).
+                                // The earlier module-path lookup has already had
+                                // its chance to resolve this receiver.
+                                let qualified_name = format!("{package}::{name}");
+                                if get_package_method_receiver_regex()?
+                                    .captures_iter(&text_around)
+                                    .any(|cap| {
+                                        cap.get(1).is_some_and(|receiver| {
+                                            receiver.as_str() == qualified_name
+                                                && cursor_in_text >= receiver.start()
+                                                && cursor_in_text <= receiver.end()
+                                        })
+                                    })
+                                {
+                                    return Ok(Some(Value::Null));
+                                }
                                 if workspace_index_is_fresh()
                                     && let Some(result) = lookup_workspace_definition(
                                         self.coordinator(),
@@ -1747,13 +2193,13 @@ impl LspServer {
                                     return Ok(Some(result));
                                 }
                             }
-                            FqnCursorComponent::Prefix => return Ok(None),
+                            FqnCursorComponent::Prefix => return Ok(Some(Value::Null)),
                         }
                     }
                 }
 
                 #[cfg(feature = "workspace")]
-                if workspace_index_is_fresh() {
+                if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
                     // Attempt to resolve Package->method calls
                     let arrow_re = get_arrow_method_regex()?;
                     for cap in arrow_re.captures_iter(&text_around) {
@@ -1870,12 +2316,19 @@ impl LspServer {
                     }
                 }
 
-                let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let offset = self.pos16_to_offset(doc, line, character);
+                    // A literal has no generic symbol of its own. Keep the
+                    // AST-aware DeclarationProvider below for method modifiers.
+                    // A quoted import-list member is an intentional exception:
+                    // the semantic Use node supplies a Sub key for that member.
+                    let quoted_import_list_symbol = cursor_in_single_quoted_literal
+                        && parsed.as_ref().is_some_and(|snapshot| {
+                            quoted_import_list_symbol(ast, snapshot, &doc.text, offset)
+                        });
 
                     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                    if workspace_index_is_fresh() {
+                    if !cursor_in_single_quoted_literal && workspace_index_is_fresh() {
                         let cursor_on_arrow_method = cursor_in_regex_capture(
                             get_arrow_method_regex()?,
                             &text_around,
@@ -1962,6 +2415,10 @@ impl LspServer {
                         }
                     }
 
+                    if cursor_in_single_quoted_literal && !quoted_import_list_symbol {
+                        return Ok(Some(json!([])));
+                    }
+
                     // Try workspace index for cross-file definitions using routing policy
                     #[cfg(feature = "workspace")]
                     if workspace_index_is_fresh()
@@ -2027,11 +2484,40 @@ impl LspServer {
                     }
                     // No coordinator: fall through to same-file semantic model
 
+                    if cursor_in_single_quoted_literal {
+                        return Ok(Some(json!([])));
+                    }
+
                     // Fall back to same-file definition
                     let model = crate::semantic::SemanticModel::build(ast, &doc.text);
 
                     // Find definition at the position
                     if let Some(definition) = model.definition_at(offset) {
+                        // These built-in variables have no local declaration. The
+                        // semantic analyzer can instead return the sub whose span
+                        // contains them, which is not their definition.
+                        let on_special_variable = ["$|", "@_"].into_iter().any(|special| {
+                            [Some(offset), offset.checked_sub(1)].into_iter().flatten().any(
+                                |start| {
+                                    doc.text.get(start..).is_some_and(|tail| {
+                                        tail.starts_with(special)
+                                            && (special != "@_"
+                                                || !tail.as_bytes().get(2).is_some_and(|byte| {
+                                                    byte.is_ascii_alphanumeric() || *byte == b'_'
+                                                }))
+                                    })
+                                },
+                            )
+                        });
+                        if on_special_variable
+                            && matches!(
+                                definition.kind,
+                                crate::symbol::SymbolKind::Subroutine
+                                    | crate::symbol::SymbolKind::Method
+                            )
+                        {
+                            return Ok(Some(json!([])));
+                        }
                         let (def_line, def_char) =
                             self.offset_to_pos16(doc, definition.location.start);
                         let (def_end_line, def_end_char) =
@@ -2127,15 +2613,92 @@ impl LspServer {
         if !snapshot_is_current() {
             return None;
         }
-        let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
-            let context = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(index.as_ref(), &queries, &symbol, &context)
-                .receipt
-        })?;
+        // One shared basis for this request (#8977), bracketed against the
+        // index's write version across everything the basis is meant to
+        // describe. References builds its basis from the same constructor, so
+        // the two providers cannot drift onto different generations.
+        //
+        // The basis cannot be re-read inside the callback:
+        // `accepted_generation_basis` takes the index's document-map lock, and
+        // taking it while `with_semantic_queries_for_uri` holds the semantic
+        // read guards would invert this crate's lock order. So the bracket is
+        // closed the other way — `stable_basis_view` observes `write_version`
+        // before the basis is captured and again after the view has completed
+        // and released its guards.
+        //
+        // Both the legacy lookup and the view open sit inside that bracket, and
+        // both must. The legacy lookup has to happen before the callback (it
+        // must not re-enter `WorkspaceIndex` while the read guards are held,
+        // #15644), which leaves two operations between the basis capture and the
+        // view. `snapshot_is_current` below compares only *document*
+        // generations, so without this bracket an unrelated workspace update
+        // completing in that window would label the newer view's facts with the
+        // settled older workspace basis and nothing would notice.
+        //
+        // Exhaustion declines the receipt rather than emitting a basis that does
+        // not describe its own view. This is the receipt path, so declining
+        // costs a trace entry and never changes the definition response. The
+        // underlying writer protocol — overlapping `WriteVersionGuard` windows
+        // and the unversioned incremental shard replace — stays with
+        // #8038/#8642; this bracket does not claim to repair it.
+        //
+        // Same bound as the references seam, which brackets this same class
+        // with this same helper: contention here is a brief index write, not a
+        // queue. Each attempt only re-reads, so a retry is observationally
+        // identical to the first pass.
+        const VIEW_BASIS_ATTEMPTS: u8 = 3;
+        let (_resolve_generation, view) = stable_basis_view(
+            || accepted_generation_basis(index.as_ref(), uri),
+            || index.write_version(),
+            |resolve_generation| {
+                let legacy_location = index.find_definition(&symbol);
+                index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+                    // The shared cursor identity and the live name-keyed lookup
+                    // are captured under ONE view open; two opens would be a
+                    // second snapshot of the same request.
+                    let resolve_source = SemanticQueriesResolveSource::new(&queries);
+                    let resolved_at_cursor = resolve_at_position(
+                        &resolve_source,
+                        file_id,
+                        byte_offset,
+                        resolve_generation,
+                        false,
+                    );
+                    let context = QueryContext::new(file_id, None, Some(byte_offset));
+                    let outcome = goto_definition_live_exact_or_imported(
+                        legacy_location,
+                        &queries,
+                        &symbol,
+                        &context,
+                    );
+                    (outcome, resolved_at_cursor)
+                })
+            },
+            VIEW_BASIS_ATTEMPTS,
+        )?;
+        let (receipt, resolved_at_cursor) = view?;
         if !snapshot_is_current() || self.workspace_index_stale_for_any_open_document() {
             return None;
         }
-        serde_json::to_value(receipt).ok()
+
+        let live_entity_id = match &receipt.result {
+            DefinitionCutoverResult::Exact(candidate) => Some(candidate.entity_id),
+            DefinitionCutoverResult::Ambiguous(_) | DefinitionCutoverResult::LegacyFallback(_) => {
+                None
+            }
+        };
+        let mut value = serde_json::to_value(receipt.receipt).ok()?;
+        // Merged into the receipt the `goto_definition` decision trace already
+        // carries, so `perl.explainProviderDecision` can actually reach it. A
+        // separate provider key could never be read back: the trace store is a
+        // map keyed by provider, and the handler writes `goto_definition` last.
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "resolve_at".to_owned(),
+                definition_resolve_at_trace(&resolved_at_cursor, live_entity_id),
+            );
+        }
+        Some(value)
     }
 
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -2152,7 +2715,7 @@ impl LspServer {
                 "provider": "definition",
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": null,
+                "source_backed_receipt": null,
                 "no_live_behavior_change": true,
                 "note": "definition runtime proof unavailable without workspace semantic queries"
             })))
@@ -2165,7 +2728,7 @@ impl LspServer {
                     "provider": "definition",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "definition runtime proof missing request params"
                 })));
@@ -2180,32 +2743,37 @@ impl LspServer {
                     "provider": "definition",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "definition runtime proof found no symbol at request position"
                 })));
             };
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-            let compiler_receipt = if self.workspace_index_stale_for_any_open_document() {
+            let source_backed_receipt = if self.workspace_index_stale_for_any_open_document() {
                 None
             } else {
                 match route_index_access(self.coordinator()) {
                     IndexAccessMode::Full(coordinator) => {
                         let index = coordinator.index();
+                        // Resolve the legacy location BEFORE entering the
+                        // callback: the cutover path must not re-enter
+                        // `WorkspaceIndex` while `with_semantic_queries_for_uri`
+                        // holds its read guards (#15644).
+                        let legacy_location = index.find_definition(&symbol);
                         index.with_semantic_queries_for_uri(uri, |file_id, queries| {
                         let ctx = QueryContext::new(file_id, None, Some(byte_offset));
                         let mut receipt = goto_definition_live_exact_or_imported(
-                            index.as_ref(),
+                            legacy_location,
                             &queries,
                             &symbol,
                             &ctx,
                         )
                         .receipt;
-                        let compiler_result_count = receipt.new_result.match_count;
+                        let source_backed_result_count = receipt.new_result.match_count;
                         receipt.notes.push(format!(
-                            "definition runtime proof: live_provider_results={live_provider_count}; compiler_fact_candidates={}; compiler_result_count={}; partial live exact/imported cutover",
-                            compiler_result_count, compiler_result_count
+                            "definition runtime proof: live_provider_results={live_provider_count}; source_backed_candidates={}; source_backed_result_count={}; partial live exact/imported cutover",
+                            source_backed_result_count, source_backed_result_count
                         ));
                         receipt
                     })
@@ -2213,14 +2781,14 @@ impl LspServer {
                     IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
             };
-            let live_cutover = compiler_receipt.is_some();
+            let live_cutover = source_backed_receipt.is_some();
 
             Ok(Some(json!({
                 "provider": "definition",
                 "symbol": symbol,
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": compiler_receipt,
+                "source_backed_receipt": source_backed_receipt,
                 "no_live_behavior_change": !live_cutover,
                 "live_cutover": if live_cutover {
                     Some("partial_exact_imported")
@@ -2298,9 +2866,13 @@ impl LspServer {
             return None;
         }
         let workspace_index = self.workspace_index()?;
+        // Resolve the legacy location BEFORE entering the callback: the cutover
+        // path must not re-enter `WorkspaceIndex` while
+        // `with_semantic_queries_for_uri` holds its read guards (#15644).
+        let legacy_location = workspace_index.find_definition(symbol);
         let outcome = workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
             let ctx = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(workspace_index.as_ref(), &queries, symbol, &ctx)
+            goto_definition_live_exact_or_imported(legacy_location, &queries, symbol, &ctx)
         })?;
 
         if self.workspace_index_stale_for_any_open_document() {
@@ -2311,7 +2883,10 @@ impl LspServer {
             return None;
         };
         let def_location = workspace_index.semantic_anchor_wire_location(candidate.anchor_id)?;
-        let location: lsp_types::Location = def_location.into();
+        // An unconvertible URI yields no definition rather than a fabricated one:
+        // this exact path claims source-backed exactness, which a substituted
+        // resource cannot support.
+        let location = lsp_types::Location::try_from(def_location).ok()?;
         serde_json::to_value(location).ok()
     }
 
@@ -2703,6 +3278,11 @@ impl LspServer {
     }
 
     /// Non-blocking definition handler with fallback
+    ///
+    /// Production definition dispatch is a transparent adapter over the
+    /// canonical handler, so this compatibility handler is compiled only for
+    /// the test-fallbacks path (#5108).
+    #[cfg(any(test, feature = "test-fallbacks"))]
     pub(crate) fn on_definition(
         &self,
         params: serde_json::Value,
@@ -2915,6 +3495,97 @@ mod tests {
         Ok((result, receipt))
     }
 
+    /// Cross-file definition must not consume predecessor workspace facts while
+    /// a Full-sync violation is outstanding, and must recover after an admitted
+    /// full replacement plus index catch-up (#8129).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn definition_skips_workspace_index_while_full_sync_required()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/desync-def-caller.pl";
+        let target_uri = "file:///workspace/desync-def-target.pl";
+        let caller_text = "DesyncDefTarget::shared_entry();\n";
+        let target_v1 = "package DesyncDefTarget;\nsub shared_entry { 1 }\n";
+        let target_v2 = "package DesyncDefTarget;\nsub shared_entry { 2 }\n";
+
+        server.test_apply_did_open(caller_uri, caller_text, 1)?;
+        server.test_apply_did_open(target_uri, target_v1, 1)?;
+        server
+            .test_index_file_in_building_state(caller_uri, caller_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(target_uri, target_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "the fixture starts with a current workspace index"
+        );
+
+        let (fresh, fresh_receipt) = goto_definition_request_receipt(&server, caller_uri, 0, 18)?;
+        assert!(
+            fresh.as_ref().and_then(Value::as_array).is_some_and(|locations| !locations.is_empty()),
+            "cross-file DesyncDefTarget::shared_entry should resolve while the index is current: {fresh:?}"
+        );
+        assert_eq!(
+            fresh_receipt.get("freshness").and_then(Value::as_str),
+            Some("fresh"),
+            "fresh definition over a current index: {fresh_receipt}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": target_uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 16 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+        assert!(server.workspace_index_stale_for_any_open_document());
+
+        let (desync, desync_receipt) = goto_definition_request_receipt(&server, caller_uri, 0, 18)?;
+        assert!(
+            desync.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
+                || desync.is_none(),
+            "cross-file definition must not consume predecessor workspace facts: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("freshness").and_then(Value::as_str),
+            Some("unknown"),
+            "empty definition over a Full-sync-stale index must not claim freshness: {desync_receipt}"
+        );
+
+        server.test_apply_did_change(target_uri, target_v2, 3)?;
+        let recovered_gen = {
+            let docs = server.documents.lock();
+            docs.get(target_uri).ok_or("recovered definition target")?.current_generation()
+        };
+        server
+            .test_index_live_file(target_uri, target_v2, recovered_gen)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        assert!(!server.workspace_index_stale_for_any_open_document());
+
+        let (recovered, recovered_receipt) =
+            goto_definition_request_receipt(&server, caller_uri, 0, 18)?;
+        assert!(
+            recovered
+                .as_ref()
+                .and_then(Value::as_array)
+                .is_some_and(|locations| !locations.is_empty()),
+            "full-document recovery must restore cross-file definition: {recovered:?}"
+        );
+        assert_eq!(
+            recovered_receipt.get("freshness").and_then(Value::as_str),
+            Some("fresh"),
+            "recovered definition over a current index: {recovered_receipt}"
+        );
+        Ok(())
+    }
+
     /// End-to-end counter-assertion that the goto-definition receipt's
     /// `freshness` is wired to the derivation rather than emitted as a literal
     /// (#14162).
@@ -2952,7 +3623,7 @@ mod tests {
             goto_definition_request_receipt(&server, main_uri, 3, 1)?;
         assert!(
             prefix_fresh_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
-                || prefix_fresh_index.is_none(),
+                || prefix_fresh_index.as_ref().is_some_and(Value::is_null),
             "a package-prefix cursor must yield an empty answer; got {prefix_fresh_index:?}"
         );
         assert_eq!(prefix_fresh_receipt.get("result_count").and_then(Value::as_u64), Some(0));
@@ -2991,7 +3662,7 @@ mod tests {
             goto_definition_request_receipt(&server, main_uri, 3, 1)?;
         assert!(
             prefix_stale_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
-                || prefix_stale_index.is_none(),
+                || prefix_stale_index.as_ref().is_some_and(Value::is_null),
             "a package-prefix cursor must stay empty under a stale index; got {prefix_stale_index:?}"
         );
         assert_eq!(prefix_stale_receipt.get("result_count").and_then(Value::as_u64), Some(0));
@@ -3029,6 +3700,93 @@ mod tests {
         Ok(())
     }
 
+    /// The predicate `rename.rs` and `references.rs` share (#14757).
+    ///
+    /// Each caller kept its own copy of this match until the two were lifted
+    /// here. The cases below are the union of what those copies answered, so a
+    /// divergence in either direction is a red test rather than a provider that
+    /// quietly misbehaves for one surface only.
+    ///
+    /// The document is deliberately multi-line and every offset is off line one:
+    /// the predicate derives its own line window, and the callers that used to do
+    /// that themselves must not lose the whole-line requirement in the move.
+    ///
+    /// Each case pins the component it classifies to before asserting the
+    /// predicate's answer. Without that, an offset can silently land on a
+    /// different arm than its comment claims -- `new` in `Some::Module->new()`
+    /// looks like a final component but carries no `::`, so it classifies as
+    /// `None` -- and the case then proves nothing about the arm it names.
+    #[test]
+    fn shared_off_symbol_predicate_answers_for_rename_and_references()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let regex = get_fqn_regex()?;
+        let text = "use Some::Module;\nSome::Module->new();\nAlpha::target();\n";
+        let line2 = text.find("Some::Module->new").ok_or("fixture line 2")?;
+        let line3 = text.find("Alpha::target").ok_or("fixture line 3")?;
+        let arm = |offset: usize, line_start: usize| {
+            let (_, line_text) = crate::util::line_window_around_offset(text, offset);
+            fqn_component_at_cursor(regex, line_text, offset - line_start)
+        };
+
+        // Arrow receiver: the qualified-name match stops at the `->`, so `Module`
+        // is that match's *final* component while the resolved symbol is the
+        // method `new`. Off the named symbol -- the wrong-symbol edit this
+        // predicate exists to refuse. A predicate keyed on `Prefix` alone
+        // answers `false` here.
+        assert!(matches!(arm(line2 + 6, line2), Some(FqnCursorComponent::Final { .. })));
+        assert!(
+            cursor_is_off_named_symbol(text, line2 + 6, Some("new")),
+            "a cursor on the arrow receiver is off the method the key names"
+        );
+        // The method itself carries no `::`, so it is not inside a qualified
+        // match at all. The predicate must not refuse it -- this is the one
+        // position on this line rename has to keep working.
+        assert!(arm(line2 + 14, line2).is_none());
+        assert!(
+            !cursor_is_off_named_symbol(text, line2 + 14, Some("new")),
+            "a cursor on the method names the symbol being acted on"
+        );
+
+        // Package prefix of a qualified call: never names the callable.
+        assert!(matches!(arm(line3 + 1, line3), Some(FqnCursorComponent::Prefix)));
+        assert!(
+            cursor_is_off_named_symbol(text, line3 + 1, Some("target")),
+            "a cursor on a package prefix is off the sub it resolves to"
+        );
+        // Final component agreeing with the resolved name: on the symbol.
+        // Refusing every `Final` would break rename here.
+        assert!(matches!(arm(line3 + 8, line3), Some(FqnCursorComponent::Final { .. })));
+        assert!(
+            !cursor_is_off_named_symbol(text, line3 + 8, Some("target")),
+            "a cursor on the final component names the sub"
+        );
+
+        // Not inside a `::`-qualified match at all: not a question this
+        // predicate answers, so it must not refuse. `references.rs` reaches this
+        // for every unqualified cursor.
+        assert!(
+            !cursor_is_off_named_symbol("my $x = 1;\n", 4, Some("x")),
+            "an unqualified cursor is not classified as off the symbol"
+        );
+
+        // `rename.rs` alone reaches an unresolved cursor: `references.rs` only
+        // calls the predicate with a resolved bare sub key. A final component
+        // with nothing to disagree with is not a disagreement, so the union arm
+        // must stay `false` -- refusing here would refuse rename wherever
+        // resolution came back empty on a qualified line.
+        assert!(
+            !cursor_is_off_named_symbol(text, line3 + 8, None),
+            "with no resolved symbol a final component reports no disagreement"
+        );
+        // A prefix stays off the symbol even unresolved: it never names a
+        // callable regardless of what resolution found.
+        assert!(
+            cursor_is_off_named_symbol(text, line3 + 1, None),
+            "a prefix component is off the symbol independently of resolution"
+        );
+        Ok(())
+    }
+
     /// Regression: a stale workspace index must not re-enable the wrong jump the
     /// package-prefix guard exists to prevent.
     ///
@@ -3036,7 +3794,7 @@ mod tests {
     /// `symbol_at_cursor_with_source` both extract the LAST component (`bar`)
     /// regardless of cursor position, so falling through to them navigates to
     /// `sub bar` — a confidently wrong target. `handle_definition_inner`
-    /// therefore returns `Ok(None)` for a prefix cursor.
+    /// therefore returns an explicit null result for a prefix cursor.
     ///
     /// That guard used to live inside the workspace-index freshness gate, so an
     /// unrelated edited buffer with a stale index entry skipped the whole block
@@ -3367,5 +4125,38 @@ mod tests {
         // mutex's poisoned flag from being permanently true after this test
         // runs, matching "no test leaving the mutex poisoned".
         NAVIGATION_SAME_DOC_FALLBACK_GAP.clear_poison();
+    }
+
+    /// The core-module goto-definition notice must reach the output channel
+    /// once per server session, not once per F12 (#16551).
+    ///
+    /// `window/logMessage` is a per-request action path, so an unguarded notice
+    /// repeats on every jump to `use strict` and trains the user to ignore the
+    /// channel that carries it.
+    ///
+    /// Drives [`LspServer::emit_core_module_notice_once`] — the unit that
+    /// actually enforces the guard — rather than the flag behind it, so deleting
+    /// the guard fails this test.
+    #[test]
+    fn the_core_module_notice_is_emitted_once_per_server_session() {
+        let first = crate::runtime::LspServer::new();
+        assert!(
+            first.emit_core_module_notice_once("strict"),
+            "the first notice in a session must be emitted"
+        );
+        assert!(
+            !first.emit_core_module_notice_once("strict"),
+            "a second F12 on the same module must stay silent, not repeat the notice"
+        );
+        assert!(
+            !first.emit_core_module_notice_once("warnings"),
+            "the guard is per session, not per module: a different core module is also silent"
+        );
+
+        let second = crate::runtime::LspServer::new();
+        assert!(
+            second.emit_core_module_notice_once("strict"),
+            "the guard is instance-level: a second server session must still emit"
+        );
     }
 }

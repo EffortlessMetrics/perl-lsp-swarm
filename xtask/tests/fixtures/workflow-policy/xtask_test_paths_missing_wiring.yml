@@ -1,0 +1,16 @@
+name: fixture-xtask-test-paths-missing-wiring
+# Negative control. `cargo test -p xtask` compiles test targets, not the CLI
+# dispatch path, so this workflow is not making a subcommand-routing claim.
+on:
+  pull_request:
+    paths:
+      - 'xtask/tests/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo test -p xtask --locked --test example_contract

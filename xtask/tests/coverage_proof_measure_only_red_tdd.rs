@@ -44,6 +44,8 @@ fn test_coverage_pack_non_fatal_lib_test_failure() -> TestResult {
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
 
+    check_fixture_exception_policy(&payload, &receipt)?;
+
     // DESIRED: receipt has test_failure_class field (can be None or a failure class name).
     // FAILS NOW: field doesn't exist yet.
     assert!(
@@ -75,6 +77,8 @@ fn test_coverage_pack_non_fatal_integration_test_failure() -> TestResult {
     patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?.assert().success();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+
+    check_fixture_exception_policy(&payload, &receipt)?;
 
     // DESIRED: receipt has test_failure_class field, indicating that
     // non-fatal wrapping is in place for all test commands.
@@ -305,6 +309,27 @@ fn test_genuine_coverage_shortfall_still_fails_gate() -> TestResult {
 // Helper functions (mirror of quality_gate_patch_coverage_cli_policy.rs tests)
 // ============================================================================
 
+fn fixture_exception_policy_path(receipt: &Path) -> TestResult<PathBuf> {
+    Ok(receipt
+        .parent()
+        .ok_or("quality-gate receipt path must have a parent")?
+        .join("quality-gate-exceptions.toml"))
+}
+
+fn check_fixture_exception_policy(payload: &Value, receipt: &Path) -> TestResult {
+    let expected = fixture_exception_policy_path(receipt)?.to_string_lossy().replace('\\', "/");
+    let actual = payload
+        .pointer("/temporary_exceptions/policy")
+        .and_then(Value::as_str)
+        .ok_or("quality-gate receipt must identify its exception policy")?;
+    if actual != expected {
+        return Err(
+            format!("expected fixture exception policy {expected:?}, got {actual:?}").into()
+        );
+    }
+    Ok(())
+}
+
 fn patch_quality_gate_command(
     root: &Path,
     coverage: &Path,
@@ -313,7 +338,13 @@ fn patch_quality_gate_command(
     patch: Option<f64>,
 ) -> TestResult<Command> {
     let mut command = Command::cargo_bin("xtask")?;
+    let exception_policy = fixture_exception_policy_path(receipt)?;
+    fs::write(
+        &exception_policy,
+        "schema_version = 1\npolicy = \"quality-gate-exceptions\"\nowner = \"test\"\nstatus = \"active\"\nupdated = \"2026-01-01\"\ndue_review = \"fail\"\n[requirements]\nrequired_active = []\n",
+    )?;
     command.current_dir(root).args(["quality-gate", "--mode", "enforce-patch-coverage"]);
+    command.arg("--exception-policy").arg(exception_policy);
     command.arg("--coverage-receipt").arg(coverage);
     command.args(["--codecov", "codecov.yml"]);
     command.arg("--receipt").arg(receipt);

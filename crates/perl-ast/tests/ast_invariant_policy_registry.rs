@@ -1,3 +1,4 @@
+use perl_ast::geometry_fields_for;
 use perl_ast::kind_schema::{FieldCardinality, registered_child_fields};
 use perl_ast::{
     AST_NODE_POLICIES, AST_NODE_POLICY_SCHEMA_VERSION, AstChildContainmentPolicy,
@@ -199,6 +200,10 @@ fn every_kind_reconciles_observed_structure_with_its_policy_row()
         for (bucket, fields) in [
             ("child_fields", child_fields.iter().map(|spec| spec.field.name()).collect()),
             ("payload_fields", fixture.payload_fields.to_vec()),
+            (
+                "geometry_fields",
+                geometry_fields_for(kind_name).iter().map(|row| row.field).collect(),
+            ),
             ("untracked_fields", fixture.untracked_fields.to_vec()),
         ] {
             for name in fields {

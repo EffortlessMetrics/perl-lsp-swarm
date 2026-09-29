@@ -250,14 +250,9 @@ fn parse_string_value(raw: &str) -> Vec<String> {
 }
 
 fn parse_qw_list(raw: &str) -> Vec<String> {
-    if raw.len() < 4 {
+    let Some((start, open)) = raw.char_indices().nth(2) else {
         return Vec::new();
-    }
-
-    let mut chars = raw.chars();
-    let _q = chars.next();
-    let _w = chars.next();
-    let open = chars.next().unwrap_or(' ');
+    };
     let close = match open {
         '(' => ')',
         '[' => ']',
@@ -266,17 +261,16 @@ fn parse_qw_list(raw: &str) -> Vec<String> {
         c => c,
     };
 
-    let Some(start) = raw.find(open) else {
-        return Vec::new();
-    };
     let Some(end) = raw.rfind(close) else {
         return Vec::new();
     };
-    if start >= end {
+    // The opener is one character, which may occupy several UTF-8 bytes.
+    // Checked access also refuses a missing closer found at the opener itself.
+    let Some(content) = raw.get(start + open.len_utf8()..end) else {
         return Vec::new();
-    }
+    };
 
-    raw[start + 1..end].split_whitespace().filter_map(normalize_name).collect()
+    content.split_whitespace().filter_map(normalize_name).collect()
 }
 
 fn parse_argument_names(raw: &str) -> Vec<String> {
@@ -299,6 +293,79 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = parser.parse()?;
         Ok(ExportMetadataBuilder::new().build(&ast))
+    }
+
+    fn check_names(actual: &[String], expected: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+        if !actual.iter().map(String::as_str).eq(expected.iter().copied()) {
+            return Err(format!("expected names {expected:?}, received {actual:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn word_list_boundaries_preserve_names() -> Result<(), Box<dyn std::error::Error>> {
+        for raw in [
+            "qw(alpha beta)",
+            "qw[alpha beta]",
+            "qw{alpha beta}",
+            "qw<alpha beta>",
+            "qw/alpha beta/",
+            "qw§alpha beta§",
+            "qwqalpha betaq",
+            "qwwalpha betaw",
+        ] {
+            check_names(&parse_qw_list(raw), &["alpha", "beta"])?;
+        }
+        check_names(&parse_qw_list("qw(café βeta)"), &["café", "βeta"])?;
+        check_names(&parse_qw_list("qw§café βeta§"), &["café", "βeta"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn empty_or_incomplete_word_lists_are_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        for raw in [
+            "",
+            "q",
+            "qw",
+            "qw(",
+            "qw(alpha",
+            "qw{alpha]",
+            "qw§",
+            "qw§alpha",
+            "qw()",
+            "qw§§",
+            "qw(  )",
+        ] {
+            check_names(&parse_qw_list(raw), &[])?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unicode_export_metadata_preserves_order_and_definition_filtering()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let metadata = parse_export_metadata(
+            "use utf8; package Demo; use Exporter 'import';
+             our @EXPORT = qw(βeta café βeta missing);
+             our @EXPORT_OK = qw(gamma café);
+             our %EXPORT_TAGS = (core => [qw(café gamma café missing)]);
+             sub café {} sub βeta {} sub gamma {}",
+        )?;
+        if metadata.packages.len() != 1 {
+            return Err(format!("expected one Exporter package, received {metadata:?}").into());
+        }
+        let package = metadata.packages.first().ok_or("missing Exporter package")?;
+        if package.package != "Demo" {
+            return Err(format!("unexpected package: {}", package.package).into());
+        }
+        let names = |items: &[ExportedSubroutine]| {
+            items.iter().map(|item| item.name.clone()).collect::<Vec<_>>()
+        };
+        check_names(&names(&package.exports), &["βeta", "café"])?;
+        check_names(&names(&package.export_ok), &["gamma"])?;
+        let core = package.export_tags.get("core").ok_or("missing core export tag")?;
+        check_names(&names(core), &["café", "gamma"])?;
+        Ok(())
     }
 
     #[test]

@@ -1,4 +1,6 @@
 use super::LspServer;
+use super::hover_extracted::HoverExtracted;
+use perl_parser_core::syntax::source_context::SourceRegionIndex;
 use perl_tdd_support::must_some;
 use serde_json::json;
 
@@ -800,6 +802,59 @@ fn method_modifier_hover_escapes_doc_markdown() {
 }
 
 #[test]
+fn method_modifier_hover_answers_on_quoted_target_in_string_region()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #15425: the modifier's target name is a quoted string, so the
+    // generation-bound region index proves StringLiteral there — never Code
+    // (#4967). The modifier card must still answer: the synthetic modifier
+    // symbol spans the declaration head and its target is precisely this
+    // quoted token. Body strings, comments, POD, and heredocs keep failing
+    // closed.
+    let text = "package Demo::Modifiers;\nuse Moo;\nafter 'save' => sub {\n    my ($self) = @_;\n};\nmy $label = 'save';\n";
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let uri = "file:///modifier_target_island.pl".to_string();
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": text
+        }
+    }))?;
+
+    let save_col =
+        text.lines().nth(2).and_then(|line| line.find("save")).ok_or("no `save` on line 2")?;
+    let hover = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 2, "character": save_col }
+    })))?);
+    let value = must_some(hover["contents"]["value"].as_str());
+    assert!(
+        value.contains("Method Modifier") && value.contains("after"),
+        "quoted modifier target must answer the modifier card, got: {value}"
+    );
+
+    // A string literal in a plain assignment is NOT a modifier target: the
+    // modifier-symbol containment claim must stay scoped to the declaration
+    // head of a `modifier=`-attributed symbol.
+    let label_col =
+        text.lines().nth(5).and_then(|line| line.find("save")).ok_or("no `save` on line 5")?;
+    let plain_string_hover = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 5, "character": label_col }
+    })))?;
+    if let Some(hover) = plain_string_hover
+        && let Some(value) = hover["contents"]["value"].as_str()
+    {
+        assert!(
+            !value.contains("Method Modifier"),
+            "plain string literal must not answer the modifier card, got: {value}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn hover_off_lock_analysis_emits_lock_hold_and_analyze_timing_spans()
 -> Result<(), Box<dyn std::error::Error>> {
     // #3396 Phase 4: `handle_hover` grabs the parsed snapshot + text under a
@@ -1132,4 +1187,180 @@ fn hover_trace_source_region_kind_is_not_shared_across_concurrent_requests() {
     for handle in handles {
         assert!(handle.join().is_ok(), "hover trace worker panicked");
     }
+}
+
+fn ranged_violation(uri: &str, version: i32) -> serde_json::Value {
+    json!({
+        "textDocument": { "uri": uri, "version": version },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })
+}
+
+#[test]
+fn hover_does_not_publish_in_flight_predecessor_after_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///workspace/inflight_hover.pl";
+    let predecessor = "require PredHoverMod;\n";
+
+    server.test_apply_did_open(uri, predecessor, 1)?;
+    let snapshot = server
+        .snapshot_user_answer_text(uri)
+        .ok_or("open document must have a usable user-answer snapshot")?;
+    let computed = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?);
+    let value = must_some(computed["contents"]["value"].as_str());
+    assert!(
+        value.contains("PredHoverMod"),
+        "in-flight hover must see the predecessor module: {value}"
+    );
+
+    server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+    assert!(
+        !server.user_answer_text_is_current(uri, snapshot.generation),
+        "ranged violation must invalidate the captured user-answer generation"
+    );
+    let published =
+        server.publish_user_answer_value(uri, snapshot.generation, computed, json!(null));
+    assert!(
+        published.is_null(),
+        "in-flight predecessor hover must not publish after invalidation: {published}"
+    );
+
+    let live = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?;
+    assert!(
+        live.as_ref().is_none_or(serde_json::Value::is_null),
+        "live hover after Full-sync violation must fail closed: {live:?}"
+    );
+    Ok(())
+}
+
+/// `$!` interpolated inside a double-quoted string is a live variable
+/// reference and keeps its variable card; the same text single-quoted or
+/// escaped does not interpolate, and a bareword in the string stays
+/// suppressed (#14860, regression from #14160's proven-code gate).
+#[test]
+fn interpolated_string_variable_island_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    // (source, needle, cursor byte offset within the needle, expected)
+    let cases: [(&str, &str, usize, bool); 19] = [
+        ("open my $fh, '<', 'x' or die \"Cannot open: $!\";\n", "$!", 0, true),
+        // Cursor on the punctuation, not the sigil.
+        ("open my $fh, '<', 'x' or die \"Cannot open: $!\";\n", "$!", 1, true),
+        ("print \"pid $$\\n\";\n", "$$", 0, true),
+        ("warn \"warnings are $^W\";\n", "$^W", 1, true),
+        ("warn \"warnings are $^W\";\n", "$^W", 2, true),
+        ("print \"last match ended at @+\";\n", "@+", 1, true),
+        ("print \"$!x\";\n", "$!", 2, false),
+        ("print \"@+x\";\n", "@+", 2, false),
+        ("print \"$!_\";\n", "$!", 2, false),
+        ("print \"$!é\";\n", "$!", 2, false),
+        ("print \"$!x\";\n", "$!", 0, true),
+        ("print \"$!x\";\n", "$!", 1, true),
+        ("print \"@+x\";\n", "@+", 1, true),
+        ("print \"@+;\";\n", "@+", 2, true),
+        // `\\$!` is an escaped backslash followed by a live `$!`.
+        ("my $msg = \"escaped slash \\\\$! text\";\n", "$!", 0, true),
+        ("my $msg = 'literal $! text';\n", "$!", 1, false),
+        // `\$!` is an escaped sigil: no interpolation.
+        ("my $msg = \"escaped \\$! text\";\n", "$!", 1, false),
+        ("my $msg = \"hash %! never interpolates\";\n", "%!", 1, false),
+        ("my $msg = \"call sprintf here\";\n", "sprintf", 0, false),
+    ];
+    for (text, needle, delta, expected) in cases {
+        let offset = must_some(text.find(needle)) + delta;
+        let index = SourceRegionIndex::build(text);
+        assert_eq!(
+            LspServer::token_is_interpolated_string_variable(Some(&index), text, offset),
+            expected,
+            "{text:?} at {needle:?}+{delta}"
+        );
+    }
+
+    let text = "open my $fh, '<', 'x' or die \"Cannot open: $!\";\n";
+    let index = SourceRegionIndex::build(text);
+    for delta in [0usize, 1] {
+        let offset = must_some(text.find("$!")) + delta;
+        let hover = LspServer::extract_token_hover("file:///t.pl", text, offset, Some(&index));
+        let HoverExtracted::Complete(card) = hover else {
+            return Err(format!(
+                "expected a complete `$!` card inside the interpolating string at +{delta}"
+            )
+            .into());
+        };
+        let value = must_some(card["contents"]["value"].as_str());
+        assert!(value.contains("errno"), "expected the `$!` card at +{delta}, got: {value}");
+    }
+    Ok(())
+}
+
+/// Editing a defining file without reindexing must not present the old
+/// indexed `Pkg::sub` as a current callable (#16646 review).
+#[cfg(feature = "workspace")]
+#[test]
+fn qualified_callable_hover_fails_closed_when_defining_file_is_stale()
+-> Result<(), Box<dyn std::error::Error>> {
+    let definer_uri = "file:///workspace/lib/StaleCallable.pm";
+    let caller_uri = "file:///workspace/script/stale_callable.pl";
+    let definer_v1 = "package StaleCallable;\nsub run { return 1; }\n1;\n";
+    let definer_v2 = "package StaleCallable;\n1;\n";
+    let caller = "print StaleCallable::run();\n";
+
+    let server = LspServer::new();
+    server.test_apply_did_open(definer_uri, definer_v1, 1)?;
+    server.test_apply_did_open(caller_uri, caller, 1)?;
+    server
+        .test_index_file_in_building_state(definer_uri, definer_v1)
+        .map_err(std::io::Error::other)?;
+    server.test_index_file_in_building_state(caller_uri, caller).map_err(std::io::Error::other)?;
+    server.test_simulate_indexing_complete();
+
+    let run_character = u32::try_from(must_some(caller.find("run")))?;
+    let fresh = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": caller_uri },
+        "position": { "line": 0, "character": run_character }
+    })))?);
+    let fresh_value = must_some(fresh["contents"]["value"].as_str());
+    assert!(
+        fresh_value.contains("Defined in `StaleCallable`")
+            || fresh_value.contains("sub StaleCallable::run"),
+        "fresh index should prove StaleCallable::run, got: {fresh_value}"
+    );
+
+    server
+        .test_replace_document_without_index(definer_uri, definer_v2, 2)
+        .map_err(std::io::Error::other)?;
+    assert!(
+        !server.workspace_index_stale_for_document(caller_uri),
+        "unchanged caller must stay fresh under the per-document helper"
+    );
+    assert!(
+        server.workspace_index_stale_for_any_open_document(),
+        "edited defining file must stale the workspace-wide index"
+    );
+
+    let stale = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": caller_uri },
+        "position": { "line": 0, "character": run_character }
+    })))?);
+    let stale_value = must_some(stale["contents"]["value"].as_str());
+    assert!(
+        !stale_value.contains("Defined in `StaleCallable`"),
+        "stale defining-file index must not prove StaleCallable::run, got: {stale_value}"
+    );
+    assert!(
+        !stale_value.contains("**Subroutine**"),
+        "stale defining-file index must not emit a subroutine card, got: {stale_value}"
+    );
+    Ok(())
 }

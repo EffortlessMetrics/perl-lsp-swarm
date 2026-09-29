@@ -35,8 +35,8 @@ def refuses(call):
 
 
 @contextmanager
-def fixture(extra_target=False):
-    with topology_fixture.ReleaseTopologyTests().valid_manifest_fixture() as (root, frozen, sha):
+def fixture(extra_target=False, schema_version=1):
+    with topology_fixture.ReleaseTopologyTests().valid_manifest_fixture(schema_version=schema_version) as (root, frozen, sha):
         if extra_target:
             workflow_path = root / ".github/workflows/release.yml"
             workflow = workflow_path.read_text().replace("        steps:",

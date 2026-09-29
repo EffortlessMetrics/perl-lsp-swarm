@@ -9,12 +9,13 @@
 //! duplicated parsers.
 
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
 /// A dependency declared by project metadata.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeclaredDependency {
     /// Perl module name, for example `JSON::PP`.
     pub module: String,
@@ -63,6 +64,21 @@ pub enum DeclaredDependencySource {
 }
 
 impl DeclaredDependencySource {
+    /// Every declared-dependency metadata source, in detection order.
+    ///
+    /// [`detect_declared_dependencies`] iterates this list, so it is the exact
+    /// set of workspace-root files that produce declared-dependency facts.
+    /// `super::project_metadata` classifies watched paths from the same list
+    /// (#13640), which keeps detection and invalidation from drifting apart.
+    pub const ALL: [Self; 6] = [
+        Self::Cpanfile,
+        Self::MakefilePl,
+        Self::BuildPl,
+        Self::DistIni,
+        Self::MetaJson,
+        Self::MetaYml,
+    ];
+
     /// User-facing file label for this metadata source.
     #[must_use]
     pub fn display_name(self) -> &'static str {
@@ -73,6 +89,27 @@ impl DeclaredDependencySource {
             Self::DistIni => "dist.ini",
             Self::MetaJson => "META.json",
             Self::MetaYml => "META.yml",
+        }
+    }
+
+    /// Workspace-root-relative file name this source is read from.
+    ///
+    /// Identical to [`Self::display_name`]; named separately because callers
+    /// resolving a path depend on it being the on-disk spelling.
+    #[must_use]
+    pub fn file_name(self) -> &'static str {
+        self.display_name()
+    }
+
+    /// Literal extractor applied to this source's contents.
+    fn extractor(self) -> fn(&str) -> Vec<DeclaredDependency> {
+        match self {
+            Self::Cpanfile => extract_cpanfile_requirements,
+            Self::MakefilePl => extract_makefile_pl_requirements,
+            Self::BuildPl => extract_build_pl_requirements,
+            Self::DistIni => extract_dist_ini_requirements,
+            Self::MetaJson => extract_meta_json_requirements,
+            Self::MetaYml => extract_meta_yml_requirements,
         }
     }
 }
@@ -117,43 +154,113 @@ const BUILD_PL_KEYS: &[&str] =
 const META_RELATION_KEYS: &[&str] =
     &["requires", "recommends", "build_requires", "test_requires", "configure_requires"];
 
+/// Authoritative text captured for one declared-dependency metadata source.
+///
+/// The watcher route (#13640) resolves each source exactly once per refresh and
+/// passes the outcome here, so detection consumes the same bytes the caller
+/// already observed. That removes the read-twice window in which a source could
+/// succeed during a readability probe and then fail when the detector reopened
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataSourceRead {
+    /// Authoritative text: the file's bytes, or an open buffer's staged text.
+    Text(String),
+    /// The source does not exist and declares nothing.
+    Absent,
+    /// The source exists but could not be read as text.
+    Unreadable,
+}
+
+/// Compose declared dependencies from per-source captured reads.
+///
+/// Sources are consumed in [`DeclaredDependencySource::ALL`] order and each
+/// source contributes its own facts; only structurally identical facts (same
+/// module, version, kind, and source) collapse to the first occurrence,
+/// matching [`detect_declared_dependencies`].
+///
+/// Retention is per source, not per folder: an [`MetadataSourceRead::Unreadable`]
+/// source contributes its entries from `previous`, so an unreadable `META.yml`
+/// cannot erase what a readable `cpanfile` declares, and an unknown source is
+/// never silently downgraded to "declares nothing". An
+/// [`MetadataSourceRead::Absent`] source contributes nothing, which is how a
+/// genuine delete drops its declarations.
+///
+/// `reads` need not be complete. A source it does not mention is *unknown*,
+/// not absent, and retains its previous entries exactly as an unreadable one
+/// does. Every current caller resolves all of
+/// [`DeclaredDependencySource::ALL`], so this decides nothing today; it is
+/// defined this way because the alternative is that a partial slice silently
+/// erases facts about sources it makes no claim about, and `Absent` — the
+/// variant that drops declarations — should only ever come from a caller that
+/// actually looked. Staleness is the caller's to record: omission says nothing
+/// was observed, so an omitting caller that wants the folder marked stale must
+/// say so itself.
+///
+/// # Retention across sources
+///
+/// `previous` keeps each source's facts distinct rather than collapsing a
+/// module to its earliest source, so an unreadable source retains exactly the
+/// entries it contributed before, even when another readable source declares
+/// the same module. The folder is still reported stale whenever any source is
+/// unreadable, so the uncertainty is visible rather than silent.
+#[must_use]
+pub fn declared_dependencies_from_reads(
+    reads: &[(DeclaredDependencySource, MetadataSourceRead)],
+    previous: &[DeclaredDependency],
+) -> Vec<DeclaredDependency> {
+    let mut dependencies = Vec::new();
+    // Iterate the canonical order and look each source up, rather than walking
+    // `reads` in whatever order the caller assembled it. Output order is a
+    // property of `DeclaredDependencySource::ALL` — it is what
+    // `detect_declared_dependencies` uses — so letting the argument order
+    // decide would make the same inputs compose in different orders depending
+    // on who built the slice.
+    for source in DeclaredDependencySource::ALL {
+        let Some((_, read)) = reads.iter().find(|(candidate, _)| *candidate == source) else {
+            // Unknown, not absent — see the contract above.
+            retain_previous(&mut dependencies, previous, source);
+            continue;
+        };
+        match read {
+            MetadataSourceRead::Text(text) => {
+                for dependency in source.extractor()(text) {
+                    push_candidate(&mut dependencies, dependency);
+                }
+            }
+            MetadataSourceRead::Absent => {}
+            MetadataSourceRead::Unreadable => {
+                retain_previous(&mut dependencies, previous, source);
+            }
+        }
+    }
+    dedupe_dependencies(dependencies)
+}
+
+/// Carry `source`'s entries from the previous snapshot into `dependencies`.
+fn retain_previous(
+    dependencies: &mut Vec<DeclaredDependency>,
+    previous: &[DeclaredDependency],
+    source: DeclaredDependencySource,
+) {
+    for dependency in previous.iter().filter(|entry| entry.source == source) {
+        push_candidate(dependencies, dependency.clone());
+    }
+}
+
 /// Detect declared dependencies from common workspace-root metadata files.
 #[must_use]
 pub fn detect_declared_dependencies(workspace_root: &Path) -> Vec<DeclaredDependency> {
     let mut dependencies = Vec::new();
 
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("cpanfile"),
-        extract_cpanfile_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("Makefile.PL"),
-        extract_makefile_pl_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("Build.PL"),
-        extract_build_pl_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("dist.ini"),
-        extract_dist_ini_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("META.json"),
-        extract_meta_json_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("META.yml"),
-        extract_meta_yml_requirements,
-    );
+    for source in DeclaredDependencySource::ALL {
+        collect_from_file(
+            &mut dependencies,
+            &workspace_root.join(source.file_name()),
+            source.extractor(),
+        );
+    }
 
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 /// Extract literal dependencies from a `cpanfile`.
@@ -262,7 +369,7 @@ pub fn extract_cpanfile_requirements(source: &str) -> Vec<DeclaredDependency> {
         }
     }
 
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 /// Parse the declaration arguments that follow a `cpanfile` relation keyword
@@ -288,7 +395,7 @@ fn emit_cpanfile_declaration(
             format!("{}.{}", declared.forced_phase.unwrap_or(phase), declared.relation)
         }
     };
-    push_unique(
+    push_candidate(
         dependencies,
         DeclaredDependency::new(
             module,
@@ -668,7 +775,7 @@ pub fn extract_dist_ini_requirements(source: &str) -> Vec<DeclaredDependency> {
         let Some(module) = normalize_module_name(module) else {
             continue;
         };
-        push_unique(
+        push_candidate(
             &mut dependencies,
             DeclaredDependency::new(
                 module,
@@ -679,7 +786,7 @@ pub fn extract_dist_ini_requirements(source: &str) -> Vec<DeclaredDependency> {
         );
     }
 
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 /// Extract dependencies from CPAN `META.json` prerequisite maps.
@@ -691,14 +798,15 @@ pub fn extract_meta_json_requirements(source: &str) -> Vec<DeclaredDependency> {
 
     let mut dependencies = Vec::new();
     collect_meta_json_requirements(&value, &mut dependencies);
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 /// Extract dependencies from simple CPAN `META.yml` prerequisite maps.
 #[must_use]
 pub fn extract_meta_yml_requirements(source: &str) -> Vec<DeclaredDependency> {
     let mut dependencies = Vec::new();
-    let mut active_key: Option<(usize, String)> = None;
+    let mut open_keys: Vec<(usize, String)> = Vec::new();
+    let mut active_kind: Option<(usize, String)> = None;
 
     for raw_line in source.lines() {
         let without_comment = raw_line.split_once('#').map_or(raw_line, |(before, _)| before);
@@ -708,21 +816,25 @@ pub fn extract_meta_yml_requirements(source: &str) -> Vec<DeclaredDependency> {
             continue;
         }
 
-        if let Some((active_indent, _)) = active_key.as_ref()
+        if let Some((active_indent, _)) = active_kind.as_ref()
             && indent <= *active_indent
         {
-            active_key = None;
+            active_kind = None;
         }
 
         if line.ends_with(':') {
+            while open_keys.last().is_some_and(|(key_indent, _)| indent <= *key_indent) {
+                open_keys.pop();
+            }
             let key = line.trim_end_matches(':').trim().trim_matches(['"', '\'']);
             if META_RELATION_KEYS.contains(&key) {
-                active_key = Some((indent, key.to_string()));
+                active_kind = Some((indent, meta_yml_kind(&open_keys, key)));
             }
+            open_keys.push((indent, key.to_string()));
             continue;
         }
 
-        let Some((_, kind)) = active_key.as_ref() else {
+        let Some((_, kind)) = active_kind.as_ref() else {
             continue;
         };
 
@@ -732,7 +844,7 @@ pub fn extract_meta_yml_requirements(source: &str) -> Vec<DeclaredDependency> {
         let Some(module) = normalize_module_name(module) else {
             continue;
         };
-        push_unique(
+        push_candidate(
             &mut dependencies,
             DeclaredDependency::new(
                 module,
@@ -743,7 +855,7 @@ pub fn extract_meta_yml_requirements(source: &str) -> Vec<DeclaredDependency> {
         );
     }
 
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 fn collect_from_file(
@@ -755,15 +867,31 @@ fn collect_from_file(
         return;
     };
     for dependency in extractor(&source) {
-        push_unique(into, dependency);
+        push_candidate(into, dependency);
     }
 }
 
-fn push_unique(into: &mut Vec<DeclaredDependency>, dependency: DeclaredDependency) {
-    if into.iter().any(|existing| existing.module == dependency.module) {
-        return;
+/// Qualify a META.yml relation key with its phase path under `prereqs`,
+/// mirroring META.json kinds such as `runtime.requires`.
+fn meta_yml_kind(open_keys: &[(usize, String)], key: &str) -> String {
+    let Some(position) = open_keys.iter().position(|(_, open)| open == "prereqs") else {
+        return key.to_string();
+    };
+    let phases: Vec<&str> =
+        open_keys[position + 1..].iter().map(|(_, open)| open.as_str()).collect();
+    if phases.is_empty() {
+        return key.to_string();
     }
+    format!("{}.{key}", phases.join("."))
+}
+
+fn push_candidate(into: &mut Vec<DeclaredDependency>, dependency: DeclaredDependency) {
     into.push(dependency);
+}
+
+fn dedupe_dependencies(dependencies: Vec<DeclaredDependency>) -> Vec<DeclaredDependency> {
+    let mut seen = HashSet::with_capacity(dependencies.len());
+    dependencies.into_iter().filter(|dependency| seen.insert(dependency.clone())).collect()
 }
 
 fn extract_hash_requirements(
@@ -798,7 +926,7 @@ fn extract_hash_requirements(
         }
     }
 
-    dependencies
+    dedupe_dependencies(dependencies)
 }
 
 fn parse_hash_dependency_pairs(
@@ -831,7 +959,7 @@ fn parse_hash_dependency_pairs(
             None
         };
 
-        push_unique(
+        push_candidate(
             dependencies,
             DeclaredDependency::new(module, version.as_deref(), kind, dependency_source),
         );
@@ -852,7 +980,7 @@ fn collect_meta_json_requirements(value: &Value, dependencies: &mut Vec<Declared
                     let Some(module) = normalize_module_name(module) else {
                         continue;
                     };
-                    push_unique(
+                    push_candidate(
                         dependencies,
                         DeclaredDependency::new(
                             module,
@@ -875,7 +1003,7 @@ fn collect_meta_json_requirements(value: &Value, dependencies: &mut Vec<Declared
             let Some(module) = normalize_module_name(module) else {
                 continue;
             };
-            push_unique(
+            push_candidate(
                 dependencies,
                 DeclaredDependency::new(
                     module,
@@ -1186,6 +1314,43 @@ mod tests {
     }
 
     #[test]
+    fn dedupe_dependencies_uses_complete_fact_identity() {
+        let runtime = DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "runtime.requires",
+            DeclaredDependencySource::MetaJson,
+        );
+        let test = DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "test.requires",
+            DeclaredDependencySource::MetaJson,
+        );
+        let newer = DeclaredDependency::new(
+            "Shared::Module",
+            Some("2.0"),
+            "runtime.requires",
+            DeclaredDependencySource::MetaJson,
+        );
+        let cpanfile = DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        );
+
+        let mut dependencies = Vec::new();
+        push_candidate(&mut dependencies, runtime.clone());
+        push_candidate(&mut dependencies, runtime.clone());
+        push_candidate(&mut dependencies, test.clone());
+        push_candidate(&mut dependencies, newer.clone());
+        push_candidate(&mut dependencies, cpanfile.clone());
+
+        assert_eq!(dedupe_dependencies(dependencies), vec![runtime, test, newer, cpanfile]);
+    }
+
+    #[test]
     fn hash_requirement_edges_have_local_oracles() {
         let source = r#"
             my $ignored = 'PREREQ_PM\\not_a_key';
@@ -1436,6 +1601,239 @@ requires 'Kept#Tag'; # drop
         assert!(stripped.contains(r##""Escaped\"#Tag""##));
         assert!(stripped.contains("'Kept#Tag'"));
         assert!(!stripped.contains("drop"));
+        Ok(())
+    }
+
+    #[test]
+    fn source_precedence_does_not_depend_on_the_order_of_the_reads_slice() -> TestResult {
+        let cpanfile = MetadataSourceRead::Text("requires 'Shared::Module', '1.0';\n".to_string());
+        let meta_yml = MetadataSourceRead::Text("requires:\n  Shared::Module: '2.0'\n".to_string());
+
+        // The same two reads, assembled in opposite orders by the caller. Only
+        // `DeclaredDependencySource::ALL` may decide composition order, so both
+        // slices must yield the same facts in the same order.
+        let canonical_order = declared_dependencies_from_reads(
+            &[
+                (DeclaredDependencySource::Cpanfile, cpanfile.clone()),
+                (DeclaredDependencySource::MetaYml, meta_yml.clone()),
+            ],
+            &[],
+        );
+        let reversed_order = declared_dependencies_from_reads(
+            &[
+                (DeclaredDependencySource::MetaYml, meta_yml),
+                (DeclaredDependencySource::Cpanfile, cpanfile),
+            ],
+            &[],
+        );
+
+        assert_eq!(
+            canonical_order, reversed_order,
+            "the same reads must compose identically however the caller ordered them"
+        );
+        assert_eq!(
+            canonical_order.len(),
+            2,
+            "each source keeps its own fact for the shared module"
+        );
+        let first = canonical_order
+            .first()
+            .ok_or_else(|| missing("expected the cpanfile fact to be declared"))?;
+        assert_eq!(first.module, "Shared::Module");
+        assert_eq!(
+            first.source,
+            DeclaredDependencySource::Cpanfile,
+            "cpanfile precedes META.yml in DeclaredDependencySource::ALL"
+        );
+        assert_eq!(first.version.as_deref(), Some("1.0"));
+        let second = canonical_order
+            .get(1)
+            .ok_or_else(|| missing("expected the META.yml fact to be declared"))?;
+        assert_eq!(second.module, "Shared::Module");
+        assert_eq!(second.source, DeclaredDependencySource::MetaYml);
+        assert_eq!(second.version.as_deref(), Some("2.0"));
+        Ok(())
+    }
+
+    #[test]
+    fn retention_for_an_unreadable_source_does_not_depend_on_the_order_of_the_reads_slice()
+    -> TestResult {
+        // `META.yml` is unreadable and retains its own previous entry; the
+        // readable `cpanfile` declares a different module. Retention must be
+        // attributed by source, not by where the caller placed the read.
+        let previous = vec![DeclaredDependency::new(
+            "Retained::Module",
+            Some("3.0"),
+            "requires",
+            DeclaredDependencySource::MetaYml,
+        )];
+        let reads = [
+            (DeclaredDependencySource::MetaYml, MetadataSourceRead::Unreadable),
+            (
+                DeclaredDependencySource::Cpanfile,
+                MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+            ),
+        ];
+
+        let composed = declared_dependencies_from_reads(&reads, &previous);
+        let modules: Vec<&str> = composed.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            modules,
+            vec!["Fresh::Module", "Retained::Module"],
+            "composition follows DeclaredDependencySource::ALL, not the reads slice"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_source_missing_from_the_reads_slice_is_unknown_rather_than_absent() {
+        // Only `cpanfile` was resolved. The other five sources are unknown, so
+        // a partial slice must not erase what they previously declared —
+        // `Absent`, the variant that drops declarations, has to come from a
+        // caller that actually looked.
+        let previous = vec![
+            DeclaredDependency::new(
+                "From::MetaYml",
+                Some("2.0"),
+                "requires",
+                DeclaredDependencySource::MetaYml,
+            ),
+            DeclaredDependency::new(
+                "From::DistIni",
+                None,
+                "requires",
+                DeclaredDependencySource::DistIni,
+            ),
+        ];
+        let reads = [(
+            DeclaredDependencySource::Cpanfile,
+            MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+        )];
+
+        let composed = declared_dependencies_from_reads(&reads, &previous);
+        let modules: Vec<&str> = composed.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            modules,
+            vec!["Fresh::Module", "From::DistIni", "From::MetaYml"],
+            "unmentioned sources retain, in DeclaredDependencySource::ALL order"
+        );
+
+        // The contrast that makes the choice meaningful: an explicit `Absent`
+        // for the same source really does drop it.
+        let explicit_absence = declared_dependencies_from_reads(
+            &[
+                (
+                    DeclaredDependencySource::Cpanfile,
+                    MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+                ),
+                (DeclaredDependencySource::MetaYml, MetadataSourceRead::Absent),
+                (DeclaredDependencySource::DistIni, MetadataSourceRead::Absent),
+            ],
+            &previous,
+        );
+        let dropped: Vec<&str> =
+            explicit_absence.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            dropped,
+            vec!["Fresh::Module"],
+            "an observed absence still downgrades, which is how a real delete works"
+        );
+    }
+
+    #[test]
+    fn meta_yml_kind_without_prereqs_keeps_leaf_key() {
+        assert_eq!(
+            meta_yml_kind(&[], "requires"),
+            "requires",
+            "an empty nesting path keeps the leaf key"
+        );
+        assert_eq!(
+            meta_yml_kind(&[(0, "requires".to_string())], "requires"),
+            "requires",
+            "a nesting path without prereqs keeps the leaf key"
+        );
+    }
+
+    #[test]
+    fn meta_yml_kind_boundary_discriminator() {
+        let with_prereqs = vec![(0, "prereqs".to_string()), (2, "runtime".to_string())];
+        let without_prereqs = vec![(0, "unrelated".to_string()), (2, "runtime".to_string())];
+
+        assert_eq!(meta_yml_kind(&with_prereqs, "requires"), "runtime.requires");
+        assert_eq!(meta_yml_kind(&without_prereqs, "requires"), "requires");
+        assert_ne!(
+            meta_yml_kind(&with_prereqs, "requires"),
+            meta_yml_kind(&without_prereqs, "requires"),
+        );
+    }
+
+    #[test]
+    fn meta_yml_kind_qualifies_phase_path_under_prereqs() {
+        assert_eq!(
+            meta_yml_kind(&[(0, "prereqs".to_string()), (2, "runtime".to_string())], "requires",),
+            "runtime.requires"
+        );
+        assert_eq!(
+            meta_yml_kind(
+                &[
+                    (0, "prereqs".to_string()),
+                    (2, "runtime".to_string()),
+                    (4, "platform".to_string()),
+                ],
+                "requires",
+            ),
+            "runtime.platform.requires"
+        );
+    }
+
+    #[test]
+    fn meta_yml_kind_with_no_phases_keeps_leaf_key() {
+        assert_eq!(meta_yml_kind(&[(0, "prereqs".to_string())], "requires"), "requires");
+    }
+
+    #[test]
+    fn collect_from_file_appends_distinct_meta_yml_phase_facts() -> TestResult {
+        let temp = tempfile::TempDir::new()?;
+        let path = temp.path().join("META.yml");
+        fs::write(
+            &path,
+            "prereqs:\n  runtime:\n    requires:\n      Shared::Module: 1.0\n  test:\n    requires:\n      Shared::Module: 1.0\n",
+        )?;
+
+        let mut dependencies = Vec::new();
+        collect_from_file(&mut dependencies, &path, DeclaredDependencySource::MetaYml.extractor());
+
+        assert_eq!(dependencies.len(), 2);
+        assert!(dependencies.contains(&DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "runtime.requires",
+            DeclaredDependencySource::MetaYml,
+        )));
+        assert!(dependencies.contains(&DeclaredDependency::new(
+            "Shared::Module",
+            Some("1.0"),
+            "test.requires",
+            DeclaredDependencySource::MetaYml,
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn collect_from_file_ignores_unreadable_file() -> TestResult {
+        let temp = tempfile::TempDir::new()?;
+        let path = temp.path().join("missing-META.yml");
+        let sentinel = DeclaredDependency::new(
+            "Existing::Module",
+            Some("1.0"),
+            "runtime.requires",
+            DeclaredDependencySource::MetaYml,
+        );
+        let mut dependencies = vec![sentinel.clone()];
+
+        collect_from_file(&mut dependencies, &path, DeclaredDependencySource::MetaYml.extractor());
+
+        assert_eq!(dependencies, vec![sentinel]);
         Ok(())
     }
 }

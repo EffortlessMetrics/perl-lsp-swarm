@@ -2,7 +2,7 @@
 
 **Status:** ✅ Automated (Issue #277)
 **Tools:** cargo-semver-checks, justfile recipes, CI integration
-**Scope:** Published crates (perl-parser, perl-lexer, perl-parser-core, perl-lsp)
+**Scope:** the API-ratcheted crates listed in `.ci/public-api-baselines/ratchet-crates.txt` (the single list both the semver rails and `just public-api-check` read; admission is enforced by `cargo xtask publish-manifest-check`, #14607)
 
 ---
 
@@ -188,10 +188,10 @@ let result = parser.parse(source, &config)?;
 
 ### Triggering CI Checks
 
-Semver checks select themselves when the PR diff touches a published facade
-crate (`crates/perl-parser`, `crates/perl-lexer`, `crates/perl-parser-core`,
-`crates/perl-lsp-rs`, `crates/perllsp`) or `.ci/public-api-baselines/`
-(#2266). To force a manual run on an otherwise untouched PR, add the
+Semver checks select themselves when the PR diff touches any crate listed in
+`.ci/public-api-baselines/ratchet-crates.txt`, any crate whose public items
+reach a committed baseline by re-export, or `.ci/public-api-baselines/`
+(#2266, #14607). To force a manual run on an otherwise untouched PR, add the
 `ci:semver` label:
 
 ```
@@ -210,13 +210,13 @@ GitHub Actions will:
 
 **No breaking changes:**
 ```
-✅ Check perl-parser API compatibility
+✅ Check API-ratcheted crates for compatibility
    No breaking changes detected
 ```
 
 **Breaking changes detected:**
 ```
-⚠️ Check perl-parser API compatibility
+⚠️ Check API-ratcheted crates for compatibility
    Breaking changes detected:
    - Removed: pub fn parse_legacy
    - Changed: pub fn parse (signature)

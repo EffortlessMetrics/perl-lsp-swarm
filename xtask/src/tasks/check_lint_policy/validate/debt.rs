@@ -1,7 +1,6 @@
 use super::super::model::{DebtEntry, DebtLedger, LintLedger};
 use super::common::{parse_review_date, validate_level, validate_lint_name, validate_nonempty};
 use super::disposition::validate_unique_dispositions;
-use chrono::NaiveDate;
 use color_eyre::eyre::{Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -10,7 +9,6 @@ pub(crate) fn validate_debt_ledger(
     root: &Path,
     lint_ledger: &LintLedger,
     debt_ledger: &DebtLedger,
-    today: NaiveDate,
 ) -> Result<()> {
     if debt_ledger.schema != 2 {
         bail!("policy/clippy-debt.toml schema must be 2");
@@ -29,7 +27,7 @@ pub(crate) fn validate_debt_ledger(
     let mut identities = BTreeSet::new();
 
     for entry in &debt_ledger.debt {
-        validate_debt_entry(root, entry, today)?;
+        validate_debt_entry(root, entry)?;
         let Some(lint) = lint_by_name.get(entry.lint.as_str()) else {
             bail!("debt entry names ungoverned lint {}", entry.lint);
         };
@@ -63,7 +61,7 @@ pub(crate) fn validate_debt_ledger(
     Ok(())
 }
 
-fn validate_debt_entry(root: &Path, entry: &DebtEntry, today: NaiveDate) -> Result<()> {
+fn validate_debt_entry(root: &Path, entry: &DebtEntry) -> Result<()> {
     validate_lint_name(&entry.lint)?;
     validate_level(&entry.lint, &entry.level, false)?;
     validate_nonempty(&entry.lint, "path", &entry.path)?;
@@ -94,9 +92,9 @@ fn validate_debt_entry(root: &Path, entry: &DebtEntry, today: NaiveDate) -> Resu
     }
     validate_nonempty(&entry.lint, "owner", &entry.owner)?;
     validate_nonempty(&entry.lint, "reason", &entry.reason)?;
-    let review_after = parse_review_date(&entry.lint, &entry.review_after)?;
-    if review_after < today {
-        bail!("debt entry for {} review date expired on {review_after}", entry.lint);
-    }
+    // Review dates schedule owner work. They remain structurally validated here,
+    // but cadence is reported by `cargo xtask policy cadence`; crossing midnight
+    // must not change an unrelated candidate's lint-policy verdict (#15267).
+    parse_review_date(&entry.lint, &entry.review_after)?;
     Ok(())
 }

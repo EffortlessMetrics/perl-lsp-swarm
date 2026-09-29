@@ -1,0 +1,38 @@
+schema_version = 1
+contract = "product_topology.v1"
+mcp_stage = "absent"
+
+[packages]
+lsp_library = "perl-lsp-rs"
+transport_service = "perl-code-intelligence"
+mcp_adapter = "perl-mcp"
+product = "perllsp"
+dap = "perl-dap"
+
+[targets]
+lsp_library = "perl_lsp"
+transport_service = "perl_code_intelligence"
+mcp_adapter = "perl_mcp"
+product_library = "perllsp"
+product_binary = "perllsp"
+dap_library = "perl_dap"
+dap_binary = "perl-dap"
+
+[dependencies]
+product_requires = ["perl-lsp-rs"]
+mcp_requires = ["perl-code-intelligence"]
+lsp_forbids = ["perl-mcp"]
+dap_forbids = ["perllsp", "perl-lsp-rs", "perl-mcp", "perl-mcp-rs"]
+mcp_forbids = [
+  "perllsp",
+  "perl-lsp-rs",
+  "perl-lsp-rs-core",
+  "lsp-types",
+  "ls-types",
+  "effortless-lsp",
+]
+
+[executables]
+forbidden_names = ["perl-lsp", "perl-mcp"]
+forbidden_prefixes = ["perl-lsp-", "perl-mcp-"]
+forbidden_tokens = ["adapter", "server"]

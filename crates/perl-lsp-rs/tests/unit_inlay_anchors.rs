@@ -74,7 +74,7 @@ mod tests {
         let matches = hints
             .iter()
             .filter(|h| {
-                h.get("label").and_then(|l| l.as_str()) == Some(label)
+                perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h) == Some(label)
                     && h.pointer("/position/line").and_then(|v| v.as_u64())
                         == Some(want_line as u64)
                     && h.pointer("/position/character").and_then(|v| v.as_u64())

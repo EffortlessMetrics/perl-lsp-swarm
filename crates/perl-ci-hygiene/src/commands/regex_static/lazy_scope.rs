@@ -32,60 +32,140 @@ pub(super) fn line_opens_lazy_init(code: &str) -> bool {
     LAZY_INIT_TRIGGERS.iter().any(|trigger| code.contains(trigger))
 }
 
-/// Strip string literals, char literals, and a trailing `//` comment from a line,
-/// leaving only code text. Delimiter counting and constructor matching run over the
+/// Stateful per-file sanitizer: strips string literals, char literals, line
+/// comments, block comments, and raw-string bodies, leaving only code text.
+/// Lexical state (`block_depth`, `raw_hashes`) persists across lines so a `}`
+/// inside a multi-line block comment or multi-line raw string can never corrupt
+/// delimiter tracking. Delimiter counting and constructor matching run over the
 /// result so literal/comment content can never affect detection.
 ///
-/// Handles single-line `"..."` and raw (`r"..."`, `r#"..."#`) strings, char literals
-/// (kept distinct from lifetimes like `'static`), and `//` comments. Multi-line
-/// string literals are not tracked across lines — a rare case the baseline absorbs.
-pub(super) fn code_only(line: &str) -> String {
-    let chars: Vec<char> = line.chars().collect();
-    let mut out = String::with_capacity(line.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
+/// Handles `"..."` and raw (`r"..."`, `r#"..."#`) strings (including ones that
+/// span lines via `raw_hashes`), `/* … */` block comments with nesting (string
+/// and char delimiters inside a block comment are literal), char literals (kept
+/// distinct from lifetimes like `'static`), and `//` comments.
+#[derive(Default)]
+pub(super) struct LineSanitizer {
+    block_depth: u32,
+    raw_hashes: Option<u32>,
+}
 
-        // Trailing line comment `//` — the rest of the line is not code.
-        if c == '/' && chars.get(i + 1) == Some(&'/') {
-            break;
+impl LineSanitizer {
+    /// Sanitize one line, advancing the persisted lexical state.
+    pub(super) fn sanitize(&mut self, line: &str) -> String {
+        let chars: Vec<char> = line.chars().collect();
+        let mut out = String::with_capacity(line.len());
+        let mut i = 0;
+
+        // Resume a raw string opened on an earlier line: everything up to the
+        // closing `"` + hashes is string content.
+        if let Some(hashes) = self.raw_hashes {
+            match find_raw_close(&chars, 0, hashes as usize) {
+                Some(after) => {
+                    self.raw_hashes = None;
+                    i = after;
+                }
+                None => return String::new(),
+            }
         }
 
-        // Raw string: r"..." or r#"..."# / r##"..."## …
-        if c == 'r' {
-            let mut j = i + 1;
-            let mut hashes = 0;
-            while chars.get(j) == Some(&'#') {
-                hashes += 1;
-                j += 1;
+        // Resume a block comment opened on an earlier line. Delimiters for
+        // strings/chars inside the comment are literal; only `/*` (nest) and
+        // `*/` (un-nest) matter.
+        while self.block_depth > 0 && i < chars.len() {
+            if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                self.block_depth += 1;
+                i += 2;
+            } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                self.block_depth -= 1;
+                i += 2;
+            } else {
+                i += 1;
             }
-            if chars.get(j) == Some(&'"') {
-                // Consume the raw-string body up to the closing `"` + `hashes` `#`.
-                i = skip_raw_string(&chars, j + 1, hashes);
+        }
+        if self.block_depth > 0 {
+            return out;
+        }
+
+        while i < chars.len() {
+            let c = chars[i];
+
+            // Trailing line comment `//` — the rest of the line is not code.
+            if c == '/' && chars.get(i + 1) == Some(&'/') {
+                break;
+            }
+
+            // Block comment open: consume through its (possibly multi-line) close.
+            if c == '/' && chars.get(i + 1) == Some(&'*') {
+                self.block_depth += 1;
+                i += 2;
+                while i < chars.len() && self.block_depth > 0 {
+                    if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                        self.block_depth += 1;
+                        i += 2;
+                    } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                        self.block_depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
                 continue;
             }
-        }
 
-        // Normal string literal.
-        if c == '"' {
-            i = skip_normal_string(&chars, i + 1);
-            continue;
-        }
+            // Raw string: r"..." or r#"..."# / r##"..."## …
+            if c == 'r' {
+                let mut j = i + 1;
+                let mut hashes = 0;
+                while chars.get(j) == Some(&'#') {
+                    hashes += 1;
+                    j += 1;
+                }
+                if chars.get(j) == Some(&'"') {
+                    match find_raw_close(&chars, j + 1, hashes) {
+                        Some(after) => {
+                            i = after;
+                        }
+                        None => {
+                            // Unterminated on this line: the rest of the line
+                            // is raw-string body continuing onto later lines.
+                            self.raw_hashes = Some(hashes as u32);
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
 
-        // Char literal vs lifetime/label. A char literal is `'x'`, `'\n'`, `'\''`,
-        // `'\u{7b}'`; a lifetime is `'static` (no closing quote soon after).
-        if c == '\''
-            && let Some(next) = skip_char_literal(&chars, i)
-        {
-            i = next; // literal dropped
-            continue;
-        }
-        // Lifetime/label: keep the quote and continue (harmless — no delimiters).
+            // Normal string literal.
+            if c == '"' {
+                i = skip_normal_string(&chars, i + 1);
+                continue;
+            }
 
-        out.push(c);
-        i += 1;
+            // Char literal vs lifetime/label. A char literal is `'x'`, `'\n'`,
+            // `'\''`, `'\u{7b}'`; a lifetime is `'static` (no closing quote).
+            if c == '\''
+                && let Some(next) = skip_char_literal(&chars, i)
+            {
+                i = next; // literal dropped
+                continue;
+            }
+            // Lifetime/label: keep the quote and continue (harmless).
+
+            out.push(c);
+            i += 1;
+        }
+        out
     }
-    out
+}
+
+/// Strip string literals, char literals, and comments from a single line,
+/// leaving only code text. Thin stateless wrapper over
+/// [`LineSanitizer`] for single-line callers and unit tests; multi-line file
+/// scans must use one `LineSanitizer` per file instead.
+#[allow(dead_code)]
+pub(super) fn code_only(line: &str) -> String {
+    LineSanitizer::default().sanitize(line)
 }
 
 /// Given `start` pointing just past the opening `"` of a normal string, return the
@@ -103,19 +183,20 @@ fn skip_normal_string(chars: &[char], start: usize) -> usize {
 }
 
 /// Given `start` pointing just past the opening `"` of a raw string with `hashes`
-/// hashes, return the index just past the closing `"###…` (or end of line).
-fn skip_raw_string(chars: &[char], start: usize, hashes: usize) -> usize {
+/// hashes, return the index just past the closing `"###…`, or `None` when the
+/// close is not on this line (the raw string continues onto later lines).
+fn find_raw_close(chars: &[char], start: usize, hashes: usize) -> Option<usize> {
     let mut i = start;
     while i < chars.len() {
         if chars[i] == '"' {
             let closed = (1..=hashes).all(|k| chars.get(i + k) == Some(&'#'));
             if closed {
-                return i + 1 + hashes;
+                return Some(i + 1 + hashes);
             }
         }
         i += 1;
     }
-    i
+    None
 }
 
 /// If a char literal starts at `quote` (a `'`), return the index just past its
@@ -141,9 +222,10 @@ fn skip_char_literal(chars: &[char], quote: usize) -> Option<usize> {
     None
 }
 
-/// Net `()`/`{}` delimiter delta for a (already [`code_only`]-sanitized) line
-/// (opens minus closes).
-fn delim_delta(code: &str) -> i32 {
+/// Net `()`/`{}` delimiter delta for a (sanitized) line (opens minus closes).
+/// Used only by [`LazyStaticScope`]; `inline_test_scope` tracks item spans with
+/// its own brace-and-bracket delta so lazy-init `});` closers stay untouched.
+pub(super) fn delim_delta(code: &str) -> i32 {
     let mut delta = 0;
     for ch in code.chars() {
         match ch {

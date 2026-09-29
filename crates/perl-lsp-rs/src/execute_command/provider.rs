@@ -17,14 +17,18 @@ use perl_lsp_rs_core::providers::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
-#[cfg(windows)]
-use std::ffi::OsString;
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
 use std::path::{Component, Prefix};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
 use url::Url;
 
 /// Strip the Windows extended-length path prefix (`\\?\`) before passing a path
@@ -150,6 +154,10 @@ struct ExplainProviderDecisionRequest {
     request_receipt: Option<Value>,
     #[serde(default)]
     request_position: Option<ProviderDecisionRequestPosition>,
+    /// Optional exact JSON-RPC request ID used to select the latest matching
+    /// provider trace. Numeric and string IDs remain distinct.
+    #[serde(default)]
+    request_id: Option<crate::protocol::JsonRpcId>,
 }
 
 /// Maximum accepted length of one client-supplied identifier echo field
@@ -360,17 +368,35 @@ impl ExecuteCommandProvider {
         let request_value = arguments
             .first()
             .ok_or_else(|| "Missing explain-provider-decision argument".to_string())?;
+        if request_value.get("request_id").is_some_and(Value::is_null) {
+            return Err(
+                "Invalid explain-provider-decision argument: request_id must be a JSON-RPC string or number"
+                    .to_string(),
+            );
+        }
         let request: ExplainProviderDecisionRequest = serde_json::from_value(request_value.clone())
             .map_err(|error| format!("Invalid explain-provider-decision argument: {error}"))?;
+        if request.request_id.is_some() && request.request_receipt.is_some() {
+            return Err(
+                "Invalid explain-provider-decision argument: request_id cannot be combined with request_receipt"
+                    .to_string(),
+            );
+        }
 
         let mut explanation = default_provider_decision_explanation(request.provider);
+        // Capture only the defaults. Caller context and request details belong
+        // outside the policy heading, even though the shared formatter supports both.
+        let policy_summary = format_provider_decision_explanation(&explanation);
+        let mut request_context = String::new();
 
         if let Some(receipt_id) = request.receipt_id {
             validate_explanation_echo(&receipt_id, "receipt_id")?;
+            request_context.push_str(&format!("\nReceipt: {receipt_id}."));
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
             validate_explanation_echo(&scenario, "scenario")?;
+            request_context.push_str(&format!("\nScenario: {scenario}."));
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {
@@ -384,7 +410,29 @@ impl ExecuteCommandProvider {
         }
 
         let request_position = request.request_position;
-        let user_message = format_provider_decision_explanation(&explanation);
+        // These top-level defaults describe provider policy, not a recorded
+        // request outcome. Keep attached evidence distinct in the editor message.
+        let request_evidence = if let Some(receipt) = &explanation.request_receipt {
+            let freshness = receipt.get("freshness").and_then(|value| {
+                serde_json::from_value::<ProviderDecisionFreshness>(value.clone()).ok()
+            });
+            let label = match freshness {
+                Some(ProviderDecisionFreshness::Fresh) => "fresh",
+                Some(ProviderDecisionFreshness::Stale) => "stale",
+                Some(ProviderDecisionFreshness::NotApplicable) => "not applicable",
+                _ => "unknown",
+            };
+            let mut evidence = format!("Attached request freshness: {label}.");
+            if let Some(detail) = receipt.get("user_message").and_then(Value::as_str) {
+                evidence.push_str(&format!("\nRequest detail: {detail}"));
+            }
+            evidence
+        } else {
+            "No request evidence is attached.".to_string()
+        };
+        let user_message = format!(
+            "{request_evidence}{request_context}\nProvider policy summary:\n{policy_summary}"
+        );
         explanation = explanation.with_user_message(user_message);
         let copyable_payload = ProviderDecisionCopyablePayload::from_explanation(
             &explanation,
@@ -1488,30 +1536,18 @@ impl ExecuteCommandProvider {
         }
     }
 
+    /// Whether an external tool is available to this server.
+    ///
+    /// Delegates to the module's single availability authority
+    /// ([`command_exists`]) so the test-runner gate and the external-critic
+    /// gate cannot answer the same question under different admission rules.
+    ///
+    /// Previously this spawned `which` as a child process on non-Windows while
+    /// the free function used the `which` crate directly; the two disagreed
+    /// about whether a current-directory candidate counts, and neither matched
+    /// what `run_test_command` will actually launch.
     pub(crate) fn command_exists(&self, command: &str) -> bool {
-        // On Windows, spawning `Command::new("where")` is itself a bare-name call
-        // subject to the same CWD-first CreateProcess RCE (#3028).  Use the
-        // hardened PATH-only resolver instead — it already answers "is this tool
-        // findable on an absolute PATH directory" without touching the CWD.
-        //
-        // On non-Windows, the resolver is a pass-through (returns Ok unchanged),
-        // so we fall back to the `which` crate for the actual PATH search there.
-        #[cfg(all(windows, not(target_arch = "wasm32")))]
-        {
-            perl_subprocess_runtime::resolve_program(command).is_ok()
-        }
-        #[cfg(all(not(windows), not(target_arch = "wasm32")))]
-        {
-            let mut cmd = Command::new("which");
-            cmd.arg(command);
-            crate::util::run_command_with_timeout(cmd, 2)
-                .map(|output| output.status.success())
-                .unwrap_or(false)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            false
-        }
+        command_exists(command)
     }
 }
 
@@ -1781,9 +1817,286 @@ pub(crate) fn select_test_runner(
     }
 }
 
-/// Check whether a command exists in the current PATH.
+/// Environment inputs that can change an availability probe for a command.
+///
+/// `path_present` distinguishes a missing `PATH` from an explicitly empty one:
+/// the strict probe refuses an absent or empty `PATH`, but the states remain
+/// distinct cache keys so an environment change re-probes rather than serving
+/// another environment's answer. `cwd` is the normalized working directory;
+/// the probe never searches it, but a `cwd` change re-probes instead of
+/// serving the old directory's answer — the safe direction.
+/// On Windows the resolver applies `PATHEXT` executable-extension rules, so
+/// it participates in the key there; on other platforms only the `PATH` value
+/// matters.
+/// The command text remains caller-provided. On Windows, executable names
+/// resolve case-insensitively, so differently cased aliases can occupy
+/// separate bounded entries; they still receive the same probe semantics.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CommandExistsCacheKey {
+    command: String,
+    path_present: bool,
+    path_env: OsString,
+    cwd: PathBuf,
+    #[cfg(windows)]
+    path_ext: OsString,
+}
+
+/// Build a cache key from explicit environment inputs so tests can prove key
+/// sensitivity without mutating the process environment.
+fn command_exists_cache_key(
+    command: &str,
+    path_present: bool,
+    path_env: &OsStr,
+    cwd: &Path,
+    path_ext: Option<&OsStr>,
+) -> CommandExistsCacheKey {
+    #[cfg(not(windows))]
+    let _ = path_ext;
+    CommandExistsCacheKey {
+        command: command.to_string(),
+        path_present,
+        path_env: path_env.to_os_string(),
+        cwd: cwd.to_path_buf(),
+        #[cfg(windows)]
+        path_ext: path_ext.unwrap_or_default().to_os_string(),
+    }
+}
+
+/// Snapshot the live environment into a [`CommandExistsCacheKey`].
+///
+/// Returns `None` when the working directory cannot be determined: a lookup
+/// the cache cannot key must bypass the cache and probe directly rather than
+/// risk serving another directory's answer. The raw (non-canonicalized)
+/// directory is sufficient — two spellings of one directory only ever cause a
+/// redundant re-probe, never a wrong answer.
+fn current_command_exists_cache_key(command: &str) -> Option<CommandExistsCacheKey> {
+    let (path_present, path_env) = match std::env::var_os("PATH") {
+        Some(value) => (true, value),
+        None => (false, OsString::new()),
+    };
+    let cwd = std::env::current_dir().ok()?;
+    #[cfg(windows)]
+    let path_ext = std::env::var_os("PATHEXT");
+    #[cfg(not(windows))]
+    let path_ext: Option<OsString> = None;
+    Some(command_exists_cache_key(
+        command,
+        path_present,
+        path_env.as_os_str(),
+        &cwd,
+        path_ext.as_deref(),
+    ))
+}
+
+/// Metadata needed to invalidate a cached probe after a filesystem change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FilesystemProbeFingerprint {
+    path: PathBuf,
+    exists: bool,
+    is_file: bool,
+    len: Option<u64>,
+    modified: Option<SystemTime>,
+    readonly: Option<bool>,
+    #[cfg(unix)]
+    mode: Option<u32>,
+}
+
+fn filesystem_probe_fingerprint(path: &Path) -> FilesystemProbeFingerprint {
+    match std::fs::metadata(path) {
+        Ok(metadata) => FilesystemProbeFingerprint {
+            path: path.to_path_buf(),
+            exists: true,
+            is_file: metadata.is_file(),
+            len: Some(metadata.len()),
+            modified: metadata.modified().ok(),
+            readonly: Some(metadata.permissions().readonly()),
+            #[cfg(unix)]
+            mode: Some(metadata.mode()),
+        },
+        Err(_) => FilesystemProbeFingerprint {
+            path: path.to_path_buf(),
+            exists: false,
+            is_file: false,
+            len: None,
+            modified: None,
+            readonly: None,
+            #[cfg(unix)]
+            mode: None,
+        },
+    }
+}
+
+/// Build the candidate paths that the availability probe can inspect for this
+/// key.
+///
+/// Directory fingerprints cover additions/removals even when a candidate is
+/// currently absent. Candidate fingerprints additionally catch replacement,
+/// permission, and executable-bit changes without re-running `which` on a
+/// cache hit.
+fn command_exists_candidate_paths(key: &CommandExistsCacheKey) -> Vec<PathBuf> {
+    let command = OsString::from(&key.command);
+    let mut candidates = Vec::new();
+
+    for directory in std::env::split_paths(key.path_env.as_os_str()) {
+        candidates.push(directory.join(&command));
+
+        #[cfg(windows)]
+        if Path::new(&command).extension().is_none() {
+            for extension in key.path_ext.to_string_lossy().split(';').filter(|ext| !ext.is_empty())
+            {
+                let mut executable = command.clone();
+                executable.push(extension);
+                candidates.push(directory.join(executable));
+            }
+        }
+    }
+
+    candidates
+}
+
+fn command_exists_filesystem_state(key: &CommandExistsCacheKey) -> Vec<FilesystemProbeFingerprint> {
+    let mut paths = Vec::new();
+
+    for directory in std::env::split_paths(key.path_env.as_os_str()) {
+        paths.push(directory);
+    }
+    paths.extend(command_exists_candidate_paths(key));
+
+    paths.into_iter().map(|path| filesystem_probe_fingerprint(&path)).collect()
+}
+
+struct CommandExistsCacheEntry {
+    result: bool,
+    filesystem_state: Vec<FilesystemProbeFingerprint>,
+}
+
+/// Memoized tool-presence answers keyed on [`CommandExistsCacheKey`].
+///
+/// Same shape as the DAP-side interpreter-discovery cache
+/// (`perl_dap::platform::PERL_INTERPRETER_CACHE`): a check-then-compute-then-
+/// store pattern with two lock acquisitions. Two concurrent callers racing on
+/// a cold entry will both run the probe and the second write wins; the
+/// invariant is that callers always receive an answer for the current
+/// environment and candidate filesystem state, not that exactly one probe runs
+/// per entry.
+///
+/// The map is hard-bounded ([`MAX_COMMAND_EXISTS_CACHE_ENTRIES`]): `pub fn
+/// command_exists` accepts arbitrary command text, so an unbounded map would
+/// grow for process lifetime on adversarial or churned inputs. Eviction drops
+/// one arbitrary entry; correctness is unaffected because an evicted key
+/// simply re-probes on its next lookup.
+static COMMAND_EXISTS_CACHE: LazyLock<
+    Mutex<HashMap<CommandExistsCacheKey, CommandExistsCacheEntry>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Capacity of [`COMMAND_EXISTS_CACHE`]. Product callers probe a fixed set of
+/// tool names (`perltidy`, `perlcritic`, `yath`, `prove`) across a slowly
+/// changing environment; 64 entries give that working set an order of
+/// magnitude of headroom while keeping adversarial growth constant-bounded.
+const MAX_COMMAND_EXISTS_CACHE_ENTRIES: usize = 64;
+
+/// Insert with the capacity bound enforced. Evicting an arbitrary entry keeps
+/// the map constant-bounded; the evicted key re-probes on next lookup, so the
+/// bound can never serve a stale or wrong answer.
+fn insert_bounded(
+    cache: &mut HashMap<CommandExistsCacheKey, CommandExistsCacheEntry>,
+    key: CommandExistsCacheKey,
+    entry: CommandExistsCacheEntry,
+) {
+    let victim = (cache.len() >= MAX_COMMAND_EXISTS_CACHE_ENTRIES && !cache.contains_key(&key))
+        .then(|| cache.keys().next().cloned())
+        .flatten();
+    if let Some(victim) = victim {
+        cache.remove(&victim);
+    }
+    cache.insert(key, entry);
+}
+
+/// Answer command presence through [`COMMAND_EXISTS_CACHE`], running `probe`
+/// only on a cache miss.
+///
+/// A hit still pays one validation walk ([`command_exists_filesystem_state`]):
+/// that walk is the invalidation price for the no-stale-positive guarantee,
+/// and it replaces the strictly larger `which` walk plus per-call `PATH`
+/// string processing the uncached path performs. What the cache removes is
+/// repetition of the probe — not observation of the filesystem.
+///
+/// The injectable probe is the same test-seam approach used by the
+/// perl-lsp-rs-core config module (#12945/#12978): tests supply a counting
+/// probe to observe that a second lookup does not re-execute the underlying
+/// probe.
+fn command_exists_via(probe: impl Fn(&str) -> bool, command: &str) -> bool {
+    let Some(key) = current_command_exists_cache_key(command) else {
+        return probe(command);
+    };
+    command_exists_via_key(probe, key)
+}
+
+/// Testable cache path with an explicit environment key. Production callers
+/// use [`current_command_exists_cache_key`]; tests use this helper to exercise
+/// filesystem invalidation without mutating process-global environment state.
+fn command_exists_via_key(probe: impl Fn(&str) -> bool, key: CommandExistsCacheKey) -> bool {
+    let filesystem_state = command_exists_filesystem_state(&key);
+    if let Ok(cache) = COMMAND_EXISTS_CACHE.lock()
+        && let Some(entry) = cache.get(&key)
+        && entry.filesystem_state == filesystem_state
+    {
+        return entry.result;
+    }
+
+    let found = probe(&key.command);
+    if let Ok(mut cache) = COMMAND_EXISTS_CACHE.lock() {
+        insert_bounded(
+            &mut cache,
+            key,
+            CommandExistsCacheEntry { result: found, filesystem_state },
+        );
+    }
+    found
+}
+
+/// Check whether an external tool is available to this server.
+///
+/// This is the single bare-name availability authority for the live runtime:
+/// the external-critic gate in this module, `LspServer::detect_tool` (and the
+/// perltidy/perlcritic capability advertisement built on it), and the
+/// perlcritic diagnostics gates all answer through it.
+///
+/// Availability means "found in an absolute `PATH` directory, excluding the
+/// current directory". The current directory is routinely the opened
+/// workspace, so a file planted there must not be able to satisfy a capability
+/// or diagnostics gate (#2764 / #3028). `perl_subprocess_runtime` owns that
+/// probe policy and applies it at launch on Windows too. Unix launch retains
+/// its existing PATH search behavior; this probe does not harden that path.
+///
+/// This is deliberately stricter than `execvp`, which honors relative and
+/// empty `PATH` components: a tool reachable only through such a component is
+/// reported absent and callers take their tool-unavailable branch. It
+/// therefore subsumes the earlier empty-entry stripping that filtered only
+/// `""` before delegating to `which`: an empty component is not absolute, so
+/// it is refused by the same rule that refuses `.` and `tools`, and no
+/// `which` lookup remains to re-admit the current directory.
+///
+/// Memoized per process after the first probe: the initialize-time
+/// `detect_tool("perltidy")` / `detect_tool("perlcritic")` calls and every
+/// later diagnostics/executeCommand availability guard reuse the cached answer
+/// instead of re-probing on each call. The cache key includes the environment
+/// inputs that can change the answer (PATH presence and value, working
+/// directory, plus PATHEXT on Windows), so an environment change re-probes;
+/// entries additionally re-probe when their filesystem fingerprint changes.
+/// The map itself is hard-bounded ([`MAX_COMMAND_EXISTS_CACHE_ENTRIES`]). No
+/// LSP configuration setting can change external-tool presence, so no
+/// config-change invalidation signal is required.
 pub fn command_exists(command: &str) -> bool {
-    which::which(command).is_ok()
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        command_exists_via(perl_subprocess_runtime::command_exists, command)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = command;
+        false
+    }
 }
 
 /// Return the supported executeCommand identifiers.
@@ -1814,6 +2127,8 @@ pub fn get_supported_commands() -> Vec<String> {
     ]
 }
 
+#[cfg(test)]
+mod command_exists_cache_tests;
 #[cfg(test)]
 mod normalize_path_tests;
 #[cfg(test)]

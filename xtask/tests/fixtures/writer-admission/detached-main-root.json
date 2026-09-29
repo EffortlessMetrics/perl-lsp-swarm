@@ -1,5 +1,6 @@
 {
   "target_branch": "(detached)",
+  "target_branch_state": "detached",
   "requested_base": "origin/main",
   "is_root_checkout": true,
   "head": {
@@ -19,7 +20,10 @@
   },
   "worktree_mapping": {
     "entries": [
-      { "path": "/repo", "branch": null }
+      {
+        "path": "/repo",
+        "branch": null
+      }
     ],
     "error": null
   },
@@ -38,5 +42,8 @@
     "status": "none",
     "pr_number": null,
     "error": null
+  },
+  "remote_branch": {
+    "observed": true
   }
 }

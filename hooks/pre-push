@@ -183,10 +183,73 @@ if [ "$SINGLE_CRATE_ALL_UNDER_CRATES" = true ] && [ "$SINGLE_CRATE_COUNT" = "1" 
     echo "Single-crate push (${SINGLE_CRATE_DIR} -> ${SINGLE_CRATE_NAME}) — running targeted gate"
     echo "   (Skip with: git push --no-verify)"
     echo ""
+    # Clippy target selection follows the crate's CI cohort, because the tier
+    # is meant to narrow SCOPE (one crate instead of the workspace), not to
+    # apply a different contract than CI does.
+    #
+    # Cargo's default selection is lib + bins, so a bare `cargo clippy -p X`
+    # cannot see tests/, benches/ or examples/ at all. For a crate in the
+    # clippy_tests_kernel cohort that is a real hole: the #14549 regression was
+    # a duplicated #![deny(clippy::map_err_ignore)] in
+    # crates/perl-workspace-core/tests/, a file this tier never compiled, so it
+    # reached main and reddened the kernel gate for every PR.
+    #
+    # But --all-targets is NOT universally right here. The crates in
+    # CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES (#15677, #15613) are deliberately
+    # outside that cohort because they retain measured test-target lint debt;
+    # CI lints them through clippy_strict, which is lib + bins. Applying
+    # --all-targets to those would fail every otherwise valid push on
+    # pre-existing findings that CI does not gate on.
+    #
+    # So read the cohort from the gate policy rather than assuming one answer,
+    # and match its exact lint flags. The list is parsed out of the
+    # clippy_tests_kernel command itself, so it cannot drift from what CI runs;
+    # unparseable or missing policy falls back to the narrower command.
+    #
+    # --locked on every command so a gate run cannot quietly rewrite Cargo.lock
+    # and have CI reject the push it just approved. Deliberately NOT
+    # --all-targets on cargo test: that flag drops doctests, which the current
+    # invocation does run.
+    clippy_tests_kernel_cohort() {
+        awk '
+            /^  - name: clippy_tests_kernel$/ { in_gate = 1; next }
+            in_gate && /^  - name: / { in_gate = 0 }
+            in_gate {
+                line = $0
+                sub(/^[[:space:]]+/, "", line)
+                sub(/[[:space:]]+$/, "", line)
+                # Whole-line match only: prose in this block mentions "-p <crate>"
+                # when narrating past admissions, and those must not count.
+                if (line ~ /^-p [A-Za-z0-9_-]+$/) { print substr(line, 4) }
+            }
+        ' "$1"
+    }
+
+    GATE_POLICY_FILE="$REPO_ROOT/.ci/gate-policy.yaml"
+    CLIPPY_ALL_TARGETS=false
+    if [ -f "$GATE_POLICY_FILE" ]; then
+        if clippy_tests_kernel_cohort "$GATE_POLICY_FILE" \
+            | grep -qxF "$SINGLE_CRATE_NAME" 2>/dev/null; then
+            CLIPPY_ALL_TARGETS=true
+        fi
+    fi
+
+    if [ "$CLIPPY_ALL_TARGETS" = true ]; then
+        echo "   clippy: --all-targets (crate is in the clippy_tests_kernel cohort)"
+    else
+        echo "   clippy: lib + bins (crate is outside the clippy_tests_kernel cohort)"
+    fi
+    echo ""
+
     run_single_crate_gate() {
-        cargo fmt -p "$SINGLE_CRATE_NAME" -- --check && \
-        cargo clippy -p "$SINGLE_CRATE_NAME" -- -D warnings && \
-        cargo test -p "$SINGLE_CRATE_NAME"
+        cargo fmt -p "$SINGLE_CRATE_NAME" -- --check || return
+        if [ "$CLIPPY_ALL_TARGETS" = true ]; then
+            cargo clippy -p "$SINGLE_CRATE_NAME" --all-targets --locked \
+                -- -D warnings -A missing_docs || return
+        else
+            cargo clippy -p "$SINGLE_CRATE_NAME" --locked -- -D warnings || return
+        fi
+        cargo test -p "$SINGLE_CRATE_NAME" --locked
     }
     GATE_LOG="$(mktemp -t perl-lsp-prepush.XXXXXX.log 2>/dev/null || mktemp)"
     trap 'rm -f "$GATE_LOG"' EXIT

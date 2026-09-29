@@ -71,6 +71,8 @@ export interface WorkspaceExperienceTelemetry {
   readonly name?: string | undefined;
   readonly version?: string | undefined;
   readonly fileCount?: number | undefined;
+  /** True when the displayed file count is only a known lower bound. */
+  readonly fileCountLowerBound?: boolean | undefined;
   readonly errorCount?: number | undefined;
   readonly indexingMessage?: string | undefined;
   readonly indexingPercentage?: number | undefined;
@@ -111,8 +113,8 @@ function detailTooltip(
 }
 
 /** Count a countable noun without emitting "1 files" in the status bar. */
-function countLabel(count: number, singular: string): string {
-  return `${count} ${singular}${count === 1 ? '' : 's'}`;
+function countLabel(count: number, singular: string, lowerBound = false): string {
+  return `${count}${lowerBound ? '+' : ''} ${singular}${count === 1 && !lowerBound ? '' : 's'}`;
 }
 
 function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
@@ -122,7 +124,7 @@ function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
   const label = telemetry.version ? `${product} v${telemetry.version}` : product;
   const parts: string[] = [];
   if (telemetry.fileCount !== undefined) {
-    parts.push(countLabel(telemetry.fileCount, 'file'));
+    parts.push(countLabel(telemetry.fileCount, 'file', telemetry.fileCountLowerBound));
   }
   if ((telemetry.errorCount ?? 0) > 0) {
     parts.push(countLabel(telemetry.errorCount ?? 0, 'error'));
@@ -133,7 +135,11 @@ function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
 function indexingLabel(telemetry: WorkspaceExperienceTelemetry): string {
   let message = telemetry.indexingMessage ?? 'Indexing…';
   if ((telemetry.fileCount ?? 0) > 0) {
-    message = `Indexing… (${countLabel(telemetry.fileCount ?? 0, 'file')})`;
+    message = `Indexing… (${countLabel(
+      telemetry.fileCount ?? 0,
+      'file',
+      telemetry.fileCountLowerBound,
+    )})`;
   }
   if ((telemetry.indexingPercentage ?? 0) > 0) {
     message += ` ${Math.round(telemetry.indexingPercentage ?? 0)}%`;

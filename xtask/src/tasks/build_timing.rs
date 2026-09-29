@@ -2,7 +2,7 @@
 
 use crate::utils::project_root;
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, eyre};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -19,8 +19,58 @@ const TIMING_BASELINE_FILE: &str = "build-timing-baseline.json";
 const LSP_PROVIDERS_LIB: &str = "crates/perl-lsp-providers/src/lib.rs";
 const PARSER_LIB: &str = "crates/perl-parser/src/lib.rs";
 
+/// Improvement values with magnitude below this threshold (in percentage
+/// points) are treated as exact ties rather than improvements or regressions.
+///
+/// Build timing measurements are wall-clock durations recorded at `f64`
+/// precision by `Instant::elapsed().as_secs_f64()`. Two measurements of the
+/// same command typically differ by tens of microseconds, which after the
+/// percentage transform `(base - curr) / base * 100.0` produces a residual
+/// in the `1e-9 .. 1e-3` range. Branching on raw `> 0.0` / `< 0.0` against
+/// such residuals classifies float-rounding noise as an improvement or
+/// regression.
+///
+/// This constant is a named, single source of truth for the comparison
+/// gate. Keep it aligned with `parser_corpus_sweep::ratchet::RATCHET_EPS`
+/// (1e-9) for ratios, or with the corpus_audit epsilon pattern when the
+/// metric is a percentage rather than a ratio.
+const IMPROVEMENT_EPS: f64 = 1e-3;
+
+/// Result of classifying a single per-row improvement value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImprovementClass {
+    /// Improvement or regression magnitude is at or below `IMPROVEMENT_EPS`;
+    /// counts as neither.
+    Tie,
+    /// `improvement > IMPROVEMENT_EPS`.
+    Improvement,
+    /// `improvement < -IMPROVEMENT_EPS`.
+    Regression,
+}
+
+/// Classify a per-row improvement percentage using an epsilon guard so that
+/// exact-tie / float-rounding residuals are not recorded as verdicts.
+///
+/// Extracted from `run_compare` so the branch logic can be unit-tested
+/// without constructing `BuildTimingReceipt` values on disk.
+fn classify_improvement(improvement: f64) -> ImprovementClass {
+    if improvement.abs() <= IMPROVEMENT_EPS {
+        ImprovementClass::Tie
+    } else if improvement > 0.0 {
+        ImprovementClass::Improvement
+    } else {
+        ImprovementClass::Regression
+    }
+}
+
+/// Schema version stamped by the producer and required (fail-closed) by
+/// consumers — `run_compare` here and `metrics release-health` in
+/// `tasks/metrics/release_health.rs` (#15357).
+pub(crate) const SCHEMA_VERSION: u32 = 1;
+
 #[derive(Serialize)]
 struct BuildTimingReceipt {
+    schema_version: u32,
     timestamp: String,
     toolchain: String,
     system: SystemInfo,
@@ -42,6 +92,9 @@ struct BuildMeasurement {
 
 #[derive(Deserialize)]
 struct MeasurableReceipt {
+    /// No serde default: a receipt without the envelope field fails to parse
+    /// (fail-closed) instead of being silently compared (#15357).
+    schema_version: u32,
     timestamp: String,
     toolchain: String,
     measurements: BTreeMap<String, BuildMeasurement>,
@@ -132,6 +185,7 @@ pub fn run_receipt(
     }
 
     let receipt = BuildTimingReceipt {
+        schema_version: SCHEMA_VERSION,
         timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         toolchain: command_output_or_unknown(&["rustc", "--version"]),
         system,
@@ -174,6 +228,21 @@ pub fn run_compare(baseline: PathBuf, current: PathBuf) -> Result<()> {
     let current: MeasurableReceipt =
         serde_json::from_str(&current_raw).context("Failed to parse current receipt")?;
 
+    // Fail closed on schema drift: a receipt written by a different producer
+    // generation must not be silently compared (#15357).
+    for (label, path, receipt) in
+        [("baseline", &baseline_path, &baseline), ("current", &current_path, &current)]
+    {
+        if receipt.schema_version != SCHEMA_VERSION {
+            let found = receipt.schema_version;
+            return Err(eyre!(
+                "Build timing {label} receipt schema version mismatch at {}: \
+                 expected {SCHEMA_VERSION}, got {found}",
+                path.display()
+            ));
+        }
+    }
+
     println!("# Build Timing Comparison");
     println!();
     println!("**Generated:** {}", Utc::now().format("%Y-%m-%dT%H:%M:%SZ"));
@@ -211,12 +280,16 @@ pub fn run_compare(baseline: PathBuf, current: PathBuf) -> Result<()> {
                 };
 
                 let mut improvement_label = format!("{improvement:.1}%");
-                if improvement > 0.0 {
-                    improvements += 1;
-                    improvement_label = format!("🟢 {improvement_label}");
-                } else if improvement < 0.0 {
-                    regressions += 1;
-                    improvement_label = format!("🔴 {improvement_label}");
+                match classify_improvement(improvement) {
+                    ImprovementClass::Improvement => {
+                        improvements += 1;
+                        improvement_label = format!("🟢 {improvement_label}");
+                    }
+                    ImprovementClass::Regression => {
+                        regressions += 1;
+                        improvement_label = format!("🔴 {improvement_label}");
+                    }
+                    ImprovementClass::Tie => {}
                 }
 
                 println!(
@@ -466,4 +539,183 @@ fn run_command_silently(root: &Path, command: &[&str]) -> f64 {
 
 fn command_to_string(command: &[&str]) -> String {
     command.join(" ")
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// A float-rounding residual on a 100ns timing difference (one second
+    /// baseline) is `~1e-5`. The defect (raw `> 0.0` branching) classifies
+    /// that as an improvement.
+    #[test]
+    fn classify_improvement_treats_float_rounding_residual_as_tie() {
+        let improvement: f64 = (1.0 - 1.0000001) / 1.0 * 100.0;
+        assert!(improvement.abs() > 0.0);
+        assert!(improvement.abs() < IMPROVEMENT_EPS);
+        assert_eq!(classify_improvement(improvement), ImprovementClass::Tie);
+        assert_eq!(classify_improvement(-improvement), ImprovementClass::Tie);
+    }
+
+    /// Exactly-zero improvement is always a tie, regardless of epsilon.
+    #[test]
+    fn classify_improvement_treats_exact_zero_as_tie() {
+        assert_eq!(classify_improvement(0.0), ImprovementClass::Tie);
+    }
+
+    /// Values strictly larger than `IMPROVEMENT_EPS` are improvements,
+    /// regardless of how close they are to the boundary.
+    #[test]
+    fn classify_improvement_above_eps_is_improvement() {
+        assert_eq!(classify_improvement(IMPROVEMENT_EPS * 2.0), ImprovementClass::Improvement);
+        assert_eq!(classify_improvement(5.0), ImprovementClass::Improvement);
+        assert_eq!(classify_improvement(100.0), ImprovementClass::Improvement);
+    }
+
+    /// Values strictly below `-IMPROVEMENT_EPS` are regressions.
+    #[test]
+    fn classify_improvement_below_neg_eps_is_regression() {
+        assert_eq!(classify_improvement(-IMPROVEMENT_EPS * 2.0), ImprovementClass::Regression);
+        assert_eq!(classify_improvement(-5.0), ImprovementClass::Regression);
+    }
+
+    /// The boundary values themselves are ties (closed interval).
+    #[test]
+    fn classify_improvement_at_boundary_is_tie() {
+        assert_eq!(classify_improvement(IMPROVEMENT_EPS), ImprovementClass::Tie);
+        assert_eq!(classify_improvement(-IMPROVEMENT_EPS), ImprovementClass::Tie);
+    }
+
+    /// A regression whose magnitude equals `IMPROVEMENT_EPS` is a tie, not a
+    /// regression — symmetric with the positive case above.
+    #[test]
+    fn classify_improvement_negative_at_eps_is_tie() {
+        assert_eq!(classify_improvement(-1e-3), ImprovementClass::Tie);
+    }
+
+    /// `run_compare` enforces the schema gate on both inputs: a wrong or
+    /// missing version on either side must fail, so removing or reversing
+    /// the gate (or validating only one side) turns this test red (#16024
+    /// review).
+    #[test]
+    fn run_compare_rejects_wrong_or_missing_schema_version_on_either_side() -> Result<()> {
+        fn receipt(version: Option<serde_json::Value>) -> serde_json::Value {
+            let mut map = serde_json::Map::new();
+            if let Some(version) = version {
+                map.insert("schema_version".to_string(), version);
+            }
+            map.insert("timestamp".to_string(), serde_json::Value::from("2026-01-01T00:00:00Z"));
+            map.insert("toolchain".to_string(), serde_json::Value::from("rustc (test)"));
+            map.insert(
+                "measurements".to_string(),
+                serde_json::json!({
+                    "clean_build_workspace": {
+                        "duration_seconds": 1.0,
+                        "command": "cargo build",
+                    },
+                }),
+            );
+            serde_json::Value::Object(map)
+        }
+
+        let dir = tempfile::tempdir()?;
+        let baseline = dir.path().join("baseline.json");
+        let current = dir.path().join("current.json");
+        let write = |path: &std::path::Path, value: &serde_json::Value| -> Result<()> {
+            std::fs::write(path, serde_json::to_string(value)?)?;
+            Ok(())
+        };
+
+        // Both current: the gate passes (comparison itself may report drift;
+        // here the inputs are identical so it succeeds).
+        write(&baseline, &receipt(Some(serde_json::Value::from(SCHEMA_VERSION))))?;
+        write(&current, &receipt(Some(serde_json::Value::from(SCHEMA_VERSION))))?;
+        run_compare(baseline.clone(), current.clone())?;
+
+        // Wrong version on either side fails through the schema gate.
+        for (label, baseline_version, current_version) in [
+            ("baseline-wrong", Some(serde_json::Value::from(SCHEMA_VERSION + 1)), None),
+            ("current-wrong", None, Some(serde_json::Value::from(SCHEMA_VERSION + 1))),
+        ] {
+            // The `None` side keeps the current version; the `Some` side is
+            // the wrong one under test.
+            write(
+                &baseline,
+                &receipt(baseline_version.or(Some(serde_json::Value::from(SCHEMA_VERSION)))),
+            )?;
+            write(
+                &current,
+                &receipt(current_version.or(Some(serde_json::Value::from(SCHEMA_VERSION)))),
+            )?;
+            let err = run_compare(baseline.clone(), current.clone()).err().ok_or_else(|| {
+                color_eyre::eyre::eyre!("run_compare must reject a wrong schema version ({label})")
+            })?;
+            assert!(
+                err.to_string().contains("schema version mismatch"),
+                "expected the schema gate, got: {err}"
+            );
+        }
+
+        // Missing version on either side fails at parse (no serde default).
+        for (label, drop_baseline, drop_current) in
+            [("baseline-missing", true, false), ("current-missing", false, true)]
+        {
+            write(
+                &baseline,
+                &receipt(if drop_baseline {
+                    None
+                } else {
+                    Some(serde_json::Value::from(SCHEMA_VERSION))
+                }),
+            )?;
+            write(
+                &current,
+                &receipt(if drop_current {
+                    None
+                } else {
+                    Some(serde_json::Value::from(SCHEMA_VERSION))
+                }),
+            )?;
+            let err = run_compare(baseline.clone(), current.clone()).err().ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "run_compare must reject a missing schema version ({label})"
+                )
+            })?;
+            assert!(
+                err.to_string().contains("Failed to parse"),
+                "expected a parse failure, got: {err}"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Producer round-trip: the receipt stamps the current schema version and
+    /// the consumer-facing view parses it back (#15357).
+    #[test]
+    fn receipt_stamps_current_schema_version() -> Result<()> {
+        let receipt = BuildTimingReceipt {
+            schema_version: SCHEMA_VERSION,
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            toolchain: "rustc (test)".to_string(),
+            system: SystemInfo {
+                cpu_cores: Value::from(8u64),
+                memory_gb: Value::from(16.0),
+                os: "test".to_string(),
+            },
+            measurements: BTreeMap::from([(
+                "clean_build_workspace".to_string(),
+                BuildMeasurement { duration_seconds: 1.0, command: "cargo build".to_string() },
+            )]),
+        };
+        let raw = serde_json::to_string(&receipt).context("serialize receipt")?;
+        let parsed: MeasurableReceipt = serde_json::from_str(&raw).context("parse receipt")?;
+        assert_eq!(parsed.schema_version, SCHEMA_VERSION);
+        assert!(
+            parsed.measurements.contains_key("clean_build_workspace"),
+            "round-trip must keep measurements"
+        );
+        Ok(())
+    }
 }

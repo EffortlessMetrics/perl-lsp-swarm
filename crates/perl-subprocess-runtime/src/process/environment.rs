@@ -1,0 +1,366 @@
+//! The environment projection a plan applies to its child.
+//!
+//! The projection is declarative: it records what the owner decided, not what
+//! the ambient process happens to hold. Reading the real environment belongs
+//! to the environment-snapshot authority, not here.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::encoding::CanonicalEncoder;
+use super::identity::SecretValue;
+
+/// The name of an environment variable.
+///
+/// Names are public; values are not.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EnvVarName(String);
+
+impl EnvVarName {
+    /// Construct a variable name.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    /// Borrow the name.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for EnvVarName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Variables that let a caller inject code or libraries into the child.
+///
+/// Admitting one of these is a decision, never a default: the plan must
+/// acknowledge it explicitly and a hermetic probe may not admit one at all.
+///
+/// # This list is not, and cannot be, exhaustive
+///
+/// Every language runtime adds its own loader variables, so a name absent here
+/// is unrecognised rather than proven safe. The list is a floor that catches
+/// the known vectors, not the boundary itself — the boundary is
+/// [`AmbientInheritance`], which decides whether unnamed variables reach the
+/// child at all. A plan that wants a guarantee uses `DenyAll` or
+/// `AllowListedOnly` and names what it needs; only `InheritExceptDenied` is
+/// exposed to what this list happens to omit.
+pub const CODE_LOADING_VARIABLES: &[&str] = &[
+    "PERL5LIB",
+    "PERL5OPT",
+    "PERLLIB",
+    "PERL5DB",
+    "PERL_UNICODE",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "RUBYOPT",
+    "RUBYLIB",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+];
+
+/// Whether a set holds a name, ignoring ASCII case.
+fn names_contain_ignoring_case(names: &BTreeSet<EnvVarName>, needle: &EnvVarName) -> bool {
+    names.iter().any(|name| name.as_str().eq_ignore_ascii_case(needle.as_str()))
+}
+
+/// Whether a variable name is a known code-loading vector.
+///
+/// Compared case-insensitively. Environment variable names are case-sensitive
+/// on Unix but not on Windows, and the safe direction of that ambiguity is to
+/// treat `Perl5Lib` as the loader variable it resembles rather than to let a
+/// spelling walk past the acknowledgement gate.
+pub fn is_code_loading_variable(name: &EnvVarName) -> bool {
+    CODE_LOADING_VARIABLES.iter().any(|known| known.eq_ignore_ascii_case(name.as_str()))
+}
+
+/// How the child treats the supervisor's ambient environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AmbientInheritance {
+    /// The child starts from an empty environment.
+    DenyAll,
+    /// Only explicitly allowed names are inherited.
+    AllowListedOnly,
+    /// Everything except explicitly denied names is inherited.
+    ///
+    /// The permissive option; profiles that require hermeticity reject it.
+    InheritExceptDenied,
+}
+
+impl AmbientInheritance {
+    pub(crate) fn discriminant(self) -> u16 {
+        match self {
+            Self::DenyAll => 0,
+            Self::AllowListedOnly => 1,
+            Self::InheritExceptDenied => 2,
+        }
+    }
+}
+
+/// Whether the plan's owner explicitly accepted code-loading variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CodeLoadingDisposition {
+    /// No code-loading variable may be admitted.
+    Refused,
+    /// The owner explicitly accepted the injection risk.
+    AcknowledgedByOwner,
+}
+
+impl CodeLoadingDisposition {
+    pub(crate) fn discriminant(self) -> u16 {
+        match self {
+            Self::Refused => 0,
+            Self::AcknowledgedByOwner => 1,
+        }
+    }
+}
+
+/// The declarative environment projection applied to a child process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentProjection {
+    projection_id: String,
+    inheritance: AmbientInheritance,
+    allowed: BTreeSet<EnvVarName>,
+    denied: BTreeSet<EnvVarName>,
+    removed: BTreeSet<EnvVarName>,
+    additions: BTreeMap<EnvVarName, SecretValue>,
+    code_loading: CodeLoadingDisposition,
+}
+
+impl EnvironmentProjection {
+    /// Start a projection bound to an environment-snapshot identity.
+    ///
+    /// The identity is opaque here; the snapshot authority owns its meaning.
+    pub fn new(projection_id: impl Into<String>, inheritance: AmbientInheritance) -> Self {
+        Self {
+            projection_id: projection_id.into(),
+            inheritance,
+            allowed: BTreeSet::new(),
+            denied: BTreeSet::new(),
+            removed: BTreeSet::new(),
+            additions: BTreeMap::new(),
+            code_loading: CodeLoadingDisposition::Refused,
+        }
+    }
+
+    /// Allow a name to be inherited.
+    #[must_use]
+    pub fn allow(mut self, name: EnvVarName) -> Self {
+        self.allowed.insert(name);
+        self
+    }
+
+    /// Deny a name.
+    #[must_use]
+    pub fn deny(mut self, name: EnvVarName) -> Self {
+        self.denied.insert(name);
+        self
+    }
+
+    /// Remove a name that would otherwise be inherited.
+    #[must_use]
+    pub fn remove(mut self, name: EnvVarName) -> Self {
+        self.removed.insert(name);
+        self
+    }
+
+    /// Set a variable in the child's environment.
+    #[must_use]
+    pub fn add(mut self, name: EnvVarName, value: SecretValue) -> Self {
+        self.additions.insert(name, value);
+        self
+    }
+
+    /// Record that the owner explicitly accepted code-loading variables.
+    #[must_use]
+    pub fn acknowledging_code_loading(mut self) -> Self {
+        self.code_loading = CodeLoadingDisposition::AcknowledgedByOwner;
+        self
+    }
+
+    /// The opaque environment-snapshot identity.
+    pub fn projection_id(&self) -> &str {
+        &self.projection_id
+    }
+
+    /// How ambient variables are treated.
+    pub fn inheritance(&self) -> AmbientInheritance {
+        self.inheritance
+    }
+
+    /// Names explicitly allowed.
+    pub fn allowed(&self) -> &BTreeSet<EnvVarName> {
+        &self.allowed
+    }
+
+    /// Names explicitly denied.
+    pub fn denied(&self) -> &BTreeSet<EnvVarName> {
+        &self.denied
+    }
+
+    /// Names explicitly removed.
+    pub fn removed(&self) -> &BTreeSet<EnvVarName> {
+        &self.removed
+    }
+
+    /// Names explicitly set, without their values.
+    pub fn addition_names(&self) -> impl Iterator<Item = &EnvVarName> {
+        self.additions.keys()
+    }
+
+    /// Look up an addition's value.
+    ///
+    /// The only way to reach a secret value, and deliberately explicit.
+    pub fn addition_value(&self, name: &EnvVarName) -> Option<&SecretValue> {
+        self.additions.get(name)
+    }
+
+    /// Whether any addition carries a value the plan must keep private.
+    pub fn carries_private_values(&self) -> bool {
+        !self.additions.is_empty()
+    }
+
+    /// The disposition toward code-loading variables.
+    pub fn code_loading(&self) -> CodeLoadingDisposition {
+        self.code_loading
+    }
+
+    /// Names admitted into the child that are known code-loading vectors.
+    ///
+    /// Admission is not only what the projection names explicitly.
+    /// [`AmbientInheritance::InheritExceptDenied`] passes every ambient
+    /// variable through, so under that policy a code-loading variable is
+    /// admitted unless it is explicitly denied — even though it appears in
+    /// neither `allowed` nor `additions`. Counting only the named sets would
+    /// make the permissive policy the one place the acknowledgement gate
+    /// never fires, which is precisely backwards.
+    pub fn admitted_code_loading_variables(&self) -> Vec<EnvVarName> {
+        // An addition always counts: the plan sets the variable itself, so it
+        // reaches the child under every inheritance policy.
+        let mut admitted: Vec<EnvVarName> =
+            self.additions.keys().filter(|name| is_code_loading_variable(name)).cloned().collect();
+        let allowed_loaders =
+            || self.allowed.iter().filter(|name| is_code_loading_variable(name)).cloned();
+        // Whether the *allow list* admits anything depends on the policy, and
+        // an exhaustive match rather than a single equality test so a new
+        // policy has to be classified here.
+        match self.inheritance {
+            // Nothing ambient is inherited, so an allow-list entry names a
+            // variable that cannot reach the child by any route. Counting it
+            // demanded an acknowledgement for a vector the plan had already
+            // closed — an over-rejection aimed squarely at hermetic plans,
+            // which are the ones most likely to name a loader in order to be
+            // explicit about refusing it.
+            AmbientInheritance::DenyAll => {}
+            // Here the allow list *is* the inheritance mechanism.
+            AmbientInheritance::AllowListedOnly => admitted.extend(allowed_loaders()),
+            AmbientInheritance::InheritExceptDenied => {
+                admitted.extend(allowed_loaders());
+                // Admission is not only what the projection names explicitly:
+                // this policy passes every ambient variable through, so a
+                // loader is admitted unless it is explicitly excluded.
+                admitted.extend(
+                    CODE_LOADING_VARIABLES
+                        .iter()
+                        .map(|name| EnvVarName::new(*name))
+                        // Compared case-insensitively to match detection. Exact
+                        // matching meant a lowercase denial failed to clear the
+                        // canonical name, so a plan that had already denied the
+                        // vector was still asked to acknowledge it.
+                        .filter(|name| {
+                            !names_contain_ignoring_case(&self.denied, name)
+                                && !names_contain_ignoring_case(&self.removed, name)
+                        }),
+                );
+            }
+        }
+        admitted.sort();
+        admitted.dedup();
+        admitted
+    }
+
+    /// Names that appear in contradictory rules.
+    pub fn contradictions(&self) -> Vec<&EnvVarName> {
+        let mut contradictions: Vec<&EnvVarName> = Vec::new();
+        // Compared ignoring ASCII case, matching the admission check. Byte-exact
+        // membership here left a real hole: `allow("PERL5LIB")` with
+        // `deny("perl5lib")` reported no contradiction, while admission saw the
+        // lowercase denial and cleared the vector — so a plan holding one rule
+        // that says inherit and one that says do not passed both gates. On
+        // Windows those spellings name one variable, which is exactly the
+        // divergence this function exists to refuse.
+        for name in &self.allowed {
+            // Allowed-and-denied and allowed-and-removed are both undefined:
+            // one rule says inherit the variable and the other says do not,
+            // and no precedence between them exists. Two backends could
+            // project different child environments from the same validated
+            // plan, so the plan is refused instead.
+            if names_contain_ignoring_case(&self.denied, name)
+                || names_contain_ignoring_case(&self.removed, name)
+            {
+                contradictions.push(name);
+            }
+        }
+        for name in self.additions.keys() {
+            if names_contain_ignoring_case(&self.removed, name)
+                || names_contain_ignoring_case(&self.denied, name)
+            {
+                contradictions.push(name);
+            }
+        }
+        // Two additions differing only in case are one variable on Windows, so
+        // the value the child receives would be backend-dependent.
+        for name in self.additions.keys() {
+            if self
+                .additions
+                .keys()
+                .any(|other| other != name && other.as_str().eq_ignore_ascii_case(name.as_str()))
+            {
+                contradictions.push(name);
+            }
+        }
+        contradictions.sort();
+        contradictions.dedup();
+        contradictions
+    }
+
+    /// Canonically encode the projection.
+    ///
+    /// Variable **values** are never encoded, not even as a fingerprint: a
+    /// fingerprint of a low-entropy secret is a guessable secret. Two plans
+    /// that differ only in an addition's value therefore share a semantic
+    /// fingerprint, which is a deliberate, documented limitation.
+    ///
+    /// What that forbids a consumer from doing is documented where a consumer
+    /// reads it — on
+    /// [`ProcessPlan::semantic_fingerprint`](super::ProcessPlan::semantic_fingerprint),
+    /// which is public, rather than here on a `pub(crate)` method no consumer
+    /// can see.
+    pub(crate) fn encode(&self, encoder: &mut CanonicalEncoder) {
+        encoder.section("environment");
+        encoder.text(&self.projection_id);
+        encoder.variant(self.inheritance.discriminant());
+        encoder.variant(self.code_loading.discriminant());
+        for (label, names) in
+            [("allowed", &self.allowed), ("denied", &self.denied), ("removed", &self.removed)]
+        {
+            encoder.section(label);
+            encoder.unsigned(names.len() as u64);
+            for name in names {
+                encoder.text(name.as_str());
+            }
+        }
+        encoder.section("additions");
+        encoder.unsigned(self.additions.len() as u64);
+        for name in self.additions.keys() {
+            encoder.text(name.as_str());
+        }
+    }
+}

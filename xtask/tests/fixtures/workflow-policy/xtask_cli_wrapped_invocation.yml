@@ -1,0 +1,35 @@
+name: fixture-xtask-cli-wrapped-invocation
+# Assignments and wrapper options sit in front of the command without changing
+# what runs. Skipping only the wrapper's name would leave a non-`cargo` token in
+# command position and silently miss each of these.
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  bare-assignment:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: RUST_LOG=debug cargo xtask example-contract check
+  env-wrapper:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: env RUST_LOG=debug cargo xtask example-contract check
+  wrapper-option:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: sudo -E cargo xtask example-contract check
+  wrapper-option-with-value:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: nice -n 10 cargo xtask example-contract check

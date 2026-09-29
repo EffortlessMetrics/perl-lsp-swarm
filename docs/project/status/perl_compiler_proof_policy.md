@@ -9,11 +9,14 @@ Closed proof-class, composition-dimension, and campaign vocabulary for the curre
 - Policy: `perl_compiler_proof_policy_seed_v1`
 - Controller: #6689
 - Concept schema: `perl_compiler_concepts.v1`
-- Policy vocabulary closed: `false`
+- Policy vocabulary closed: `false` (derived)
 - Closure authority: —
 - Proof classes: `11`
 - Composition dimensions: `35`
 - Campaigns: `7`
+- Retained dispositions: `0`
+- Policy digest: `236f9ab0697d9d8f078befca41fd4604341cf3632d9a01c7d01933d3a20a93d5`
+- Concept projection digest: `935b925a2cbe8c35178c46cbff913ef45b6a50cba1d29bedd34f008ace53ee0d`
 
 **Claim boundary:** This policy defines admissible proof shapes. It does not satisfy any concept obligation or authorize provider promotion.
 
@@ -32,6 +35,24 @@ Closed proof-class, composition-dimension, and campaign vocabulary for the curre
 | `real_perl_oracle` | `real_perl_oracle` | `effects_world`, `eir`, `provider` | `false` | `blocks_claim_when_observable` | #4767 |
 | `recovery_gold` | `independent_gold` | `parser`, `body_hir`, `provider` | `false` | `blocks_claim` | #5238 |
 | `verifier_mutation` | `mutation_fixture` | `pir_a`, `eir`, `provider` | `false` | `blocks_claim` | #2277 |
+
+## Evidence-role compatibility
+
+Authority says who produced the evidence; role says what it may be read as.
+
+| Proof class | Admitted roles | Roles the authority allows | Claim ceiling |
+| --- | --- | --- | --- |
+| `boundary_gold` | `independent_structural_expectation` | `independent_structural_expectation` | — |
+| `composition_coverage` | `composition_result` | `composition_result` | — |
+| `effects_world_fixture` | `effects_world_fixture` | `effects_world_fixture` | — |
+| `eir_differential` | `execution_receipt`, `eir_differential_result` | `eir_differential_result`, `execution_receipt` | Execution observations bound the eir stage only. A differential run is not an independently authored semantic expectation and cannot satisfy a gold obligation. |
+| `hir_snapshot` | `compiler_generated_snapshot` | `compiler_generated_snapshot`, `implementation_diagnostic_receipt` | — |
+| `negative_gold` | `independent_structural_expectation` | `independent_structural_expectation` | — |
+| `pir_snapshot` | `compiler_generated_snapshot` | `compiler_generated_snapshot`, `implementation_diagnostic_receipt` | — |
+| `positive_gold` | `independent_structural_expectation` | `independent_structural_expectation` | — |
+| `real_perl_oracle` | `execution_receipt`, `real_perl_oracle_observation` | `real_perl_oracle_observation`, `execution_receipt` | Observed real-Perl behavior bounds safely observable semantics only. It cannot stand as a structural expectation, and unobservable behavior stays unproven. |
+| `recovery_gold` | `independent_structural_expectation` | `independent_structural_expectation` | — |
+| `verifier_mutation` | `verifier_mutation_result` | `verifier_mutation_result` | — |
 
 ## Composition dimensions
 
@@ -84,6 +105,20 @@ Closed proof-class, composition-dimension, and campaign vocabulary for the curre
 | `phases_modules_effects` | `namespaces`, `objects`, `phases` | `compile_state`, `dynamic_boundary`, `feature_state`, `inheritance`, `module_order`, `object_dispatch`, `package_scope`, `phase` | `boundary_gold`, `composition_coverage`, `effects_world_fixture`, `negative_gold`, `positive_gold`, `real_perl_oracle` | #6689 |
 | `regex_topic_hidden_state` | `control`, `regex` | `access_mode`, `dynamic_boundary`, `evaluation_demand`, `hidden_effect`, `implicit_topic`, `match_state`, `value_context` | `boundary_gold`, `composition_coverage`, `hir_snapshot`, `negative_gold`, `pir_snapshot`, `positive_gold`, `real_perl_oracle`, `verifier_mutation` | #6689 |
 | `source_regions_incremental` | `formats`, `source` | `dynamic_boundary`, `feature_state`, `incremental_edit`, `io_capability`, `package_scope`, `recovery_state`, `source_region` | `boundary_gold`, `composition_coverage`, `effects_world_fixture`, `hir_snapshot`, `negative_gold`, `positive_gold`, `real_perl_oracle`, `recovery_gold` | #6689 |
+
+## Reverse coverage
+
+Every declared item is exercised by a campaign or retained under a typed disposition.
+
+| Vocabulary | Declared | Exercised | Dispositioned |
+| --- | ---: | ---: | ---: |
+| `proof_class` | 11 | 11 | 0 |
+| `dimension` | 35 | 35 | 0 |
+| `concept_family` | 15 | 15 | 0 |
+
+## Retained dispositions
+
+None. Every declared item is exercised, so the policy retains no unresolved obligation.
 
 ## Coverage counts
 

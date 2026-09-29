@@ -14,6 +14,7 @@ claim_stages = ["body_hir", "pir_a", "effects_world", "eir", "provider"]
 circular_output_allowed = false
 missing_effect = "blocks_claim"
 owner_issue = "#4760"
+evidence_roles = ["independent_structural_expectation"]
 
 [[proof_classes]]
 class_id = "negative_gold"
@@ -23,6 +24,7 @@ claim_stages = ["body_hir", "pir_a", "effects_world", "eir", "provider"]
 circular_output_allowed = false
 missing_effect = "blocks_claim"
 owner_issue = "#4760"
+evidence_roles = ["independent_structural_expectation"]
 
 [[proof_classes]]
 class_id = "boundary_gold"
@@ -32,6 +34,7 @@ claim_stages = ["body_hir", "pir_a", "effects_world", "eir", "provider"]
 circular_output_allowed = false
 missing_effect = "blocks_claim"
 owner_issue = "#4770"
+evidence_roles = ["independent_structural_expectation"]
 
 [[proof_classes]]
 class_id = "recovery_gold"
@@ -41,6 +44,7 @@ claim_stages = ["parser", "body_hir", "provider"]
 circular_output_allowed = false
 missing_effect = "blocks_claim"
 owner_issue = "#5238"
+evidence_roles = ["independent_structural_expectation"]
 
 [[proof_classes]]
 class_id = "hir_snapshot"
@@ -50,6 +54,7 @@ claim_stages = ["flat_hir", "body_hir"]
 circular_output_allowed = true
 missing_effect = "blocks_stage"
 owner_issue = "#5214"
+evidence_roles = ["compiler_generated_snapshot"]
 
 [[proof_classes]]
 class_id = "pir_snapshot"
@@ -59,6 +64,7 @@ claim_stages = ["pir_a"]
 circular_output_allowed = true
 missing_effect = "blocks_stage"
 owner_issue = "#2277"
+evidence_roles = ["compiler_generated_snapshot"]
 
 [[proof_classes]]
 class_id = "verifier_mutation"
@@ -68,6 +74,7 @@ claim_stages = ["pir_a", "eir", "provider"]
 circular_output_allowed = false
 missing_effect = "blocks_claim"
 owner_issue = "#2277"
+evidence_roles = ["verifier_mutation_result"]
 
 [[proof_classes]]
 class_id = "effects_world_fixture"
@@ -77,6 +84,7 @@ claim_stages = ["effects_world", "provider"]
 circular_output_allowed = false
 missing_effect = "blocks_claim"
 owner_issue = "#4810"
+evidence_roles = ["effects_world_fixture"]
 
 [[proof_classes]]
 class_id = "eir_differential"
@@ -86,6 +94,8 @@ claim_stages = ["eir"]
 circular_output_allowed = false
 missing_effect = "blocks_execution_claim"
 owner_issue = "#4779"
+evidence_roles = ["eir_differential_result", "execution_receipt"]
+multi_role_claim_ceiling = "Execution observations bound the eir stage only. A differential run is not an independently authored semantic expectation and cannot satisfy a gold obligation."
 
 [[proof_classes]]
 class_id = "real_perl_oracle"
@@ -95,6 +105,8 @@ claim_stages = ["effects_world", "eir", "provider"]
 circular_output_allowed = false
 missing_effect = "blocks_claim_when_observable"
 owner_issue = "#4767"
+evidence_roles = ["real_perl_oracle_observation", "execution_receipt"]
+multi_role_claim_ceiling = "Observed real-Perl behavior bounds safely observable semantics only. It cannot stand as a structural expectation, and unobservable behavior stays unproven."
 
 [[proof_classes]]
 class_id = "composition_coverage"
@@ -104,6 +116,7 @@ claim_stages = ["body_hir", "pir_a", "effects_world", "eir", "provider"]
 circular_output_allowed = false
 missing_effect = "blocks_claim"
 owner_issue = "#6689"
+evidence_roles = ["composition_result"]
 
 [[dimensions]]
 dimension_id = "value_context"

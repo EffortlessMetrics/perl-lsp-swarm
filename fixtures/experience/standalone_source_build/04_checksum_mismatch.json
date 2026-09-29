@@ -1,0 +1,11 @@
+{
+  "schema_version": "standalone_source_build.vector.v1",
+  "base": "01_exact_plan.json",
+  "mutation": {
+    "pointer": "/evidence/package_checksum",
+    "value": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "expectation": {
+    "result": "source_checksum_mismatch"
+  }
+}

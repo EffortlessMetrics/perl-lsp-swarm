@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Ignore stale debugger expression results requested for a stack frame after execution resumes or the session changes, and distinguish cancellation and session loss from timeouts.
+time: 2026-09-14T01:09:33Z
+custom:
+  PR: "15566"
+  Slug: evaluate-stop-lifetime
+  Breaking: "no"

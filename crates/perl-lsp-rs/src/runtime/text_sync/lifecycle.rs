@@ -34,6 +34,7 @@ impl LspServer {
             }
 
             self.evict_open_document_session_state(uri);
+            self.clear_formatting_receipt_for_close(uri);
 
             // If the closed document has no backing file on disk it existed only in
             // the editor buffer (e.g. a new unsaved file or a test virtual document).
@@ -58,13 +59,13 @@ impl LspServer {
                 );
                 if !file_on_disk {
                     if let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().remove_file(&key);
                         }
                     }
                 } else {
                     if session_diverged && let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().remove_file(&key);
                         }
                         if let Some(content) =
@@ -95,7 +96,7 @@ impl LspServer {
                     // (#11305) — is not blocked by the stale high-water mark
                     // from the previous session (#5438).
                     if let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().reset_generation_for_close(&key);
                         }
                     }
@@ -154,7 +155,12 @@ impl LspServer {
                 let replacement = {
                     let documents = self.documents.lock();
                     self.get_document(&documents, &normalized_uri).and_then(|doc| {
-                        (doc.text.as_str() != saved_text)
+                        // Identical-text is a no-op only while the buffer is
+                        // already synchronized. After a Full-sync violation the
+                        // retained predecessor still equals the saved snapshot,
+                        // but current answers stay closed until an admitted
+                        // full replacement recovers the document.
+                        (doc.full_sync_required() || doc.text.as_str() != saved_text)
                             .then(|| (saved_text.to_owned(), doc.version))
                     })
                 };
@@ -187,6 +193,12 @@ impl LspServer {
                 let doc_info = {
                     let documents = self.documents_guard();
                     self.get_document(&documents, &normalized_uri).and_then(|d| {
+                        // A didSave without includeText cannot recover Full-sync.
+                        // Predecessor `text_str` stays evidence only; generation-only
+                        // index admission must not republish it as current.
+                        if d.full_sync_required() {
+                            return None;
+                        }
                         let doc_gen_val = NonZeroU32::new(d.current_generation())?;
                         let needs_commit = backing_transition.is_some()
                             || self.coordinator().is_some_and(|coordinator| {

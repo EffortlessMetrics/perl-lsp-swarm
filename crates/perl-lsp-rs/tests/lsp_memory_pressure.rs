@@ -755,7 +755,7 @@ fn test_incremental_parsing_stress() {
         }),
     );
 
-    // Send many rapid incremental changes
+    // Send many rapid full-document replacements
     for i in 2..1002 {
         send_notification(
             &server,
@@ -768,11 +768,7 @@ fn test_incremental_parsing_stress() {
                         "version": i
                     },
                     "contentChanges": [{
-                        "range": {
-                            "start": {"line": 0, "character": 7},
-                            "end": {"line": 0, "character": 12}
-                        },
-                        "text": format!("change{}", i)
+                        "text": format!("print 'change{i}';\n").repeat(100)
                     }]
                 }
             }),

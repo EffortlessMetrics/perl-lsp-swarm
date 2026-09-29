@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "The multiline-constructor UX check now requires diagnostics for the edited document version and fails on missing evidence instead of accepting stale results or silence."
+time: 2026-09-13T20:32:08Z
+custom:
+  PR: "15549"
+  Slug: scenario60-versioned-diagnostics
+  Breaking: "no"

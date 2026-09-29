@@ -5,17 +5,25 @@
 //! journey without promoting a support tier or turning a fallback into an
 //! exactness claim.
 
-use anyhow::{Context, Result, anyhow, ensure};
+#[path = "support/active_document_readiness.rs"]
+mod active_document_readiness;
+
+use active_document_readiness::{
+    ReadyObservation, generation_after, ready_event_count, ready_generations,
+    wait_for_generation_after,
+};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use perl_lsp_ux_tests::{
-    ProjectFixtureFile, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
-    fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
-    load_dancer2_fixture_files, load_mojolicious_fixture_files, missing_binary_skip,
-    open_all_fixture_files, run_ux_scenario,
+    LspEvent, ProjectFixtureFile, ScenarioConfig, UxCiTier, UxComponent, UxHarness,
+    binary_available, document_symbol_names, fixture_content, fixture_scenario_config,
+    load_catalyst_fixture_files, load_dancer2_fixture_files, load_mojolicious_fixture_files,
+    missing_binary_skip, open_all_fixture_files, run_ux_scenario,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Deserializer, Value, json};
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use url::Url;
@@ -23,6 +31,10 @@ use url::Url;
 const SCENARIO_FILE: &str = "ux_scenario_67_golden_editor_workload.rs";
 const MANIFEST: &str = include_str!("../fixtures/golden_editor_workload.json");
 const PLAIN_ACTIVE_FILE: &str = "lib/Plain/App.pm";
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
+const EDIT_BURST_COUNT: i32 = 20;
+const PRE_CLOSE_SYMBOL: &str = "__golden_preclose_symbol";
+const REOPENED_SYMBOL: &str = "__golden_reopened_symbol";
 const PLAIN_SOURCE: &str = r#"package Plain::App;
 use strict;
 use warnings;
@@ -51,25 +63,17 @@ fn golden_manifest_has_exact_after_ready_shape() -> Result<()> {
     validate_manifest(&manifest)
 }
 
-#[test]
-fn waiver_expiry_rejects_malformed_and_expired_dates() -> Result<()> {
-    ensure!(validate_waiver_expiry("9999-12-31").is_ok());
-    ensure!(validate_waiver_expiry("2026-02-30").is_err());
-    ensure!(validate_waiver_expiry("2020-01-01").is_err());
-    Ok(())
-}
-
-#[test]
-fn expired_waiver_error_preserves_debt_identity() -> Result<()> {
-    let error = validate_error_waiver(&ErrorWaiver {
+fn test_waiver(expires_after: &str) -> ErrorWaiver {
+    ErrorWaiver {
         project: "mojolicious".to_owned(),
         journey: "edit_burst_completion".to_owned(),
         expected_error_class: "request_superseded".to_owned(),
         issue: 5779,
-        expires_after: "2020-01-01".to_owned(),
-    })
-    .expect_err("expired waiver must remain a validation error");
-    let message = format!("{error:#}");
+        expires_after: expires_after.to_owned(),
+    }
+}
+
+fn ensure_waiver_identity(message: &str) -> Result<()> {
     ensure!(message.contains("project=mojolicious"), "missing project identity: {message}");
     ensure!(
         message.contains("journey=edit_burst_completion"),
@@ -80,6 +84,128 @@ fn expired_waiver_error_preserves_debt_identity() -> Result<()> {
         "missing error-class identity: {message}"
     );
     ensure!(message.contains("tracking_issue=#5779"), "missing issue identity: {message}");
+    Ok(())
+}
+
+/// Waiver shape is a property of the manifest text, so it is enforced
+/// identically on a feature branch and on the default branch.
+#[test]
+fn waiver_expiry_shape_is_rejected_under_every_policy() -> Result<()> {
+    let today = days_from_civil(2026, 1, 1);
+    for policy in [WaiverExpiryPolicy::Warn, WaiverExpiryPolicy::Enforce] {
+        for malformed in
+            ["2026-02-30", "2026-13-01", "2026-00-10", "2026-1-01", "2026-01", "not-a-date"]
+        {
+            ensure!(
+                validate_error_waiver_at(&test_waiver(malformed), today, policy).is_err(),
+                "malformed expiry {malformed} must be rejected under {policy:?}"
+            );
+        }
+        ensure!(
+            validate_error_waiver_at(&test_waiver("9999-12-31"), today, policy)?.is_none(),
+            "a well-formed future expiry must be accepted silently under {policy:?}"
+        );
+        ensure!(
+            validate_error_waiver_at(
+                &ErrorWaiver { issue: 0, ..test_waiver("9999-12-31") },
+                today,
+                policy
+            )
+            .is_err(),
+            "a waiver without a tracking issue must be rejected under {policy:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A waiver remains current *through* its expiry date; the boundary is the
+/// following day. Pinning both sides keeps an off-by-one from silently
+/// widening or shortening every waiver by a day.
+#[test]
+fn waiver_remains_current_through_its_expiry_date() -> Result<()> {
+    let expiry = days_from_civil(2026, 8, 11);
+    ensure!(waiver_lapse(expiry, expiry - 1) == WaiverLapse::Current, "before expiry is current");
+    ensure!(waiver_lapse(expiry, expiry) == WaiverLapse::Current, "the expiry day is current");
+    ensure!(waiver_lapse(expiry, expiry + 1) == WaiverLapse::Lapsed, "the day after has lapsed");
+    Ok(())
+}
+
+/// #9616: a lapsed waiver must not fail a branch whose diff never touched the
+/// manifest, but it must still fail on the default branch, where the
+/// maintainer who can refresh the waiver will see it.
+#[test]
+fn lapsed_waiver_fails_under_enforcement_and_warns_otherwise() -> Result<()> {
+    let waiver = test_waiver("2026-08-11");
+    let today = days_from_civil(2026, 8, 12);
+
+    let error = match validate_error_waiver_at(&waiver, today, WaiverExpiryPolicy::Enforce) {
+        Err(error) => error,
+        Ok(_) => bail!("a lapsed waiver must fail under the enforcing policy"),
+    };
+    let message = format!("{error:#}");
+    ensure!(message.contains("expired on 2026-08-11"), "missing lapse detail: {message}");
+    ensure_waiver_identity(&message)?;
+
+    let warning = validate_error_waiver_at(&waiver, today, WaiverExpiryPolicy::Warn)?
+        .context("a lapsed waiver must still be reported when the policy only warns")?;
+    ensure!(warning.contains("expired on 2026-08-11"), "missing lapse detail: {warning}");
+    ensure_waiver_identity(&warning)?;
+    Ok(())
+}
+
+/// Negative control against trading a noisy gate for a silent one: warnings
+/// are emitted only for waivers that have actually lapsed.
+#[test]
+fn current_waiver_is_silent_under_the_warning_policy() -> Result<()> {
+    let expiry = days_from_civil(2026, 8, 11);
+    ensure!(
+        validate_error_waiver_at(&test_waiver("2026-08-11"), expiry, WaiverExpiryPolicy::Warn)?
+            .is_none(),
+        "a current waiver must not warn, or the lapse signal degrades into noise"
+    );
+    Ok(())
+}
+
+/// The rendered line is the entire signal on the path that deliberately does
+/// not fail, so both renderings are pinned. A GitHub annotation must stay on
+/// one line: an embedded newline would terminate the annotation early and drop
+/// the debt identity that makes the report actionable.
+#[test]
+fn waiver_warning_renders_one_actionable_line_in_both_environments() -> Result<()> {
+    let report = "error waiver expired on 2026-08-11; refresh or remove the waiver";
+
+    let annotation = format_waiver_warning(report, true);
+    ensure!(
+        annotation.starts_with("::warning title="),
+        "GitHub output must be an annotation: {annotation}"
+    );
+    ensure!(annotation.contains(report), "annotation dropped the report: {annotation}");
+
+    let plain = format_waiver_warning(report, false);
+    ensure!(!plain.starts_with("::"), "local output must not be an annotation: {plain}");
+    ensure!(plain.contains(report), "local output dropped the report: {plain}");
+
+    for rendered in [&annotation, &plain] {
+        ensure!(rendered.ends_with('\n'), "report must terminate its line: {rendered}");
+        ensure!(
+            rendered.trim_end_matches('\n').lines().count() == 1,
+            "report must occupy exactly one line: {rendered}"
+        );
+    }
+    Ok(())
+}
+
+/// An unrecognized policy value must fail rather than fall back to `warn`:
+/// a typo in CI would otherwise silently disable the default-branch failure
+/// that this split exists to preserve.
+#[test]
+fn waiver_policy_defaults_to_warn_and_rejects_unknown_values() -> Result<()> {
+    ensure!(WaiverExpiryPolicy::parse("")? == WaiverExpiryPolicy::Warn);
+    ensure!(WaiverExpiryPolicy::parse("warn")? == WaiverExpiryPolicy::Warn);
+    ensure!(WaiverExpiryPolicy::parse("enforce")? == WaiverExpiryPolicy::Enforce);
+    ensure!(WaiverExpiryPolicy::parse("enfroce").is_err(), "a typo must not degrade to warn");
+    ensure!(WaiverExpiryPolicy::parse("Enforce").is_err(), "policy values are exact");
+    ensure!(WaiverExpiryPolicy::parse("1").is_err(), "policy values are not booleans");
     Ok(())
 }
 
@@ -122,6 +248,116 @@ fn protocol_crashes_are_preserved_in_the_rollup() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn close_reopen_uses_tracked_restore_and_generation_two() -> Result<()> {
+    if !binary_available() {
+        return Ok(());
+    }
+
+    let project = test_plain_project();
+    let harness = create_harness(&project, &[])?;
+    harness.open_file(&project.active_file, PLAIN_SOURCE)?;
+
+    let observation = run_close_reopen_pending(&harness, &project, PLAIN_SOURCE)?;
+    ensure!(
+        harness.tracked_document_version(&project.active_file) == Some(2),
+        "lifecycle helper must leave the tracked buffer at restored version 2"
+    );
+    ensure!(
+        observation.readiness_state.contains("reopened_generation=1")
+            && observation.readiness_state.contains("restored_generation=2"),
+        "lifecycle receipt omitted the two generation barriers: {}",
+        observation.readiness_state
+    );
+    ensure!(observation.evidence["readiness"]["observed_generation"] == 1);
+    ensure!(observation.evidence["readiness"]["restored_generation"] == 2);
+    Ok(())
+}
+
+#[test]
+fn close_reopen_rejects_untracked_buffer_before_current_evidence() -> Result<()> {
+    if !binary_available() {
+        return Ok(());
+    }
+
+    let project = test_plain_project();
+    let harness = create_harness(&project, &[])?;
+    let error = run_close_reopen_pending(&harness, &project, PLAIN_SOURCE)
+        .err()
+        .context("close/reopen must not bypass the tracked-buffer owner")?;
+    let message = format!("{error:#}");
+    ensure!(message.contains("cannot change editor buffer before open"), "{message}");
+    ensure!(harness.tracked_document_version(&project.active_file).is_none());
+    Ok(())
+}
+
+#[test]
+fn delayed_same_generation_readiness_requires_reopened_discriminator() -> Result<()> {
+    let uri = "file:///workspace/lib/App.pm";
+    let ready = |generation| LspEvent::Other {
+        method: active_document_readiness::ACTIVE_DOCUMENT_READY_METHOD.to_owned(),
+        params: json!({"uri": uri, "generation": generation}),
+    };
+    let mut events = vec![ready(1), ready(2)];
+    let cursor = ready_generations(&events, uri).len();
+    events.push(ready(1));
+    let stale_readiness = generation_after(&ready_generations(&events, uri), cursor, 1).context(
+        "same-generation delayed readiness must be observable for this negative control",
+    )?;
+    let stale_names = vec![format!("Golden::PreClose::App::{PRE_CLOSE_SYMBOL}")];
+    let error = require_reopened_discriminator(stale_readiness, &stale_names)
+        .err()
+        .context("a same-generation stale event must not release close/reopen evidence")?;
+    let message = format!("{error:#}");
+    ensure!(
+        message.contains("post-reopen document symbols"),
+        "stale same-generation evidence was not rejected by the independent discriminator: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn edit_burst_restoration_is_pending_until_real_generation_barrier() -> Result<()> {
+    if !binary_available() {
+        return Ok(());
+    }
+
+    let project = test_plain_project();
+    let harness = create_harness(&project, &[])?;
+    harness.open_file(&project.active_file, PLAIN_SOURCE)?;
+    let cursor = position_after(PLAIN_SOURCE, "$self->")?;
+    let observation =
+        run_edit_burst_completion(&harness, &project.active_file, PLAIN_SOURCE, cursor)?;
+    let expected_generation = 1 + EDIT_BURST_COUNT + 1;
+
+    ensure!(
+        observation.readiness_state.starts_with("active_document_pending_during_request;"),
+        "edit burst retained initial readiness: {}",
+        observation.readiness_state
+    );
+    ensure!(
+        observation.readiness_state.contains(&format!("restored_generation={expected_generation}"))
+    );
+    ensure!(harness.tracked_document_version(&project.active_file) == Some(expected_generation));
+    Ok(())
+}
+
+#[test]
+fn lifecycle_symbol_matching_is_namespace_component_exact() -> Result<()> {
+    let names = vec![
+        "Golden::Reopened::__golden_reopened_symbol".to_owned(),
+        "Golden::Reopened::__golden_reopened_symbol_v2".to_owned(),
+        "not___golden_reopened_symbol".to_owned(),
+    ];
+    ensure!(contains_symbol_name(&names, REOPENED_SYMBOL));
+    ensure!(!contains_symbol_name(&names, "__golden_reopened_symbol_v"));
+    ensure!(!contains_symbol_name(&names, "golden_reopened_symbol"));
+    let sanitized = lifecycle_source("Reopened", "project-name", "bad-symbol!");
+    ensure!(sanitized.contains("sub bad_symbol_ {"));
+    ensure!(!sanitized.contains("sub bad-symbol! {"));
+    Ok(())
+}
+
 #[cfg(test)]
 fn test_workload_row(actual_result_class: &str, fallback_or_blocker: &str) -> WorkloadRow {
     WorkloadRow {
@@ -149,6 +385,19 @@ fn test_workload_row(actual_result_class: &str, fallback_or_blocker: &str) -> Wo
         readiness_state: "active_document_ready".to_owned(),
         latency_ms: 1.0,
         unsafe_edit: false,
+    }
+}
+
+#[cfg(test)]
+fn test_plain_project() -> ProjectSpec {
+    ProjectSpec {
+        name: "plain_modern_oo".to_owned(),
+        fixture: "inline_plain_modern_oo".to_owned(),
+        active_file: PLAIN_ACTIVE_FILE.to_owned(),
+        completion_needle: "$self->".to_owned(),
+        definition_needle: "run".to_owned(),
+        reference_needle: "$value".to_owned(),
+        safe_rename_needle: "$value".to_owned(),
     }
 }
 
@@ -283,6 +532,18 @@ struct Rollup {
     p95_latency_ms: Option<f64>,
 }
 
+#[derive(Debug)]
+struct EditBurstObservation {
+    response: Value,
+    readiness_state: String,
+}
+
+#[derive(Debug)]
+struct LifecycleObservation {
+    evidence: Value,
+    readiness_state: String,
+}
+
 #[test]
 fn scenario_67_golden_editor_workload_receipt() {
     run_ux_scenario(
@@ -317,11 +578,25 @@ fn scenario_67_golden_editor_workload_receipt() {
                     open_all_fixture_files(&harness, &files)?;
                 }
                 let active_uri = harness.workspace.uri(&project.active_file);
-                let active_document_ready =
-                    harness.wait_for_active_document_ready(&active_uri, Duration::from_secs(30));
+                let initial_generation = harness
+                    .tracked_document_version(&project.active_file)
+                    .context("active workload file is not tracked after open")?;
+                let initial_readiness = wait_for_generation_after(
+                    &harness,
+                    &active_uri,
+                    u64::try_from(initial_generation)?,
+                    0,
+                    READY_TIMEOUT,
+                )
+                .with_context(|| {
+                    format!(
+                        "after-ready workload project {} did not reach active-document readiness",
+                        project.name
+                    )
+                })?;
                 ensure!(
-                    active_document_ready,
-                    "after-ready workload project {} did not reach active-document readiness",
+                    initial_readiness.generation == u64::try_from(initial_generation)?,
+                    "initial readiness generation drift for {}",
                     project.name
                 );
                 project_receipts.push(ProjectReceipt {
@@ -331,7 +606,7 @@ fn scenario_67_golden_editor_workload_receipt() {
                     file_count: files.len()
                         + usize::from(project.fixture == "inline_plain_modern_oo"),
                     active_file: project.active_file.clone(),
-                    active_document_ready,
+                    active_document_ready: true,
                     runtime: RuntimeReceipt::default(),
                 });
 
@@ -341,7 +616,7 @@ fn scenario_67_golden_editor_workload_receipt() {
                     project,
                     &source,
                     &harness,
-                    active_document_ready,
+                    initial_readiness,
                     &mut rows,
                 )?;
                 let runtime = wait_for_runtime_receipt(&harness, Duration::from_secs(10))
@@ -448,24 +723,153 @@ fn validate_manifest(manifest: &WorkloadManifest) -> Result<()> {
             "manifest is missing zero-budget metric {metric}"
         );
     }
+    // Resolve the policy and the evaluation day once, before the loop and
+    // regardless of how many waivers exist. An unreadable policy value is then
+    // caught even when `error_waivers` is empty — otherwise a typo in CI would
+    // lie dormant until the next waiver was added, which is precisely when the
+    // enforcement it disables would have been needed.
+    let policy = WaiverExpiryPolicy::from_env()?;
+    let today_days = today_utc_days()?;
     for waiver in &manifest.error_waivers {
-        validate_error_waiver(waiver)?;
+        if let Some(warning) = validate_error_waiver_at(waiver, today_days, policy)? {
+            report_waiver_warning(&warning);
+        }
     }
     Ok(())
 }
 
-fn validate_error_waiver(waiver: &ErrorWaiver) -> Result<()> {
-    ensure!(waiver.issue > 0, "error waiver must name a tracking issue");
-    validate_waiver_expiry(&waiver.expires_after).with_context(|| {
-        format!(
-            "Scenario 67 waiver identity: project={} journey={} expected_error_class={} tracking_issue=#{}",
-            waiver.project, waiver.journey, waiver.expected_error_class, waiver.issue
-        )
-    })?;
-    Ok(())
+/// Environment variable selecting how a lapsed waiver is reported (#9616).
+const WAIVER_EXPIRY_ENV: &str = "PERL_LSP_UX_WAIVER_EXPIRY";
+
+/// How a wall-clock waiver lapse is reported.
+///
+/// A waiver's *shape* is a property of the manifest and is always enforced. A
+/// waiver's *lapse* is a property of when the suite runs, so enforcing it on
+/// every branch makes the verdict a function of merge-base age rather than of
+/// the diff under test: two identical diffs get different results, and a PR
+/// author is asked to refresh a fixture they never touched. The lapse is
+/// therefore routed to the default branch, where it can actually be acted on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaiverExpiryPolicy {
+    /// A lapsed waiver fails the run. Selected for pushes to the default branch.
+    Enforce,
+    /// A lapsed waiver is reported but does not fail the run.
+    Warn,
 }
 
-fn validate_waiver_expiry(expires_after: &str) -> Result<()> {
+impl WaiverExpiryPolicy {
+    /// Read the policy from the environment, defaulting to [`Self::Warn`].
+    fn from_env() -> Result<Self> {
+        match std::env::var(WAIVER_EXPIRY_ENV) {
+            Ok(raw) => Self::parse(&raw),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Warn),
+            Err(err) => Err(anyhow!("{WAIVER_EXPIRY_ENV} is not readable: {err}")),
+        }
+    }
+
+    /// Parse a policy value.
+    ///
+    /// An unrecognized value is an error rather than a fallback to
+    /// [`Self::Warn`], so a typo in CI cannot quietly disable the
+    /// default-branch failure.
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.trim() {
+            "" | "warn" => Ok(Self::Warn),
+            "enforce" => Ok(Self::Enforce),
+            other => Err(anyhow!("{WAIVER_EXPIRY_ENV} must be `enforce` or `warn`, got `{other}`")),
+        }
+    }
+}
+
+/// Whether a waiver is still current on a given day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaiverLapse {
+    Current,
+    Lapsed,
+}
+
+/// Compare an expiry day against the evaluation day.
+///
+/// A waiver is current *through* its expiry date, so equality is current.
+fn waiver_lapse(expiry_days: i64, today_days: i64) -> WaiverLapse {
+    if expiry_days >= today_days { WaiverLapse::Current } else { WaiverLapse::Lapsed }
+}
+
+/// Days since 1970-01-01 (UTC) for the current instant.
+fn today_utc_days() -> Result<i64> {
+    Ok(i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() / 86_400)?)
+}
+
+/// The debt identity carried by every waiver report, so a lapse names the
+/// project, journey, error class, and tracking issue on either channel.
+fn waiver_debt_identity(waiver: &ErrorWaiver) -> String {
+    format!(
+        "Scenario 67 waiver identity: project={} journey={} expected_error_class={} tracking_issue=#{}",
+        waiver.project, waiver.journey, waiver.expected_error_class, waiver.issue
+    )
+}
+
+/// Validate one waiver against an explicit day under an explicit policy.
+///
+/// Returns the report text when the waiver has lapsed but the policy only
+/// warns, so a lapse is never silent even when it does not fail the run.
+/// Taking the day as a parameter keeps the decision testable without
+/// depending on the wall clock.
+fn validate_error_waiver_at(
+    waiver: &ErrorWaiver,
+    today_days: i64,
+    policy: WaiverExpiryPolicy,
+) -> Result<Option<String>> {
+    let identity = waiver_debt_identity(waiver);
+    ensure!(waiver.issue > 0, "error waiver must name a tracking issue: {identity}");
+    let expiry_days =
+        parse_waiver_expiry(&waiver.expires_after).with_context(|| identity.clone())?;
+
+    if waiver_lapse(expiry_days, today_days) == WaiverLapse::Current {
+        return Ok(None);
+    }
+
+    let lapse =
+        format!("error waiver expired on {}; refresh or remove the waiver", waiver.expires_after);
+    match policy {
+        WaiverExpiryPolicy::Enforce => Err(anyhow!(lapse).context(identity)),
+        WaiverExpiryPolicy::Warn => Ok(Some(format!("{lapse} ({identity})"))),
+    }
+}
+
+/// Surface a lapsed-waiver report where a maintainer will see it.
+///
+/// Written straight to the process stderr rather than through `eprintln!`:
+/// libtest captures the print macros and discards the capture for a test that
+/// passes, which is exactly the case this report exists for. A direct
+/// descriptor write survives, so the warning reaches the job log. Delivery is
+/// best-effort — failing to report a warning must not fail the run, since the
+/// actionable signal is the default-branch enforcement.
+fn report_waiver_warning(warning: &str) {
+    let line = format_waiver_warning(warning, std::env::var_os("GITHUB_ACTIONS").is_some());
+    let mut stderr = std::io::stderr();
+    let _ = stderr.write_all(line.as_bytes());
+    let _ = stderr.flush();
+}
+
+/// Render the report line for the active environment.
+///
+/// GitHub Actions renders `::warning …` as a job annotation; elsewhere a plain
+/// prefix keeps the line readable. Kept separate from the write so both
+/// renderings are testable — this line is the entire signal on the path that
+/// deliberately does not fail.
+fn format_waiver_warning(warning: &str, github_actions: bool) -> String {
+    if github_actions {
+        format!("::warning title=Scenario 67 waiver lapsed::{warning}\n")
+    } else {
+        format!("warning: {warning}\n")
+    }
+}
+
+/// Validate the `YYYY-MM-DD` shape of a waiver expiry and return its day
+/// number. This is a pure function of the manifest text, so a malformed date
+/// is a defect in the branch's own content and always fails.
+fn parse_waiver_expiry(expires_after: &str) -> Result<i64> {
     let mut parts = expires_after.split('-');
     let year = parts.next().context("waiver expiry is missing a year")?.parse::<i64>()?;
     let month = parts.next().context("waiver expiry is missing a month")?.parse::<u32>()?;
@@ -480,15 +884,7 @@ fn validate_waiver_expiry(expires_after: &str) -> Result<()> {
         _ => 31,
     };
     ensure!((1..=days_in_month).contains(&day), "waiver expiry day is invalid: {expires_after}");
-
-    let expiry_days = days_from_civil(year, month, day);
-    let today_days =
-        i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() / 86_400)?;
-    ensure!(
-        expiry_days >= today_days,
-        "error waiver expired on {expires_after}; refresh or remove the waiver"
-    );
-    Ok(())
+    Ok(days_from_civil(year, month, day))
 }
 
 fn is_leap_year(year: i64) -> bool {
@@ -595,7 +991,7 @@ fn run_project_workload(
     project: &ProjectSpec,
     source: &str,
     harness: &UxHarness,
-    active_document_ready: bool,
+    initial_readiness: ReadyObservation,
     rows: &mut Vec<WorkloadRow>,
 ) -> Result<()> {
     let completion_cursor = position_after(source, &project.completion_needle)?;
@@ -607,7 +1003,7 @@ fn run_project_workload(
         let operation = operation_name(project, journey);
         recorder.mark_request_start(&operation);
         let request_started = Instant::now();
-        let (cursor, response, actual_edits) = match journey.id.as_str() {
+        let (cursor, response, actual_edits, readiness_state) = match journey.id.as_str() {
             "completion_after_ready" => (
                 completion_cursor,
                 capture(harness.completion(
@@ -616,6 +1012,7 @@ fn run_project_workload(
                     completion_cursor.character,
                 )),
                 Value::Null,
+                readiness_state_for(initial_readiness),
             ),
             "hover_after_ready" => (
                 reference_cursor,
@@ -629,6 +1026,7 @@ fn run_project_workload(
                         .map(|value| value.unwrap_or(Value::Null)),
                 ),
                 Value::Null,
+                readiness_state_for(initial_readiness),
             ),
             "definition_local_or_imported" => (
                 definition_cursor,
@@ -638,6 +1036,7 @@ fn run_project_workload(
                     definition_cursor.character,
                 )),
                 Value::Null,
+                readiness_state_for(initial_readiness),
             ),
             "references_lexical" => (
                 reference_cursor,
@@ -648,45 +1047,57 @@ fn run_project_workload(
                     true,
                 )),
                 Value::Null,
+                readiness_state_for(initial_readiness),
             ),
             "rename_safe_lexical" => {
                 let result = capture(request_rename(harness, &project.active_file, rename_cursor));
                 let edits = result.clone();
-                (rename_cursor, result, edits)
+                (rename_cursor, result, edits, readiness_state_for(initial_readiness))
             }
             "diagnostics_present_import" => {
                 let diagnostics =
                     harness.wait_for_diagnostics(&project.active_file, Duration::from_secs(5));
-                (CursorReceipt { line: 0, character: 0 }, json!(diagnostics), Value::Null)
+                (
+                    CursorReceipt { line: 0, character: 0 },
+                    json!(diagnostics),
+                    Value::Null,
+                    readiness_state_for(initial_readiness),
+                )
             }
             "workspace_symbols_after_ready" => (
                 CursorReceipt { line: 0, character: 0 },
                 capture(harness.workspace_symbols("new")),
                 Value::Null,
+                readiness_state_for(initial_readiness),
             ),
-            "edit_burst_completion" => (
-                completion_cursor,
-                run_edit_burst_completion(
+            "edit_burst_completion" => {
+                let observed = run_edit_burst_completion(
                     harness,
                     &project.active_file,
                     source,
                     completion_cursor,
-                )?,
-                Value::Null,
-            ),
-            "edit_burst_hover" => (
-                reference_cursor,
-                run_edit_burst_hover(harness, &project.active_file, source, reference_cursor)?,
-                Value::Null,
-            ),
-            "close_reopen_pending" => {
-                let uri = harness.workspace.uri(&project.active_file);
-                harness
-                    .client
-                    .notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}))?;
-                harness.open_file(&project.active_file, source)?;
-                (CursorReceipt { line: 0, character: 0 }, json!({"reopened": true}), Value::Null)
+                )?;
+                (completion_cursor, observed.response, Value::Null, observed.readiness_state)
             }
+            "edit_burst_hover" => {
+                let observed =
+                    run_edit_burst_hover(harness, &project.active_file, source, reference_cursor)?;
+                (reference_cursor, observed.response, Value::Null, observed.readiness_state)
+            }
+            "close_reopen_pending" => match run_close_reopen_pending(harness, project, source) {
+                Ok(observed) => (
+                    CursorReceipt { line: 0, character: 0 },
+                    observed.evidence,
+                    Value::Null,
+                    observed.readiness_state,
+                ),
+                Err(error) => (
+                    CursorReceipt { line: 0, character: 0 },
+                    json!({"_golden_error": format!("{error:#}")}),
+                    Value::Null,
+                    "lifecycle_failure_before_observation".to_owned(),
+                ),
+            },
             other => return Err(anyhow!("unhandled golden workload journey {other}")),
         };
         let request_latency_ms = request_started.elapsed().as_secs_f64() * 1000.0;
@@ -697,7 +1108,7 @@ fn run_project_workload(
             cursor,
             response,
             actual_edits,
-            if active_document_ready { "active_document_ready" } else { "active_document_pending" },
+            &readiness_state,
             request_latency_ms,
             harness,
         )?;
@@ -717,7 +1128,12 @@ fn run_project_workload(
                 journey.id.as_str(),
                 cursor,
             )?;
-            apply_provider_receipt(row, Ok(provider_receipt))
+            let row = apply_provider_receipt(row, Ok(provider_receipt));
+            if matches!(journey.id.as_str(), "edit_burst_completion" | "edit_burst_hover") {
+                apply_edit_burst_receipt_boundary(row)
+            } else {
+                row
+            }
         };
         if row.actual_result_class != "empty" && row.actual_result_class != "error" {
             recorder.mark_first_useful_result(&operation);
@@ -739,16 +1155,14 @@ fn run_edit_burst_completion(
     file: &str,
     source: &str,
     cursor: CursorReceipt,
-) -> Result<Value> {
-    for edit in 0..20 {
-        harness.change_file_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
+) -> Result<EditBurstObservation> {
+    for edit in 0..EDIT_BURST_COUNT {
+        harness
+            .change_editor_buffer_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
     }
-    // The initial active-document-ready gate is already established. The
-    // burst intentionally measures provider behavior while edits are pending;
-    // it does not claim post-edit workspace readiness.
     let response = capture(harness.completion(file, cursor.line, cursor.character));
-    harness.change_file_full(file, source)?;
-    Ok(response)
+    let readiness_state = restore_after_edit_burst(harness, file, source)?;
+    Ok(EditBurstObservation { response, readiness_state })
 }
 
 fn run_edit_burst_hover(
@@ -756,17 +1170,166 @@ fn run_edit_burst_hover(
     file: &str,
     source: &str,
     cursor: CursorReceipt,
-) -> Result<Value> {
-    for edit in 0..20 {
-        harness.change_file_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
+) -> Result<EditBurstObservation> {
+    for edit in 0..EDIT_BURST_COUNT {
+        harness
+            .change_editor_buffer_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
     }
     let response = capture(
         harness
             .hover(file, cursor.line, cursor.character)
             .map(|value| value.unwrap_or(Value::Null)),
     );
-    harness.change_file_full(file, source)?;
-    Ok(response)
+    let readiness_state = restore_after_edit_burst(harness, file, source)?;
+    Ok(EditBurstObservation { response, readiness_state })
+}
+
+fn restore_after_edit_burst(harness: &UxHarness, file: &str, source: &str) -> Result<String> {
+    let uri = harness.workspace.uri(file);
+    let ready_cursor = ready_event_count(harness, &uri);
+    let restored_generation = harness.change_editor_buffer_full(file, source)?;
+    let readiness = wait_for_generation_after(
+        harness,
+        &uri,
+        u64::try_from(restored_generation)?,
+        ready_cursor,
+        READY_TIMEOUT,
+    )?;
+    Ok(format!(
+        "active_document_pending_during_request;restored_generation={restored_generation};restored_readiness_ordinal={}",
+        readiness.matching_ordinal
+    ))
+}
+
+fn run_close_reopen_pending(
+    harness: &UxHarness,
+    project: &ProjectSpec,
+    source: &str,
+) -> Result<LifecycleObservation> {
+    let uri = harness.workspace.uri(&project.active_file);
+    let pre_close_source = lifecycle_source("PreClose", &project.name, PRE_CLOSE_SYMBOL);
+    let reopened_source = lifecycle_source("Reopened", &project.name, REOPENED_SYMBOL);
+
+    harness.change_editor_buffer_full(&project.active_file, &pre_close_source)?;
+    let ready_cursor = ready_event_count(harness, &uri);
+    harness.close_editor_buffer(&project.active_file)?;
+    harness.open_editor_buffer(&project.active_file, &reopened_source)?;
+    ensure!(
+        harness.tracked_document_version(&project.active_file) == Some(1),
+        "reopen must restore the tracked buffer owner at version 1"
+    );
+
+    let reopened_readiness =
+        wait_for_generation_after(harness, &uri, 1, ready_cursor, READY_TIMEOUT)?;
+    let symbols = harness.document_symbols(&project.active_file)?;
+    let names = document_symbol_names(&symbols).into_iter().map(str::to_owned).collect::<Vec<_>>();
+
+    require_reopened_discriminator(reopened_readiness, &names)?;
+    ensure!(
+        !contains_symbol_name(&names, &project.definition_needle),
+        "post-reopen document symbols still exposed the backing/initial source discriminator `{}`; got {names:?}",
+        project.definition_needle
+    );
+    let disk_source = fs::read_to_string(harness.workspace.path(&project.active_file))?;
+    ensure!(
+        disk_source == source,
+        "close/reopen lifecycle changed the backing-file oracle for {}",
+        project.name
+    );
+
+    let restored_cursor = ready_event_count(harness, &uri);
+    let restored_generation = harness.change_editor_buffer_full(&project.active_file, source)?;
+    ensure!(
+        restored_generation == 2,
+        "tracked source restore must use client version 2, got {restored_generation}"
+    );
+    let restored_readiness = wait_for_generation_after(
+        harness,
+        &uri,
+        u64::try_from(restored_generation)?,
+        restored_cursor,
+        READY_TIMEOUT,
+    )?;
+
+    let symbol_response = Value::Array(symbols);
+    let provider_result_class = classify_result(&symbol_response, "document_symbols");
+    let evidence = json!({
+        "readiness": {
+            "pre_close_matching_count": ready_cursor,
+            "expected_generation": 1,
+            "observed_generation": reopened_readiness.generation,
+            "matching_ordinal": reopened_readiness.matching_ordinal,
+            "restored_generation": restored_readiness.generation,
+            "restored_matching_ordinal": restored_readiness.matching_ordinal
+        },
+        "provider": {
+            "method": "textDocument/documentSymbol",
+            "result_class": provider_result_class,
+            "reopened_symbol": REOPENED_SYMBOL,
+            "reopened_symbol_observed": true,
+            "pre_close_symbol": PRE_CLOSE_SYMBOL,
+            "pre_close_symbol_observed": false,
+            "backing_source_discriminator": project.definition_needle,
+            "backing_source_discriminator_observed": false,
+            "symbol_names": names,
+            "result": symbol_response
+        },
+        "backing_file_unchanged": true
+    });
+
+    Ok(LifecycleObservation {
+        evidence,
+        readiness_state: format!(
+            "active_document_ready;reopened_generation={};reopened_readiness_ordinal={};restored_generation={};restored_readiness_ordinal={}",
+            reopened_readiness.generation,
+            reopened_readiness.matching_ordinal,
+            restored_readiness.generation,
+            restored_readiness.matching_ordinal
+        ),
+    })
+}
+
+fn lifecycle_source(phase: &str, project_name: &str, symbol: &str) -> String {
+    let package_component = sanitize_perl_identifier_component(project_name);
+    let symbol_component = sanitize_perl_identifier_component(symbol);
+    format!(
+        "package Golden::{phase}::{package_component};\nuse strict;\nuse warnings;\n\nsub {symbol_component} {{\n    return 1;\n}}\n\n1;\n"
+    )
+}
+
+fn sanitize_perl_identifier_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
+        .collect()
+}
+
+fn require_reopened_discriminator(readiness: ReadyObservation, names: &[String]) -> Result<()> {
+    ensure!(
+        readiness.generation == 1,
+        "close/reopen readiness used unexpected generation {}; expected generation 1",
+        readiness.generation
+    );
+    ensure!(
+        contains_symbol_name(names, REOPENED_SYMBOL),
+        "post-reopen document symbols did not expose the reopened buffer marker; got {names:?}"
+    );
+    ensure!(
+        !contains_symbol_name(names, PRE_CLOSE_SYMBOL),
+        "post-reopen document symbols exposed the pre-close buffer marker; got {names:?}"
+    );
+    Ok(())
+}
+
+fn contains_symbol_name(names: &[String], expected: &str) -> bool {
+    names.iter().any(|name| name == expected || name.rsplit("::").next() == Some(expected))
+}
+
+fn readiness_state_for(observation: ReadyObservation) -> String {
+    format!(
+        "active_document_ready;generation={};readiness_ordinal={}",
+        observation.generation, observation.matching_ordinal
+    )
 }
 
 fn request_rename(harness: &UxHarness, file: &str, cursor: CursorReceipt) -> Result<Value> {
@@ -810,11 +1373,12 @@ fn response_row(
                 }
             },
         );
-    let actual_locations = if matches!(journey.provider.as_str(), "definition" | "references") {
-        harness.normalize_response(&response)
-    } else {
-        Value::Array(Vec::new())
-    };
+    let actual_locations =
+        if matches!(journey.provider.as_str(), "definition" | "references" | "lifecycle") {
+            harness.normalize_response(&response)
+        } else {
+            Value::Array(Vec::new())
+        };
     let normalized_edits = harness.normalize_response(&actual_edits);
     let active_uri = harness.workspace.uri(&project.active_file);
     let unsafe_edit = journey.provider == "rename"
@@ -860,12 +1424,29 @@ fn classify_error(response: &Value) -> String {
 }
 
 fn apply_lifecycle_receipt(mut row: WorkloadRow) -> WorkloadRow {
+    if row.actual_result_class == "error" {
+        row.answering_tier = "not_observed".to_owned();
+        row.fact_producer = "not_observed".to_owned();
+        row.proof_class = "baseline_only".to_owned();
+        row.confidence = "not_observed".to_owned();
+        row.freshness = "not_observed".to_owned();
+        return row;
+    }
     row.answering_tier = "lifecycle".to_owned();
-    row.fact_producer = "transport".to_owned();
+    row.fact_producer = "transport_and_document_symbols".to_owned();
     row.proof_class = "lifecycle".to_owned();
     row.confidence = "not_applicable".to_owned();
     row.freshness = "current".to_owned();
     row.fallback_or_blocker = "lifecycle_evidence".to_owned();
+    row
+}
+
+fn apply_edit_burst_receipt_boundary(mut row: WorkloadRow) -> WorkloadRow {
+    row.freshness = "not_proven".to_owned();
+    row.proof_class = "baseline_only".to_owned();
+    if row.actual_result_class != "error" {
+        row.fallback_or_blocker = "response_decision_correlation_not_proven".to_owned();
+    }
     row
 }
 

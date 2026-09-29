@@ -1,0 +1,23 @@
+name: fixture-xtask-cli-paths-tab-and-bare
+# Spelling must not decide the verdict: a tab between command and subcommand,
+# and a bare `cargo xtask`, are the same CLI claim as the ordinary spelling.
+# A commented-out invocation is not a claim at all.
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  tabbed:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: "cargo xtask\texample-contract check"
+  bare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo xtask

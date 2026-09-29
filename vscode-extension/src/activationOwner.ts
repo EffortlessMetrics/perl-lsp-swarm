@@ -4,6 +4,7 @@ import {
   type ActivationAttemptState,
   type ActivationCleanupReceipt,
   type ActivationPhase,
+  type ActivationResourceCensus,
   type ActivationResourceClass,
   type CommittedActivation,
 } from './activationTransaction';
@@ -56,6 +57,18 @@ export class ExtensionActivationOwner {
 
   public resourceIds(): string[] {
     return this.transaction.resourceIds();
+  }
+
+  /**
+   * Ownership-aware count of the resources this attempt still holds (#14678).
+   *
+   * Always read from the transaction. The committed runtime shares the very
+   * same resource array, so a deactivation through it is already visible here;
+   * preferring the committed runtime would have implied a divergence that does
+   * not exist and left an untestable branch behind.
+   */
+  public resourceCensus(): ActivationResourceCensus {
+    return this.transaction.resourceCensus();
   }
 
   public lastCleanupReceipt(): ActivationCleanupReceipt | null {

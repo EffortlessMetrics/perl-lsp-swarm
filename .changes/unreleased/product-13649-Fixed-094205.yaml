@@ -1,0 +1,11 @@
+project: product
+component: Packaging and distribution
+kind: Fixed
+body: Keep conditional and feature-gated cpanfile declarations out of unconditional
+  distribution facts, and stop a brace inside a quoted or quote-like literal from
+  dropping every later declaration in the file.
+time: 2026-08-29T09:42:05Z
+custom:
+  PR: "13649"
+  Slug: cpanfile-conditional-facts
+  Breaking: "no"

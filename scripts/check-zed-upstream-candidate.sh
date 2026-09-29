@@ -10,6 +10,10 @@ readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 bash -n "$REPO_ROOT/scripts/apply-zed-perl-upstream.sh"
 
+# The committed editor guide is a generated book projection with rewritten links.
+# Check it against the generator output rather than comparing raw source bytes.
+bash "$REPO_ROOT/scripts/ci/validate_book_copy_freshness.sh"
+
 # Behavioral proof for the staged candidate: its own unit suite carries the
 # LSP/DAP identity-separation, schema acceptance/rejection, request-kind,
 # precedence, projection, and cleanup-boundary falsifiers (#9485).
@@ -82,17 +86,46 @@ require(
     'const PERLLSP_REPO: &str = "EffortlessMetrics/perl-lsp";' in source,
     "candidate source must download from EffortlessMetrics/perl-lsp",
 )
+launch_projection = json.loads(read(packet / "launch-contract.v1.json"))
 require(
-    "normalize_perllsp_args" in source and 'normalized.push("--stdio".to_string())' in source,
-    "candidate source must normalize to exactly one explicit --stdio argument",
+    launch_projection.get("schema_version") == "zed_perllsp_launch_contract.v1",
+    "launch projection schema version drifted",
 )
 require(
-    'argument == "--stdio" || argument == "--mcp" || argument == "mcp"' in source,
-    "candidate source must treat mcp/--mcp as stdio launcher aliases",
+    launch_projection.get("required_transport_flag") == "--stdio",
+    "launch projection must pin exact --stdio transport",
 )
 require(
-    "is_non_lsp_argument" in source and '"--socket"' in source,
-    "candidate source must reject non-LSP transport routes such as --socket",
+    launch_projection.get("fail_closed_default") is True,
+    "launch projection must fail closed by default",
+)
+rejected_tokens = set(launch_projection.get("rejected_exact_tokens", [])) | set(
+    launch_projection.get("rejected_flags", [])
+)
+require(
+    {"--socket", "--port"} <= rejected_tokens,
+    "launch projection must reject non-LSP transport routes such as --socket/--port",
+)
+require(
+    {"mcp", "--mcp"} <= rejected_tokens,
+    "launch projection must reject the MCP route tokens",
+)
+require(
+    'include_str!("../../launch-contract.v1.json")' in source
+    and "normalize_perllsp_args" in source,
+    "candidate source must classify argv through the checked launch projection",
+)
+require(
+    "normalized.insert(0, contract.required_transport_flag.clone())" in source,
+    "candidate source must construct exactly one leading explicit --stdio argument",
+)
+require(
+    "selects the MCP route rather than the LSP stdio transport" in source,
+    "candidate source must refuse to flatten mcp/--mcp into LSP stdio",
+)
+require(
+    "unsupported perllsp argument" in source,
+    "candidate source must keep the fail-closed unsupported-argument diagnostic",
 )
 require(
     "LspSettings::for_worktree(PERLLSP_SERVER_ID, worktree)" in source,
@@ -149,8 +182,8 @@ require(
 require("Zed integration: planned / not proven" in readme, "README Zed boundary is missing")
 require("Zed is **planned / not proven**" in faq, "FAQ Zed boundary is missing")
 require("**Status: planned / not proven.**" in setup, "Zed guide status is missing")
-require("Planned / not proven" in combined_setup, "combined editor table must bound Zed")
-require(book_setup == combined_setup, "committed mdBook editor projection must match the canonical guide")
+require("| Zed | **Planned / not proven:**" in combined_setup, "combined editor table must bound Zed")
+require("| Zed | **Planned / not proven:**" in book_setup, "mdBook editor table must bound Zed")
 require("public Perl extension does not register `perllsp`" in troubleshooting, "troubleshooting boundary is missing")
 require("Zed integration: planned / not proven" in steering, "agent steering still overclaims Zed")
 
@@ -167,10 +200,18 @@ def markdown_section(text: str, heading: str, next_heading_prefix: str) -> str:
 zed_sections = {
     "docs/EDITORS/ZED_SETUP.md": setup,
     "docs/how-to/EDITOR_SETUP.md": markdown_section(combined_setup, "### Zed", "### "),
+    "book/src/reference/editor-setup-canonical.md": markdown_section(
+        book_setup, "### Zed", "### "
+    ),
     "docs/how-to/TROUBLESHOOTING.md": markdown_section(
         troubleshooting, "## Zed Does Not Start `perllsp`", "## "
     ),
 }
+for path in ("docs/how-to/EDITOR_SETUP.md", "book/src/reference/editor-setup-canonical.md"):
+    require(
+        zed_sections[path].lstrip().startswith("**Planned / not proven.**"),
+        f"{path} Zed section must start with planned/not-proven status",
+    )
 for path, text in zed_sections.items():
     require(
         '\"perl-lsp\": {' not in text,

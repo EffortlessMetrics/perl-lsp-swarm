@@ -1949,7 +1949,7 @@ $cat->print_info;
 #[test]
 fn symbol_at_cursor_resolves_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package MyClass;
 
@@ -1991,7 +1991,7 @@ sub main_work {
 #[test]
 fn symbol_at_cursor_resolves_constructor_assigned_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package main;
 use Dog;
@@ -2017,7 +2017,7 @@ $dog->fetch('stick');
 #[test]
 fn symbol_at_cursor_resolves_constructor_assigned_bare_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package main;
 use MooDog;
@@ -2047,7 +2047,7 @@ $dog->fetch;
 #[test]
 fn symbol_at_cursor_resolves_use_statement() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = "use Data::Dumper;\nmy $x = 1;\n";
 
@@ -2403,7 +2403,7 @@ extends 'MyApp::User';
 #[test]
 fn symbol_at_cursor_resolves_package_method_call() -> TestResult {
     use perl_parser::Parser;
-    use perl_parser::declaration::{current_package_at, symbol_at_cursor};
+    use perl_semantic_analyzer::analysis::declaration::{current_package_at, symbol_at_cursor};
 
     let code = r#"package main;
 use MyModule;
@@ -3252,6 +3252,118 @@ my $result = helper_a();
         "Definition should point to My/Utils.pm, got: {uri}"
     );
 
+    // The quoted import-list entry is an intentional symbol target too.
+    let (line, character) = find_line_char(caller, "helper_a',")?;
+    let imported = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": workspace.uri("app.pl")},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+    if !imported
+        .pointer("/0/uri")
+        .and_then(|uri| uri.as_str())
+        .is_some_and(|uri| uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"))
+        || imported.pointer("/0/range/start/line").and_then(|line| line.as_u64()) != Some(4)
+    {
+        return Err(format!(
+            "quoted import-list symbol should reach My::Utils::helper_a: {imported}"
+        )
+        .into());
+    }
+
+    // A continued use statement owns the quoted member on a later physical line.
+    let multiline = "use My::Utils (\n  'helper_a',\n);\n";
+    let multiline_uri = workspace.uri("multiline.pl");
+    harness.open(&multiline_uri, multiline)?;
+    harness.barrier();
+    let continued = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": multiline_uri},
+            "position": {"line": 1, "character": 4}
+        }),
+    )?;
+    if !continued
+        .pointer("/0/uri")
+        .and_then(|uri| uri.as_str())
+        .is_some_and(|uri| uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"))
+        || continued.pointer("/0/range/start/line").and_then(|line| line.as_u64()) != Some(4)
+    {
+        return Err(format!("continued quoted import should reach helper_a: {continued}").into());
+    }
+
+    // The same physical shape inside a single-quoted string has no Use owner.
+    let inert = "my $literal = 'prefix\nuse My::Utils (\n  \"helper_a\",\n);\nsuffix';\n";
+    let inert_uri = workspace.uri("inert.pl");
+    harness.open(&inert_uri, inert)?;
+    harness.barrier();
+    let quoted_prose = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": inert_uri},
+            "position": {"line": 2, "character": 4}
+        }),
+    )?;
+    if !quoted_prose.is_null()
+        && !quoted_prose.as_array().is_some_and(|locations| locations.is_empty())
+    {
+        return Err(format!("inert continued import navigated: {quoted_prose}").into());
+    }
+
+    // The first quoted argument remains a target; a matching word embedded
+    // in the second argument must not borrow that target.
+    let mixed = "use My::Utils ('helper_a', 'prose helper_a');\n";
+    let mixed_uri = workspace.uri("mixed_import.pl");
+    harness.open(&mixed_uri, mixed)?;
+    harness.barrier();
+    let (line, good_start) = find_line_char(mixed, "helper_a',")?;
+    let good = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": mixed_uri},
+            "position": {"line": line, "character": good_start}
+        }),
+    )?;
+    if !good
+        .pointer("/0/uri")
+        .and_then(|uri| uri.as_str())
+        .is_some_and(|uri| uri.contains("My/Utils.pm") || uri.contains("My%2FUtils.pm"))
+        || good.pointer("/0/range/start/line").and_then(|line| line.as_u64()) != Some(4)
+    {
+        return Err(format!("first mixed-list member should reach helper_a: {good}").into());
+    }
+    let (line, prose_start) = find_line_char(mixed, "prose helper_a")?;
+    let prose = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": mixed_uri},
+            "position": {"line": line, "character": prose_start + 6}
+        }),
+    )?;
+    if !prose.is_null() && !prose.as_array().is_some_and(|locations| locations.is_empty()) {
+        return Err(format!("prose token borrowed another import target: {prose}").into());
+    }
+
+    // A concatenation produces one different argument; its first literal is
+    // not an independently imported helper_a.
+    let concatenated = "use My::Utils ('helper_a' . '_suffix');\n";
+    let concatenated_uri = workspace.uri("concatenated_import.pl");
+    harness.open(&concatenated_uri, concatenated)?;
+    harness.barrier();
+    let (line, character) = find_line_char(concatenated, "helper_a'")?;
+    let part = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": concatenated_uri},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+    if !part.is_null() && !part.as_array().is_some_and(|locations| locations.is_empty()) {
+        return Err(format!("concatenated literal navigated as an import: {part}").into());
+    }
+
     Ok(())
 }
 
@@ -3534,6 +3646,16 @@ fn assert_no_location_points_to(response: &Value, needle: &str) {
     }
 }
 
+/// A declined receiver must carry no location at all: any unrelated target
+/// would make the negative control vacuous, in every location shape (a
+/// `uri` Location or a `targetUri` LocationLink).
+fn assert_carries_no_location(response: &Value) {
+    assert!(
+        response.is_null() || response.as_array().is_some_and(Vec::is_empty),
+        "goto-definition must decline the receiver with no location: {response:?}"
+    );
+}
+
 #[test]
 fn go_to_definition_on_prefix_sibling_method_does_not_leak() -> TestResult {
     let mut harness = LspHarness::new();
@@ -3722,5 +3844,82 @@ my $obj = Foo->new();
     assert_no_location_points_to(&result, "Bar.pm");
     assert_no_location_points_to(&result, "Bar%2Epm");
 
+    Ok(())
+}
+
+#[test]
+fn arrow_receiver_does_not_navigate_to_coincidental_sub() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness
+        .open("file:///lib/Some.pm", "package Some;\nsub Module { return 'unrelated'; }\n1;\n")?;
+
+    // The receiver's package is defined inline, so there is no Module.pm path
+    // for the earlier filesystem lookup to return. The workspace index also
+    // contains a real, unrelated Some::Module callable.
+    let caller = "package Some::Module;\nsub new { return bless {}, shift; }\npackage main;\nSome::Module->new();\nSome::Module();\nSome::Module->();\n";
+    harness.open("file:///app.pl", caller)?;
+    harness.barrier();
+
+    // Prove the colliding callable is actually indexed and reachable. If it
+    // is absent, a null receiver response would not distinguish the fix.
+    let callable = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///app.pl"},
+            "position": {"line": 4, "character": 7}
+        }),
+    )?;
+    let callable_location = first_location(&callable)?;
+    assert!(
+        callable_location["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.contains("Some.pm") || uri.contains("Some%2Epm"))
+    );
+    assert_eq!(callable_location["range"]["start"]["line"], 1);
+
+    let receiver = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///app.pl"},
+            "position": {"line": 3, "character": 7}
+        }),
+    )?;
+    assert!(receiver.is_null() || receiver.is_array(), "unexpected definition result: {receiver}");
+    assert_carries_no_location(&receiver);
+    assert_no_location_points_to(&receiver, "Some.pm");
+    assert_no_location_points_to(&receiver, "Some%2Epm");
+
+    // An arrow-paren form is a callable invocation of the bareword, not a
+    // method call on a package receiver: the refusal must not swallow it, and
+    // the workspace callable stays reachable exactly as for the direct call.
+    let call_receiver = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///app.pl"},
+            "position": {"line": 5, "character": 7}
+        }),
+    )?;
+    let call_location = first_location(&call_receiver)?;
+    assert!(
+        call_location["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.contains("Some.pm") || uri.contains("Some%2Epm")),
+        "arrow-paren callable must keep navigating to the indexed sub: {call_receiver:?}"
+    );
+    assert_eq!(call_location["range"]["start"]["line"], 1);
+
+    // A blanket refusal of this whole call would pass the first assertion.
+    // The cursor on the actual method must still navigate to its definition.
+    let method = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///app.pl"},
+            "position": {"line": 3, "character": 15}
+        }),
+    )?;
+    let location = first_location(&method)?;
+    assert_eq!(location["uri"], "file:///app.pl");
+    assert_eq!(location["range"]["start"]["line"], 1);
     Ok(())
 }

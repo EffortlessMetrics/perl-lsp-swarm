@@ -392,7 +392,7 @@ mod tests {
         json!({
             "check": "memory-plateau",
             "kind": "memory_plateau",
-            "schema_version": "1",
+            "schema_version": "memory_plateau.v1",
             "event": "local",
             "verdict": "pass",
             "scenario": "lsp_doc_churn_delete",

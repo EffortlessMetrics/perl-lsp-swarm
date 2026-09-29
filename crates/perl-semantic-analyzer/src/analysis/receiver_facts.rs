@@ -182,6 +182,26 @@ impl ReceiverFact {
     }
 }
 
+/// Heuristic reason recorded for `$array[i]->method` receivers.
+///
+/// Tests should compare evidence with [`TypeEvidence::is_heuristic_reason`]
+/// and this constant rather than duplicating the literal string.
+pub const ARRAY_INDEX_RECEIVER_REASON: &str = "array index receiver";
+
+/// Heuristic reason recorded when a hash-slot key cannot be classified statically.
+///
+/// Tests should compare evidence with [`TypeEvidence::is_heuristic_reason`]
+/// and this constant rather than duplicating the literal string.
+pub const DYNAMIC_HASH_KEY_RECEIVER_REASON: &str = "hash receiver key is dynamic";
+
+fn array_index_receiver_evidence() -> TypeEvidence {
+    TypeEvidence::Heuristic { reason: ARRAY_INDEX_RECEIVER_REASON.to_string() }
+}
+
+fn dynamic_hash_key_receiver_evidence() -> TypeEvidence {
+    TypeEvidence::Heuristic { reason: DYNAMIC_HASH_KEY_RECEIVER_REASON.to_string() }
+}
+
 /// Extracts a receiver fact from a method-call node.
 pub fn receiver_fact_for_method_call(
     call: &Node,
@@ -302,10 +322,7 @@ fn hash_receiver_fact(
     context: ReceiverFactContext<'_>,
 ) -> ReceiverFact {
     let Some(key) = static_slot_key(right) else {
-        return ReceiverFact::dynamic_key(
-            receiver,
-            TypeEvidence::Heuristic { reason: "hash receiver key is dynamic".to_string() },
-        );
+        return ReceiverFact::dynamic_key(receiver, dynamic_hash_key_receiver_evidence());
     };
 
     let base = receiver_base_label(left);
@@ -358,7 +375,7 @@ fn array_receiver_fact(
     right: &Node,
     context: ReceiverFactContext<'_>,
 ) -> ReceiverFact {
-    let evidence = TypeEvidence::Heuristic { reason: "array index receiver".to_string() };
+    let evidence = array_index_receiver_evidence();
     let Some(container_fact) = receiver_container_fact(left, context) else {
         return ReceiverFact {
             kind: ReceiverKind::ArrayIndex,
@@ -415,7 +432,7 @@ fn receiver_container_fact(left: &Node, context: ReceiverFactContext<'_>) -> Opt
                 return Some(with_access_evidence(
                     TypeFact::dynamic(DynamicBoundary::DynamicHashKey),
                     &container_fact,
-                    TypeEvidence::Heuristic { reason: "hash receiver key is dynamic".to_string() },
+                    dynamic_hash_key_receiver_evidence(),
                 ));
             };
 
@@ -434,7 +451,7 @@ fn receiver_container_fact(left: &Node, context: ReceiverFactContext<'_>) -> Opt
         }
         NodeKind::Binary { op, left: container, right } if op == "[]" || op == "->[]" => {
             let container_fact = receiver_container_fact(container, context)?;
-            let evidence = TypeEvidence::Heuristic { reason: "array index receiver".to_string() };
+            let evidence = array_index_receiver_evidence();
             let Some(index) = static_array_index(right) else {
                 return Some(with_access_evidence(
                     TypeFact::dynamic(DynamicBoundary::UnknownReceiver),
@@ -633,10 +650,11 @@ fn all_packages_from_type_fact(fact: &TypeFact) -> Vec<String> {
     let mut packages: Vec<String> = all_packages_from_type(&fact.ty);
 
     // If no package was found from the type itself, check the shape field.
-    if packages.is_empty() && !contains_union(&fact.ty) {
-        if let Some(ShapeFact::Object(shape)) = &fact.shape {
-            packages.push(shape.package.clone());
-        }
+    if packages.is_empty()
+        && !contains_union(&fact.ty)
+        && let Some(ShapeFact::Object(shape)) = &fact.shape
+    {
+        packages.push(shape.package.clone());
     }
 
     packages
@@ -702,10 +720,10 @@ mod tests {
     }
 
     fn method_call_named<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
-        if let NodeKind::MethodCall { method, .. } = &node.kind {
-            if method == name {
-                return Some(node);
-            }
+        if let NodeKind::MethodCall { method, .. } = &node.kind
+            && method == name
+        {
+            return Some(node);
         }
 
         match &node.kind {
@@ -893,10 +911,10 @@ mod tests {
     // object of the matching method call directly, so a found node is a
     // method-call receiver by construction.
     fn method_call_object<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
-        if let NodeKind::MethodCall { method, object, .. } = &node.kind {
-            if method == name {
-                return Some(object);
-            }
+        if let NodeKind::MethodCall { method, object, .. } = &node.kind
+            && method == name
+        {
+            return Some(object);
         }
 
         match &node.kind {
@@ -986,10 +1004,11 @@ mod tests {
         assert!(fact.evidence.iter().any(|evidence| {
             matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$groups" && key == "staff")
         }));
-        assert!(fact
-            .evidence
-            .iter()
-            .any(|evidence| matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "array index receiver")));
+        assert!(
+            fact.evidence
+                .iter()
+                .any(|evidence| evidence.is_heuristic_reason(ARRAY_INDEX_RECEIVER_REASON))
+        );
         Ok(())
     }
 
@@ -1574,9 +1593,11 @@ mod tests {
         assert!(fact.evidence.iter().any(|evidence| {
             matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "$groups" && key == "staff")
         }));
-        assert!(fact.evidence.iter().any(|evidence| {
-            matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "array index receiver")
-        }));
+        assert!(
+            fact.evidence
+                .iter()
+                .any(|evidence| { evidence.is_heuristic_reason(ARRAY_INDEX_RECEIVER_REASON) })
+        );
         Ok(())
     }
 
@@ -1611,12 +1632,16 @@ mod tests {
         assert_eq!(fact.confidence, Confidence::Low);
         assert_eq!(fact.dynamic_boundary, Some(DynamicBoundary::DynamicHashKey));
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
-        assert!(fact.evidence.iter().any(|evidence| {
-            matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "hash receiver key is dynamic")
-        }));
-        assert!(fact.evidence.iter().any(|evidence| {
-            matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "array index receiver")
-        }));
+        assert!(
+            fact.evidence
+                .iter()
+                .any(|evidence| { evidence.is_heuristic_reason(DYNAMIC_HASH_KEY_RECEIVER_REASON) })
+        );
+        assert!(
+            fact.evidence
+                .iter()
+                .any(|evidence| { evidence.is_heuristic_reason(ARRAY_INDEX_RECEIVER_REASON) })
+        );
         Ok(())
     }
 
@@ -1632,9 +1657,11 @@ mod tests {
         assert_eq!(fact.confidence, Confidence::Low);
         assert_eq!(fact.dynamic_boundary, Some(DynamicBoundary::DynamicHashKey));
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
-        assert!(fact.evidence.iter().any(|evidence| {
-            matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "hash receiver key is dynamic")
-        }));
+        assert!(
+            fact.evidence
+                .iter()
+                .any(|evidence| { evidence.is_heuristic_reason(DYNAMIC_HASH_KEY_RECEIVER_REASON) })
+        );
         assert!(fact.evidence.iter().any(|evidence| {
             matches!(evidence, TypeEvidence::HashSlot { hash, key } if hash == "Binary" && key == "field")
         }));
@@ -1673,9 +1700,11 @@ mod tests {
         assert_eq!(fact.confidence, Confidence::Low);
         assert_eq!(fact.dynamic_boundary, None);
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
-        assert!(fact.evidence.iter().any(|evidence| {
-            matches!(evidence, TypeEvidence::Heuristic { reason } if reason == "array index receiver")
-        }));
+        assert!(
+            fact.evidence
+                .iter()
+                .any(|evidence| { evidence.is_heuristic_reason(ARRAY_INDEX_RECEIVER_REASON) })
+        );
         Ok(())
     }
 
@@ -1760,16 +1789,16 @@ mod tests {
         let code = "$groups{staff}[0]->render(";
         let mut parser = Parser::new(code);
         let parsed = parser.parse();
-        if let Ok(ast) = parsed {
-            if let Some(call) = method_call_named(&ast, "render") {
-                let env = TypeEnvironment::new();
-                let fact = receiver_fact_for_method_call(
-                    call,
-                    ReceiverFactContext::new(Some(&env)).with_source(code),
-                );
-                if fact.package.is_some() || fact.fallback_state == ReceiverFallbackState::Exact {
-                    return Err(format!("malformed receiver fabricated exact fact: {fact:?}"));
-                }
+        if let Ok(ast) = parsed
+            && let Some(call) = method_call_named(&ast, "render")
+        {
+            let env = TypeEnvironment::new();
+            let fact = receiver_fact_for_method_call(
+                call,
+                ReceiverFactContext::new(Some(&env)).with_source(code),
+            );
+            if fact.package.is_some() || fact.fallback_state == ReceiverFallbackState::Exact {
+                return Err(format!("malformed receiver fabricated exact fact: {fact:?}"));
             }
         }
         Ok(())

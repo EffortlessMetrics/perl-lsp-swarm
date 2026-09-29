@@ -86,10 +86,10 @@ reason = "Activated by #6113 after the behavior-preserving collapse of all measu
 
 [[lint]]
 name = "clippy::decimal_bitwise_operands"
-level = "warn"
+level = "deny"
 status = "active"
 class = "numeric"
-reason = "Make bit masks visually inspectable."
+reason = "Make bit masks visually inspectable. Activated by #9894 after a zero-site confirmation on a complete workspace --all-targets measurement (force-warn pierces allows)."
 
 [[lint]]
 name = "clippy::duration_suboptimal_units"

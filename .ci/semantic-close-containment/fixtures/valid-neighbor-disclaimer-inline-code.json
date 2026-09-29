@@ -1,0 +1,36 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-06",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14790",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/14879"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves CP00-EXPLICITLY-NOT-PROVEN ignores a neighboring-issue disclaimer whose inline Markdown code span contains `?` before the neighbor issue reference."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990015,
+    "title": "fix(hir): emit one guarded selector (#9001001)",
+    "body": "## Claim Boundary\n\nThis PR proves #9001001's claim in full.\n\nComplete behavior is not established for `$ready ? $new : $old`; see #9001002.\n\nCloses #9001001."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001001,
+      "title": "fix(hir): emit one guarded selector",
+      "body": "## Acceptance\n\nThe named selector emits an explicit dynamic boundary and the neighboring issue retains the remaining families."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001001,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

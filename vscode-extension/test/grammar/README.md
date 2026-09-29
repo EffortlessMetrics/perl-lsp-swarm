@@ -115,7 +115,7 @@ not here — this harness is the guard that keeps them fixed once they are.
 (`glob@7.2.3`), which npm marks deprecated. This is **knowingly accepted**:
 
 - It is a **dev/test** dependency, not shipped in the extension bundle
-  (`dependencies` ships only `adm-zip`, `tar`, `vscode-languageclient`).
+  (`dependencies` ships only `yauzl`, `tar`, `vscode-languageclient`).
 - `npm audit` reports **0 vulnerabilities** for the committed lockfile; the
   deprecation is a maintenance notice on the glob v7 line.
 - A `package.json` `overrides` forcing glob v9/v10 is **not** applied: the tool

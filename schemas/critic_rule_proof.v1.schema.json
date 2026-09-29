@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/critic_rule_proof.v1.schema.json",
+  "title": "critic_rule_proof.v1",
+  "description": "Versioned native critic rule-proof manifest (#6973). Records per-rule evidence classes and fixture propositions. Missing classes stay missing and are not inherited from aggregate transport coverage.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest",
+    "issue",
+    "owner",
+    "status",
+    "updated",
+    "claim_boundary",
+    "evidence_classes",
+    "fixtures",
+    "rules",
+    "cases"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema_version": { "const": "critic_rule_proof.v1" },
+    "manifest": { "const": "critic-rule-proof" },
+    "issue": { "const": 6973 },
+    "owner": { "type": "string", "minLength": 1 },
+    "status": { "const": "pilot" },
+    "updated": { "type": "string", "minLength": 1 },
+    "claim_boundary": { "type": "string", "minLength": 1 },
+    "evidence_classes": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/evidence_class" }
+    },
+    "fixtures": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/fixture_record" }
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/rule_record" }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/case_record" }
+    }
+  },
+  "$defs": {
+    "evidence_class": {
+      "type": "string",
+      "enum": [
+        "positive_finding",
+        "near_miss_negative",
+        "project_shaped_false_positive",
+        "file_level_suppression",
+        "canonical_identity",
+        "source_range_and_severity",
+        "remediation_class",
+        "automatic_fix_round_trip",
+        "boundary"
+      ]
+    },
+    "profile": {
+      "type": "string",
+      "enum": ["recommended", "strict"]
+    },
+    "parse_expectation": {
+      "type": "string",
+      "enum": ["ok", "error"]
+    },
+    "remediation_eligibility": {
+      "type": "string",
+      "enum": ["none", "manual", "preview_candidate", "automatic_candidate"]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "fixture_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "alias_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "code", "shape"],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "enum": [
+            "built_in_diagnostic",
+            "native_critic",
+            "legacy_policy",
+            "external_perl_critic"
+          ]
+        },
+        "code": { "type": "string", "minLength": 1 },
+        "shape": {
+          "type": "string",
+          "enum": [
+            "general",
+            "literal_undef_comparison",
+            "potentially_undef_comparison",
+            "backtick",
+            "qx",
+            "readpipe",
+            "system_call",
+            "exec_call"
+          ]
+        }
+      }
+    },
+    "rule_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rule_id",
+        "canonical_id",
+        "profile",
+        "declared_remediation",
+        "identity_aliases"
+      ],
+      "properties": {
+        "rule_id": { "type": "string", "minLength": 1 },
+        "canonical_id": { "type": "string", "minLength": 1 },
+        "profile": { "$ref": "#/$defs/profile" },
+        "declared_remediation": { "$ref": "#/$defs/remediation_eligibility" },
+        "identity_aliases": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/alias_record" }
+        }
+      }
+    },
+    "expected_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rule_id",
+        "start_byte",
+        "end_byte",
+        "excerpt",
+        "severity",
+        "remediation_eligibility"
+      ],
+      "properties": {
+        "rule_id": { "type": "string", "minLength": 1 },
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 0 },
+        "excerpt": { "type": "string" },
+        "severity": {
+          "type": "string",
+          "enum": ["gentle", "stern", "harsh", "cruel", "brutal"]
+        },
+        "remediation_eligibility": { "$ref": "#/$defs/remediation_eligibility" },
+        "fix_title": { "type": "string", "minLength": 1 }
+      }
+    },
+    "fix_round_trip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "apply",
+        "expect_reparse",
+        "expect_target_removed",
+        "expect_no_new_governed",
+        "expected_edits"
+      ],
+      "properties": {
+        "apply": { "type": "string", "enum": ["automatic", "forbidden"] },
+        "expect_reparse": { "$ref": "#/$defs/parse_expectation" },
+        "expect_target_removed": { "type": "boolean" },
+        "expect_no_new_governed": { "type": "boolean" }
+        ,"expected_edits": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/expected_edit" }
+        }
+      }
+    },
+    "expected_edit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_byte", "end_byte", "new_text"],
+      "properties": {
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 0 },
+        "new_text": { "type": "string" }
+      }
+    },
+    "case_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "rule_id",
+        "evidence_classes",
+        "fixture",
+        "profile",
+        "include",
+        "parse_expectation",
+        "expected_findings",
+        "expected_non_findings",
+        "proposition"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "pattern": "^CRP-[A-Z0-9]+-[A-Z]+-[0-9]{3}$"
+        },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "evidence_classes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/evidence_class" }
+        },
+        "fixture": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^([A-Za-z0-9][A-Za-z0-9_.-]*/)*[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "profile": { "$ref": "#/$defs/profile" },
+        "include": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "parse_expectation": { "$ref": "#/$defs/parse_expectation" },
+        "expected_findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/expected_finding" }
+        },
+        "expected_non_findings": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "fix_round_trip": { "$ref": "#/$defs/fix_round_trip" },
+        "suppression_selector": { "type": "string", "minLength": 1 },
+        "proposition": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

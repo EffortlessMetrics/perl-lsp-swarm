@@ -29,6 +29,13 @@ impl AllocationMeasurement {
 
 struct TrackingAllocator;
 
+/// Runs `operation` and returns its result with the allocations recorded
+/// inside the process-global measurement window.
+///
+/// The window is process-global: `reset_allocation_window()` zeroes shared
+/// statics, so concurrent callers in one process race each other's windows.
+/// Production callers are single-threaded measurement paths; tests entering
+/// the window must serialize against each other (see `mod tests`, #15531).
 pub(crate) fn measure_allocations<F, R>(operation: F) -> (R, AllocationMeasurement)
 where
     F: FnOnce() -> R,
@@ -39,6 +46,10 @@ where
 }
 
 /// Memory measurement helper that provides safe fallback behavior.
+///
+/// Enters the same process-global allocation window as
+/// [`measure_allocations`]; the same single-threaded-caller constraint
+/// applies (#15531).
 pub(crate) fn measure_memory_usage<F, R>(operation: F) -> (R, f64)
 where
     F: FnOnce() -> R,
@@ -167,7 +178,15 @@ unsafe impl GlobalAlloc for TrackingAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::ensure;
+    use color_eyre::eyre::{ensure, eyre};
+    use std::sync::Mutex;
+
+    /// Serializes the tests that enter the process-global allocation window:
+    /// `reset_allocation_window()` zeroes the window's shared statics, so a
+    /// concurrent sibling reset can zero another test's counters mid-window
+    /// and fail its lower-bound assertions under the default multi-threaded
+    /// test runner (#15531).
+    static ALLOCATION_WINDOW_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn allocation_tracker_bytes_to_mb_uses_binary_mebibytes() -> Result<()> {
@@ -223,6 +242,11 @@ mod tests {
 
     #[test]
     fn allocation_tracker_measure_allocations_preserves_result() -> Result<()> {
+        // Hold the window lock: `measure_allocations` resets the shared
+        // allocation window, and a concurrent sibling reset would zero these
+        // counters mid-window (#15531).
+        let _window =
+            ALLOCATION_WINDOW_LOCK.lock().map_err(|_| eyre!("allocation window lock poisoned"))?;
         let (result, measurement) = measure_allocations(|| {
             let mut values = Vec::with_capacity(1024);
             values.extend(0..1024_usize);
@@ -244,6 +268,11 @@ mod tests {
 
     #[test]
     fn allocation_tracker_measure_memory_usage_preserves_result() -> Result<()> {
+        // Hold the window lock for the same reason as the sibling test:
+        // `measure_memory_usage` also resets the shared allocation window
+        // (#15531).
+        let _window =
+            ALLOCATION_WINDOW_LOCK.lock().map_err(|_| eyre!("allocation window lock poisoned"))?;
         let (result, memory_mb) = measure_memory_usage(|| {
             let mut values = Vec::with_capacity(4096);
             values.extend(0..4096_u64);

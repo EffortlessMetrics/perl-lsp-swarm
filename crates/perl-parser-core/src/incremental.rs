@@ -198,11 +198,16 @@ impl IncrementalState {
         let left_checkpoint = self
             .checkpoints
             .iter()
-            .find(|checkpoint| checkpoint.position == old_relex_start)
+            .find(|checkpoint| checkpoint.position() == old_relex_start)
             .cloned();
         let mut lexer = PerlLexer::new(new_source);
-        if let Some(checkpoint) = &left_checkpoint {
-            lexer.restore(checkpoint);
+        if let Some(mut checkpoint) = left_checkpoint
+            && (checkpoint
+                .rebind_to_source(new_source, perl_source_identity::SourceGeneration::Unknown)
+                .is_err()
+                || lexer.restore(&checkpoint).is_err())
+        {
+            return self.full_reparse(new_source, Some(FallbackReason::NoCheckpointWindow));
         }
 
         let mut raw_relexed = Vec::new();
@@ -259,7 +264,7 @@ impl IncrementalState {
             edit,
             old_relex_start,
             old_relex_end,
-            new_source.len(),
+            new_source,
         );
         self.latest_metrics = IncrementalMetrics {
             full_parse: false,
@@ -334,29 +339,29 @@ impl IncrementalState {
 
     fn replay_start(&self, edit_start: usize) -> Option<usize> {
         let checkpoint = self.find_before(edit_start)?;
-        if checkpoint.position == 0 {
+        if checkpoint.position() == 0 {
             return Some(0);
         }
 
         let prefix_token =
-            self.tokens.iter().rev().find(|token| token.end() <= checkpoint.position)?;
+            self.tokens.iter().rev().find(|token| token.end() <= checkpoint.position())?;
         let preceding_checkpoint = self.find_before(prefix_token.start())?;
-        (preceding_checkpoint.position < checkpoint.position)
-            .then_some(preceding_checkpoint.position)
+        (preceding_checkpoint.position() < checkpoint.position())
+            .then_some(preceding_checkpoint.position())
     }
 
     fn replay_end(&self, edit_end: usize) -> Option<usize> {
         let Some(checkpoint) = self.find_after(edit_end) else {
             return Some(self.source.len());
         };
-        if checkpoint.position != edit_end {
-            return Some(checkpoint.position);
+        if checkpoint.position() != edit_end {
+            return Some(checkpoint.position());
         }
 
         self.checkpoints
             .iter()
-            .find(|candidate| candidate.position > checkpoint.position)
-            .map_or(Some(self.source.len()), |next| Some(next.position))
+            .find(|candidate| candidate.position() > checkpoint.position())
+            .map_or(Some(self.source.len()), |next| Some(next.position()))
     }
 
     fn full_reparse(
@@ -379,11 +384,11 @@ impl IncrementalState {
     }
 
     fn find_before(&self, position: usize) -> Option<&LexerCheckpoint> {
-        self.checkpoints.iter().rev().find(|checkpoint| checkpoint.position <= position)
+        self.checkpoints.iter().rev().find(|checkpoint| checkpoint.position() <= position)
     }
 
     fn find_after(&self, position: usize) -> Option<&LexerCheckpoint> {
-        self.checkpoints.iter().find(|checkpoint| checkpoint.position >= position)
+        self.checkpoints.iter().find(|checkpoint| checkpoint.position() >= position)
     }
 }
 
@@ -413,31 +418,37 @@ fn merge_checkpoints(
     edit: &IncrementalEdit,
     old_relex_start: usize,
     old_relex_end: usize,
-    new_source_len: usize,
+    new_source: &str,
 ) -> Vec<LexerCheckpoint> {
     let mut checkpoints = old
         .iter()
         .filter_map(|checkpoint| {
-            if checkpoint.position > old_relex_start && checkpoint.position < old_relex_end {
+            if checkpoint.position() > old_relex_start && checkpoint.position() < old_relex_end {
                 return None;
             }
             let mut shifted = checkpoint.clone();
-            if shifted.position >= edit.old_end_byte {
+            if shifted.position() >= edit.old_end_byte {
                 shifted.apply_edit(
                     edit.start_byte,
                     edit.old_end_byte - edit.start_byte,
                     edit.new_text.len(),
                 );
             }
-            (shifted.position <= new_source_len).then_some(shifted)
+            if shifted.is_invalidated() || shifted.position() > new_source.len() {
+                return None;
+            }
+            shifted
+                .rebind_to_source(new_source, perl_source_identity::SourceGeneration::Unknown)
+                .ok()?;
+            Some(shifted)
         })
         .collect::<Vec<_>>();
     checkpoints.extend(replay);
     if checkpoints.is_empty() {
-        checkpoints.push(LexerCheckpoint::new());
+        checkpoints.push(LexerCheckpoint::origin(new_source));
     }
-    checkpoints.sort_by_key(|checkpoint| checkpoint.position);
-    checkpoints.dedup_by_key(|checkpoint| checkpoint.position);
+    checkpoints.sort_by_key(|checkpoint| checkpoint.position());
+    checkpoints.dedup_by_key(|checkpoint| checkpoint.position());
     checkpoints
 }
 
@@ -494,7 +505,7 @@ mod tests {
         assert_eq!(boundary, 258);
 
         let state = IncrementalState::new(&source);
-        assert!(state.checkpoints.iter().any(|checkpoint| checkpoint.position == boundary));
+        assert!(state.checkpoints.iter().any(|checkpoint| checkpoint.position() == boundary));
         assert!(
             state.tokens.iter().any(|token| token.end() == boundary),
             "token ends: {:?}",

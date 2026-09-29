@@ -7,7 +7,7 @@
 //! content digest, so an edit immediately changes the generation and a
 //! stale exact answer cannot survive a re-query.
 
-use super::activation::Dancer2FileActivations;
+use super::activation::{Dancer2FileActivations, Dancer2TwoXPackageActivation};
 use perl_parser_core::Node;
 use perl_semantic_analyzer::analysis::dancer2_hooks::extract_dancer2_hook_declarations;
 use perl_semantic_analyzer::analysis::dancer2_routes::extract_dancer2_route_contexts;
@@ -41,6 +41,21 @@ pub struct CanonicalDancer2FileFacts {
     /// remain source observations).
     pub extracted_routes:
         Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration>,
+    /// Exact 2.x activations for this document (#14989). Comparison-only
+    /// output (the 2.x adapter stays Shadow); consumers must render the
+    /// route-handler scope honestly and never treat this as publication
+    /// authority.
+    pub two_x: Vec<Dancer2TwoXPackageActivation>,
+    /// Source-extracted route declarations inside exact 2.x packages, kept
+    /// separate from the 1.x `extracted_routes` so the two contracts never
+    /// conflate (#14989).
+    pub two_x_extracted_routes:
+        Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration>,
+    /// Minted 2.x route-family facts (contract marker `TwoX`),
+    /// comparison-only output of the Shadow adapter — merged across exact
+    /// 2.x packages in source order (#14989).
+    pub two_x_route_facts:
+        Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts>,
 }
 
 impl CanonicalDancer2FileFacts {
@@ -53,6 +68,13 @@ impl CanonicalDancer2FileFacts {
             && self.parameters.is_empty()
             && self.handler_contexts.is_empty()
             && self.hooks.is_empty()
+    }
+
+    /// Whether comparison-only 2.x (shadow) facts are present. Deliberately
+    /// separate from [`Self::is_empty`]: shadow evidence must never read as
+    /// publication-grade canonical output (#15006 review).
+    pub fn has_comparison_facts(&self) -> bool {
+        !self.two_x.is_empty() || !self.two_x_extracted_routes.is_empty()
     }
 
     /// The route fact whose declaration span contains `offset`, excluding
@@ -207,6 +229,36 @@ pub fn canonical_file_facts(
             package,
             &hook_declarations,
         ));
+    }
+    // 2.x activations (#14989): exact packages only, plus their
+    // source-level route declarations kept contract-separated.
+    for activation in &activations.two_x_packages {
+        if !activation.facts.is_exact() {
+            continue;
+        }
+        facts.two_x.push(activation.clone());
+        let package = Some(activation.package.as_str());
+        for declaration in &route_contexts.routes {
+            if declaration.package.as_deref() == package {
+                facts.two_x_extracted_routes.push(declaration.clone());
+            }
+        }
+        // Mint the 2.x route family through the shared view core; the
+        // bundle carries the TwoX contract marker and stays
+        // comparison-only while the adapter is Shadow (#14989).
+        let detection_detected = activations
+            .two_x_detection
+            .as_ref()
+            .is_some_and(perl_semantic_facts::framework::AdapterDetectionResult::is_detected);
+        facts.two_x_route_facts.push(
+            perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_route_family_facts(
+                detection_detected,
+                &activation.facts,
+                package,
+                &route_contexts.routes,
+                &route_contexts.prefixes,
+            ),
+        );
     }
     facts
 }

@@ -1,161 +1,107 @@
+//! Modules is a #9581 secondary-capability floor row.
+//!
+//! `supportsModulesRequest` is an explicit `false` cell in the initialize
+//! response until the modules re-enable gate passes (#8581 + #7667/#8668 +
+//! #9585 + #9586). While it is false, every `modules` request must return the
+//! explicit unsupported disposition *before* any `%INC` query, pagination, or
+//! module-ID allocation, and a missing/unavailable session can never become an
+//! unexplained successful empty list (#9581).
+
 use perl_dap::{DapMessage, DebugAdapter};
-use perl_tdd_support::must;
 use serde_json::json;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// Helper: send a modules request and return the response body.
+/// Send a `modules` request and return `(success, message, body)`.
 fn modules_request(
     adapter: &mut DebugAdapter,
     arguments: Option<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
-    let response = adapter.handle_request(2, "modules", arguments);
-    match response {
-        DapMessage::Response { success: true, body: Some(body), .. } => Ok(body),
-        DapMessage::Response { success: false, message, .. } => {
-            Err(message.unwrap_or_else(|| "unknown error".to_string()))
+) -> Result<(bool, String, Option<serde_json::Value>), String> {
+    match adapter.handle_request(2, "modules", arguments) {
+        DapMessage::Response { success, command, body, message, .. } if command == "modules" => {
+            Ok((success, message.unwrap_or_default(), body))
         }
+        DapMessage::Response { command, .. } => Err(format!("unexpected command `{command}`")),
         _ => Err("unexpected response type".to_string()),
     }
 }
 
-#[test]
-fn test_modules_no_session() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
-
-    let body = modules_request(&mut adapter, Some(json!({ "startModule": 0 })))
-        .map_err(|e| e.to_string())?;
-
-    let modules = body.get("modules").and_then(|v| v.as_array()).ok_or("missing modules array")?;
-    let total =
-        body.get("totalModules").and_then(|v| v.as_i64()).ok_or("missing totalModules field")?;
-
-    assert!(modules.is_empty(), "No session should mean empty modules");
-    assert_eq!(total, 0, "No session should mean total 0");
-
-    Ok(())
-}
-
-#[test]
-fn test_modules_with_default_arguments() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
-
-    let body = modules_request(&mut adapter, Some(json!({ "startModule": 0 })))
-        .map_err(|e| e.to_string())?;
-
-    let modules = body.get("modules").and_then(|v| v.as_array()).ok_or("missing modules")?;
-    assert!(modules.is_empty(), "Expected empty modules without active session");
-
-    Ok(())
-}
-
-#[test]
-fn test_modules_pagination_count_zero() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
-
-    let body = modules_request(&mut adapter, Some(json!({ "startModule": 0, "moduleCount": 0 })))
-        .map_err(|e| e.to_string())?;
-
-    let modules = body.get("modules").and_then(|v| v.as_array()).ok_or("missing modules")?;
-    assert!(modules.is_empty());
-
-    Ok(())
-}
-
-#[test]
-fn test_modules_negative_start_clamped() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
-
-    // Negative start should be clamped to 0
-    let body = modules_request(&mut adapter, Some(json!({ "startModule": -1 })))
-        .map_err(|e| e.to_string())?;
-
-    let modules = body.get("modules").and_then(|v| v.as_array()).ok_or("missing modules")?;
-    // No session, so still empty — but the important thing is no crash
-    assert!(modules.is_empty());
-
-    Ok(())
-}
-
-#[test]
-fn test_modules_negative_count_clamped() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
-
-    let body = modules_request(&mut adapter, Some(json!({ "startModule": 0, "moduleCount": -1 })))
-        .map_err(|e| e.to_string())?;
-
-    let modules = body.get("modules").and_then(|v| v.as_array()).ok_or("missing modules")?;
-    assert!(modules.is_empty());
-
-    Ok(())
-}
-
-#[test]
-fn test_modules_missing_arguments() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
-
-    // None arguments should still succeed (optional args pattern)
-    let body = modules_request(&mut adapter, None).map_err(|e| e.to_string())?;
-
-    let modules = body.get("modules").and_then(|v| v.as_array()).ok_or("missing modules")?;
-    assert!(modules.is_empty());
-
-    Ok(())
-}
-
-#[test]
-fn test_modules_response_structure() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    adapter.handle_request(1, "initialize", None);
-
-    let body = modules_request(&mut adapter, Some(json!({ "startModule": 0 })))
-        .map_err(|e| e.to_string())?;
-
-    // Verify required response fields exist
-    assert!(body.get("modules").is_some(), "Response must have 'modules' field");
-    assert!(body.get("modules").and_then(|v| v.as_array()).is_some(), "modules must be an array");
-    assert!(body.get("totalModules").is_some(), "Response must have 'totalModules' field");
+fn assert_floor_rejection(success: bool, message: &str, body: &Option<serde_json::Value>) {
+    assert!(!success, "modules is floored (#9581) and must fail");
     assert!(
-        body.get("totalModules").and_then(|v| v.as_i64()).is_some(),
-        "totalModules must be a number"
+        message.contains("unsupported") && message.contains("supportsModulesRequest"),
+        "expected the explicit #9581 unsupported disposition, got: {message}"
     );
+    assert!(body.is_none(), "a floored modules request must not carry a modules/totalModules body");
+}
 
+#[test]
+fn initialize_does_not_advertise_modules() -> TestResult {
+    let mut adapter = DebugAdapter::new();
+    let init = adapter.handle_request(1, "initialize", None);
+    let body = match init {
+        DapMessage::Response { success: true, body: Some(body), .. } => body,
+        _ => return Err("Expected successful initialize response".into()),
+    };
+    let supported = body
+        .get("supportsModulesRequest")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or("supportsModulesRequest must be a boolean")?;
+    assert!(
+        !supported,
+        "supportsModulesRequest must be false while the modules gate is open (#9581)"
+    );
     Ok(())
 }
 
 #[test]
-fn test_modules_response_is_success() {
+fn modules_without_a_session_is_unsupported_not_an_empty_success() -> TestResult {
+    // The discriminating no-masquerade row (#9581): a request before any
+    // launch must fail explicitly, never succeed with an empty list.
     let mut adapter = DebugAdapter::new();
     adapter.handle_request(1, "initialize", None);
-
-    let response = adapter.handle_request(2, "modules", Some(json!({ "startModule": 0 })));
-
-    match response {
-        DapMessage::Response { success, command, .. } => {
-            assert!(success);
-            assert_eq!(command, "modules");
-        }
-        _ => must(Err::<(), _>("Expected response message")),
-    }
+    let (success, message, body) = modules_request(&mut adapter, Some(json!({ "startModule": 0 })))
+        .map_err(|e| e.to_string())?;
+    assert_floor_rejection(success, &message, &body);
+    assert!(
+        message.contains("#9581"),
+        "the rejection must name the capability floor for traceability: {message}"
+    );
+    Ok(())
 }
 
 #[test]
-fn test_modules_large_start_offset() -> TestResult {
+fn modules_pagination_arguments_are_not_processed() -> TestResult {
+    // Pagination is part of the floored handler computation: every argument
+    // shape gets the same explicit rejection with no module-ID allocation.
+    let cases = [
+        Some(json!({ "startModule": 0, "moduleCount": 10 })),
+        Some(json!({ "startModule": 0, "moduleCount": 0 })),
+        Some(json!({ "startModule": -1 })),
+        Some(json!({ "startModule": 0, "moduleCount": -1 })),
+        Some(json!({ "startModule": 999_999 })),
+        None,
+    ];
+    for arguments in cases {
+        let mut adapter = DebugAdapter::new();
+        adapter.handle_request(1, "initialize", None);
+        let (success, message, body) =
+            modules_request(&mut adapter, arguments).map_err(|e| e.to_string())?;
+        assert_floor_rejection(success, &message, &body);
+    }
+    Ok(())
+}
+
+#[test]
+fn modules_rejection_is_stable_across_repeated_requests() -> TestResult {
     let mut adapter = DebugAdapter::new();
     adapter.handle_request(1, "initialize", None);
-
-    // Start beyond any possible module count should return empty
-    let body = modules_request(&mut adapter, Some(json!({ "startModule": 999999 })))
+    let first = modules_request(&mut adapter, Some(json!({ "startModule": 0 })))
         .map_err(|e| e.to_string())?;
-
-    let modules = body.get("modules").and_then(|v| v.as_array()).ok_or("missing modules")?;
-    assert!(modules.is_empty());
-
+    let second = modules_request(&mut adapter, Some(json!({ "startModule": 0 })))
+        .map_err(|e| e.to_string())?;
+    assert_eq!(first.0, second.0, "floor disposition must not flip between requests");
+    assert_eq!(first.1, second.1, "floor message must be deterministic");
+    assert_floor_rejection(first.0, &first.1, &first.2);
     Ok(())
 }

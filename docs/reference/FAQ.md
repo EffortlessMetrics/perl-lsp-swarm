@@ -141,9 +141,6 @@ By default, perl-lsp indexes up to 10,000 files and 500,000 total symbols. For l
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 2000000,
-      "workspaceScanDeadlineMs": 120000
     }
   }
 }
@@ -153,7 +150,7 @@ See [CONFIG.md](CONFIG.md) for the full limits reference.
 
 ### What if the server is slow on startup?
 
-The initial workspace scan budget is 30 seconds by default. If your workspace has many files, increase `perl.limits.workspaceScanDeadlineMs`. You can also use `.perl-lspignore` to exclude directories that don't contain Perl source.
+The initial workspace scan is bounded by internal deadlines. If your workspace has many files, use `.perl-lspignore` to exclude directories that don't contain Perl source.
 
 ---
 

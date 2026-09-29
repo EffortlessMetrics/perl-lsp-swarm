@@ -6,12 +6,16 @@ on:
       - "clients/sublime/**"
       - "policy/non-rust-allowlist.toml"
       - ".github/workflows/sublime-package-contract.yml"
+      - "xtask/src/main.rs"
+      - "xtask/src/tasks/mod.rs"
   push:
     branches: [main]
     paths:
       - "clients/sublime/**"
       - "policy/non-rust-allowlist.toml"
       - ".github/workflows/sublime-package-contract.yml"
+      - "xtask/src/main.rs"
+      - "xtask/src/tasks/mod.rs"
 
 permissions:
   contents: read

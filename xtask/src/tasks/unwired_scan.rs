@@ -391,32 +391,54 @@ fn print_report(report: &ScanReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
     use std::fs;
     use tempfile::TempDir;
 
+    #[track_caller]
+    fn tempdir() -> TempDir {
+        must_with(TempDir::new(), "tempdir")
+    }
+
+    #[track_caller]
     fn write(dir: &Path, rel: &str, content: &str) {
         let path = dir.join(rel);
-        if let Some(p) = path.parent() {
-            fs::create_dir_all(p).unwrap();
+        if let Some(parent) = path.parent() {
+            must_with(fs::create_dir_all(parent), "create fixture parent");
         }
-        fs::write(path, content).unwrap();
+        must_with(fs::write(path, content), "write fixture");
+    }
+
+    #[track_caller]
+    fn scan_ok(workspace: &Path, lsp_crate: &str) -> ScanReport {
+        must_with(scan(workspace, lsp_crate), "scan workspace")
+    }
+
+    #[track_caller]
+    fn crate_named<'a>(report: &'a ScanReport, name: &str) -> &'a CrateReport {
+        must_some_with(
+            report.crates.iter().find(|r| r.name == name),
+            "crate present in scan report",
+        )
+    }
+
+    #[track_caller]
+    fn first_wiring_hit(hits: &[WiringComment]) -> &WiringComment {
+        must_some_with(hits.first(), "wiring comment hit")
     }
 
     #[test]
     fn test_count_tests_finds_attribute() {
-        let dir = TempDir::new().unwrap();
-        let src = dir.path().join("src");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("lib.rs"), "#[test]\nfn a() {}\n#[test]\nfn b() {}\n").unwrap();
-        assert_eq!(count_tests_in_dir(&src), 2);
+        let dir = tempdir();
+        write(dir.path(), "src/lib.rs", "#[test]\nfn a() {}\n#[test]\nfn b() {}\n");
+        assert_eq!(count_tests_in_dir(&dir.path().join("src")), 2);
     }
 
     #[test]
     fn test_count_tests_empty_dir() {
-        let dir = TempDir::new().unwrap();
-        let src = dir.path().join("src");
-        fs::create_dir_all(&src).unwrap();
-        assert_eq!(count_tests_in_dir(&src), 0);
+        let dir = tempdir();
+        must_with(fs::create_dir_all(dir.path().join("src")), "create empty src dir");
+        assert_eq!(count_tests_in_dir(&dir.path().join("src")), 0);
     }
 
     #[test]
@@ -426,14 +448,13 @@ mod tests {
 
     #[test]
     fn test_parse_deps_basic() {
-        let dir = TempDir::new().unwrap();
-        let toml_path = dir.path().join("Cargo.toml");
-        fs::write(
-            &toml_path,
+        let dir = tempdir();
+        write(
+            dir.path(),
+            "Cargo.toml",
             "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde = \"1.0\"\nfoo = { path = \"../foo\" }\n",
-        )
-        .unwrap();
-        let deps = parse_crate_deps(&toml_path);
+        );
+        let deps = parse_crate_deps(&dir.path().join("Cargo.toml"));
         assert!(deps.contains("serde"));
         assert!(deps.contains("foo"));
     }
@@ -446,45 +467,34 @@ mod tests {
 
     #[test]
     fn test_scan_wiring_comments_todo_wire() {
-        let dir = TempDir::new().unwrap();
-        let src = dir.path().join("src");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("lib.rs"), "// TODO: wire this into diagnostics\npub fn f() {}\n")
-            .unwrap();
-        let hits = scan_wiring_comments(&src, dir.path());
+        let dir = tempdir();
+        write(dir.path(), "src/lib.rs", "// TODO: wire this into diagnostics\npub fn f() {}\n");
+        let hits = scan_wiring_comments(&dir.path().join("src"), dir.path());
         assert_eq!(hits.len(), 1);
-        assert!(hits[0].line.contains("TODO: wire"));
+        assert!(first_wiring_hit(&hits).line.contains("TODO: wire"));
     }
 
     #[test]
     fn test_scan_wiring_comments_fixme_not_called() {
-        let dir = TempDir::new().unwrap();
-        let src = dir.path().join("src");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("lib.rs"), "// FIXME: not called from anywhere\npub fn g() {}\n")
-            .unwrap();
-        let hits = scan_wiring_comments(&src, dir.path());
+        let dir = tempdir();
+        write(dir.path(), "src/lib.rs", "// FIXME: not called from anywhere\npub fn g() {}\n");
+        let hits = scan_wiring_comments(&dir.path().join("src"), dir.path());
         assert_eq!(hits.len(), 1);
     }
 
     #[test]
-    fn test_scan_wiring_comments_lowercase_todo_wire() -> Result<()> {
-        let dir = TempDir::new()?;
-        let src = dir.path().join("src");
-        fs::create_dir_all(&src)?;
-        fs::write(src.join("lib.rs"), "// todo: wire this into diagnostics\npub fn f() {}\n")?;
-        let hits = scan_wiring_comments(&src, dir.path());
+    fn test_scan_wiring_comments_lowercase_todo_wire() {
+        let dir = tempdir();
+        write(dir.path(), "src/lib.rs", "// todo: wire this into diagnostics\npub fn f() {}\n");
+        let hits = scan_wiring_comments(&dir.path().join("src"), dir.path());
         assert_eq!(hits.len(), 1);
-        Ok(())
     }
 
     #[test]
     fn test_scan_wiring_comments_no_hits() {
-        let dir = TempDir::new().unwrap();
-        let src = dir.path().join("src");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("lib.rs"), "pub fn clean_code() {}\n").unwrap();
-        let hits = scan_wiring_comments(&src, dir.path());
+        let dir = tempdir();
+        write(dir.path(), "src/lib.rs", "pub fn clean_code() {}\n");
+        let hits = scan_wiring_comments(&dir.path().join("src"), dir.path());
         assert!(hits.is_empty());
     }
 
@@ -519,8 +529,9 @@ mod tests {
     }
 
     /// Build a minimal fake workspace and run the full scan.
+    #[track_caller]
     fn fake_workspace() -> TempDir {
-        let dir = TempDir::new().unwrap();
+        let dir = tempdir();
         let root = dir.path();
 
         write(
@@ -561,7 +572,7 @@ mod tests {
     #[test]
     fn test_scan_identifies_unwired() {
         let workspace = fake_workspace();
-        let report = scan(workspace.path(), "perl-lsp-rs").unwrap();
+        let report = scan_ok(workspace.path(), "perl-lsp-rs");
         assert!(report.flagged.contains(&"perl-unwired".to_string()));
         assert!(!report.flagged.contains(&"perl-wired".to_string()));
         assert!(!report.flagged.contains(&"perl-no-tests".to_string()));
@@ -570,8 +581,8 @@ mod tests {
     #[test]
     fn test_scan_counts_correctly() {
         let workspace = fake_workspace();
-        let report = scan(workspace.path(), "perl-lsp-rs").unwrap();
-        let unwired = report.crates.iter().find(|r| r.name == "perl-unwired").unwrap();
+        let report = scan_ok(workspace.path(), "perl-lsp-rs");
+        let unwired = crate_named(&report, "perl-unwired");
         assert_eq!(unwired.test_count, 2);
         assert!(!unwired.is_direct_dep_of_lsp);
     }
@@ -579,7 +590,7 @@ mod tests {
     #[test]
     fn test_scan_excludes_lsp_crate_itself() {
         let workspace = fake_workspace();
-        let report = scan(workspace.path(), "perl-lsp-rs").unwrap();
+        let report = scan_ok(workspace.path(), "perl-lsp-rs");
         assert!(!report.crates.iter().any(|r| r.name == "perl-lsp-rs"));
     }
 
@@ -588,15 +599,81 @@ mod tests {
     #[test]
     fn test_scan_errors_on_missing_lsp_crate() {
         let workspace = fake_workspace();
-        let result = scan(workspace.path(), "nonexistent-crate");
-        assert!(
-            result.is_err(),
-            "scan() must return Err when the lsp_crate Cargo.toml does not exist"
+        let err = must_err_with(
+            scan(workspace.path(), "nonexistent-crate"),
+            "scan() must return Err when the lsp_crate Cargo.toml does not exist",
         );
-        let msg = result.unwrap_err().to_string();
+        let msg = err.to_string();
         assert!(
             msg.contains("not found") || msg.contains("nonexistent-crate"),
             "error message should mention what was missing; got: {msg}"
         );
+    }
+
+    #[test]
+    fn unwired_scan_converted_must_wrappers_carry_track_caller() {
+        let src = include_str!("unwired_scan.rs");
+        let mut failures = Vec::new();
+        for helper in [
+            "fn tempdir(",
+            "fn write(",
+            "fn scan_ok(",
+            "fn crate_named<",
+            "fn first_wiring_hit(",
+            "fn fake_workspace(",
+        ] {
+            let Some(idx) = src.find(helper) else {
+                failures.push(format!("missing wrapper {helper}"));
+                continue;
+            };
+            let preceding = src.get(..idx).unwrap_or("");
+            let last_attr_line =
+                preceding.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
+            if last_attr_line.trim() != "#[track_caller]" {
+                failures.push(format!(
+                    "{helper} is not immediately preceded by #[track_caller] (found {last_attr_line:?})"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must: create fixture parent:")]
+    fn unwired_scan_converted_write_helper_still_fails_when_parent_is_a_file() {
+        let dir = tempdir();
+        write(dir.path(), "blocked", "not a directory");
+        write(dir.path(), "blocked/child.rs", "unreachable");
+    }
+
+    #[test]
+    #[should_panic(expected = "must: scan workspace:")]
+    fn unwired_scan_converted_result_assertion_still_fails_when_lsp_crate_is_missing() {
+        let workspace = fake_workspace();
+        let _ = scan_ok(workspace.path(), "nonexistent-crate");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: crate present in scan report:")]
+    fn unwired_scan_converted_option_assertion_still_fails_when_crate_is_absent() {
+        let workspace = fake_workspace();
+        let report = scan_ok(workspace.path(), "perl-lsp-rs");
+        let _ = crate_named(&report, "does-not-exist");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: missing lsp crate must not succeed:")]
+    fn unwired_scan_converted_err_assertion_still_fails_when_scan_succeeds() {
+        let workspace = fake_workspace();
+        let _ = must_err_with(
+            scan(workspace.path(), "perl-lsp-rs"),
+            "missing lsp crate must not succeed",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: wiring comment hit:")]
+    fn unwired_scan_converted_wiring_hit_assertion_still_fails_when_hits_are_empty() {
+        let _ = first_wiring_hit(&[]);
     }
 }

@@ -4,6 +4,14 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 /// A simple rate limiter using token bucket algorithm.
+///
+/// # Not a concurrency control
+///
+/// This bounds how many requests may *start* per second. A token is consumed
+/// at dispatch and never returned, so the burst allowance says nothing about
+/// how many requests are simultaneously active — several callers can each take
+/// a token and then all remain in flight. The live-request ceiling
+/// (`maxInflight`) is [`super::inflight::InflightGate`] (`#8300`).
 pub struct RateLimiter {
     state: Mutex<RateLimiterState>,
 }
@@ -19,12 +27,15 @@ impl RateLimiter {
     /// Create a new rate limiter.
     ///
     /// `rps` is the maximum requests per second.
-    /// `burst` is the maximum burst size.
-    pub fn new(rps: f64, burst: u32) -> Self {
+    ///
+    /// `burst_capacity` is the token-bucket refill ceiling — how many requests
+    /// may start back-to-back after an idle period. It is deliberately *not*
+    /// named for concurrency: it cannot bound simultaneously active requests.
+    pub fn new(rps: f64, burst_capacity: u32) -> Self {
         Self {
             state: Mutex::new(RateLimiterState {
-                tokens: f64::from(burst),
-                max_tokens: f64::from(burst),
+                tokens: f64::from(burst_capacity),
+                max_tokens: f64::from(burst_capacity),
                 refill_rate: rps,
                 last_refill: Instant::now(),
             }),

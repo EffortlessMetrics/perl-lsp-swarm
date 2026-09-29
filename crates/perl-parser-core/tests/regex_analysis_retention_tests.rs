@@ -191,6 +191,42 @@ fn source_edit_changes_digest_and_record_geometry() -> Result<(), Box<dyn Error>
     Ok(())
 }
 
+/// Regression for #15092: projected regex diagnostics must respect the same
+/// `max_errors` limit that `Parser::record_error` applies. Building 150
+/// statements with a nested-quantifier risk pattern previously caused
+/// `errors_emitted` to reach 150 against a budget of 100.
+#[test]
+fn regex_retention_projection_respects_max_errors_budget() -> Result<(), Box<dyn Error>> {
+    // ParseBudget::default().max_errors is 100; Parser::record_error caps at the
+    // same value (see crates/perl-parser-core/src/engine/parser/helpers.rs).
+    const MAX_ERRORS: usize = 100;
+    let statements = 150;
+
+    let mut source = String::new();
+    for i in 0..statements {
+        source.push_str(&format!("my $v{i} = \"x\" =~ /(a*)*b/;\n"));
+    }
+
+    let output = parse_source_with_regex_analysis(&source).into_parts().0;
+
+    // Hard cap on diagnostics and errors_emitted, in either order: the parser
+    // itself may have already charged a partial total before projection runs,
+    // but neither dimension may exceed the budget after projection completes.
+    assert!(
+        output.diagnostics.len() <= MAX_ERRORS,
+        "diagnostics.len() = {} exceeds budget {}",
+        output.diagnostics.len(),
+        MAX_ERRORS
+    );
+    assert!(
+        output.budget_usage.errors_emitted <= MAX_ERRORS,
+        "errors_emitted = {} exceeds budget {}",
+        output.budget_usage.errors_emitted,
+        MAX_ERRORS
+    );
+    Ok(())
+}
+
 #[test]
 fn consecutive_parses_do_not_share_pending_geometry() -> Result<(), Box<dyn Error>> {
     let first = parse_source_with_regex_analysis("my $x = /a/; my $y = /b/;");

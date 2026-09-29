@@ -85,18 +85,78 @@ impl<'a> Parser<'a> {
     ///
     /// Perl permits `func { ... } @list` and DSL-style named args such as
     /// `func { ... } foreach => $items` without a comma after the block. We
-    /// still stop at real statement boundaries and at postfix modifiers unless
-    /// the modifier token is being autoquoted before `=>`.
+    /// still stop at real statement boundaries and at postfix modifiers / low-
+    /// precedence word operators unless that token is being autoquoted before
+    /// `=>` (`has { 1 } or => 2`, #16639). Comparison words are infix here:
+    /// `has { 1 } cmp => 2` is a Perl syntax error (`} cmp`); the valid form
+    /// uses an explicit comma (`has { 1 }, cmp => 2`, #16691). Comma and fat
+    /// arrow belong to the dedicated separator loop, not this implicit path.
     fn should_continue_bare_call_after_block(&mut self) -> bool {
         match self.peek_kind() {
             Some(kind) if kind.is_recovery_boundary() => false,
             None => false,
             // `?` begins a ternary on the block-call result, not an argument to it.
             Some(TokenKind::Question) => false,
-            Some(kind) if kind.is_low_precedence_word_operator() => false,
-            Some(kind) if Self::is_stmt_modifier_kind(kind) => self.is_keyword_before_fat_arrow(),
+            Some(TokenKind::Comma | TokenKind::FatArrow) => false,
+            Some(_) if self.peek_is_comparison_word() => false,
+            Some(kind)
+                if kind.is_low_precedence_word_operator() || Self::is_stmt_modifier_kind(kind) =>
+            {
+                self.is_keyword_before_fat_arrow()
+            }
             _ => true,
         }
+    }
+
+    /// After an explicit `,` / `=>`, comparison words before `=>` are ordinary
+    /// list elements (`has { 1 }, cmp => 2`). The implicit after-block path
+    /// still refuses them.
+    fn should_continue_bare_call_after_separator(&mut self) -> bool {
+        if self.peek_is_comparison_word() {
+            return self.is_keyword_before_fat_arrow();
+        }
+        self.should_continue_bare_call_after_block()
+    }
+
+    /// Word-operator tokens Perl autoquotes before `=>` (`and`/`or`/`not`/`xor`/`cmp`).
+    /// These must not be treated as infix/no-arg terminators in that position.
+    fn peek_is_autoquoted_word_operator(&mut self) -> bool {
+        self.peek_kind().is_some_and(|kind| kind.is_word_operator())
+            && self.is_keyword_before_fat_arrow()
+    }
+
+    /// Turn a word-operator token immediately left of `=>` into an identifier
+    /// so every expression-start path, including `parse_shift`, can autoquote it.
+    fn consume_autoquoted_word_operator_identifier(&mut self) -> ParseResult<Option<Node>> {
+        if !self.peek_is_autoquoted_word_operator() {
+            return Ok(None);
+        }
+        let token = self.consume_token()?;
+        Ok(Some(self.charge_node(
+            NodeKind::Identifier { name: token.text.to_string() },
+            SourceLocation { start: token.start(), end: token.end() },
+        )?))
+    }
+
+    fn peek_is_comparison_word(&mut self) -> bool {
+        self.peek_kind() == Some(TokenKind::StringCompare)
+            || self.peek_is_identifier_string_comparison()
+    }
+
+    /// Identifier spellings that Perl treats as infix string comparisons.
+    /// `cmp` is normally `TokenKind::StringCompare`; keep the Identifier
+    /// spelling so a reclassified token still terminates like `eq`.
+    fn is_identifier_string_comparison(text: &str) -> bool {
+        matches!(text, "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "cmp")
+    }
+
+    fn peek_is_identifier_string_comparison(&mut self) -> bool {
+        self.peek_kind() == Some(TokenKind::Identifier)
+            && self
+                .tokens
+                .peek()
+                .ok()
+                .is_some_and(|token| Self::is_identifier_string_comparison(token.text.as_ref()))
     }
 
     /// Enter production recursion depth through the live operation context.
@@ -126,6 +186,27 @@ impl<'a> Parser<'a> {
 
     fn exit_block_recursion(&mut self) {
         self.block_depth = self.block_depth.saturating_sub(1);
+    }
+
+    /// Run `f` inside a class grammar frame of `form`.
+    ///
+    /// Closure-based for the same reason as [`Self::with_depth`]: the context
+    /// can be restored without a `Drop` guard that aliases `&mut Parser`. The
+    /// context is restored to the depth observed on entry on success, parse
+    /// error, recovery, truncated input, cancellation, and early return, so no
+    /// caller has to remember a paired reset and no frame can leak into the
+    /// statements that follow the class body.
+    #[inline]
+    fn within_class_grammar<T>(
+        &mut self,
+        form: ClassGrammarForm,
+        f: impl FnOnce(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<T> {
+        let restore = self.class_grammar.mark();
+        self.class_grammar.enter(form);
+        let result = f(self);
+        self.class_grammar.restore(restore);
+        result
     }
 
     /// Run `f` under the live production recursion-depth context.
@@ -361,6 +442,12 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// Barewords Perl autoquotes before `=>`: identifiers, reserved-word
+    /// tokens, and word-operator tokens (`and`/`or`/`not`/`xor`/`cmp`).
+    fn is_autoquoted_bareword_kind(kind: TokenKind) -> bool {
+        kind == TokenKind::Identifier || Self::is_keyword_token(kind) || kind.is_word_operator()
+    }
+
     /// Check if a token kind is a binary operator that couldn't start an expression argument.
     fn is_binary_operator(kind: TokenKind) -> bool {
         kind.is_logical_operator()
@@ -418,7 +505,12 @@ impl<'a> Parser<'a> {
             .is_some_and(|token| Self::is_sigil_argument_start(token.kind(), token.text.as_ref()))
     }
 
-    fn assignment_operator_text(kind: TokenKind) -> Option<&'static str> {
+    /// The single symbolic assignment-operator table.
+    ///
+    /// Contextual `x=` is not listed here: it arrives as two tokens and is
+    /// recognized only by `consume_assignment_operator`, which layers that
+    /// case on top of this table.
+    pub(super) fn assignment_operator_text(kind: TokenKind) -> Option<&'static str> {
         match kind {
             TokenKind::Assign => Some("="),
             TokenKind::PlusAssign => Some("+="),
@@ -478,12 +570,11 @@ impl<'a> Parser<'a> {
             return Ok(expr);
         }
 
-        let Some(op) = self.peek_kind().and_then(Self::assignment_operator_text) else {
+        let Some((op, op_start)) = self.consume_assignment_operator()? else {
             return Ok(expr);
         };
 
-        let op_token = self.tokens.next()?;
-        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
             missing
         } else {
             self.parse_assignment()?
@@ -491,10 +582,41 @@ impl<'a> Parser<'a> {
         let start = expr.location.start;
         let end = rhs.location.end;
 
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Assignment { lhs: Box::new(expr), rhs: Box::new(rhs), op: op.to_string() },
             SourceLocation { start, end },
-        ))
+        )
+    }
+
+    /// Fold a just-parsed declaration into the repetition assignment the
+    /// shared seam has already recognized.
+    ///
+    /// Both declaration-specific exits that bypass ordinary assignment
+    /// parsing (the statement-level list branch and the call-argument
+    /// declaration expression) share this finisher so the span rule (LHS
+    /// keeps the declaration span, the assignment spans through the RHS),
+    /// missing-RHS recovery, and right-associative RHS have one authority
+    /// (#13486). Callers own the `Identifier` gate: only invoke after
+    /// `consume_assignment_operator` returns `Some`, which keeps symbolic
+    /// operators on their existing path.
+    fn finish_declaration_repetition_assignment(
+        &mut self,
+        decl: Node,
+        op: &str,
+        op_start: usize,
+    ) -> ParseResult<Node> {
+        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
+            missing
+        } else {
+            self.parse_assignment()?
+        };
+        let start = decl.location.start;
+        let end = rhs.location.end;
+
+        self.charge_node(
+            NodeKind::Assignment { lhs: Box::new(decl), rhs: Box::new(rhs), op: op.to_string() },
+            SourceLocation { start, end },
+        )
     }
 
     fn is_explicit_sub_sigil_argument_start(&mut self) -> bool {
@@ -536,7 +658,7 @@ impl<'a> Parser<'a> {
 
     /// Expect a specific token kind
     fn expect(&mut self, kind: TokenKind) -> ParseResult<Token> {
-        let token = self.tokens.next()?;
+        let token = self.advance_token()?;
         if token.kind() != kind {
             return Err(ParseError::unexpected(
                 kind.display_name(),
@@ -563,7 +685,7 @@ impl<'a> Parser<'a> {
 
     /// Consume next token and track position
     fn consume_token(&mut self) -> ParseResult<Token> {
-        let token = self.tokens.next()?;
+        let token = self.advance_token()?;
         self.last_end_position = token.end();
         Ok(token)
     }
@@ -593,20 +715,21 @@ impl<'a> Parser<'a> {
     /// Utility to build either a HashLiteral or ArrayLiteral based on whether
     /// fat arrow (=>) was seen and we have an even number of elements
     fn build_list_or_hash(
+        &mut self,
         elements: Vec<Node>,
         saw_fat_arrow: bool,
         start: usize,
         end: usize,
-    ) -> Node {
+    ) -> ParseResult<Node> {
         if saw_fat_arrow && elements.len().is_multiple_of(2) {
             // Convert to HashLiteral
             let mut pairs = Vec::with_capacity(elements.len() / 2);
             for chunk in elements.chunks(2) {
                 pairs.push((chunk[0].clone(), chunk[1].clone()));
             }
-            Node::new(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
+            self.charge_node(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
         } else {
-            Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
+            self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
         }
     }
 
@@ -614,13 +737,18 @@ impl<'a> Parser<'a> {
     /// Apply Perl's implicit string conversion to a bareword immediately left
     /// of a fat comma. `=>` is a comma synonym, but unlike a plain comma it
     /// also auto-quotes an otherwise bare identifier.
-    pub(crate) fn auto_quote_bareword_before_fat_comma(node: &mut Node) {
+    pub(crate) fn auto_quote_bareword_before_fat_comma(
+        &mut self,
+        node: &mut Node,
+    ) -> ParseResult<()> {
         if let NodeKind::Identifier { ref name } = node.kind {
-            *node = Node::new(
+            let quoted = self.charge_node(
                 NodeKind::String { value: name.clone(), interpolated: false },
                 node.location,
-            );
+            )?;
+            *node = quoted;
         }
+        Ok(())
     }
 
     /// Continue parsing a comma / fat-arrow separated list when the first
@@ -644,7 +772,7 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::FatArrow) {
             saw_fat_arrow = true;
             if let Some(last) = expressions.last_mut() {
-                Self::auto_quote_bareword_before_fat_comma(last);
+                self.auto_quote_bareword_before_fat_comma(last)?;
             }
             self.consume_token()?; // consume =>
             if self.peek_kind() == Some(TokenKind::FatArrow) {
@@ -676,7 +804,7 @@ impl<'a> Parser<'a> {
                 saw_fat_arrow = true;
                 if !was_comma
                     && let Some(last) = expressions.last_mut() {
-                        Self::auto_quote_bareword_before_fat_comma(last);
+                        self.auto_quote_bareword_before_fat_comma(last)?;
                     }
                 self.consume_token()?; // consume =>
             }
@@ -698,7 +826,7 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                Self::auto_quote_bareword_before_fat_comma(&mut elem);
+                self.auto_quote_bareword_before_fat_comma(&mut elem)?;
                 self.consume_token()?; // consume =>
                 expressions.push(elem);
 
@@ -716,18 +844,88 @@ impl<'a> Parser<'a> {
         }
 
         let end = expressions.last().map(|expr| expr.location.end).unwrap_or(start);
-        Ok(Self::build_list_or_hash(expressions, saw_fat_arrow, start, end))
+        self.build_list_or_hash(expressions, saw_fat_arrow, start, end)
     }
 
-    /// Record a parse error for later retrieval
+    /// Record a parse error for later retrieval.
+    ///
+    /// This is the single production diagnostic-retention seam (#8786). The
+    /// decision to retain is made by the live tracker's charge-before-work
+    /// authority against the operation's configured
+    /// [`crate::ParseBudget::max_errors`], so:
+    ///
+    /// * the limit is the one this operation was configured with, not a
+    ///   hard-coded constant that silently ignored an explicit budget; and
+    /// * the authority is *charged usage*, not `self.errors.len()`, so the
+    ///   retained vector is a consequence of charging rather than its source.
+    ///
+    /// A refusal drops the diagnostic; it is never charged and never retained.
+    /// Diagnostic exhaustion does not by itself terminate the parse — the
+    /// complete recovery terminal behavior remains #7074 — so this seam
+    /// deliberately returns `()` rather than propagating the typed refusal.
     fn record_error(&mut self, error: ParseError) {
-        // Respect max_errors to prevent diagnostic flooding on pathological input.
-        // The default limit matches ParseBudget::default().max_errors.
-        const MAX_ERRORS: usize = 100;
-        if self.errors.len() >= MAX_ERRORS {
+        // Observation is recorded before authorization and is never refused:
+        // grammar decisions that ask "did inner recovery happen?" must not
+        // change answer because the diagnostic budget is spent.
+        self.operation.note_diagnostic_observed();
+        if self.operation.authorize_diagnostic_emit().is_err() {
             return;
         }
+        // #8786: the seam itself.
         self.errors.push(error);
+    }
+
+    /// Construct one AST node: the single production node-construction seam
+    /// (#8786). Charges before construction; a refused node is never built.
+    fn charge_node(&mut self, kind: NodeKind, location: SourceLocation) -> ParseResult<Node> {
+        self.operation.authorize_node_construct()?;
+        // #8786: the seam itself. This is the one permitted routed use of the
+        // raw constructor; `node_construction_seam_is_unique` enforces that
+        // every other use in the production parser is annotated.
+        Ok(Node::new(kind, location))
+    }
+
+    /// Retain a *terminal* diagnostic regardless of the diagnostic budget.
+    ///
+    /// A terminal diagnostic is the only source-anchored record of why the
+    /// parse stopped, and its typed `ParseStopCause` carries no location — the
+    /// stop-cause contract directs consumers to the diagnostic vector for the
+    /// anchor. Dropping it because ordinary retention is spent would leave a
+    /// terminated parse with a cause nobody can locate.
+    ///
+    /// It is observed but deliberately **not** charged: charging it could
+    /// itself be refused, which is the failure being avoided. Same exemption as
+    /// the terminal error retained by [`Parser::parse_with_recovery`].
+    fn retain_terminal_diagnostic(&mut self, error: ParseError) {
+        self.operation.note_diagnostic_observed();
+        // #8786: not charged — a terminal diagnostic must outlive the budget.
+        self.errors.push(error);
+    }
+
+    /// Consume the next token: the single production token-advance seam
+    /// (#8786).
+    ///
+    /// Every parser advance reaches [`crate::TokenStream::next`] through here,
+    /// so token consumption is charged exactly once, before the token leaves
+    /// the stream. A refused advance consumes nothing and charges nothing.
+    ///
+    /// Lookahead (`peek`, `peek_second`, `peek_third`) is not consumption and
+    /// is never charged. A repeated read of the sticky `Eof` terminator takes
+    /// no input from the stream and is likewise not charged; the first, fresh
+    /// `Eof` is charged once like any other token.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::CoreBudgetExhausted`] when the configured
+    /// `max_tokens_consumed` is spent, or the stream's own error otherwise.
+    fn advance_token(&mut self) -> ParseResult<Token> {
+        if !self.tokens.peeked_is_sticky_eof() {
+            self.operation.authorize_token_consume()?;
+        }
+        // #8786: the seam itself. The one permitted direct use of the raw
+        // stream advance. The `token_advance_seam_is_unique` recurrence test
+        // fails if a second, unannotated direct use appears.
+        self.tokens.next()
     }
 
     /// Get all recorded errors
@@ -891,7 +1089,7 @@ impl<'a> Parser<'a> {
     /// before calling the RHS parse function:
     ///
     /// ```ignore
-    /// let op_token = self.tokens.next()?;
+    /// let op_token = self.advance_token()?;
     /// if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
     ///     // wrap (left_expr op missing) and continue
     /// }
@@ -901,13 +1099,20 @@ impl<'a> Parser<'a> {
         if !self.is_infix_rhs_absent() {
             return None;
         }
-        self.errors.push(ParseError::Recovered {
+        Some(self.record_missing_infix_rhs(op_pos))
+    }
+
+    /// Record an absent operand after its grammar owner has identified the boundary.
+    fn record_missing_infix_rhs(&mut self, op_pos: usize) -> Node {
+        self.record_error(ParseError::Recovered {
             site: RecoverySite::InfixRhs,
             kind: RecoveryKind::MissingOperand,
             location: op_pos,
         });
         let pos = op_pos;
-        Some(Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos }))
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
+        Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos })
     }
 
     /// Expect a closing delimiter, recovering gracefully if missing.
@@ -940,7 +1145,7 @@ impl<'a> Parser<'a> {
     fn record_inserted_closer(&mut self, kind: TokenKind) {
         let pos = self.current_position();
         let site = Self::recovery_site_for_closer(kind);
-        self.errors.push(ParseError::Recovered {
+        self.record_error(ParseError::Recovered {
             site,
             kind: RecoveryKind::InsertedCloser,
             location: pos,
@@ -1084,6 +1289,8 @@ impl<'a> Parser<'a> {
         let end = self.current_position();
         let found_token = self.tokens.peek().ok().cloned();
 
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
         Node::new(
             NodeKind::Error { message, expected: vec![], found: found_token, partial: None },
             SourceLocation { start: location, end },
@@ -1130,6 +1337,8 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
         let found = self.tokens.peek().ok().cloned();
 
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
         Node::new(
             NodeKind::Error { message, expected, found, partial: None },
             SourceLocation { start, end: start },
@@ -1198,10 +1407,48 @@ impl<'a> Parser<'a> {
         name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
     }
 
+    /// True when this token starts a `qw` list that Perl flattens in list
+    /// context: a single `QuoteWords` token, or a split `qw` identifier waiting
+    /// for its delimiter.
+    fn token_starts_qw_list(kind: TokenKind, text: &str) -> bool {
+        kind == TokenKind::QuoteWords || (kind == TokenKind::Identifier && text == "qw")
+    }
+
+    fn peek_is_qw_list_start(&mut self) -> bool {
+        self.tokens
+            .peek()
+            .ok()
+            .is_some_and(|token| Self::token_starts_qw_list(token.kind(), token.text.as_ref()))
+    }
+
+    /// Parse the next `qw` list as bare-call arguments, flattening the words.
+    ///
+    /// Standalone `qw(a b)` remains an ArrayLiteral. List-operator calls treat the
+    /// same node as the flattened words, matching `func 'a', 'b'`.
+    ///
+    /// The returned location is the consumed qw container. Empty or
+    /// comment-only lists have no element ends, and `QuoteWords` is consumed
+    /// with `tokens.next()`, which leaves `previous_position()` stale.
+    fn parse_flattened_qw_list_argument(&mut self) -> ParseResult<(Vec<Node>, SourceLocation)> {
+        let node = self.parse_assignment_or_declaration()?;
+        self.flatten_qw_list_argument(node)
+    }
+
+    fn flatten_qw_list_argument(
+        &mut self,
+        node: Node,
+    ) -> ParseResult<(Vec<Node>, SourceLocation)> {
+        match node.into_parts() {
+            (NodeKind::ArrayLiteral { elements }, location) => Ok((elements, location)),
+            (kind, location) => Ok((vec![self.charge_node(kind, location)?], location)),
+        }
+    }
+
     /// We are conservative: the identifier must be lowercase (uppercase bare
-    /// identifiers are more likely to be constants or package names) and
-    /// must NOT be a string comparison operator (`eq`, `ne`, `lt`, `gt`, etc.)
-    /// or a keyword token.
+    /// identifiers are more likely to be constants or package names — an
+    /// uppercase name is admitted only before a plain literal, where the call
+    /// reading is the sole valid Perl parse, #16373) and must NOT be a string
+    /// comparison operator (`eq`, `ne`, `lt`, `gt`, etc.) or a keyword token.
     fn looks_like_bare_call(&mut self, name: &str) -> bool {
         if self.peek_kind().is_some_and(|kind| {
             matches!(kind, TokenKind::My | TokenKind::Our | TokenKind::Local | TokenKind::State)
@@ -1213,8 +1460,29 @@ impl<'a> Parser<'a> {
 
         // Only lowercase identifiers can be bare function calls.
         // Uppercase identifiers like `FIRST_FD` are constants.
-        if name.is_empty() || !name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') {
+        if name.is_empty() {
             return false;
+        }
+        if !name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') {
+            // An uppercase bareword followed by a plain literal has exactly one
+            // valid Perl reading: a declared sub call. ``T `a``` (perl
+            // t/base/lex.t:225) cannot be two adjacent terms, so refusing the
+            // call route left the literal as `UnexpectedSameLineResidue`
+            // (#16373). Widen only for argument starts that admit no other
+            // parse; every other following token keeps the conservative
+            // constant/package-name reading.
+            if !self.peek_kind().is_some_and(|kind| {
+                matches!(
+                    kind,
+                    TokenKind::String
+                        | TokenKind::QuoteSingle
+                        | TokenKind::QuoteDouble
+                        | TokenKind::QuoteCommand
+                        | TokenKind::Number
+                )
+            }) {
+                return false;
+            }
         }
 
         // Exclude string comparison operators and infix keyword operators that are
@@ -1226,6 +1494,35 @@ impl<'a> Parser<'a> {
         let has_typeglob_first_arg = self.peek_kind() == Some(TokenKind::Star)
             && matches!(name, "is" | "isnt" | "like" | "unlike" | "cmp_ok" | "isa_ok" | "can_ok");
 
+        // Peek at the next token to see if it could be an argument
+        let next = match self.tokens.peek() {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        let next_kind = next.kind();
+        let next_text = next.text.clone();
+
+        // `func qw(a b)` is one QuoteWords token; split `qw` plus a delimiter is
+        // the same list in list-operator position (#14808).
+        if Self::token_starts_qw_list(next_kind, next_text.as_ref()) {
+            return true;
+        }
+
+        // Perl autoquotes any bareword before `=>`, including reserved words
+        // and names that the lexer classifies as builtins (`log`, `abs`) or
+        // keywords (`class`, `method`, `format`). Those tokens are valid
+        // list-operator arguments: `has log => sub {}`, `has class => (is =>
+        // 'rw')` (#16639). This check must precede the statement-end / binary-
+        // operator refusal: `and`/`or` are logical operators, and `if` is a
+        // statement-end token, but `has and => 1` / `has if => 1` are still
+        // autoquoted list-operator arguments, including comparison-word tokens
+        // (`has cmp =>`, `has eq =>`, #16691). The Identifier match below used
+        // to return early for builtins without consulting `=>`, and keyword
+        // tokens fell through to `_ => false`.
+        if Self::is_autoquoted_bareword_kind(next_kind) && self.is_keyword_before_fat_arrow() {
+            return true;
+        }
+
         // Must not already be at a statement end or followed by a binary operator.
         // Test helpers are commonly imported as list operators and may take a
         // typeglob slot expression as their first argument: `is *BEGIN{CODE}, ...`.
@@ -1235,18 +1532,12 @@ impl<'a> Parser<'a> {
             return false;
         }
 
-        // Peek at the next token to see if it could be an argument
-        let next = match self.tokens.peek() {
-            Ok(t) => t,
-            Err(_) => return false,
-        };
-
-        match next.kind() {
+        match next_kind {
             // Sigiled variables: `func $x`, `func @arr`, `func %hash`
             TokenKind::Identifier
-                if next.text.starts_with('$')
-                    || next.text.starts_with('@')
-                    || next.text.starts_with('%') =>
+                if next_text.starts_with('$')
+                    || next_text.starts_with('@')
+                    || next_text.starts_with('%') =>
             {
                 true
             }
@@ -1258,21 +1549,29 @@ impl<'a> Parser<'a> {
             // multiplication.
             TokenKind::Star if has_typeglob_first_arg => true,
 
-            // `func "string"` or `func 'string'` — bare function call with a string literal arg.
+            // `func "string"`, `func 'string'`, `func q()`, `func qq()`,
+            // or `func `command`` — bare function call with a string-literal
+            // argument. Backtick bodies lex as `QuoteCommand`, `q()` as
+            // `QuoteSingle` and `qq()` as `QuoteDouble`, so they must be
+            // admitted here too or the quote form loses its argument
+            // uptake (#16373, #16377 review).
             // Handles: `croak "error message"`, `_estr "fmt"`, `die "msg"`, etc.
             // Imported functions that behave like builtins often take string args without parens.
-            TokenKind::String => true,
+            TokenKind::String
+            | TokenKind::QuoteSingle
+            | TokenKind::QuoteDouble
+            | TokenKind::QuoteCommand => true,
 
             // `func 0` — Perl list-operator style calls may take literal numeric args.
             TokenKind::Number => true,
 
             // `func other_func(args)` — identifier followed by `(`
-            // `func bareword => value` — identifier followed by fat arrow (auto-quoted arg)
             // Also: `func Qualified::Name->method(...)` — qualified name as arg (Sub-pattern A).
             // The `!starts_with_uppercase` guard is relaxed for names that contain `::` so that
             // `func File::Spec->catfile(...)` is recognised as a bare call.
+            // Bareword `=>` autoquoting lives above this match so builtins and
+            // keyword tokens share one admission (`has log =>`, `has class =>`).
             TokenKind::Identifier => {
-                let next_text = next.text.clone();
                 // Special tokens like __PACKAGE__, __FILE__, __LINE__, __SUB__ are
                 // nullary builtins that produce values. They are valid bare-call arguments.
                 // e.g. `croak __PACKAGE__, ": error"` (Encode/Encoder.pm)
@@ -1281,8 +1580,7 @@ impl<'a> Parser<'a> {
                 if matches!(
                     next_text.as_ref(),
                     "__PACKAGE__" | "__FILE__" | "__LINE__" | "__SUB__" | "__CLASS__"
-                )
-                {
+                ) {
                     return true;
                 }
                 // Allow qualified names (e.g. `File::Spec`, `Scalar::Util`) as arguments.
@@ -1299,19 +1597,17 @@ impl<'a> Parser<'a> {
                 }
                 if next_text.starts_with(|c: char| c.is_ascii_uppercase()) {
                     // Plain uppercase identifier (e.g. constant) — not an argument.
-                    // Exception: if followed by `=>`, the fat-comma auto-quotes
-                    // it, making it a valid bare-call argument (#5929).
-                    if let Ok(third) = self.tokens.peek_second() {
-                        return third.kind() == TokenKind::FatArrow;
-                    }
+                    // Fat-arrow autoquoting of the same spelling is admitted
+                    // above, before this Identifier match.
                     return false;
                 }
                 // Block-list functions (map/grep/sort/etc.) as argument: `uniq map { ... } @list`
                 if Self::is_block_list_func(&next_text)
-                    && let Ok(third) = self.tokens.peek_second() {
-                        return third.kind() == TokenKind::LeftBrace
-                            || third.kind() == TokenKind::LeftParen;
-                    }
+                    && let Ok(third) = self.tokens.peek_second()
+                {
+                    return third.kind() == TokenKind::LeftBrace
+                        || third.kind() == TokenKind::LeftParen;
+                }
                 // Builtin functions as arguments:
                 //
                 // Pattern A (sigil arg): `func values %hash`, `func keys %h`
@@ -1328,26 +1624,26 @@ impl<'a> Parser<'a> {
                 // the fallthrough to the general `(` check at the bottom of this
                 // branch, causing `croak ref($x) . "y"` to drop the argument.
                 if Self::is_builtin_function(&next_text)
-                    && let Ok(third) = self.tokens.peek_second() {
-                        let third_text: &str = &third.text;
-                        if third.kind() == TokenKind::LeftParen {
-                            // builtin(args) — the builtin is called with parens,
-                            // producing a value that is the outer function's argument.
-                            return true;
-                        }
-                        return Self::is_sigil_argument_start(third.kind(), third_text);
+                    && let Ok(third) = self.tokens.peek_second()
+                {
+                    let third_text: &str = &third.text;
+                    if third.kind() == TokenKind::LeftParen {
+                        // builtin(args) — the builtin is called with parens,
+                        // producing a value that is the outer function's argument.
+                        return true;
                     }
+                    return Self::is_sigil_argument_start(third.kind(), third_text);
+                }
                 if next_text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
                     && self.tokens.peek_second().ok().is_some_and(|third| {
                         Self::is_sigil_argument_start(third.kind(), third.text.as_ref())
-                    }) {
-                        return true;
-                    }
-                // Check if the next-next token is `(` — that signals a function call
-                // or `=>` (fat arrow after bareword) — that signals an auto-quoted arg
-                self.tokens.peek_second().ok().is_some_and(|t| {
-                    t.kind() == TokenKind::LeftParen || t.kind() == TokenKind::FatArrow
-                })
+                    })
+                {
+                    return true;
+                }
+                // Check if the next-next token is `(` — that signals a function call.
+                // Fat-arrow autoquoting of the same identifier is admitted above.
+                self.tokens.peek_second().ok().is_some_and(|t| t.kind() == TokenKind::LeftParen)
             }
 
             _ => false,

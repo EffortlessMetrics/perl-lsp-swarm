@@ -18,7 +18,8 @@
     "result_classes",
     "required_environment_denials",
     "default_claim_boundary",
-    "fixtures"
+    "fixtures",
+    "class_contracts"
   ],
   "properties": {
     "$schema": {
@@ -85,6 +86,14 @@
         "$ref": "#/$defs/fixture"
       },
       "minItems": 1
+    },
+    "class_contracts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/class_contract"
+      },
+      "minItems": 6,
+      "uniqueItems": true
     }
   },
   "$defs": {
@@ -152,7 +161,10 @@
         "dynamic_boundaries",
         "unsupported_effects",
         "framework_adapters",
-        "claim_boundary"
+        "claim_boundary",
+        "expected_fact_families",
+        "owner",
+        "module_files"
       ],
       "properties": {
         "id": {
@@ -222,6 +234,103 @@
         "claim_boundary": {
           "type": "string",
           "minLength": 1
+        },
+        "expected_fact_families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fact_family"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "owner": {
+          "$ref": "#/$defs/owner_issue"
+        },
+        "module_files": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Additional load files (beyond `source`) that the fixture's module graph requires. Empty for single-file fixtures. Every entry must be contained by a declared module_root."
+        }
+      }
+    },
+    "owner_issue": {
+      "type": "string",
+      "pattern": "^#[1-9][0-9]*$",
+      "description": "Owning GitHub issue reference, e.g. \"#13622\"."
+    },
+    "fact_family": {
+      "type": "string",
+      "enum": [
+        "compile_effects",
+        "constants",
+        "dynamic_boundaries",
+        "export_sets",
+        "generated_members",
+        "import_specs",
+        "inheritance_facts",
+        "isa_entries",
+        "named_subs",
+        "packages",
+        "prototype_entries",
+        "role_composition_facts",
+        "source_ranges",
+        "stash_entries",
+        "visible_symbols"
+      ],
+      "description": "Normalized fact family compared by a comparison class (PLSP-SPEC-0027)."
+    },
+    "class_coverage": {
+      "type": "string",
+      "enum": [
+        "declared",
+        "pending_fixture"
+      ],
+      "description": "declared = at least one fixture declares this class; pending_fixture = no fixture declares it yet and the owner still owns that gap."
+    },
+    "class_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "comparison_class",
+        "contract_version",
+        "owner",
+        "coverage",
+        "fact_families",
+        "pending_fact_families"
+      ],
+      "properties": {
+        "comparison_class": {
+          "$ref": "#/$defs/comparison_class"
+        },
+        "contract_version": {
+          "type": "string",
+          "pattern": "^v[1-9][0-9]*$"
+        },
+        "owner": {
+          "$ref": "#/$defs/owner_issue"
+        },
+        "coverage": {
+          "$ref": "#/$defs/class_coverage"
+        },
+        "fact_families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fact_family"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "pending_fact_families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fact_family"
+          },
+          "uniqueItems": true,
+          "description": "Fact families this class compares that no fixture attests to yet. Together with the families fixtures do attest, this must account for every entry in fact_families."
         }
       }
     }

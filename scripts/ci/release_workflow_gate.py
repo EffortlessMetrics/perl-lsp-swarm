@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""Dispatch one GitHub Actions workflow and prove its exact terminal result.
+"""Retained mechanical child-run leaf; current orchestration does not use it.
 
-The release orchestrator uses this helper at workflow boundaries where an
-existing publisher is still independently dispatchable. A downstream job may
-become reachable only after this helper identifies exactly one new run for the
-expected source SHA and observes a successful terminal conclusion.
-
-This is deliberately stricter than `gh workflow run && gh run watch`: the
-selected run is bound to repository, workflow, event, source SHA, ref, run ID,
-and attempt. Ambiguous or missing runs fail closed.
+Exact selection/terminal identity and a named private observation are necessary
+for mechanical success. They never establish release qualification. The CLI has
+no artifact identity adapter and fails closed with NOT_PROVEN before dispatch.
 """
 
 from __future__ import annotations
@@ -42,6 +37,7 @@ class GateError(RuntimeError):
 
 @dataclasses.dataclass(frozen=True)
 class RunIdentity:
+    repository: str
     run_id: int
     run_attempt: int
     workflow_id: int
@@ -56,9 +52,14 @@ class RunIdentity:
     @classmethod
     def from_json(cls, raw: Mapping[str, Any]) -> "RunIdentity":
         try:
+            if any(type(raw.get(key)) is not int or raw[key] <= 0 for key in ("id", "run_attempt", "workflow_id")):
+                raise GateError("workflow run numeric identity must be positive exact integers")
+            if type(raw.get("repository")) is not dict or not isinstance(raw["repository"].get("full_name"), str):
+                raise GateError("workflow run repository identity missing")
             return cls(
+                repository=raw["repository"]["full_name"],
                 run_id=int(raw["id"]),
-                run_attempt=int(raw.get("run_attempt", 1)),
+                run_attempt=int(raw["run_attempt"]),
                 workflow_id=int(raw["workflow_id"]),
                 event=str(raw["event"]),
                 head_sha=str(raw["head_sha"]),
@@ -88,6 +89,8 @@ def select_new_exact_run(
     prior_ids: set[int],
     expected_sha: str,
     dispatch_started: dt.datetime,
+    expected_repository: str, expected_ref: str, expected_workflow_id: int,
+    expected_run_attempt: int, expected_run_id: int | None = None,
 ) -> RunIdentity | None:
     """Return one exact newly-created run, or fail when selection is ambiguous."""
 
@@ -95,6 +98,11 @@ def select_new_exact_run(
         run
         for run in runs
         if run.run_id not in prior_ids
+        and run.repository == expected_repository
+        and run.head_branch == expected_ref.removeprefix("refs/heads/").removeprefix("refs/tags/")
+        and run.workflow_id == expected_workflow_id
+        and run.run_attempt == expected_run_attempt
+        and (expected_run_id is None or run.run_id == expected_run_id)
         and run.event == "workflow_dispatch"
         and run.head_sha == expected_sha
         and _parse_time(run.created_at) >= dispatch_started - dt.timedelta(seconds=60)
@@ -113,7 +121,15 @@ def validate_terminal_run(
     *,
     expected_sha: str,
     expected_workflow_id: int,
+    expected_repository: str, expected_ref: str, expected_run_id: int, expected_run_attempt: int,
+    expected_transaction_id: str, expected_workflow_ref: str, observation_bytes: bytes | None,
 ) -> None:
+    if run.repository != expected_repository:
+        raise GateError("repository mismatch")
+    if run.head_branch != expected_ref.removeprefix("refs/heads/").removeprefix("refs/tags/"):
+        raise GateError("ref mismatch")
+    if run.run_id != expected_run_id or run.run_attempt != expected_run_attempt:
+        raise GateError("selected run ID/attempt mismatch")
     if run.workflow_id != expected_workflow_id:
         raise GateError(
             f"workflow mismatch: expected {expected_workflow_id}, got {run.workflow_id}"
@@ -127,6 +143,26 @@ def validate_terminal_run(
     if run.conclusion != "success":
         conclusion = run.conclusion or "missing"
         raise GateError(f"run {run.run_id} did not succeed: conclusion={conclusion}")
+    if observation_bytes is None:
+        raise GateError("NOT_PROVEN: private observation artifact identity adapter absent")
+    import release_publication_admission as admission
+    try:
+        observation = admission.parse_object(observation_bytes)
+    except admission.AdmissionError as error:
+        raise GateError("private observation malformed") from error
+    if (observation.get("schema_version") != "private_producer_observation.v1"
+            or observation.get("phase") != "private_candidate"
+            or observation.get("transaction_id") != expected_transaction_id
+            or observation.get("source_sha") != expected_sha):
+        raise GateError("private observation transaction/source mismatch")
+    producer = observation.get("producer")
+    if type(producer) is not dict or producer != {"repository": expected_repository,
+            "workflow_ref": expected_workflow_ref, "run_id": expected_run_id,
+            "run_attempt": expected_run_attempt} or type(producer.get("run_id")) is not int or type(producer.get("run_attempt")) is not int:
+        raise GateError("private observation producer identity mismatch")
+    if observation.get("qualification") != "not_proven":
+        raise GateError("mechanical leaf cannot accept qualification assertions")
+
 
 
 def _run_gh(args: Sequence[str], *, expect_json: bool = True) -> Any:
@@ -217,6 +253,8 @@ def dispatch_and_wait(
     poll_seconds: int,
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
+    expected_run_attempt: int = 1, expected_transaction_id: str = "",
+    expected_workflow_ref: str = "", observation_loader: Callable | None = None,
 ) -> RunIdentity:
     if not expected_sha or len(expected_sha) != 40 or any(
         character not in "0123456789abcdef" for character in expected_sha
@@ -225,12 +263,26 @@ def dispatch_and_wait(
     if timeout_seconds <= 0 or poll_seconds <= 0:
         raise GateError("timeout and poll interval must be positive")
 
+    if observation_loader is None:
+        raise GateError("NOT_PROVEN: private observation artifact identity adapter absent")
+    if not ref.startswith(("refs/heads/", "refs/tags/")):
+        raise GateError("requested ref must name its exact branch/tag namespace")
+    if len(expected_transaction_id) != 64 or any(c not in "0123456789abcdef" for c in expected_transaction_id):
+        raise GateError("private transaction identity malformed")
+    if not expected_workflow_ref.startswith(repo + "/.github/workflows/") or not expected_workflow_ref.endswith("@" + ref):
+        raise GateError("expected workflow ref does not bind requested repository/ref")
+    if type(expected_run_attempt) is not int or expected_run_attempt <= 0:
+        raise GateError("expected run attempt malformed")
     workflow_raw = _workflow(repo, workflow)
     try:
-        workflow_id = int(workflow_raw["id"])
+        workflow_id = workflow_raw["id"]
+        if type(workflow_id) is not int or workflow_id <= 0:
+            raise GateError("workflow ID must be a positive exact integer")
     except (KeyError, TypeError, ValueError) as error:
         raise GateError("workflow lookup lacks a numeric id") from error
 
+    if expected_workflow_ref != repo + "/" + str(workflow_raw.get("path")) + "@" + ref:
+        raise GateError("workflow lookup path differs from expected workflow ref")
     before = _runs(repo, workflow_id)
     prior_ids = {run.run_id for run in before}
     dispatch_started = dt.datetime.now(dt.timezone.utc)
@@ -244,6 +296,8 @@ def dispatch_and_wait(
             prior_ids=prior_ids,
             expected_sha=expected_sha,
             dispatch_started=dispatch_started,
+            expected_repository=repo, expected_ref=ref, expected_workflow_id=workflow_id,
+            expected_run_attempt=expected_run_attempt,
         )
         if selected is not None:
             break
@@ -256,10 +310,19 @@ def dispatch_and_wait(
     while clock() < deadline:
         current = _run(repo, selected.run_id)
         if current.status == "completed":
+            artifact_name = f"private-producer-{expected_transaction_id}-{expected_run_attempt}"
+            artifact = observation_loader(repo, selected.run_id, artifact_name)
+            if (type(artifact) is not dict or artifact.get("repository") != repo
+                    or artifact.get("run_id") != selected.run_id or artifact.get("name") != artifact_name
+                    or type(artifact.get("bytes")) is not bytes):
+                raise GateError("NOT_PROVEN: exact private observation artifact absent")
             validate_terminal_run(
                 current,
                 expected_sha=expected_sha,
-                expected_workflow_id=workflow_id,
+                expected_workflow_id=workflow_id, expected_repository=repo, expected_ref=ref,
+                expected_run_id=selected.run_id, expected_run_attempt=expected_run_attempt,
+                expected_transaction_id=expected_transaction_id, expected_workflow_ref=expected_workflow_ref,
+                observation_bytes=artifact["bytes"],
             )
             return current
         sleeper(poll_seconds)
@@ -303,7 +366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _write_output("html_url", run.html_url)
     _write_output("conclusion", run.conclusion or "")
     print(
-        f"Exact workflow gate passed: workflow={args.workflow} run={run.run_id} "
+        f"Mechanical workflow gate passed; release qualification NOT_PROVEN: workflow={args.workflow} run={run.run_id} "
         f"attempt={run.run_attempt} sha={run.head_sha}"
     )
     return 0

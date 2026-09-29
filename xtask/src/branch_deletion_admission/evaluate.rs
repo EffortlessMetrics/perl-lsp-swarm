@@ -34,6 +34,7 @@ use super::model::{
 /// 6. `SAFE_TO_DELETE`.
 pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
     let parent = &request.parent;
+    let branch_ref = request.branch.local_ref.as_deref().unwrap_or(&parent.head_ref);
     let outcome = |admission: DeletionAdmission,
                    detail: String,
                    retained_children: Vec<RetainedChild>| AdmissionOutcome {
@@ -41,7 +42,8 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         policy_version: BRANCH_DELETION_ADMISSION_POLICY_VERSION.to_string(),
         repository: parent.repository.render(),
         parent_number: parent.number,
-        branch: parent.head_ref.clone(),
+        branch: branch_ref.to_string(),
+        local_ref: request.branch.local_ref.clone(),
         admission,
         detail,
         retained_children,
@@ -172,7 +174,7 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
                 DeletionAdmission::RetainBranchMoved,
                 format!(
                     "{} now points at {current}, not the reviewed subject {}",
-                    parent.head_ref, parent.reviewed_head_sha
+                    branch_ref, parent.reviewed_head_sha
                 ),
                 Vec::new(),
             );
@@ -180,7 +182,7 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         None => {
             return outcome(
                 DeletionAdmission::RetainBranchMoved,
-                format!("current tip of {} could not be read", parent.head_ref),
+                format!("current tip of {} could not be read", branch_ref),
                 Vec::new(),
             );
         }
@@ -192,14 +194,14 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
         WorktreeOwnership::ActiveWriter { detail } => {
             return outcome(
                 DeletionAdmission::RetainGraphNotProven,
-                format!("a local writer still owns {}: {detail}", parent.head_ref),
+                format!("a local writer still owns {}: {detail}", branch_ref),
                 Vec::new(),
             );
         }
         WorktreeOwnership::NotProven { detail } => {
             return outcome(
                 DeletionAdmission::RetainGraphNotProven,
-                format!("local worktree ownership of {} is not proven: {detail}", parent.head_ref),
+                format!("local worktree ownership of {} is not proven: {detail}", branch_ref),
                 Vec::new(),
             );
         }
@@ -210,8 +212,8 @@ pub fn evaluate(request: &AdmissionRequest) -> AdmissionOutcome {
     let mut admitted = outcome(
         DeletionAdmission::SafeToDelete,
         format!(
-            "#{} is merged, no open pull request uses {} as a base, the branch still points at {}, and no local writer owns it",
-            parent.number, parent.head_ref, parent.reviewed_head_sha
+            "#{} is merged, no open pull request uses {} as a base, local subject {} still points at {}, and no local writer owns it",
+            parent.number, parent.head_ref, branch_ref, parent.reviewed_head_sha
         ),
         Vec::new(),
     );

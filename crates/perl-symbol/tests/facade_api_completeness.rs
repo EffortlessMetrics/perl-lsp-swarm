@@ -122,12 +122,14 @@ fn canonical_adapter_path_is_unique() {
         &[SymbolRef],
         FileId,
         &BTreeMap<String, EntityId>,
+        &BTreeMap<String, EntityId>,
     ) -> SymbolRefSemanticFacts = symbol_refs_to_semantic_facts;
 
     // ── SymbolRef adapter: module path (must be the same function) ──
     let _ref_adapter_mod: fn(
         &[SymbolRef],
         FileId,
+        &BTreeMap<String, EntityId>,
         &BTreeMap<String, EntityId>,
     ) -> perl_symbol::surface::SymbolRefSemanticFacts =
         perl_symbol::surface::symbol_refs_to_semantic_facts;

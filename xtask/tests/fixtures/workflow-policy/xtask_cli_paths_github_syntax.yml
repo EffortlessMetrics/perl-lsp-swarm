@@ -1,0 +1,18 @@
+name: fixture-xtask-cli-paths-github-syntax
+# GitHub reads `?` and `+` as quantifiers on the preceding character, which the
+# glob crate does not. Such a pattern cannot be evaluated faithfully, so it is
+# not counted as coverage and the wiring file is still requested explicitly.
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/main.rs?'
+      - 'xtask/src/tasks/mod.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo xtask example-contract check

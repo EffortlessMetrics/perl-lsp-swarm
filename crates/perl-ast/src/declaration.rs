@@ -368,7 +368,9 @@ mod tests {
         }
     }
 
-    fn exact_attribute(name: &str) -> DeclarationAttributeSyntax {
+    fn exact_attribute(
+        name: &str,
+    ) -> Result<DeclarationAttributeSyntax, DeclarationAttributeSyntaxError> {
         DeclarationAttributeSyntax::new(
             DeclarationAttributeSeparator::Colon { range: span(0, 1) },
             name.to_owned(),
@@ -377,23 +379,25 @@ mod tests {
             span(0, 12),
             DeclarationAttributeCompleteness::Exact,
         )
-        .expect("fixture is valid")
     }
 
     #[test]
-    fn preserves_order_duplicates_and_spelling_without_interpretation() {
+    fn preserves_order_duplicates_and_spelling_without_interpretation()
+    -> Result<(), DeclarationAttributeSyntaxError> {
         let attributes =
-            [exact_attribute("reader"), exact_attribute("reader"), exact_attribute("custom")];
+            [exact_attribute("reader")?, exact_attribute("reader")?, exact_attribute("custom")?];
         assert_eq!(attributes[0].name(), attributes[1].name());
         assert_eq!(
             attributes.iter().map(|a| a.name()).collect::<Vec<_>>(),
             ["reader", "reader", "custom"]
         );
         assert_ne!(attributes[0], attributes[2]);
+        Ok(())
     }
 
     #[test]
-    fn preserves_separator_geometry_and_whitespace_continuation() {
+    fn preserves_separator_geometry_and_whitespace_continuation()
+    -> Result<(), DeclarationAttributeSyntaxError> {
         let attribute = DeclarationAttributeSyntax::new(
             DeclarationAttributeSeparator::WhitespaceContinuation { range: span(0, 2) },
             "does".into(),
@@ -401,9 +405,9 @@ mod tests {
             None,
             span(0, 6),
             DeclarationAttributeCompleteness::Exact,
-        )
-        .expect("fixture is valid");
+        )?;
         assert_eq!(attribute.separator().range(), span(0, 2));
+        Ok(())
     }
 
     #[test]
@@ -440,7 +444,8 @@ mod tests {
     }
 
     #[test]
-    fn distinguishes_absent_empty_exact_recovered_and_unavailable_arguments() {
+    fn distinguishes_absent_empty_exact_recovered_and_unavailable_arguments()
+    -> Result<(), DeclarationAttributeSyntaxError> {
         let absent = DeclarationAttributeSyntax::new(
             DeclarationAttributeSeparator::Colon { range: span(0, 1) },
             "a".into(),
@@ -448,8 +453,7 @@ mod tests {
             None,
             span(0, 2),
             DeclarationAttributeCompleteness::Exact,
-        )
-        .expect("fixture is valid");
+        )?;
         assert!(absent.argument().is_none());
 
         for disposition in [
@@ -505,6 +509,7 @@ mod tests {
                 .is_ok()
             );
         }
+        Ok(())
     }
 
     #[test]

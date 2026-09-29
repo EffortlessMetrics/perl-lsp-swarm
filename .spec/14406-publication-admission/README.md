@@ -4,6 +4,11 @@ Status: first pure leaf authorized by root after review of spec bcfcc57c; implem
 preparation in the retained draft #14479 carrier, not a standalone mergeable
 partial graph. It advances #14406 and closes no release prerequisite.
 
+Current #16762 recovery supersedes the historical sequencing prohibition below:
+normal c5c6c72 main integration is admitted and in progress. The current slice is
+private acquisition/execution-boundary repair, not completed canonical producer
+integration or release qualification. Historical leaf decisions remain preserved.
+
 ## Authorities and reconstruction boundary
 
 - [Accepted admission decision](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14406#issuecomment-5599441910).
@@ -254,3 +259,149 @@ accepted #14923 composition and authenticated artifact/policy context. This adap
 is not permission to merge the partial carrier or run its obsolete retained graph.
 
 Independent adapter review corrected a masked negative: prepared-versus-frozen now changes both expected prepared SHA and producer head, and requires the canonical terminal validator's source-identity rejection. Root and child symbolic-link/junction refusal branches have deterministic controls; removing only root-junction rejection fails the control, and exact restoration passes. These mocked path-predicate controls prove refusal logic, not native detection or filesystem isolation. The updated eight adapter tests pass; the earlier 49 other focused canonical/leaf/gate tests remain unchanged proof, for 57 distinct tests across the two runs. Broad corruption controls establish rejection without attributing each rejection to a unique internal validator.
+# #16762 current-main private producer recovery
+
+Accepted packet: issue comment 5888739071. Normal integration consumes main
+`c5c6c72cb0a20ace218c5f449dc8e5077e67dd72` without changing the separate conflicted
+#6231 checkout. Main supersedes the old tag-first workflow, topology v3-only
+implementation, helper and dependency snapshots; private permission/byte adapters,
+their tests and self-mutating finalizer removal survive. Policy retains main's
+evolved shared rows and adds only private rows absent from main.
+
+Implementation cage: existing release.yml/orchestration, canonical topology
+producer grammar and paired tests, private producer observation adapter/tests,
+existing prerequisite-graph checker/tests and this plan. Private mode is the safe
+default. Its planned tag is a label, not an assertion of existing immutable tag
+authority. Candidate building has read-only repository permissions and no OIDC,
+attestation, publisher environment or downstream publication. Exact source,
+transaction, run/attempt, policy bytes and canonical terminal membership accompany
+the private result. No same-SHA dispatch selection grants authority.
+
+The common fan-in must remain terminal on failed/missing predecessors. It derives
+NOT_PROVEN while authentication, isolation, accepted policy/currentness or complete
+VSIX adapters are absent; no unsigned digest becomes publication eligibility.
+Public jobs require affirmative qualification plus separate explicit publication
+authorization. No such authorization is exercised by this packet. #16207 is landed;
+#16230 is not, so complete mapped VSIX remains NOT_PROVEN.
+
+Proof commands: `python -m unittest discover -s scripts/ci -p test_release_publication_admission.py`, the corresponding
+`test_release_private_candidate.py` and `test_release_private_producer.py`
+modules, plus canonical `test_generate_release_topology.py` and
+`test_release_terminal_manifest.py`. Actual workflow controls live in
+`test_release_prerequisite_graph.py`; actionlint checks both selected workflows.
+Per-module unittest counts count test methods, not individual mutations; current
+combined admission/candidate/producer execution is 21 methods (11/8/2). #9422/#8576 receive
+exact job/output/environment/dispatch observation identifiers, never fabricated
+hosted counts. Rollback reverts the coherent source changes while retaining the
+canonical main graph and private-adapter history. No public operation is run.
+
+## Executable observation handoff (#9422 / #8576)
+
+`release.yml` is the single selected child workflow. Inputs include exact
+`expected_sha`, `transaction_id`, expected policy/topology digests and expected
+run attempt; `no_publish` defaults true. Orchestration forwards those inputs and
+always requests private mode. Planned `tag` labels bytes only; it does not claim
+a created or authenticated immutable tag. The selected caller still owes trusted
+input acquisition and producer/artifact authentication.
+
+Failure input: `fail_before_publish=true`. Required refused predecessor:
+`publisher-eligibility` / `Bind and seal terminal candidate authority`, after
+canonical private-byte observation and before any affirmative qualification.
+Failed/skipped candidate or metadata results fail that terminal fan-in; missing
+bytes also refuse. Its only implemented qualification output is `not_proven`.
+The emitted `private_producer_observation.v1` is a local observation, not the
+named release-integrity aggregate or a new admitted qualification schema.
+
+Observation artifact: `private-producer-<transaction_id>-<run_attempt>`; private
+candidate artifact: `release-terminal-candidate-<transaction_id>-<run_attempt>`.
+Record exact repository, workflow ref, SHA, run ID/attempt, input identity, policy
+and topology digests. Artifact names route bytes, not authenticated authority.
+
+All public jobs are `publish-release` and `dispatch-publishers`. The former holds
+deferred attestation/tag/GitHub Release operations; the latter owns crates/editor/
+container and package-manager fan-out. Both require explicit non-private mode AND
+`publisher-eligibility.qualification == satisfied`; no current adapter can emit
+that value. No publisher environment is selected by the private path.
+
+Hosted probes must observe those jobs, effective environment/credential admission,
+attestation/tag/release APIs and every downstream dispatch, plus topology-selected
+public-state surfaces before/after. Expected counts are zero; actual counts and
+public-state equality are NOT_PROVEN here. Local source/fixture passes do not fill
+them. Complete VSIX, isolated-worker provenance, trusted policy, artifact/producer
+authentication and relied-upon live controls remain mandatory unresolved adapters.
+
+
+## #16762 explicit source acquisition and #8576 executor prerequisite
+
+The optional release inputs `source_context_run_id`, `source_context_artifact_name`
+and `source_context_sha256` select one same-repository, exact-run named artifact
+using actions:read. Missing/unavailable input is NOT_PROVEN, not compatibility green.
+The unpacked artifact must contain exactly regular `context.json` and
+`frozen-topology.json` files. Context JSON must be canonical, duplicate-free and
+closed-schema `private_source_context.v1`: repository, positive artifact_run_id,
+artifact_name, distinct frozen_sha/prepared_sha, frozen_topology_sha256,
+independent vsix_mapping and sorted unique targets. The expected context digest
+binds exact JSON bytes; its frozen digest binds exact frozen topology bytes.
+Repository/run/name equality is an observed acquisition join, not authenticated
+release authority. Separate checkouts use exact declared commits, no persisted
+credentials, and complete Git history for the frozen-ancestor-of-prepared check.
+Producer SHA must equal the declared prepared role; tag is only a planned label.
+
+No artifact field, CLI option or workflow boolean admits source execution. The
+current CLI does not execute declared-root topology helpers or Cargo metadata.
+`admitted_source_executor` is an internal callable seam, unavailable to CLI;
+`validate_v4_sources` preserves the canonical v4 callable for a future admitted
+adapter and is tested on owned fixture roots. It validates the exact independent
+mapping, frozen/prepared transition and topology/archive/evidence target equality.
+The ordinary acquisition path reports source_validation NOT_PROVEN and leaves
+reviewed_source_execution and credential_free_worker as missing adapters. Even a
+locally admitted callable never qualifies publication by itself. The observation
+always reports source_validation NOT_PROVEN until a concrete admitted result
+interface exists; a no-op callable cannot upgrade this receipt. Direct owned-fixture
+canonical execution remains a separate test result.
+
+[Existing #8576](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8576)
+owns the executable prerequisite; do not create a second authority model. Its
+next adapter must independently admit the reviewed validator closure and source
+roots, establish credential-free isolation before helper/metadata execution, bind
+read-only roots and exact source roles/ancestry, and prove denied credentials,
+network and process capabilities where the accepted execution contract requires
+it. Canonical `publish_dependency_graph` executes root/scripts/publish-topo.py;
+`cargo_metadata` invokes Cargo in the root. Digest pinning and
+persist-credentials:false alone cannot authorize these operations.
+
+Discriminators: default missing executor must never reach a throwing helper;
+missing/malformed context, wrong digest/repository/run/source/targets refuse;
+owned v4 canonical positive plus wrong source and omitted/wrong targets refuse;
+no_publish=false with NOT_PROVEN must leave both public jobs unreachable. #8576
+must supply real before/after private execution and #9422 mutation observations
+before any hosted completion claim. Current tests are local source/fixture proof;
+actual hosted acquisition, isolated executor, full VSIX, authenticated qualification
+and observed zero public mutations remain NOT_PROVEN. No public operation is
+permitted in this goal. Root owns issue publication and final disposition.
+
+
+## Retained child-run mechanical leaf disposition
+
+`release_workflow_gate.py` is preserved donor value, not used by current
+orchestration. Selection now binds repository, requested branch/tag ref component,
+workflow ID, attempt and optional explicit run ID. Terminal validation rechecks
+selected run ID/attempt and full identity, then joins the actual named
+`private-producer-<transaction>-<attempt>` observation bytes to the independently
+expected transaction/source/repository/full workflow ref/run/attempt. Run metadata
+cannot supply workflow input or transaction identity. A future admitted artifact
+loader must obtain the exact same-repository selected-run named artifact and
+return verified bytes plus observed identity. The current CLI has no such adapter
+and returns NOT_PROVEN before dispatch. Mechanical terminal success never means
+release qualification; the observation must remain explicitly nonqualifying.
+Paired tests mock all API/artifact operations: wrong ref/workflow, substituted
+selected ID/attempt, same-SHA distinct transaction, absent identity adapter and
+wrong producer identity refuse. No network or dispatch execution occurs in proof.
+
+
+Mechanical selection retains a dispatch_started minus 60-second tolerance. An
+unseen just-pre-dispatch run with the same ref/SHA/attempt and reused transaction
+ID is not causally distinguished by these joins. The disconnected helper and
+missing-loader CLI remain nonqualifying. #8576 must independently admit one
+execution/transaction identity and authenticated acquisition before any causal
+claim; do not invent a parallel registry or infer causality from timestamps.

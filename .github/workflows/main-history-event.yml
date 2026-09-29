@@ -1,0 +1,187 @@
+name: Main History Event
+
+# Observe exact `main` push-event movement and publish one durable receipt.
+#
+# #10306: the repository can verify a completed Git graph, but it produced no
+# event-bound observation when `main` moved non-fast-forward. This workflow binds
+# GitHub's delivered push subjects (`before`, `after`, `ref`, and the
+# created/deleted/forced flags) to the typed ancestry authority added by #10304
+# and keeps the two propositions on separate axes.
+#
+# Deliberate boundaries:
+#   * read-only. `contents: read`, no persisted credentials, and no branch, tag,
+#     PR, issue, release, or ref mutation. This detector observes a push after
+#     the fact; it is not prevention and must never be represented as such.
+#   * no independent ancestry logic lives here. The workflow forwards the exact
+#     event subjects to one repository command and reports its verdict. It never
+#     parses fetch prose and never re-derives the history relation in YAML —
+#     that is precisely the mistake behind the false August 15 re-root
+#     diagnosis. `main_history_event_workflow_contract` enforces this.
+#   * it does not read live branch-protection or ruleset state. That authority
+#     belongs to the `release_live_controls` observer (#9403 / #8551), and this
+#     workflow must not grow a second settings model.
+#
+# Two limits are inherent to observing pushes from inside the history being
+# observed, and neither is repairable here. They bound what this lane can claim;
+# prevention remains with the live branch-protection controls above.
+#
+#   1. GitHub evaluates a `push` workflow from the pushed revision, so a reset to
+#      a commit that predates this file dispatches nothing at all. A destructive
+#      push can therefore erase its own detector, and the absence of a run is not
+#      evidence of a safe push.
+#   2. A rewind commonly leaves `github.event.before` unreachable from every ref,
+#      and a clone fetches only reachable objects. The classifier then reports
+#      `not_proven_missing_object` rather than proving the rewrite. That still
+#      fails closed and still retains the delivered `forced` flag, but it is
+#      weaker evidence than a proven `non_fast_forward`.
+#
+# On ref deletion: a `push` event is still delivered with `deleted: true`, but
+# `github.sha` reverts to the default branch tip rather than naming the deleted
+# ref's commit. The classifier is therefore fed `github.event.after` — the
+# delivered payload subject, which is the zero object name for a deletion — so
+# the receipt records what the platform actually sent instead of an unrelated
+# tip. The `deleted_ref` verdict is driven by the delivered flag and that zero
+# name, never by the checked-out SHA. Because this workflow filters on
+# `branches: [main]`, the deletion path is only reachable if `main` itself is
+# deleted; prevention remains with the live branch-protection observer above.
+
+# `push` is the only trigger. A `workflow_dispatch` run carries no push payload,
+# so `github.event.before` and the created/deleted/forced flags would all be
+# empty and every manual run would fail as `invalid_event`. There is no push
+# event to classify outside a push; investigate a specific pair locally with
+# `cargo run -p xtask --bin main-history-event` instead.
+on:
+  push:
+    branches:
+      - main
+
+# No `concurrency:` group, deliberately. A group admits one running and one
+# pending run, and a newly queued run displaces the pending one, so any shared
+# group can silently discard a push's receipt — `cancel-in-progress: false` does
+# not prevent that. Keying by `github.sha` is not sufficient either: `main`
+# returning to the same commit produces distinct push events that share a SHA,
+# and that is the force-push shape this lane most needs to observe. Every run
+# stays independent so no observation can ever be displaced by another.
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  classify:
+    name: Classify main push movement
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the exact event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The complete graph is required: a shallow checkout cannot tell a
+          # rewritten history from a retained-boundary artifact, and the command
+          # correctly refuses to answer on one.
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache: true
+          cache-key-suffix: main-history-event
+
+      - name: Classify the delivered push event
+        id: classify
+        env:
+          # Exact platform subjects, passed at step scope as environment values
+          # rather than interpolated into the script body.
+          EVENT_BEFORE: ${{ github.event.before }}
+          # The delivered payload subject, not `github.sha`: the two agree for an
+          # ordinary push, but on a ref deletion `github.sha` reverts to the
+          # default branch tip while `github.event.after` is the zero name.
+          EVENT_AFTER: ${{ github.event.after }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_FORCED: ${{ github.event.forced }}
+          EVENT_CREATED: ${{ github.event.created }}
+          EVENT_DELETED: ${{ github.event.deleted }}
+          RECEIPT_PATH: target/history/main-event.json
+        run: |
+          set -euo pipefail
+          arguments=(
+            --repo .
+            --before "${EVENT_BEFORE}"
+            --after "${EVENT_AFTER}"
+            --ref "${EVENT_REF}"
+            --output "${RECEIPT_PATH}"
+          )
+          if [ "${EVENT_FORCED}" = "true" ]; then
+            arguments+=(--event-forced)
+          fi
+          if [ "${EVENT_CREATED}" = "true" ]; then
+            arguments+=(--event-created)
+          fi
+          if [ "${EVENT_DELETED}" = "true" ]; then
+            arguments+=(--event-deleted)
+          fi
+
+          # The verdict is recorded rather than raised here so the receipt is
+          # always uploaded, including — especially — when the detector is red.
+          set +e
+          cargo run --locked -p xtask --bin main-history-event -- "${arguments[@]}"
+          status=$?
+          set -e
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+          echo "receipt=${RECEIPT_PATH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish the history-event receipt
+        if: always() && steps.classify.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # `github.sha` alone is not an event identity: `main` returning to the
+          # same commit produces distinct pushes that share it, and those repeated
+          # resets are the shape most worth telling apart. The run id makes each
+          # observation addressable without consulting run metadata.
+          name: main-history-event-receipt-${{ github.sha }}-${{ github.run_id }}
+          path: target/history/main-event.json
+          # A missing receipt is a failed observation, not a quiet skip.
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce the detector verdict
+        if: always() && steps.classify.outcome != 'skipped'
+        env:
+          CLASSIFY_STATUS: ${{ steps.classify.outputs.status }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLASSIFY_STATUS}" ]; then
+            echo "::error::the history-event classifier produced no verdict"
+            exit 1
+          fi
+          # Distinguish the blocking classes: a proven rewrite and an
+          # unverifiable graph are very different operator situations, and an
+          # instrument failure is not a history finding at all.
+          case "${CLASSIFY_STATUS}" in
+            0)
+              echo "main history-event detector: movement proven safe"
+              ;;
+            2)
+              echo "::error::main moved destructively, or moved non-fast-forward with no force push reported. See the uploaded receipt."
+              exit 1
+              ;;
+            3)
+              echo "::error::main movement could NOT be verified (incomplete object graph). This is not proof of a rewrite, and not proof of safety. See the uploaded receipt."
+              exit 1
+              ;;
+            5)
+              echo "::error::GitHub reported a force push on main. The graph proves no history was lost, but this ref should not accept a force push at all. See the uploaded receipt."
+              exit 1
+              ;;
+            *)
+              echo "::error::the history-event detector failed to produce a verdict (exit ${CLASSIFY_STATUS}): invalid event subject or instrument failure, not a history finding. See the uploaded receipt."
+              exit 1
+              ;;
+          esac

@@ -1,5 +1,67 @@
 //! Canonical htmx protocol and attribute metadata.
 
+/// Provenance of the reviewed htmx reference snapshot this module encodes.
+///
+/// The catalog below is a transcription of one exact upstream document, so the
+/// question a consumer or maintainer actually needs answered is "which htmx does
+/// this describe, and when was that established?". Recording the reviewed
+/// revision alongside the data it produced is what lets a later comparison state
+/// a baseline instead of re-deriving one; without it a drift report has nothing
+/// to compare against and a stale catalog is indistinguishable from a current
+/// one.
+///
+/// `cargo xtask htmx-catalog-drift --reference <path>` consumes this to report a
+/// proposed diff against a maintainer-supplied copy of the reference document.
+/// Refreshing the catalog is a reviewed source change: nothing in this
+/// repository fetches the network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HtmxCatalogProvenance {
+    /// Reviewed reference document, addressed by commit.
+    ///
+    /// A branch moves by design and a Git tag can be moved or deleted, so
+    /// neither pins a review: retagging would silently change the reviewed
+    /// document while leaving this provenance untouched. Only a commit is
+    /// immutable, so the URL is commit-addressed.
+    pub reference_url: &'static str,
+    /// Upstream commit that supplied the reviewed document.
+    pub reference_commit: &'static str,
+    /// Released htmx version whose reference document was reviewed.
+    ///
+    /// Human-facing context for [`Self::reference_commit`], which is the
+    /// authority on exactly what was read.
+    pub htmx_version: &'static str,
+    /// Major component of the htmx contract this snapshot describes.
+    pub contract_major: u32,
+    /// Minor component of the htmx contract this snapshot describes.
+    pub contract_minor: u32,
+    /// ISO-8601 date on which the reference document was reviewed.
+    pub reviewed_on: &'static str,
+    /// Upstream spelling of the dynamic event-handler attribute family.
+    ///
+    /// The reference document writes the family as `hx-on*`, while the catalog
+    /// encodes the completable prefix `hx-on:` with
+    /// [`HtmxAttributeFamily::EventHandler`]. That transcription is deliberate,
+    /// and recording both spellings keeps it machine-readable so a drift report
+    /// reconciles the two from data rather than from a hardcoded literal.
+    pub upstream_event_handler_name: &'static str,
+    /// Catalog spelling of the dynamic event-handler attribute family.
+    pub catalog_event_handler_name: &'static str,
+}
+
+/// The reviewed htmx reference snapshot behind [`HTMX_HEADERS`] and
+/// [`HTMX_ATTRIBUTES`].
+pub const HTMX_CATALOG_PROVENANCE: HtmxCatalogProvenance = HtmxCatalogProvenance {
+    reference_url: "https://github.com/bigskysoftware/htmx/blob/\
+                    bdc7d7d3e25d0390c7ee11049806e8279b075598/www/content/reference.md",
+    reference_commit: "bdc7d7d3e25d0390c7ee11049806e8279b075598",
+    htmx_version: "2.0.10",
+    contract_major: 2,
+    contract_minor: 0,
+    reviewed_on: "2026-09-02",
+    upstream_event_handler_name: "hx-on*",
+    catalog_event_handler_name: "hx-on:",
+};
+
 /// Direction in which an htmx header is sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HtmxHeaderDirection {
