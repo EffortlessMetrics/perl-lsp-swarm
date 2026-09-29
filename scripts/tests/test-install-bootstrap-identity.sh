@@ -362,6 +362,7 @@ SECTION="$(posix_manual_archive_section)"
 if [[ "$SECTION" == "$POSIX_MANUAL_ARCHIVE_HEADING"$'\n'* ]] \
     && [[ "$SECTION" == *'perllsp-${VERSION}-${TARGET}.tar.gz'* ]] \
     && [[ "$SECTION" == *'SHA256SUMS'* ]] \
+    && [[ "$SECTION" == *'ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1'* ]] \
     && [[ "$SECTION" == *'sha256sum'* ]] \
     && [[ "$SECTION" == *'shasum'* ]] \
     && [[ "$SECTION" == *'tar -xzf'* ]] \
@@ -393,7 +394,8 @@ mkdir -p "$EXTRACT"
 (
     cd "$EXTRACT"
     cp "$FIXTURE/$ASSET" "$FIXTURE/SHA256SUMS" .
-    grep -F "$ASSET" SHA256SUMS | sha256sum -c -
+    ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1
+    printf '%s\n' "$ROW" | sha256sum -c -
     tar -xzf "$ASSET"
 )
 if grep -qx 'fixture-perllsp' "$EXTRACT/perllsp-0.17.0-x86_64-unknown-linux-gnu/perllsp" \
@@ -402,6 +404,30 @@ if grep -qx 'fixture-perllsp' "$EXTRACT/perllsp-0.17.0-x86_64-unknown-linux-gnu/
 else
     fail_case "documented POSIX archive steps extract a local fixture without installer identity" \
         "verify/extract did not produce the fixture binaries"
+fi
+
+MISSING_ROW="$TMP/manual-archive-missing-row"
+mkdir -p "$MISSING_ROW"
+cp "$FIXTURE/$ASSET" "$MISSING_ROW/"
+printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  other.tar.gz\n' \
+    > "$MISSING_ROW/SHA256SUMS"
+set +e
+MISSING_OUTPUT="$(
+    cd "$MISSING_ROW"
+    ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1
+    printf '%s\n' "$ROW" | sha256sum -c -
+    tar -xzf "$ASSET"
+    echo EXTRACTED
+)"
+MISSING_STATUS=$?
+set -e
+if [ "$MISSING_STATUS" -ne 0 ] \
+    && [[ "$MISSING_OUTPUT" != *"EXTRACTED"* ]] \
+    && [ ! -e "$MISSING_ROW/perllsp-0.17.0-x86_64-unknown-linux-gnu" ]; then
+    pass "missing SHA256SUMS row fails closed before extract"
+else
+    fail_case "missing SHA256SUMS row fails closed before extract" \
+        "status=$MISSING_STATUS output=$MISSING_OUTPUT"
 fi
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS" "$FAIL"
