@@ -129,7 +129,9 @@ fn empty_index() -> Arc<WorkspaceIndex> {
 
 fn indexed_source(source: &str) -> Arc<WorkspaceIndex> {
     let index = Arc::new(WorkspaceIndex::new());
-    must(index.index_file(must(Url::parse("file:///workspace/User.pm")), source.to_string()));
+    must(
+        index.index_initial_file(must(Url::parse("file:///workspace/User.pm")), source.to_string()),
+    );
     index
 }
 

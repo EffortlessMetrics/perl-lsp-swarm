@@ -3086,7 +3086,12 @@ has 'name' => (is => 'ro', isa => 'Str');
 sub own_method { 1 }
 "#;
         let index = Arc::new(WorkspaceIndex::new());
-        must(index.index_file(must(Url::parse("file:///workspace/User.pm")), source.to_string()));
+        must(
+            index.index_initial_file(
+                must(Url::parse("file:///workspace/User.pm")),
+                source.to_string(),
+            ),
+        );
         assert!(index.has_symbols(), "indexed current-document package must publish symbols");
         let members = collect_all_package_members_with_source(index.as_ref(), "User", source);
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
