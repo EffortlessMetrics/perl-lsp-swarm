@@ -298,3 +298,127 @@ pub(super) fn handle_identifier(
         description: format!("Bareword '{}' not allowed under 'use strict'", name),
     });
 }
+
+// ============================================================================
+// #16670 — call-observation for `handle_identifier`.
+// Integration tests drive `analyze()`; these `--lib` tests invoke the
+// production handler directly so RIPR can grip the `strict_subs_mode`
+// early return and the UnquotedBareword `issues.push` (hosted receipt
+// classified both as no_static_path on this file).
+// ============================================================================
+#[cfg(test)]
+mod tests {
+    use super::super::IssueKind;
+    use super::{AnalysisContext, PragmaState, ScopeAnalyzer, ScopeIssue, handle_identifier};
+    use crate::Parser;
+    use crate::ast::{Node, NodeKind};
+    use perl_tdd_support::{must, must_some_with};
+
+    fn parse(code: &str) -> Node {
+        let mut parser = Parser::new(code);
+        must(parser.parse())
+    }
+
+    fn identifier_hits<'a>(root: &'a Node, name: &str) -> Vec<(&'a Node, Vec<&'a Node>)> {
+        let mut found = Vec::new();
+        collect_identifiers(root, name, &mut Vec::new(), &mut found);
+        found
+    }
+
+    fn collect_identifiers<'a>(
+        node: &'a Node,
+        name: &str,
+        ancestors: &mut Vec<&'a Node>,
+        found: &mut Vec<(&'a Node, Vec<&'a Node>)>,
+    ) {
+        if let NodeKind::Identifier { name: ident } = &node.kind
+            && ident == name
+        {
+            found.push((node, ancestors.clone()));
+        }
+        ancestors.push(node);
+        node.for_each_child(|child| collect_identifiers(child, name, ancestors, found));
+        ancestors.pop();
+    }
+
+    fn first_named<'a>(root: &'a Node, name: &str) -> (&'a Node, Vec<&'a Node>) {
+        must_some_with(
+            identifier_hits(root, name).into_iter().next(),
+            "expected Identifier with that spelling",
+        )
+    }
+
+    fn diagnose(code: &str, ident_name: &str, strict_subs_mode: bool) -> Vec<ScopeIssue> {
+        let ast = parse(code);
+        let analyzer = ScopeAnalyzer::new();
+        let (node, ancestors) = first_named(&ast, ident_name);
+        let name = must_some_with(
+            match &node.kind {
+                NodeKind::Identifier { name } => Some(name.as_str()),
+                _ => None,
+            },
+            "first_named must return an Identifier",
+        );
+        let pragma_map: &[(std::ops::Range<usize>, PragmaState)] = &[];
+        let context = AnalysisContext::new(&ast, code, pragma_map);
+        let pragma_state = PragmaState::default();
+        let mut issues = Vec::new();
+        handle_identifier(
+            &analyzer,
+            node,
+            name,
+            &mut issues,
+            &context,
+            &ancestors,
+            &pragma_state,
+            strict_subs_mode,
+        );
+        issues
+    }
+
+    fn unquoted_barewords(issues: &[ScopeIssue]) -> Vec<&str> {
+        issues
+            .iter()
+            .filter(|issue| issue.kind == IssueKind::UnquotedBareword)
+            .map(|issue| issue.variable_name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn strict_subs_off_does_not_emit_unquoted_bareword() {
+        let issues = diagnose("my $x = DBI;", "DBI", false);
+        assert!(
+            unquoted_barewords(&issues).is_empty(),
+            "strict_subs_mode=false must take the early return; got: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn unparenthesized_require_dbi_does_not_emit_unquoted_bareword() {
+        let issues = diagnose("require DBI;", "DBI", true);
+        assert!(
+            unquoted_barewords(&issues).is_empty(),
+            "unparenthesized require DBI must skip UnquotedBareword; got: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn expression_dbi_emits_unquoted_bareword() {
+        let issues = diagnose("my $x = DBI;", "DBI", true);
+        assert_eq!(
+            unquoted_barewords(&issues),
+            ["DBI"],
+            "expression-position DBI under strict must push UnquotedBareword; got: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn parenthesized_require_dbi_emits_unquoted_bareword() {
+        let issues = diagnose("require(DBI);", "DBI", true);
+        assert_eq!(
+            unquoted_barewords(&issues),
+            ["DBI"],
+            "require(DBI) under strict must still push UnquotedBareword; got: {issues:?}"
+        );
+    }
+}
