@@ -142,10 +142,55 @@ impl NativeFormatter {
         range: TextRange,
         config: &FormatConfig,
     ) -> (String, Vec<TextEdit>) {
+        Self::format_safe_subset_selected(source, config, |line, _, _| {
+            range_includes_line(range, line)
+        })
+    }
+
+    fn format_safe_subset_outside_literals(
+        source: &str,
+        config: &FormatConfig,
+    ) -> (String, Vec<TextEdit>) {
+        // The current index stores exclusion regions; its complement-derived
+        // Code classification is not positive proof that a line can be edited.
+        // The formatter's own small-line rewrite and both whole-source parse
+        // gates remain the admission criteria.
+        let index = perl_parser_core::SourceRegionIndex::build(source);
+        let regions = index.regions();
+        let mut region_index = 0_usize;
+        Self::format_safe_subset_selected(source, config, |_, start, end| {
+            let line = &source[start..end];
+            if literal_preserve_region(line).is_some() {
+                return false;
+            }
+            while let Some(region) = regions.get(region_index)
+                && (region.end < start
+                    || (region.end == start
+                        && region.kind != perl_parser_core::SourceRegionKind::Heredoc))
+            {
+                region_index += 1;
+            }
+            if regions.get(region_index).is_some_and(|region| {
+                (region.start < end && start < region.end)
+                    || (region.kind == perl_parser_core::SourceRegionKind::Heredoc
+                        && region.end == start)
+            }) {
+                return false;
+            }
+            true
+        })
+    }
+
+    fn format_safe_subset_selected(
+        source: &str,
+        config: &FormatConfig,
+        mut admitted: impl FnMut(u32, usize, usize) -> bool,
+    ) -> (String, Vec<TextEdit>) {
         let mut formatted = String::with_capacity(source.len());
         let mut edits = Vec::new();
         let mut processed_lines = 0_u64;
         let fallback_line_ending = inferred_line_ending(source);
+        let mut byte_offset = 0_usize;
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             processed_lines = processed_lines.saturating_add(1);
@@ -153,7 +198,7 @@ impl NativeFormatter {
             let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
                 if line_ending.is_empty() { fallback_line_ending } else { line_ending };
-            let formatted_body = if range_includes_line(range, line_index) {
+            let formatted_body = if admitted(line_index, byte_offset, byte_offset + line.len()) {
                 format_simple_line(body, config)
             } else {
                 None
@@ -178,6 +223,7 @@ impl NativeFormatter {
                 formatted.push_str(body);
             }
             formatted.push_str(line_ending);
+            byte_offset += line.len();
         }
 
         counters::record_with(|counters| counters.observe_lines(processed_lines));
@@ -216,11 +262,61 @@ impl PerlFormatter for NativeFormatter {
             return FormatResult::unchanged(source);
         }
 
-        if let Err(diagnostic) = Self::validate_clean_parse(source, counters::ParseGateKind::Source)
-        {
+        // The source-region index does not currently carry `format` bodies.
+        // A body line may look like ordinary Perl code, so keep the historical
+        // whole-document refusal until that source-owned exclusion exists.
+        if source.lines().any(|line| is_format_declaration_start(line.trim_start())) {
+            return FormatResult::unsafe_to_format(
+                source,
+                LITERAL_PRESERVE_CODE,
+                "native formatting skipped because format body preservation is not enabled yet",
+            );
+        }
+
+        let literal_kind = literal_preserve_region(source);
+        let source_gate = if literal_kind.is_some() {
+            Self::validate_parse_only(source, counters::ParseGateKind::Source)
+        } else {
+            Self::validate_clean_parse(source, counters::ParseGateKind::Source)
+        };
+        if let Err(diagnostic) = source_gate {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(diagnostic);
             return result;
+        }
+
+        if let Some(kind) = literal_kind {
+            let (formatted, edits) = Self::format_safe_subset_outside_literals(source, config);
+            if edits.is_empty() {
+                let mut result = FormatResult::unchanged(source);
+                result.diagnostics.push(FormatDiagnostic::new(
+                    LITERAL_PRESERVE_CODE,
+                    FormatDiagnosticSeverity::Warning,
+                    None,
+                    format!(
+                        "native formatting skipped because {kind} preservation is not enabled yet"
+                    ),
+                ));
+                return result;
+            }
+            if let Err(diagnostic) =
+                Self::validate_parse_only(&formatted, counters::ParseGateKind::FormattedOutput)
+            {
+                let mut result = FormatResult::unchanged(source);
+                result.diagnostics.push(FormatDiagnostic::new(
+                    PARSE_PRESERVATION_CODE,
+                    FormatDiagnosticSeverity::Warning,
+                    diagnostic.range,
+                    "native formatting skipped because formatted output did not parse cleanly",
+                ));
+                return result;
+            }
+            return FormatResult {
+                formatted,
+                changed: !edits.is_empty(),
+                edits,
+                diagnostics: Vec::new(),
+            };
         }
 
         let formatted =

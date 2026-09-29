@@ -1,4 +1,7 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+use perl_lsp_perltidy::native::{
+    EditSpec, FormatContext, FormatDisposition, PositionEncoding, apply_edits_exact,
+};
 use perl_lsp_perltidy::{
     FinalNewline, FormatConfig, FormatterMode, NativeFormatter, PerlFormatter, TextPosition,
     TextRange,
@@ -84,6 +87,126 @@ fn native_formatter_refuses_heredoc_until_preservation_pass_exists() {
     assert_eq!(result.formatted, source);
     assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
     assert!(result.diagnostics[0].message.contains("heredoc"));
+}
+
+#[test]
+fn native_formatter_formats_clean_prefix_before_heredoc_without_touching_literal() {
+    let formatter = NativeFormatter::new();
+    let source = "my$x=1;\nmy $text = <<'EOF';\nraw { text }\nEOF\n";
+    let suffix = "my $text = <<'EOF';\nraw { text }\nEOF\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert!(result.changed, "a complete heredoc must not hide an earlier safe edit: {result:?}");
+    assert_eq!(result.formatted, format!("my $x = 1;\n{suffix}"));
+    assert_eq!(result.edits.len(), 1);
+    assert_eq!(result.edits[0].range.start, TextPosition::new(0, 0));
+    assert_eq!(result.edits[0].range.end.line, 0);
+    assert!(result.formatted.ends_with(suffix));
+    assert!(
+        formatter.format_document(&result.formatted, &FormatConfig::default()).edits.is_empty()
+    );
+}
+
+#[test]
+fn native_formatter_formats_both_sides_of_heredoc_with_scoped_edits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let formatter = NativeFormatter::new();
+    let source = "my$before=1;\r\nmy $text = <<'EOF';\r\nraw 😀 { text }  \r\nEOF\r\nmy$after=2;\r\n";
+    let literal = "my $text = <<'EOF';\r\nraw 😀 { text }  \r\nEOF\r\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert!(result.changed, "complete heredoc should admit adjacent code: {result:?}");
+    assert_eq!(result.formatted, format!("my $before = 1;\r\n{literal}my $after = 2;\r\n"));
+    assert_eq!(result.edits.len(), 2);
+    assert_eq!(result.edits[0].range.start.line, 0);
+    assert_eq!(result.edits[0].range.end.line, 0);
+    assert_eq!(result.edits[1].range.start.line, 4);
+    assert_eq!(result.edits[1].range.end.line, 4);
+    assert!(result.formatted.contains(literal));
+    let edits: Vec<_> = result
+        .edits
+        .iter()
+        .map(|edit| {
+            EditSpec::new(
+                edit.range.start.line,
+                edit.range.start.character,
+                edit.range.end.line,
+                edit.range.end.character,
+                edit.new_text.clone(),
+            )
+        })
+        .collect();
+    let applied = apply_edits_exact(source, &edits, PositionEncoding::Utf16CodeUnits)?;
+    assert_eq!(applied, result.formatted, "returned edits must reproduce exact CRLF bytes");
+    assert!(
+        formatter.format_document(&result.formatted, &FormatConfig::default()).edits.is_empty()
+    );
+    Ok(())
+}
+
+#[test]
+fn native_formatter_keeps_typed_refusal_for_literal_only_document() {
+    let formatter = NativeFormatter::new();
+    let source = "my $text = <<'EOF';\nraw { text }\nEOF\n";
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+    assert!(typed.result.edits.is_empty());
+    assert_eq!(typed.result.formatted, source);
+    assert_eq!(typed.result.diagnostics[0].code, "native.format.literal_preserve_region");
+}
+
+#[test]
+fn native_formatter_refuses_unterminated_heredoc_despite_safe_prefix() {
+    let formatter = NativeFormatter::new();
+    let source = "my$before=1;\nmy $text = <<'EOF';\nunterminated\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert!(!result.changed, "unterminated literal cannot admit a prefix edit: {result:?}");
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert!(!result.diagnostics.is_empty());
+}
+
+#[test]
+fn native_formatter_formats_real_demo_module_outside_qw_line() {
+    let formatter = NativeFormatter::new();
+    let fixture = include_str!("../../../demo_workspace/lib/Utils.pm");
+    let source = fixture.replace("my $sum_val = sum(@$data);", "my$sum_val=sum(@$data);");
+    assert_ne!(source, fixture, "fixture must contain the selected declaration");
+
+    let result = formatter.format_document(&source, &FormatConfig::default());
+
+    assert!(result.changed, "ordinary code after qw should still format: {result:?}");
+    assert!(result.formatted.contains("my $sum_val = sum(@$data);"));
+    assert!(result.formatted.contains("use List::Util qw(max min sum);"));
+    assert!(
+        formatter.format_document(&result.formatted, &FormatConfig::default()).edits.is_empty()
+    );
+}
+
+#[test]
+fn native_formatter_preserves_pod_and_regex_bytes_between_safe_lines() {
+    let formatter = NativeFormatter::new();
+    let source = "my$before=1;\n=pod\n  raw { text }  \n=cut\nmy $pattern = /a{2}/;\nmy$after=2;\n";
+    let opaque = "=pod\n  raw { text }  \n=cut\nmy $pattern = /a{2}/;\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert!(result.changed, "safe lines around POD and regex should admit edits: {result:?}");
+    assert_eq!(result.formatted, format!("my $before = 1;\n{opaque}my $after = 2;\n"));
+    assert_eq!(result.edits.len(), 2);
+    assert!(result.edits.iter().all(|edit| matches!(edit.range.start.line, 0 | 5)));
+    assert!(
+        formatter.format_document(&result.formatted, &FormatConfig::default()).edits.is_empty()
+    );
 }
 
 #[test]
@@ -182,6 +305,19 @@ fn native_formatter_refuses_format_body_until_preservation_pass_exists() {
     assert_eq!(result.formatted, source);
     assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
     assert!(result.diagnostics[0].message.contains("format body"));
+}
+
+#[test]
+fn native_formatter_does_not_edit_code_looking_format_body_lines() {
+    let formatter = NativeFormatter::new();
+    let source = "my$before=1;\nformat STDOUT =\nmy$x=2;\n.\nmy$after=3;\n";
+
+    let result = formatter.format_document(source, &FormatConfig::default());
+
+    assert!(!result.changed);
+    assert_eq!(result.formatted, source);
+    assert!(result.edits.is_empty());
+    assert_eq!(result.diagnostics[0].code, "native.format.literal_preserve_region");
 }
 
 #[test]

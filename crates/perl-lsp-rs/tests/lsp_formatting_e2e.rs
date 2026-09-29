@@ -4,6 +4,38 @@ mod support;
 use support::lsp_client::LspClient;
 
 #[test]
+fn native_document_formatting_edits_code_around_heredoc_without_crossing_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
+    let uri = "file:///literal-island.pl";
+    let source = "my$before=1;\nmy $text = <<'EOF';\nraw { text }  \nEOF\nmy$after=2;\n";
+    let literal = "my $text = <<'EOF';\nraw { text }  \nEOF\n";
+    client.did_open(uri, "perl", source)?;
+
+    let response = client.request(
+        "textDocument/formatting",
+        json!({"textDocument": {"uri": uri}, "options": {"tabSize": 4, "insertSpaces": true}}),
+    )?;
+    let edits = response["result"].as_array().ok_or("formatting must return an edit array")?;
+    assert_eq!(
+        edits.len(),
+        2,
+        "ordinary code on both sides should receive scoped edits: {response}"
+    );
+    assert_eq!(edits[0]["range"]["start"]["line"], 0);
+    assert_eq!(edits[0]["range"]["end"]["line"], 0);
+    assert_eq!(edits[1]["range"]["start"]["line"], 4);
+    assert_eq!(edits[1]["range"]["end"]["line"], 4);
+    let formatted = support::test_helpers::apply_text_edits(source, edits);
+    assert_eq!(formatted, format!("my $before = 1;\n{literal}my $after = 2;\n"));
+    assert!(formatted.contains(literal));
+
+    client.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn native_default_document_formatting() -> Result<(), Box<dyn std::error::Error>> {
     let bin = support::product_binary_path()?;
     let mut client = LspClient::spawn(&bin)?;
