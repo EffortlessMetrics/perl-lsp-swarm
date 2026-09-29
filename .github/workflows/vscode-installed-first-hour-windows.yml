@@ -2,7 +2,9 @@ name: VS Code Installed First-Hour Windows
 
 on:
   pull_request:
-    branches: [main, master]
+    # The installed-byte leaf stacks on #16981 until its observer lands.
+    # Remove this temporary base when #16991 retargets to main.
+    branches: [main, master, codex/6056-installed-identity]
     paths:
       - 'vscode-extension/**'
       - 'crates/perl-lsp*/**'

@@ -86,6 +86,7 @@ void test('current-source Linux smoke runs when the DAP crate changes', () => {
 
 void test('Linux first-hour byte leaf uses one standalone stable leg and retains its receipts', () => {
   const source = readWorkflow('vscode-current-source-linux-smoke.yml');
+  assert.match(source, /branches: \[main, master, codex\/6056-installed-identity\]/);
   const start = source.indexOf('- name: Run installed first-hour byte leaf under Xvfb');
   const end = source.indexOf('- name: Record exact-subject scheduling result', start);
   assert.ok(start > 0 && end > start);
@@ -297,6 +298,7 @@ void test('managed Windows smoke packages and runs the current Test Explorer VSI
 
 void test('Windows first-hour byte leaf builds both release binaries at the exact PR head', () => {
   const source = readWorkflow('vscode-installed-first-hour-windows.yml');
+  assert.match(source, /branches: \[main, master, codex\/6056-installed-identity\]/);
   const job = source.slice(source.indexOf('  installed-first-hour-windows:'));
   for (const trigger of [
     'vscode-extension/**',
