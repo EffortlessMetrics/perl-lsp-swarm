@@ -3110,12 +3110,8 @@ sub own_method { 1 }
     }
 }
 
-/// Tests for union-receiver method completion (#9500).
-///
-/// These tests exercise `add_union_receiver_method_completions` directly.
-/// The discriminating test `union_receiver_surfaces_methods_from_second_arm`
-/// verifies that dropping any union arm would cause a test failure — the
-/// contract required by #9500.
+/// Collector-level proof that a reopened consumer package keeps only its own
+/// ancestry and roles (#16853).
 #[cfg(test)]
 mod reopened_consumer_source_facts_tests {
     use super::*;
@@ -3182,6 +3178,12 @@ mod reopened_consumer_source_facts_tests {
     }
 }
 
+/// Tests for union-receiver method completion (#9500).
+///
+/// These tests exercise `add_union_receiver_method_completions` directly.
+/// The discriminating test `union_receiver_surfaces_methods_from_second_arm`
+/// verifies that dropping any union arm would cause a test failure — the
+/// contract required by #9500.
 #[cfg(test)]
 mod union_receiver_method_completion_tests {
     use super::*;
