@@ -8,7 +8,8 @@ use url::Url;
 fn completions_at(source: &str, position: usize) -> Vec<CompletionItem> {
     let mut parser = Parser::new(source);
     let ast = must(parser.parse());
-    CompletionProvider::new(&ast).get_completions(source, position)
+    CompletionProvider::new_with_index_and_source(&ast, source, None)
+        .get_completions(source, position)
 }
 
 fn completions_with_workspace(
@@ -22,7 +23,8 @@ fn completions_with_workspace(
     index.index_initial_file(Url::parse("file:///lib/Animal.pm")?, package_source.to_string())?;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
-    Ok(CompletionProvider::new_with_index(&ast, Some(index)).get_completions(source, position))
+    Ok(CompletionProvider::new_with_index_and_source(&ast, source, Some(index))
+        .get_completions(source, position))
 }
 
 fn labels(items: &[CompletionItem]) -> Vec<&str> {
