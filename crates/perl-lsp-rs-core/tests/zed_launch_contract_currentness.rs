@@ -142,6 +142,50 @@ fn projection_classifies_the_live_clap_surface_exactly() -> Result<(), Box<dyn E
     Ok(())
 }
 
+#[test]
+fn doctor_only_clap_flags_are_rejected_not_admitted() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let projection = load_projection(&root)?;
+    let rejected: BTreeSet<String> = string_array(&projection, "/rejected_flags")?
+        .into_iter()
+        .map(|flag| canonical_long(&flag))
+        .collect();
+    let admitted = projection
+        .get("admitted_arguments")
+        .and_then(Value::as_array)
+        .ok_or("missing admitted_arguments")?;
+    let admitted_keys: BTreeSet<String> = admitted
+        .iter()
+        .filter_map(|row| row.get("flag").and_then(Value::as_str).map(canonical_long))
+        .collect();
+
+    let mut command = LspArgs::command();
+    command.build();
+    let mut doctor_only = BTreeSet::new();
+    for argument in command.get_arguments() {
+        let Some(long) = argument.get_long() else { continue };
+        let help = argument.get_help().map(|help| help.to_string()).unwrap_or_default();
+        if help.contains("With --doctor") {
+            doctor_only.insert(long.to_string());
+        }
+    }
+    assert!(
+        doctor_only.contains("dev-environment"),
+        "live clap must still describe --dev-environment as a --doctor companion"
+    );
+    for flag in &doctor_only {
+        assert!(
+            rejected.contains(flag),
+            "doctor-only flag `--{flag}` must be rejected by the Zed launch projection, not omitted"
+        );
+        assert!(
+            !admitted_keys.contains(flag),
+            "doctor-only flag `--{flag}` must not be admitted as an LSP launch argument"
+        );
+    }
+    Ok(())
+}
+
 /// Insert one classified flag, failing when the same flag is classified
 /// again (review 3848275693): a flag listed twice — or in both
 /// `admitted_arguments` and `rejected_flags` — must invalidate the

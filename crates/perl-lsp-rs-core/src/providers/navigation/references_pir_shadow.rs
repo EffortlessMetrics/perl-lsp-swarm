@@ -46,7 +46,8 @@
 
 use std::collections::BTreeSet;
 
-use perl_parser_core::pir::LexicalExtractorReceipt;
+use perl_parser_core::hir::HirBindingId;
+use perl_parser_core::pir::{LexicalBindingFact, LexicalExtractorReceipt, LexicalRole};
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
     ProviderFallbackState, ProviderSurface,
@@ -427,6 +428,20 @@ pub struct ReferenceOptions {
     /// caller, keep `include_declaration: true` and filter at the provider
     /// layer where more context is available.
     pub include_declaration: bool,
+    /// Byte offset of the find-references cursor, when known.
+    ///
+    /// When `Some`, PromoteExact selects the [`HirBindingId`] of the fact
+    /// whose source range contains this offset so nested same-spelling
+    /// lexicals stay distinct. When `None`, the outermost (earliest Write)
+    /// binding of the target name in the body is selected — never the union
+    /// of every same-spelling fact in the body.
+    pub query_byte_offset: Option<usize>,
+}
+
+impl Default for ReferenceOptions {
+    fn default() -> Self {
+        Self { include_declaration: true, query_byte_offset: None }
+    }
 }
 
 /// Outcome of a guarded PIR-A lexical reference promotion attempt.
@@ -481,7 +496,7 @@ fn evaluate_pir_reference_candidate(
     target_name: &str,
     target_body_idx: usize,
     uri_mapper: &dyn Fn(usize, usize) -> lsp_types::Range,
-    include_declaration: bool,
+    opts: ReferenceOptions,
 ) -> Result<Vec<lsp_types::Range>, PirShadowRefusalReason> {
     // Refusal ladder on the bare name part.
     if let Some(reason) = evaluate_refusal(
@@ -494,24 +509,32 @@ fn evaluate_pir_reference_candidate(
         return Err(reason);
     }
 
-    use perl_parser_core::pir::LexicalRole;
-
     let body = &pir_receipt.bodies[target_body_idx];
 
-    // Build the range list. Match on sigil AND name (full identity). When
-    // `include_declaration` is false, skip the first Write fact for the target
-    // (treated as the declaration anchor).
+    // Match on sigil AND name (full identity), then keep only the selected
+    // binding so nested same-spelling lexicals are not unioned. When
+    // `include_declaration` is false, skip the first Write fact for the
+    // selected binding (treated as the declaration anchor).
+    let matching: Vec<_> = body
+        .facts
+        .iter()
+        .filter(|fact| fact.name.sigil == target_sigil && fact.name.name == target_name)
+        .collect();
+    if matching.is_empty() {
+        return Err(PirShadowRefusalReason::NoExactFacts);
+    }
+
+    let selected_binding = binding_for_query(&matching, opts.query_byte_offset);
     let mut declaration_skipped = false;
-    let mut matched_binding = false;
     let mut ranges: Vec<lsp_types::Range> = Vec::new();
-    for fact in &body.facts {
-        if fact.name.sigil != target_sigil || fact.name.name != target_name {
-            continue;
+    for fact in matching {
+        if let Some(selected) = selected_binding {
+            match fact.binding {
+                Some(binding) if binding == selected => {}
+                _ => continue,
+            }
         }
-        matched_binding = true;
-        // Note: extractor invariant (PR1 #2637) guarantees every emitted fact has
-        // `source_anchor.is_anchored() == true` — no dead branch needed here.
-        if !include_declaration && !declaration_skipped && fact.role == LexicalRole::Write {
+        if !opts.include_declaration && !declaration_skipped && fact.role == LexicalRole::Write {
             declaration_skipped = true;
             continue;
         }
@@ -522,7 +545,7 @@ fn evaluate_pir_reference_candidate(
         }
     }
 
-    if !matched_binding {
+    if ranges.is_empty() && opts.include_declaration {
         return Err(PirShadowRefusalReason::NoExactFacts);
     }
 
@@ -531,6 +554,36 @@ fn evaluate_pir_reference_candidate(
     ranges.dedup();
 
     Ok(ranges)
+}
+
+/// Select the HIR binding PromoteExact should return for one name+sigil set.
+///
+/// A cursor that lands on a fact range wins. Otherwise the outermost
+/// declaration (earliest Write with a binding) is selected so the compiler
+/// never unions inner-scope shadows into the outer result.
+fn binding_for_query(
+    facts: &[&LexicalBindingFact],
+    query_byte_offset: Option<usize>,
+) -> Option<HirBindingId> {
+    if let Some(offset) = query_byte_offset {
+        for fact in facts {
+            if let Some(range) = fact.source_anchor.range.as_ref()
+                && offset >= range.start
+                && offset < range.end
+            {
+                return fact.binding;
+            }
+        }
+    }
+    facts
+        .iter()
+        .filter(|fact| fact.role == LexicalRole::Write)
+        .filter_map(|fact| {
+            let start = fact.source_anchor.range.as_ref().map(|range| range.start)?;
+            fact.binding.map(|binding| (start, binding))
+        })
+        .min_by_key(|(start, _)| *start)
+        .map(|(_, binding)| binding)
 }
 
 /// Run the PIR-A lexical reference promotion with the corrected contract.
@@ -639,7 +692,7 @@ pub fn references_pir_promote(
                 target_name,
                 target_body_idx,
                 uri_mapper,
-                opts.include_declaration,
+                opts,
             ) {
                 Ok(ranges) => ReferencesPirPromoteOutcome::Exact(ranges),
                 Err(reason) => {
@@ -680,7 +733,7 @@ mod promote_tests {
     }
 
     fn opts_all() -> ReferenceOptions {
-        ReferenceOptions { include_declaration: true }
+        ReferenceOptions::default()
     }
 
     // ── DEFAULT_PROMOTION_MODE is Off ──────────────────────────────────────
@@ -881,7 +934,7 @@ mod promote_tests {
             &[(0, 2)],
             0,
             &byte_mapper,
-            ReferenceOptions { include_declaration: false },
+            ReferenceOptions { include_declaration: false, query_byte_offset: None },
         );
         match outcome {
             ReferencesPirPromoteOutcome::Exact(ranges) if ranges.is_empty() => Ok(()),
@@ -966,7 +1019,7 @@ mod promote_tests {
             &[],
             0,
             &byte_mapper,
-            ReferenceOptions { include_declaration: true },
+            ReferenceOptions { include_declaration: true, query_byte_offset: None },
         );
         if let ReferencesPirPromoteOutcome::Exact(ranges) = outcome {
             assert!(ranges.len() >= 2, "with include_declaration=true must have >=2 ranges");
@@ -990,7 +1043,7 @@ mod promote_tests {
             &[],
             0,
             &byte_mapper,
-            ReferenceOptions { include_declaration: true },
+            ReferenceOptions { include_declaration: true, query_byte_offset: None },
         );
         let without_decl = references_pir_promote(
             PromotionMode::PromoteExact,
@@ -1000,7 +1053,7 @@ mod promote_tests {
             &[],
             0,
             &byte_mapper,
-            ReferenceOptions { include_declaration: false },
+            ReferenceOptions { include_declaration: false, query_byte_offset: None },
         );
 
         match (with_decl, without_decl) {

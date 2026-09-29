@@ -8,7 +8,7 @@
 
 use perl_lsp_rs_core::providers::diagnostics::Diagnostic;
 use perl_lsp_rs_core::providers::diagnostics::unreachable_code::check_unreachable_code;
-use perl_parser::Parser;
+use perl_parser::{ParseError, Parser};
 
 fn diagnostics(source: &str) -> Result<Vec<Diagnostic>, Box<dyn std::error::Error>> {
     let mut parser = Parser::new(source);
@@ -60,10 +60,12 @@ fn exact_transfers_in_continue_blocks_close_sibling_fallthrough()
 #[test]
 fn for_and_foreach_continue_blocks_use_the_same_local_flow_contract()
 -> Result<(), Box<dyn std::error::Error>> {
+    // List-`for` is the `foreach` alias. C-style `for (;;) { } continue { }` is
+    // a hard parse error in Perl (#16296) and is not this contract.
     for (source, context) in [
         (
-            r#"for (my $i = 0; $i < 3; $i++) { work(); } continue { die "err"; print "dead"; }"#,
-            "for continue",
+            r#"for my $x (1, 2) { work(); } continue { die "err"; print "dead"; }"#,
+            "list-for continue",
         ),
         (
             r#"foreach my $x (1, 2) { work(); } continue { die "err"; print "dead"; }"#,
@@ -73,6 +75,18 @@ fn for_and_foreach_continue_blocks_use_the_same_local_flow_contract()
         assert_pl406_count(source, 1, context)?;
     }
     Ok(())
+}
+
+#[test]
+fn c_style_for_continue_block_is_a_parse_error_not_a_pl406_contract()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = r#"for (my $i = 0; $i < 3; $i++) { work(); } continue { die "err"; print "dead"; }"#;
+    let mut parser = Parser::new(source);
+    match parser.parse() {
+        Err(ParseError::CStyleForContinueBlock { .. }) => Ok(()),
+        Err(other) => Err(format!("expected CStyleForContinueBlock, got {other:?}").into()),
+        Ok(_) => Err("C-style for with continue block must fail to parse".into()),
+    }
 }
 
 #[test]
@@ -188,6 +202,7 @@ fn goto_forms_transfer_without_falling_through() -> Result<(), Box<dyn std::erro
         (r#"goto DONE; print "dead";"#, 1, "unresolved forward label"),
         (r#"goto DONE; print "dead"; DONE: print "alive";"#, 1, "resolved forward label"),
         (r#"goto &handler; print "dead";"#, 1, "goto sub"),
+        (r#"goto; print "dead";"#, 1, "targetless goto"),
         (r#"while (1) { } continue { goto &handler; print "dead"; }"#, 1, "goto sub in continue"),
         (
             r#"while (1) { } continue { goto DONE; print "dead"; DONE: print "alive"; }"#,

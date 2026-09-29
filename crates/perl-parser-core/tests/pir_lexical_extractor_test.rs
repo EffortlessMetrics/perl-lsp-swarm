@@ -116,6 +116,32 @@ say $x;
     Ok(())
 }
 
+#[test]
+fn nested_block_same_spelling_facts_keep_distinct_bindings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "my $x = 1;\n{\n    my $x = 2;\n    print $x;\n}\nprint $x;\n";
+    let receipt = extract(source);
+    let facts: Vec<_> = receipt
+        .bodies
+        .iter()
+        .flat_map(|body| body.facts.iter())
+        .filter(|fact| fact.name.sigil == "$" && fact.name.name == "x")
+        .collect();
+    assert_eq!(facts.len(), 4, "outer decl/read + inner decl/read: {facts:?}");
+
+    let bindings: Vec<_> = facts.iter().map(|fact| fact.binding).collect();
+    assert!(
+        bindings.iter().all(Option::is_some),
+        "each nested `$x` fact must carry a HIR binding: {bindings:?}"
+    );
+    let outer = bindings[0];
+    let inner = bindings[1];
+    assert_ne!(outer, inner, "inner `my $x` must not share the outer binding");
+    assert_eq!(bindings[2], inner, "inner read must attach to the inner binding");
+    assert_eq!(bindings[3], outer, "outer read after the block must attach to the outer binding");
+    Ok(())
+}
+
 /// Fixture 2: State variables.
 ///
 /// Verifies that `state` variables are treated as lexical reads/writes just like `my`.

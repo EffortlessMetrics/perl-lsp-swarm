@@ -6,12 +6,20 @@
 //! The extractor is used by PR2 (#2634) for shadow comparison and later by providers for
 //! navigation and reference detection. PR1 defines the core API only; no provider changes.
 
-use crate::hir::{BodyOwnerKind, HirBodyId, HirFile, HirKind};
+use crate::hir::{
+    BodyOwnerKind, HirBindingId, HirBodyId, HirExpr, HirExprId, HirFile, HirKind, HirStmt,
+    HirStmtId,
+};
 use crate::pir::lower::lower_single_body;
 use crate::pir::model::{LexicalName, PirOperation, PirSourceAnchor};
+use std::collections::BTreeMap;
 
 /// Current schema version for lexical extractor receipts.
-pub const LEXICAL_EXTRACTOR_RECEIPT_VERSION: u32 = 2;
+///
+/// Version 3 attaches the canonical HIR [`HirBindingId`] onto each fact so
+/// same-spelling nested lexicals in one body stay distinguishable. PIR
+/// *operations* still do not carry that identity (#6659 item 2).
+pub const LEXICAL_EXTRACTOR_RECEIPT_VERSION: u32 = 3;
 
 /// A single lexical variable binding fact extracted from PIR.
 ///
@@ -30,6 +38,11 @@ pub struct LexicalBindingFact {
     pub body_idx: usize,
     /// Body owner kind (what construct owns this body).
     pub body_owner: BodyOwnerKind,
+    /// Canonical HIR binding this occurrence resolves to, when the scope graph
+    /// recorded one. Nested same-spelling `my $x` declarations in one body
+    /// therefore stay distinct here even though PIR operations still store
+    /// only sigil+name.
+    pub binding: Option<HirBindingId>,
 }
 
 /// Role of a lexical binding fact (read or write).
@@ -113,6 +126,7 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
     let mut skipped_node_count = 0usize;
     let dynamic_boundary_count =
         file.items.iter().filter(|item| matches!(&item.kind, HirKind::DynamicBoundary(_))).count();
+    let bindings_by_range = hir_bindings_by_range(file);
 
     for (body_idx, body) in file.bodies.iter().enumerate() {
         let owner = body.owner.clone();
@@ -135,6 +149,7 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
                         source_anchor: pir_node.source_anchor.clone(),
                         body_idx,
                         body_owner: owner.clone(),
+                        binding: binding_for_anchor(&bindings_by_range, &pir_node.source_anchor),
                     });
                     total_read_count += 1;
                 }
@@ -146,6 +161,7 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
                         source_anchor: pir_node.source_anchor.clone(),
                         body_idx,
                         body_owner: owner.clone(),
+                        binding: binding_for_anchor(&bindings_by_range, &pir_node.source_anchor),
                     });
                     total_write_count += 1;
                 }
@@ -188,4 +204,47 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
         dynamic_boundary_count,
         provider_behavior_changed: false,
     }
+}
+
+/// Index canonical HIR bindings by the source range of each occurrence.
+///
+/// PIR lexical ops still carry only sigil+name (#6659 item 2). Join the
+/// already-canonical [`HirBindingId`] at extract time so a nested same-spelling
+/// `my $x` does not merge with the outer binding.
+fn hir_bindings_by_range(file: &HirFile) -> BTreeMap<(usize, usize), HirBindingId> {
+    let mut bindings = BTreeMap::new();
+    for body in &file.bodies {
+        for idx in 0..body.source_map.expr_ranges.len() {
+            let id = HirExprId(idx as u32);
+            let Some(HirExpr::Variable(var)) = body.expr(id) else {
+                continue;
+            };
+            let Some(binding) = var.binding else {
+                continue;
+            };
+            let Some(range) = body.source_map.expr_range(id) else {
+                continue;
+            };
+            bindings.insert((range.start, range.end), binding);
+        }
+        for idx in 0..body.source_map.stmt_ranges.len() {
+            let id = HirStmtId(idx as u32);
+            let Some(HirStmt::Let { binding, binding_range, .. }) = body.stmt(id) else {
+                continue;
+            };
+            let Some(binding) = *binding else {
+                continue;
+            };
+            bindings.insert((binding_range.start, binding_range.end), binding);
+        }
+    }
+    bindings
+}
+
+fn binding_for_anchor(
+    bindings: &BTreeMap<(usize, usize), HirBindingId>,
+    anchor: &PirSourceAnchor,
+) -> Option<HirBindingId> {
+    let range = anchor.range.as_ref()?;
+    bindings.get(&(range.start, range.end)).copied()
 }

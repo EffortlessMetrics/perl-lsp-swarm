@@ -35,6 +35,8 @@
     "--completion",
     "--critic-compatibility",
     "--external-tools",
+    "--critic-compatibility",
+    "--dev-environment",
     "--features-json",
     "--perltidy-compat-report",
     "--perlcritic-compat-report",
