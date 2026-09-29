@@ -4538,7 +4538,7 @@ pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_fresh_kind(
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_second(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_third(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::relex_as_term(&mut self)
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::with_lexer_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> Self
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::with_lexer_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
 pub mod perl_parser_core::tokens
 pub use perl_parser_core::tokens::token_wrapper
 pub mod perl_parser_core::tokens::token_stream
@@ -4596,7 +4596,7 @@ pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_fresh_kind(
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_second(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_third(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::relex_as_term(&mut self)
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::with_lexer_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> Self
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::with_lexer_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
 pub mod perl_parser_core::tokens::token_subject
 pub enum perl_parser_core::tokens::token_subject::ClassificationAuthority
 pub perl_parser_core::tokens::token_subject::ClassificationAuthority::CarriedFromPredecessor
@@ -5277,7 +5277,7 @@ pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_fresh_kind(
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_second(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::peek_third(&mut self) -> perl_parser_core::syntax::error::ParseResult<&perl_token::token::Token>
 pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::relex_as_term(&mut self)
-pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::with_lexer_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> Self
+pub fn perl_parser_core::tokens::token_stream::TokenStream<'a>::with_lexer_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> perl_parser_core::tokens::token_stream::TokenStream<'a>
 pub struct perl_parser_core::TriviaParseOutput
 pub perl_parser_core::TriviaParseOutput::parse: perl_parser_core::syntax::error::ParseOutput
 pub perl_parser_core::TriviaParseOutput::trivia: alloc::vec::Vec<perl_parser_core::tokens::trivia::TriviaToken>
