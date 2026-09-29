@@ -21,6 +21,26 @@ use std::time::Duration;
 const MODULE_AMBIGUITY_IDENTITY_CAP: usize = 128;
 const MODULE_AMBIGUITY_NAME_MAX_BYTES: usize = 256;
 const MODULE_AMBIGUITY_WORKER_CAP: usize = 4;
+const MODULE_AMBIGUITY_PROCESS_WORKER_CAP: usize = 16;
+static MODULE_AMBIGUITY_PROCESS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+fn try_acquire_worker_slot(in_flight: &AtomicUsize, cap: usize) -> bool {
+    let mut current = in_flight.load(Ordering::Relaxed);
+    loop {
+        if current >= cap {
+            return false;
+        }
+        match in_flight.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+}
 
 /// Bounded, session-local observation state. Entries are pending or notified;
 /// a scan that cannot make a completed ambiguity claim releases its entry.
@@ -32,40 +52,32 @@ pub(crate) struct ModuleAmbiguityNoticeState {
 
 struct ModuleAmbiguityReservation {
     state: Arc<ModuleAmbiguityNoticeState>,
-    retained_name: Option<String>,
+    retained_name: String,
     notified: bool,
 }
 
 impl ModuleAmbiguityNoticeState {
     fn reserve(self: &Arc<Self>, name: &str) -> Option<ModuleAmbiguityReservation> {
-        let mut current = self.in_flight.load(Ordering::Relaxed);
-        loop {
-            if current >= MODULE_AMBIGUITY_WORKER_CAP {
-                return None;
-            }
-            match self.in_flight.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(actual) => current = actual,
-            }
+        if name.len() > MODULE_AMBIGUITY_NAME_MAX_BYTES
+            || !try_acquire_worker_slot(
+                &MODULE_AMBIGUITY_PROCESS_IN_FLIGHT,
+                MODULE_AMBIGUITY_PROCESS_WORKER_CAP,
+            )
+        {
+            return None;
         }
-
-        let mut retained_name = None;
-        if name.len() <= MODULE_AMBIGUITY_NAME_MAX_BYTES {
-            let mut identities = self.identities.lock();
-            if identities.contains(name) {
-                self.in_flight.fetch_sub(1, Ordering::Release);
-                return None;
-            }
-            if identities.len() < MODULE_AMBIGUITY_IDENTITY_CAP {
-                identities.insert(name.to_string());
-                retained_name = Some(name.to_string());
-            }
+        if !try_acquire_worker_slot(&self.in_flight, MODULE_AMBIGUITY_WORKER_CAP) {
+            MODULE_AMBIGUITY_PROCESS_IN_FLIGHT.fetch_sub(1, Ordering::Release);
+            return None;
         }
+        let mut identities = self.identities.lock();
+        if identities.contains(name) || identities.len() >= MODULE_AMBIGUITY_IDENTITY_CAP {
+            self.in_flight.fetch_sub(1, Ordering::Release);
+            MODULE_AMBIGUITY_PROCESS_IN_FLIGHT.fetch_sub(1, Ordering::Release);
+            return None;
+        }
+        let retained_name = name.to_string();
+        identities.insert(retained_name.clone());
         Some(ModuleAmbiguityReservation { state: Arc::clone(self), retained_name, notified: false })
     }
 }
@@ -73,11 +85,10 @@ impl ModuleAmbiguityNoticeState {
 impl Drop for ModuleAmbiguityReservation {
     fn drop(&mut self) {
         if !self.notified {
-            if let Some(name) = &self.retained_name {
-                self.state.identities.lock().remove(name);
-            }
+            self.state.identities.lock().remove(&self.retained_name);
         }
         self.state.in_flight.fetch_sub(1, Ordering::Release);
+        MODULE_AMBIGUITY_PROCESS_IN_FLIGHT.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -963,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn ambiguity_notice_state_is_bounded_and_saturation_fails_open() -> TestResult {
+    fn ambiguity_notice_state_is_bounded_and_saturation_omits_observation() -> TestResult {
         let state = Arc::new(ModuleAmbiguityNoticeState::default());
         for index in 0..MODULE_AMBIGUITY_IDENTITY_CAP {
             let name = format!("Module{index}");
@@ -973,13 +984,35 @@ mod tests {
         if state.identities.lock().len() != MODULE_AMBIGUITY_IDENTITY_CAP {
             return Err("retained module identities exceeded or missed the cap".into());
         }
-        let overflow = state.reserve("Overflow");
-        if !overflow.as_ref().is_some_and(|entry| entry.retained_name.is_none()) {
-            return Err("a saturated table must observe without retaining a new identity".into());
+        if state.reserve("Overflow").is_some()
+            || state.identities.lock().len() != MODULE_AMBIGUITY_IDENTITY_CAP
+            || state.in_flight.load(Ordering::Acquire) != 0
+        {
+            return Err("a saturated table must reject observation without changing state".into());
         }
-        drop(overflow);
-        if state.identities.lock().len() != MODULE_AMBIGUITY_IDENTITY_CAP {
-            return Err("overflow observation changed retained identity count".into());
+        let long_name = "X".repeat(MODULE_AMBIGUITY_NAME_MAX_BYTES + 1);
+        let empty_state = Arc::new(ModuleAmbiguityNoticeState::default());
+        if empty_state.reserve(&long_name).is_some()
+            || !empty_state.identities.lock().is_empty()
+            || empty_state.in_flight.load(Ordering::Acquire) != 0
+        {
+            return Err("an oversized module name must not enter observation state".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn worker_slot_acquisition_stops_at_cap() -> TestResult {
+        let slots = AtomicUsize::new(0);
+        for _ in 0..MODULE_AMBIGUITY_PROCESS_WORKER_CAP {
+            if !try_acquire_worker_slot(&slots, MODULE_AMBIGUITY_PROCESS_WORKER_CAP) {
+                return Err("worker cap rejected an available slot".into());
+            }
+        }
+        if try_acquire_worker_slot(&slots, MODULE_AMBIGUITY_PROCESS_WORKER_CAP)
+            || slots.load(Ordering::Acquire) != MODULE_AMBIGUITY_PROCESS_WORKER_CAP
+        {
+            return Err("worker cap admitted an extra slot".into());
         }
         Ok(())
     }
