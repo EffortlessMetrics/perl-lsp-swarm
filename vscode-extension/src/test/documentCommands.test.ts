@@ -133,9 +133,7 @@ describe('document command implementations', () => {
     // (#16581). The trailing lines are asserted in
     // documentCommandsIncPaths.test.ts; the scope string is pinned here too so
     // this test cannot silently regress to a bare header.
-    expect(outputChannel.appendLine).toHaveBeenCalledWith(
-      'Perl @INC of the `perl` found on PATH:',
-    );
+    expect(outputChannel.appendLine).toHaveBeenCalledWith('Perl @INC of the `perl` found on PATH:');
     expect(outputChannel.appendLine).toHaveBeenCalledWith('  /one');
     expect(outputChannel.appendLine).toHaveBeenCalledWith('  /two');
     expect(outputChannel.show).toHaveBeenCalledTimes(1);
