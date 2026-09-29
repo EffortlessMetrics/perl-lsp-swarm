@@ -1,5 +1,7 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 fn run_perllsp(args: &[&str]) -> Result<std::process::Output, Box<dyn std::error::Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_perllsp")).args(args).output()?;
@@ -137,6 +139,90 @@ fn unknown_completion_shell_reports_supported_values() -> Result<(), Box<dyn std
     assert!(
         stderr.contains("Run 'perllsp --help'"),
         "error help should use the facade name: {stderr:?}"
+    );
+    Ok(())
+}
+
+fn lsp_frame(body: &str) -> String {
+    format!("Content-Length: {}\r\n\r\n{body}", body.len())
+}
+
+fn timing_stdio_output(
+    mode: &str,
+    cwd: &std::path::Path,
+) -> Result<Output, Box<dyn std::error::Error>> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_perllsp"))
+        .arg("--stdio")
+        .current_dir(cwd)
+        .env("PERL_LSP_TIMING", mode)
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let messages = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}"#,
+        r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#,
+        r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///timing-test.pl","languageId":"perl","version":1,"text":"my $x = 1;\n"}}}"#,
+        r#"{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///timing-test.pl","version":2},"contentChanges":[{"text":"my $x = 2;\n"}]}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}"#,
+        r#"{"jsonrpc":"2.0","method":"exit","params":null}"#,
+    ];
+    let input = messages.into_iter().map(lsp_frame).collect::<String>();
+    child.stdin.take().ok_or("missing server stdin")?.write_all(input.as_bytes())?;
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while child.try_wait()?.is_none() {
+        if Instant::now() >= deadline {
+            child.kill()?;
+            let _ = child.wait();
+            return Err(format!("perllsp --stdio did not exit for PERL_LSP_TIMING={mode}").into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(child.wait_with_output()?)
+}
+
+#[test]
+fn documented_timing_modes_use_stderr_without_creating_token_named_files()
+-> Result<(), Box<dyn std::error::Error>> {
+    for mode in ["json", "spans"] {
+        let cwd = tempfile::tempdir()?;
+        let output = timing_stdio_output(mode, cwd.path())?;
+        let stdout = String::from_utf8(output.stdout)?;
+        let stderr = String::from_utf8(output.stderr)?;
+
+        assert!(output.status.success(), "{mode}: server failed: {stderr}");
+        assert!(stdout.contains("Content-Length:"), "{mode}: no LSP response: {stdout}");
+        assert!(!stdout.contains("perl_lsp_timing"), "{mode}: timing corrupted LSP stdout");
+        assert!(
+            stderr.contains("\"t\":\"perl_lsp_timing\""),
+            "{mode}: no JSONL timing event: {stderr}"
+        );
+        assert!(!cwd.path().join(mode).exists(), "{mode}: server created a file named {mode}");
+
+        let notice_count = stderr.matches("PERL_LSP_TIMING=spans is not implemented").count();
+        assert_eq!(
+            notice_count,
+            usize::from(mode == "spans"),
+            "{mode}: unexpected notice: {stderr}"
+        );
+    }
+
+    let cwd = tempfile::tempdir()?;
+    let output = timing_stdio_output("timing.jsonl", cwd.path())?;
+    assert!(
+        output.status.success(),
+        "file sink server failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let file = cwd.path().join("timing.jsonl");
+    assert!(file.exists(), "an explicit path must still create a timing file");
+    let content = std::fs::read_to_string(file)?;
+    assert!(
+        content.contains("\"t\":\"perl_lsp_timing\""),
+        "file sink has no JSONL timing event: {content}"
     );
     Ok(())
 }

@@ -982,7 +982,7 @@ object per line.
 | unset, empty, `off`, `0`, `false` | disabled (default) |
 | `stderr`, `1`, `true` | JSONL to stderr |
 | `json` | JSONL to stderr (the same sink; there is no separate JSON format) |
-| `spans` | accepted for compatibility; **not implemented** — warns once on stderr, then behaves as `json` |
+| `spans` | accepted for compatibility; **not implemented** — emits one warning-level notice (unless filtered by `RUST_LOG`), then behaves as `json` |
 | a file path | JSONL appended to that file, created if absent |
 
 ```bash

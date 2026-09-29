@@ -19,7 +19,7 @@
 //! | unset / empty / `0` / `off`    | disabled (zero overhead)   |
 //! | `1` / `stderr` / `true`        | JSONL to stderr            |
 //! | `json`                         | JSONL to stderr (same sink)|
-//! | `spans`                        | not implemented; warns, then JSONL to stderr |
+//! | `spans`                        | not implemented; warning-level notice, then JSONL to stderr |
 //! | any other value                | JSONL appended to that path |
 //!
 //! `json` is not a distinct format: [`format_span_json`] is the only renderer,
@@ -172,18 +172,15 @@ fn mode() -> &'static TimingMode {
     MODE.get_or_init(|| match std::env::var("PERL_LSP_TIMING") {
         Ok(value) => {
             let parsed = parse_mode(&value);
-            // `tracing::warn!`, and this DOES reach the operator:
-            // `run_server` calls `init_logging("warn")` unconditionally on the
-            // `--stdio` path (`cli.rs`), whose writer is `io::stderr`.
+            // `run_server` initializes a stderr tracing subscriber before
+            // serving stdio. Its filter may suppress this warning when the
+            // operator explicitly sets RUST_LOG below warn.
             //
             // `eprintln!` is not an option here regardless of visibility: the
             // crate lints direct stderr writes out of library code, and this
             // module is library code.
             //
-            // Residual tradeoff, stated rather than hidden: an operator who
-            // lowers the default filter below `warn` stops seeing this once.
-            // That is the correct behavior for a diagnostic, and unlike the
-            // defect it replaces the notice is emitted at all.
+            // Respecting that filter is the normal diagnostic behavior.
             if let Some(notice) = parsed.notice {
                 tracing::warn!("{notice}");
             }
