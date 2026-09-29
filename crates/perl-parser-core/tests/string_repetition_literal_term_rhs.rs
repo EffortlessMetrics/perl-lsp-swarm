@@ -299,22 +299,30 @@ fn division_after_a_string_is_not_binary_repetition() {
 }
 
 #[test]
-fn word_not_and_angle_bracket_terms_remain_outside_this_classifier() {
-    for source in
-        [r#"my $value = "x" x not 1;"#, r#"my $value = "x" x <>;"#, r#"my $value = "x" x <STDIN>;"#]
-    {
+fn angle_bracket_terms_remain_outside_this_classifier() {
+    // Word-not association is supported and protected separately by #13932.
+    for source in [r#"my $value = "x" x <>;"#, r#"my $value = "x" x <STDIN>;"#] {
         assert_not_repetition(source);
     }
 }
 
 #[test]
-fn missing_rhs_does_not_fabricate_a_binary_x_node() {
-    // `"x" x;` currently splits into a string statement plus a bare `x`
-    // statement rather than synthesizing `Binary { op: "x", right: Missing }`.
-    // This claim keeps that non-repetition recovery; it does not add a new
-    // missing-operand diagnostic.
+fn missing_rhs_is_a_recovered_operand_not_a_clean_sibling() -> Result<(), String> {
     let source = r#""x" x;"#;
-    assert_not_repetition(source);
+    let output = Parser::new(source).parse_with_recovery();
+    let repetitions = repetitions_of(&output.ast);
+    if repetitions.len() != 1
+        || !matches!(repetitions.first().map(|node| &node.kind), Some(NodeKind::Binary { right, .. })
+            if matches!(right.kind, NodeKind::MissingExpression))
+        || !output.diagnostics.iter().any(|error| error.blocks_clean_parse())
+    {
+        return Err(format!(
+            "expected one recovered repetition: {} {:?}",
+            output.ast.to_sexp(),
+            output.diagnostics
+        ));
+    }
+    Ok(())
 }
 
 #[test]

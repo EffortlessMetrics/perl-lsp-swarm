@@ -1,0 +1,1515 @@
+//! Proof for the shared cursor occurrence identity layer.
+//!
+//! The realistic wrong implementation this proof targets is one that resolves a
+//! cursor by *spelling*: it would happily return an exact identity for a
+//! shadowed lexical, for a same-name entity in another root, or for an
+//! occurrence whose entity was never resolved. Each of those has a negative
+//! control below that fails such an implementation.
+
+use super::{
+    ResolveAtOutcome, ResolveAtSource, ResolveGenerationBasis, ResolveLimitation, ResolveNotReady,
+    ResolveUnavailable, ResolvedOccurrence, resolve_at_position,
+    resolve_at_position_with_dynamic_boundary, stable_basis_view, stable_generation_basis,
+};
+use perl_semantic_facts::{
+    AnchorId, Confidence, EntityFact, EntityId, EntityKind, FileId, OccurrenceFact, OccurrenceId,
+    OccurrenceKind, Provenance, ScopeId, SourceGeneration,
+};
+
+const FILE: FileId = FileId(7);
+
+/// Stub carrying exactly the facts the narrow port needs, keyed by offset.
+///
+/// Deliberately offset-keyed rather than name-keyed: a stub that could answer by
+/// spelling would let a spelling-based implementation pass.
+#[derive(Default)]
+struct StubSource {
+    symbol_at: Vec<(u32, EntityFact, OccurrenceFact)>,
+    dynamic_at: Vec<(u32, OccurrenceFact)>,
+    occurrence_at: Vec<(u32, OccurrenceFact)>,
+}
+
+impl StubSource {
+    fn with_symbol(mut self, offset: u32, entity: EntityFact, occurrence: OccurrenceFact) -> Self {
+        self.symbol_at.push((offset, entity, occurrence));
+        self
+    }
+
+    fn with_dynamic(mut self, offset: u32, occurrence: OccurrenceFact) -> Self {
+        self.dynamic_at.push((offset, occurrence));
+        self
+    }
+
+    /// Publish an occurrence the entity pair lookup does not return — the
+    /// production shape where `symbol_at` collapses an entity-less occurrence
+    /// to `None` while `occurrence_at` still reports it.
+    fn with_occurrence_only(mut self, offset: u32, occurrence: OccurrenceFact) -> Self {
+        self.occurrence_at.push((offset, occurrence));
+        self
+    }
+}
+
+impl ResolveAtSource for StubSource {
+    fn resolve_symbol_at(
+        &self,
+        file_id: FileId,
+        byte_offset: u32,
+    ) -> Option<(EntityFact, OccurrenceFact)> {
+        self.symbol_at.iter().find_map(|(offset, entity, occurrence)| {
+            (file_id == FILE && *offset == byte_offset)
+                .then(|| (entity.clone(), occurrence.clone()))
+        })
+    }
+
+    fn resolve_dynamic_boundary_at(
+        &self,
+        file_id: FileId,
+        byte_offset: u32,
+    ) -> Option<OccurrenceFact> {
+        self.dynamic_at.iter().find_map(|(offset, occurrence)| {
+            (file_id == FILE && *offset == byte_offset).then(|| occurrence.clone())
+        })
+    }
+
+    fn resolve_occurrence_at(&self, file_id: FileId, byte_offset: u32) -> Option<OccurrenceFact> {
+        self.occurrence_at.iter().find_map(|(offset, occurrence)| {
+            (file_id == FILE && *offset == byte_offset).then(|| occurrence.clone())
+        })
+    }
+}
+
+fn generation() -> ResolveGenerationBasis {
+    ResolveGenerationBasis::new(
+        SourceGeneration::known("document-1"),
+        SourceGeneration::known("workspace-1"),
+    )
+}
+
+fn entity(id: u64, kind: EntityKind, name: &str, anchor: Option<u64>) -> EntityFact {
+    EntityFact {
+        id: EntityId(id),
+        kind,
+        canonical_name: name.to_owned(),
+        anchor_id: anchor.map(AnchorId),
+        scope_id: Some(ScopeId(id)),
+        provenance: Provenance::ExactAst,
+        confidence: Confidence::High,
+    }
+}
+
+fn occurrence(
+    id: u64,
+    kind: OccurrenceKind,
+    entity_id: Option<u64>,
+    anchor: u64,
+) -> OccurrenceFact {
+    OccurrenceFact {
+        id: OccurrenceId(id),
+        kind,
+        entity_id: entity_id.map(EntityId),
+        anchor_id: AnchorId(anchor),
+        scope_id: Some(ScopeId(id)),
+        provenance: Provenance::ExactAst,
+        confidence: Confidence::High,
+    }
+}
+
+fn resolve(source: &StubSource, offset: u32) -> ResolveAtOutcome {
+    resolve_at_position(source, FILE, offset, &generation(), false)
+}
+
+fn expect_exact(outcome: &ResolveAtOutcome) -> Result<&ResolvedOccurrence, String> {
+    match outcome {
+        ResolveAtOutcome::Exact(resolved) => Ok(resolved),
+        other => Err(format!("expected an exact identity, got {other:?}")),
+    }
+}
+
+// Fallible proposition helpers.
+//
+// Every proposition in this file is stated through one of these rather than
+// through `assert!`/`assert_eq!`, so a failure returns `Err` instead of
+// unwinding. The operands are taken by reference and rendered into the failure
+// exactly as `assert_eq!` renders them, so nothing is lost from the diagnostic.
+
+/// Fallible equality proposition, carrying both compared values.
+fn eq<L, R>(left: &L, right: &R, claim: impl std::fmt::Display) -> Result<(), String>
+where
+    L: PartialEq<R> + std::fmt::Debug + ?Sized,
+    R: std::fmt::Debug + ?Sized,
+{
+    if left == right {
+        Ok(())
+    } else {
+        Err(format!("{claim}\n  left:  {left:?}\n  right: {right:?}"))
+    }
+}
+
+/// Fallible inequality proposition, carrying the value both sides shared.
+fn ne<L, R>(left: &L, right: &R, claim: impl std::fmt::Display) -> Result<(), String>
+where
+    L: PartialEq<R> + std::fmt::Debug + ?Sized,
+    R: std::fmt::Debug + ?Sized,
+{
+    if left == right { Err(format!("{claim}\n  both sides: {left:?}")) } else { Ok(()) }
+}
+
+/// Fallible boolean proposition.
+fn require(held: bool, claim: impl std::fmt::Display) -> Result<(), String> {
+    if held { Ok(()) } else { Err(claim.to_string()) }
+}
+
+// ── Exact identity ──
+
+#[test]
+fn exact_occurrence_carries_occurrence_entity_and_generation() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+
+    let outcome = resolve(&source, 10);
+    let resolved = expect_exact(&outcome)?;
+
+    eq(&resolved.occurrence_id, &OccurrenceId(50), "resolved.occurrence_id == OccurrenceId(50)")?;
+    eq(&resolved.entity_id, &EntityId(1), "resolved.entity_id == EntityId(1)")?;
+    eq(&resolved.role, &OccurrenceKind::Read, "resolved.role == OccurrenceKind::Read")?;
+    eq(
+        &resolved.occurrence_anchor_id,
+        &AnchorId(101),
+        "resolved.occurrence_anchor_id == AnchorId(101)",
+    )?;
+    eq(
+        &resolved.entity_anchor_id,
+        &Some(AnchorId(100)),
+        "resolved.entity_anchor_id == Some(AnchorId(100))",
+    )?;
+    eq(&resolved.generation, &generation(), "resolved.generation == generation()")?;
+    require(resolved.limitations.is_empty(), "resolved.limitations.is_empty()")?;
+    eq(&outcome.stage(), &"exact", "outcome.stage() == \"exact\"")?;
+    Ok(())
+}
+
+/// Negative control for the whole layer: nested same-name lexicals are two
+/// bindings, so the same spelling at two offsets must not collapse to one
+/// identity. A spelling-based implementation fails here.
+#[test]
+fn nested_same_name_lexicals_resolve_to_distinct_bindings() -> Result<(), String> {
+    let source = StubSource::default()
+        .with_symbol(
+            10,
+            entity(1, EntityKind::Variable, "$value", Some(100)),
+            occurrence(50, OccurrenceKind::Read, Some(1), 101),
+        )
+        .with_symbol(
+            40,
+            entity(2, EntityKind::Variable, "$value", Some(200)),
+            occurrence(51, OccurrenceKind::Read, Some(2), 201),
+        );
+
+    let outer = resolve(&source, 10);
+    let inner = resolve(&source, 40);
+
+    eq(
+        &expect_exact(&outer)?.canonical_name,
+        &expect_exact(&inner)?.canonical_name,
+        "expect_exact(&outer)?.canonical_name == expect_exact(&inner)?.canonical_name",
+    )?;
+    ne(
+        &expect_exact(&outer)?.entity_id,
+        &expect_exact(&inner)?.entity_id,
+        "expect_exact(&outer)?.entity_id != expect_exact(&inner)?.entity_id",
+    )?;
+    ne(
+        &expect_exact(&outer)?.occurrence_id,
+        &expect_exact(&inner)?.occurrence_id,
+        "expect_exact(&outer)?.occurrence_id != expect_exact(&inner)?.occurrence_id",
+    )?;
+    require(
+        !outer.shares_subject_with(&inner),
+        "shadowed lexicals must not be reported as one shared subject",
+    )?;
+    Ok(())
+}
+
+/// Same spelling in two packages, and the same spelling in two roots, are
+/// distinct entities. Only the offset may decide which one the cursor selected.
+#[test]
+fn same_spelling_in_two_packages_resolves_by_position_not_name() -> Result<(), String> {
+    let source = StubSource::default()
+        .with_symbol(
+            10,
+            entity(1, EntityKind::Subroutine, "Alpha::run", Some(100)),
+            occurrence(50, OccurrenceKind::Call, Some(1), 101),
+        )
+        .with_symbol(
+            40,
+            entity(2, EntityKind::Subroutine, "Beta::run", Some(200)),
+            occurrence(51, OccurrenceKind::Call, Some(2), 201),
+        );
+
+    eq(
+        &expect_exact(&resolve(&source, 10))?.entity_id,
+        &EntityId(1),
+        "expect_exact(&resolve(&source, 10))?.entity_id == EntityId(1)",
+    )?;
+    eq(
+        &expect_exact(&resolve(&source, 40))?.entity_id,
+        &EntityId(2),
+        "expect_exact(&resolve(&source, 40))?.entity_id == EntityId(2)",
+    )?;
+    Ok(())
+}
+
+/// Qualified and unqualified occurrences of one entity share the entity but
+/// remain separate occurrences.
+#[test]
+fn qualified_and_unqualified_occurrences_share_one_entity() -> Result<(), String> {
+    let shared = entity(1, EntityKind::Subroutine, "Alpha::run", Some(100));
+    let source = StubSource::default()
+        .with_symbol(10, shared.clone(), occurrence(50, OccurrenceKind::Call, Some(1), 101))
+        .with_symbol(40, shared, occurrence(51, OccurrenceKind::Call, Some(1), 201));
+
+    let qualified = resolve(&source, 10);
+    let unqualified = resolve(&source, 40);
+
+    eq(
+        &expect_exact(&qualified)?.entity_id,
+        &expect_exact(&unqualified)?.entity_id,
+        "expect_exact(&qualified)?.entity_id == expect_exact(&unqualified)?.entity_id",
+    )?;
+    ne(
+        &expect_exact(&qualified)?.occurrence_id,
+        &expect_exact(&unqualified)?.occurrence_id,
+        "expect_exact(&qualified)?.occurrence_id != expect_exact(&unqualified)?.occurrence_id",
+    )?;
+    Ok(())
+}
+
+/// Declaration and write roles are preserved; role is part of the resolved
+/// subject, not something each provider re-derives.
+#[test]
+fn occurrence_roles_are_preserved() -> Result<(), String> {
+    let source = StubSource::default()
+        .with_symbol(
+            10,
+            entity(1, EntityKind::Variable, "$value", Some(100)),
+            occurrence(50, OccurrenceKind::Definition, Some(1), 101),
+        )
+        .with_symbol(
+            40,
+            entity(1, EntityKind::Variable, "$value", Some(100)),
+            occurrence(51, OccurrenceKind::Write, Some(1), 201),
+        );
+
+    eq(
+        &expect_exact(&resolve(&source, 10))?.role,
+        &OccurrenceKind::Definition,
+        "expect_exact(&resolve(&source, 10))?.role == OccurrenceKind::Definition",
+    )?;
+    eq(
+        &expect_exact(&resolve(&source, 40))?.role,
+        &OccurrenceKind::Write,
+        "expect_exact(&resolve(&source, 40))?.role == OccurrenceKind::Write",
+    )?;
+    Ok(())
+}
+
+// ── Non-exact states stay mechanically distinct ──
+
+/// Negative control: an occurrence with no entity must never be promoted to an
+/// exact identity by finding a same-name definition. This is the precise error
+/// the layer exists to prevent.
+#[test]
+fn occurrence_without_entity_is_partial_not_exact() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, None, 101),
+    );
+
+    let outcome = resolve(&source, 10);
+
+    eq(&outcome.stage(), &"partial", "outcome.stage() == \"partial\"")?;
+    require(outcome.exact().is_none(), "an unresolved entity must not be exact")?;
+    match outcome {
+        ResolveAtOutcome::Partial { limitations, .. } => {
+            require(
+                limitations.contains(&ResolveLimitation::OccurrenceWithoutEntity),
+                "limitations.contains(&ResolveLimitation::OccurrenceWithoutEntity)",
+            )?;
+        }
+        other => return Err(format!("expected Partial, got {other:?}")),
+    }
+    Ok(())
+}
+
+/// The production shape of the same state: the entity–occurrence pair lookup
+/// returns `None` because no entity was bound, while the occurrence-only
+/// lookup still reports the published fact. The outcome must be the
+/// entity-less limitation, never "no occurrence at this position".
+#[test]
+fn occurrence_without_entity_stays_visible_when_the_pair_lookup_collapses() -> Result<(), String> {
+    let source = StubSource::default()
+        .with_occurrence_only(10, occurrence(50, OccurrenceKind::Read, None, 101));
+
+    let outcome = resolve(&source, 10);
+
+    match outcome {
+        ResolveAtOutcome::Partial { limitations, .. } => {
+            require(
+                limitations.contains(&ResolveLimitation::OccurrenceWithoutEntity),
+                "limitations.contains(&ResolveLimitation::OccurrenceWithoutEntity)",
+            )?;
+        }
+        other => return Err(format!("expected Partial(OccurrenceWithoutEntity), got {other:?}")),
+    }
+    Ok(())
+}
+
+/// A position with truly nothing published stays unavailable — the
+/// occurrence-only fallback must not manufacture a boundary where none was
+/// published.
+#[test]
+fn no_published_occurrence_anywhere_is_still_unavailable() -> Result<(), String> {
+    let source = StubSource::default();
+
+    let outcome = resolve(&source, 10);
+
+    require(
+        matches!(
+            outcome,
+            ResolveAtOutcome::Unavailable(ResolveUnavailable::NoOccurrenceAtPosition)
+        ),
+        "matches!( outcome, ResolveAtOutcome::Unavailable(ResolveUnavailable::NoOccurrenceAtPosition) )",
+    )?;
+    Ok(())
+}
+
+/// A dynamic method selector stays an explicit boundary rather than resolving to
+/// whichever receiver class happens to define that name.
+#[test]
+fn dynamic_boundary_occurrence_is_dynamic_not_exact() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Method, "run", Some(100)),
+        occurrence(50, OccurrenceKind::DynamicBoundary, Some(1), 101),
+    );
+
+    let outcome = resolve(&source, 10);
+
+    eq(&outcome.stage(), &"dynamic", "outcome.stage() == \"dynamic\"")?;
+    eq(
+        &outcome.reason(),
+        &Some("dynamic_selector"),
+        "outcome.reason() == Some(\"dynamic_selector\")",
+    )?;
+    require(outcome.exact().is_none(), "outcome.exact().is_none()")?;
+    Ok(())
+}
+
+/// A dynamic boundary covering a position with no published occurrence is a
+/// different fact from "nothing is here" — but only for a caller that opted in
+/// to the second query.
+#[test]
+fn dynamic_boundary_without_occurrence_is_not_unavailable_when_consulted() -> Result<(), String> {
+    let source = StubSource::default()
+        .with_dynamic(10, occurrence(90, OccurrenceKind::DynamicBoundary, None, 900));
+
+    let outcome =
+        resolve_at_position_with_dynamic_boundary(&source, FILE, 10, &generation(), false);
+
+    eq(&outcome.stage(), &"dynamic", "outcome.stage() == \"dynamic\"")?;
+    match outcome {
+        ResolveAtOutcome::Dynamic { occurrence_id, .. } => {
+            eq(&occurrence_id, &OccurrenceId(90), "occurrence_id == OccurrenceId(90)")?;
+        }
+        other => return Err(format!("expected Dynamic, got {other:?}")),
+    }
+    Ok(())
+}
+
+/// The base rule asks the semantic layer exactly one question. A caller whose
+/// receipts distinguish these cases must not have a second query forced on it.
+#[test]
+fn base_rule_does_not_consult_the_dynamic_boundary_producer() -> Result<(), String> {
+    let source = StubSource::default()
+        .with_dynamic(10, occurrence(90, OccurrenceKind::DynamicBoundary, None, 900));
+
+    eq(
+        &resolve(&source, 10).stage(),
+        &"unavailable",
+        "resolve(&source, 10).stage() == \"unavailable\"",
+    )?;
+    Ok(())
+}
+
+/// Opting in does not override a published occurrence.
+#[test]
+fn dynamic_consultation_does_not_override_a_published_occurrence() -> Result<(), String> {
+    let source = StubSource::default()
+        .with_symbol(
+            10,
+            entity(1, EntityKind::Variable, "$value", Some(100)),
+            occurrence(50, OccurrenceKind::Read, Some(1), 101),
+        )
+        .with_dynamic(10, occurrence(90, OccurrenceKind::DynamicBoundary, None, 900));
+
+    let outcome =
+        resolve_at_position_with_dynamic_boundary(&source, FILE, 10, &generation(), false);
+
+    eq(&outcome.stage(), &"exact", "outcome.stage() == \"exact\"")?;
+    eq(
+        &outcome.bound_entity_id(),
+        &Some(EntityId(1)),
+        "outcome.bound_entity_id() == Some(EntityId(1))",
+    )?;
+    Ok(())
+}
+
+/// A generated member with no source body keeps its generated identity and is
+/// never given a fabricated body range.
+#[test]
+fn generated_member_without_source_body_records_its_limitation() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::GeneratedMember, "name", None),
+        occurrence(50, OccurrenceKind::MethodCall, Some(1), 101),
+    );
+
+    let outcome = resolve(&source, 10);
+    let resolved = expect_exact(&outcome)?;
+
+    eq(&resolved.entity_anchor_id, &None, "no fabricated body range")?;
+    require(
+        resolved.limitations.contains(&ResolveLimitation::GeneratedWithoutSourceBody),
+        "resolved.limitations.contains(&ResolveLimitation::GeneratedWithoutSourceBody)",
+    )?;
+    Ok(())
+}
+
+/// Heuristic or search-fallback provenance is not exact evidence. A name-scan
+/// producer cannot launder a spelling match into an exact identity.
+#[test]
+fn non_exact_provenance_is_partial_not_exact() -> Result<(), String> {
+    for provenance in [Provenance::NameHeuristic, Provenance::SearchFallback] {
+        let mut fact = occurrence(50, OccurrenceKind::Read, Some(1), 101);
+        fact.provenance = provenance;
+        let source = StubSource::default().with_symbol(
+            10,
+            entity(1, EntityKind::Variable, "$value", Some(100)),
+            fact,
+        );
+
+        let outcome = resolve(&source, 10);
+
+        eq(&outcome.stage(), &"partial", format!("{provenance:?} must not be exact"))?;
+        match outcome {
+            ResolveAtOutcome::Partial { limitations, .. } => {
+                require(
+                    limitations.contains(&ResolveLimitation::NonExactProvenance),
+                    "limitations.contains(&ResolveLimitation::NonExactProvenance)",
+                )?;
+            }
+            other => return Err(format!("expected Partial for {provenance:?}, got {other:?}")),
+        }
+    }
+    Ok(())
+}
+
+/// Low confidence is not exact evidence either.
+#[test]
+fn low_confidence_occurrence_is_partial_not_exact() -> Result<(), String> {
+    let mut fact = occurrence(50, OccurrenceKind::Read, Some(1), 101);
+    fact.confidence = Confidence::Low;
+    let source =
+        StubSource::default().with_symbol(10, entity(1, EntityKind::Variable, "$v", Some(1)), fact);
+
+    eq(&resolve(&source, 10).stage(), &"partial", "resolve(&source, 10).stage() == \"partial\"")?;
+    Ok(())
+}
+
+/// "Could not resolve the cursor" is distinct from "resolved, and downstream is
+/// genuinely empty".
+#[test]
+fn no_occurrence_is_unavailable_not_exact_empty() -> Result<(), String> {
+    let outcome = resolve(&StubSource::default(), 10);
+
+    eq(&outcome.stage(), &"unavailable", "outcome.stage() == \"unavailable\"")?;
+    eq(
+        &outcome.reason(),
+        &Some("no_occurrence_at_position"),
+        "outcome.reason() == Some(\"no_occurrence_at_position\")",
+    )?;
+    require(outcome.generation().is_none(), "a state that never queried carries no basis")?;
+    Ok(())
+}
+
+/// A stale accepted view is checked before any query, so it can never produce an
+/// identity that later looks exact.
+#[test]
+fn stale_view_short_circuits_before_any_query() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+
+    let outcome = resolve_at_position(&source, FILE, 10, &generation(), true);
+
+    eq(&outcome.stage(), &"stale", "outcome.stage() == \"stale\"")?;
+    require(outcome.exact().is_none(), "a stale view must not yield an identity")?;
+    Ok(())
+}
+
+// ── Accessors relied on for behaviour-preserving provider adoption ──
+
+/// `bound_entity_id` reports what the producer published without asserting the
+/// identity is exact, so a caller that already accepted sub-exact evidence keeps
+/// the same answer while sharing this resolution stage.
+#[test]
+fn bound_entity_id_matches_the_published_occurrence_entity() -> Result<(), String> {
+    let mut heuristic = occurrence(50, OccurrenceKind::Read, Some(4), 101);
+    heuristic.provenance = Provenance::NameHeuristic;
+
+    let exact = StubSource::default().with_symbol(
+        10,
+        entity(3, EntityKind::Variable, "$v", Some(1)),
+        occurrence(50, OccurrenceKind::Read, Some(3), 101),
+    );
+    let sub_exact = StubSource::default().with_symbol(
+        10,
+        entity(4, EntityKind::Variable, "$v", Some(1)),
+        heuristic,
+    );
+    let no_entity = StubSource::default().with_symbol(
+        10,
+        entity(5, EntityKind::Variable, "$v", Some(1)),
+        occurrence(50, OccurrenceKind::Read, None, 101),
+    );
+
+    eq(
+        &resolve(&exact, 10).bound_entity_id(),
+        &Some(EntityId(3)),
+        "resolve(&exact, 10).bound_entity_id() == Some(EntityId(3))",
+    )?;
+    eq(
+        &resolve(&sub_exact, 10).bound_entity_id(),
+        &Some(EntityId(4)),
+        "resolve(&sub_exact, 10).bound_entity_id() == Some(EntityId(4))",
+    )?;
+    eq(
+        &resolve(&no_entity, 10).bound_entity_id(),
+        &None,
+        "resolve(&no_entity, 10).bound_entity_id() == None",
+    )?;
+    eq(
+        &resolve(&StubSource::default(), 10).bound_entity_id(),
+        &None,
+        "resolve(&StubSource::default(), 10).bound_entity_id() == None",
+    )?;
+    Ok(())
+}
+
+/// Ambiguity must never be silently collapsed to one identity.
+#[test]
+fn ambiguous_outcome_yields_no_bound_entity() -> Result<(), String> {
+    eq(
+        &ResolveAtOutcome::Ambiguous(Vec::new()).bound_entity_id(),
+        &None,
+        "ResolveAtOutcome::Ambiguous(Vec::new()).bound_entity_id() == None",
+    )?;
+    require(
+        ResolveAtOutcome::Ambiguous(Vec::new()).published_occurrence().is_none(),
+        "ResolveAtOutcome::Ambiguous(Vec::new()).published_occurrence().is_none()",
+    )?;
+    Ok(())
+}
+
+/// `published_occurrence` exposes the occurrence's role and anchor so a caller
+/// need not re-query the semantic layer for facts this resolution already read.
+#[test]
+fn published_occurrence_exposes_role_and_anchor_without_a_second_query() -> Result<(), String> {
+    let mut heuristic = occurrence(51, OccurrenceKind::Definition, Some(2), 201);
+    heuristic.provenance = Provenance::NameHeuristic;
+
+    let exact = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$v", Some(1)),
+        occurrence(50, OccurrenceKind::Definition, Some(1), 101),
+    );
+    let sub_exact = StubSource::default().with_symbol(
+        10,
+        entity(2, EntityKind::Variable, "$v", Some(2)),
+        heuristic,
+    );
+
+    let from_exact = resolve(&exact, 10);
+    let published = from_exact
+        .published_occurrence()
+        .ok_or_else(|| "exact publishes an occurrence".to_owned())?;
+    eq(
+        &published.role,
+        &OccurrenceKind::Definition,
+        "published.role == OccurrenceKind::Definition",
+    )?;
+    eq(
+        &published.occurrence_anchor_id,
+        &AnchorId(101),
+        "published.occurrence_anchor_id == AnchorId(101)",
+    )?;
+
+    // A sub-exact occurrence is still a published occurrence: the caller that
+    // reads the declaration anchor must see it exactly as it did before.
+    let from_partial = resolve(&sub_exact, 10);
+    let published = from_partial
+        .published_occurrence()
+        .ok_or_else(|| "partial publishes an occurrence".to_owned())?;
+    eq(
+        &published.role,
+        &OccurrenceKind::Definition,
+        "published.role == OccurrenceKind::Definition",
+    )?;
+    eq(
+        &published.occurrence_anchor_id,
+        &AnchorId(201),
+        "published.occurrence_anchor_id == AnchorId(201)",
+    )?;
+
+    // Nothing published means nothing to read.
+    require(
+        resolve(&StubSource::default(), 10).published_occurrence().is_none(),
+        "resolve(&StubSource::default(), 10).published_occurrence().is_none()",
+    )?;
+    require(
+        ResolveAtOutcome::Stale.published_occurrence().is_none(),
+        "ResolveAtOutcome::Stale.published_occurrence().is_none()",
+    )?;
+    Ok(())
+}
+
+/// `occurrence_was_published` separates "a producer published an occurrence but
+/// it carried no entity" from "nothing is here" — the distinction the
+/// entity-resolution canaries report.
+#[test]
+fn occurrence_was_published_tracks_producer_output_not_exactness() -> Result<(), String> {
+    let with_entity = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$v", Some(1)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+    let without_entity = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$v", Some(1)),
+        occurrence(50, OccurrenceKind::Read, None, 101),
+    );
+
+    require(
+        resolve(&with_entity, 10).occurrence_was_published(),
+        "resolve(&with_entity, 10).occurrence_was_published()",
+    )?;
+    require(
+        resolve(&without_entity, 10).occurrence_was_published(),
+        "resolve(&without_entity, 10).occurrence_was_published()",
+    )?;
+    require(
+        !resolve(&StubSource::default(), 10).occurrence_was_published(),
+        "!resolve(&StubSource::default(), 10).occurrence_was_published()",
+    )?;
+    require(
+        !ResolveAtOutcome::Stale.occurrence_was_published(),
+        "!ResolveAtOutcome::Stale.occurrence_was_published()",
+    )?;
+    Ok(())
+}
+
+/// Every state has a distinct stage identifier, so a receipt can never conflate
+/// two of them.
+#[test]
+fn every_outcome_stage_is_distinct() -> Result<(), String> {
+    let stages = [
+        ResolveAtOutcome::Exact(
+            expect_exact(&resolve(
+                &StubSource::default().with_symbol(
+                    10,
+                    entity(1, EntityKind::Variable, "$v", Some(1)),
+                    occurrence(50, OccurrenceKind::Read, Some(1), 2),
+                ),
+                10,
+            ))?
+            .clone(),
+        )
+        .stage(),
+        ResolveAtOutcome::Ambiguous(Vec::new()).stage(),
+        ResolveAtOutcome::Dynamic {
+            boundary: ResolveLimitation::DynamicSelector,
+            occurrence_id: OccurrenceId(1),
+            entity_id: None,
+            generation: generation(),
+        }
+        .stage(),
+        ResolveAtOutcome::Partial {
+            candidates: Vec::new(),
+            limitations: Vec::new(),
+            generation: generation(),
+        }
+        .stage(),
+        ResolveAtOutcome::NotReady(ResolveNotReady::WorkspaceIndexUnavailable).stage(),
+        ResolveAtOutcome::Stale.stage(),
+        ResolveAtOutcome::Unavailable(ResolveUnavailable::ByteOffsetOutOfRange).stage(),
+        ResolveAtOutcome::InstrumentFailure("boom").stage(),
+    ];
+
+    let mut unique = stages.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    eq(&unique.len(), &stages.len(), "outcome stages must be mechanically distinct")?;
+    Ok(())
+}
+
+/// Not-ready reasons stay separated from "no occurrence here": the first may
+/// succeed unchanged later, the second will not.
+#[test]
+fn not_ready_is_distinct_from_unavailable() -> Result<(), String> {
+    let not_ready = ResolveAtOutcome::NotReady(ResolveNotReady::SemanticQueriesUnavailable);
+    let unavailable = ResolveAtOutcome::Unavailable(ResolveUnavailable::NoOccurrenceAtPosition);
+
+    ne(&not_ready.stage(), &unavailable.stage(), "not_ready.stage() != unavailable.stage()")?;
+    eq(
+        &not_ready.reason(),
+        &Some("semantic_queries_unavailable"),
+        "not_ready.reason() == Some(\"semantic_queries_unavailable\")",
+    )?;
+    eq(
+        &unavailable.reason(),
+        &Some("no_occurrence_at_position"),
+        "unavailable.reason() == Some(\"no_occurrence_at_position\")",
+    )?;
+    Ok(())
+}
+
+// ── Generation basis ──
+
+/// Two providers answering one request must resolve the cursor against the same
+/// generations. This is the mechanical check that proves it.
+#[test]
+fn same_basis_is_shared_and_different_basis_is_not() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+
+    let definition = resolve(&source, 10);
+    let references = resolve(&source, 10);
+    require(
+        definition.shares_generation_with(&references),
+        "definition.shares_generation_with(&references)",
+    )?;
+    require(
+        definition.shares_subject_with(&references),
+        "definition.shares_subject_with(&references)",
+    )?;
+
+    let later_workspace = ResolveGenerationBasis::new(
+        SourceGeneration::known("document-1"),
+        SourceGeneration::known("workspace-2"),
+    );
+    let drifted = resolve_at_position(&source, FILE, 10, &later_workspace, false);
+
+    require(
+        !definition.shares_generation_with(&drifted),
+        "a different accepted workspace generation must be detectable",
+    )?;
+    require(
+        definition.shares_subject_with(&drifted),
+        "the subject is unchanged even though the basis drifted",
+    )?;
+    Ok(())
+}
+
+/// States that never reached the semantic view share no basis, so the check is
+/// false rather than vacuously true.
+#[test]
+fn states_without_a_basis_do_not_report_a_shared_generation() -> Result<(), String> {
+    let unavailable = resolve(&StubSource::default(), 10);
+    let stale = ResolveAtOutcome::Stale;
+
+    require(
+        !unavailable.shares_generation_with(&stale),
+        "!unavailable.shares_generation_with(&stale)",
+    )?;
+    require(!stale.shares_generation_with(&stale), "!stale.shares_generation_with(&stale)")?;
+    Ok(())
+}
+
+/// A basis that names no snapshot is not evidence that two outcomes shared one.
+///
+/// `stable_generation_basis` returns an all-unknown basis when it cannot observe
+/// a stable pair within its attempts, so two resolves that both met a churning
+/// index carry equal bases while neither identifies a generation. Comparing the
+/// values alone reports agreement exactly when the index was least settled, so
+/// the refusal has to come from the basis being unidentified — the states here
+/// both reached the semantic view, which rules out the no-basis arm.
+#[test]
+fn fully_unknown_bases_do_not_report_a_shared_generation() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+    let unknown = ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::Unknown);
+
+    let definition = resolve_at_position(&source, FILE, 10, &unknown, false);
+    let references = resolve_at_position(&source, FILE, 10, &unknown, false);
+
+    require(
+        definition.generation().is_some() && references.generation().is_some(),
+        "both outcomes must carry a basis, or this control proves something weaker",
+    )?;
+    eq(
+        &definition.generation(),
+        &references.generation(),
+        "the two bases are equal as values; the refusal must come from identity, not inequality",
+    )?;
+    require(
+        !definition.shares_generation_with(&references),
+        "neither basis identifies a snapshot, so agreeing on `unknown` is not a shared generation",
+    )?;
+    Ok(())
+}
+
+/// One unidentified half is enough to refuse, whichever half it is.
+///
+/// An unindexed document yields an unknown document generation beside a known
+/// workspace one; an unobservable index yields the mirror. Agreeing on the
+/// identified half says nothing about the unidentified one, so neither pairing
+/// may read as shared. Both directions are checked because a gate written
+/// against one half only would still pass the other.
+#[test]
+fn a_partially_unknown_basis_does_not_report_a_shared_generation() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+
+    for (label, basis) in [
+        (
+            "unknown document generation",
+            ResolveGenerationBasis::new(
+                SourceGeneration::Unknown,
+                SourceGeneration::known("workspace-index@4"),
+            ),
+        ),
+        (
+            "unknown workspace generation",
+            ResolveGenerationBasis::new(
+                SourceGeneration::known("file:///a.pl@4"),
+                SourceGeneration::Unknown,
+            ),
+        ),
+    ] {
+        let definition = resolve_at_position(&source, FILE, 10, &basis, false);
+        let references = resolve_at_position(&source, FILE, 10, &basis, false);
+
+        eq(
+            &definition.generation(),
+            &references.generation(),
+            format!(
+                "{label}: the bases are equal as values, so equality alone would report them shared"
+            ),
+        )?;
+        require(
+            !definition.shares_generation_with(&references),
+            format!("{label}: an unidentified half leaves the resolved snapshot unidentified"),
+        )?;
+    }
+    Ok(())
+}
+
+/// An empty label is present but carries no freshness, so it is refused exactly
+/// like `Unknown`.
+///
+/// This is the control that separates asking whether a basis *identifies* a
+/// snapshot from testing for the `Unknown` variant: `Known(String::new())` is
+/// not `Unknown`, compares equal to itself, and still names nothing.
+#[test]
+fn an_empty_generation_label_does_not_report_a_shared_generation() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+    let empty_labels =
+        ResolveGenerationBasis::new(SourceGeneration::known(""), SourceGeneration::known(""));
+
+    let definition = resolve_at_position(&source, FILE, 10, &empty_labels, false);
+    let references = resolve_at_position(&source, FILE, 10, &empty_labels, false);
+
+    eq(
+        &definition.generation(),
+        &references.generation(),
+        "definition.generation() == references.generation()",
+    )?;
+    require(
+        !definition.shares_generation_with(&references),
+        "an empty label is a present value that identifies no snapshot",
+    )?;
+    Ok(())
+}
+
+/// The refusal is bounded: a fully identified basis still reports sharing.
+///
+/// Without this, every test above would also pass an implementation that always
+/// returned `false`.
+#[test]
+fn known_bases_still_report_a_shared_generation() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+
+    let definition = resolve(&source, 10);
+    let references = resolve(&source, 10);
+
+    require(
+        definition.generation().is_some_and(ResolveGenerationBasis::is_known),
+        "the shared helper basis must be fully identified for this control to bound the refusal",
+    )?;
+    require(
+        definition.shares_generation_with(&references),
+        "definition.shares_generation_with(&references)",
+    )?;
+    Ok(())
+}
+
+// ── Torn-read protocol around the generation basis ──
+
+/// A quiet index yields a known basis naming the observed write version.
+#[test]
+fn a_stable_write_version_yields_a_known_basis() -> Result<(), String> {
+    let basis = stable_generation_basis(|| 7, || Some(3), "file:///a.pm", 3);
+
+    require(basis.is_known(), "basis.is_known()")?;
+    eq(
+        &basis.document_generation,
+        &SourceGeneration::known("file:///a.pm@3"),
+        "basis.document_generation == SourceGeneration::known(\"file:///a.pm@3\")",
+    )?;
+    eq(
+        &basis.workspace_generation,
+        &SourceGeneration::known("workspace-index@7"),
+        "basis.workspace_generation == SourceGeneration::known(\"workspace-index@7\")",
+    )?;
+    Ok(())
+}
+
+/// A write that lands between the two halves is retried, and the basis that
+/// survives names one snapshot — never a document generation from before the
+/// write paired with a workspace version from after it.
+#[test]
+fn a_write_landing_mid_read_is_retried_until_the_pair_is_stable() -> Result<(), String> {
+    use std::cell::Cell;
+
+    // Version moves during the first attempt, then settles.
+    let reads = Cell::new(0u32);
+    let version = Cell::new(10u64);
+    let basis = stable_generation_basis(
+        || {
+            let seen = reads.get();
+            reads.set(seen + 1);
+            // Reads 0 and 1 straddle the first attempt: bump between them.
+            if seen == 1 {
+                version.set(11);
+            }
+            version.get()
+        },
+        || Some(4),
+        "file:///a.pm",
+        3,
+    );
+
+    require(basis.is_known(), "a settled index must still yield a usable basis")?;
+    eq(
+        &basis.workspace_generation,
+        &SourceGeneration::known("workspace-index@11"),
+        "the surviving basis must name the settled version, not the pre-write one",
+    )?;
+    Ok(())
+}
+
+/// An index that never settles yields an explicit unknown basis rather than a
+/// fabricated one. This is the control that matters: a torn read must never be
+/// laundered into a basis that looks exact.
+#[test]
+fn an_index_that_never_settles_yields_an_explicit_unknown_basis() -> Result<(), String> {
+    use std::cell::Cell;
+
+    let version = Cell::new(0u64);
+    let basis = stable_generation_basis(
+        || {
+            // Every read observes a different version, so no pair is stable.
+            version.set(version.get() + 1);
+            version.get()
+        },
+        || Some(4),
+        "file:///a.pm",
+        3,
+    );
+
+    require(!basis.is_known(), "an unstable read must not claim a known basis")?;
+    eq(
+        &basis.document_generation,
+        &SourceGeneration::Unknown,
+        "basis.document_generation == SourceGeneration::Unknown",
+    )?;
+    eq(
+        &basis.workspace_generation,
+        &SourceGeneration::Unknown,
+        "basis.workspace_generation == SourceGeneration::Unknown",
+    )?;
+    Ok(())
+}
+
+/// The protocol is bounded: it does not spin forever on a busy index.
+#[test]
+fn the_torn_read_protocol_is_bounded() -> Result<(), String> {
+    use std::cell::Cell;
+
+    let version = Cell::new(0u64);
+    let reads = Cell::new(0u32);
+    let _ = stable_generation_basis(
+        || {
+            reads.set(reads.get() + 1);
+            version.set(version.get() + 1);
+            version.get()
+        },
+        || Some(1),
+        "file:///a.pm",
+        3,
+    );
+
+    // Two version reads per attempt, three attempts.
+    eq(&reads.get(), &6, "the protocol must stop after its attempt bound")?;
+    Ok(())
+}
+
+// ── Basis-to-view stability bracket ──
+
+/// A commit that lands between basis capture and view completion is retried:
+/// the surviving attempt carries the post-commit basis, not a pair spanning
+/// two snapshots. This is the deterministic version of the race the bracket
+/// exists for — the write fires while the first view is open.
+#[test]
+fn a_commit_between_basis_and_view_is_retried_with_a_fresh_basis() -> Result<(), String> {
+    use std::cell::Cell;
+
+    let version = Cell::new(10u64);
+    let view_calls = Cell::new(0u32);
+    let result = stable_basis_view(
+        || format!("basis@{}", version.get()),
+        || version.get(),
+        |basis| {
+            view_calls.set(view_calls.get() + 1);
+            // First attempt: a writer commits while the view is open.
+            if view_calls.get() == 1 {
+                version.set(11);
+            }
+            basis.clone()
+        },
+        3,
+    );
+
+    eq(&view_calls.get(), &2, "the torn attempt must be retried")?;
+    let (basis, view_basis) =
+        result.ok_or_else(|| "a settled index must still yield a view".to_owned())?;
+    eq(&basis, &"basis@11", "the surviving basis must name the post-commit version")?;
+    eq(&view_basis, &"basis@11", "the surviving view must have resolved against that same basis")?;
+    Ok(())
+}
+
+/// A view whose version never settles yields `None` — the caller's named
+/// instability — rather than a pair spanning two snapshots.
+#[test]
+fn a_view_that_never_settles_yields_no_result() -> Result<(), String> {
+    use std::cell::Cell;
+
+    let version = Cell::new(0u64);
+    let result: Option<(u64, ())> = stable_basis_view(
+        || version.get(),
+        || version.get(),
+        |_| version.set(version.get() + 1), // a writer commits during every view
+        3,
+    );
+
+    require(result.is_none(), "instability must be explicit, not laundered into a pair")?;
+    Ok(())
+}
+
+/// The bracket is bounded: it stops after its attempt limit instead of
+/// spinning on a busy index.
+#[test]
+fn the_basis_view_bracket_is_bounded() -> Result<(), String> {
+    use std::cell::Cell;
+
+    let version = Cell::new(0u64);
+    let attempts = Cell::new(0u32);
+    let result: Option<(u64, ())> = stable_basis_view(
+        || version.get(),
+        || version.get(),
+        |_| {
+            attempts.set(attempts.get() + 1);
+            version.set(version.get() + 1);
+        },
+        3,
+    );
+
+    require(result.is_none(), "result.is_none()")?;
+    eq(&attempts.get(), &3, "the bracket must stop after its attempt bound")?;
+    Ok(())
+}
+
+/// The definition receipt captures its basis, then performs the legacy lookup,
+/// then opens the semantic view — three steps the one basis is meant to
+/// describe. An unrelated workspace update completing anywhere in that window
+/// would otherwise leave the newer view's facts labelled with the settled older
+/// basis, and the provider's own document-generation checks would not catch it:
+/// they compare document generations, never the workspace half.
+///
+/// The update here is *scheduled* rather than raced — it lands exactly once,
+/// inside the first attempt's window — so the control is deterministic. It
+/// fails against the pre-repair ordering, which captured the basis once and
+/// returned it without ever re-observing the version: that shape yields the
+/// stale `7` after a single pass instead of the settled `8` after two.
+#[test]
+fn a_workspace_update_scheduled_between_basis_and_view_is_not_returned() -> Result<(), String> {
+    use std::cell::Cell;
+
+    let version = Cell::new(7u64);
+    let view_passes = Cell::new(0u32);
+    let update_pending = Cell::new(true);
+
+    let observed: Option<(u64, &'static str)> = stable_basis_view(
+        || version.get(),
+        || version.get(),
+        |_basis| {
+            view_passes.set(view_passes.get() + 1);
+            if update_pending.replace(false) {
+                // The unrelated workspace update completes here: after the
+                // basis was captured, before this view finishes.
+                version.set(version.get() + 1);
+            }
+            "view"
+        },
+        3,
+    );
+
+    eq(
+        &observed,
+        &Some((8, "view")),
+        "the returned basis must describe the view it labels, not the one that was displaced",
+    )?;
+    eq(
+        &view_passes.get(),
+        &2,
+        "the attempt the update landed in must be discarded rather than returned",
+    )?;
+    Ok(())
+}
+
+/// A uri the index has never seen still yields an explicit unknown document
+/// generation, while the workspace half stays known.
+#[test]
+fn an_unseen_uri_yields_an_unknown_document_generation_with_a_known_workspace() -> Result<(), String>
+{
+    let basis = stable_generation_basis(|| 2, || None, "file:///absent.pm", 3);
+
+    require(!basis.is_known(), "!basis.is_known()")?;
+    eq(
+        &basis.document_generation,
+        &SourceGeneration::Unknown,
+        "basis.document_generation == SourceGeneration::Unknown",
+    )?;
+    eq(
+        &basis.workspace_generation,
+        &SourceGeneration::known("workspace-index@2"),
+        "basis.workspace_generation == SourceGeneration::known(\"workspace-index@2\")",
+    )?;
+    Ok(())
+}
+
+/// A source that hands back an entity which is not the one the occurrence binds
+/// must be refused, not silently combined. Otherwise the result would carry one
+/// entity's id alongside another's kind, name, anchor, and evidence — an
+/// "exact" identity describing no real entity at all.
+#[test]
+fn a_source_pairing_mismatched_facts_is_refused() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        // This entity is #2 …
+        entity(2, EntityKind::Subroutine, "Beta::run", Some(200)),
+        // … but the occurrence binds #1.
+        occurrence(50, OccurrenceKind::Call, Some(1), 101),
+    );
+
+    let outcome = resolve(&source, 10);
+
+    eq(&outcome.stage(), &"instrument_failure", "outcome.stage() == \"instrument_failure\"")?;
+    eq(
+        &outcome.reason(),
+        &Some("source_entity_occurrence_mismatch"),
+        "outcome.reason() == Some(\"source_entity_occurrence_mismatch\")",
+    )?;
+    require(outcome.exact().is_none(), "a hybrid identity must never be exact")?;
+    eq(&outcome.bound_entity_id(), &None, "no entity may be reported from a mismatched pair")?;
+    require(!outcome.occurrence_was_published(), "!outcome.occurrence_was_published()")?;
+    Ok(())
+}
+
+/// The check is an equality test on identity, not a coincidence of the fixtures:
+/// the same pair with matching ids resolves normally.
+#[test]
+fn a_source_pairing_matched_facts_still_resolves() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Subroutine, "Alpha::run", Some(100)),
+        occurrence(50, OccurrenceKind::Call, Some(1), 101),
+    );
+
+    eq(&resolve(&source, 10).stage(), &"exact", "resolve(&source, 10).stage() == \"exact\"")?;
+    Ok(())
+}
+
+// ── Exactness depends on both halves of the identity, and on the basis ──
+
+/// The identity is occurrence *and* entity, so a weak entity cannot be laundered
+/// into an exact identity by a strong occurrence.
+#[test]
+fn a_weak_entity_is_not_an_exact_identity() -> Result<(), String> {
+    for (provenance, confidence) in [
+        (Provenance::NameHeuristic, Confidence::High),
+        (Provenance::SearchFallback, Confidence::High),
+        (Provenance::ExactAst, Confidence::Low),
+    ] {
+        let mut weak = entity(1, EntityKind::Variable, "$value", Some(100));
+        weak.provenance = provenance;
+        weak.confidence = confidence;
+        // The occurrence itself is impeccable.
+        let source = StubSource::default().with_symbol(
+            10,
+            weak,
+            occurrence(50, OccurrenceKind::Read, Some(1), 101),
+        );
+
+        let outcome = resolve(&source, 10);
+
+        eq(
+            &outcome.stage(),
+            &"partial",
+            format!("entity evidence {provenance:?}/{confidence:?} must not be exact"),
+        )?;
+        match outcome {
+            ResolveAtOutcome::Partial { limitations, .. } => require(
+                limitations.contains(&ResolveLimitation::NonExactEntityProvenance),
+                "the weak half must be named",
+            )?,
+            other => return Err(format!("expected Partial, got {other:?}")),
+        }
+    }
+    Ok(())
+}
+
+/// The two halves are reported separately, so a caller can tell which one is
+/// approximate rather than being told only that something is.
+#[test]
+fn weak_occurrence_and_weak_entity_are_named_separately() -> Result<(), String> {
+    let mut weak_entity_fact = entity(1, EntityKind::Variable, "$value", Some(100));
+    weak_entity_fact.provenance = Provenance::NameHeuristic;
+    let mut weak_occurrence = occurrence(50, OccurrenceKind::Read, Some(1), 101);
+    weak_occurrence.provenance = Provenance::SearchFallback;
+
+    let entity_only = StubSource::default().with_symbol(
+        10,
+        weak_entity_fact,
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+    let occurrence_only = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        weak_occurrence,
+    );
+
+    match resolve(&entity_only, 10) {
+        ResolveAtOutcome::Partial { limitations, .. } => {
+            require(
+                limitations.contains(&ResolveLimitation::NonExactEntityProvenance),
+                "limitations.contains(&ResolveLimitation::NonExactEntityProvenance)",
+            )?;
+            require(
+                !limitations.contains(&ResolveLimitation::NonExactProvenance),
+                "!limitations.contains(&ResolveLimitation::NonExactProvenance)",
+            )?;
+        }
+        other => return Err(format!("expected Partial, got {other:?}")),
+    }
+    match resolve(&occurrence_only, 10) {
+        ResolveAtOutcome::Partial { limitations, .. } => {
+            require(
+                limitations.contains(&ResolveLimitation::NonExactProvenance),
+                "limitations.contains(&ResolveLimitation::NonExactProvenance)",
+            )?;
+            require(
+                !limitations.contains(&ResolveLimitation::NonExactEntityProvenance),
+                "!limitations.contains(&ResolveLimitation::NonExactEntityProvenance)",
+            )?;
+        }
+        other => return Err(format!("expected Partial, got {other:?}")),
+    }
+    Ok(())
+}
+
+/// An identity whose snapshot is unidentified is not exact, however strong the
+/// producer evidence. Without a known basis a caller cannot say which source the
+/// identity came from, nor detect drift by comparing bases.
+#[test]
+fn an_unknown_basis_cannot_produce_an_exact_identity() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+
+    for basis in [
+        ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::Unknown),
+        ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::known("w")),
+        ResolveGenerationBasis::new(SourceGeneration::known("d"), SourceGeneration::Unknown),
+    ] {
+        let outcome = resolve_at_position(&source, FILE, 10, &basis, false);
+
+        eq(&outcome.stage(), &"partial", format!("unknown basis {basis:?} must not be exact"))?;
+        require(outcome.exact().is_none(), "outcome.exact().is_none()")?;
+        match outcome {
+            ResolveAtOutcome::Partial { limitations, candidates, .. } => {
+                require(
+                    limitations.contains(&ResolveLimitation::UnknownGeneration),
+                    "limitations.contains(&ResolveLimitation::UnknownGeneration)",
+                )?;
+                // The identity is still carried, so a caller that already
+                // accepted sub-exact evidence keeps the same answer.
+                eq(
+                    &candidates.first().map(|first| first.entity_id),
+                    &Some(EntityId(1)),
+                    "candidates.first().map(|first| first.entity_id) == Some(EntityId(1))",
+                )?;
+            }
+            other => return Err(format!("expected Partial, got {other:?}")),
+        }
+    }
+    Ok(())
+}
+
+/// The degraded state stays usable: `bound_entity_id` still reports the entity,
+/// so references' acceptance is unchanged by the basis gate.
+#[test]
+fn an_unknown_basis_still_reports_the_bound_entity() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+    let unknown = ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::Unknown);
+
+    let outcome = resolve_at_position(&source, FILE, 10, &unknown, false);
+
+    eq(
+        &outcome.bound_entity_id(),
+        &Some(EntityId(1)),
+        "outcome.bound_entity_id() == Some(EntityId(1))",
+    )?;
+    require(outcome.occurrence_was_published(), "outcome.occurrence_was_published()")?;
+    Ok(())
+}
+
+/// An unknown generation is explicit and never counts as a known basis.
+#[test]
+fn unknown_generation_is_not_a_known_basis() -> Result<(), String> {
+    require(generation().is_known(), "generation().is_known()")?;
+    require(
+        !ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::known("w"))
+            .is_known(),
+        "!ResolveGenerationBasis::new(SourceGeneration::Unknown, SourceGeneration::known(\"w\")) .is_known()",
+    )?;
+    require(
+        !ResolveGenerationBasis::new(SourceGeneration::known("d"), SourceGeneration::Unknown)
+            .is_known(),
+        "!ResolveGenerationBasis::new(SourceGeneration::known(\"d\"), SourceGeneration::Unknown) .is_known()",
+    )?;
+    Ok(())
+}
+
+/// The file identity is part of the subject: the same offset in another file is
+/// not this cursor. Guards the "another root's same-name entity" control.
+#[test]
+fn another_file_at_the_same_offset_does_not_satisfy_the_request() -> Result<(), String> {
+    let source = StubSource::default().with_symbol(
+        10,
+        entity(1, EntityKind::Variable, "$value", Some(100)),
+        occurrence(50, OccurrenceKind::Read, Some(1), 101),
+    );
+
+    let other_file = resolve_at_position(&source, FileId(99), 10, &generation(), false);
+
+    eq(&other_file.stage(), &"unavailable", "other_file.stage() == \"unavailable\"")?;
+    Ok(())
+}
+
+// ── The reported scope is the occurrence's use site, never the declaration ──
+
+/// `scope_id` is documented as the scope *containing the occurrence*. The
+/// entity's scope is where it was declared, which for an import, a package
+/// member, or a shadowed lexical is a different scope entirely. An occurrence
+/// that published no scope must stay absent rather than borrow the entity's,
+/// or an exact identity would carry a use site the cursor never had.
+#[test]
+fn a_missing_occurrence_scope_is_not_filled_from_the_entity() -> Result<(), String> {
+    let mut declared_elsewhere = entity(1, EntityKind::Variable, "$value", Some(100));
+    declared_elsewhere.scope_id = Some(ScopeId(77));
+    let mut used_here = occurrence(50, OccurrenceKind::Read, Some(1), 101);
+    used_here.scope_id = None;
+
+    let source = StubSource::default().with_symbol(10, declared_elsewhere, used_here);
+
+    let outcome = resolve(&source, 10);
+
+    eq(
+        &expect_exact(&outcome)?.scope_id,
+        &None,
+        "an unpublished occurrence scope must stay absent, not borrow ScopeId(77) from the entity",
+    )?;
+    Ok(())
+}
+
+/// Positive control on the same shape: when the occurrence does publish a
+/// scope, that scope is reported even though the entity names a different one.
+/// Pins the rule as "the occurrence's scope" rather than "whichever is Some".
+#[test]
+fn a_published_occurrence_scope_wins_over_a_different_entity_scope() -> Result<(), String> {
+    let mut declared_elsewhere = entity(1, EntityKind::Variable, "$value", Some(100));
+    declared_elsewhere.scope_id = Some(ScopeId(77));
+    let mut used_here = occurrence(50, OccurrenceKind::Read, Some(1), 101);
+    used_here.scope_id = Some(ScopeId(88));
+
+    let source = StubSource::default().with_symbol(10, declared_elsewhere, used_here);
+
+    let outcome = resolve(&source, 10);
+
+    eq(
+        &expect_exact(&outcome)?.scope_id,
+        &Some(ScopeId(88)),
+        "expect_exact(&outcome)?.scope_id == Some(ScopeId(88))",
+    )?;
+    Ok(())
+}

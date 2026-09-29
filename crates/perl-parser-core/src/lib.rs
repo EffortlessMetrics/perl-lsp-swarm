@@ -177,9 +177,10 @@ pub use ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 pub use error::classifier::{RecoverySalvageMetrics, classify_recovery_salvage};
 /// Parse error, budget, and output types.
 pub use error::{
-    BudgetTracker, ErrorCategory, ErrorClass, ParseBudget, ParseCoreDimension,
-    ParseDiagnosticSeverity, ParseError, ParseOutput, ParseResult, ParseStopCause,
-    RecoverySalvageClass, RecoverySalvageProfile,
+    BudgetTracker, ErrorCategory, ErrorClass, InvalidSignatureOrderingKind,
+    InvalidSignatureParameterKind, ParseBudget, ParseCoreDimension, ParseDiagnosticSeverity,
+    ParseError, ParseOutput, ParseResult, ParseStopCause, RecoverySalvageClass,
+    RecoverySalvageProfile,
 };
 
 /// Builtin function signature lookup tables.

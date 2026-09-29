@@ -110,6 +110,7 @@ pub fn cardinality_forms() -> Vec<Node> {
         Node::new(NodeKind::Signature { parameters: vec![] }, loc()),
         Node::new(
             NodeKind::NamedParameter {
+                default_operator_span: None,
                 variable: boxed(),
                 external_name: text(),
                 default_operator: None,

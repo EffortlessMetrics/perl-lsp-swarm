@@ -175,7 +175,6 @@ For references:
       "referencesCap": 500,
       "completionCap": 100,
       "referenceSearchDeadlineMs": 2000,
-      "workspaceScanDeadlineMs": 30000
     }
   }
 }
@@ -189,9 +188,6 @@ For projects with 10K+ files:
 {
   "perl": {
     "limits": {
-      "maxIndexedFiles": 50000,
-      "maxTotalSymbols": 2000000,
-      "workspaceScanDeadlineMs": 120000,
       "workspaceSymbolCap": 300,
       "referencesCap": 1000
     }
@@ -207,10 +203,6 @@ For limited memory/CPU environments:
 {
   "perl": {
     "limits": {
-      "astCacheMaxEntries": 50,
-      "maxIndexedFiles": 5000,
-      "maxTotalSymbols": 100000,
-      "workspaceScanDeadlineMs": 15000,
       "referenceSearchDeadlineMs": 1000,
       "workspaceSymbolCap": 100,
       "referencesCap": 200

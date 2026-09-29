@@ -998,3 +998,20 @@ mappedPackageTests().catch((error) => {
   process.stderr.write(`${String(error)}\n`);
   process.exitCode = 1;
 });
+
+void test('mapped empty snapshot errors identify the snapshot without disclosing ZIP bytes', async () => {
+  const JSZip = require('jszip');
+  const { collectArchiveInventory } = require('./check-vsix-inventory-transition');
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<Types>PRIVATE_ARCHIVE_MARKER</Types>');
+  const snapshot = await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' });
+  await assert.rejects(collectArchiveInventory(snapshot), (error) => {
+    assert.ok(error instanceof Error);
+    assert.equal(
+      error.message,
+      'VSIX archive <supplied snapshot> contains no extension/ payload entries',
+    );
+    assert.equal(error.message.includes('PRIVATE_ARCHIVE_MARKER'), false);
+    return true;
+  });
+});

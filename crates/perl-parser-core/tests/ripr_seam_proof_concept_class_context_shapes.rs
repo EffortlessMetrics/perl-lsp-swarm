@@ -110,7 +110,7 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                         let Some(parameter) = parameters.first() else {
                             return (source_text(source, signature), 0, false, false);
                         };
-                        let NodeKind::OptionalParameter { variable, default_value } =
+                        let NodeKind::OptionalParameter { variable, default_value, .. } =
                             &parameter.kind
                         else {
                             return (

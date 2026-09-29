@@ -41,9 +41,9 @@ first branching point in every large-workspace investigation.
 
 | Cause | How to confirm | Fix |
 |-------|----------------|-----|
-| `max_files` limit hit | `reason: ResourceLimit(Files)` | Raise `maxIndexedFiles` or add `.lspignore` |
-| `max_total_symbols` limit hit | `reason: ResourceLimit(Symbols)` | Raise `maxTotalSymbols` |
-| Scan timeout | `reason: Timeout` | Raise `workspaceScanDeadlineMs` |
+| `max_files` limit hit | `reason: ResourceLimit(Files)` | Open a narrower workspace folder containing the project area you need (the internal index limit is not client-configurable via `perl.limits`) |
+| `max_total_symbols` limit hit | `reason: ResourceLimit(Symbols)` | Open a narrower workspace folder containing the project area you need (the internal index limit is not client-configurable via `perl.limits`) |
+| Scan timeout | `reason: Timeout` | Open a narrower workspace folder containing the project area you need |
 | IO error | `reason: IoError` | Check disk health; check NFS mount |
 | Parse storm | `reason: ParseStorm` | Reduce concurrent editors; check for watch loops |
 
@@ -150,10 +150,10 @@ fast but response times climb over a long session.
 
 - **Short term**: Restart the LSP server. This flushes all caches and
   returns to baseline memory.
-- **Medium term**: Raise `astCacheMaxEntries` if hit rate is low:
+- **Medium term**: Raise the AST cache memory budget (`astCacheMaxMemoryBytes`) if hit rate is low:
 
   ```json
-  { "perl": { "limits": { "astCacheMaxEntries": 5000 } } }
+  { "perl": { "limits": { "astCacheMaxMemoryBytes": 268435456 } } }
   ```
 
 - **Long term**: If restart frequency is high (more than once per day),
@@ -220,8 +220,8 @@ to prevent concurrent writes. If you see it, check:
 
 ### Remediation
 
-Restart the LSP server. If corruption recurs after restart, reduce
-`maxIndexedFiles` and report with a minimal reproduction.
+Restart the LSP server. If corruption recurs after restart, open a narrower
+workspace folder and report the issue with a minimal reproduction.
 
 ---
 

@@ -25,7 +25,11 @@
 //!
 //! # Schema
 //!
-//! Each row conforms to the ORCHESTRATION_ROLES.md builder/closer output schema:
+//! Each row conforms to the ORCHESTRATION_ROLES.md builder/closer output schema.
+//! This row type and the `pr-triage.v1` contract in `agent_ledgers` are the single
+//! authority for PR-triage rows (#15557); the competing contract formerly at
+//! `docs/agents/pr-ledger.schema.json` was retired, its structured `close_proof`
+//! half now owned by the validator.
 //!
 //! ```json
 //! {
@@ -113,7 +117,7 @@ pub struct GenerateConfig {
 /// Fields align with the ORCHESTRATION_ROLES.md output schema for builder/closer agents.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LedgerRow {
-    /// PR number as string (matches validator schema).
+    /// PR number as string (the `pr-triage.v1` contract type).
     pub pr: String,
     /// PR title.
     pub title: String,
@@ -602,6 +606,20 @@ fn infer_surface(title: &str, labels: &[String]) -> String {
 // ---------------------------------------------------------------------------
 
 fn write_repo_json(rows: &[LedgerRow], repo: &str, out_dir: &Path) -> Result<()> {
+    // The worklist is written under `target/` and never committed, so the batch
+    // ledger validator never globs it (#15557). Enforce the same `pr-triage.v1`
+    // contract at the only seam that always executes: generation.
+    for row in rows {
+        let line = serde_json::to_string(row).context("serializing ledger row")?;
+        let errors = crate::tasks::agent_ledgers::validate_pr_triage_row(&line);
+        if !errors.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "row for PR {} violates the `pr-triage.v1` contract: {}",
+                row.pr,
+                errors.join("; ")
+            ));
+        }
+    }
     let slug = repo.replace('/', "-");
     let path = out_dir.join(format!("{slug}.json"));
     let json = serde_json::to_string_pretty(rows).context("serializing repo ledger JSON")?;

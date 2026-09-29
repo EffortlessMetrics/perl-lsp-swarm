@@ -13,9 +13,10 @@ not succeed (outage timeout, failure, cancellation, or a fork/bot skip):
   `validate`
 - `validate-result` (display name `Validate CI policy ledgers`, the stable
   required identity) aggregates fail-closed: it waits only on the fallback,
-  polls the trusted verdict with a deadline, passes on agreement or on a
-  fallback success when the trusted lane never completed, and fails on
-  trusted failure or lane divergence.
+  polls the trusted verdict with a deadline, and delegates the decision
+  table to `policy_validators_aggregate.py`. Agreement or a hosted success
+  on any trusted non-success passes; hosted failure or lane divergence
+  fails.
 
 No secrets and no expressions embedded in run source: the router that needed
 a runner-inventory token cannot satisfy the workflow security ratchet, and a
@@ -26,22 +27,41 @@ Red-first contract: mutating ANY single implementation job's copy of a
 validator step — argument drift, commenting out, echo decoy — must fail this
 contract WITH THE SITE NAMED, so a silent revert fails the required aggregate
 instead of drifting back to per-runner copies. Fork and bot PRs must stay off
-trusted self-hosted capacity.
+trusted self-hosted capacity. Reverting trusted-failure to a hard fail must
+fail the decision table even when hosted succeeded.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import io
 import re
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "policy-validators.yml"
+AGGREGATE_PATH = ROOT / "scripts" / "ci" / "policy_validators_aggregate.py"
 
 IMPL_JOBS = ("validate", "validate-hosted")
 RESULT_JOB = "validate-result"
 STABLE_DISPLAY_NAME = "Validate CI policy ledgers"
 CONTRACT_TEST_FILE = "scripts/ci/test_policy_validators_route_contract.py"
+AGGREGATE_SCRIPT = "scripts/ci/policy_validators_aggregate.py"
+
+
+def load_aggregate():
+    spec = importlib.util.spec_from_file_location(
+        "policy_validators_aggregate", AGGREGATE_PATH
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+aggregate = load_aggregate()
 
 # Every validator step the two implementation jobs must carry identically.
 # These are (name, first command line) pairs; the parity test compares full
@@ -54,6 +74,7 @@ VALIDATOR_STEPS = (
     "Validate policy TOML parses",
     "Validate provider fact-read inventory",
     "Validate Cargo.lock conflict-repair policy",
+    "Validate Cargo feature roles",
     "Validate Dependabot source contract",
     "Validate Dependabot cooldown contract",
     "Validate exposed-surface disposition contract",
@@ -199,13 +220,12 @@ class AggregateTest(unittest.TestCase):
         self.assertIn("actions/runs/", result)
         self.assertIn("POLL_DEADLINE_SECONDS", result)
         self.assertIn(".conclusion", result)
-        # ...both-lanes-agree passes, divergence fails...
-        self.assertIn("both lanes agree", result)
-        self.assertIn("lane divergence", result)
-        # ...a trusted failure fails regardless of the fallback...
-        self.assertIn("trusted lane failed", result)
-        # ...and every violation path exits nonzero.
-        self.assertGreaterEqual(result.count("exit 1"), 3)
+        # ...and the required identity uses the shared decision table
+        # rather than an in-workflow case that can hard-fail trusted
+        # failure while hosted succeeded.
+        self.assertIn(AGGREGATE_SCRIPT, result)
+        self.assertNotIn("trusted lane failed", result)
+        self.assertNotIn("case \"$nano\"", result)
 
 
 class RedFirstTest(unittest.TestCase):
@@ -244,6 +264,125 @@ class RedFirstTest(unittest.TestCase):
             "# check_bounded_result_overflow.py",
         )
         self.assert_parity_fails(bodies, "Validate bounded-result overflow invariants")
+
+
+class DeadlineCancelTest(unittest.TestCase):
+    """A queued-forever trusted lane must reach an explicit terminal state.
+
+    Job queue time ignores timeout-minutes, so a trusted lane that never
+    receives a runner keeps the run and its check pending forever (#15900).
+    The aggregate (PR-triggered, no write authority per the workflow
+    security ratchet) must emit actionable deadline diagnostics; the
+    scheduled policy-validators-nano-reaper workflow owns the explicit
+    cancel.
+    """
+
+    def read_result_block(self) -> str:
+        return job_block(read_workflow(), RESULT_JOB)
+
+    def test_aggregate_reports_deadline_diagnostics(self):
+        result = self.read_result_block()
+        self.assertIn("::warning::", result)
+        self.assertIn("GITHUB_STEP_SUMMARY", result)
+        self.assertIn("em-ci-nano", result)
+        self.assertIn("#15900", result)
+        self.assertIn("nano-reaper", result)
+
+    def test_aggregate_holds_no_write_authority(self):
+        text = read_workflow()
+        self.assertNotIn("actions: write", text)
+        self.assertNotIn("/cancel", text)
+        self.assertNotIn("secrets.", text)
+
+    def test_reaper_owns_the_cancel(self):
+        reaper = (
+            ROOT / ".github" / "workflows" / "policy-validators-nano-reaper.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("schedule:", reaper)
+        self.assertNotIn("pull_request", reaper)
+        self.assertIn("actions: write", reaper)
+        self.assertNotIn("actions/checkout", reaper)
+        self.assertIn("/cancel", reaper)
+        self.assertIn("em-ci-nano", reaper)
+        self.assertIn("#15900", reaper)
+        self.assertIn("MAX_QUEUE_SECONDS", reaper)
+        self.assertNotIn("secrets.", reaper)
+
+
+class DecisionTableTest(unittest.TestCase):
+    """Executable #15854 matrix: failover on every trusted non-success."""
+
+    CASES = (
+        ("success", "success", 0),
+        ("success", "failure", 1),
+        ("success", "cancelled", 1),
+        ("failure", "success", 0),
+        ("failure", "failure", 1),
+        ("skipped", "success", 0),
+        ("cancelled", "success", 0),
+        ("pending", "success", 0),
+        ("pending", "failure", 1),
+        ("", "success", 0),
+        ("failure", "", 1),
+    )
+
+    def test_decision_table(self):
+        for nano, hosted, code in self.CASES:
+            with self.subTest(nano=nano or "empty", hosted=hosted or "empty"):
+                got_code, message = aggregate.decide(nano, hosted)
+                self.assertEqual(got_code, code, message)
+                if code == 0 and nano == "success":
+                    self.assertIn("both lanes agree", message)
+                elif code == 0:
+                    self.assertIn("failover", message)
+                    self.assertIn("hosted passed", message)
+                elif nano == "success":
+                    self.assertIn("lane divergence", message)
+                else:
+                    self.assertIn("failed", message)
+
+    def test_trusted_failure_failovers_when_hosted_succeeds(self):
+        code, message = aggregate.decide("failure", "success")
+        self.assertEqual(code, 0, "trusted failure must not block a hosted success")
+        self.assertIn("failover", message)
+        self.assertNotIn("trusted lane failed", message)
+
+    def test_hosted_failure_fail_closes_regardless_of_trusted(self):
+        for nano in ("success", "failure", "skipped", "cancelled", "pending"):
+            with self.subTest(nano=nano):
+                code, message = aggregate.decide(nano, "failure")
+                self.assertEqual(code, 1)
+                self.assertTrue(
+                    "divergence" in message or "failed" in message, message
+                )
+
+    def test_cli_fail_closed_writes_error_annotation(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = aggregate.main(["failure", "failure"])
+        self.assertEqual(code, 1)
+        self.assertIn("::error::", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_cli_failover_is_quiet_success(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = aggregate.main(["failure", "success"])
+        self.assertEqual(code, 0)
+        self.assertIn("failover", stdout.getvalue())
+        self.assertNotIn("::error::", stdout.getvalue())
+
+    def test_workflow_invokes_decision_table(self):
+        result = job_block(read_workflow(), RESULT_JOB)
+        self.assertIn(AGGREGATE_SCRIPT, result)
+        self.assertIn('"$nano"', result)
+        self.assertIn('"$HOSTED_RESULT"', result)
+
+    def test_workflow_paths_cover_decision_table(self):
+        text = read_workflow()
+        self.assertIn(f"- '{AGGREGATE_SCRIPT}'", text)
+        self.assertIn(f"- '{CONTRACT_TEST_FILE}'", text)
 
 
 if __name__ == "__main__":

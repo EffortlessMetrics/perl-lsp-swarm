@@ -322,3 +322,29 @@ Focused proof uses a benign synthetic packager hook producing actual ZIP bytes a
 all entries of the current canonical matrix. It does not run VSCE, compile an installed
 extension, resolve registry occupancy, or satisfy installed acceptance. The caller's
 producer of the independently expected inventory remains an explicit downstream gap.
+
+
+### Current-main production integration and proof boundary
+
+The bounded #16230 recovery normally integrates main
+`2aabcc94fda6a0b9f8bc2a2090a2af37bc2bc5ec`, whose canonical v4/v2 offline
+contracts supersede the old dependency-stack blocker. The mapped packaging and
+captured-snapshot APIs are retained alongside that main behavior. Release-history
+and adapter schema installs select the pinned repository Python action; adapter
+input filters cover topology/mapping/schema and package verifier dependencies.
+The opted-in build-identity diagnostic names 1/2/4; the legacy diagnostic remains
+1/2. Empty captured archives identify a snapshot without embedding ZIP bytes.
+
+Local proof is bounded: Python identity/adapter tests pass; mapped Node ZIP and
+rollback controls pass, but the full selected Node suite fails at a retained
+Windows file-symlink fixture with EPERM before its intended oracle. No permission
+change, assertion removal, or skip was introduced. The synthetic fixture subsequently passed one actual locked VSCE 3.9.2 packaging
+invocation and the production captured-snapshot verifier, using the repository
+ignore rules and an inventory independently declared before packaging. The locked
+input processors supplied the expected README and CHANGELOG transformed sizes;
+no expectation was derived from the resulting ZIP. Earlier fixture setup failures
+(missing staging filename, omitted ignore rules and raw-source inventory sizes)
+remain recorded as corrected fixture evidence. This local composition proof does
+not establish a production expected-inventory producer, the real full extension
+bundle, installed server/DAP, authenticated terminal production or full #14923
+acceptance; those remain NOT_PROVEN. This integration does not grant publication or qualification.
