@@ -179,7 +179,19 @@ require("Zed integration: planned / not proven" in readme, "README Zed boundary 
 require("Zed is **planned / not proven**" in faq, "FAQ Zed boundary is missing")
 require("**Status: planned / not proven.**" in setup, "Zed guide status is missing")
 require("Planned / not proven" in combined_setup, "combined editor table must bound Zed")
-require(book_setup == combined_setup, "committed mdBook editor projection must match the canonical guide")
+require(
+    "](../EDITORS/ZED_SETUP.md)" in combined_setup,
+    "canonical editor setup must keep the docs-tree relative Zed guide link",
+)
+# populate-book.sh rewrites docs-tree links to GitHub blob URLs (#16684).
+# Byte identity with EDITOR_SETUP.md is not the projection contract;
+# validate_book_copy_freshness.sh owns committed-copy freshness.
+require("Planned / not proven" in book_setup, "mdBook editor projection must keep Zed planned/not-proven")
+require(
+    "https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/ZED_SETUP.md"
+    in book_setup,
+    "mdBook editor projection must remain the populate-book rewrite, not a raw docs clone",
+)
 require("public Perl extension does not register `perllsp`" in troubleshooting, "troubleshooting boundary is missing")
 require("Zed integration: planned / not proven" in steering, "agent steering still overclaims Zed")
 

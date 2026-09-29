@@ -91,7 +91,23 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
         editor_setup.contains("Planned / not proven"),
         "combined editor setup must keep Zed planned/not-proven"
     );
-    assert_eq!(book_setup, editor_setup, "mdBook projection drifted from canonical editor setup");
+    assert!(
+        editor_setup.contains("](../EDITORS/ZED_SETUP.md)"),
+        "canonical editor setup must keep the docs-tree relative Zed guide link"
+    );
+    // populate-book.sh rewrites docs-tree links to GitHub blob URLs (#16684).
+    // Byte identity with EDITOR_SETUP.md is not the projection contract;
+    // validate_book_copy_freshness.sh owns committed-copy freshness.
+    assert!(
+        book_setup.contains("Planned / not proven"),
+        "mdBook projection must keep Zed planned/not-proven"
+    );
+    assert!(
+        book_setup.contains(
+            "https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/ZED_SETUP.md"
+        ),
+        "mdBook projection must remain the populate-book rewrite, not a raw docs clone"
+    );
     assert!(
         troubleshooting.contains("public Perl extension does not register `perllsp`"),
         "troubleshooting must keep the public-extension boundary"
