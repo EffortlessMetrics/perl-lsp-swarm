@@ -372,6 +372,13 @@ fn lab_without_decision_consumer_fails() -> TestResult {
 }
 
 #[test]
+fn lab_without_receipt_identity_fails() -> TestResult {
+    let mut row = lab_fixture();
+    row["registration"]["detail"] = Value::Null;
+    expect_fail(&row, "receipt identity")
+}
+
+#[test]
 fn test_api_without_named_profile_fails() -> TestResult {
     let mut row = test_api_fixture();
     row["compile_profiles"] = json!([]);
@@ -441,19 +448,19 @@ fn report_render_is_deterministic_and_names_failures() -> TestResult {
 // CLI
 // ---------------------------------------------------------------------------
 
-fn run_activation(args: &[&str]) -> std::process::Output {
+fn run_activation(args: &[&str]) -> TestResult<std::process::Output> {
     use assert_cmd::cargo::cargo_bin;
     let mut cmd = std::process::Command::new(cargo_bin("xtask"));
     cmd.arg("activation");
     for arg in args {
         cmd.arg(arg);
     }
-    cmd.output().expect("run cargo xtask activation")
+    Ok(cmd.output()?)
 }
 
 #[test]
-fn cli_check_report_and_explain_operate_on_the_committed_inventory() {
-    let check = run_activation(&["check"]);
+fn cli_check_report_and_explain_operate_on_the_committed_inventory() -> TestResult {
+    let check = run_activation(&["check"])?;
     assert!(
         check.status.success(),
         "activation check must pass the committed inventory; stderr={}",
@@ -463,30 +470,30 @@ fn cli_check_report_and_explain_operate_on_the_committed_inventory() {
     assert!(stdout.contains("activation_check.v1"), "{stdout}");
     assert!(stdout.contains("#9205"), "{stdout}");
 
-    let report = run_activation(&["report", "--json"]);
+    let report = run_activation(&["report", "--json"])?;
     assert!(
         report.status.success(),
         "activation report --json must succeed; stderr={}",
         String::from_utf8_lossy(&report.stderr)
     );
-    let parsed: Value = serde_json::from_slice(&report.stdout).expect("report --json must be JSON");
+    let parsed: Value = serde_json::from_slice(&report.stdout)?;
     assert_eq!(parsed["schema"].as_str(), Some("activation_check.v1"));
     assert_eq!(parsed["controlling_issue"].as_str(), Some("#9205"));
     assert_eq!(parsed["failed"].as_u64(), Some(0));
 
-    let explain = run_activation(&["explain", "feature:lsp.hover"]);
+    let explain = run_activation(&["explain", "feature:lsp.hover"])?;
     assert!(
         explain.status.success(),
         "explain known surface; stderr={}",
         String::from_utf8_lossy(&explain.stderr)
     );
-    let explained: Value =
-        serde_json::from_slice(&explain.stdout).expect("explain must print JSON");
+    let explained: Value = serde_json::from_slice(&explain.stdout)?;
     assert_eq!(explained["surface_id"].as_str(), Some("feature:lsp.hover"));
     assert_eq!(explained["verdict"].as_str(), Some("pass"));
 
-    let unknown = run_activation(&["explain", "feature:does-not-exist"]);
+    let unknown = run_activation(&["explain", "feature:does-not-exist"])?;
     assert!(!unknown.status.success(), "unknown surface must fail closed");
     let stderr = String::from_utf8_lossy(&unknown.stderr);
     assert!(stderr.contains("unknown activation surface"), "unknown explain stderr: {stderr}");
+    Ok(())
 }

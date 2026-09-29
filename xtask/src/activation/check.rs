@@ -271,10 +271,9 @@ fn check_runnable_non_product(row: &ActivationRow, reasons: &mut Vec<String>) {
             row.class.as_str()
         ));
     }
-    let receipt_identity = !blank(row.registration.detail.as_deref()) || !row.surface_id.is_empty();
-    if !receipt_identity {
+    if blank(row.registration.detail.as_deref()) {
         reasons.push(format!(
-            "{} row requires a receipt identity (registration detail or surface id)",
+            "{} row requires a receipt identity in registration detail",
             row.class.as_str()
         ));
     }
