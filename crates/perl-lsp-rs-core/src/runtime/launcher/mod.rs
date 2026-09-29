@@ -852,6 +852,11 @@ const PORT_OUT_OF_RANGE: &str = "Expected a port in 0-65535.";
 /// Rejection reason for a `--port` token that is not a number at all.
 const PORT_NOT_A_NUMBER: &str = "Expected a whole number in 0-65535.";
 
+/// Rejection reason for a signed spelling of zero (`-0`, `-000`): the numeric
+/// value is inside the range, so a range error would be false — the sign is
+/// what the port grammar rejects (#16537 review).
+const PORT_NEGATIVE_ZERO: &str = "The value is 0; spell it without a sign.";
+
 /// Reject one `--port` value by naming the accepted range instead of forwarding
 /// `ParseIntError`'s wording ("number too large to fit in target type"), which
 /// named an internal implementation detail rather than the actionable fact
@@ -866,8 +871,14 @@ fn validate_port_token(raw_port: &str) -> Result<(), LaunchParseError> {
     // range, and anything else is not a number at all. This also keeps an
     // arbitrarily long digit run on the range side, where it belongs.
     let digits = raw_port.strip_prefix(['+', '-']).unwrap_or(raw_port);
+    // A minus sign followed only by zeros names the value 0, which is inside
+    // the stated range: the rejected thing is the signed spelling, not the
+    // magnitude, so the range wording would be false (#16537 review).
+    let negative_zero = raw_port.starts_with('-')
+        && raw_port.len() > 1
+        && raw_port[1..].bytes().all(|byte| byte == b'0');
     let reason = if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        PORT_OUT_OF_RANGE
+        if negative_zero { PORT_NEGATIVE_ZERO } else { PORT_OUT_OF_RANGE }
     } else {
         PORT_NOT_A_NUMBER
     };
@@ -1831,6 +1842,27 @@ mod tests {
             let reason = format!("{raw}. Expected a port in 0-65535.");
 
             assert_eq!(error.to_string(), format!("Invalid port value: {reason}"));
+        }
+    }
+
+    /// A negative-zero spelling names the value 0, which is inside the range:
+    /// the diagnostic must blame the sign, not the magnitude (#16537 review).
+    /// The `u16` parse stays the sole acceptance check, so this only sharpens
+    /// the wording; `-0` is still rejected.
+    #[test]
+    fn negative_zero_port_blames_the_sign_not_the_range() {
+        for raw in ["-0", "-000"] {
+            let error = must_err(parse_args(["perl-lsp", "--port", raw]));
+            let rendered = error.to_string();
+
+            assert_eq!(
+                rendered,
+                format!("Invalid port value: {raw}. The value is 0; spell it without a sign.")
+            );
+            assert!(
+                !rendered.contains("Expected a port in 0-65535"),
+                "a zero-valued spelling must not read as out of range: {rendered}"
+            );
         }
     }
 
