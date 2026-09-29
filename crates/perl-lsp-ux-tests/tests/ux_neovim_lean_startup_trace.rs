@@ -3,10 +3,27 @@
 //! This is an e2e wiring receipt, not a hard latency budget. It records the
 //! observed lean startup path and asserts that the no-eager-indexing and
 //! no-file-watcher dials are active.
+//!
+//! # Disposition policy (#15613, #16977)
+//!
+//! Both print findings in this target are classified rather than silenced:
+//!
+//! - The missing-binary case is **local non-execution**. It is modelled by
+//!   [`TraceStart::NotExecuted`], which publishes a `not_executed` receipt and
+//!   can never be read as a product pass.
+//! - The structured trace is **scenario evidence**. It goes through the one
+//!   sanctioned emitter, [`emit_lean_startup_trace_receipt`], which writes to
+//!   the descriptor directly under CI so the receipt survives libtest capture.
+//!
+//! Neither finding buys a file-level lint allowance; the workspace
+//! `print_stderr`/`print_stdout` denial stays in force for every other line.
 
 use anyhow::Result;
-use perl_lsp_ux_tests::{LspEvent, ScenarioConfig, UxHarness, binary_available};
+use perl_lsp_ux_tests::{
+    LspEvent, ScenarioConfig, UxHarness, binary_available, missing_binary_skip,
+};
 use serde_json::{Value, json};
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 const TRACE_SOURCE: &str = r#"use strict;
@@ -24,8 +41,75 @@ sub broken {
 /// the runner — #16278 measured the two UX workflows disagreeing on 11 of
 /// 30 identical heads. The happy path still completes in well under a
 /// second.
-const SCENARIO_TIMEOUT: Duration = Duration::from_secs(60);
+const SCENARIO_TIMEOUT: Duration = Duration::from_mins(1);
 const ARRIVAL_BUDGET: Duration = Duration::from_secs(30);
+
+/// Why the scenario did or did not reach a runnable `perl-lsp`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TraceStart {
+    /// A runnable binary exists, so the scenario may publish a trace.
+    Run,
+    /// Local non-execution. Carries the package's typed infra skip reason and
+    /// is never a product pass.
+    NotExecuted {
+        /// Human-readable reason taken from [`missing_binary_skip`].
+        reason: String,
+    },
+}
+
+impl TraceStart {
+    /// Only a run that actually reached a binary is product evidence.
+    fn is_product_evidence(&self) -> bool {
+        matches!(self, Self::Run)
+    }
+
+    /// The receipt published when the scenario cannot run, or `None` for a run.
+    fn non_execution_receipt(&self) -> Option<Value> {
+        match self {
+            Self::Run => None,
+            Self::NotExecuted { reason } => Some(json!({
+                "profile": "neovim_lean",
+                "disposition": "not_executed",
+                "product_evidence": false,
+                "reason": reason,
+            })),
+        }
+    }
+}
+
+/// Pure classifier behind the binary gate.
+///
+/// Kept free of harness and process state so "a missing binary is
+/// non-execution, not a pass" is executable proof rather than a comment.
+fn classify_trace_start(binary_available: bool) -> TraceStart {
+    if binary_available {
+        return TraceStart::Run;
+    }
+    TraceStart::NotExecuted { reason: missing_binary_skip().reason }
+}
+
+/// The one sanctioned print site in this target.
+///
+/// Local runs use a print macro; CI needs descriptor IO to bypass libtest
+/// capture, which otherwise discards the receipt from the job log. Keep both
+/// paths explicit so the source-policy exception is operative.
+#[expect(
+    clippy::print_stdout,
+    reason = "policy:allow-ux-lean-startup-trace-16977: the lean startup trace receipt and its not-executed marker must survive libtest capture in CI logs"
+)]
+fn emit_lean_startup_trace_receipt(receipt: &Value) -> Result<()> {
+    let rendered = serde_json::to_string_pretty(receipt)?;
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let stdout = std::io::stdout();
+        let mut output = stdout.lock();
+        output.write_all(rendered.as_bytes())?;
+        output.write_all(b"\n")?;
+        output.flush()?;
+    } else {
+        println!("{rendered}");
+    }
+    Ok(())
+}
 
 fn trace_config(timeout: Duration) -> ScenarioConfig {
     ScenarioConfig {
@@ -117,10 +201,15 @@ fn wait_for_registration(harness: &UxHarness, method_name: &str, timeout: Durati
 
 #[test]
 fn ux_neovim_lean_startup_trace_receipt() -> Result<()> {
-    if !binary_available() {
-        eprintln!("SKIP ux_neovim_lean_startup_trace_receipt: perl-lsp binary not found");
+    let start_state = classify_trace_start(binary_available());
+    if let Some(receipt) = start_state.non_execution_receipt() {
+        emit_lean_startup_trace_receipt(&receipt)?;
         return Ok(());
     }
+    debug_assert!(
+        start_state.is_product_evidence(),
+        "a run must be the only product-evidence disposition"
+    );
 
     let start = Instant::now();
     let mut events = Vec::new();
@@ -182,6 +271,8 @@ fn ux_neovim_lean_startup_trace_receipt() -> Result<()> {
 
     let receipt = json!({
         "profile": "neovim_lean",
+        "disposition": "executed",
+        "product_evidence": start_state.is_product_evidence(),
         "workspace_indexing_started": false,
         "workspace_indexing_decision_observed": indexing_skip_observed,
         "file_watchers_registered": watcher_registered,
@@ -192,8 +283,46 @@ fn ux_neovim_lean_startup_trace_receipt() -> Result<()> {
         "diagnostic_debounce_ms": 0,
         "events": events,
     });
-    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    emit_lean_startup_trace_receipt(&receipt)?;
 
     harness.assert_no_crash();
+    Ok(())
+}
+
+/// A missing binary must classify as local non-execution, never a product
+/// pass, and a run must not be able to publish the not-executed marker.
+///
+/// This is the discriminating proof for the #16977 print dispositions: it
+/// fails if the skip regresses to a bare `return Ok(())` that reads as a
+/// pass, and fails if a run starts emitting non-execution evidence.
+#[test]
+fn a_missing_binary_is_non_execution_never_a_product_pass() -> Result<()> {
+    let skipped = classify_trace_start(false);
+    assert!(
+        !skipped.is_product_evidence(),
+        "a missing perl-lsp must not be product evidence; got {skipped:?}"
+    );
+
+    let Some(receipt) = skipped.non_execution_receipt() else {
+        anyhow::bail!("a skipped scenario must publish a not-executed receipt")
+    };
+    assert_eq!(receipt["disposition"], json!("not_executed"));
+    assert_eq!(receipt["product_evidence"], json!(false));
+    assert_eq!(receipt["profile"], json!("neovim_lean"));
+    let reason = receipt["reason"].as_str().ok_or_else(|| {
+        anyhow::anyhow!("not-executed receipt must carry a string reason; got {receipt}")
+    })?;
+    assert!(!reason.is_empty(), "a non-execution receipt must state why it did not execute");
+    assert_eq!(reason, missing_binary_skip().reason);
+
+    let ran = classify_trace_start(true);
+    assert!(
+        ran.is_product_evidence(),
+        "an available perl-lsp is the only product-evidence disposition; got {ran:?}"
+    );
+    assert!(
+        ran.non_execution_receipt().is_none(),
+        "a run must never publish a not-executed marker"
+    );
     Ok(())
 }
