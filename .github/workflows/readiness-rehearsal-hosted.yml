@@ -1,8 +1,8 @@
 # Hosted no-publish readiness rehearsal matrix (#16788).
 #
 # Manual-only. Not a required PR gate, not a scheduled spend, and not a
-# publisher. Workflow YAML invokes `cargo xtask readiness-rehearsal` and does
-# not encode product-stage verdicts, package/VSIX/archive semantics, or
+# publisher. Workflow YAML invokes `cargo run --locked -p xtask -- readiness-rehearsal`
+# and does not encode product-stage verdicts, package/VSIX/archive semantics, or
 # publication.
 #
 # Product rehearsal stages remain #16785/#16786/#16787. Until those producers
