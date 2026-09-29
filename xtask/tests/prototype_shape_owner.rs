@@ -17,6 +17,12 @@ const SCAN_ROOTS: &[&str] = &[
     "crates/perl-parser-core/src",
 ];
 
+fn repo_root() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root
+}
+
 fn rust_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -56,9 +62,10 @@ fn local_slot_parser(source: &str) -> bool {
 
 #[test]
 fn providers_do_not_reparse_prototype_strings_for_slots() {
+    let root = repo_root();
     let mut hits = Vec::new();
-    for root in SCAN_ROOTS {
-        for path in rust_files(Path::new(root)) {
+    for scan in SCAN_ROOTS {
+        for path in rust_files(&root.join(scan)) {
             if is_owner(&path) {
                 continue;
             }
@@ -79,7 +86,7 @@ fn providers_do_not_reparse_prototype_strings_for_slots() {
 #[test]
 fn owner_module_exists() {
     assert!(
-        Path::new("crates/perl-parser-core/src/prototype_shape/mod.rs").is_file(),
+        repo_root().join("crates/perl-parser-core/src/prototype_shape/mod.rs").is_file(),
         "canonical projector owner is missing"
     );
 }

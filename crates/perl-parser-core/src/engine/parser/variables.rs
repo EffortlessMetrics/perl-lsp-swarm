@@ -1873,38 +1873,32 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse old-style prototype
+    /// Parse old-style prototype.
+    ///
+    /// The returned string is the exact source between the parentheses so
+    /// formatting whitespace is retained (#16810). Token kinds still drive
+    /// consumption; spelling is not reconstructed from token text.
     fn parse_prototype(&mut self) -> ParseResult<String> {
-        let open_paren_pos = self.current_position();
-        self.expect(TokenKind::LeftParen)?; // consume (
-        let mut prototype = String::new();
+        let open = self.expect(TokenKind::LeftParen)?;
+        let open_paren_pos = open.start();
+        let inner_start = open.end();
+        let mut inner_end = inner_start;
 
         while !self.tokens.is_eof() {
             let token = self.consume_token()?;
-
-            match token.kind() {
-                TokenKind::RightParen => {
-                    // End of prototype
-                    break;
-                }
-                TokenKind::ScalarSigil => prototype.push('$'),
-                TokenKind::ArraySigil => prototype.push('@'),
-                TokenKind::HashSigil => prototype.push('%'),
-                TokenKind::GlobSigil | TokenKind::Star => prototype.push('*'),
-                TokenKind::SubSigil | TokenKind::BitwiseAnd => prototype.push('&'),
-                TokenKind::Semicolon => prototype.push(';'),
-                TokenKind::Backslash => prototype.push('\\'),
-                // `+` means "scalar or array/hash ref" (perlsub prototype character).
-                // `++` is the Increment token produced when two `+` chars appear together.
-                TokenKind::Plus => prototype.push('+'),
-                TokenKind::Increment => prototype.push_str("++"),
-                _ => {
-                    // For any other token, just add its text
-                    // This handles cases where sigils might be parsed differently
-                    prototype.push_str(&token.text);
-                }
+            if token.kind() == TokenKind::RightParen {
+                inner_end = token.start();
+                break;
             }
+            inner_end = token.end();
         }
+
+        let prototype = self
+            .src_bytes
+            .get(inner_start..inner_end)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .unwrap_or_default()
+            .to_string();
 
         // Validate every character in the collected prototype string.
         // Perl allows: $ @ % & * \ ; + _ bracketed ref groups, and ASCII space.

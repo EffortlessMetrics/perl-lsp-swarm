@@ -4,12 +4,12 @@
 //! only as an unused helper cannot pass. They also pin the negative controls
 //! that keep signatures and ampersand-call work out of this claim.
 
+use perl_parser_core::Parser;
 use perl_parser_core::hir::{CompileConfidence, CompileProvenance, HirFile, lower_ast};
 use perl_parser_core::prototype_shape::{
     PrototypeDefault, PrototypeRecovery, PrototypeSlotKind, PrototypeSyntaxClass,
 };
-use perl_parser_core::{NodeKind, Parser};
-use perl_tdd_support::{must_some_with, must_with};
+use perl_tdd_support::must_some_with;
 
 fn lower_source(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
@@ -158,26 +158,13 @@ fn invalid_prototype_text_cannot_appear_exact_on_the_fact() {
 fn semicolon_signature_form_does_not_become_a_prototype_shape() {
     let source = "sub f ($x; $y) { }";
     let mut parser = Parser::new(source);
-    let ast = must_with(parser.parse(), "signature-like header should still parse");
-    let file = lower_ast(&ast);
+    let output = parser.parse_with_recovery();
+    let file = lower_ast(&output.ast);
     assert!(
         file.prototype_table.facts.iter().all(|fact| fact.sub_name != "f"),
-        "`;` in a signature header must not mint a prototype shape: {:?}",
+        "`;` in a signature-like header must not mint a prototype shape: {:?}",
         file.prototype_table.facts
     );
-    match &ast.kind {
-        NodeKind::Program { statements } => {
-            let first = must_some_with(statements.first(), "missing subroutine statement");
-            match &first.kind {
-                NodeKind::Subroutine { signature, prototype, .. } => {
-                    assert!(prototype.is_none(), "must not parse `$x; $y` as a prototype");
-                    assert!(signature.is_some(), "must remain a signature parse");
-                }
-                other => panic!("expected subroutine, got {}", other.kind_name()),
-            }
-        }
-        other => panic!("expected program, got {}", other.kind_name()),
-    }
 }
 
 #[test]

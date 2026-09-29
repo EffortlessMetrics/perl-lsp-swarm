@@ -388,11 +388,20 @@ fn parameter_info_from_prototype_slot(
     existing_params: usize,
 ) -> ParameterInfo {
     match kind {
-        PrototypeSlotKind::Scalar | PrototypeSlotKind::TopicDefaultScalar => {
+        PrototypeSlotKind::Scalar => {
             let number = existing_params + 1;
             ParameterInfo {
                 label: format!("$arg{number}"),
                 documentation: Some(format!("Scalar parameter {number}")),
+            }
+        }
+        PrototypeSlotKind::TopicDefaultScalar => {
+            let number = existing_params + 1;
+            ParameterInfo {
+                label: format!("$arg{number}"),
+                documentation: Some(format!(
+                    "Scalar parameter {number} (defaults to $_ if omitted)"
+                )),
             }
         }
         PrototypeSlotKind::ArraySlurpy => ParameterInfo {
