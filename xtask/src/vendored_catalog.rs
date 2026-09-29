@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use perl_lsp_rs_core::feature_catalog::Catalog;
 
@@ -121,6 +121,8 @@ pub enum ViolationCode {
     MissingAuthority,
     /// Authority/projection is missing the generated-projection marker.
     MissingGeneratedMarker,
+    /// A declared projection's Cargo package manifest is missing.
+    MissingPackage,
 }
 
 /// One deterministic checker finding.
@@ -169,6 +171,10 @@ impl ProjectionViolation {
                 "MISSING_GENERATED_MARKER: {} does not declare {GENERATED_MARKER} (#9199)",
                 self.path
             ),
+            ViolationCode::MissingPackage => format!(
+                "MISSING_PACKAGE: {} is declared but its Cargo.toml is missing (#9199)",
+                self.path
+            ),
         }
     }
 }
@@ -186,12 +192,15 @@ pub fn regenerate(root: &Path) -> Result<RegenReport, String> {
         match projection.class {
             ProjectionClass::FullCatalog => {}
         }
-        let path = root.join(projection.relative_path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!("creating parent for {}: {error}", projection.relative_path)
-            })?;
+        let manifest = package_manifest_path(root, projection)?;
+        if !manifest.is_file() {
+            return Err(format!(
+                "MISSING_PACKAGE: {} has no Cargo.toml; refusing to create a phantom \
+                 projection (#9199)",
+                projection.relative_path
+            ));
         }
+        let path = root.join(projection.relative_path);
         let previous = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
@@ -242,6 +251,17 @@ pub fn check(root: &Path) -> Vec<ProjectionViolation> {
     push_stale_proof_paths(AUTHORITY_RELATIVE, &authority, &mut violations);
 
     for projection in DECLARED_PROJECTIONS {
+        match package_manifest_path(root, projection) {
+            Ok(manifest) if manifest.is_file() => {}
+            Ok(_) | Err(_) => {
+                violations.push(ProjectionViolation {
+                    code: ViolationCode::MissingPackage,
+                    path: projection.relative_path.to_string(),
+                    detail: format!("package {} has no Cargo.toml", projection.package),
+                });
+                continue;
+            }
+        }
         match fs::read(root.join(projection.relative_path)) {
             Ok(bytes) if bytes == authority => {}
             Ok(bytes) => {
@@ -352,6 +372,14 @@ fn push_stale_proof_paths(relative: &str, bytes: &[u8], violations: &mut Vec<Pro
             });
         }
     }
+}
+
+fn package_manifest_path(root: &Path, projection: &DeclaredProjection) -> Result<PathBuf, String> {
+    let relative = Path::new(projection.relative_path);
+    let Some(parent) = relative.parent() else {
+        return Err(format!("{} has no parent directory", projection.relative_path));
+    };
+    Ok(root.join(parent).join("Cargo.toml"))
 }
 
 fn discover_crate_local_fallbacks(root: &Path) -> Result<BTreeSet<String>, String> {

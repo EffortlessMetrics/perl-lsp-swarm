@@ -81,6 +81,29 @@ fn write_authority(root: &Path, body: &str) -> TestResult {
     Ok(())
 }
 
+fn stub_package_manifest(root: &Path, relative_projection: &str) -> TestResult {
+    let projection = root.join(relative_projection);
+    let Some(parent) = projection.parent() else {
+        return Err(format!("{relative_projection} has no parent directory").into());
+    };
+    fs::create_dir_all(parent)?;
+    fs::write(parent.join("Cargo.toml"), "[package]\nname = \"stub\"\nversion = \"0.0.0\"\n")?;
+    Ok(())
+}
+
+fn ensure_declared_packages(root: &Path) -> TestResult {
+    for projection in DECLARED_PROJECTIONS {
+        stub_package_manifest(root, projection.relative_path)?;
+    }
+    Ok(())
+}
+
+fn seed_full_catalog_fixture(root: &Path, body: &str) -> TestResult {
+    write_authority(root, body)?;
+    ensure_declared_packages(root)?;
+    Ok(())
+}
+
 fn write_projection(root: &Path, relative: &str, body: &str) -> TestResult {
     let path = root.join(relative);
     if let Some(parent) = path.parent() {
@@ -92,6 +115,7 @@ fn write_projection(root: &Path, relative: &str, body: &str) -> TestResult {
 
 fn write_all_declared(root: &Path, body: &str) -> TestResult {
     for projection in DECLARED_PROJECTIONS {
+        stub_package_manifest(root, projection.relative_path)?;
         write_projection(root, projection.relative_path, body)?;
     }
     Ok(())
@@ -145,7 +169,7 @@ fn inventory_declares_exactly_the_four_full_catalog_packages() {
 fn regenerate_writes_byte_identical_full_catalog_projections() -> TestResult {
     let temp = fixture_root()?;
     let root = temp.path();
-    write_authority(root, MINIMAL_AUTHORITY)?;
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
 
     let report = regenerate(root)?;
     assert_eq!(report.files.len(), 4);
@@ -164,7 +188,7 @@ fn regenerate_writes_byte_identical_full_catalog_projections() -> TestResult {
 fn second_regenerate_is_clean() -> TestResult {
     let temp = fixture_root()?;
     let root = temp.path();
-    write_authority(root, MINIMAL_AUTHORITY)?;
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
     regenerate(root)?;
 
     let before: Vec<(String, Vec<u8>)> = DECLARED_PROJECTIONS
@@ -192,7 +216,7 @@ fn second_regenerate_is_clean() -> TestResult {
 fn regenerate_preserves_preview_not_proven_and_unsupported_maturity() -> TestResult {
     let temp = fixture_root()?;
     let root = temp.path();
-    write_authority(root, MINIMAL_AUTHORITY)?;
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
     regenerate(root)?;
 
     let authority = parse_catalog(&fs::read(root.join(AUTHORITY_RELATIVE))?)?;
@@ -211,7 +235,7 @@ fn regenerate_preserves_preview_not_proven_and_unsupported_maturity() -> TestRes
 fn manual_maturity_edit_fails_closed() -> TestResult {
     let temp = fixture_root()?;
     let root = temp.path();
-    write_authority(root, MINIMAL_AUTHORITY)?;
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
     regenerate(root)?;
 
     let target = DECLARED_PROJECTIONS[0].relative_path;
@@ -230,7 +254,7 @@ fn manual_maturity_edit_fails_closed() -> TestResult {
 fn stale_authority_bytes_fail_closed() -> TestResult {
     let temp = fixture_root()?;
     let root = temp.path();
-    write_authority(root, MINIMAL_AUTHORITY)?;
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
     regenerate(root)?;
 
     let target = DECLARED_PROJECTIONS[1].relative_path;
@@ -249,7 +273,7 @@ fn stale_authority_bytes_fail_closed() -> TestResult {
 fn undeclared_feature_subset_fails_closed() -> TestResult {
     let temp = fixture_root()?;
     let root = temp.path();
-    write_authority(root, MINIMAL_AUTHORITY)?;
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
     regenerate(root)?;
 
     let target = DECLARED_PROJECTIONS[2].relative_path;
@@ -283,7 +307,7 @@ description = "preview row"
 fn missing_declared_projection_fails_closed() -> TestResult {
     let temp = fixture_root()?;
     let root = temp.path();
-    write_authority(root, MINIMAL_AUTHORITY)?;
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
     regenerate(root)?;
 
     let target = DECLARED_PROJECTIONS[3].relative_path;
@@ -301,7 +325,7 @@ fn missing_declared_projection_fails_closed() -> TestResult {
 fn undeclared_extra_fallback_fails_closed() -> TestResult {
     let temp = fixture_root()?;
     let root = temp.path();
-    write_authority(root, MINIMAL_AUTHORITY)?;
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
     regenerate(root)?;
     write_projection(root, "crates/perl-lexer/features_sot.toml", MINIMAL_AUTHORITY)?;
 
@@ -321,7 +345,7 @@ fn undeclared_extra_fallback_fails_closed() -> TestResult {
 fn absorbed_proof_path_in_a_fallback_fails_closed() -> TestResult {
     let temp = fixture_root()?;
     let root = temp.path();
-    write_authority(root, MINIMAL_AUTHORITY)?;
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
     regenerate(root)?;
 
     let target = DECLARED_PROJECTIONS[0].relative_path;
@@ -343,7 +367,7 @@ fn absorbed_proof_path_in_a_fallback_fails_closed() -> TestResult {
 fn bridge_era_feature_id_in_a_fallback_fails_closed() -> TestResult {
     let temp = fixture_root()?;
     let root = temp.path();
-    write_authority(root, MINIMAL_AUTHORITY)?;
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
     regenerate(root)?;
 
     let target = "crates/perl-dap/features_sot.toml";
@@ -385,6 +409,55 @@ fn missing_authority_fails_closed() -> TestResult {
         "missing root authority must fail: {:?}",
         check(root)
     );
+    Ok(())
+}
+
+#[test]
+fn missing_declared_package_manifest_fails_closed() -> TestResult {
+    let temp = fixture_root()?;
+    let root = temp.path();
+    seed_full_catalog_fixture(root, MINIMAL_AUTHORITY)?;
+    regenerate(root)?;
+
+    let target = DECLARED_PROJECTIONS[1];
+    let Some(parent) = Path::new(target.relative_path).parent() else {
+        return Err("declared projection has no parent directory".into());
+    };
+    fs::remove_file(root.join(parent).join("Cargo.toml"))?;
+
+    assert!(
+        has_code_on(root, ViolationCode::MissingPackage, target.relative_path),
+        "declared package without Cargo.toml must not pass: {:?}",
+        check(root)
+    );
+    Ok(())
+}
+
+#[test]
+fn regenerate_refuses_to_create_phantom_package() -> TestResult {
+    let temp = fixture_root()?;
+    let root = temp.path();
+    write_authority(root, MINIMAL_AUTHORITY)?;
+
+    let missing = DECLARED_PROJECTIONS.last().ok_or("DECLARED_PROJECTIONS must not be empty")?;
+    for projection in DECLARED_PROJECTIONS.iter().rev().skip(1) {
+        stub_package_manifest(root, projection.relative_path)?;
+    }
+
+    let error = regenerate(root).expect_err("regen must fail closed without a package manifest");
+    assert!(error.contains("MISSING_PACKAGE"), "expected MISSING_PACKAGE, got {error}");
+    assert!(
+        error.contains(missing.relative_path),
+        "error must name the phantom projection {error}"
+    );
+
+    assert!(
+        !root.join(missing.relative_path).exists(),
+        "regen must not write a fallback into a missing package"
+    );
+    if let Some(parent) = Path::new(missing.relative_path).parent() {
+        assert!(!root.join(parent).exists(), "regen must not create a phantom package directory");
+    }
     Ok(())
 }
 
