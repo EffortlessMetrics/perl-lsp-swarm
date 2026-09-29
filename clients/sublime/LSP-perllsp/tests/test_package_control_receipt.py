@@ -205,16 +205,23 @@ class PackageControlReceiptTests(unittest.TestCase):
         subject = listed_subject()
         subject_bytes = json.dumps(subject, sort_keys=True).encode("utf-8")
         digest = sha256_bytes(subject_bytes)
-        for source, route in (
-            ("clients/sublime/LSP-perllsp", "exact_source_local"),
-            ("extra_packages", "extra_packages"),
-            ("local_checkout", "local_checkout"),
-            ("custom_channel", "custom_channel"),
-            ("manual_copy", "manual_copy"),
+        for route in (
+            "exact_source_local",
+            "extra_packages",
+            "local_checkout",
+            "custom_channel",
+            "manual_copy",
         ):
             receipt = passing_receipt(subject, digest)
-            receipt["helper_package"]["source"] = source
             receipt["install_route"] = route
+            with self.assertRaisesRegex(
+                ValueError,
+                "install route must be package_control_default_channel",
+            ):
+                validator.validate_pass(receipt, subject_bytes)
+        for source in validator.FORBIDDEN_PASS_SOURCES:
+            receipt = passing_receipt(subject, digest)
+            receipt["helper_package"]["source"] = source
             with self.assertRaisesRegex(
                 ValueError,
                 "exact-source helper source cannot satisfy a Package Control pass",
