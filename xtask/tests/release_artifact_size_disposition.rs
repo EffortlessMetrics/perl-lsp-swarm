@@ -393,7 +393,35 @@ fn a_prior_that_lost_archive_or_structural_parity_cannot_confirm() {
     ));
 
     prior = waiting_borderline(ARM, SHA_A, LOCK_A);
+    prior.comparison.baseline_archive_identity = false;
+    assert!(matches!(
+        confirm(ARM, SHA_A, LOCK_A, &prior),
+        Err(RepeatDenial::PriorWasNotAWaitingBorderline { .. })
+    ));
+
+    prior = waiting_borderline(ARM, SHA_A, LOCK_A);
     prior.comparison.structural_parity = false;
+    assert!(matches!(
+        confirm(ARM, SHA_A, LOCK_A, &prior),
+        Err(RepeatDenial::PriorWasNotAWaitingBorderline { .. })
+    ));
+
+    prior = waiting_borderline(ARM, SHA_A, LOCK_A);
+    prior.comparison.target_architecture_match = false;
+    assert!(matches!(
+        confirm(ARM, SHA_A, LOCK_A, &prior),
+        Err(RepeatDenial::PriorWasNotAWaitingBorderline { .. })
+    ));
+
+    prior = waiting_borderline(ARM, SHA_A, LOCK_A);
+    prior.comparison.source_identity_bound = false;
+    assert!(matches!(
+        confirm(ARM, SHA_A, LOCK_A, &prior),
+        Err(RepeatDenial::PriorWasNotAWaitingBorderline { .. })
+    ));
+
+    prior = waiting_borderline(ARM, SHA_A, LOCK_A);
+    prior.comparison.component_growth_within_policy = false;
     assert!(matches!(
         confirm(ARM, SHA_A, LOCK_A, &prior),
         Err(RepeatDenial::PriorWasNotAWaitingBorderline { .. })
