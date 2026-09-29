@@ -291,6 +291,8 @@ fn read_package_name(manifest_dir: &Path) -> Result<String, String> {
     Ok(parsed.package.name)
 }
 
+const EXPECTED_PACKAGE: &str = "perl-lsp-rs-core";
+
 fn validate_package_fallback(manifest_dir: &Path, catalog: &Catalog) -> Result<String, String> {
     if catalog.advertised_feature_ids().is_empty() {
         return Err(format!(
@@ -298,7 +300,14 @@ fn validate_package_fallback(manifest_dir: &Path, catalog: &Catalog) -> Result<S
             manifest_dir.join("features_sot.toml").display()
         ));
     }
-    read_package_name(manifest_dir)
+    let name = read_package_name(manifest_dir)?;
+    if name != EXPECTED_PACKAGE {
+        return Err(format!(
+            "WRONG_PACKAGE: {} package name is {name}, expected {EXPECTED_PACKAGE}",
+            manifest_dir.join("Cargo.toml").display()
+        ));
+    }
+    Ok(name)
 }
 
 pub fn generate_lsp_catalog_module_at(

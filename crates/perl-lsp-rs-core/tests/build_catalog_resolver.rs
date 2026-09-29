@@ -141,4 +141,19 @@ mod build_catalog {
         assert!(error.contains("MALFORMED_FALLBACK"));
         assert!(!out_dir.join("feature_contracts.rs").exists());
     }
+
+    #[test]
+    fn auto_vendored_generate_rejects_wrong_package_identity() {
+        let root = must_with(tempfile::tempdir(), "create unpacked crate");
+        unpacked_crate(root.path(), "other-package", advertised_catalog());
+        let out_dir = root.path().join("out");
+        must_with(std::fs::create_dir(&out_dir), "create out dir");
+
+        let error = must_err_with(
+            generate_lsp_catalog_module_at(root.path(), &out_dir, None),
+            "wrong Cargo package must fail on Auto vendored generate",
+        );
+        assert!(error.contains("WRONG_PACKAGE"));
+        assert!(!out_dir.join("feature_contracts.rs").exists());
+    }
 }

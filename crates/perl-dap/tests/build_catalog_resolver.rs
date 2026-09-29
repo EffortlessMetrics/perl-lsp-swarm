@@ -56,6 +56,15 @@ mod build_catalog {
         "[meta]\nversion = 'test'\nlsp_version = '3.18'\n\n[[feature]]\nid = 'dap.core'\narea = 'debug'\nadvertised = true\n"
     }
 
+    fn unpacked_named(root: &std::path::Path, package: &str, fallback: &str) {
+        must(std::fs::create_dir_all(root));
+        must(std::fs::write(
+            root.join("Cargo.toml"),
+            format!("[package]\nname = \"{package}\"\nversion = \"0.0.0\"\n"),
+        ));
+        must(std::fs::write(root.join("features_sot.toml"), fallback));
+    }
+
     fn unpacked_dap(root: &std::path::Path, fallback: &str) {
         must(std::fs::create_dir_all(root));
         must(std::fs::write(
@@ -124,5 +133,40 @@ mod build_catalog {
 
         let error = must_err(resolve_catalog_source_package_isolated(&crate_dir, None));
         assert!(error.to_string().contains("MISSING_FALLBACK"));
+    }
+
+    #[test]
+    fn auto_vendored_generate_rejects_wrong_package_identity() {
+        let root = must(tempfile::tempdir());
+        unpacked_named(root.path(), "other-package", advertised_dap_catalog());
+        let out_dir = root.path().join("out");
+        must(std::fs::create_dir(&out_dir));
+
+        let error = must_err(generate_catalog_module_at(root.path(), &out_dir, None));
+        assert!(error.to_string().contains("WRONG_PACKAGE"));
+        assert!(!out_dir.join("dap_feature_catalog.rs").exists());
+    }
+
+    #[test]
+    fn vendored_duplicate_or_empty_id_is_malformed_fallback() {
+        let root = must(tempfile::tempdir());
+        let duplicate = "[meta]\nversion = 'test'\nlsp_version = '3.18'\n\n[[feature]]\nid = 'dap.core'\narea = 'debug'\nadvertised = true\n\n[[feature]]\nid = 'dap.core'\narea = 'debug'\nadvertised = true\n";
+        unpacked_dap(root.path(), duplicate);
+        let out_dir = root.path().join("out");
+        must(std::fs::create_dir(&out_dir));
+
+        let error = must_err(generate_catalog_module_package_isolated(root.path(), &out_dir));
+        assert!(error.to_string().contains("MALFORMED_FALLBACK"));
+        assert!(!out_dir.join("dap_feature_catalog.rs").exists());
+
+        let empty_id_root = must(tempfile::tempdir());
+        let empty_id = "[meta]\nversion = 'test'\nlsp_version = '3.18'\n\n[[feature]]\nid = ''\narea = 'debug'\nadvertised = true\n";
+        unpacked_dap(empty_id_root.path(), empty_id);
+        let empty_out = empty_id_root.path().join("out");
+        must(std::fs::create_dir(&empty_out));
+        let error =
+            must_err(generate_catalog_module_package_isolated(empty_id_root.path(), &empty_out));
+        assert!(error.to_string().contains("MALFORMED_FALLBACK"));
+        assert!(!empty_out.join("dap_feature_catalog.rs").exists());
     }
 }

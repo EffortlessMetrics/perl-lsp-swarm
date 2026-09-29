@@ -49,6 +49,8 @@ pub struct CheckOk {
     pub kind: String,
     /// Source digest.
     pub digest: String,
+    /// Declared projection class (`FullCatalog` on current main).
+    pub projection: String,
     /// Selected path.
     pub path: PathBuf,
     /// Package identity when recorded.
@@ -58,6 +60,7 @@ pub struct CheckOk {
 /// Render a compact identity receipt.
 pub fn format_ok(ok: &CheckOk) -> String {
     let mut line = format!("OK {} {}", ok.kind, ok.digest);
+    let _ = write!(line, " projection={}", ok.projection);
     if let Some(package) = &ok.package {
         let _ = write!(line, " package={package}");
     }
@@ -144,6 +147,7 @@ fn ok_from_resolution(resolution: &CatalogResolution) -> CheckOk {
     CheckOk {
         kind: resolution.source.kind_label().to_string(),
         digest: resolution.identity.source_digest.clone(),
+        projection: resolution.identity.projection_class.to_string(),
         path: resolution.source.path.clone(),
         package: resolution.identity.package.clone(),
     }

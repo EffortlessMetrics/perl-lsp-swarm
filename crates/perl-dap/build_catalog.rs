@@ -1,12 +1,22 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const EXPECTED_PACKAGE: &str = "perl-dap";
+
 #[derive(Debug, Deserialize)]
 struct FeatureCatalog {
+    meta: CatalogMeta,
     feature: Vec<Feature>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogMeta {
+    version: String,
+    lsp_version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,7 +166,42 @@ fn load_catalog_for_build(
     };
     let text = std::str::from_utf8(&bytes).map_err(|error| malformed(&error))?;
     let catalog: FeatureCatalog = toml::from_str(text).map_err(|error| malformed(&error))?;
+    if source.kind == CatalogSourceKind::Vendored {
+        validate_vendored_schema(&source.path, &catalog)?;
+    }
     Ok((catalog, digest))
+}
+
+fn validate_vendored_schema(
+    path: &Path,
+    catalog: &FeatureCatalog,
+) -> Result<(), Box<dyn Error>> {
+    if catalog.meta.version.trim().is_empty() || catalog.meta.lsp_version.trim().is_empty() {
+        return Err(format!(
+            "MALFORMED_FALLBACK: {}: catalog meta.version and meta.lsp_version are required",
+            path.display()
+        )
+        .into());
+    }
+    let mut seen = BTreeSet::new();
+    for feature in &catalog.feature {
+        if feature.id.trim().is_empty() {
+            return Err(format!(
+                "MALFORMED_FALLBACK: {}: feature id must not be empty",
+                path.display()
+            )
+            .into());
+        }
+        if !seen.insert(feature.id.as_str()) {
+            return Err(format!(
+                "MALFORMED_FALLBACK: {}: duplicate feature id: {}",
+                path.display(),
+                feature.id
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn advertised_debug_ids(catalog: &FeatureCatalog) -> Vec<String> {
@@ -231,9 +276,9 @@ fn generate_catalog_module_at_with_mode(
     }
     let package = if source.kind == CatalogSourceKind::Vendored {
         let name = read_package_name(manifest_dir)?;
-        if package_isolated && name != "perl-dap" {
+        if name != EXPECTED_PACKAGE {
             return Err(format!(
-                "WRONG_PACKAGE: {} package name is {name}, expected perl-dap",
+                "WRONG_PACKAGE: {} package name is {name}, expected {EXPECTED_PACKAGE}",
                 manifest_dir.join("Cargo.toml").display()
             )
             .into());

@@ -313,7 +313,9 @@ fn features_check_covers_workspace_package_and_override() -> TestResult {
         authority_path: None,
     })?;
     assert_eq!(workspace.len(), 1);
-    assert!(format_ok(&workspace[0]).starts_with("OK workspace sha256:"));
+    let workspace_line = format_ok(&workspace[0]);
+    assert!(workspace_line.starts_with("OK workspace sha256:"));
+    assert!(workspace_line.contains("projection=FullCatalog"));
 
     let package = check(&CheckRequest {
         root: root.path().to_path_buf(),
@@ -326,6 +328,7 @@ fn features_check_covers_workspace_package_and_override() -> TestResult {
     assert_eq!(package.len(), 1);
     let line = format_ok(&package[0]);
     assert!(line.contains("OK package-fallback"));
+    assert!(line.contains("projection=FullCatalog"));
     assert!(line.contains("package=perl-dap"));
 
     let override_path = root.path().join("override.toml");
