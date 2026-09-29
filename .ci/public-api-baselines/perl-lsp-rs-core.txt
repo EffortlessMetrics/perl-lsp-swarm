@@ -9847,7 +9847,9 @@ pub fn perl_lsp_rs_core::runtime::cancellation::CancellableProvider::check_cance
 pub fn perl_lsp_rs_core::runtime::cancellation::CancellableProvider::cleanup_on_cancel(&self, context: &perl_lsp_rs_core::runtime::ProviderCleanupContext)
 pub fn perl_lsp_rs_core::runtime::cancellation::CancellableProvider::provider_name(&self) -> &'static str
 pub mod perl_lsp_rs_core::runtime::input_validation
+pub fn perl_lsp_rs_core::runtime::input_validation::is_text_sync_method(method: &str) -> bool
 pub fn perl_lsp_rs_core::runtime::input_validation::sanitize_string(input: &str) -> alloc::string::String
+pub fn perl_lsp_rs_core::runtime::input_validation::text_sync_params_ceiling() -> usize
 pub fn perl_lsp_rs_core::runtime::input_validation::validate_buffer_line_lengths(text: &str) -> anyhow::Result<()>
 pub fn perl_lsp_rs_core::runtime::input_validation::validate_document_uri(uri: &str) -> anyhow::Result<()>
 pub fn perl_lsp_rs_core::runtime::input_validation::validate_file_content(content: &str, file_path: &std::path::Path) -> anyhow::Result<()>
@@ -9929,6 +9931,9 @@ pub fn perl_lsp_rs_core::runtime::LaunchAction::clone(&self) -> perl_lsp_rs_core
 pub fn perl_lsp_rs_core::runtime::LaunchAction::eq(&self, other: &perl_lsp_rs_core::runtime::LaunchAction) -> bool
 pub fn perl_lsp_rs_core::runtime::LaunchAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::runtime::launcher::LaunchParseError
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticDebounceMs
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticDebounceMs::raw_value: alloc::string::String
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticDebounceMs::reason: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticMode
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticMode::raw_mode: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidFeatureProfile
@@ -10275,6 +10280,9 @@ pub fn perl_lsp_rs_core::runtime::LaunchAction::clone(&self) -> perl_lsp_rs_core
 pub fn perl_lsp_rs_core::runtime::LaunchAction::eq(&self, other: &perl_lsp_rs_core::runtime::LaunchAction) -> bool
 pub fn perl_lsp_rs_core::runtime::LaunchAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::runtime::LaunchParseError
+pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticDebounceMs
+pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticDebounceMs::raw_value: alloc::string::String
+pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticDebounceMs::reason: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticMode
 pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticMode::raw_mode: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidFeatureProfile
@@ -10552,6 +10560,7 @@ pub fn perl_lsp_rs_core::runtime::format_startup_banner(version: &str, profile: 
 pub fn perl_lsp_rs_core::runtime::help_text() -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::init_logging(default_filter: &str)
 pub fn perl_lsp_rs_core::runtime::inlay_hints_cap() -> usize
+pub fn perl_lsp_rs_core::runtime::is_text_sync_method(method: &str) -> bool
 pub fn perl_lsp_rs_core::runtime::log_server_startup(server_name: &str, version: &str, transport: perl_lsp_rs_core::runtime::TransportMode, feature_profile: core::option::Option<perl_lsp_rs_core::features::policy::FeatureProfile>, startup_report: core::option::Option<&perl_lsp_rs_core::runtime::timing::StartupReport>)
 pub fn perl_lsp_rs_core::runtime::logging_filter(explicit_flag: bool, explicit_default_filter: &str, implicit_default_filter: &str) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::max_file_size_bytes() -> usize
@@ -10570,6 +10579,7 @@ pub fn perl_lsp_rs_core::runtime::should_use_ansi_stderr() -> bool
 pub fn perl_lsp_rs_core::runtime::should_use_ansi_stdout() -> bool
 pub fn perl_lsp_rs_core::runtime::shutdown_logging()
 pub fn perl_lsp_rs_core::runtime::startup_banner(version: &str, profile: perl_lsp_rs_core::features::policy::FeatureProfile, transport: perl_lsp_rs_core::runtime::TransportMode)
+pub fn perl_lsp_rs_core::runtime::text_sync_params_ceiling() -> usize
 pub fn perl_lsp_rs_core::runtime::to_json_for_profile(profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::trackable_feature_count_for_grid() -> usize
 pub fn perl_lsp_rs_core::runtime::validate_buffer_line_lengths(text: &str) -> anyhow::Result<()>

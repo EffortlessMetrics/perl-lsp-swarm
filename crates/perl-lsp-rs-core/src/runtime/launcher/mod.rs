@@ -1161,7 +1161,8 @@ pub fn help_text() -> String {
     out.push_str("                       Set file-watcher tuning value\n");
     out.push_str("  PERL_LSP_TIMING=<mode>\n");
     out.push_str(
-        "                       Enable phase-1 latency instrumentation (off, spans, json)\n",
+        "                       Enable phase-1 latency instrumentation; JSONL to stderr (off, stderr, \
+         json) or JSONL appended to a file path\n",
     );
     out.push_str("  PERL_LSP_INCREMENTAL=1\n");
     out.push_str("                       Enable incremental reparsing (experimental)\n");
