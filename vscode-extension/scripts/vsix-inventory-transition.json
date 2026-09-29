@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16490,
-  "reason": "Issue #16490 makes the packaged Go to Definition walkthrough platform-neutral in package.json and its SVG. Against the current main inventory, package.json grows 62099 to 62107 bytes (+8) and media/walkthrough/try-goto-definition.svg grows 1852 to 1857 bytes (+5); the 30-file total grows 1892898 to 1892911 bytes. This accepts only those two document-size changes; installed VSIX smoke remains required.",
-  "base_baseline_file_sha256": "088bb2b2356366d7a7198011981b90cf8b2c234f21868c5d172c2c62b22e35a7",
-  "candidate_baseline_file_sha256": "02be3f2c70c23fe13159d7f0c3e1e84ac7f53ab291c51a28b21c22cb0d5a5791",
-  "base_inventory_sha256": "5adabe41b29aaf96be03e6bddab064d61335136b4f612e0ce3a0e6910778c2ac",
-  "candidate_inventory_sha256": "91c883030a238ffa984d0fe649ff56cb0f1669efb096f1beaaa3eabaa976c9cf"
+  "owner_issue": 16956,
+  "reason": "Clarify optional Perl first-run guidance and debugger minimum while preserving core language-server startup",
+  "base_baseline_file_sha256": "02be3f2c70c23fe13159d7f0c3e1e84ac7f53ab291c51a28b21c22cb0d5a5791",
+  "candidate_baseline_file_sha256": "37ddeaecd71156ef4cccc06066514ab349feb5734f87b7b8a4a3a1a2f31440e8",
+  "base_inventory_sha256": "91c883030a238ffa984d0fe649ff56cb0f1669efb096f1beaaa3eabaa976c9cf",
+  "candidate_inventory_sha256": "6787a890f6284247c93d9749346238ba934cba010e9d22a491c4205a237b363e"
 }
