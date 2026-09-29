@@ -566,11 +566,13 @@ pub const perl_lsp_rs_core::external_tool_doctor::NATIVE_STATUS_NOT_APPLICABLE: 
 pub const perl_lsp_rs_core::external_tool_doctor::NATIVE_STATUS_PLANNED: &str
 pub const perl_lsp_rs_core::external_tool_doctor::REASON_EXPLICIT_ADAPTER_ONLY: &str
 pub const perl_lsp_rs_core::external_tool_doctor::REASON_EXPLICIT_OPTIONAL_PEER: &str
+pub const perl_lsp_rs_core::external_tool_doctor::REASON_EXPLICIT_OPTIONAL_TESTING_INSTRUMENT: &str
 pub const perl_lsp_rs_core::external_tool_doctor::REASON_RUNTIME_ENABLEMENT_FORBIDDEN: &str
 pub const perl_lsp_rs_core::external_tool_doctor::REASON_UNCLASSIFIED: &str
 pub const perl_lsp_rs_core::external_tool_doctor::STATUS_CONFORMANCE_ONLY: &str
 pub const perl_lsp_rs_core::external_tool_doctor::STATUS_OPTIONAL_EXTERNAL: &str
 pub const perl_lsp_rs_core::external_tool_doctor::STATUS_OPTIONAL_PEER: &str
+pub const perl_lsp_rs_core::external_tool_doctor::STATUS_OPTIONAL_TESTING_INSTRUMENT: &str
 pub const perl_lsp_rs_core::external_tool_doctor::STATUS_UNKNOWN: &str
 pub fn perl_lsp_rs_core::external_tool_doctor::critic_compatibility_entry(registry: &[perl_lsp_rs_core::external_tools::ExternalToolPolicy]) -> core::option::Option<perl_lsp_rs_core::external_tool_doctor::ExternalToolDoctorEntry>
 pub fn perl_lsp_rs_core::external_tool_doctor::external_tool_doctor_entries(registry: &[perl_lsp_rs_core::external_tools::ExternalToolPolicy]) -> alloc::vec::Vec<perl_lsp_rs_core::external_tool_doctor::ExternalToolDoctorEntry>
@@ -587,6 +589,7 @@ pub fn perl_lsp_rs_core::external_tools::ConfigReaderSupport::eq(&self, other: &
 pub fn perl_lsp_rs_core::external_tools::ConfigReaderSupport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::external_tools::ConfigReaderSupport::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub enum perl_lsp_rs_core::external_tools::ExternalExecutionSupport
+pub perl_lsp_rs_core::external_tools::ExternalExecutionSupport::ExplicitOptionalTestingInstrument
 pub perl_lsp_rs_core::external_tools::ExternalExecutionSupport::ExplicitProductAdapter
 pub perl_lsp_rs_core::external_tools::ExternalExecutionSupport::None
 pub perl_lsp_rs_core::external_tools::ExternalExecutionSupport::RepositoryConformanceOnly
@@ -595,6 +598,7 @@ pub fn perl_lsp_rs_core::external_tools::ExternalExecutionSupport::eq(&self, oth
 pub fn perl_lsp_rs_core::external_tools::ExternalExecutionSupport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::external_tools::ExternalExecutionSupport::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub enum perl_lsp_rs_core::external_tools::ExternalToolId
+pub perl_lsp_rs_core::external_tools::ExternalToolId::DevelCover
 pub perl_lsp_rs_core::external_tools::ExternalToolId::PerlCritic
 pub perl_lsp_rs_core::external_tools::ExternalToolId::PerlLanguageServer
 pub perl_lsp_rs_core::external_tools::ExternalToolId::PerlTidy
@@ -636,6 +640,8 @@ pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidExternal
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidExternalExecutionTrust::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidPeerTrust
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidPeerTrust::tool: &'static str
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidTestingInstrumentTrust
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidTestingInstrumentTrust::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::MissingCandidateOutputValidationOwner
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::MissingCandidateOutputValidationOwner::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::MissingExplicitEnablement
@@ -652,10 +658,14 @@ pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::NativeReplaceme
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::NativeReplacementWithoutIdentity::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::NativeReplacementWithoutOwner
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::NativeReplacementWithoutOwner::tool: &'static str
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::ReportProducerRoleMismatch
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::ReportProducerRoleMismatch::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::RequiredForNative
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::RequiredForNative::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::RuntimeForbidden
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::RuntimeForbidden::tool: &'static str
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::TestingInstrumentRoleMismatch
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::TestingInstrumentRoleMismatch::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::WorkspaceOpenExecution
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::WorkspaceOpenExecution::tool: &'static str
 pub fn perl_lsp_rs_core::external_tools::ExternalToolRegistryError::clone(&self) -> perl_lsp_rs_core::external_tools::ExternalToolRegistryError
@@ -667,6 +677,8 @@ pub perl_lsp_rs_core::external_tools::ExternalToolRole::ConfigurationCompatibili
 pub perl_lsp_rs_core::external_tools::ExternalToolRole::ConformanceOracle
 pub perl_lsp_rs_core::external_tools::ExternalToolRole::ExplicitExternalAdapter
 pub perl_lsp_rs_core::external_tools::ExternalToolRole::ExplicitOptionalPeer
+pub perl_lsp_rs_core::external_tools::ExternalToolRole::ExplicitOptionalTestingInstrument
+pub perl_lsp_rs_core::external_tools::ExternalToolRole::ReportProducer
 pub fn perl_lsp_rs_core::external_tools::ExternalToolRole::clone(&self) -> perl_lsp_rs_core::external_tools::ExternalToolRole
 pub fn perl_lsp_rs_core::external_tools::ExternalToolRole::cmp(&self, other: &perl_lsp_rs_core::external_tools::ExternalToolRole) -> core::cmp::Ordering
 pub fn perl_lsp_rs_core::external_tools::ExternalToolRole::eq(&self, other: &perl_lsp_rs_core::external_tools::ExternalToolRole) -> bool
@@ -742,6 +754,7 @@ pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::native_host: &'static 
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::native_package_requires_external: bool
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::native_replacement: perl_lsp_rs_core::external_tools::NativeReplacement
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::owned_domain: &'static str
+pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::report_contract_owner: core::option::Option<&'static str>
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::required_for_native: bool
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::roles: &'static [perl_lsp_rs_core::external_tools::ExternalToolRole]
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::runtime_enablement: perl_lsp_rs_core::external_tools::RuntimeEnablement

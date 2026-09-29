@@ -22,6 +22,7 @@ perllsp                         .perlcriticrc compatibility and repository
                                 conformance only — no product adapter
 perllsp                         explicit perlimports adapter, conformance
 perl-dap                        explicit optional ptkdb peer
+canonical testing service       explicit optional Devel::Cover instrument
 ```
 
 PATH or module presence may identify an advisory candidate where authorized. It
@@ -153,6 +154,34 @@ owner: #4786 / #7276
 ptkdb is not a fallback DAP server. Bootstrap and experimental live-peer claims
 remain separately bounded by their evidence.
 
+### Devel::Cover / cover
+
+```text
+native host: canonical testing service
+native replacement: not applicable
+roles: explicit optional testing instrument, report producer
+bundled: false
+required for native: false
+auto detect: advisory only
+auto select: false
+runtime enablement: explicit user action
+execution owner: #4750 / #4776 / #4833 / #4842 / #4898
+report contract owner: #16831
+install help: user-requested compatibility
+trust class: explicit external process
+owner: #16829
+```
+
+Devel::Cover is not part of the canonical native test service. PATH or module
+presence, project configuration, and a `cover_db` directory are advisory
+capability evidence only; they never auto-select or auto-execute coverage.
+Missing Devel::Cover is an optional-tool-unavailable state and cannot make
+ordinary native LSP, testing, Test Explorer, doctor, or installed-product
+readiness fail. Later execution, if any, is owned by the canonical testing
+service and ProcessSupervisor. The client cannot supply an executable, shell
+command, argv, cwd, or environment through a coverage request. Report parsing
+and protocol/UI remain later coverage leaves.
+
 ## Registry invariants
 
 Validation rejects:
@@ -172,6 +201,7 @@ Validation rejects:
 - configuration-file presence authorizing execution;
 - a configuration reader without a domain owner;
 - a debugger peer without the peer trust owner;
+- a testing instrument without the process/trust owner and report-contract owner;
 - an execution or peer role without explicit user enablement;
 - PLS exposed as product runtime;
 - Perl::Critic gaining a product runtime, editor, or CLI adapter, user-facing
@@ -186,7 +216,7 @@ readiness consumers.
 
 ## Identity aliases are not package patterns
 
-Aliases such as `pls`, `perltidy`, `perlimports`, and `ptkdb` exist for exact,
+Aliases such as `pls`, `perltidy`, `perlimports`, `ptkdb`, and `cover` exist for exact,
 case-insensitive identity resolution. They are deliberately not exported as
 package deny-list substrings. A raw archive scan for `pls`, for example, would
 also match unrelated filenames and documentation.
@@ -221,6 +251,7 @@ They must not move domain details into the common registry. For example:
 - Perl::Critic policy aliases and parameters stay with the critic registry;
 - import-cleanup plan semantics and edit safety stay with #8277;
 - ptkdb request/event capabilities come from the authenticated session;
+- Devel::Cover report facts stay with the coverage report adapter (#16831);
 - package payload rules stay with the package/release controller;
 - process identity, trust, environment, and execution stay with the environment
   and process controllers.

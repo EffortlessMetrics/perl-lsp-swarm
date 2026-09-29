@@ -26,6 +26,8 @@ pub enum ExternalToolId {
     Perlimports,
     /// `Devel::ptkdb`, an explicit optional debugger peer.
     Ptkdb,
+    /// `Devel::Cover` / the `cover` executable, an explicit optional testing instrument.
+    DevelCover,
 }
 
 /// A bounded role an external tool may hold around the native product.
@@ -43,6 +45,10 @@ pub enum ExternalToolRole {
     ConformanceOracle,
     /// Cooperate as an explicitly selected peer while the native product keeps protocol ownership.
     ExplicitOptionalPeer,
+    /// Run only after an explicit coverage/testing action; never a native requirement.
+    ExplicitOptionalTestingInstrument,
+    /// Produce a report artifact owned by a named report-contract owner.
+    ReportProducer,
 }
 
 /// Support level for reading an external tool's configuration without running it.
@@ -72,6 +78,8 @@ pub enum ExternalExecutionSupport {
     RepositoryConformanceOnly,
     /// A shipped adapter may run the tool after an explicit user selection.
     ExplicitProductAdapter,
+    /// A shipped testing instrument may run after an explicit coverage action.
+    ExplicitOptionalTestingInstrument,
 }
 
 /// Whether a product runtime or editor surface may ever select this tool.
@@ -234,6 +242,8 @@ pub struct ExternalToolPolicy {
     pub evidence_promotes_native_readiness: bool,
     /// Issue owning validation of adapter output before it becomes an edit.
     pub candidate_output_validation_owner: Option<&'static str>,
+    /// Issue owning the report/fact contract when this tool produces a report.
+    pub report_contract_owner: Option<&'static str>,
     /// Scope in which install guidance may be offered.
     pub install_help_scope: InstallHelpScope,
     /// Security/trust class governing interaction.
@@ -255,12 +265,15 @@ const PERLCRITIC_ROLES: &[ExternalToolRole] =
 const PERLIMPORTS_ROLES: &[ExternalToolRole] =
     &[ExternalToolRole::ExplicitExternalAdapter, ExternalToolRole::ConformanceOracle];
 const PTKDB_ROLES: &[ExternalToolRole] = &[ExternalToolRole::ExplicitOptionalPeer];
+const DEVEL_COVER_ROLES: &[ExternalToolRole] =
+    &[ExternalToolRole::ExplicitOptionalTestingInstrument, ExternalToolRole::ReportProducer];
 
 const PLS_ALIASES: &[&str] = &["Perl-LanguageServer", "pls"];
 const PERLTIDY_ALIASES: &[&str] = &["perltidy"];
 const PERLCRITIC_ALIASES: &[&str] = &["perlcritic"];
 const PERLIMPORTS_ALIASES: &[&str] = &["perlimports"];
 const PTKDB_ALIASES: &[&str] = &["ptkdb"];
+const DEVEL_COVER_ALIASES: &[&str] = &["cover", "Devel-Cover"];
 const PERLTIDY_CONFIG: &[&str] = &[".perltidyrc"];
 const PERLCRITIC_CONFIG: &[&str] = &[".perlcriticrc"];
 const NO_CONFIG_FILES: &[&str] = &[];
@@ -308,6 +321,7 @@ pub const EXTERNAL_TOOL_REGISTRY: &[ExternalToolPolicy] = &[
         }),
         evidence_promotes_native_readiness: false,
         candidate_output_validation_owner: None,
+        report_contract_owner: None,
         install_help_scope: InstallHelpScope::DeveloperConformance,
         trust_class: ExternalToolTrustClass::RepositoryConformance,
         claim_boundary: "repository-only conformance oracle; never a runtime backend",
@@ -351,6 +365,7 @@ pub const EXTERNAL_TOOL_REGISTRY: &[ExternalToolPolicy] = &[
         }),
         evidence_promotes_native_readiness: false,
         candidate_output_validation_owner: Some("#7056"),
+        report_contract_owner: None,
         install_help_scope: InstallHelpScope::UserRequestedCompatibility,
         trust_class: ExternalToolTrustClass::ExplicitExternalProcess,
         claim_boundary: "native formatting is default; external execution is explicit compatibility only",
@@ -394,6 +409,7 @@ pub const EXTERNAL_TOOL_REGISTRY: &[ExternalToolPolicy] = &[
         }),
         evidence_promotes_native_readiness: false,
         candidate_output_validation_owner: None,
+        report_contract_owner: None,
         install_help_scope: InstallHelpScope::DeveloperConformance,
         trust_class: ExternalToolTrustClass::RepositoryConformance,
         claim_boundary: "process-free .perlcriticrc compatibility plus repository-only oracle; no runtime, editor, or CLI adapter",
@@ -437,6 +453,7 @@ pub const EXTERNAL_TOOL_REGISTRY: &[ExternalToolPolicy] = &[
         }),
         evidence_promotes_native_readiness: false,
         candidate_output_validation_owner: Some("#8277"),
+        report_contract_owner: None,
         install_help_scope: InstallHelpScope::UserRequestedCompatibility,
         trust_class: ExternalToolTrustClass::ExplicitExternalProcess,
         claim_boundary: "explicit saved-file import-cleanup adapter; output is candidate evidence validated by the native plan owner",
@@ -476,10 +493,51 @@ pub const EXTERNAL_TOOL_REGISTRY: &[ExternalToolPolicy] = &[
         conformance: None,
         evidence_promotes_native_readiness: false,
         candidate_output_validation_owner: None,
+        report_contract_owner: None,
         install_help_scope: InstallHelpScope::UserRequestedCompatibility,
         trust_class: ExternalToolTrustClass::ExplicitDebuggerPeer,
         claim_boundary: "explicit optional peer; perl-dap remains the DAP server",
         status_owner: "#4786 / #7276",
+    },
+    ExternalToolPolicy {
+        tool_id: ExternalToolId::DevelCover,
+        canonical_name: "Devel::Cover",
+        aliases: DEVEL_COVER_ALIASES,
+        owned_domain: "testing_coverage",
+        native_host: "canonical testing service",
+        native_replacement: NativeReplacement {
+            products: NO_NATIVE_PRODUCTS,
+            package: None,
+            library: None,
+            executable: None,
+            lsp_consumer: None,
+            delivery: NativeReplacementDelivery::NotApplicable,
+            current_implementation: None,
+            owner: "#16829",
+        },
+        roles: DEVEL_COVER_ROLES,
+        bundled: false,
+        required_for_native: false,
+        native_package_requires_external: false,
+        may_auto_detect: true,
+        may_auto_select: false,
+        may_execute_on_workspace_open: false,
+        runtime_enablement: RuntimeEnablement::ExplicitUserAction,
+        source_requirement: SourceRequirement::None,
+        config_files: NO_CONFIG_FILES,
+        config_reader_support: ConfigReaderSupport::None,
+        config_reader_owner: None,
+        config_presence_authorizes_execution: false,
+        external_execution_support: ExternalExecutionSupport::ExplicitOptionalTestingInstrument,
+        external_execution_owner: Some("#4750 / #4776 / #4833 / #4842 / #4898"),
+        conformance: None,
+        evidence_promotes_native_readiness: false,
+        candidate_output_validation_owner: None,
+        report_contract_owner: Some("#16831"),
+        install_help_scope: InstallHelpScope::UserRequestedCompatibility,
+        trust_class: ExternalToolTrustClass::ExplicitExternalProcess,
+        claim_boundary: "explicit optional testing instrument and report producer; PATH or cover_db never auto-selects; missing Devel::Cover does not degrade native testing or LSP readiness; later execution is owned by the canonical testing service and ProcessSupervisor; the client cannot supply executable, argv, cwd, or environment",
+        status_owner: "#16829",
     },
 ];
 
@@ -594,6 +652,24 @@ pub enum ExternalToolRegistryError {
         /// Canonical tool name.
         tool: &'static str,
     },
+    /// A testing-instrument role disagrees with its execution class.
+    #[error("testing instrument role/support mismatch for {tool}")]
+    TestingInstrumentRoleMismatch {
+        /// Canonical tool name.
+        tool: &'static str,
+    },
+    /// A testing instrument uses the wrong trust class.
+    #[error("testing instrument {tool} must use the explicit external-process trust class")]
+    InvalidTestingInstrumentTrust {
+        /// Canonical tool name.
+        tool: &'static str,
+    },
+    /// A report-producer role disagrees with its report-contract owner.
+    #[error("report-producer role/owner mismatch for {tool}")]
+    ReportProducerRoleMismatch {
+        /// Canonical tool name.
+        tool: &'static str,
+    },
     /// A tool with a permanently bounded role was exposed as product runtime.
     #[error("external tool {tool} is not authorized as a product runtime")]
     RuntimeForbidden {
@@ -660,119 +736,194 @@ pub fn validate_external_tool_registry(
     let mut identities = BTreeSet::new();
 
     for policy in registry {
-        let tool = policy.canonical_name;
-
-        if policy.bundled {
-            return Err(ExternalToolRegistryError::BundledExternalTool { tool });
-        }
-        if policy.required_for_native {
-            return Err(ExternalToolRegistryError::RequiredForNative { tool });
-        }
-        if policy.native_package_requires_external {
-            return Err(ExternalToolRegistryError::NativePackageRequiresExternal { tool });
-        }
-        if policy.may_auto_select {
-            return Err(ExternalToolRegistryError::AutomaticSelection { tool });
-        }
-        if policy.may_execute_on_workspace_open {
-            return Err(ExternalToolRegistryError::WorkspaceOpenExecution { tool });
-        }
-        if policy.runtime_enablement == RuntimeEnablement::ImplicitOnDiscovery {
-            return Err(ExternalToolRegistryError::ImplicitEnablement { tool });
-        }
-        if policy.config_presence_authorizes_execution {
-            return Err(ExternalToolRegistryError::ConfigPresenceAuthorizesExecution { tool });
-        }
-        if policy.evidence_promotes_native_readiness {
-            return Err(ExternalToolRegistryError::EvidencePromotesNativeReadiness { tool });
-        }
-
-        let has_external_adapter =
-            policy.roles.contains(&ExternalToolRole::ExplicitExternalAdapter);
-        let has_conformance = policy.roles.contains(&ExternalToolRole::ConformanceOracle);
-        let has_config_reader =
-            policy.roles.contains(&ExternalToolRole::ConfigurationCompatibility);
-        let has_peer = policy.roles.contains(&ExternalToolRole::ExplicitOptionalPeer);
-        let is_product_adapter =
-            policy.external_execution_support == ExternalExecutionSupport::ExplicitProductAdapter;
-
-        if has_external_adapter != is_product_adapter {
-            return Err(ExternalToolRegistryError::ExternalExecutionRoleMismatch { tool });
-        }
-        if is_product_adapter
-            && policy.trust_class != ExternalToolTrustClass::ExplicitExternalProcess
-        {
-            return Err(ExternalToolRegistryError::InvalidExternalExecutionTrust { tool });
-        }
-        if policy.external_execution_support != ExternalExecutionSupport::None
-            && policy.external_execution_owner.is_none()
-        {
-            return Err(ExternalToolRegistryError::ExternalExecutionWithoutOwner { tool });
-        }
-        if is_product_adapter && policy.candidate_output_validation_owner.is_none() {
-            return Err(ExternalToolRegistryError::MissingCandidateOutputValidationOwner { tool });
-        }
-
-        if has_conformance != policy.conformance.is_some() {
-            return Err(ExternalToolRegistryError::ConformanceRoleMismatch { tool });
-        }
-        if let Some(requirements) = policy.conformance
-            && (!requirements.pinned_version_required
-                || !requirements.receipt_required
-                || requirements.owner.trim().is_empty())
-        {
-            return Err(ExternalToolRegistryError::ConformanceWithoutEvidenceRequirements { tool });
-        }
-
-        if has_config_reader != (policy.config_reader_support != ConfigReaderSupport::None) {
-            return Err(ExternalToolRegistryError::ConfigReaderRoleMismatch { tool });
-        }
-        if has_config_reader && policy.config_reader_owner.is_none() {
-            return Err(ExternalToolRegistryError::ConfigReaderWithoutOwner { tool });
-        }
-
-        if has_peer && policy.trust_class != ExternalToolTrustClass::ExplicitDebuggerPeer {
-            return Err(ExternalToolRegistryError::InvalidPeerTrust { tool });
-        }
-        if (has_external_adapter || has_peer)
-            && policy.runtime_enablement != RuntimeEnablement::ExplicitUserAction
-        {
-            return Err(ExternalToolRegistryError::MissingExplicitEnablement { tool });
-        }
-
-        if policy.tool_id == ExternalToolId::PerlLanguageServer
-            && (has_external_adapter || has_peer || is_product_adapter)
-        {
-            return Err(ExternalToolRegistryError::RuntimeForbidden { tool });
-        }
-        if NATIVE_ONLY_TOOLS.contains(&policy.tool_id) {
-            if has_external_adapter
-                || is_product_adapter
-                || policy.runtime_enablement != RuntimeEnablement::Forbidden
-                || policy.install_help_scope != InstallHelpScope::DeveloperConformance
-            {
-                return Err(ExternalToolRegistryError::NativeOnlyToolHasProductAdapter { tool });
-            }
-            if policy.may_auto_detect {
-                return Err(ExternalToolRegistryError::NativeOnlyToolAutoDetected { tool });
-            }
-        }
-
+        validate_universal_invariants(policy)?;
+        validate_role_consistency(policy)?;
+        validate_native_only_constraints(policy)?;
         validate_native_replacement(policy)?;
-
-        for identity in std::iter::once(policy.canonical_name).chain(policy.aliases.iter().copied())
-        {
-            let trimmed = identity.trim();
-            if trimmed.is_empty() {
-                return Err(ExternalToolRegistryError::EmptyIdentity);
-            }
-            let normalized = trimmed.to_ascii_lowercase();
-            if !identities.insert(normalized.clone()) {
-                return Err(ExternalToolRegistryError::DuplicateIdentity { identity: normalized });
-            }
-        }
+        register_identities(policy, &mut identities)?;
     }
 
+    Ok(())
+}
+
+fn named_owner(owner: Option<&'static str>) -> bool {
+    owner.is_some_and(|value| !value.trim().is_empty())
+}
+
+struct RoleShape {
+    has_external_adapter: bool,
+    has_conformance: bool,
+    has_config_reader: bool,
+    has_peer: bool,
+    has_testing_instrument: bool,
+    has_report_producer: bool,
+    is_product_adapter: bool,
+    is_testing_instrument_execution: bool,
+}
+
+fn role_shape(policy: &ExternalToolPolicy) -> RoleShape {
+    RoleShape {
+        has_external_adapter: policy.roles.contains(&ExternalToolRole::ExplicitExternalAdapter),
+        has_conformance: policy.roles.contains(&ExternalToolRole::ConformanceOracle),
+        has_config_reader: policy.roles.contains(&ExternalToolRole::ConfigurationCompatibility),
+        has_peer: policy.roles.contains(&ExternalToolRole::ExplicitOptionalPeer),
+        has_testing_instrument: policy
+            .roles
+            .contains(&ExternalToolRole::ExplicitOptionalTestingInstrument),
+        has_report_producer: policy.roles.contains(&ExternalToolRole::ReportProducer),
+        is_product_adapter: policy.external_execution_support
+            == ExternalExecutionSupport::ExplicitProductAdapter,
+        is_testing_instrument_execution: policy.external_execution_support
+            == ExternalExecutionSupport::ExplicitOptionalTestingInstrument,
+    }
+}
+
+fn validate_universal_invariants(
+    policy: &ExternalToolPolicy,
+) -> Result<(), ExternalToolRegistryError> {
+    let tool = policy.canonical_name;
+
+    if policy.bundled {
+        return Err(ExternalToolRegistryError::BundledExternalTool { tool });
+    }
+    if policy.required_for_native {
+        return Err(ExternalToolRegistryError::RequiredForNative { tool });
+    }
+    if policy.native_package_requires_external {
+        return Err(ExternalToolRegistryError::NativePackageRequiresExternal { tool });
+    }
+    if policy.may_auto_select {
+        return Err(ExternalToolRegistryError::AutomaticSelection { tool });
+    }
+    if policy.may_execute_on_workspace_open {
+        return Err(ExternalToolRegistryError::WorkspaceOpenExecution { tool });
+    }
+    if policy.runtime_enablement == RuntimeEnablement::ImplicitOnDiscovery {
+        return Err(ExternalToolRegistryError::ImplicitEnablement { tool });
+    }
+    if policy.config_presence_authorizes_execution {
+        return Err(ExternalToolRegistryError::ConfigPresenceAuthorizesExecution { tool });
+    }
+    if policy.evidence_promotes_native_readiness {
+        return Err(ExternalToolRegistryError::EvidencePromotesNativeReadiness { tool });
+    }
+
+    Ok(())
+}
+
+fn validate_role_consistency(policy: &ExternalToolPolicy) -> Result<(), ExternalToolRegistryError> {
+    let tool = policy.canonical_name;
+    let shape = role_shape(policy);
+
+    if shape.has_external_adapter != shape.is_product_adapter {
+        return Err(ExternalToolRegistryError::ExternalExecutionRoleMismatch { tool });
+    }
+    if shape.is_product_adapter
+        && policy.trust_class != ExternalToolTrustClass::ExplicitExternalProcess
+    {
+        return Err(ExternalToolRegistryError::InvalidExternalExecutionTrust { tool });
+    }
+    if policy.external_execution_support != ExternalExecutionSupport::None
+        && !named_owner(policy.external_execution_owner)
+    {
+        return Err(ExternalToolRegistryError::ExternalExecutionWithoutOwner { tool });
+    }
+    if shape.is_product_adapter && !named_owner(policy.candidate_output_validation_owner) {
+        return Err(ExternalToolRegistryError::MissingCandidateOutputValidationOwner { tool });
+    }
+
+    if shape.has_testing_instrument != shape.is_testing_instrument_execution {
+        return Err(ExternalToolRegistryError::TestingInstrumentRoleMismatch { tool });
+    }
+    if shape.has_testing_instrument
+        && policy.trust_class != ExternalToolTrustClass::ExplicitExternalProcess
+    {
+        return Err(ExternalToolRegistryError::InvalidTestingInstrumentTrust { tool });
+    }
+    if shape.has_report_producer != named_owner(policy.report_contract_owner) {
+        return Err(ExternalToolRegistryError::ReportProducerRoleMismatch { tool });
+    }
+
+    if shape.has_conformance != policy.conformance.is_some() {
+        return Err(ExternalToolRegistryError::ConformanceRoleMismatch { tool });
+    }
+    if let Some(requirements) = policy.conformance
+        && (!requirements.pinned_version_required
+            || !requirements.receipt_required
+            || requirements.owner.trim().is_empty())
+    {
+        return Err(ExternalToolRegistryError::ConformanceWithoutEvidenceRequirements { tool });
+    }
+
+    if shape.has_config_reader != (policy.config_reader_support != ConfigReaderSupport::None) {
+        return Err(ExternalToolRegistryError::ConfigReaderRoleMismatch { tool });
+    }
+    if shape.has_config_reader && !named_owner(policy.config_reader_owner) {
+        return Err(ExternalToolRegistryError::ConfigReaderWithoutOwner { tool });
+    }
+
+    if shape.has_peer && policy.trust_class != ExternalToolTrustClass::ExplicitDebuggerPeer {
+        return Err(ExternalToolRegistryError::InvalidPeerTrust { tool });
+    }
+    if (shape.has_external_adapter || shape.has_peer || shape.has_testing_instrument)
+        && policy.runtime_enablement != RuntimeEnablement::ExplicitUserAction
+    {
+        return Err(ExternalToolRegistryError::MissingExplicitEnablement { tool });
+    }
+
+    if policy.tool_id == ExternalToolId::PerlLanguageServer
+        && (shape.has_external_adapter
+            || shape.has_peer
+            || shape.has_testing_instrument
+            || shape.is_product_adapter
+            || shape.is_testing_instrument_execution)
+    {
+        return Err(ExternalToolRegistryError::RuntimeForbidden { tool });
+    }
+
+    Ok(())
+}
+
+fn validate_native_only_constraints(
+    policy: &ExternalToolPolicy,
+) -> Result<(), ExternalToolRegistryError> {
+    if !NATIVE_ONLY_TOOLS.contains(&policy.tool_id) {
+        return Ok(());
+    }
+
+    let tool = policy.canonical_name;
+    let shape = role_shape(policy);
+
+    if shape.has_external_adapter
+        || shape.has_testing_instrument
+        || shape.is_product_adapter
+        || shape.is_testing_instrument_execution
+        || policy.runtime_enablement != RuntimeEnablement::Forbidden
+        || policy.install_help_scope != InstallHelpScope::DeveloperConformance
+    {
+        return Err(ExternalToolRegistryError::NativeOnlyToolHasProductAdapter { tool });
+    }
+    if policy.may_auto_detect {
+        return Err(ExternalToolRegistryError::NativeOnlyToolAutoDetected { tool });
+    }
+
+    Ok(())
+}
+
+fn register_identities(
+    policy: &ExternalToolPolicy,
+    identities: &mut BTreeSet<String>,
+) -> Result<(), ExternalToolRegistryError> {
+    for identity in std::iter::once(policy.canonical_name).chain(policy.aliases.iter().copied()) {
+        let trimmed = identity.trim();
+        if trimmed.is_empty() {
+            return Err(ExternalToolRegistryError::EmptyIdentity);
+        }
+        let normalized = trimmed.to_ascii_lowercase();
+        if !identities.insert(normalized.clone()) {
+            return Err(ExternalToolRegistryError::DuplicateIdentity { identity: normalized });
+        }
+    }
     Ok(())
 }
 
@@ -866,6 +1017,8 @@ mod tests {
     const PERLIMPORTS_INDEX: usize = 3;
     /// Index of the Devel::ptkdb entry, used to build mutation fixtures.
     const PTKDB_INDEX: usize = 4;
+    /// Index of the Devel::Cover entry, used to build mutation fixtures.
+    const DEVEL_COVER_INDEX: usize = 5;
 
     #[test]
     fn reviewed_registry_is_valid() -> Result<(), ExternalToolRegistryError> {
@@ -913,6 +1066,7 @@ mod tests {
                 ExternalToolId::PerlCritic,
                 ExternalToolId::Perlimports,
                 ExternalToolId::Ptkdb,
+                ExternalToolId::DevelCover,
             ]
         );
     }
@@ -929,6 +1083,12 @@ mod tests {
             .ok_or("perlimports alias should resolve")?;
         assert_eq!(imports.tool_id, ExternalToolId::Perlimports);
         assert!(external_tool_policy_by_identity("perlimports-wrapper").is_none());
+
+        let cover =
+            external_tool_policy_by_identity("cover").ok_or("cover alias should resolve")?;
+        assert_eq!(cover.tool_id, ExternalToolId::DevelCover);
+        assert!(external_tool_policy_by_identity("my-cover-wrapper").is_none());
+        assert!(external_tool_policy_by_identity("cover_db").is_none());
         Ok(())
     }
 
@@ -1035,6 +1195,56 @@ mod tests {
     }
 
     #[test]
+    fn devel_cover_is_an_optional_testing_instrument_not_a_native_requirement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let policy = external_tool_policy(ExternalToolId::DevelCover)
+            .ok_or("missing Devel::Cover policy")?;
+        assert_eq!(
+            policy.roles,
+            &[
+                ExternalToolRole::ExplicitOptionalTestingInstrument,
+                ExternalToolRole::ReportProducer,
+            ]
+        );
+        assert_eq!(policy.owned_domain, "testing_coverage");
+        assert_eq!(policy.native_host, "canonical testing service");
+        assert_eq!(policy.native_replacement.delivery, NativeReplacementDelivery::NotApplicable);
+        assert!(!policy.bundled);
+        assert!(!policy.required_for_native);
+        assert!(!policy.native_package_requires_external);
+        assert!(policy.may_auto_detect, "PATH/module discovery is advisory evidence only");
+        assert!(!policy.may_auto_select, "cover or cover_db must not auto-select");
+        assert!(!policy.may_execute_on_workspace_open);
+        assert!(!policy.config_presence_authorizes_execution);
+        assert!(!policy.evidence_promotes_native_readiness);
+        assert_eq!(policy.runtime_enablement, RuntimeEnablement::ExplicitUserAction);
+        assert_eq!(
+            policy.external_execution_support,
+            ExternalExecutionSupport::ExplicitOptionalTestingInstrument
+        );
+        assert_eq!(policy.external_execution_owner, Some("#4750 / #4776 / #4833 / #4842 / #4898"));
+        assert_eq!(policy.report_contract_owner, Some("#16831"));
+        assert_eq!(policy.trust_class, ExternalToolTrustClass::ExplicitExternalProcess);
+        assert_eq!(policy.install_help_scope, InstallHelpScope::UserRequestedCompatibility);
+        assert_eq!(
+            external_tool_policy_by_identity("Devel::Cover")
+                .ok_or("canonical name should resolve")?
+                .tool_id,
+            ExternalToolId::DevelCover
+        );
+        assert_eq!(
+            external_tool_policy_by_identity("Devel-Cover")
+                .ok_or("CPAN dist alias should resolve")?
+                .tool_id,
+            ExternalToolId::DevelCover
+        );
+        assert!(policy.claim_boundary.contains("cover_db never auto-selects"));
+        assert!(policy.claim_boundary.contains("does not degrade native testing"));
+        assert!(policy.claim_boundary.contains("client cannot supply executable"));
+        Ok(())
+    }
+
+    #[test]
     fn registry_json_is_deterministic_and_machine_readable()
     -> Result<(), Box<dyn std::error::Error>> {
         let first = external_tool_registry_json()?;
@@ -1048,6 +1258,14 @@ mod tests {
         assert_eq!(entries[2]["toolId"], "perl_critic");
         assert_eq!(entries[3]["toolId"], "perlimports");
         assert_eq!(entries[4]["toolId"], "ptkdb");
+        assert_eq!(entries[5]["toolId"], "devel_cover");
+        assert_eq!(
+            entries[5]["roles"],
+            serde_json::json!(["explicit_optional_testing_instrument", "report_producer"])
+        );
+        assert_eq!(entries[5]["ownedDomain"], "testing_coverage");
+        assert_eq!(entries[5]["reportContractOwner"], "#16831");
+        assert_eq!(entries[5]["externalExecutionSupport"], "explicit_optional_testing_instrument");
 
         // Exact native identity must survive serialization for docs/doctor consumers.
         assert_eq!(entries[1]["nativeReplacement"]["package"], "perl-tidy");
@@ -1116,6 +1334,164 @@ mod tests {
     }
 
     #[test]
+    fn validator_rejects_devel_cover_role_escalations() {
+        let bundled =
+            [ExternalToolPolicy { bundled: true, ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX] }];
+        assert!(matches!(
+            validate_external_tool_registry(&bundled),
+            Err(ExternalToolRegistryError::BundledExternalTool { .. })
+        ));
+
+        let required = [ExternalToolPolicy {
+            required_for_native: true,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&required),
+            Err(ExternalToolRegistryError::RequiredForNative { .. })
+        ));
+
+        let auto_selected = [ExternalToolPolicy {
+            may_auto_select: true,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&auto_selected),
+            Err(ExternalToolRegistryError::AutomaticSelection { .. })
+        ));
+
+        let workspace_open = [ExternalToolPolicy {
+            may_execute_on_workspace_open: true,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&workspace_open),
+            Err(ExternalToolRegistryError::WorkspaceOpenExecution { .. })
+        ));
+
+        let cover_db_executes = [ExternalToolPolicy {
+            config_files: &["cover_db"],
+            config_presence_authorizes_execution: true,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&cover_db_executes),
+            Err(ExternalToolRegistryError::ConfigPresenceAuthorizesExecution { .. })
+        ));
+
+        let implicit = [ExternalToolPolicy {
+            runtime_enablement: RuntimeEnablement::ImplicitOnDiscovery,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&implicit),
+            Err(ExternalToolRegistryError::ImplicitEnablement { .. })
+        ));
+
+        let forbidden_enablement = [ExternalToolPolicy {
+            runtime_enablement: RuntimeEnablement::Forbidden,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&forbidden_enablement),
+            Err(ExternalToolRegistryError::MissingExplicitEnablement { .. })
+        ));
+
+        let promoting = [ExternalToolPolicy {
+            evidence_promotes_native_readiness: true,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&promoting),
+            Err(ExternalToolRegistryError::EvidencePromotesNativeReadiness { .. })
+        ));
+
+        let unowned_execution = [ExternalToolPolicy {
+            external_execution_owner: None,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&unowned_execution),
+            Err(ExternalToolRegistryError::ExternalExecutionWithoutOwner { .. })
+        ));
+
+        let blank_execution_owner = [ExternalToolPolicy {
+            external_execution_owner: Some("  "),
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&blank_execution_owner),
+            Err(ExternalToolRegistryError::ExternalExecutionWithoutOwner { .. })
+        ));
+
+        let unowned_report = [ExternalToolPolicy {
+            report_contract_owner: None,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&unowned_report),
+            Err(ExternalToolRegistryError::ReportProducerRoleMismatch { .. })
+        ));
+
+        let blank_report_owner = [ExternalToolPolicy {
+            report_contract_owner: Some("  "),
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&blank_report_owner),
+            Err(ExternalToolRegistryError::ReportProducerRoleMismatch { .. })
+        ));
+
+        let adapter_execution = [ExternalToolPolicy {
+            external_execution_support: ExternalExecutionSupport::ExplicitProductAdapter,
+            candidate_output_validation_owner: Some("#0000"),
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&adapter_execution),
+            Err(ExternalToolRegistryError::ExternalExecutionRoleMismatch { .. })
+        ));
+
+        let no_execution_class = [ExternalToolPolicy {
+            external_execution_support: ExternalExecutionSupport::None,
+            external_execution_owner: None,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&no_execution_class),
+            Err(ExternalToolRegistryError::TestingInstrumentRoleMismatch { .. })
+        ));
+
+        let wrong_trust = [ExternalToolPolicy {
+            trust_class: ExternalToolTrustClass::RepositoryConformance,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&wrong_trust),
+            Err(ExternalToolRegistryError::InvalidTestingInstrumentTrust { .. })
+        ));
+
+        let report_without_role = [ExternalToolPolicy {
+            roles: &[ExternalToolRole::ExplicitOptionalTestingInstrument],
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&report_without_role),
+            Err(ExternalToolRegistryError::ReportProducerRoleMismatch { .. })
+        ));
+
+        let recognized_cover_db = [ExternalToolPolicy {
+            config_files: &["cover_db"],
+            config_presence_authorizes_execution: false,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(
+            validate_external_tool_registry(&recognized_cover_db).is_ok(),
+            "listing cover_db without authorizing execution must remain valid"
+        );
+    }
+
+    #[test]
     fn validator_rejects_perl_critic_becoming_a_product_engine() {
         // A runtime/editor adapter is the exact regression #7209 exists to prevent.
         let runtime_adapter = [ExternalToolPolicy {
@@ -1154,6 +1530,24 @@ mod tests {
         assert!(matches!(
             validate_external_tool_registry(&probed_on_startup),
             Err(ExternalToolRegistryError::NativeOnlyToolAutoDetected { .. })
+        ));
+
+        let coverage_instrument = [ExternalToolPolicy {
+            roles: DEVEL_COVER_ROLES,
+            external_execution_support: ExternalExecutionSupport::ExplicitOptionalTestingInstrument,
+            trust_class: ExternalToolTrustClass::ExplicitExternalProcess,
+            runtime_enablement: RuntimeEnablement::ExplicitUserAction,
+            report_contract_owner: Some("#16831"),
+            external_execution_owner: Some("#4750"),
+            conformance: None,
+            config_reader_support: ConfigReaderSupport::None,
+            config_reader_owner: None,
+            install_help_scope: InstallHelpScope::UserRequestedCompatibility,
+            ..EXTERNAL_TOOL_REGISTRY[CRITIC_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&coverage_instrument),
+            Err(ExternalToolRegistryError::NativeOnlyToolHasProductAdapter { .. })
         ));
     }
 

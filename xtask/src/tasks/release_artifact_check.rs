@@ -331,7 +331,7 @@ fn check_required_binaries(
 /// Executable payloads (matched by final component, with or without a Windows
 /// executable suffix) that must never be bundled in a native-stack release
 /// archive.
-const FORBIDDEN_EXTERNAL_BINARIES: &[&str] = &["perltidy", "perlcritic"];
+const FORBIDDEN_EXTERNAL_BINARIES: &[&str] = &["perltidy", "perlcritic", "cover"];
 
 /// Windows executable/launcher suffixes stripped before matching a payload's
 /// final component against [`FORBIDDEN_EXTERNAL_BINARIES`]. `.bat`/`.cmd`
@@ -355,15 +355,22 @@ fn strip_windows_executable_suffix(base_name: &str) -> &str {
 
 /// Path markers for legacy conformance / external-tool module payloads that
 /// must never appear anywhere inside a native-stack release archive.
-const FORBIDDEN_EXTERNAL_PATH_MARKERS: &[&str] =
-    &["Perl/LanguageServer", "Perl::LanguageServer", "Devel/TSPerlDAP", "TSPerlDAP.pm"];
+const FORBIDDEN_EXTERNAL_PATH_MARKERS: &[&str] = &[
+    "Perl/LanguageServer",
+    "Perl::LanguageServer",
+    "Devel/TSPerlDAP",
+    "TSPerlDAP.pm",
+    "Devel/Cover.pm",
+    "Devel/Cover/",
+    "Devel::Cover",
+];
 
 /// Native-stack policy: release archives ship the native binaries only. They
-/// must NOT bundle external Perl tooling (`perltidy`, `perlcritic`) or legacy
-/// conformance payloads (`Perl::LanguageServer`, `Devel::TSPerlDAP`). Their
-/// mere presence would reintroduce the "install external tools" product story
-/// the native stack exists to remove. This is the negative half of the
-/// contract; `check_required_binaries` is the positive half.
+/// must NOT bundle external Perl tooling (`perltidy`, `perlcritic`, `cover`) or
+/// legacy conformance payloads (`Perl::LanguageServer`, `Devel::TSPerlDAP`,
+/// `Devel::Cover`). Their mere presence would reintroduce the "install external
+/// tools" product story the native stack exists to remove. This is the negative
+/// half of the contract; `check_required_binaries` is the positive half.
 fn check_no_external_tooling(
     location: &str,
     entries: &[ArchiveEntry],
@@ -990,6 +997,44 @@ mod tests {
         check_no_external_tooling("pkg.tar.gz", &entries, &mut violations);
         assert_eq!(violations.len(), 1, "only perltidy should be flagged: {violations:?}");
         assert!(violations[0].message.contains("perltidy"));
+    }
+
+    #[test]
+    fn external_cover_binary_and_devel_cover_module_are_flagged() {
+        let entries = vec![
+            entry("cover", "pkg/bin/cover", 0o755),
+            entry("Cover.pm", "pkg/lib/Devel/Cover.pm", 0o644),
+            entry("DB.pm", "pkg/lib/Devel/Cover/DB.pm", 0o644),
+        ];
+        let mut violations = Vec::new();
+        check_no_external_tooling("pkg.tar.gz", &entries, &mut violations);
+        assert!(violations.iter().any(|v| v.message.contains("cover")));
+        assert!(violations.iter().any(|v| v.message.contains("Devel/Cover.pm")));
+        assert!(violations.iter().any(|v| v.message.contains("Devel/Cover/")));
+        assert_eq!(violations.len(), 3, "each Devel::Cover payload flagged once: {violations:?}");
+    }
+
+    #[test]
+    fn cover_exe_is_flagged_but_incidental_cover_names_are_not() {
+        let mut exe_violations = Vec::new();
+        check_no_external_tooling(
+            "pkg.zip",
+            &[entry("cover.exe", "pkg/cover.exe", 0)],
+            &mut exe_violations,
+        );
+        assert_eq!(exe_violations.len(), 1, "`cover.exe` must be flagged: {exe_violations:?}");
+        assert!(exe_violations[0].message.contains("cover.exe"));
+
+        // Exact stem `cover` is the payload; nearby names must not become
+        // deny-list substrings (same rule as `pls` / `my-pls-wrapper`).
+        let entries = vec![
+            entry("recover", "pkg/recover", 0o755),
+            entry("cover.txt", "pkg/docs/cover.txt", 0o644),
+            entry("CoveredNotes.md", "pkg/docs/Devel/CoveredNotes.md", 0o644),
+        ];
+        let mut violations = Vec::new();
+        check_no_external_tooling("pkg.tar.gz", &entries, &mut violations);
+        assert!(violations.is_empty(), "no incidental cover false positives: {violations:?}");
     }
 
     #[test]
