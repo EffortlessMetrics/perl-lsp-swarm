@@ -181,6 +181,7 @@ pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result
                 role: BackupRole::Admin,
                 filter: FileFilter::AllRegular,
                 skip_names: SKIP_NONE,
+                logical_prefix: "",
                 limits,
                 objects_dir: &objects_dir,
                 reader: &reader,
@@ -194,6 +195,7 @@ pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result
             role: BackupRole::CandidateSource,
             filter: FileFilter::SourceLike,
             skip_names: SKIP_GIT,
+            logical_prefix: "",
             limits,
             objects_dir: &objects_dir,
             reader: &reader,
@@ -222,6 +224,7 @@ pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result
             role: BackupRole::Refs,
             filter: FileFilter::AllRegular,
             skip_names: SKIP_NONE,
+            logical_prefix: "refs/",
             limits,
             objects_dir: &objects_dir,
             reader: &reader,
@@ -234,6 +237,7 @@ pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result
             role: BackupRole::Reflog,
             filter: FileFilter::AllRegular,
             skip_names: SKIP_NONE,
+            logical_prefix: "logs/",
             limits,
             objects_dir: &objects_dir,
             reader: &reader,
@@ -529,6 +533,7 @@ struct TreeWalk<'a> {
     role: BackupRole,
     filter: FileFilter,
     skip_names: &'static [&'static str],
+    logical_prefix: &'static str,
     limits: TraversalLimits,
     objects_dir: &'a Path,
     reader: &'a FilesystemReader,
@@ -671,7 +676,8 @@ fn capture_tree_inner(
             continue;
         }
         let logical_path = match logical_path_from(root, &path) {
-            Ok(path) => path,
+            Ok(path) if walk.logical_prefix.is_empty() => path,
+            Ok(path) => format!("{}{path}", walk.logical_prefix),
             Err(error) => {
                 state.complete = false;
                 state.details.insert(error);
