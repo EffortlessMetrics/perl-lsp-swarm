@@ -1218,8 +1218,13 @@ fn add_union_receiver_method_completions(
 /// Sources are restricted to:
 /// - imported / visible packages from the current file's `import_map`
 /// - the current package and its `@ISA` chain (via
-///   [`collect_all_package_members`]) when `current_package` is set and
-///   not `main`
+///   [`collect_all_package_members_with_source`]) when `current_package`
+///   is set and not `main`
+///
+/// Current-document source is required so an unindexed child package can
+/// still follow `use parent` / role composition to persisted generated
+/// members. Allowed packages and unknown/low-confidence labelling are
+/// unchanged (#7929).
 ///
 /// All-workspace fallback is intentionally not used. Fallback candidates
 /// carry a `receiver: unknown, low confidence` detail suffix and use sort
@@ -1247,7 +1252,7 @@ fn add_unknown_receiver_fallback(
     let mut pending = Vec::new();
 
     for package_name in &allowed_packages {
-        let members = collect_all_package_members(index, package_name);
+        let members = collect_all_package_members_with_source(index, package_name, source);
         for symbol in members {
             if !matches!(symbol.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method) {
                 continue;

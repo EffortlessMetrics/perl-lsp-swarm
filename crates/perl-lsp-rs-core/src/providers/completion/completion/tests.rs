@@ -9176,10 +9176,10 @@ has 'status' => (
 #[test]
 fn block_form_package_after_close_stays_main() {
     let code = r#"package Child {
-method greet {
-    my $self = shift;
-    $self->bark;
-}
+    sub greet {
+        my $self = shift;
+        $self->bark;
+    }
 }
 $self->
 "#;
@@ -9217,6 +9217,27 @@ fn block_form_package_at_scope_end_is_main() {
     );
 }
 
+fn assert_unknown_inherited_workspace_method(completions: &[CompletionItem], label: &str) {
+    let item = must_some_with(
+        completions.iter().find(|item| item.label == label),
+        format!("inherited workspace method `{label}`"),
+    );
+    let detail = must_some_with(item.detail.as_deref(), format!("`{label}` detail"));
+    assert!(
+        detail.contains("receiver: unknown, low confidence"),
+        "classic-sub inherited `{label}` must stay unknown-receiver fallback, got {detail:?}"
+    );
+    assert!(
+        !detail.contains("receiver: self/this"),
+        "classic-sub inherited `{label}` must not promote Exact self/this, got {detail:?}"
+    );
+    let sort = must_some_with(item.sort_text.as_deref(), format!("`{label}` sort_text"));
+    assert!(
+        sort.starts_with("6_"),
+        "classic-sub inherited `{label}` must stay fallback tier 6, got {sort:?}"
+    );
+}
+
 #[test]
 fn inherited_moo_current_package_is_child() {
     let code = r#"
@@ -9224,7 +9245,7 @@ package Child;
 use Moo;
 use parent 'Parent';
 
-method greet {
+sub greet {
     my $self = shift;
     $self->
 }
@@ -9248,7 +9269,7 @@ package Child;
 use Moo;
 use parent 'Parent';
 
-method greet {
+sub greet {
     my $self = shift;
     $self->
 }
@@ -9261,11 +9282,7 @@ method greet {
     let pos = must_some(code.find("$self->")) + "$self->".len();
     let completions = provider.get_completions(code, pos);
 
-    assert!(
-        completions.iter().any(|item| item.label == "name"),
-        "expected inherited Moo accessor name in Child completion, got {:?}",
-        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
-    );
+    assert_unknown_inherited_workspace_method(&completions, "name");
 }
 
 #[test]
@@ -9275,7 +9292,7 @@ package Child;
 use Moo;
 use parent 'Parent';
 
-method inspect {
+sub inspect {
     my $self = shift;
     $self->
 }
@@ -9286,16 +9303,10 @@ method inspect {
     let index = must(inherited_moo_parent_index());
     let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
-    let labels: Vec<_> =
-        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+    let completions = provider.get_completions(code, pos);
 
     for expected in ["status", "has_status", "_build_status", "clear_status"] {
-        assert!(
-            labels.iter().any(|label| label == expected),
-            "expected inherited generated accessor {} in Child completion, got {:?}",
-            expected,
-            labels
-        );
+        assert_unknown_inherited_workspace_method(&completions, expected);
     }
 }
 
@@ -9306,7 +9317,7 @@ package Child;
 use Moo;
 use parent 'Parent';
 
-method inspect {
+sub inspect {
     my $self = shift;
     $self->
 }
@@ -9322,13 +9333,33 @@ method inspect {
 
     let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
-    let labels: Vec<_> =
-        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+    let completions = provider.get_completions(code, pos);
 
-    assert!(
-        labels.iter().any(|label| label == "name"),
-        "open Child source must win over unrelated indexed bare symbol, got {labels:?}"
-    );
+    assert_unknown_inherited_workspace_method(&completions, "name");
+}
+
+#[test]
+fn test_inherited_moo_unknown_obj_follows_current_document_isa() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my ($obj) = @_;
+    $obj->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = must(inherited_moo_parent_index());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let pos = must_some(code.find("$obj->")) + "$obj->".len();
+    let completions = provider.get_completions(code, pos);
+
+    assert_unknown_inherited_workspace_method(&completions, "name");
+    assert_unknown_inherited_workspace_method(&completions, "status");
 }
 
 /// Proof seam for issue #11858: empty-prefix general context must emit visible
