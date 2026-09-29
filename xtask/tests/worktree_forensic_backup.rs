@@ -1,6 +1,7 @@
 use anyhow::{Result, bail, ensure};
 use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::Value;
+use serial_test::serial;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -423,7 +424,9 @@ fn forged_pointer_outside_admin_namespace_does_not_copy_host_files() -> Result<(
     Ok(())
 }
 
+// Process cwd is global; #1269 requires #[serial] rather than a registry row.
 #[test]
+#[serial]
 fn relative_backup_dir_without_slash_uses_current_directory_parent() -> Result<()> {
     let fixture = LinkedFixture::create()?;
     let before = fixture.snapshot()?;
