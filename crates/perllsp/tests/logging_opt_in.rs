@@ -30,14 +30,24 @@ const CLEARED_CHILD_ENV: &[&str] = &[
     "TERM_PROGRAM",
 ];
 
-/// Spawn `perllsp` with the log surface reduced to its documented defaults.
-fn spawn_perllsp(args: &[&str]) -> Command {
+/// Spawn `perllsp`, apply `setup`, then clear the runner-leak keys.
+///
+/// `setup` runs first so a test can plant `PERL_LSP_LOG` / `RUST_LOG` /
+/// `FORCE_COLOR` and prove `env_remove` still wins. Re-applying those keys
+/// *after* this function is the opposite-direction leak path.
+fn spawn_perllsp_with(args: &[&str], setup: impl FnOnce(&mut Command)) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_perllsp"));
     command.args(args).stdin(Stdio::null());
+    setup(&mut command);
     for key in CLEARED_CHILD_ENV {
         command.env_remove(key);
     }
     command
+}
+
+/// Spawn `perllsp` with the log surface reduced to its documented defaults.
+fn spawn_perllsp(args: &[&str]) -> Command {
+    spawn_perllsp_with(args, |_| {})
 }
 
 /// Decode a successful server's stderr, or report spawn / status / UTF-8 failure.
@@ -55,6 +65,10 @@ fn stderr_for(args: &[&str]) -> Result<String, TestError> {
 }
 
 /// Build a real [`Output`] with a chosen success bit and stderr payload.
+///
+/// Failure status is synthesized with `perllsp --completion nushell`, which
+/// `cli_smoke` also requires to stay rejected. If that CLI later succeeds,
+/// the guard below fails loudly instead of minting a false success `Output`.
 fn finished_output(success: bool, stderr: &[u8]) -> Result<Output, TestError> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_perllsp"));
     if success {
@@ -182,7 +196,45 @@ fn perl_lsp_log_env_enables_info_without_the_flag() -> TestResult {
     let stderr = successful_stderr(command.output())?;
     assert!(
         stderr.contains(" INFO "),
-        "re-applied PERL_LSP_LOG must enable INFO so the default env_remove stays load-bearing: {stderr}"
+        "re-applied PERL_LSP_LOG must enable INFO without --log: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rust_log_env_enables_info_without_the_flag() -> TestResult {
+    let mut command = spawn_perllsp(&["--stdio"]);
+    command.env("RUST_LOG", "info");
+    let stderr = successful_stderr(command.output())?;
+    assert!(
+        stderr.contains(" INFO "),
+        "re-applied RUST_LOG must enable INFO without --log: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn spawn_clears_perl_lsp_log_planted_before_strip() -> TestResult {
+    let command = spawn_perllsp_with(&["--stdio"], |command| {
+        command.env("PERL_LSP_LOG", "info");
+    });
+    let stderr = successful_stderr(command.output())?;
+    assert!(
+        !stderr.contains(" INFO "),
+        "env_remove(PERL_LSP_LOG) must win over a planted value: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn spawn_clears_rust_log_planted_before_strip() -> TestResult {
+    let command = spawn_perllsp_with(&["--stdio"], |command| {
+        command.env("RUST_LOG", "info");
+    });
+    let stderr = successful_stderr(command.output())?;
+    assert!(
+        !stderr.contains(" INFO "),
+        "env_remove(RUST_LOG) must win over a planted value: {stderr}"
     );
     Ok(())
 }
@@ -195,7 +247,21 @@ fn force_color_on_the_child_rewrites_piped_info_tokens() -> TestResult {
     let stderr = successful_stderr(command.output())?;
     assert!(
         stderr.contains('\u{1b}'),
-        "re-applied FORCE_COLOR must color piped --log stderr so the default env_remove stays load-bearing: {stderr:?}"
+        "re-applied FORCE_COLOR must color piped --log stderr: {stderr:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn spawn_clears_force_color_planted_before_strip() -> TestResult {
+    let command = spawn_perllsp_with(&["--stdio", "--log"], |command| {
+        command.env_remove("NO_COLOR");
+        command.env("FORCE_COLOR", "1");
+    });
+    let stderr = successful_stderr(command.output())?;
+    assert!(
+        !stderr.contains('\u{1b}'),
+        "env_remove(FORCE_COLOR) must win over a planted value: {stderr:?}"
     );
     Ok(())
 }
