@@ -80,14 +80,39 @@ fn refused_first_did_open_notifies_the_client() -> TestResult {
             "contentChanges": [{"text": "x".repeat(ceiling + 1)}],
         }),
     );
-    let logged = wait_for_message_containing(&mut harness, "window/logMessage", uri)?;
+    let logged = wait_for_message_containing(
+        &mut harness,
+        "window/logMessage",
+        "textDocument/didChange for file:///refused-first-open.pl was rejected at",
+    )?;
     assert!(
         logged["message"].as_str().is_some_and(|message| message.contains(uri)),
         "unassociated change refusal must reach the client log: {logged}"
     );
+    // A following request is a dispatcher barrier: the refused notification
+    // and all of its outbound messages completed before this response.
+    let barrier = harness.request_raw(json!({
+        "jsonrpc": "2.0",
+        "id": 901,
+        "method": "custom/barrierAfterRefusedChange",
+        "params": {},
+    }));
+    assert_eq!(error_code(&barrier), Some(-32601));
+    // The harness also reparses prior raw output while waiting for a request
+    // response, so an old didOpen warning can appear in this queue again.
+    // Match the refused change itself, not an unrelated or replayed warning.
+    let change_popups: Vec<_> = harness
+        .drain_notifications(Some("window/showMessage"), 0)
+        .into_iter()
+        .filter(|notification| {
+            notification["params"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("textDocument/didChange"))
+        })
+        .collect();
     assert!(
-        harness.drain_notifications(Some("window/showMessage"), 50).is_empty(),
-        "a refused change after an unopened document must not raise another popup"
+        change_popups.is_empty(),
+        "a refused change after an unopened document must not raise another popup: {change_popups:?}"
     );
 
     // Missing URI still gets a generic refusal; there is no response to a
