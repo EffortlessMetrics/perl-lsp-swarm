@@ -136,8 +136,8 @@ The old v0.8.8 workspace report is historical. The current workspace excludes le
 # ✅ This should work (workspace tests only production crates)
 cargo test
 
-# ⚠️ Legacy excluded components are not part of the default workspace
-cargo build -p tree-sitter-perl
+# ⚠️ The legacy top-level tree-sitter-perl component is excluded; the maintained C compatibility crate is tree-sitter-perl-c
+cargo build -p tree-sitter-perl-c
 ```
 
 **Solution**: The workspace is configured to exclude problematic crates. Use the standard workspace commands:
@@ -164,7 +164,7 @@ cargo test
 cargo test -p example-crate-with-conflicts
 ```
 
-**Reference**: See [workspace status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/workspace.md) for current workspace status.
+**Reference**: See the [workspace status report](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/workspace.md) for current workspace status.
 
 ### Debug adapter not found
 ```bash
@@ -188,7 +188,7 @@ cargo install --path crates/perl-dap --force
 
 The debugging system consists of:
 
-1. **Debug Adapter (perl-dap)**: Native DAP adapter (default CLI)
+1. **Debug Adapter (perl-dap)**: Native DAP adapter (default CLI); launch is supported and TCP attach is transport-only
 2. **Legacy bridge compatibility**: Kept separate from the native launch and TCP attach path
 3. **Perl Debugger Integration**: Interfaces with `perl -d`
 4. **VSCode Extension**: Provides UI integration
