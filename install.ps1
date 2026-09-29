@@ -7,6 +7,28 @@
 # README.md and docs/how-to/INSTALLATION.md. Do not assume perl-lsp/master is
 # equivalent to this file.
 #
+# Two concrete reasons that matters for Windows PowerShell 5.1:
+#
+#   1. The PS 5.1 parse fix lives only in THIS repository. The copy served from
+#      the publication repo's `master` branch
+#      (raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1)
+#      is still the older non-ASCII file, which Windows PowerShell 5.1 cannot
+#      parse (25 parse errors). This file is pure ASCII, so 5.1 parses it with
+#      zero errors. The fix reaches users when #4348 lands the audited
+#      publication join; until then, fetch this repository at a reviewed commit
+#      SHA rather than from `master`.
+#   2. First-party install-surface policy forbids publishing an
+#      `install.ps1 | iex` invocation (see install_surface_check), and a bare
+#      piped invocation omits the remote-bootstrap wrapper's identity pair — a
+#      full 40-character commit SHA plus a reviewed SHA-256 digest. A one-liner
+#      could carry both values, but no reviewed pair is published for this
+#      script.
+#
+# Fetch, review, then run:
+#   irm "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp-swarm/<commit-sha>/install.ps1" -OutFile install.ps1
+#   notepad .\install.ps1
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1
+#
 # Run it from a clone or a reviewed downloaded copy:
 #   .\install.ps1                                    # latest, default dir
 #   .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
@@ -22,13 +44,13 @@ $ProgressPreference = "SilentlyContinue"
 
 $Repo = "EffortlessMetrics/perl-lsp"
 # The release workflow packages the binary as `perllsp` on every platform
-# (see .github/workflows/release.yml — NAME="perllsp"), and every editor doc
+# (see .github/workflows/release.yml - NAME="perllsp"), and every editor doc
 # / README / POSIX installer (scripts/install.sh) uses `perllsp`. Install the
 # Windows candidate stores `perllsp.exe`; PATH-visible names are `perllsp.cmd`
 # / `perl-dap.cmd` shims that follow `.perl-lsp\current` so unelevated hosts
 # never publish independent copies.
 $Name = "perllsp"
-# The release archive also carries the debug adapter (`perl-dap.exe`) — see
+# The release archive also carries the debug adapter (`perl-dap.exe`) - see
 # .github/workflows/release.yml, which builds `-p perl-dap` for every target.
 # Install it alongside the server so Windows matches every sibling channel:
 # scripts/install.sh (optional perl-dap copy), Formula/perllsp.rb,
@@ -37,7 +59,7 @@ $DapName = "perl-dap"
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "→ " -ForegroundColor Green -NoNewline
+    Write-Host "-> " -ForegroundColor Green -NoNewline
     Write-Host $Message
 }
 
@@ -50,13 +72,13 @@ function Write-Error {
 
 function Write-Warn {
     param([string]$Message)
-    Write-Host "⚠ " -ForegroundColor Yellow -NoNewline
+    Write-Host "[!] " -ForegroundColor Yellow -NoNewline
     Write-Host $Message
 }
 
 function Write-Success {
     param([string]$Message)
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "[ok] " -ForegroundColor Green -NoNewline
     Write-Host $Message
 }
 
@@ -1238,15 +1260,15 @@ Check the release page for an existing tag: https://github.com/$Repo/releases"
     Write-Info "PATH status: $PathDisposition"
     
     Write-Host ""
-    Write-Host "Installation complete! 🎉" -ForegroundColor Green
+    Write-Host "Installation complete!" -ForegroundColor Green
     Write-Host ""
     Write-Host "To get started with Perl LSP:"
-    Write-Host "  • VS Code: Install the Perl LSP extension from the marketplace"
-    Write-Host "  • Other editors: Configure to use '$DestPath --stdio'"
+    Write-Host "  - VS Code: Install the Perl LSP extension from the marketplace"
+    Write-Host "  - Other editors: Configure to use '$DestPath --stdio'"
     if ($DapInstalled) {
-        Write-Host "  • Debugging: Configure your DAP client to use '$DapDestPath'"
+        Write-Host "  - Debugging: Configure your DAP client to use '$DapDestPath'"
     } else {
-        Write-Host "  • Debugging: unavailable - $DapName.exe was not in this release archive"
+        Write-Host "  - Debugging: unavailable - $DapName.exe was not in this release archive"
     }
     Write-Host ""
     Write-Host "For more information: https://github.com/$Repo"
