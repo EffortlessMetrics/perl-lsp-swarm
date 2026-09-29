@@ -559,6 +559,7 @@ fn fixture_hostile_path_source_secret_log_canaries() {
     for hostile in [
         "/home/user/.ssh/id_rsa",
         r"C:\Users\secret\token.txt",
+        "C:",
         "package Foo;",
         "sub leak {",
         "password=hunter2",
@@ -730,6 +731,24 @@ fn negative_source_secrets_private_paths_env_or_unbounded_history_enter_public_o
     assert!(!json.contains("/home/"));
     assert!(!json.contains("BEGIN "));
     assert!(!json.contains("password"));
+}
+
+#[test]
+fn negative_token_list_membership_changes_semantic_identity() {
+    let mut reasons_and_limitations = current_ready_parts();
+    reasons_and_limitations.reasons = vec![token("a")];
+    reasons_and_limitations.limitations = vec![token("b")];
+    reasons_and_limitations.operation_links = Vec::new();
+
+    let mut limitations_only = current_ready_parts();
+    limitations_only.reasons = Vec::new();
+    limitations_only.limitations = vec![token("a"), token("b")];
+    limitations_only.operation_links = Vec::new();
+
+    let left = envelope_from(vec![row_from(reasons_and_limitations)]);
+    let right = envelope_from(vec![row_from(limitations_only)]);
+    assert_ne!(left.fingerprint(), right.fingerprint());
+    assert_ne!(left, right);
 }
 
 #[test]

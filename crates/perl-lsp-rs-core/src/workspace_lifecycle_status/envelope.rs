@@ -400,15 +400,9 @@ impl WorkspaceLifecycleStatusRow {
             Some(action) => push_bytes(&mut buf, action.as_str().as_bytes()),
             None => push_bytes(&mut buf, b"none"),
         }
-        for reason in &self.reasons {
-            push_token(&mut buf, reason);
-        }
-        for limitation in &self.limitations {
-            push_token(&mut buf, limitation);
-        }
-        for link in &self.operation_links {
-            push_token(&mut buf, link);
-        }
+        push_token_list(&mut buf, b"reasons", &self.reasons);
+        push_token_list(&mut buf, b"limitations", &self.limitations);
+        push_token_list(&mut buf, b"operation_links", &self.operation_links);
         push_bytes(&mut buf, self.metadata.completeness().as_str().as_bytes());
         push_bytes(&mut buf, self.metadata.instrument_state().as_str().as_bytes());
         push_bytes(&mut buf, self.metadata.privacy_class().as_str().as_bytes());
@@ -774,6 +768,15 @@ fn push_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
 
 fn push_token(buf: &mut Vec<u8>, token: &LogicalToken) {
     push_bytes(buf, token.as_str().as_bytes());
+}
+
+fn push_token_list(buf: &mut Vec<u8>, tag: &[u8], tokens: &[LogicalToken]) {
+    push_bytes(buf, tag);
+    let count = u32::try_from(tokens.len()).unwrap_or(u32::MAX);
+    buf.extend_from_slice(&count.to_be_bytes());
+    for token in tokens {
+        push_token(buf, token);
+    }
 }
 
 fn push_dimension<T: Copy>(
