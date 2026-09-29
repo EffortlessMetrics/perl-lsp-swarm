@@ -7,7 +7,7 @@ schema_version = 1
 policy = "framework-adapters"
 owner = "perl-lsp maintainers"
 status = "advisory"
-updated = "2026-08-28"
+updated = "2026-09-29"
 spec = "docs/specs/PLSP-SPEC-0024-framework-fact-adapters.md"
 fact_provenance_spec = "docs/specs/PLSP-SPEC-0017-fact-provenance-and-source-backing.md"
 edit_authorization_spec = "docs/specs/PLSP-SPEC-0018-edit-authorization-contract.md"
@@ -444,3 +444,75 @@ blocks = [
   "unsupported_fact_class",
 ]
 claim_boundary = "DBIx::QuickORM emits only the source-anchored, bounded Medium-confidence qorm_table generated member for exact unfiltered table-package builders; the generated-member package query, workspace-symbol, and method-completion consumers may present that fact, while generic source-only package-member queries, filtered configuration, runtime-controlled builders, local method catalogues, and manual column metadata remain blocked or unmodeled."
+
+[[adapter]]
+framework = "Function::Parameters"
+fact_class = "literal_callable_declaration"
+state = "shadow"
+fact_provenance = "ExactAst"
+source_anchor_required = true
+generated_label_required = false
+rename_policy = "blocked_without_class_specific_edit_proof"
+safe_delete_policy = "blocked_without_class_specific_edit_proof"
+provider_surfaces = []
+supported_forms = [
+  "use Function::Parameters",
+  "use Function::Parameters qw(:std|:strict|:lax|fun|method)",
+  "fun NAME SIGNATURE? BLOCK",
+  "method NAME SIGNATURE? BLOCK",
+]
+blocked_forms = [
+  "empty_import",
+  "hashref_custom_keyword_configuration",
+  ":modifiers",
+  "renamed_or_runtime_keywords",
+  "typed_or_named_parameters_as_exact_canonical_signature",
+  "module_execution",
+]
+blocks = [
+  "generated_no_source",
+  "stale_fact",
+  "dynamic_boundary",
+  "low_confidence",
+  "ambiguous_identity",
+  "unsupported_fact_class",
+  "unresolved_module_identity",
+  "unsupported_version",
+]
+claim_boundary = "Function::Parameters 2.x literal fun/method declarations are registry-backed shadow callable facts (#16808): exact activation requires resolved supported Function::Parameters identity plus a reviewed default or keyword-tag import; empty, customized, and dynamic keyword forms mint nothing; no provider surface may consume the facts until registry-dispatch (#6821) and shard-publication (#6822) land."
+version_constraint = ">=2.0.0,<3.0.0"
+
+[[adapter]]
+framework = "Method::Signatures"
+fact_class = "literal_callable_declaration"
+state = "shadow"
+fact_provenance = "ExactAst"
+source_anchor_required = true
+generated_label_required = false
+rename_policy = "blocked_without_class_specific_edit_proof"
+safe_delete_policy = "blocked_without_class_specific_edit_proof"
+provider_surfaces = []
+supported_forms = [
+  "use Method::Signatures",
+  "func NAME SIGNATURE? BLOCK",
+  "method NAME SIGNATURE? BLOCK",
+]
+blocked_forms = [
+  "empty_import",
+  "hashref_custom_configuration",
+  "renamed_or_runtime_keywords",
+  "typed_or_named_parameters_as_exact_canonical_signature",
+  "module_execution",
+]
+blocks = [
+  "generated_no_source",
+  "stale_fact",
+  "dynamic_boundary",
+  "low_confidence",
+  "ambiguous_identity",
+  "unsupported_fact_class",
+  "unresolved_module_identity",
+  "unsupported_version",
+]
+claim_boundary = "Method::Signatures 20170211 literal func/method declarations are registry-backed shadow callable facts (#16808): exact activation requires resolved supported Method::Signatures identity plus the reviewed default import; empty and customized forms mint nothing; no provider surface may consume the facts until registry-dispatch (#6821) and shard-publication (#6822) land."
+version_constraint = ">=20170211,<20170212"
