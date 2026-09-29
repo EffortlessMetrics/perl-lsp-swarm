@@ -201,7 +201,8 @@ Validation rejects:
 - configuration-file presence authorizing execution;
 - a configuration reader without a domain owner;
 - a debugger peer without the peer trust owner;
-- a testing instrument without the process/trust owner and report-contract owner;
+- a testing instrument without the process/trust owner, report-producer role,
+  and report-contract owner;
 - an execution or peer role without explicit user enablement;
 - PLS exposed as product runtime;
 - Perl::Critic gaining a product runtime, editor, or CLI adapter, user-facing

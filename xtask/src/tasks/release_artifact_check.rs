@@ -355,6 +355,7 @@ fn strip_windows_executable_suffix(base_name: &str) -> &str {
 
 /// Path markers for legacy conformance / external-tool module payloads that
 /// must never appear anywhere inside a native-stack release archive.
+/// Matched case-insensitively so a Windows ZIP cannot hide `devel/cover.pm`.
 const FORBIDDEN_EXTERNAL_PATH_MARKERS: &[&str] = &[
     "Perl/LanguageServer",
     "Perl::LanguageServer",
@@ -388,8 +389,10 @@ fn check_no_external_tooling(
             });
             continue;
         }
-        if let Some(marker) =
-            FORBIDDEN_EXTERNAL_PATH_MARKERS.iter().find(|m| entry.path.contains(**m))
+        let path_lower = entry.path.to_ascii_lowercase();
+        if let Some(marker) = FORBIDDEN_EXTERNAL_PATH_MARKERS
+            .iter()
+            .find(|m| path_lower.contains(&m.to_ascii_lowercase()))
         {
             violations.push(Violation {
                 location: location.to_string(),
@@ -1035,6 +1038,38 @@ mod tests {
         let mut violations = Vec::new();
         check_no_external_tooling("pkg.tar.gz", &entries, &mut violations);
         assert!(violations.is_empty(), "no incidental cover false positives: {violations:?}");
+    }
+
+    #[test]
+    fn mixed_case_devel_cover_module_paths_are_flagged() {
+        // Windows ZIP entries may store `devel/cover.pm`; the binary stem
+        // matcher already folds case, so module markers must too.
+        let entries = vec![
+            entry("cover.pm", "pkg/lib/devel/cover.pm", 0o644),
+            entry("DB.pm", "pkg/lib/DEVEL/COVER/DB.pm", 0o644),
+        ];
+        let mut violations = Vec::new();
+        check_no_external_tooling("pkg.zip", &entries, &mut violations);
+        assert!(
+            violations.iter().any(|v| v.message.contains("devel/cover.pm")),
+            "lowercase Devel/Cover.pm must be flagged: {violations:?}"
+        );
+        assert!(
+            violations.iter().any(|v| v.message.contains("DEVEL/COVER/")),
+            "uppercase Devel/Cover/ must be flagged: {violations:?}"
+        );
+        assert_eq!(violations.len(), 2, "each mixed-case payload flagged once: {violations:?}");
+
+        let mut incidental = Vec::new();
+        check_no_external_tooling(
+            "pkg.zip",
+            &[entry("notes.md", "pkg/docs/devel/coverednotes.md", 0o644)],
+            &mut incidental,
+        );
+        assert!(
+            incidental.is_empty(),
+            "case-folding must not flag CoveredNotes.md: {incidental:?}"
+        );
     }
 
     #[test]

@@ -664,7 +664,8 @@ pub enum ExternalToolRegistryError {
         /// Canonical tool name.
         tool: &'static str,
     },
-    /// A report-producer role disagrees with its report-contract owner.
+    /// A report-producer role disagrees with its report-contract owner, or a
+    /// testing instrument omits the report-producer role.
     #[error("report-producer role/owner mismatch for {tool}")]
     ReportProducerRoleMismatch {
         /// Canonical tool name.
@@ -839,6 +840,9 @@ fn validate_role_consistency(policy: &ExternalToolPolicy) -> Result<(), External
         && policy.trust_class != ExternalToolTrustClass::ExplicitExternalProcess
     {
         return Err(ExternalToolRegistryError::InvalidTestingInstrumentTrust { tool });
+    }
+    if shape.has_testing_instrument && !shape.has_report_producer {
+        return Err(ExternalToolRegistryError::ReportProducerRoleMismatch { tool });
     }
     if shape.has_report_producer != named_owner(policy.report_contract_owner) {
         return Err(ExternalToolRegistryError::ReportProducerRoleMismatch { tool });
@@ -1477,6 +1481,16 @@ mod tests {
         }];
         assert!(matches!(
             validate_external_tool_registry(&report_without_role),
+            Err(ExternalToolRegistryError::ReportProducerRoleMismatch { .. })
+        ));
+
+        let instrument_without_report = [ExternalToolPolicy {
+            roles: &[ExternalToolRole::ExplicitOptionalTestingInstrument],
+            report_contract_owner: None,
+            ..EXTERNAL_TOOL_REGISTRY[DEVEL_COVER_INDEX]
+        }];
+        assert!(matches!(
+            validate_external_tool_registry(&instrument_without_report),
             Err(ExternalToolRegistryError::ReportProducerRoleMismatch { .. })
         ));
 
