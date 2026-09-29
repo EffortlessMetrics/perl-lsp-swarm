@@ -1351,7 +1351,7 @@
           {
             "id": "verify-perl",
             "title": "Check Optional Perl Runtime",
-            "description": "The core language server works without Perl. Run [Perl: Run Health Check](command:perl-lsp.runHealthCheck) to check Perl for running tests and debugging. Native formatting and critic are built in; perltidy and perlcritic are optional external-compatibility tools.",
+            "description": "The core language server works without Perl. [Run Health Check](command:perl-lsp.runHealthCheck) checks for optional Perl to run tests. Debugging requires Perl 5.10+. Native formatting and critic are built in; perltidy and perlcritic are optional external-compatibility tools.",
             "media": {
               "image": "media/walkthrough/verify-perl.svg",
               "altText": "Verify Perl"

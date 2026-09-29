@@ -157,8 +157,9 @@ describe('package.json walkthrough contribution', () => {
     const step = findRequired(wt.steps, (s) => s.id === 'verify-perl', 'verify-perl step');
     expect(step.title).toMatch(/optional/i);
     expect(step.description).toMatch(/core language server works without Perl/i);
-    expect(step.description).toMatch(/Perl for running tests and debugging/i);
-    expect(step.description).not.toMatch(/Perl 5\.10|full LSP support/i);
+    expect(step.description).toMatch(/optional Perl to run tests/i);
+    expect(step.description).toMatch(/Debugging requires Perl 5\.10\+/i);
+    expect(step.description).not.toMatch(/full LSP support/i);
   });
 
   test('open-project step offers the bundled demo project (#1635)', () => {
