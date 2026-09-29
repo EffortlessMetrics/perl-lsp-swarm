@@ -14,7 +14,10 @@ use perl_workspace::semantic::queries::SemanticQueries;
 use perl_workspace::semantic::workspace_import_extractor::{
     extract_import_specs, extract_import_specs_from_hir, extract_import_specs_with_source,
 };
-use perl_workspace::workspace::workspace_index::WorkspaceIndex;
+use perl_workspace::workspace::workspace_index::{
+    SourceCommit, SourceCommitOutcome, WorkspaceIndex,
+};
+use std::num::NonZeroU32;
 use url::Url;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -335,11 +338,11 @@ fn require_then_import_overlay_replaces_the_hir_require_row() -> TestResult {
 }
 
 #[test]
-fn index_file_default_and_empty_imports_stay_distinct() -> TestResult {
+fn index_initial_file_default_and_empty_imports_stay_distinct() -> TestResult {
     let index = WorkspaceIndex::new();
-    index.index_file_str("file:///lib/M.pm", "package M;\nour @EXPORT = qw(foo);\n1;\n")?;
-    index.index_file_str("file:///default.pl", "package Main;\nuse M;\nfoo();\n1;\n")?;
-    index.index_file_str("file:///empty.pl", "package Main;\nuse M ();\nfoo();\n1;\n")?;
+    index.index_initial_file_str("file:///lib/M.pm", "package M;\nour @EXPORT = qw(foo);\n1;\n")?;
+    index.index_initial_file_str("file:///default.pl", "package Main;\nuse M;\nfoo();\n1;\n")?;
+    index.index_initial_file_str("file:///empty.pl", "package Main;\nuse M ();\nfoo();\n1;\n")?;
 
     let default_visible = index
         .with_semantic_queries_for_uri("file:///default.pl", |file_id, queries| {
@@ -370,18 +373,30 @@ fn index_file_default_and_empty_imports_stay_distinct() -> TestResult {
 #[test]
 fn later_generation_replaces_import_rows_and_stale_generation_does_not() -> TestResult {
     let index = WorkspaceIndex::new();
-    index.index_file_str("file:///lib/M.pm", "package M;\nour @EXPORT = qw(foo);\n1;\n")?;
+    index.index_initial_file_str("file:///lib/M.pm", "package M;\nour @EXPORT = qw(foo);\n1;\n")?;
     let uri = Url::parse("file:///script.pl")?;
-    index.index_file_with_generation(
-        uri.clone(),
-        "package Main;\nuse M;\nfoo();\n1;\n".to_string(),
-        2,
-    )?;
-    index.index_file_with_generation(
-        uri.clone(),
-        "package Main;\nuse M ();\nfoo();\n1;\n".to_string(),
-        1,
-    )?;
+    let commit = |generation| {
+        NonZeroU32::new(generation)
+            .map(SourceCommit::new)
+            .ok_or_else(|| format!("live fixture generation {generation} must be nonzero"))
+    };
+    assert!(commit(0).is_err(), "zero cannot mint a live source commit");
+    assert_eq!(
+        index.index_live_file(
+            uri.clone(),
+            "package Main;\nuse M;\nfoo();\n1;\n".to_string(),
+            commit(2)?,
+        ),
+        SourceCommitOutcome::Accepted
+    );
+    assert_eq!(
+        index.index_live_file(
+            uri.clone(),
+            "package Main;\nuse M ();\nfoo();\n1;\n".to_string(),
+            commit(1)?,
+        ),
+        SourceCommitOutcome::RejectedStale
+    );
 
     let after_stale = index
         .with_semantic_queries_for_uri(uri.as_str(), |file_id, queries| {
@@ -395,11 +410,14 @@ fn later_generation_replaces_import_rows_and_stale_generation_does_not() -> Test
         "generation 1 must not replace generation 2 facts; got {after_stale:?}"
     );
 
-    index.index_file_with_generation(
-        uri,
-        "package Main;\nuse M ();\nfoo();\n1;\n".to_string(),
-        3,
-    )?;
+    assert_eq!(
+        index.index_live_file(
+            uri,
+            "package Main;\nuse M ();\nfoo();\n1;\n".to_string(),
+            commit(3)?,
+        ),
+        SourceCommitOutcome::Accepted
+    );
     let after_newer = index
         .with_semantic_queries_for_uri("file:///script.pl", |file_id, queries| {
             queries.visible_symbols_at(file_id, 32, None)
@@ -436,12 +454,12 @@ fn same_module_spelling_keeps_per_file_import_rows() -> TestResult {
     // prove multi-root export isolation. Per-file import rows must still keep
     // each importer's own explicit list.
     let index = WorkspaceIndex::new();
-    index.index_file_str(
+    index.index_initial_file_str(
         "file:///root-a/lib/M.pm",
         "package M;\nour @EXPORT_OK = qw(alpha beta);\n1;\n",
     )?;
-    index.index_file_str("file:///root-a/script.pl", a_source)?;
-    index.index_file_str("file:///root-b/script.pl", b_source)?;
+    index.index_initial_file_str("file:///root-a/script.pl", a_source)?;
+    index.index_initial_file_str("file:///root-b/script.pl", b_source)?;
 
     let a_visible = index
         .with_semantic_queries_for_uri("file:///root-a/script.pl", |file_id, queries| {
@@ -484,18 +502,18 @@ fn same_module_spelling_keeps_per_file_import_rows() -> TestResult {
 #[test]
 fn delete_and_readd_rebuilds_current_import_rows() -> TestResult {
     let index = WorkspaceIndex::new();
-    index.index_file_str(
+    index.index_initial_file_str(
         "file:///lib/First.pm",
         "package First;\nour @EXPORT = qw(first_sym);\n1;\n",
     )?;
-    index.index_file_str(
+    index.index_initial_file_str(
         "file:///lib/Second.pm",
         "package Second;\nour @EXPORT = qw(second_sym);\n1;\n",
     )?;
     let uri = "file:///script.pl";
-    index.index_file_str(uri, "package Main;\nuse First;\nfirst_sym();\n1;\n")?;
+    index.index_initial_file_str(uri, "package Main;\nuse First;\nfirst_sym();\n1;\n")?;
     index.remove_file(uri);
-    index.index_file_str(uri, "package Main;\nuse Second;\nsecond_sym();\n1;\n")?;
+    index.index_initial_file_str(uri, "package Main;\nuse Second;\nsecond_sym();\n1;\n")?;
 
     let visible = index
         .with_semantic_queries_for_uri(uri, |file_id, queries| {
