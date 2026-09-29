@@ -2466,14 +2466,17 @@ fn truncate_for_detail(text: &str, max_chars: usize) -> String {
 /// the plain form is expressible, and keeps the prefix only where dropping it
 /// would change which path is meant (#16662).
 ///
-/// Display-only. Canonicalized values stay extended in the `--json` surface and
-/// in every filesystem operation: the extended spelling is the lossless one,
-/// and this is the boundary that trades it for a pasteable one.
+/// Display-only, with one documented exception. No filesystem operation is
+/// affected and the `--doctor --json` path fields stay extended — the extended
+/// spelling is the lossless one. The one exception is the repository-root
+/// sentence in `RepoEntrypointsReport::note`, which is rendered here at
+/// construction rather than at the render boundary: it is prose, not a path
+/// field, so `--doctor --dev-environment --json` reports it in plain form too.
 fn display_path(path: &Path) -> String {
     display_path_text(&path.display().to_string())
 }
 
-/// Longest plain-namespace Windows path in characters, excluding the
+/// Longest plain-namespace Windows path in UTF-16 code units, excluding the
 /// terminator. Past this the Win32 layer truncates the plain spelling, which is
 /// the whole reason the extended form exists, so a longer path keeps its prefix.
 #[cfg(windows)]
@@ -2500,20 +2503,59 @@ fn display_path_text(text: &str) -> String {
     };
 
     // The extended namespace skips Win32 normalization, so an extended path may
-    // carry forward slashes, `.`/`..` components, a character the plain
-    // namespace rejects, or a length it cannot hold. Each of those makes the
+    // carry a component the plain namespace rewrites. Each of those makes the
     // plain form a *different* path, so keep the prefix and give up
     // pasteability rather than give up meaning.
-    if plain.chars().count() > MAX_PLAIN_PATH_CHARS
-        || plain.split(['\\', '/']).any(|component| component == "." || component == "..")
-        || plain
-            .chars()
-            .any(|ch| ch.is_control() || matches!(ch, '<' | '>' | '|' | '"' | '?' | '*'))
-    {
+    if !is_lossless_plain_form(&plain) {
         return text.to_string();
     }
 
     plain
+}
+
+/// Windows device names the plain namespace resolves as a device rather than a
+/// file, whatever directory they appear in. `NUL` and `trail.` are the two that
+/// actually occur: an object created through the extended namespace can bear
+/// either, and the plain spelling of both points somewhere else.
+#[cfg(windows)]
+const RESERVED_DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// Whether the plain (non-extended) namespace can express `plain` as the very
+/// same object the extended form names.
+///
+/// Each arm below is a plain-namespace rewrite that the extended namespace
+/// skips, so a path passing all of them is the one path where dropping the
+/// prefix costs pasteability and nothing else.
+#[cfg(windows)]
+fn is_lossless_plain_form(plain: &str) -> bool {
+    // Win32 counts a path in UTF-16 code units, so a non-BMP character spends
+    // two of the budget rather than one.
+    if plain.encode_utf16().count() > MAX_PLAIN_PATH_CHARS {
+        return false;
+    }
+    if plain.chars().any(|ch| ch.is_control() || matches!(ch, '<' | '>' | '|' | '"' | '?' | '*')) {
+        return false;
+    }
+
+    plain.split(['\\', '/']).all(|component| {
+        if component.is_empty() {
+            return true;
+        }
+        // The plain namespace resolves `.` and `..` before the filesystem sees
+        // them, and strips a trailing `.` or space from any other component.
+        if matches!(component, "." | "..") {
+            return false;
+        }
+        if component.ends_with('.') || component.ends_with(' ') {
+            return false;
+        }
+        // A device name matches on the stem, with or without an extension.
+        let stem = component.split('.').next().unwrap_or(component);
+        !RESERVED_DEVICE_NAMES.iter().any(|reserved| stem.eq_ignore_ascii_case(reserved))
+    })
 }
 
 /// True for an absolute `C:\`-anchored remainder, which is the only non-UNC
@@ -3720,6 +3762,13 @@ mod tests {
             .find(|line| line.starts_with("Workspace: "))
             .ok_or("doctor report has no Workspace line")?;
         assert_eq!(line, &format!("Workspace: {}", display_path(&PathBuf::from(&workspace_text))));
+        // The discriminating half, and the one the test is named for: it does
+        // not route the expectation back through the helper, so a helper that
+        // stopped simplifying anything would fail here rather than pass quietly.
+        assert!(
+            !line.contains(r"\\?\") && !rendered.contains(r"\\?\"),
+            "doctor report still prints an extended-length path; Workspace line was: {line}"
+        );
         Ok(())
     }
 
@@ -3744,6 +3793,68 @@ mod tests {
         ] {
             assert_eq!(display_path_text(text), text, "{text} has no lossless plain form");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_keeps_names_the_plain_namespace_rewrites() {
+        // Verified on this host: an object created through the extended
+        // namespace can bear a trailing `.`/space or a device name, and the
+        // plain spelling of either addresses something else. Stripping the
+        // prefix here would print a path that names a different object, which
+        // is worse than printing an unpasteable one.
+        for text in [
+            r"\\?\C:\code\trail.",
+            r"\\?\C:\code\trailing ",
+            r"\\?\C:\code\NUL",
+            r"\\?\C:\code\con.txt",
+            r"\\?\C:\code\COM1",
+            r"\\?\C:\code\LPT9.log",
+            r"\\?\UNC\share\aux",
+        ] {
+            assert_eq!(
+                display_path_text(text),
+                text,
+                "{text} would name a different object plainly"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_counts_the_length_budget_in_utf16_code_units() {
+        // The budget is UTF-16, not Unicode scalar values. The plain form below
+        // is `C:\` plus 129 astral characters: 132 scalar values, comfortably
+        // under the budget, but 261 UTF-16 code units, which is not.
+        let astra = "\u{1F600}".repeat(129);
+        let over_budget = format!(r"\\?\C:\{astra}");
+        let plain = &over_budget[4..];
+        assert!(
+            plain.chars().count() < MAX_PLAIN_PATH_CHARS,
+            "the case must be under the scalar-value count to be meaningful"
+        );
+        assert!(
+            plain.encode_utf16().count() > MAX_PLAIN_PATH_CHARS,
+            "the case must be over the budget in the unit Win32 actually counts"
+        );
+        assert_eq!(display_path_text(&over_budget), over_budget);
+
+        // The boundary itself, both sides: the plain form is `C:\` (3 units)
+        // plus the filler, so 256 units of filler lands exactly on 259.
+        let filler = |units: usize| format!(r"\\?\C:\{}", "d".repeat(units));
+        let at_budget = filler(MAX_PLAIN_PATH_CHARS - 3);
+        assert_eq!(
+            at_budget.len() - 4,
+            MAX_PLAIN_PATH_CHARS,
+            "the case must sit exactly on the budget"
+        );
+        assert_eq!(
+            display_path_text(&at_budget),
+            format!(r"C:\{}", "d".repeat(MAX_PLAIN_PATH_CHARS - 3))
+        );
+
+        let over_budget = filler(MAX_PLAIN_PATH_CHARS - 2);
+        assert_eq!(display_path_text(&over_budget), over_budget);
     }
 
     #[cfg(windows)]
