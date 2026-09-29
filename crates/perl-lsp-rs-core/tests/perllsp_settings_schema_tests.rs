@@ -519,10 +519,19 @@ fn workspace_keys_named_by(guide: &str, guide_name: &str) -> Result<Vec<String>,
     while let Some(offset) = guide[cursor..].find("\"workspace\"") {
         let after_key = cursor + offset + "\"workspace\"".len();
         let Some(open) = guide[after_key..].find('{').map(|index| after_key + index) else {
-            break;
+            // A prose mention with no example body: skip it and keep scanning
+            // rather than abandoning the rest of the document.
+            cursor = after_key;
+            continue;
         };
+        // An unbalanced brace must fail loudly. Stopping the scan here would
+        // silently under-report the remaining examples, which is the same
+        // vacuous-guard failure this test exists to prevent.
         let Some(close) = matching_json_brace(guide, open) else {
-            break;
+            return Err(std::io::Error::other(format!(
+                "{guide_name} contains a `\"workspace\"` example whose braces are unbalanced"
+            ))
+            .into());
         };
         let example = &guide[open..=close];
         let value: Value = serde_json::from_str(example).map_err(|error| {
