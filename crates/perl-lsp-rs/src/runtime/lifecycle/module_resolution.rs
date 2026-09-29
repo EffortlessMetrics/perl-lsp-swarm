@@ -14,8 +14,147 @@ use perl_module::{UseLibPath, resolve_use_lib_paths_from_source};
 use perl_parser_core::hir::{IncRootAction, lower_ast};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+const MODULE_AMBIGUITY_IDENTITY_CAP: usize = 128;
+const MODULE_AMBIGUITY_NAME_MAX_BYTES: usize = 256;
+const MODULE_AMBIGUITY_WORKER_CAP: usize = 4;
+
+/// Bounded, session-local observation state. Entries are pending or notified;
+/// a scan that cannot make a completed ambiguity claim releases its entry.
+#[derive(Default)]
+pub(crate) struct ModuleAmbiguityNoticeState {
+    identities: parking_lot::Mutex<HashSet<String>>,
+    in_flight: AtomicUsize,
+}
+
+struct ModuleAmbiguityReservation {
+    state: Arc<ModuleAmbiguityNoticeState>,
+    retained_name: Option<String>,
+    notified: bool,
+}
+
+impl ModuleAmbiguityNoticeState {
+    fn reserve(self: &Arc<Self>, name: &str) -> Option<ModuleAmbiguityReservation> {
+        let mut current = self.in_flight.load(Ordering::Relaxed);
+        loop {
+            if current >= MODULE_AMBIGUITY_WORKER_CAP {
+                return None;
+            }
+            match self.in_flight.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+
+        let mut retained_name = None;
+        if name.len() <= MODULE_AMBIGUITY_NAME_MAX_BYTES {
+            let mut identities = self.identities.lock();
+            if identities.contains(name) {
+                self.in_flight.fetch_sub(1, Ordering::Release);
+                return None;
+            }
+            if identities.len() < MODULE_AMBIGUITY_IDENTITY_CAP {
+                identities.insert(name.to_string());
+                retained_name = Some(name.to_string());
+            }
+        }
+        Some(ModuleAmbiguityReservation { state: Arc::clone(self), retained_name, notified: false })
+    }
+}
+
+impl Drop for ModuleAmbiguityReservation {
+    fn drop(&mut self) {
+        if !self.notified {
+            if let Some(name) = &self.retained_name {
+                self.state.identities.lock().remove(name);
+            }
+        }
+        self.state.in_flight.fetch_sub(1, Ordering::Release);
+    }
+}
+
+#[derive(Hash, PartialEq, Eq)]
+enum ReportedFileIdentity {
+    Physical(PathBuf),
+    Uri(String),
+}
+
+fn distinct_report_uris(report: &perl_module::ModuleUriCandidateReport) -> Vec<String> {
+    let mut seen = HashSet::new();
+    report
+        .candidates
+        .iter()
+        .filter_map(|candidate| {
+            let identity = url::Url::parse(&candidate.uri)
+                .ok()
+                .filter(|url| url.scheme() == "file")
+                .and_then(|url| url.to_file_path().ok())
+                .and_then(|path| std::fs::canonicalize(path).ok())
+                .map_or_else(
+                    || ReportedFileIdentity::Uri(candidate.uri.clone()),
+                    ReportedFileIdentity::Physical,
+                );
+            seen.insert(identity).then(|| candidate.uri.clone())
+        })
+        .collect()
+}
+
+struct ModuleAmbiguityObservation {
+    module_name: String,
+    selected: String,
+    open_document_uris: Vec<String>,
+    workspace_folder_uris: Vec<String>,
+    effective_roots: Vec<perl_module::IncRoot>,
+    timeout: Duration,
+    outbound: crate::runtime::outbound::WeakOutboundSender,
+    reservation: ModuleAmbiguityReservation,
+    #[cfg(test)]
+    probe_gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+}
+
+impl ModuleAmbiguityObservation {
+    fn run(mut self) {
+        #[cfg(test)]
+        if let Some((entered, resume)) = self.probe_gate.take() {
+            let _ = entered.send(());
+            let _ = resume.recv();
+        }
+        let report = collect_module_uri_candidates_with_effective_inc(
+            &self.module_name,
+            &self.open_document_uris,
+            &self.workspace_folder_uris,
+            &self.effective_roots,
+            self.timeout,
+        );
+        if report.timed_out
+            || report.candidates.first().is_none_or(|first| first.uri != self.selected)
+        {
+            return;
+        }
+        let distinct = distinct_report_uris(&report);
+        if distinct.len() < 2 {
+            return;
+        }
+        let shadowed = distinct.iter().skip(1).map(String::as_str).collect::<Vec<_>>().join(", ");
+        let message = format!(
+            "Module '{}' has multiple definition targets. Selected: {}; shadowed: {}",
+            report.module_name, self.selected, shadowed
+        );
+        let params = serde_json::json!({"type": MessageType::Info as i32, "message": message});
+        match self.outbound.send_notification("window/logMessage", params) {
+            Ok(()) => self.reservation.notified = true,
+            Err(error) => tracing::debug!(%error, "Module ambiguity notice unavailable"),
+        }
+    }
+}
 
 /// Runtime-owned cache for compiler-backed `use lib` recovery paths.
 ///
@@ -693,38 +832,43 @@ impl LspServer {
         };
 
         if for_definition {
-            let report = collect_module_uri_candidates_with_effective_inc(
+            // The request keeps the original first-hit path. Later roots may
+            // block inside filesystem metadata beyond the configured timeout.
+            let selected = match resolve_module_uri_with_effective_inc(
                 module_name,
                 &open_document_uris,
                 &workspace_folder_uris,
                 &context.effective_roots,
                 timeout,
-            );
-            let Some(first) = report.candidates.first() else {
-                if report.timed_out {
+            ) {
+                ModuleUriResolution::Resolved(uri) => uri,
+                ModuleUriResolution::TimedOut => {
                     tracing::warn!("Module resolution timeout for: {}", module_name);
+                    return None;
                 }
-                return None;
+                ModuleUriResolution::NotFound => return None,
             };
-            let selected = first.uri.clone();
-            if !report.timed_out && report.candidates.len() > 1 {
-                let mut shown = self.module_ambiguity_notices.lock();
-                if shown.insert(report.module_name.clone()) {
-                    drop(shown);
-                    let shadowed = report
-                        .candidates
-                        .iter()
-                        .skip(1)
-                        .map(|candidate| candidate.uri.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let message = format!(
-                        "Module '{}' has multiple definition targets. Selected: {}; shadowed: {}",
-                        report.module_name, selected, shadowed
-                    );
-                    if let Err(error) = self.log_message(MessageType::Info, &message) {
-                        tracing::warn!(%error, %message, "Failed to log module definition ambiguity");
-                    }
+
+            let canonical_name =
+                perl_module::module_path_to_name(&perl_module::module_name_to_path(module_name));
+            if let Some(reservation) = self.module_ambiguity_notices.reserve(&canonical_name) {
+                let observation = ModuleAmbiguityObservation {
+                    module_name: module_name.to_string(),
+                    selected: selected.clone(),
+                    open_document_uris,
+                    workspace_folder_uris,
+                    effective_roots: context.effective_roots,
+                    timeout,
+                    outbound: self.outbound.downgrade(),
+                    reservation,
+                    #[cfg(test)]
+                    probe_gate: self.module_ambiguity_probe_gate.lock().take(),
+                };
+                let spawn = std::thread::Builder::new()
+                    .name("module-ambiguity-observer".to_string())
+                    .spawn(move || observation.run());
+                if let Err(error) = spawn {
+                    tracing::debug!(%error, "Module ambiguity observer unavailable");
                 }
             }
             return Some(selected);
@@ -756,6 +900,128 @@ mod tests {
     use perl_module::build_effective_inc_roots;
     use std::fs;
 
+    #[test]
+    fn definition_returns_before_observation_and_drop_does_not_wait_for_probe() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let module_file = workspace.join("lib").join("Delayed.pm");
+        std::fs::create_dir_all(module_file.parent().ok_or("missing module parent")?)?;
+        std::fs::write(&module_file, "package Delayed; 1;\n")?;
+        let workspace_uri =
+            url::Url::from_file_path(&workspace).map_err(|_| "failed to create workspace URI")?;
+        let module_uri = url::Url::from_file_path(&module_file)
+            .map_err(|_| "failed to create module URI")?
+            .to_string();
+        let server = Arc::new(LspServer::new());
+        *server.workspace_folders.lock() =
+            vec![WorkspaceFolderState::new(workspace_uri.to_string()).with_path(workspace.clone())];
+        server.workspace_config.lock().include_paths = vec!["lib".to_string()];
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        *server.module_ambiguity_probe_gate.lock() = Some((entered_tx, resume_rx));
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let request_server = Arc::clone(&server);
+        let request = std::thread::spawn(move || {
+            let result = request_server.resolve_module_for_definition("Delayed", None, None, None);
+            let _ = result_tx.send(result);
+        });
+
+        let selected = result_rx.recv_timeout(Duration::from_secs(2));
+        let probe_entered = entered_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        if selected.is_err() || !probe_entered {
+            let _ = resume_tx.send(());
+        }
+        let _ = request.join();
+        if selected.as_ref().ok() != Some(&Some(module_uri)) || !probe_entered {
+            let _ = resume_tx.send(());
+            return Err(
+                "definition must return its first winner while the observer is blocked".into()
+            );
+        }
+
+        let state = Arc::clone(&server.module_ambiguity_notices);
+        let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            drop(server);
+            let _ = dropped_tx.send(());
+        });
+        let dropped_before_probe_resumed = dropped_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        let _ = resume_tx.send(());
+        let _ = dropper.join();
+        if !dropped_before_probe_resumed {
+            return Err("server drop waited for blocked ambiguity observer".into());
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while state.in_flight.load(Ordering::Acquire) != 0 && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        if state.in_flight.load(Ordering::Acquire) != 0 {
+            return Err("ambiguity observer did not release its in-flight slot".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ambiguity_notice_state_is_bounded_and_saturation_fails_open() -> TestResult {
+        let state = Arc::new(ModuleAmbiguityNoticeState::default());
+        for index in 0..MODULE_AMBIGUITY_IDENTITY_CAP {
+            let name = format!("Module{index}");
+            let mut reservation = state.reserve(&name).ok_or("failed to reserve module")?;
+            reservation.notified = true;
+        }
+        if state.identities.lock().len() != MODULE_AMBIGUITY_IDENTITY_CAP {
+            return Err("retained module identities exceeded or missed the cap".into());
+        }
+        let overflow = state.reserve("Overflow");
+        if !overflow.as_ref().is_some_and(|entry| entry.retained_name.is_none()) {
+            return Err("a saturated table must observe without retaining a new identity".into());
+        }
+        drop(overflow);
+        if state.identities.lock().len() != MODULE_AMBIGUITY_IDENTITY_CAP {
+            return Err("overflow observation changed retained identity count".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn reporting_collapses_symlink_alias_without_changing_selected_uri() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let real_root = temp.path().join("real");
+        let linked_root = temp.path().join("linked");
+        std::fs::create_dir_all(&real_root)?;
+        std::fs::write(real_root.join("Alias.pm"), "package Alias; 1;\n")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_root, &linked_root)?;
+        #[cfg(windows)]
+        if let Err(error) = std::os::windows::fs::symlink_dir(&real_root, &linked_root) {
+            eprintln!("SKIP: directory symlink unavailable on this Windows host: {error}");
+            return Ok(());
+        }
+        let alias_uri = url::Url::from_file_path(linked_root.join("Alias.pm"))
+            .map_err(|_| "failed alias URI")?
+            .to_string();
+        let report = collect_module_uri_candidates_with_effective_inc(
+            "Alias",
+            &[alias_uri.clone()],
+            &[],
+            &[perl_module::IncRoot {
+                kind: IncRootKind::ExternalAbsolute,
+                path: real_root,
+                precedence: 0,
+                source: "real".to_string(),
+            }],
+            Duration::from_secs(1),
+        );
+        if report.candidates.len() != 2 {
+            return Err("fixture must expose two URI aliases".into());
+        }
+        if distinct_report_uris(&report) != vec![alias_uri] {
+            return Err("reporting did not collapse the physical file alias".into());
+        }
+        Ok(())
+    }
     // --- workspace root detection warning tests ---
 
     /// When root_path is None, resolve_module_path must return None without panicking.

@@ -1952,7 +1952,7 @@ impl LspServer {
                             return Ok(Some(json!([lsp_location])));
                         }
 
-                        if let Some(module_path) = self.resolve_module_for_definition(
+                        if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
                             &module_ref.module_name,
                             Some(&doc_text),
                             Some(uri),

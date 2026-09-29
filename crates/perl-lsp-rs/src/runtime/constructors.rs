@@ -132,7 +132,9 @@ impl LspServer {
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
             core_module_notice_shown: Arc::new(AtomicBool::new(false)),
-            module_ambiguity_notices: Mutex::new(HashSet::new()),
+            module_ambiguity_notices: Arc::new(Default::default()),
+            #[cfg(test)]
+            module_ambiguity_probe_gate: Mutex::new(None),
 
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
@@ -332,7 +334,9 @@ impl LspServer {
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
             core_module_notice_shown: Arc::new(AtomicBool::new(false)),
-            module_ambiguity_notices: Mutex::new(HashSet::new()),
+            module_ambiguity_notices: Arc::new(Default::default()),
+            #[cfg(test)]
+            module_ambiguity_probe_gate: Mutex::new(None),
 
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
@@ -473,7 +477,9 @@ impl LspServer {
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
             core_module_notice_shown: Arc::new(AtomicBool::new(false)),
-            module_ambiguity_notices: Mutex::new(HashSet::new()),
+            module_ambiguity_notices: Arc::new(Default::default()),
+            #[cfg(test)]
+            module_ambiguity_probe_gate: Mutex::new(None),
 
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
