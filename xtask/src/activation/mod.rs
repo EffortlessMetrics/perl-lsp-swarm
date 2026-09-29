@@ -1,16 +1,22 @@
-//! Versioned activation inventory: schema, deterministic generation from
-//! existing repository authorities, and fail-closed validation (#9204).
+//! Versioned activation inventory (#9204) and fail-closed class-contract
+//! checking (#9205).
 //!
-//! This module only builds and validates the inventory. It does not
-//! implement activation *checking* semantics (`check`/`report`/`explain`
-//! belong to #9205) and does not change any runtime behavior.
+//! Generation and validation classify surfaces. Checking evaluates each
+//! classified row against its class connection requirements. Neither step
+//! changes runtime product behavior.
 
+mod check;
 mod derive;
 mod model;
 mod overrides;
 mod render;
 mod validate;
 
+pub use check::{
+    CHECK_SCHEMA, CONTROLLING_ISSUE as CHECK_CONTROLLING_ISSUE, CheckReport, RowFinding, Verdict,
+    check, evaluate_inventory, evaluate_raw_row, evaluate_row, explain, render_report,
+    report_to_json,
+};
 pub use derive::{UNOWNED, derived_class_index};
 pub use model::{
     ActivationClass, ActivationError, ActivationInventory, ActivationRow, INVENTORY_PATH,

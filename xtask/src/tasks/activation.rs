@@ -1,12 +1,12 @@
-//! `cargo xtask activation` — versioned activation inventory (#9204).
+//! `cargo xtask activation` — classified inventory (#9204) and fail-closed
+//! class-contract checking (#9205).
 //!
-//! Generates and validates a deterministic classified catalog of product,
-//! preview, compatibility-shim, test-api, lab, oracle, benchmark, and gate
-//! surfaces. Does not implement activation checking (`check`/`report`/
-//! `explain` belong to #9205) and does not change runtime behavior.
+//! `generate` / `validate` / `list` own classification. `check` / `report` /
+//! `explain` evaluate each row against its class connection requirements.
+//! Direct Cargo dependency membership is topology evidence only.
 
 use crate::utils::project_root;
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Result, bail, eyre};
 use xtask::activation;
 
 #[derive(clap::Subcommand, Debug)]
@@ -24,6 +24,19 @@ pub enum ActivationSubcommand {
     Validate,
     /// Deterministic reviewer-readable rendering to stdout.
     List,
+    /// Fail closed when any row misses its class connection contract.
+    Check,
+    /// Print the class-contract evaluation for every row.
+    Report {
+        /// Emit JSON instead of the reviewer-readable report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the class-contract evaluation for one surface id.
+    Explain {
+        /// Surface id from the inventory (for example `feature:lsp.hover`).
+        id: String,
+    },
 }
 
 pub fn run(command: ActivationSubcommand) -> Result<()> {
@@ -51,6 +64,40 @@ pub fn run(command: ActivationSubcommand) -> Result<()> {
             // rows the ledger cannot justify as if they were settled.
             let inventory = activation::validate(&root).map_err(|error| eyre!("{error}"))?;
             print!("{}", activation::render_list(&inventory));
+        }
+        ActivationSubcommand::Check => {
+            let report = activation::check(&root).map_err(|error| eyre!("{error}"))?;
+            print!("{}", activation::render_report(&report));
+            if !report.is_clean() {
+                bail!(
+                    "activation check failed: {} row(s) missed their class contract",
+                    report.failed
+                );
+            }
+        }
+        ActivationSubcommand::Report { json } => {
+            let report = activation::check(&root).map_err(|error| eyre!("{error}"))?;
+            if json {
+                println!(
+                    "{}",
+                    activation::report_to_json(&report).map_err(|error| eyre!("{error}"))?
+                );
+            } else {
+                print!("{}", activation::render_report(&report));
+            }
+            if !report.is_clean() {
+                bail!(
+                    "activation check failed: {} row(s) missed their class contract",
+                    report.failed
+                );
+            }
+        }
+        ActivationSubcommand::Explain { id } => {
+            let finding = activation::explain(&root, &id).map_err(|error| eyre!("{error}"))?;
+            println!("{}", serde_json::to_string_pretty(&finding)?);
+            if finding.is_fail() {
+                bail!("activation surface `{id}` failed its class contract");
+            }
         }
     }
     Ok(())
