@@ -866,6 +866,16 @@ fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParse
     while index < args.len() {
         let token = args[index].to_string_lossy();
 
+        // Operands after a bare `--` are positional file paths, not flags.
+        // clap's `--check` `trailing_var_arg` already treats that region as
+        // files; walking it here would reclassify a filename that happens to
+        // match a prevalidated option (`--diagnostic-debounce-ms`, `--port`,
+        // `--mcp`, …) as a missing or invalid value. The identity surface
+        // already honors the same terminator in `product_identity.rs`.
+        if token == "--" {
+            break;
+        }
+
         if token == "--mcp" || token.starts_with("--mcp=") {
             return Err(LaunchParseError::McpAliasRejected);
         }
@@ -1898,6 +1908,39 @@ mod tests {
     fn parse_check_flag_sets_check_action() {
         let plan = must(parse_args(["perl-lsp", "--check"]));
         assert_eq!(plan.action, LaunchAction::Check);
+    }
+
+    /// Class-level falsifier for the prevalidate walker vs the `--` terminator.
+    ///
+    /// Every option `prevalidate_cli_values` currently owns can be a legal
+    /// `--check` filename after `--`. If the walker keeps scanning past the
+    /// terminator, these invocations fail as missing/invalid option values
+    /// instead of becoming `LaunchAction::Check` with that file.
+    #[test]
+    fn check_mode_flag_shaped_filenames_after_terminator_are_files_not_options() {
+        for filename in [
+            "--diagnostic-debounce-ms",
+            "--diagnostic-debounce-ms=abc",
+            "--port",
+            "--port=abc",
+            "--mcp",
+            "--mcp=1",
+            "--completion",
+            "--feature-profile",
+            "--feature-profile=",
+        ] {
+            let plan = must(parse_args(["perl-lsp", "--check", "--", filename]));
+            assert_eq!(plan.action, LaunchAction::Check, "filename={filename}");
+            assert_eq!(plan.files, vec![filename.to_string()], "filename={filename}");
+        }
+
+        // The flag region is unchanged: the same tokens before `--` still
+        // validate as the option.
+        let error = must_err(parse_args(["perl-lsp", "--diagnostic-debounce-ms", "abc"]));
+        assert!(
+            matches!(&error, LaunchParseError::InvalidDiagnosticDebounceMs { raw_value, .. } if raw_value == "abc"),
+            "expected a typed debounce rejection, got {error:?}"
+        );
     }
 
     // ── --completion flag ─────────────────────────────────────────
