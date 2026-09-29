@@ -594,29 +594,32 @@ impl LspServer {
             i64::from(id.as_i32()),
             init_options_perl.as_ref(),
         );
-        let changed_folder_uris: HashSet<String> = folders
-            .iter()
-            .filter(|folder| {
-                previous_include_paths.get(&folder.uri)
-                    != Some(&folder.effective_workspace_config.include_paths)
-            })
-            .map(|folder| folder.uri.clone())
-            .collect();
+        let include_paths_changed = folders.iter().any(|folder| {
+            previous_include_paths.get(&folder.uri)
+                != Some(&folder.effective_workspace_config.include_paths)
+        });
         drop(init_options_perl);
         drop(folders);
         self.refresh_project_metadata_facts(&metadata_roots);
 
         // A null didChangeConfiguration only invalidates the scoped pull; it
         // intentionally leaves each folder's current config intact. Once the
-        // response changes include paths, refresh open-document consumers.
-        if !changed_folder_uris.is_empty() {
+        // response changes include paths, refresh all open documents: every
+        // folder's paths can contribute fallback module roots to another.
+        if include_paths_changed {
             self.invalidate_workspace_identity();
-            let open_uris: Vec<String> = self.documents.lock().keys().cloned().collect();
-            for open_uri in open_uris.into_iter().filter(|uri| {
-                self.folder_for_doc_uri(uri)
-                    .is_some_and(|folder| changed_folder_uris.contains(&folder.uri))
-            }) {
-                self.publish_diagnostics_debounced(&open_uri);
+            if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+                // Pull diagnostics do not use the push publication path. Ask
+                // after every accepted change; a leading-edge debounce can
+                // lose a second change while the client still has old reports.
+                if let Err(error) = self.request_diagnostic_refresh() {
+                    tracing::warn!(%error, "Failed to refresh pull diagnostics after include paths changed");
+                }
+            } else {
+                let open_uris: Vec<String> = self.documents.lock().keys().cloned().collect();
+                for open_uri in open_uris {
+                    self.publish_diagnostics_debounced(&open_uri);
+                }
             }
         }
     }
@@ -1687,7 +1690,12 @@ impl LspServer {
     /// Updates both ServerConfig and WorkspaceConfig when the client
     /// notifies of configuration changes.
     pub(super) fn handle_did_change_configuration(&self, params: Option<Value>) {
-        self.invalidate_workspace_identity();
+        // A null payload is only a request to re-pull scoped settings. It has
+        // not changed accepted configuration, so in-flight diagnostics remain
+        // current until the response installs a changed include-path layer.
+        if !params.as_ref().and_then(|params| params.get("settings")).is_some_and(Value::is_null) {
+            self.invalidate_workspace_identity();
+        }
         if let Some(params) = params
             && let Some(settings) = params.get("settings")
         {
@@ -2699,6 +2707,12 @@ impl LspServer {
             }
 
             drop(_indexing_transition);
+
+            // The old reverse request was discarded with the old topology.
+            // Pull the new folder set only after its local config is published.
+            if config_complete {
+                self.request_workspace_configuration_for_folders();
+            }
 
             // Pull-capable clients will receive the refresh request below. A
             // push-only client has no refresh protocol, so retry diagnostics
@@ -4209,7 +4223,7 @@ mod tests {
     }
 
     #[test]
-    fn null_invalidation_preserves_two_roots_until_scoped_pull_and_refreshes_changed_root()
+    fn null_invalidation_preserves_two_roots_until_scoped_pull_and_refreshes_fallback_consumers()
     -> Result<(), Box<dyn std::error::Error>> {
         let verify =
             |condition: bool, message: &'static str| -> Result<(), Box<dyn std::error::Error>> {
@@ -4219,8 +4233,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let a_path = temp.path().join("a");
         let b_path = temp.path().join("b");
+        let outside_path = temp.path().join("outside");
         std::fs::create_dir_all(&a_path)?;
         std::fs::create_dir_all(&b_path)?;
+        std::fs::create_dir_all(&outside_path)?;
         std::fs::create_dir_all(a_path.join("new-lib"))?;
         std::fs::write(
             a_path.join("new-lib").join("FolderScopedOnlyA.pm"),
@@ -4235,6 +4251,9 @@ mod tests {
             .to_string();
         let b_doc = url::Url::from_file_path(b_path.join("main.pl"))
             .map_err(|_| "invalid B document URI")?
+            .to_string();
+        let outside_doc = url::Url::from_file_path(outside_path.join("main.pl"))
+            .map_err(|_| "invalid outside document URI")?
             .to_string();
         let is_doc = |message: &Value, uri: &str| {
             message.pointer("/params/uri").and_then(Value::as_str).is_some_and(|actual| {
@@ -4254,7 +4273,7 @@ mod tests {
         {
             let mut folders = server.workspace_folders.lock();
             for (uri, path, include_path) in
-                [(a_uri.clone(), a_path, "lib-a"), (b_uri.clone(), b_path, "lib-b")]
+                [(a_uri.clone(), a_path.clone(), "lib-a"), (b_uri.clone(), b_path, "lib-b")]
             {
                 let mut folder = super::WorkspaceFolderState::new(uri).with_path(path);
                 folder.effective_workspace_config.include_paths = vec![include_path.to_string()];
@@ -4263,12 +4282,14 @@ mod tests {
         }
         server.test_apply_did_open(&a_doc, "use FolderScopedOnlyA;\n", 1)?;
         server.test_apply_did_open(&b_doc, "use FolderScopedOnlyA;\n", 1)?;
+        server.test_apply_did_open(&outside_doc, "use FolderScopedOnlyA;\n", 1)?;
         server.publish_diagnostics(&a_doc);
         server.publish_diagnostics(&b_doc);
+        server.publish_diagnostics(&outside_doc);
         server.client_capabilities.lock().workspace_configuration_support = true;
         server.initialized.store(true, Ordering::Release);
 
-        // Diagnostics compute off-lock. Observe both initial missing-module
+        // Diagnostics compute off-lock. Observe all initial missing-module
         // publications and a short quiet interval before measuring the pull.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let mut last_len = 0;
@@ -4279,7 +4300,7 @@ mod tests {
                 last_len = observed.len();
                 stable_since = std::time::Instant::now();
             }
-            let both_missing = [&a_doc, &b_doc].iter().all(|doc| {
+            let all_missing = [&a_doc, &b_doc, &outside_doc].iter().all(|doc| {
                 observed.iter().any(|message| {
                     message.get("method").and_then(Value::as_str)
                         == Some("textDocument/publishDiagnostics")
@@ -4294,7 +4315,7 @@ mod tests {
                             })
                 })
             });
-            if both_missing && stable_since.elapsed() >= std::time::Duration::from_millis(50) {
+            if all_missing && stable_since.elapsed() >= std::time::Duration::from_millis(50) {
                 break;
             }
             if std::time::Instant::now() >= deadline {
@@ -4304,7 +4325,12 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        let before_invalidation = server.workspace_identity_generation.load(Ordering::SeqCst);
         server.test_handle_did_change_configuration(Some(json!({ "settings": null })));
+        verify(
+            server.workspace_identity_generation.load(Ordering::SeqCst) == before_invalidation,
+            "null invalidation must not reject unchanged in-flight diagnostics",
+        )?;
         verify(
             server.config_for_doc(&a_doc).ok_or("A config missing")?.include_paths
                 == vec!["lib-a".to_string()],
@@ -4351,13 +4377,25 @@ mod tests {
                 == vec!["lib-b".to_string()],
             "A's scoped pull changed B's include paths",
         )?;
+        verify(
+            server.workspace_identity_generation.load(Ordering::SeqCst) > before_invalidation,
+            "changed scoped include paths must invalidate diagnostic identity",
+        )?;
+        for doc in [&b_doc, &outside_doc] {
+            verify(
+                server.include_paths_for_doc(doc).contains(&a_path.join("new-lib")),
+                "other folders and folderless documents must see A's fallback include path",
+            )?;
+        }
         let refresh_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let refreshed = loop {
             let observed = output.messages()?;
-            if observed.iter().skip(invalidated.len()).any(|message| {
-                message.get("method").and_then(Value::as_str)
-                    == Some("textDocument/publishDiagnostics")
-                    && is_doc(message, &a_doc)
+            if [&a_doc, &b_doc, &outside_doc].iter().all(|doc| {
+                observed.iter().skip(invalidated.len()).any(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("textDocument/publishDiagnostics")
+                        && is_doc(message, doc)
+                })
             }) {
                 break observed;
             }
@@ -4377,10 +4415,6 @@ mod tests {
             })
             .collect();
         verify(
-            new_diagnostics.iter().any(|message| is_doc(message, &a_doc)),
-            "changed root A must republish diagnostics",
-        )?;
-        verify(
             new_diagnostics.iter().filter(|message| is_doc(message, &a_doc)).all(|message| {
                 message.pointer("/params/diagnostics").and_then(Value::as_array).is_some_and(
                     |diagnostics| {
@@ -4390,12 +4424,25 @@ mod tests {
                     },
                 )
             }),
-            "A's new include path must resolve its module",
+            "A's new include path must resolve its own module",
         )?;
-        verify(
-            new_diagnostics.iter().all(|message| !is_doc(message, &b_doc)),
-            "unchanged root B must not republish diagnostics",
-        )?;
+        // Push diagnostics use a narrower per-document @INC than the shared
+        // include_paths_for_doc fallback; republishing B and a folderless
+        // document does not make their missing-module warnings disappear.
+        for doc in [&b_doc, &outside_doc] {
+            verify(
+                new_diagnostics.iter().filter(|message| is_doc(message, doc)).any(|message| {
+                    message.pointer("/params/diagnostics").and_then(Value::as_array).is_some_and(
+                        |diagnostics| {
+                            diagnostics
+                                .iter()
+                                .any(|diagnostic| diagnostic.get("code") == Some(&json!("PL701")))
+                        },
+                    )
+                }),
+                "fallback consumer must be republished with its diagnostic policy",
+            )?;
+        }
 
         // One VS Code event can change Critic and includePaths together. The
         // session-only push must not rebuild either folder before its pull.
@@ -4412,6 +4459,64 @@ mod tests {
                 == vec!["lib-b".to_string()],
             "Critic-only push rebuilt B's include paths",
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn pull_diagnostics_refresh_after_each_accepted_include_path_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let temp = tempfile::tempdir()?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|_| "invalid workspace URI")?
+            .to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(super::WorkspaceFolderState::new(uri).with_path(temp.path().to_path_buf()));
+        {
+            let mut capabilities = server.client_capabilities.lock();
+            capabilities.workspace_configuration_support = true;
+            capabilities.diagnostic_refresh_support = true;
+        }
+        server.client_supports_pull_diags.store(true, Ordering::Release);
+        server.initialized.store(true, Ordering::Release);
+
+        for include_path in ["first-lib", "second-lib"] {
+            server.request_workspace_configuration_for_folders();
+            let request_id = server
+                .pending_workspace_configuration_requests
+                .lock()
+                .keys()
+                .next()
+                .copied()
+                .ok_or("scoped request missing")?;
+            server.handle_client_response(Some(json!({
+                "id": request_id.as_i32(),
+                "result": [{}, { "workspace": { "includePaths": [include_path] } }]
+            })));
+        }
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let observed = output.messages()?;
+            let refresh_count = observed
+                .iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("workspace/diagnostic/refresh")
+                })
+                .count();
+            if refresh_count == 2 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "expected one pull diagnostic refresh per accepted change, saw {refresh_count}: {observed:?}"
+                ).into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         Ok(())
     }
 
@@ -4665,6 +4770,105 @@ mod tests {
             server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst),
             "a completed folder/configuration transition publishes stable authority"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn added_folder_repulls_scoped_configuration_and_ignores_old_response()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let temp = tempfile::tempdir()?;
+        let a_path = temp.path().join("a");
+        let b_path = temp.path().join("b");
+        std::fs::create_dir_all(&a_path)?;
+        std::fs::create_dir_all(&b_path)?;
+        let a_uri =
+            url::Url::from_directory_path(&a_path).map_err(|_| "invalid A URI")?.to_string();
+        let b_uri =
+            url::Url::from_directory_path(&b_path).map_err(|_| "invalid B URI")?.to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(super::WorkspaceFolderState::new(a_uri.clone()).with_path(a_path));
+        server.client_capabilities.lock().workspace_configuration_support = true;
+        server.initialized.store(true, Ordering::Release);
+        let wait_for_pulls = |count: usize| -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let observed = output.messages()?;
+                let pulls = observed
+                    .iter()
+                    .filter(|message| {
+                        message.get("method").and_then(Value::as_str)
+                            == Some("workspace/configuration")
+                    })
+                    .count();
+                if pulls >= count {
+                    return Ok(observed);
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!("expected {count} scoped pulls, saw {observed:?}").into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        server.request_workspace_configuration_for_folders();
+        let first = wait_for_pulls(1)?;
+        let old_id = first
+            .iter()
+            .find(|message| {
+                message.get("method").and_then(Value::as_str) == Some("workspace/configuration")
+            })
+            .and_then(|message| message.get("id"))
+            .ok_or("initial scoped request missing")?
+            .clone();
+
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [{ "uri": b_uri, "name": "b" }], "removed": [] }
+        })))?;
+        let after = wait_for_pulls(2)?;
+        let new_request = after
+            .iter()
+            .rev()
+            .find(|message| {
+                message.get("method").and_then(Value::as_str) == Some("workspace/configuration")
+            })
+            .ok_or("topology change did not repull scoped configuration")?;
+        let new_id = new_request.get("id").ok_or("new scoped request id missing")?;
+        if new_id == &old_id
+            || new_request.pointer("/params/items/1/scopeUri") != Some(&json!(a_uri))
+            || new_request.pointer("/params/items/2/scopeUri") != Some(&json!(b_uri))
+        {
+            return Err(
+                format!("new scoped request did not cover both roots: {new_request}").into()
+            );
+        }
+
+        server.handle_client_response(Some(json!({
+            "id": old_id,
+            "result": [{}, { "workspace": { "includePaths": ["stale-a"] } }]
+        })));
+        if server
+            .config_for_doc(&a_uri)
+            .ok_or("A config missing")?
+            .include_paths
+            .contains(&"stale-a".to_string())
+        {
+            return Err("stale pre-transition response changed A".into());
+        }
+        server.handle_client_response(Some(json!({
+            "id": new_id,
+            "result": [
+                {},
+                {},
+                { "workspace": { "includePaths": ["new-b"] } }
+            ]
+        })));
+        if server.config_for_doc(&b_uri).ok_or("B config missing")?.include_paths
+            != vec!["new-b".to_string()]
+        {
+            return Err("new folder did not receive its scoped include paths".into());
+        }
         Ok(())
     }
 
