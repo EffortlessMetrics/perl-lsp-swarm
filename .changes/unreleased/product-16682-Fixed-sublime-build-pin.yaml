@@ -1,7 +1,14 @@
 project: product
 component: Developer experience
 kind: Fixed
-body: "The Sublime real-host exact-source lane went uniformly red on 2026-09-21: its pinned UnitTesting setup action accepts only `sublime-text-version: 3|4` and resolves the actual build by scraping the live sublimetext.com download page, so when upstream floated past build 4200 to 4213/4215 (python-3.13/3.14 plugin host replacing python-3.8), the pinned LSP 2.13.0 window registry stopped populating and every leg failed with `windows.lookup() -> None` before a single test ran (#16388). The workflow now replaces the floating install with the exact 4200 artifacts on all three legs, each digest-verified, restoring the last-green python-3.8 host era every other pinned input (UnitTesting action SHA, LSP 4070-2.13.0, the python-3.8-era typing_extensions vendor) was chosen for."
+body: >-
+  The Sublime real-host exact-source lane now runs on digest-verified Sublime
+  Text build 4200 on all three platforms. A controlled 4200/4213 comparison
+  traced the newer host's zero-test failure to pinned typing_extensions 4.7.1:
+  under Python 3.14, its ParamSpec initialization raises an AttributeError
+  before LSP enables the window registry (#16388). The setup action still
+  downloads the latest ST4 build before the workflow replaces that install;
+  this pin fixes the build used for the test journey.
 time: 2026-09-28T00:00:00Z
 custom:
   PR: "16682"
