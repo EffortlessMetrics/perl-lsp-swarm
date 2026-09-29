@@ -129,10 +129,10 @@ mod tests {
 
     // Type-level negative controls: no numeric or client-domain substitution,
     // bare ordering, or durable serialization is available to consumers.
-    static_assertions::assert_not_impl_any!(DocumentGeneration: Ord, PartialOrd, From<u64>, From<ClientDocumentVersion>);
-    static_assertions::assert_not_impl_any!(DocumentRevision: Ord, PartialOrd, From<u64>, From<ClientDocumentVersion>, serde::Serialize);
-    static_assertions::assert_not_impl_any!(OpenDocumentInstanceId: From<u64>, serde::Serialize);
-    static_assertions::assert_not_impl_any!(RevisionObservation: serde::Serialize);
+    static_assertions::assert_not_impl_any!(DocumentGeneration: Ord, PartialOrd, From<u64>, From<ClientDocumentVersion>, serde::Serialize, serde::Deserialize<'static>);
+    static_assertions::assert_not_impl_any!(DocumentRevision: Ord, PartialOrd, From<u64>, From<ClientDocumentVersion>, serde::Serialize, serde::Deserialize<'static>);
+    static_assertions::assert_not_impl_any!(OpenDocumentInstanceId: From<u64>, serde::Serialize, serde::Deserialize<'static>);
+    static_assertions::assert_not_impl_any!(RevisionObservation: serde::Serialize, serde::Deserialize<'static>);
     #[cfg(feature = "incremental")]
     static_assertions::assert_not_impl_any!(DocumentGeneration: From<perl_parser::incremental::ParseGeneration>);
     #[cfg(feature = "incremental")]
