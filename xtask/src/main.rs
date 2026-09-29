@@ -61,7 +61,8 @@ use tasks::{
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
+    queue_health, queue_snapshot, quickorm_api_matrix, readiness_rehearsal_hosted, receipts,
+    release, release_artifact_check,
     release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
     release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
     semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
@@ -1791,6 +1792,14 @@ enum Commands {
     NativeTooling {
         #[command(subcommand)]
         command: NativeToolingCommand,
+    },
+
+    /// Hosted no-publish readiness rehearsal matrix (#16788).
+    /// Distinct from `native-tooling readiness` (default-cutover status).
+    #[command(name = "readiness-rehearsal")]
+    ReadinessRehearsal {
+        #[command(subcommand)]
+        command: readiness_rehearsal_hosted::ReadinessRehearsalCommand,
     },
 
     /// Evaluate Perl distribution Kwalitee indicators (measurable
@@ -6817,6 +6826,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 })
             }
         },
+        Commands::ReadinessRehearsal { command } => readiness_rehearsal_hosted::run(command),
         Commands::PerlKwalitee { command } => match command {
             PerlKwaliteeCommand::Check { profile, dist, strict, repo_root } => {
                 perl_kwalitee::check(profile, dist, strict, repo_root)

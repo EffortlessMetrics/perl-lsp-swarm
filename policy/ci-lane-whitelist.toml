@@ -1338,3 +1338,25 @@ expensive = false
 duplicate_of = []
 review_after = "2027-03-20"
 expires = "2027-09-20"
+
+[[lane]]
+id = "readiness_rehearsal_hosted"
+workflow = ".github/workflows/readiness-rehearsal-hosted.yml"
+job = "fanin"
+tier = "on-demand"
+kind = "release"
+blocking = false
+default_pr = false
+runner = "mixed"
+base_lem = 35
+owner = "release/ci"
+intent = "Run the repository-owned no-publish rehearsal on the admitted Linux/Windows/macOS hosted matrix without becoming a required PR gate (#16788)."
+failure_mode = "Hosted rehearsal rows silently reuse another run/attempt/subject artifact, drop cancelled producers, or encode product verdicts in workflow YAML."
+proof_obligation = "cargo test -p xtask --all-targets --locked readiness_rehearsal_hosted"
+evidence = ["target/readiness/hosted/fanin.json", "target/readiness/hosted/row/row.json"]
+allowed_triggers = ["workflow_dispatch"]
+expensive = true
+expensive_reason = "Three native hosted OS rows analogous to vscode_smoke_matrix; product-stage cost lands with #16786/#16787."
+duplicate_of = []
+review_after = "2026-12-29"
+expires = "2027-03-29"

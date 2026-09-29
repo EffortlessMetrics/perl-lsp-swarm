@@ -327,3 +327,15 @@ default_pr = false
 blocking = false
 labels = []
 duplicate_of = []
+
+[lane.readiness_rehearsal_hosted]
+description = "Manual no-publish readiness rehearsal on the admitted Linux/Windows/macOS hosted matrix."
+intent = "hosted no-publish rehearsal routing"
+workflow = ".github/workflows/readiness-rehearsal-hosted.yml"
+job = "fanin"
+runner = "mixed"
+base_lem = 35
+default_pr = false
+blocking = false
+labels = []
+duplicate_of = []
