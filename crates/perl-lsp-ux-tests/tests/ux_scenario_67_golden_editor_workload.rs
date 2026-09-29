@@ -1055,13 +1055,13 @@ fn run_project_workload(
                 (rename_cursor, result, edits, readiness_state_for(initial_readiness))
             }
             "diagnostics_present_import" => {
-                let diagnostics = perl_lsp_ux_tests::wait_with_subject(
+                let diagnostics = capture(perl_lsp_ux_tests::wait_with_subject(
                     &format!("diagnostics for {}", &project.active_file),
                     harness.wait_for_diagnostics(&project.active_file, Duration::from_secs(5)),
-                )?;
+                ));
                 (
                     CursorReceipt { line: 0, character: 0 },
-                    json!(diagnostics),
+                    diagnostics,
                     Value::Null,
                     readiness_state_for(initial_readiness),
                 )
@@ -1103,6 +1103,8 @@ fn run_project_workload(
             other => return Err(anyhow!("unhandled golden workload journey {other}")),
         };
         let request_latency_ms = request_started.elapsed().as_secs_f64() * 1000.0;
+        let diagnostics_wait_failed =
+            journey.id == "diagnostics_present_import" && response.get("_golden_error").is_some();
 
         let row = response_row(
             project,
@@ -1116,6 +1118,10 @@ fn run_project_workload(
         )?;
         let row = if journey.provider == "lifecycle" {
             apply_lifecycle_receipt(row)
+        } else if diagnostics_wait_failed {
+            // The wait error is already the row's blocker; a failed stream
+            // cannot provide a second explanation without losing this row.
+            row
         } else {
             let receipt_id = format!(
                 "golden_{project_name}_{journey_id}",

@@ -1169,9 +1169,10 @@ impl UxHarness {
         timeout: Duration,
     ) -> Result<Vec<Value>> {
         self.change_file_full(relative_path, updated_content)?;
-        self.wait_for_diagnostics(relative_path, timeout).map_err(|end| {
-            anyhow!("waiting for diagnostics for {relative_path}: {}", end.describe())
-        })
+        wait_with_subject(
+            &format!("diagnostics for {relative_path}"),
+            self.wait_for_diagnostics(relative_path, timeout),
+        )
     }
 
     /// Normalize LSP payloads for platform-stable expectations.
