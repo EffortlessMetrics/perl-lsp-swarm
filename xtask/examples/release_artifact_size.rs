@@ -87,8 +87,9 @@ struct Args {
 
     /// Previous same-subject `release_artifact_size.v1` receipt. This is the
     /// only way to confirm a 0.5%–1.0% combined reduction: the instrument
-    /// verifies target, source SHA, lock digest, flags, and policy itself. A
-    /// dispatcher checkbox is not a second measurement.
+    /// verifies target, source SHA, lock digest, flags, policy, a valid first
+    /// measurement, and a distinct `GITHUB_RUN_ID`. A dispatcher checkbox is
+    /// not a second measurement.
     #[arg(long)]
     prior_receipt: Option<PathBuf>,
 
@@ -254,6 +255,7 @@ fn evaluate(root: &Path, args: &Args) -> Result<Receipt> {
                     &subject.cargo_lock_sha256,
                     &args.candidate_rustflags,
                     &policy,
+                    &subject.environment,
                     &prior,
                 ) {
                     Ok(()) => true,
