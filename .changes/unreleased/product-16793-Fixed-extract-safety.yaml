@@ -1,7 +1,7 @@
 project: product
 component: Language intelligence
 kind: Fixed
-body: "Withhold the unsafe basic Extract to function action for blocks whose lexical captures or control-flow braces cannot be preserved; supported enhanced subroutine extraction remains available."
+body: "Withhold the basic Extract to function fallback for all blocks because it cannot prove lexical-capture and brace safety; supported enhanced subroutine extraction remains available for admitted selections."
 time: 2026-09-29T02:09:02Z
 custom:
   PR: "16793"
