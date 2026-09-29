@@ -498,6 +498,8 @@ pub struct LspServer {
     /// rather than a process-level `Once`, so each `LspServer` session is its own
     /// window (#16551).
     pub(crate) core_module_notice_shown: Arc<AtomicBool>,
+    /// Canonical module names whose definition ambiguity was logged this session.
+    pub(crate) module_ambiguity_notices: Mutex<HashSet<String>>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:

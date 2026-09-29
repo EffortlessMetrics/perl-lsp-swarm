@@ -7,6 +7,7 @@ use super::super::*;
 use super::super::{LspServer, MessageType, md5, normalize_package_separator};
 use perl_module::{
     ModuleUriResolution, build_effective_inc_roots,
+    collect_module_uri_candidates_with_effective_inc,
     resolve_module_path as resolve_workspace_module_path, resolve_module_uri_with_effective_inc,
 };
 use perl_module::{UseLibPath, resolve_use_lib_paths_from_source};
@@ -628,6 +629,41 @@ impl LspServer {
         doc_uri: Option<&str>,
         doc_offset: Option<usize>,
     ) -> Option<String> {
+        self.resolve_module_to_path_with_doc_at_offset_for(
+            module_name,
+            doc_text,
+            doc_uri,
+            doc_offset,
+            false,
+        )
+    }
+
+    /// Navigation inspects the completed ordered report so a shadowed module
+    /// can be announced without changing the first candidate selected by @INC.
+    pub(crate) fn resolve_module_for_definition(
+        &self,
+        module_name: &str,
+        doc_text: Option<&str>,
+        doc_uri: Option<&str>,
+        doc_offset: Option<usize>,
+    ) -> Option<String> {
+        self.resolve_module_to_path_with_doc_at_offset_for(
+            module_name,
+            doc_text,
+            doc_uri,
+            doc_offset,
+            true,
+        )
+    }
+
+    fn resolve_module_to_path_with_doc_at_offset_for(
+        &self,
+        module_name: &str,
+        doc_text: Option<&str>,
+        doc_uri: Option<&str>,
+        doc_offset: Option<usize>,
+        for_definition: bool,
+    ) -> Option<String> {
         let workspace_folders = self.workspace_folders.lock().clone();
         let workspace_folder_uris: Vec<String> =
             workspace_folders.iter().map(|f| f.uri.clone()).collect();
@@ -655,6 +691,44 @@ impl LspServer {
                 .cloned()
                 .collect()
         };
+
+        if for_definition {
+            let report = collect_module_uri_candidates_with_effective_inc(
+                module_name,
+                &open_document_uris,
+                &workspace_folder_uris,
+                &context.effective_roots,
+                timeout,
+            );
+            let Some(first) = report.candidates.first() else {
+                if report.timed_out {
+                    tracing::warn!("Module resolution timeout for: {}", module_name);
+                }
+                return None;
+            };
+            let selected = first.uri.clone();
+            if !report.timed_out && report.candidates.len() > 1 {
+                let mut shown = self.module_ambiguity_notices.lock();
+                if shown.insert(report.module_name.clone()) {
+                    drop(shown);
+                    let shadowed = report
+                        .candidates
+                        .iter()
+                        .skip(1)
+                        .map(|candidate| candidate.uri.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let message = format!(
+                        "Module '{}' has multiple definition targets. Selected: {}; shadowed: {}",
+                        report.module_name, selected, shadowed
+                    );
+                    if let Err(error) = self.log_message(MessageType::Info, &message) {
+                        tracing::warn!(%error, %message, "Failed to log module definition ambiguity");
+                    }
+                }
+            }
+            return Some(selected);
+        }
 
         match resolve_module_uri_with_effective_inc(
             module_name,
