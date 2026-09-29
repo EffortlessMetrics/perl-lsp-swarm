@@ -136,6 +136,10 @@ class TerminalValidationTests(unittest.TestCase):
                 expected_workflow_id=WORKFLOW_ID,
             )
 
+    def test_rejects_terminal_event_mismatch(self) -> None:
+        with self.assertRaisesRegex(GateError, "event mismatch"):
+            validate_terminal_run(run(5, event="push"), expected_sha=SHA, expected_workflow_id=WORKFLOW_ID)
+
     def test_rejects_wrong_sha(self) -> None:
         with self.assertRaisesRegex(GateError, "source mismatch"):
             validate_terminal_run(

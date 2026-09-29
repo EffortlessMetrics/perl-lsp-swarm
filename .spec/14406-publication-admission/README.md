@@ -405,3 +405,31 @@ ID is not causally distinguished by these joins. The disconnected helper and
 missing-loader CLI remain nonqualifying. #8576 must independently admit one
 execution/transaction identity and authenticated acquisition before any causal
 claim; do not invent a parallel registry or infer causality from timestamps.
+
+
+The #16762 source checker admits only the current restricted workflow grammar:
+plain mapping keys, inline exact dependency sets, exact qualification expressions,
+named steps and literal run blocks. It reads real authority fields and executable
+standalone predecessor/producer commands and dispatch continuation arguments.
+Comments, quoted marker strings and echo output cannot replace them. Duplicate
+fields, aliases, merges, ambiguous continuations and unsupported command wrappers
+refuse rather than falling back to token-presence proof. This restricted reader is
+not a general YAML/shell interpreter or a hosted execution/authentication result.
+
+
+### Restricted checker execution grammar
+
+The graph ratchet admits the reviewed `fade881` eligibility job and child
+transaction dispatch job as closed lexical productions, including every named
+prior step, action, ID, environment binding, and every command through the final
+output write. Comments and blank lines are ignored; executable or metadata edits
+require a deliberate reviewed production update, including otherwise legitimate
+workflow metadata or command changes. This maintenance tradeoff intentionally
+rejects unreviewed equivalent syntax rather than claiming generalized equivalence.
+Productions are fixed reviewed constants, never generated from validator input.
+Custom workflow defaults,
+changed global environments, shell overrides, duplicate or quoted authority keys,
+extra steps, split-format output writes and shell-substitution decoys reject.
+This intentionally restricted source style is not a general YAML/shell parser,
+proof of arbitrary equivalent syntax, hosted execution, or authenticated authority.
+The live producer qualification remains `NOT_PROVEN`.
