@@ -2845,6 +2845,11 @@ impl LspServer {
             indexing_rescan_pending: Arc::clone(&resources.indexing_rescan_pending),
             indexing_transition_lock: Arc::clone(&resources.indexing_transition_lock),
             restart: Some(Box::new(move || {
+                // A follow-up scan queued while this one ran must observe the
+                // newest client cap, not this scan's snapshot: re-resolve it at
+                // restart time (#16694).
+                let mut restart_resources = restart_resources;
+                restart_resources.client_max_indexed_files = client_max_indexed_files();
                 Self::start_workspace_indexing_with_resources(restart_resources);
             })),
         };
@@ -3011,17 +3016,20 @@ impl LspServer {
                         early_exit = Some((EarlyExitReason::Cancelled, elapsed_ms, 0, files.len()));
                         break 'scan;
                     }
+                    let elapsed_ms = budget_start.elapsed().as_millis() as u64;
+                    // Check the cap before admitting: a zero cap must queue
+                    // nothing, and a workspace whose file count exactly equals
+                    // the cap must not be recorded as degraded, because no
+                    // file was actually omitted (#16694).
+                    if files.len() >= max_indexed_files {
+                        early_exit = Some((EarlyExitReason::FileLimit, elapsed_ms, 0, files.len()));
+                        break 'scan;
+                    }
                     files.push(path);
                     let total_files = files.len();
 
                     if total_files.is_multiple_of(64) {
                         coordinator.update_scan_progress(total_files);
-                    }
-
-                    let elapsed_ms = budget_start.elapsed().as_millis() as u64;
-                    if total_files >= max_indexed_files {
-                        early_exit = Some((EarlyExitReason::FileLimit, elapsed_ms, 0, total_files));
-                        break 'scan;
                     }
 
                     if elapsed_ms > caps.initial_scan_budget_ms {
@@ -5508,6 +5516,112 @@ mod tests {
             coordinator.index().file_count(),
             5,
             "an unbound client cap must not truncate discovery"
+        );
+        Ok(())
+    }
+
+    /// #16694: `maxIndexedFiles: 0` is a valid client cap. The scan must check
+    /// the cap before admitting a discovered path, so zero files are queued and
+    /// the workspace degrades as MaxFiles instead of indexing one file.
+    #[test]
+    #[cfg(feature = "workspace")]
+    fn zero_client_cap_admits_no_files() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        write_perl_modules(&dir, 3)?;
+        let server = gated_scan_server(&dir)?;
+
+        start_scan_with_client_cap(&server, 0)?;
+
+        let state =
+            server.coordinator().map(|c| c.state()).ok_or("server has no index coordinator")?;
+        match state {
+            IndexState::Degraded { reason: DegradationReason::ResourceLimit { kind }, .. } => {
+                assert_eq!(kind, ResourceKind::MaxFiles, "a zero cap must degrade as MaxFiles");
+            }
+            other => {
+                return Err(
+                    format!("expected MaxFiles degradation at a zero cap, got {other:?}").into()
+                );
+            }
+        }
+        assert_eq!(
+            server
+                .coordinator()
+                .map(|c| c.index().file_count())
+                .ok_or("server has no index coordinator")?,
+            0,
+            "a zero client cap must index no files"
+        );
+        Ok(())
+    }
+
+    /// #16694: a workspace whose file count exactly equals the cap must scan to
+    /// Ready — the MaxFiles degradation names files actually omitted, and an
+    /// exact-cap workspace omits nothing.
+    #[test]
+    #[cfg(feature = "workspace")]
+    fn exact_client_cap_does_not_degrade() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        write_perl_modules(&dir, 3)?;
+        let server = gated_scan_server(&dir)?;
+
+        start_scan_with_client_cap(&server, 3)?;
+
+        let state =
+            server.coordinator().map(|c| c.state()).ok_or("server has no index coordinator")?;
+        assert!(
+            matches!(state, IndexState::Ready { .. }),
+            "an exact-cap workspace must scan to Ready, got {state:?}"
+        );
+        assert_eq!(
+            server
+                .coordinator()
+                .map(|c| c.index().file_count())
+                .ok_or("server has no index coordinator")?,
+            3,
+            "an exact-cap workspace must index every file"
+        );
+        Ok(())
+    }
+
+    /// #16694: a follow-up scan queued while the indexing slot is busy must
+    /// observe the newest cap at restart, not the active scan's snapshot.
+    #[test]
+    #[cfg(feature = "workspace")]
+    fn queued_follow_up_scan_re_reads_the_current_cap() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        write_perl_modules(&dir, 5)?;
+        let server = gated_scan_server(&dir)?;
+        let coordinator =
+            server.coordinator().map(Arc::clone).ok_or("server has no index coordinator")?;
+
+        // The active scan owns the indexing slot, bound to client cap 2, and
+        // parks at its start gate until released.
+        let (started, started_receiver) = std::sync::mpsc::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        server.test_gate_workspace_indexing_start(started, release_receiver);
+        LspServer::start_workspace_indexing_with_resources(
+            server.indexing_resources(Arc::clone(&coordinator), 2),
+        );
+        if let Err(error) = started_receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+            let _ = release.send(());
+            return Err(error.into());
+        }
+
+        // Queue a follow-up through the production path: the queued request
+        // carries the live global cap (unbound here), not the active scan's
+        // cap of 2. Restart must keep the queued cap, not the snapshot.
+        server.start_workspace_indexing();
+        let _ = release.send(());
+
+        wait_for_indexing_completion(&server)?;
+        assert_eq!(
+            server
+                .coordinator()
+                .map(|c| c.index().file_count())
+                .ok_or("server has no index coordinator")?,
+            5,
+            "the queued follow-up must run with the newest cap, not the active scan's snapshot"
         );
         Ok(())
     }
