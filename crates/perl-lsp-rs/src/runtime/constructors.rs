@@ -4,9 +4,9 @@
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
 use super::{
-    Arc, AtomicBool, AtomicI32, AtomicU64, BufReader, ClientCapabilities, FeatureProfile, HashMap,
-    HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
-    WorkspaceConfig, Write, io, notebook, outbound, refresh,
+    Arc, AtomicBool, AtomicU64, BufReader, FeatureProfile, HashMap, IndexCoordinator, LspServer,
+    Mutex, Read, SymbolIndex, UseLibHirCache, WorkspaceConfig, Write, io, notebook, outbound,
+    refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
 
@@ -42,28 +42,17 @@ impl LspServer {
         #[cfg(feature = "workspace")]
         let index_coordinator = Some(Arc::new(IndexCoordinator::new()));
 
-        let default_features = feature_profile.advertised_features();
-        let default_feature_ids = feature_profile.build_flags().to_feature_ids();
         let (outbound, outbound_writer_handle) = outbound::spawn_writer(Box::new(io::stdout()));
 
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
-            initialize_requested: AtomicBool::new(false),
-            initialized: AtomicBool::new(false),
-            position_encoding_session_context: Mutex::new(None),
-            shutdown_received: AtomicBool::new(false),
-            pending_startup_log: Arc::new(Mutex::new(None)),
+            client_session: super::client_session::ClientSession::new(feature_profile),
             #[cfg(feature = "workspace")]
             index_coordinator,
             symbol_index: Arc::new(Mutex::new(SymbolIndex::new())),
-            config: Arc::new(Mutex::new(ServerConfig::default())),
             reader: Arc::new(Mutex::new(Box::new(BufReader::new(io::stdin())))),
             outbound,
             outbound_writer_handle: Some(outbound_writer_handle),
-            client_capabilities: Mutex::new(ClientCapabilities::default()),
-            initial_root_input: Mutex::new(None),
-            cancelled: Arc::new(Mutex::new(HashSet::new())),
-            pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
             workspace_topology_generation: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             workspace_topology_stable: Arc::new(AtomicBool::new(true)),
@@ -76,23 +65,13 @@ impl LspServer {
             single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
-            advertised_features: Mutex::new(default_features),
-            advertised_feature_ids: Mutex::new(default_feature_ids),
-            text_sync_session: Mutex::new(None),
-            client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
-            initialization_options_perl_settings: Arc::new(Mutex::new(None)),
             last_client_settings: Arc::new(Mutex::new(None)),
             server_config_baseline: Arc::new(Mutex::new(None)),
-            next_request_id: Arc::new(AtomicI32::new(1)),
-            pending_workspace_configuration_requests: Arc::new(Mutex::new(HashMap::new())),
-            progress_tokens: Arc::new(Mutex::new(HashSet::new())),
-            progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
             runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
-            trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
             resolve_session_authenticator: Mutex::new(super::resolve_session::new_session_authenticator()),
             feature_profile,
@@ -130,12 +109,9 @@ impl LspServer {
             indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
-            root_undetected_shown: Arc::new(AtomicBool::new(false)),
-
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
 
-            session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
@@ -239,29 +215,18 @@ impl LspServer {
         #[cfg(feature = "workspace")]
         let index_coordinator = Some(Arc::new(IndexCoordinator::new()));
 
-        let default_features = feature_profile.advertised_features();
-        let default_feature_ids = feature_profile.build_flags().to_feature_ids();
         let (outbound, outbound_writer_handle) =
             outbound::spawn_writer(writer as Box<dyn Write + Send>);
 
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
-            initialize_requested: AtomicBool::new(false),
-            initialized: AtomicBool::new(false),
-            position_encoding_session_context: Mutex::new(None),
-            shutdown_received: AtomicBool::new(false),
-            pending_startup_log: Arc::new(Mutex::new(None)),
+            client_session: super::client_session::ClientSession::new(feature_profile),
             #[cfg(feature = "workspace")]
             index_coordinator,
             symbol_index: Arc::new(Mutex::new(SymbolIndex::new())),
-            config: Arc::new(Mutex::new(ServerConfig::default())),
             reader: Arc::new(Mutex::new(Box::new(BufReader::new(reader)))),
             outbound,
             outbound_writer_handle: Some(outbound_writer_handle),
-            client_capabilities: Mutex::new(ClientCapabilities::default()),
-            initial_root_input: Mutex::new(None),
-            cancelled: Arc::new(Mutex::new(HashSet::new())),
-            pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
             workspace_topology_generation: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             workspace_topology_stable: Arc::new(AtomicBool::new(true)),
@@ -274,23 +239,13 @@ impl LspServer {
             single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
-            advertised_features: Mutex::new(default_features),
-            advertised_feature_ids: Mutex::new(default_feature_ids),
-            text_sync_session: Mutex::new(None),
-            client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
-            initialization_options_perl_settings: Arc::new(Mutex::new(None)),
             last_client_settings: Arc::new(Mutex::new(None)),
             server_config_baseline: Arc::new(Mutex::new(None)),
-            next_request_id: Arc::new(AtomicI32::new(1)),
-            pending_workspace_configuration_requests: Arc::new(Mutex::new(HashMap::new())),
-            progress_tokens: Arc::new(Mutex::new(HashSet::new())),
-            progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
             runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
-            trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
             resolve_session_authenticator: Mutex::new(super::resolve_session::new_session_authenticator()),
             feature_profile,
@@ -328,12 +283,9 @@ impl LspServer {
             indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
-            root_undetected_shown: Arc::new(AtomicBool::new(false)),
-
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
 
-            session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),
@@ -379,28 +331,17 @@ impl LspServer {
         #[cfg(feature = "workspace")]
         let index_coordinator = Some(Arc::new(IndexCoordinator::new()));
 
-        let default_features = feature_profile.advertised_features();
-        let default_feature_ids = feature_profile.build_flags().to_feature_ids();
         let (outbound, outbound_writer_handle) = outbound::spawn_writer_shared(output);
 
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
-            initialize_requested: AtomicBool::new(false),
-            initialized: AtomicBool::new(false),
-            position_encoding_session_context: Mutex::new(None),
-            shutdown_received: AtomicBool::new(false),
-            pending_startup_log: Arc::new(Mutex::new(None)),
+            client_session: super::client_session::ClientSession::new(feature_profile),
             #[cfg(feature = "workspace")]
             index_coordinator,
             symbol_index: Arc::new(Mutex::new(SymbolIndex::new())),
-            config: Arc::new(Mutex::new(ServerConfig::default())),
             reader: Arc::new(Mutex::new(Box::new(BufReader::new(io::stdin())))),
             outbound,
             outbound_writer_handle: Some(outbound_writer_handle),
-            client_capabilities: Mutex::new(ClientCapabilities::default()),
-            initial_root_input: Mutex::new(None),
-            cancelled: Arc::new(Mutex::new(HashSet::new())),
-            pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
             workspace_topology_generation: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             workspace_topology_stable: Arc::new(AtomicBool::new(true)),
@@ -413,23 +354,13 @@ impl LspServer {
             single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
-            advertised_features: Mutex::new(default_features),
-            advertised_feature_ids: Mutex::new(default_feature_ids),
-            text_sync_session: Mutex::new(None),
-            client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
-            initialization_options_perl_settings: Arc::new(Mutex::new(None)),
             last_client_settings: Arc::new(Mutex::new(None)),
             server_config_baseline: Arc::new(Mutex::new(None)),
-            next_request_id: Arc::new(AtomicI32::new(1)),
-            pending_workspace_configuration_requests: Arc::new(Mutex::new(HashMap::new())),
-            progress_tokens: Arc::new(Mutex::new(HashSet::new())),
-            progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
             runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
-            trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
             resolve_session_authenticator: Mutex::new(super::resolve_session::new_session_authenticator()),
             feature_profile,
@@ -467,12 +398,9 @@ impl LspServer {
             indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
-            root_undetected_shown: Arc::new(AtomicBool::new(false)),
-
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
 
-            session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
             document_symbols_sink: super::document_symbols_sink::DocumentSymbolsSink::default(),

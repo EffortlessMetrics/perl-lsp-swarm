@@ -1214,7 +1214,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().declaration {
+        if !self.client_session.advertised_features.lock().declaration {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1271,7 +1271,7 @@ impl LspServer {
                     // Find declaration at the position
                     if let Some(location_links) = provider.find_declaration(offset, doc.version) {
                         // Check client capability and return appropriate format
-                        if self.client_capabilities.lock().declaration_link_support {
+                        if self.client_session.client_capabilities.lock().declaration_link_support {
                             // Return LocationLink format
                             let result: Vec<Value> = location_links
                                 .iter()

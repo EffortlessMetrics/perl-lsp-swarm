@@ -46,7 +46,7 @@ impl LspServer {
     /// The profile *path* used for the external adapter is the explicitly
     /// configured `perltidy_profile` when set, else the discovered one.
     pub(crate) fn build_perltidy_config(&self) -> PerlTidyConfig {
-        let config = self.config.lock();
+        let config = self.client_session.config.lock();
         let profile = config
             .perltidy_profile
             .clone()
@@ -70,12 +70,12 @@ impl LspServer {
 
 impl LspServer {
     pub(crate) fn is_formatting_enabled(&self) -> bool {
-        let config = self.config.lock();
+        let config = self.client_session.config.lock();
         config.perltidy_enabled && config.formatting_engine != FormatterMode::Off
     }
 
     pub(crate) fn formatter_mode(&self) -> FormatterMode {
-        self.config.lock().formatting_engine
+        self.client_session.config.lock().formatting_engine
     }
 
     // Secondary edit-producing handlers (`textDocument/rangeFormatting`,
@@ -92,7 +92,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().formatting {
+        if !self.client_session.advertised_features.lock().formatting {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     pub(crate) fn build_perltidy_config_uses_discovered_profile_when_unset() {
         let server = LspServer::new();
-        server.config.lock().perltidy_profile = None;
+        server.client_session.config.lock().perltidy_profile = None;
         *server.discovered_perltidy_profile.lock() = Some("/ws/.perltidyrc".to_string());
 
         let config = server.build_perltidy_config();
@@ -297,7 +297,8 @@ mod tests {
     #[test]
     pub(crate) fn build_perltidy_config_prefers_explicit_profile_over_discovered() {
         let server = LspServer::new();
-        server.config.lock().perltidy_profile = Some("/explicit/.perltidyrc".to_string());
+        server.client_session.config.lock().perltidy_profile =
+            Some("/explicit/.perltidyrc".to_string());
         *server.discovered_perltidy_profile.lock() = Some("/ws/.perltidyrc".to_string());
 
         let config = server.build_perltidy_config();
@@ -312,7 +313,7 @@ mod tests {
     #[test]
     pub(crate) fn build_perltidy_config_profile_none_when_unset_and_undiscovered() {
         let server = LspServer::new();
-        server.config.lock().perltidy_profile = None;
+        server.client_session.config.lock().perltidy_profile = None;
         *server.discovered_perltidy_profile.lock() = None;
 
         let config = server.build_perltidy_config();
@@ -329,7 +330,7 @@ mod tests {
         // which already reflects defaults + discovered-profile + user config.
         let server = LspServer::new();
         {
-            let mut config = server.config.lock();
+            let mut config = server.client_session.config.lock();
             config.perltidy_maximum_line_length = Some(123);
             config.perltidy_indent_columns = Some(3);
             config.perltidy_tabs = Some(true);
@@ -545,7 +546,7 @@ mod tests {
 
         let server = Arc::new(LspServer::new());
         let uri = "file:///test_concurrent_lock.pl";
-        server.advertised_features.lock().formatting = true;
+        server.client_session.advertised_features.lock().formatting = true;
 
         // Generate a large document so the native formatter has enough work
         // to create a measurable window where the lock is released but

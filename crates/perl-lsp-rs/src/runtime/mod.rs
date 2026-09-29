@@ -32,6 +32,9 @@ mod notebook;
 pub(crate) mod outbound;
 #[allow(unused_imports)]
 use outbound::OutboundSink;
+/// Connection/client-session owner for lifecycle, capabilities, progress,
+/// and connection-reset state (#8386).
+pub(crate) mod client_session;
 pub(crate) mod parse_effect_contract;
 pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
@@ -65,6 +68,8 @@ mod workspace_progress;
 
 #[cfg(test)]
 mod active_document_readiness_tests;
+#[cfg(test)]
+mod client_session_tests;
 #[cfg(test)]
 mod diagnostics_sink_tests;
 #[cfg(test)]
@@ -137,10 +142,7 @@ use crate::{
         CONTENT_MODIFIED, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, REQUEST_CANCELLED,
         cancelled_response_with_method, document_not_found_error, enhanced_error,
     },
-    state::{
-        ClientCapabilities, DocumentState, ServerConfig, WorkspaceConfig,
-        normalize_package_separator,
-    },
+    state::{DocumentState, WorkspaceConfig, normalize_package_separator},
     transport::{ContentLengthMessageReader, log_response},
     // Import text processing helpers
     util::{
@@ -153,14 +155,13 @@ use md5;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{
     Arc, Weak,
-    atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
 };
 use url::Url;
 
@@ -178,33 +179,22 @@ use crate::fallback::text::extract_text_based_symbols;
 
 // Note: Error codes and cancelled_response imported from crate::lsp::protocol
 
-// Note: ClientCapabilities imported from crate::lsp::state::document
-
 /// LSP server that handles JSON-RPC communication
 pub struct LspServer {
     /// Document contents indexed by URI
     pub(crate) documents: Arc<Mutex<HashMap<String, DocumentState>>>,
-    /// Whether the `initialize` request has been received
-    initialize_requested: AtomicBool,
-    /// Whether the server is initialized
-    initialized: AtomicBool,
-    /// Server-owned coordinate authority, published only after initialize succeeds.
-    pub(crate) position_encoding_session_context:
-        Mutex<Option<lifecycle::position_encoding::PositionEncodingSessionContext>>,
-    /// Whether shutdown was received (for LSP-compliant exit handling)
-    shutdown_received: AtomicBool,
-    /// Pending `window/logMessage` text to emit once the client has sent the
-    /// `initialized` notification (notifications must not be sent before the
-    /// initialize response is delivered). Currently used for the JetBrains
-    /// dynamic-registration override notice (#4630).
-    pub(crate) pending_startup_log: Arc<Mutex<Option<String>>>,
+    /// Connection/client-session owner (#8386).
+    ///
+    /// Owns lifecycle phase, negotiated capabilities, trace/progress/session
+    /// identifiers, the live reverse-request pending map, and other
+    /// connection-reset state. Shutdown and replacement drain session-owned
+    /// handles exactly once; #7007 remains the reverse-request registry type.
+    pub(crate) client_session: client_session::ClientSession,
     /// Index coordinator for workspace-wide features with lifecycle management
     #[cfg(feature = "workspace")]
     pub(crate) index_coordinator: Option<Arc<IndexCoordinator>>,
     /// Symbol index for fast lookups
     symbol_index: Arc<Mutex<SymbolIndex>>,
-    /// Server configuration
-    pub(crate) config: Arc<Mutex<ServerConfig>>,
     /// Synchronized input reader
     reader: Arc<Mutex<Box<dyn BufRead + Send>>>,
     /// Outbound message sender (channel-based, decoupled from I/O).
@@ -217,22 +207,6 @@ pub struct LspServer {
     /// terminal outcome; Drop records it as structured settlement evidence
     /// (#8402).
     outbound_writer_handle: Option<std::thread::JoinHandle<outbound::WriterTerminalOutcome>>,
-    /// Client capabilities (behind mutex for interior mutability — written once during initialize)
-    client_capabilities: Mutex<ClientCapabilities>,
-    /// Root-input classification recorded by the most recent `initialize`
-    /// request (#8161). `None` before the first initialize. Kept as a separate
-    /// receipt from `client_capabilities.workspace_folders_support` so the
-    /// client's advertised bit and the declared root input never merge into
-    /// one derived boolean.
-    initial_root_input: Mutex<Option<lifecycle::root_input::InitialRootInput>>,
-    /// Cancelled request IDs
-    cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
-    /// Request IDs that are queued or executing in the async scheduler.
-    ///
-    /// This lets bounded cancellation-marker cleanup distinguish stale
-    /// tombstones from cancellation signals that still belong to work the
-    /// scheduler has not fully settled.
-    pending_request_ids: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Workspace folders with full state representation
     ///
     /// This replaces the previous `Vec<String>` approach to support multi-root
@@ -295,23 +269,8 @@ pub struct LspServer {
     /// `set_root_uri`); this field retains the path for the external adapter's
     /// `--profile` argument.
     discovered_perltidy_profile: Arc<Mutex<Option<String>>>,
-    /// Advertised server capabilities
-    advertised_features: Mutex<crate::protocol::capabilities::AdvertisedFeatures>,
-    /// Canonical feature IDs emitted by the most recent initialize response.
-    advertised_feature_ids: Mutex<Vec<&'static str>>,
-    /// Accepted text-sync session contract plus the digest of the exact
-    /// `InitializeResult` built from it (#9378). `None` until initialize is
-    /// accepted; set exactly once, and never replaced or partially altered.
-    /// The immutable contract is the single authority for the wire sync kind
-    /// and position encoding — no other field may carry a competing value.
-    text_sync_session: Mutex<Option<lifecycle::session_contract::AcceptedTextSyncSession>>,
-    /// Client supports pull diagnostics
-    client_supports_pull_diags: Arc<AtomicBool>,
     /// Workspace configuration for module resolution
     workspace_config: Arc<Mutex<WorkspaceConfig>>,
-    /// Perl settings extracted from `initializationOptions` during initialize.
-    /// Kept as a base config layer below `.perl-lsp.toml` and `workspace/configuration`.
-    initialization_options_perl_settings: Arc<Mutex<Option<Value>>>,
     /// Most recent perl settings payload received via `workspace/didChangeConfiguration`.
     /// Replayed on top of merged project config by
     /// [`crate::runtime::lifecycle::workspace::load_and_apply_project_config`] so that
@@ -329,15 +288,6 @@ pub struct LspServer {
     /// layer because `merged.apply_to_server_config` only writes present
     /// fields (issue #15715).
     server_config_baseline: Arc<Mutex<Option<perl_lsp_rs_core::config::ServerConfig>>>,
-    /// Atomic counter for generating unique request IDs
-    next_request_id: Arc<AtomicI32>,
-    /// Pending workspace/configuration reverse requests keyed by request ID.
-    pending_workspace_configuration_requests:
-        Arc<Mutex<HashMap<ServerRequestId, PendingWorkspaceConfigurationRequest>>>,
-    /// Active progress tokens for work done progress tracking
-    progress_tokens: Arc<Mutex<HashSet<String>>>,
-    /// Maps progress tokens to their originating request IDs for cancellation routing
-    progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     /// Refresh controller for debounced client refresh requests
     refresh_controller: refresh::RefreshController,
     /// Accepted-ticket push-diagnostics sink (#11673): per-URI record of the
@@ -363,8 +313,6 @@ pub struct LspServer {
     runtime_services: runtime_services::RuntimeServices,
     /// Notebook document store (LSP 3.17)
     pub(crate) notebook_store: notebook::NotebookStore,
-    /// Trace level set by client via $/setTrace (off, messages, verbose)
-    trace_level: Arc<Mutex<String>>,
     /// Stream session manager for progressive inline completion.
     stream_session_manager: stream_session::StreamSessionManager,
     /// Session-keyed resolve-envelope authenticator owned by this connection
@@ -481,26 +429,10 @@ pub struct LspServer {
     /// by this flag — it repeats for every affected file.
     #[cfg(feature = "workspace")]
     permission_denied_shown: Arc<AtomicBool>,
-    /// One-time guard for the `window/showMessage` workspace-root-undetected warning.
-    ///
-    /// Set to `true` after the first module resolution attempt when no workspace
-    /// root is configured, so the user is warned once per server session rather
-    /// than on every resolution call.  Uses an instance-level flag (not a
-    /// process-level `Once`) so that each `LspServer` instance tracks its own
-    /// session independently.
-    pub(crate) root_undetected_shown: Arc<AtomicBool>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:
         Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
-    /// Typed, bounded dedup state for user-facing session warnings (#9769).
-    ///
-    /// Governs whether a repeated Perl::Critic, invalid-client-setting, or AI
-    /// backend warning should be suppressed for the same reviewed subject.
-    /// Retains only fixed-size fingerprint identities under an explicit
-    /// per-family hard cap; it never holds semantic state and never
-    /// influences configuration, diagnostics, provider, or readiness truth.
-    pub(crate) session_warning_dedup: session_warning_dedup::SessionWarningDedupStore,
     /// Test-only hook invoked after push diagnostics capture their document
     /// snapshot and before the stale-generation guard decides whether to
     /// publish. This keeps concurrency boundary tests deterministic without
@@ -734,7 +666,7 @@ impl LspServer {
         // Decide + send + rollback under one family-lock hold (#9769): a
         // concurrent auth failure must never suppress against an identity
         // whose send has not succeeded yet.
-        let decision = self.session_warning_dedup.emit_once_with(
+        let decision = self.client_session.session_warning_dedup.emit_once_with(
             session_warning_dedup::SessionWarningFamily::AiBackend,
             identity,
             || {
@@ -797,7 +729,7 @@ impl LspServer {
     /// Called during initialization (after project config is loaded) and on every
     /// `didChangeConfiguration` notification that touches the `aiCompletion` section.
     pub(crate) fn refresh_ai_backend(&self) {
-        let ai_config = self.config.lock().ai_completion.clone();
+        let ai_config = self.client_session.config.lock().ai_completion.clone();
 
         let trusted_activation = matches!(
             ai_config.activation_authority,
@@ -1178,6 +1110,7 @@ impl LspServer {
                 .map_or(0, |p| p.active_subjects),
             diagnostic_debounce_pending_uris,
             pending_workspace_configuration_requests: self
+                .client_session
                 .pending_workspace_configuration_requests
                 .lock()
                 .len(),
@@ -2120,7 +2053,7 @@ mod tests {
             character: 0,
         });
         let request_id = ServerRequestId::new(1).ok_or("valid request id")?;
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             request_id,
             PendingWorkspaceConfigurationRequest {
                 folder_uris: vec!["file:///".to_string()],
@@ -2503,7 +2436,7 @@ model = "gpt-4"
         // wrong reason (#4997: the oracle must not depend on a missing
         // destination or missing secret).
         {
-            let mut config = server.config.lock();
+            let mut config = server.client_session.config.lock();
             config.ai_completion.endpoint =
                 "https://connector.example/v1/chat/completions".to_string();
             config.ai_completion.model = "custom-code-model".to_string();
@@ -2526,7 +2459,7 @@ model = "gpt-4"
             "project config alone must not install an outbound AI backend",
         );
         assert!(
-            !server.config.lock().ai_completion.enabled,
+            !server.client_session.config.lock().ai_completion.enabled,
             "effective AI must remain disabled without user authorization",
         );
         Ok(())
@@ -2550,7 +2483,7 @@ model = "gpt-4"
         // setup would, so the only thing that can prevent construction is
         // missing activation authority.
         {
-            let mut config = server.config.lock();
+            let mut config = server.client_session.config.lock();
             config.ai_completion.endpoint =
                 "https://connector.example/v1/chat/completions".to_string();
             config.ai_completion.model = "custom-code-model".to_string();
@@ -2572,13 +2505,13 @@ model = "gpt-4"
 
         for shape in &hostile_shapes {
             // didChangeConfiguration shape.
-            server.config.lock().update_from_value(shape);
+            server.client_session.config.lock().update_from_value(shape);
             // initializationOptions shape uses the same parser; exercise it
             // through a fresh payload application to keep both entry points
             // covered by one matrix.
             server.refresh_ai_backend();
 
-            let config = server.config.lock();
+            let config = server.client_session.config.lock();
             assert!(
                 server.ai_backend().is_none(),
                 "generic payload {shape} must not construct an outbound backend",
@@ -2604,11 +2537,11 @@ model = "gpt-4"
 
         // Hostile traffic must also not clear accepted trusted state.
         {
-            let mut config = server.config.lock();
+            let mut config = server.client_session.config.lock();
             config.ai_completion.user_enabled = true;
             config.ai_completion.admit_trusted_user_operator_activation();
         }
-        server.config.lock().update_from_value(&json!({
+        server.client_session.config.lock().update_from_value(&json!({
             "aiCompletion": {
                 "enabled": false,
                 "provider": "openai",
@@ -2617,7 +2550,7 @@ model = "gpt-4"
             }
         }));
         {
-            let config = server.config.lock();
+            let config = server.client_session.config.lock();
             assert_eq!(
                 config.ai_completion.activation_authority,
                 perl_lsp_rs_core::config::AiActivationAuthority::TrustedUserOperator,
@@ -2649,7 +2582,7 @@ model = "gpt-4"
 
         let server = LspServer::new();
         {
-            let mut config = server.config.lock();
+            let mut config = server.client_session.config.lock();
             config.ai_completion = AiCompletionConfig {
                 user_enabled: true,
                 enabled: true,

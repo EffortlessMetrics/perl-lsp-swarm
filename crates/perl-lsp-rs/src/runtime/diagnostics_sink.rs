@@ -286,7 +286,7 @@ impl LspServer {
 
         // Hold policy authority through the irreversible effect, rather than
         // carrying a pre-lock boolean across a concurrent configuration write.
-        let config = self.config.lock();
+        let config = self.client_session.config.lock();
         if let Some(snapshot) = subject.accepted_critic_snapshot
             && (live_root.as_deref() != snapshot.owning_root() || !snapshot.is_current(&config))
         {
@@ -644,7 +644,8 @@ mod tests {
         assert!(wait_for_frames(&buf, 1), "didOpen publication must flush first");
 
         // The policy the candidate's rows were produced under.
-        let accepted_snapshot = AcceptedCriticSnapshot::capture(&server.config.lock(), None);
+        let accepted_snapshot =
+            AcceptedCriticSnapshot::capture(&server.client_session.config.lock(), None);
         let accepted_fingerprint = accepted_snapshot.fingerprint();
         let bound = identity.clone().with_accepted_critic_snapshot(Some(accepted_snapshot.clone()));
 
@@ -665,8 +666,9 @@ mod tests {
 
         // Configuration moves underneath the in-flight candidate. The document
         // is untouched: same instance, same generation, same text.
-        server.config.lock().perlcritic_enabled = false;
-        let live_fingerprint = { server.config.lock().effective_critic_state(None).fingerprint() };
+        server.client_session.config.lock().perlcritic_enabled = false;
+        let live_fingerprint =
+            { server.client_session.config.lock().effective_critic_state(None).fingerprint() };
         assert_ne!(
             live_fingerprint, accepted_fingerprint,
             "the mutation must actually move the accepted policy, or this test proves nothing"
@@ -733,7 +735,7 @@ mod tests {
         let (server, buf) = make_server();
         let uri = "file:///sink_critic_collision_test.pl";
         {
-            let mut config = server.config.lock();
+            let mut config = server.client_session.config.lock();
             config.perlcritic_enabled = true;
             config.native_critic_include = vec![format!("a{SEPARATOR}b")];
         }
@@ -742,7 +744,7 @@ mod tests {
             return Err("didOpen publication must flush first".into());
         }
 
-        let accepted = AcceptedCriticSnapshot::capture(&server.config.lock(), None);
+        let accepted = AcceptedCriticSnapshot::capture(&server.client_session.config.lock(), None);
         let bound = identity.clone().with_accepted_critic_snapshot(Some(accepted.clone()));
         if server.commit_push_diagnostics(
             &bound,
@@ -756,8 +758,9 @@ mod tests {
             return Err("live-policy control publication must flush".into());
         }
 
-        server.config.lock().native_critic_include = vec!["a".to_string(), "b".to_string()];
-        let live = AcceptedCriticSnapshot::capture(&server.config.lock(), None);
+        server.client_session.config.lock().native_critic_include =
+            vec!["a".to_string(), "b".to_string()];
+        let live = AcceptedCriticSnapshot::capture(&server.client_session.config.lock(), None);
         if accepted == live {
             return Err("collision fixture must move the accepted policy".into());
         }
@@ -814,7 +817,8 @@ mod tests {
         }
 
         let owner = original_owner.to_string_lossy().into_owned();
-        let accepted = AcceptedCriticSnapshot::capture(&server.config.lock(), Some(&owner));
+        let accepted =
+            AcceptedCriticSnapshot::capture(&server.client_session.config.lock(), Some(&owner));
         let bound = identity.clone().with_accepted_critic_snapshot(Some(accepted.clone()));
         if server.commit_push_diagnostics(
             &bound,
@@ -829,7 +833,7 @@ mod tests {
         }
 
         server.workspace_folders.lock().clear();
-        if !accepted.is_current(&server.config.lock()) {
+        if !accepted.is_current(&server.client_session.config.lock()) {
             return Err("configuration must remain current at the stored root".into());
         }
         let settled_frames = frame_count(&buf);
@@ -887,7 +891,7 @@ mod tests {
         if !wait_for_frames(&buf, 1) {
             return Err("didOpen publication must flush first".into());
         }
-        let accepted = AcceptedCriticSnapshot::capture(&server.config.lock(), None);
+        let accepted = AcceptedCriticSnapshot::capture(&server.client_session.config.lock(), None);
         let bound = identity.with_accepted_critic_snapshot(Some(accepted));
         let settled_frames = frame_count(&buf);
         let outcome = server.commit_push_diagnostics_after_staging(
@@ -895,7 +899,7 @@ mod tests {
             json!({ "uri": uri, "version": 1, "diagnostics": [] }),
             PushDiagnosticsDisposition::Replacement,
             || {
-                server.config.lock().native_critic_exclude =
+                server.client_session.config.lock().native_critic_exclude =
                     vec!["native.testing.require_use_strict".to_string()];
             },
         );

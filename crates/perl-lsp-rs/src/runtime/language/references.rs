@@ -2047,7 +2047,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().document_highlight {
+        if !self.client_session.advertised_features.lock().document_highlight {
             return Err(crate::protocol::method_not_advertised());
         }
 

@@ -462,7 +462,7 @@ impl LspServer {
         let root = match resolution_root(self, None) {
             Some(r) => r,
             None => {
-                if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
+                if !self.client_session.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
                     self.show_message_or_log(
                         MessageType::Warning,
                         "Perl LSP: workspace root not detected — module resolution disabled. \
@@ -501,7 +501,7 @@ impl LspServer {
         let root = match resolution_root(self, doc_uri) {
             Some(r) => r,
             None => {
-                if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
+                if !self.client_session.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
                     self.show_message_or_log(
                         MessageType::Warning,
                         "Perl LSP: workspace root not detected — module resolution disabled. \
@@ -634,7 +634,7 @@ impl LspServer {
         let context = match self.effective_inc_context_for_doc(doc_uri, doc_text, doc_offset) {
             Some(context) => context,
             None => {
-                if !self.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
+                if !self.client_session.root_undetected_shown.fetch_or(true, Ordering::SeqCst) {
                     self.show_message_or_log(
                         MessageType::Warning,
                         "Perl LSP: workspace root not detected — module resolution disabled. \
@@ -1970,14 +1970,14 @@ use Overlay::OpenDoc;
 
         // Flag must start false so the first warning can fire.
         assert!(
-            !server.root_undetected_shown.load(std::sync::atomic::Ordering::SeqCst),
+            !server.client_session.root_undetected_shown.load(std::sync::atomic::Ordering::SeqCst),
             "root_undetected_shown must be false at server creation"
         );
 
         // First resolution attempt (no root set) → flag flips to true.
         let _ = server.resolve_module_path("First::Module", None);
         assert!(
-            server.root_undetected_shown.load(std::sync::atomic::Ordering::SeqCst),
+            server.client_session.root_undetected_shown.load(std::sync::atomic::Ordering::SeqCst),
             "root_undetected_shown must be true after first failed resolution"
         );
     }
@@ -1996,7 +1996,7 @@ use Overlay::OpenDoc;
         // Here we test the cumulative: after two calls the flag is still true (not reset).
         let _ = server.resolve_module_path("Second::Module", None);
         assert!(
-            server.root_undetected_shown.load(std::sync::atomic::Ordering::SeqCst),
+            server.client_session.root_undetected_shown.load(std::sync::atomic::Ordering::SeqCst),
             "root_undetected_shown must remain true after subsequent failed resolutions"
         );
     }

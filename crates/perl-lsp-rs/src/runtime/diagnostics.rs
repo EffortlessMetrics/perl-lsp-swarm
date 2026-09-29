@@ -227,7 +227,7 @@ impl PullDiagnosticsOrchestrator {
             native_critic_exclude,
             accepted_critic_snapshot,
         ) = {
-            let cfg = server.config.lock();
+            let cfg = server.client_session.config.lock();
             (
                 cfg.perlcritic_enabled,
                 cfg.perlcritic_severity,
@@ -246,7 +246,7 @@ impl PullDiagnosticsOrchestrator {
         // that has already moved.
         let accepted_state_currentness = {
             let accepted_snapshot = accepted_critic_snapshot.clone();
-            let config = std::sync::Arc::clone(&server.config);
+            let config = std::sync::Arc::clone(&server.client_session.config);
             let workspace_folders = std::sync::Arc::clone(&server.workspace_folders);
             let root_path = std::sync::Arc::clone(&server.root_path);
             let single_file_config = std::sync::Arc::clone(&server.single_file_project_config);
@@ -285,7 +285,8 @@ impl PullDiagnosticsOrchestrator {
             .collect();
 
         // Get client capabilities
-        let markup_message_support = server.client_capabilities.lock().markup_message_support;
+        let markup_message_support =
+            server.client_session.client_capabilities.lock().markup_message_support;
         let position_encoding = server.position_encoding_for_coordinates()?;
 
         // Wait for index build, then sample per-document staleness before wiring
@@ -415,7 +416,7 @@ impl LspServer {
     /// Only publishes if client doesn't support pull diagnostics to avoid
     /// double-flow for modern LSP 3.17+ clients.
     pub(crate) fn publish_diagnostics(&self, uri: &str) {
-        if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+        if self.client_session.client_supports_pull_diags.load(Ordering::Relaxed) {
             return;
         }
 
@@ -1208,7 +1209,7 @@ impl LspServer {
     pub(crate) fn publish_parse_errors_fast(&self, uri: &str) {
         // Fast path is only meaningful for push-diagnostic clients.
         // Pull-diagnostic clients request diagnostics on-demand.
-        if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+        if self.client_session.client_supports_pull_diags.load(Ordering::Relaxed) {
             return;
         }
 
@@ -1403,7 +1404,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().diagnostic_provider {
+        if !self.client_session.advertised_features.lock().diagnostic_provider {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1444,7 +1445,8 @@ impl LspServer {
                 })
             };
             if let Some((doc, generation, gen_at_snapshot)) = doc_snapshot {
-                let markup_message_support = self.client_capabilities.lock().markup_message_support;
+                let markup_message_support =
+                    self.client_session.client_capabilities.lock().markup_message_support;
                 // Both come off the one `current_parsed()` snapshot so the regex
                 // table cannot describe a different generation than the parse
                 // errors beside it (#7024).
@@ -1600,7 +1602,8 @@ impl LspServer {
 
         match report {
             DocumentDiagnosticReport::Full(full) => {
-                let markup_message_support = self.client_capabilities.lock().markup_message_support;
+                let markup_message_support =
+                    self.client_session.client_capabilities.lock().markup_message_support;
                 let items: Vec<Value> = full
                     .full_document_diagnostic_report
                     .items
@@ -1697,7 +1700,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().diagnostic_provider {
+        if !self.client_session.advertised_features.lock().diagnostic_provider {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1721,7 +1724,8 @@ impl LspServer {
         };
 
         let mut items = Vec::new();
-        let markup_message_support = self.client_capabilities.lock().markup_message_support;
+        let markup_message_support =
+            self.client_session.client_capabilities.lock().markup_message_support;
 
         // Collect document snapshots without holding lock.
         // Also capture each document's generation Arc and the generation value
@@ -2273,7 +2277,7 @@ impl LspServer {
             &self.single_file_project_config,
         )
         .map(|path| path.to_string_lossy().into_owned());
-        let config = self.config.lock();
+        let config = self.client_session.config.lock();
         AcceptedCriticSnapshot::capture(&config, root_key.as_deref())
     }
 
@@ -2372,7 +2376,7 @@ impl LspServer {
         let root_path = std::sync::Arc::clone(&self.root_path);
         let single_file_config = std::sync::Arc::clone(&self.single_file_project_config);
         let topology_stable = std::sync::Arc::clone(&self.workspace_topology_stable);
-        let config = std::sync::Arc::clone(&self.config);
+        let config = std::sync::Arc::clone(&self.client_session.config);
         let topology_generation = std::sync::Arc::clone(&self.workspace_topology_generation);
         let accepted_topology_generation =
             topology_generation.load(std::sync::atomic::Ordering::SeqCst);
@@ -3846,7 +3850,7 @@ mod tests {
         //
         // A pull-only client is the realistic way to get a cold cell: `didOpen`
         // otherwise publishes, which warms it before any pull runs.
-        server.client_supports_pull_diags.store(true, Ordering::Relaxed);
+        server.client_session.client_supports_pull_diags.store(true, Ordering::Relaxed);
         let uri_pull_first = "file:///pull_first_analysis_once.pl";
         server.test_handle_did_open(Some(json!({
             "textDocument": {
@@ -4678,7 +4682,7 @@ mod tests {
         // the recommended profile and the strict-only POD rule stays absent.
         let (server, buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
-        server.config.lock().native_critic_profile = " RECOMMENDED ".to_string();
+        server.client_session.config.lock().native_critic_profile = " RECOMMENDED ".to_string();
         let uri = "file:///native_critic_normalized_profile_test.pl";
         server
             .test_handle_did_open(Some(json!({
@@ -5434,7 +5438,7 @@ system($path);
         let (server, buf) = make_server_with_capture();
         let uri = "file:///fast_path_pull_diags_test.pl";
         // Simulate a client that supports pull diagnostics by setting the flag.
-        server.client_supports_pull_diags.store(true, Ordering::Relaxed);
+        server.client_session.client_supports_pull_diags.store(true, Ordering::Relaxed);
         server
             .test_handle_did_open(Some(json!({
                 "textDocument": {
@@ -5474,7 +5478,7 @@ system($path);
     fn slow_path_silent_for_pull_diagnostic_clients() -> Result<(), Box<dyn std::error::Error>> {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///slow_path_pull_diags_test.pl";
-        server.client_supports_pull_diags.store(true, Ordering::Relaxed);
+        server.client_session.client_supports_pull_diags.store(true, Ordering::Relaxed);
         server.test_handle_did_open(Some(json!({
             "textDocument": {
                 "uri": uri,
@@ -5957,7 +5961,7 @@ print \"unreachable\\n\";\n";
             }
         })))?;
 
-        let capabilities_guard = server.client_capabilities.lock();
+        let capabilities_guard = server.client_session.client_capabilities.lock();
         let worker_server = StdArc::clone(&server);
         let handle = std::thread::spawn(move || {
             worker_server.test_handle_document_diagnostic(Some(json!({

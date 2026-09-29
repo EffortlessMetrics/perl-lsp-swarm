@@ -95,16 +95,17 @@ impl LspServer {
     pub(crate) fn position_encoding_session_context(
         &self,
     ) -> Option<PositionEncodingSessionContext> {
-        *self.position_encoding_session_context.lock()
+        *self.client_session.position_encoding_session_context.lock()
     }
 
     pub(crate) fn publish_position_encoding_session_context(&self) {
-        *self.position_encoding_session_context.lock() =
+        *self.client_session.position_encoding_session_context.lock() =
             Some(PositionEncodingSessionContext::COMPATIBILITY_PINNED_UTF16);
     }
 
+    #[cfg(test)]
     pub(crate) fn clear_position_encoding_session_context(&self) {
-        *self.position_encoding_session_context.lock() = None;
+        *self.client_session.position_encoding_session_context.lock() = None;
     }
 
     /// Return the active coordinate encoding.

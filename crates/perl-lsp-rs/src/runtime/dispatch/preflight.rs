@@ -92,14 +92,14 @@ pub(super) fn prepare_request(
 }
 
 fn auto_initialize_for_compat(server: &LspServer, request: &JsonRpcRequest) {
-    if !server.initialized.load(Ordering::Acquire)
+    if !server.client_session.initialized.load(Ordering::Acquire)
         && server.initialization_accepted()
         && !is_lifecycle_method(&request.method)
     {
         server.auto_initialize_for_compat(&request.method);
         // Mirror the post-`initialized` configuration pull for clients that
         // skip the notification (#7708).
-        if server.initialized.load(Ordering::Acquire) {
+        if server.client_session.initialized.load(Ordering::Acquire) {
             server.request_workspace_configuration_for_folders();
         }
     }

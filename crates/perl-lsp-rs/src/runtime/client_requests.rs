@@ -21,7 +21,7 @@ impl LspServer {
     /// the common request seam so a future call site cannot silently
     /// reintroduce a frame while `initialize` is still being handled.
     pub(crate) fn send_request(&self, method: &str, params: Value) -> io::Result<ServerRequestId> {
-        if !self.initialized.load(Ordering::Acquire) {
+        if !self.client_session.initialized.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 format!("server request `{method}` is deferred until initialization completes"),
@@ -35,9 +35,10 @@ impl LspServer {
 
     pub(crate) fn next_server_request_id(&self) -> ServerRequestId {
         loop {
-            let current = self.next_request_id.load(Ordering::Relaxed);
+            let current = self.client_session.next_request_id.load(Ordering::Relaxed);
             let next = if current == i32::MAX { 1 } else { current + 1 };
             if self
+                .client_session
                 .next_request_id
                 .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
@@ -55,7 +56,7 @@ impl LspServer {
         edit: Value,
         is_refactoring: bool,
     ) -> io::Result<Option<ServerRequestId>> {
-        let caps = self.client_capabilities.lock();
+        let caps = self.client_session.client_capabilities.lock();
         if !caps.workspace_apply_edit_support || !caps.workspace_edit_metadata_support {
             return Ok(None);
         }
@@ -77,7 +78,7 @@ impl LspServer {
 
     /// Request client to refresh code lenses (workspace/codeLens/refresh)
     pub fn request_code_lens_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().code_lens_refresh_support {
+        if !self.client_session.client_capabilities.lock().code_lens_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/codeLens/refresh", json!(null))?;
@@ -87,7 +88,7 @@ impl LspServer {
 
     /// Request client to refresh semantic tokens (workspace/semanticTokens/refresh)
     pub fn request_semantic_tokens_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().semantic_tokens_refresh_support {
+        if !self.client_session.client_capabilities.lock().semantic_tokens_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/semanticTokens/refresh", json!(null))?;
@@ -97,7 +98,7 @@ impl LspServer {
 
     /// Request client to refresh inlay hints (workspace/inlayHint/refresh)
     pub fn request_inlay_hint_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().inlay_hint_refresh_support {
+        if !self.client_session.client_capabilities.lock().inlay_hint_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/inlayHint/refresh", json!(null))?;
@@ -107,7 +108,7 @@ impl LspServer {
 
     /// Request client to refresh inline values (workspace/inlineValue/refresh)
     pub fn request_inline_value_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().inline_value_refresh_support {
+        if !self.client_session.client_capabilities.lock().inline_value_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/inlineValue/refresh", json!(null))?;
@@ -117,7 +118,7 @@ impl LspServer {
 
     /// Request client to refresh diagnostics (workspace/diagnostic/refresh)
     pub fn request_diagnostic_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().diagnostic_refresh_support {
+        if !self.client_session.client_capabilities.lock().diagnostic_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/diagnostic/refresh", json!(null))?;
@@ -127,7 +128,7 @@ impl LspServer {
 
     /// Request client to refresh folding ranges (workspace/foldingRange/refresh)
     pub fn request_folding_range_refresh(&self) -> io::Result<()> {
-        if !self.client_capabilities.lock().folding_range_refresh_support {
+        if !self.client_session.client_capabilities.lock().folding_range_refresh_support {
             return Ok(());
         }
         self.send_request("workspace/foldingRange/refresh", json!(null))?;
@@ -192,7 +193,7 @@ mod tests {
     /// exercise the pre-initialization lifecycle boundary itself.
     fn server_with_output_capture() -> (LspServer, OutputCapture) {
         let (server, output) = uninitialized_server_with_output_capture();
-        server.initialized.store(true, Ordering::Release);
+        server.client_session.initialized.store(true, Ordering::Release);
         (server, output)
     }
 
@@ -253,7 +254,7 @@ mod tests {
     fn request_apply_workspace_edit_with_metadata_call_presence_observer() -> TestResult {
         let (server, output) = server_with_output_capture();
         {
-            let mut caps = server.client_capabilities.lock();
+            let mut caps = server.client_session.client_capabilities.lock();
             caps.workspace_apply_edit_support = true;
             caps.workspace_edit_metadata_support = true;
         }
@@ -303,7 +304,7 @@ mod tests {
     #[test]
     fn request_apply_workspace_edit_with_metadata_boundary_discriminator() -> TestResult {
         let (server, output) = server_with_output_capture();
-        server.client_capabilities.lock().workspace_apply_edit_support = true;
+        server.client_session.client_capabilities.lock().workspace_apply_edit_support = true;
         let request_id = server.request_apply_workspace_edit_with_metadata(
             "Safe delete reset",
             "Review source-backed safe-delete edit for reset before applying.",
@@ -320,7 +321,7 @@ mod tests {
         );
 
         let (server, output) = server_with_output_capture();
-        server.client_capabilities.lock().workspace_edit_metadata_support = true;
+        server.client_session.client_capabilities.lock().workspace_edit_metadata_support = true;
         let request_id = server.request_apply_workspace_edit_with_metadata(
             "Safe delete reset",
             "Review source-backed safe-delete edit for reset before applying.",
@@ -350,7 +351,7 @@ mod tests {
         assert!(request_id.is_none(), "the unsupported-client boundary returns Ok(None)");
 
         {
-            let mut caps = server.client_capabilities.lock();
+            let mut caps = server.client_session.client_capabilities.lock();
             caps.workspace_apply_edit_support = true;
             caps.workspace_edit_metadata_support = true;
         }

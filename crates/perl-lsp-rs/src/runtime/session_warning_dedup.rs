@@ -305,6 +305,14 @@ impl SessionWarningDedupStore {
         self.family(family).clear_for_lifecycle();
     }
 
+    /// Drop every retained identity at the connection/session reset boundary.
+    pub(crate) fn clear_all_families(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.clear_family(SessionWarningFamily::Critic);
+        self.clear_family(SessionWarningFamily::ClientSetting);
+        self.clear_family(SessionWarningFamily::AiBackend);
+    }
+
     /// Consult the store for an invalid editor-provided setting value.
     ///
     /// Unknown setting names (no bounded tag) follow the bounded
@@ -387,6 +395,6 @@ impl super::LspServer {
     /// Pressure/bound counters for the session-warning dedup store (#9183).
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub fn session_warning_dedup_snapshot(&self) -> SessionWarningDedupSnapshot {
-        self.session_warning_dedup.snapshot()
+        self.client_session.session_warning_dedup.snapshot()
     }
 }

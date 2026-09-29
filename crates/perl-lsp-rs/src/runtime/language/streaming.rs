@@ -91,7 +91,7 @@ impl LspServer {
             ai_timeout_ms,
             streaming_debounce_ms,
         ) = {
-            let cfg = self.config.lock();
+            let cfg = self.client_session.config.lock();
             let a = &cfg.ai_completion;
             (
                 a.enabled,

@@ -408,10 +408,11 @@ mod tests {
             Box::new(SharedWriter(Arc::clone(&output))),
         );
         server
+            .client_session
             .advertised_feature_ids
             .lock()
             .extend([Surface::Document.feature_id(), Surface::Range.feature_id()]);
-        server.config.lock().perltidy_enabled = true;
+        server.client_session.config.lock().perltidy_enabled = true;
         (server, output)
     }
 
@@ -484,7 +485,7 @@ mod tests {
     #[test]
     fn unsupported_native_multi_range_warns_once() -> TestResult {
         let (server, output) = server_with_output();
-        server.advertised_feature_ids.lock().push(Surface::Ranges.feature_id());
+        server.client_session.advertised_feature_ids.lock().push(Surface::Ranges.feature_id());
         let uri = "file:///unsupported-native-multi-range-formatting.pl";
         server.test_apply_did_open(uri, "sub f {\nreturn 1;\n}\n", 1)?;
         let params = json!({
@@ -580,7 +581,7 @@ mod tests {
         server.test_apply_did_open(uri, "sub f {\nreturn 1;\n}\n", 1)?;
         let first =
             server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
-        server.config.lock().perltidy_indent_columns = Some(8);
+        server.client_session.config.lock().perltidy_indent_columns = Some(8);
         let changed =
             server.handle_formatting_policy(Some(document_formatting_params(uri, 1)), None)?;
 
@@ -599,8 +600,8 @@ mod tests {
     #[test]
     fn on_type_tab_refusal_stays_quiet() -> TestResult {
         let (server, output) = server_with_output();
-        server.advertised_feature_ids.lock().push(Surface::OnType.feature_id());
-        server.config.lock().perltidy_tabs = Some(true);
+        server.client_session.advertised_feature_ids.lock().push(Surface::OnType.feature_id());
+        server.client_session.config.lock().perltidy_tabs = Some(true);
         let uri = "file:///unsupported-on-type-formatting.pl";
         server.test_apply_did_open(uri, "if ($ok) {\n\n", 1)?;
         let params = json!({

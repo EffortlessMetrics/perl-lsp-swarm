@@ -45,6 +45,7 @@ impl LspServer {
         }
 
         if self
+            .client_session
             .initialized
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -57,7 +58,7 @@ impl LspServer {
         // Emit any pending startup logMessage (e.g. the JetBrains
         // dynamic-registration override notice) now that the client has
         // signalled readiness via the `initialized` notification (#4630).
-        if let Some(msg) = self.pending_startup_log.lock().take()
+        if let Some(msg) = self.client_session.pending_startup_log.lock().take()
             && let Err(e) = self.log_message(super::super::window::MessageType::Info, &msg)
         {
             tracing::warn!(error = %e, "Failed to send pending startup logMessage");
@@ -98,7 +99,9 @@ impl LspServer {
     }
 
     pub(super) fn auto_initialize_for_compat(&self, method: &str) {
-        if self.initialization_accepted() && !self.initialized.load(Ordering::Acquire) {
+        if self.initialization_accepted()
+            && !self.client_session.initialized.load(Ordering::Acquire)
+        {
             tracing::warn!(
                 method,
                 "Client skipped initialized notification; auto-initializing for compatibility"
@@ -120,10 +123,12 @@ impl LspServer {
 
     /// Handle shutdown request
     pub(super) fn handle_shutdown_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
-        // Enforce single-shutdown idempotence via atomic swap.
+        // Enforce single-shutdown idempotence via the session owner.
         // Note: The LSP router permits shutdown before initialize_requested
         // (see dispatch/mod.rs), so we do not check initialize_requested here.
-        if self.shutdown_received.swap(true, Ordering::AcqRel) {
+        if self.client_session.begin_shutdown()
+            == crate::runtime::client_session::ShutdownAdmission::AlreadyShutdown
+        {
             return Err(JsonRpcError {
                 code: -32600, // InvalidRequest per LSP spec
                 message: "shutdown request may only be sent once".to_string(),
@@ -131,11 +136,9 @@ impl LspServer {
             });
         }
 
-        // Clear any pending cancelled requests on shutdown
-        self.cancelled.lock().clear();
-        self.clear_position_encoding_session_context();
         // Destroy the session-keyed resolve authenticator so every envelope
-        // from this session becomes unverifiable (#8342).
+        // from this session becomes unverifiable (#8342). Transport-owned,
+        // not ClientSession-owned.
         self.teardown_resolve_session();
         Ok(Some(json!(null)))
     }
@@ -154,7 +157,8 @@ impl LspServer {
         // LSP exit status is defined by whether shutdown was received. Writer
         // settlement remains independent evidence and must not change that
         // protocol status when shutdown was accepted.
-        let exit_code = protocol_exit_code(self.shutdown_received.load(Ordering::Acquire));
+        let exit_code =
+            protocol_exit_code(self.client_session.shutdown_received.load(Ordering::Acquire));
         tracing::info!(exit_code, "LSP server exiting");
         // `process::exit` skips Rust destructors, including the non-blocking
         // file writer guard. Drain it explicitly so the final lifecycle log
@@ -179,7 +183,7 @@ impl LspServer {
         {
             let level = Self::normalize_trace_level(Some(value));
             tracing::debug!(level, "Trace level set");
-            *self.trace_level.lock() = level.to_string();
+            *self.client_session.trace_level.lock() = level.to_string();
         }
         Ok(None) // Notification, no response
     }
@@ -190,7 +194,7 @@ impl LspServer {
     /// The verbose field is only included when trace level is "verbose".
     #[allow(dead_code)]
     pub(crate) fn send_log_trace(&self, message: &str, verbose: Option<&str>) {
-        let current_level = self.trace_level.lock().clone();
+        let current_level = self.client_session.trace_level.lock().clone();
         if current_level == TRACE_LEVEL_OFF {
             return;
         }
@@ -224,7 +228,7 @@ impl LspServer {
             });
         }
 
-        if self.initialized.load(Ordering::Acquire) {
+        if self.client_session.initialized.load(Ordering::Acquire) {
             return Err(JsonRpcError {
                 code: -32600, // InvalidRequest per LSP spec
                 message: "initialized notification may only be sent once".to_string(),
@@ -241,6 +245,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::JsonRpcId;
     use proptest::prelude::*;
 
     type TestResult = Result<(), String>;
@@ -332,7 +337,7 @@ mod tests {
         // either completion path. The state is constructed directly because
         // the live initialize path now classifies before the CAS.
         let server = LspServer::new();
-        server.initialize_requested.store(true, Ordering::Release);
+        server.client_session.initialize_requested.store(true, Ordering::Release);
 
         // When — compat auto-initialize (preflight compat path)
         server.auto_initialize_for_compat("textDocument/hover");
@@ -386,12 +391,54 @@ mod tests {
         // Then
         assert_eq!(response, Some(json!(null)), "shutdown returns JSON null per LSP spec");
         assert!(
-            server.shutdown_received.load(Ordering::Acquire),
+            server.client_session.shutdown_received.load(Ordering::Acquire),
             "shutdown_received must be set (exit will use code 0)"
         );
         assert!(
             server.position_encoding_session_context().is_none(),
             "shutdown must invalidate the active coordinate context"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn given_session_owned_handles_when_shutdown_dispatch_runs_then_progress_and_pending_are_drained()
+    -> TestResult {
+        let server = LspServer::new();
+        server
+            .handle_initialize(None)
+            .map_err(|e| format!("initialize request should succeed: {e}"))?;
+        let old_generation = server.client_session.generation();
+        server.client_session.progress_tokens.lock().insert("progress-old".to_string());
+        server
+            .client_session
+            .progress_token_to_request
+            .lock()
+            .insert("progress-old".to_string(), JsonRpcId::Integer(9));
+        server.client_session.cancelled.lock().insert(JsonRpcId::Integer(9));
+        server.client_session.client_capabilities.lock().work_done_progress_support = true;
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
+            crate::runtime::types::ServerRequestId::for_test(4),
+            crate::runtime::types::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec!["file:///old".to_string()],
+                includes_global_item: false,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        let response = server
+            .handle_shutdown_dispatch()
+            .map_err(|e| format!("shutdown should succeed: {e}"))?;
+
+        assert_eq!(response, Some(json!(null)));
+        assert!(server.client_session.progress_tokens.lock().is_empty());
+        assert!(server.client_session.progress_token_to_request.lock().is_empty());
+        assert!(server.client_session.cancelled.lock().is_empty());
+        assert!(server.client_session.pending_workspace_configuration_requests.lock().is_empty());
+        assert!(!server.client_session.client_capabilities.lock().work_done_progress_support);
+        assert!(
+            !server.client_session.authorize_generation(old_generation),
+            "old session identity must not authorize after production shutdown"
         );
         Ok(())
     }
@@ -454,7 +501,7 @@ mod tests {
 
         // Then
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_OFF,
             "unknown trace value must default to 'off'"
         );
@@ -474,7 +521,7 @@ mod tests {
 
         // Then
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_VERBOSE,
             "verbose is a valid LSP TraceValue and must be stored exactly"
         );
@@ -494,7 +541,7 @@ mod tests {
 
         // Then
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_MESSAGES,
             "messages is a valid LSP TraceValue and must be stored exactly"
         );
@@ -517,7 +564,7 @@ mod tests {
 
         // Then — level must be preserved; None params must not reset to "off"
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_VERBOSE,
             "missing params must not reset trace level"
         );
@@ -540,7 +587,7 @@ mod tests {
 
         // Then — level must be preserved
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_MESSAGES,
             "missing value key must not reset trace level"
         );
@@ -556,13 +603,17 @@ mod tests {
         server
             .handle_set_trace_dispatch(Some(json!({"value": "off"})))
             .map_err(|e| format!("setTrace off should succeed: {e}"))?;
-        assert_eq!(server.trace_level.lock().as_str(), TRACE_LEVEL_OFF, "'off' roundtrip");
+        assert_eq!(
+            server.client_session.trace_level.lock().as_str(),
+            TRACE_LEVEL_OFF,
+            "'off' roundtrip"
+        );
 
         server
             .handle_set_trace_dispatch(Some(json!({"value": "messages"})))
             .map_err(|e| format!("setTrace messages should succeed: {e}"))?;
         assert_eq!(
-            server.trace_level.lock().as_str(),
+            server.client_session.trace_level.lock().as_str(),
             TRACE_LEVEL_MESSAGES,
             "'messages' roundtrip"
         );
@@ -570,7 +621,11 @@ mod tests {
         server
             .handle_set_trace_dispatch(Some(json!({"value": "verbose"})))
             .map_err(|e| format!("setTrace verbose should succeed: {e}"))?;
-        assert_eq!(server.trace_level.lock().as_str(), TRACE_LEVEL_VERBOSE, "'verbose' roundtrip");
+        assert_eq!(
+            server.client_session.trace_level.lock().as_str(),
+            TRACE_LEVEL_VERBOSE,
+            "'verbose' roundtrip"
+        );
 
         Ok(())
     }
@@ -719,7 +774,7 @@ mod tests {
 
                 // Assert both observable state fields against the model after every action.
                 prop_assert_eq!(
-                    server.initialize_requested.load(Ordering::Acquire),
+                    server.client_session.initialize_requested.load(Ordering::Acquire),
                     model.initialize_requested,
                     "initialize_requested flag must track model"
                 );
