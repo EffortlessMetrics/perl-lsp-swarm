@@ -6,7 +6,7 @@
 //! rather than silently expanding the service locator.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -931,6 +931,25 @@ fn governed_fields() -> BTreeSet<String> {
     OWNERSHIP.iter().map(|row| row.field.to_string()).collect()
 }
 
+/// Field names that appear more than once in an ownership table.
+///
+/// `governed_fields` collapses to a set, so a duplicate row would still look
+/// complete to the coverage scan. Uniqueness has to count, not set-insert.
+fn duplicate_ownership_fields(rows: &[OwnershipRow]) -> Vec<&'static str> {
+    let mut seen = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+    for row in rows {
+        if !seen.insert(row.field) {
+            duplicates.insert(row.field);
+        }
+    }
+    duplicates.into_iter().collect()
+}
+
+fn ownership_rows_named<'a>(rows: &'a [OwnershipRow], field: &str) -> Vec<&'a OwnershipRow> {
+    rows.iter().filter(|row| row.field == field).collect()
+}
+
 /// Fields present in the source that no ownership row claims.
 fn unclassified_fields(source: &str) -> Result<BTreeSet<String>> {
     Ok(discover_lsp_server_fields(source)?.difference(&governed_fields()).cloned().collect())
@@ -1210,9 +1229,9 @@ pub struct LspServer {
 
 #[test]
 fn ownership_rows_are_unique_and_complete() {
-    let mut rows = BTreeMap::new();
+    let duplicates = duplicate_ownership_fields(OWNERSHIP);
+    assert!(duplicates.is_empty(), "duplicate ownership row for {}", duplicates.join(", "));
     for row in OWNERSHIP {
-        assert!(rows.insert(row.field, row).is_none(), "duplicate ownership row for {}", row.field);
         assert!(!row.synchronization.trim().is_empty());
         assert!(!row.reset_boundary.trim().is_empty());
         assert!(!row.identity.trim().is_empty());
@@ -1233,6 +1252,137 @@ fn ownership_rows_are_unique_and_complete() {
             );
         }
     }
+}
+
+/// The #8385 folder-transition row that independently re-listed the same
+/// `LspServer` field #15418 introduced under #9062. Same owner and sync;
+/// different identity and migration. Re-adding it is the #16391 defect.
+fn discarded_8385_workspace_topology_generation_row() -> OwnershipRow {
+    row!(
+        "workspace_topology_generation",
+        WorkspaceServices,
+        "Arc<AtomicU32>",
+        "server instance drop",
+        "workspace generation",
+        false,
+        "#8385"
+    )
+}
+
+fn governing_9062_workspace_topology_generation_row() -> OwnershipRow {
+    row!(
+        "workspace_topology_generation",
+        WorkspaceServices,
+        "Arc<AtomicU32>",
+        "server instance drop",
+        "workspace-topology generation",
+        false,
+        "#9062"
+    )
+}
+
+fn topology_generation_shape(
+    row: &OwnershipRow,
+) -> (&'static str, TargetOwner, &'static str, &'static str, &'static str, bool, &'static str) {
+    (
+        row.field,
+        row.owner,
+        row.synchronization,
+        row.reset_boundary,
+        row.identity,
+        row.blocking_work_reachable,
+        row.migration_issue,
+    )
+}
+
+fn workspace_topology_generation_governor(rows: &[OwnershipRow]) -> Result<&OwnershipRow> {
+    let matches = ownership_rows_named(rows, "workspace_topology_generation");
+    ensure!(
+        matches.len() == 1,
+        "workspace_topology_generation must have exactly one OWNERSHIP row (found {})",
+        matches.len()
+    );
+    let row = matches[0];
+    ensure!(
+        topology_generation_shape(row)
+            == topology_generation_shape(&governing_9062_workspace_topology_generation_row()),
+        "workspace_topology_generation must keep the #9062 governing row, not the discarded #8385 identity"
+    );
+    Ok(row)
+}
+
+#[test]
+fn a_second_workspace_topology_generation_row_is_a_duplicate() {
+    let rows = [
+        governing_9062_workspace_topology_generation_row(),
+        discarded_8385_workspace_topology_generation_row(),
+    ];
+    assert_eq!(duplicate_ownership_fields(&rows), ["workspace_topology_generation"]);
+    let err = workspace_topology_generation_governor(&rows)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(
+        err.contains("exactly one OWNERSHIP row (found 2)"),
+        "duplicate table must fail the exactly-one check, got {err:?}"
+    );
+}
+
+#[test]
+fn two_distinct_workspace_generation_fields_are_not_duplicates() -> Result<()> {
+    let rows = [
+        row!(
+            "workspace_identity_generation",
+            WorkspaceServices,
+            "Arc<AtomicU64>",
+            "server instance drop",
+            "workspace generation",
+            false,
+            "#8385"
+        ),
+        governing_9062_workspace_topology_generation_row(),
+    ];
+    assert!(
+        duplicate_ownership_fields(&rows).is_empty(),
+        "sibling generation counters must stay distinct field names"
+    );
+    workspace_topology_generation_governor(&rows)?;
+    Ok(())
+}
+
+#[test]
+fn keeping_only_the_8385_topology_row_is_still_the_wrong_governor() {
+    let discarded_only = [discarded_8385_workspace_topology_generation_row()];
+    assert!(
+        duplicate_ownership_fields(&discarded_only).is_empty(),
+        "keeping only the #8385 row would still look unique"
+    );
+    let err = workspace_topology_generation_governor(&discarded_only)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(
+        err.contains("must keep the #9062 governing row"),
+        "unique wrong-row identity must fail as the wrong governor, got {err:?}"
+    );
+}
+
+#[test]
+fn a_missing_workspace_topology_generation_row_is_not_the_governor() {
+    let err = workspace_topology_generation_governor(&[])
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(
+        err.contains("exactly one OWNERSHIP row (found 0)"),
+        "zero rows must fail the exactly-one check, got {err:?}"
+    );
+}
+
+#[test]
+fn workspace_topology_generation_has_exactly_the_9062_governing_row() -> Result<()> {
+    workspace_topology_generation_governor(OWNERSHIP)?;
+    Ok(())
 }
 
 #[test]

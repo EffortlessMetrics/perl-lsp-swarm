@@ -370,7 +370,10 @@ jobs:
   windows-platform-smoke:
     name: Windows platform smoke
     runs-on: windows-2025
-    timeout-minutes: 20
+    # Cold windows-2025 cargo build exceeds 20m — job 108830411767 killed during
+    # compilation ("The job has exceeded the maximum execution time of 20m0s");
+    # same signature on #16624's job 108862152161 at 20m15s.
+    timeout-minutes: 45
     needs: [platform-overrides]
     if: needs.platform-overrides.outputs.windows_runner == 'true'
     steps:
@@ -458,7 +461,7 @@ jobs:
         run: |
           set +e
           mkdir -p "$RUNNER_TEMP/bin"
-          GOBIN="$RUNNER_TEMP/bin" go install github.com/aquaproj/aqua/v2/cmd/aqua@v2.57.0
+          bash scripts/tools/install-aqua.sh --dest "$RUNNER_TEMP/bin"
           export PATH="$RUNNER_TEMP/bin:$PATH"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           bash scripts/tools/aqua-doctor.sh

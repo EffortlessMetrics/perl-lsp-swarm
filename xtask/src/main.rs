@@ -2012,6 +2012,10 @@ enum Commands {
         #[arg(long)]
         no_wait_release: bool,
 
+        /// Durable `release_turnkey_transaction.v1` record path.
+        #[arg(long)]
+        transaction: Option<PathBuf>,
+
         /// Workflow wait timeout in seconds.
         #[arg(long)]
         workflow_timeout: Option<u64>,
@@ -5308,7 +5312,7 @@ enum QueueCommand {
         fixture: Option<PathBuf>,
     },
 
-    /// Classify master queue health into GREEN/PENDING/RED modes.
+    /// Classify master queue health into GREEN/PENDING/RED/NOT_PROVEN modes.
     Health {
         /// Output path for queue-health receipt JSON.
         #[arg(long)]
@@ -6373,6 +6377,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             no_auto_merge,
             no_wait_pr_merge,
             no_wait_release,
+            transaction,
             workflow_timeout,
         } => release_turnkey::run(release_turnkey::ReleaseTurnkeyConfig {
             version,
@@ -6386,6 +6391,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             no_auto_merge,
             no_wait_pr_merge,
             no_wait_release,
+            transaction: transaction.map(|path| path.display().to_string()),
             workflow_timeout,
         }),
         Commands::PrepCratesIoLaunch { mode } => {

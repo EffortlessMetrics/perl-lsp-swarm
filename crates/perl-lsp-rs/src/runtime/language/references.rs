@@ -8,11 +8,14 @@
 //! - **Ready state**: Full workspace index + text search across all files
 //! - **Building/Degraded state**: Same-file semantic analysis + open document scan
 
-use super::super::{DocumentHighlightProvider, LspServer, Value, byte_to_utf16_col, json};
+use super::super::{DocumentHighlightProvider, LspServer, Value, json};
+use super::reference_text::{
+    TextReferenceQuery, finalize_reference_locations, search_document_texts_for_references,
+};
 use crate::protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri};
 use crate::runtime::window::RequestProgressGuard;
 use crate::state::{reference_search_deadline, references_cap};
-use crate::util::{is_word_boundary, token_under_cursor};
+use crate::util::token_under_cursor;
 use std::collections::BinaryHeap;
 use std::time::Instant;
 
@@ -450,94 +453,6 @@ fn line_has_initialized_lexical_declaration(line: &str, sigil: char, name: &str)
         }
     }
     false
-}
-
-fn search_document_texts_for_references<'a, I>(documents: I, needle: &str, cap: usize) -> Vec<Value>
-where
-    I: IntoIterator<Item = (&'a str, &'a str)>,
-{
-    if needle.is_empty() || cap == 0 {
-        return Vec::new();
-    }
-
-    let needle_bytes = needle.as_bytes();
-    let mut out = Vec::new();
-
-    'docs: for (doc_uri, doc_text) in documents {
-        for (line_num, line) in doc_text.lines().enumerate() {
-            let line_bytes = line.as_bytes();
-            let mut start = 0usize;
-            while let Some(idx) = line[start..].find(needle) {
-                let byte_pos = start + idx;
-                if is_word_boundary(line_bytes, byte_pos, needle_bytes.len()) {
-                    let start_utf16 = byte_to_utf16_col(line, byte_pos);
-                    let end_utf16 = byte_to_utf16_col(line, byte_pos + needle_bytes.len());
-                    out.push(json!({
-                        "uri": doc_uri,
-                        "range": {
-                            "start": {
-                                "line": line_num,
-                                "character": start_utf16,
-                            },
-                            "end": {
-                                "line": line_num,
-                                "character": end_utf16,
-                            },
-                        },
-                    }));
-                    if out.len() >= cap {
-                        break 'docs;
-                    }
-                }
-                start = byte_pos + needle_bytes.len();
-            }
-        }
-    }
-
-    out.sort_by_key(|loc| {
-        (
-            loc["uri"].as_str().unwrap_or("").to_string(),
-            loc["range"]["start"]["line"].as_u64().unwrap_or(0),
-            loc["range"]["start"]["character"].as_u64().unwrap_or(0),
-        )
-    });
-    out.dedup();
-    out.truncate(cap);
-    out
-}
-
-fn should_skip_text_reference_match(
-    line: &str,
-    match_start: usize,
-    sigil: Option<char>,
-    include_declaration: bool,
-) -> bool {
-    if include_declaration {
-        return false;
-    }
-
-    let Some(sigil) = sigil else {
-        return false;
-    };
-
-    let symbol_start = line
-        .get(..match_start)
-        .and_then(|prefix| prefix.char_indices().next_back())
-        .and_then(|(idx, ch)| (ch == sigil).then_some(idx))
-        .unwrap_or(match_start);
-    let Some(prefix) = line.get(..symbol_start) else {
-        return false;
-    };
-
-    let statement_prefix =
-        prefix.rfind([';', '{', '}']).map(|idx| &prefix[idx + 1..]).unwrap_or(prefix);
-    if statement_prefix.contains('=') {
-        return false;
-    }
-
-    statement_prefix
-        .split(|ch: char| !ch.is_ascii_alphabetic() && ch != '_')
-        .any(|token| matches!(token, "my" | "our" | "state" | "local"))
 }
 
 impl LspServer {
@@ -1054,7 +969,10 @@ impl LspServer {
                                                 source_backed_attempt = Some(
                                                     SourceBackedReferenceAttempt::Exact(Vec::new()),
                                                 );
-                                                live_locations.truncate(cap);
+                                                live_locations = finalize_reference_locations(
+                                                    live_locations,
+                                                    cap,
+                                                );
                                                 // Precompute before the tracing macro so these
                                                 // expressions are unconditionally instrumented
                                                 // rather than lazily evaluated only when the
@@ -1068,7 +986,7 @@ impl LspServer {
                                                 );
                                                 let result_count = live_locations.len();
                                                 return Ok((
-                                                    Some(to_json_array(&live_locations)),
+                                                    Some(Value::Array(live_locations)),
                                                     ReferencesAnsweringTier::SemanticSourceBacked,
                                                     index_state,
                                                     result_count,
@@ -1157,92 +1075,54 @@ impl LspServer {
                                         typed_request_id.as_ref(),
                                     )?;
 
-                                    let mut enhanced_locations = Vec::new();
-                                    let symbol_name = &symbol_key.name;
-                                    let package_name = &symbol_key.pkg;
-
-                                    // Search patterns: both "symbol_name" and "package::symbol_name"
-                                    let patterns = vec![
-                                        format!(r"\b{}\b", regex::escape(symbol_name)),
-                                        format!(
-                                            r"\b{}::{}\b",
-                                            regex::escape(package_name),
-                                            regex::escape(symbol_name)
-                                        ),
-                                    ];
-
-                                    'pattern_loop: for pattern in patterns {
-                                        self.check_references_cancellation(
-                                            typed_request_id.as_ref(),
-                                            &mut fallback_receipt,
-                                        )?;
-                                        // Check deadline between patterns
-                                        if start.elapsed() >= deadline {
-                                            fallback_receipt.deadline_exhausted = true;
-                                            fallback_receipt.fallback_completeness = "partial";
-                                            fallback_receipt.fallback_reason = Some(
-                                                "reference_scan_deadline_during_search".to_owned(),
-                                            );
-                                            tracing::debug!(
-                                                "References: deadline exceeded during text search"
-                                            );
-                                            break 'pattern_loop;
-                                        }
-                                        if let Ok(search_regex) = regex::Regex::new(&pattern) {
-                                            for (doc_uri, doc_text) in &docs_snapshot {
-                                                self.check_references_cancellation(
-                                                    typed_request_id.as_ref(),
-                                                    &mut fallback_receipt,
-                                                )?;
-                                                // Early exit on cap
-                                                if enhanced_locations.len() >= cap {
-                                                    break 'pattern_loop;
-                                                }
-                                                let lines: Vec<&str> = doc_text.lines().collect();
-                                                for (line_num, line) in lines.iter().enumerate() {
-                                                    for mat in search_regex.find_iter(line) {
-                                                        if should_skip_text_reference_match(
-                                                            line,
-                                                            mat.start(),
-                                                            symbol_key.sigil,
-                                                            include_declaration,
-                                                        ) {
-                                                            continue;
-                                                        }
-                                                        // Convert byte offsets to UTF-16 columns for LSP compliance
-                                                        let start_utf16 =
-                                                            byte_to_utf16_col(line, mat.start());
-                                                        let end_utf16 =
-                                                            byte_to_utf16_col(line, mat.end());
-                                                        enhanced_locations.push(json!({
-                                                            "uri": doc_uri,
-                                                            "range": {
-                                                                "start": {
-                                                                    "line": line_num,
-                                                                    "character": start_utf16,
-                                                                },
-                                                                "end": {
-                                                                    "line": line_num,
-                                                                    "character": end_utf16,
-                                                                },
-                                                            },
-                                                        }));
-                                                    }
-                                                }
-                                            }
-                                        }
+                                    self.check_references_cancellation(
+                                        typed_request_id.as_ref(),
+                                        &mut fallback_receipt,
+                                    )?;
+                                    if start.elapsed() >= deadline {
+                                        fallback_receipt.deadline_exhausted = true;
+                                        fallback_receipt.fallback_completeness = "partial";
+                                        fallback_receipt.fallback_reason = Some(
+                                            "reference_scan_deadline_during_search".to_owned(),
+                                        );
+                                        tracing::debug!(
+                                            "References: deadline exceeded during text search"
+                                        );
                                     }
+                                    let index_count = workspace_locations.len();
+                                    let enhanced_locations = if fallback_receipt.deadline_exhausted
+                                    {
+                                        Vec::new()
+                                    } else {
+                                        // Identifier-boundary scan treats `:` as a separator, so
+                                        // `Pkg::name` is a hit for needle `name`. Kind filtering
+                                        // drops hash keys; identity dedup collapses overlap with
+                                        // index hits. Scan past `cap` by the current index size so
+                                        // index+text duplicates cannot exhaust the budget before
+                                        // merge (#16638).
+                                        search_document_texts_for_references(
+                                            docs_snapshot.iter().map(|(doc_uri, doc_text)| {
+                                                (doc_uri.as_str(), doc_text.as_str())
+                                            }),
+                                            TextReferenceQuery {
+                                                needle: symbol_key.name.as_ref(),
+                                                sigil: symbol_key.sigil,
+                                                include_declaration,
+                                            },
+                                            cap.saturating_add(index_count),
+                                        )
+                                    };
 
                                     // Combine workspace index results with text search results.
                                     // Capture counts BEFORE extending so classify_combined_tier
                                     // knows whether each source contributed — a mixed result
                                     // (WorkspaceMixed) must not be collapsed into WorkspaceExact.
-                                    let index_count = workspace_locations.len();
+                                    // Dedup before cap so identical index+text pairs cannot
+                                    // consume the budget (#16638).
                                     let text_count = enhanced_locations.len();
                                     workspace_locations.extend(enhanced_locations);
-                                    let mut all_combined_locations = workspace_locations;
-                                    // Cap results
-                                    all_combined_locations.truncate(cap);
+                                    let all_combined_locations =
+                                        finalize_reference_locations(workspace_locations, cap);
 
                                     if !all_combined_locations.is_empty() {
                                         tracing::debug!(
@@ -1252,7 +1132,7 @@ impl LspServer {
                                             "Found total references via combined search"
                                         );
                                         return Ok((
-                                            Some(to_json_array(&all_combined_locations)),
+                                            Some(Value::Array(all_combined_locations)),
                                             classify_combined_tier(index_count, text_count),
                                             index_state,
                                             index_count,
@@ -1420,71 +1300,43 @@ impl LspServer {
                                                         typed_request_id.as_ref(),
                                                     )?;
 
-                                                let mut all_locations = Vec::new();
-                                                let qualified_name = format!("{}::{}", pkg, name);
-                                                let Ok(search_regex) = regex::Regex::new(&format!(
-                                                    r"\b{}\b",
-                                                    regex::escape(&qualified_name)
-                                                )) else {
+                                                self.check_references_cancellation(
+                                                    typed_request_id.as_ref(),
+                                                    &mut fallback_receipt,
+                                                )?;
+                                                if start.elapsed() >= deadline {
+                                                    fallback_receipt.deadline_exhausted = true;
+                                                    fallback_receipt.fallback_completeness =
+                                                        "partial";
+                                                    fallback_receipt.fallback_reason = Some(
+                                                        "reference_scan_deadline_during_search"
+                                                            .to_owned(),
+                                                    );
                                                     continue;
-                                                };
-
-                                                'doc_scan: for (doc_uri, doc_text) in docs_snapshot
-                                                {
-                                                    self.check_references_cancellation(
-                                                        typed_request_id.as_ref(),
-                                                        &mut fallback_receipt,
-                                                    )?;
-                                                    // Check deadline
-                                                    if start.elapsed() >= deadline {
-                                                        fallback_receipt.deadline_exhausted = true;
-                                                        fallback_receipt.fallback_completeness =
-                                                            "partial";
-                                                        fallback_receipt.fallback_reason = Some(
-                                                            "reference_scan_deadline_during_search"
-                                                                .to_owned(),
-                                                        );
-                                                        break 'doc_scan;
-                                                    }
-                                                    let lines: Vec<&str> =
-                                                        doc_text.lines().collect();
-                                                    for (line_num, line) in lines.iter().enumerate()
-                                                    {
-                                                        for mat in search_regex.find_iter(line) {
-                                                            // Convert byte offsets to UTF-16 columns for LSP compliance
-                                                            let start_utf16 = byte_to_utf16_col(
-                                                                line,
-                                                                mat.start(),
-                                                            );
-                                                            let end_utf16 =
-                                                                byte_to_utf16_col(line, mat.end());
-                                                            all_locations.push(json!({
-                                                                "uri": doc_uri,
-                                                                "range": {
-                                                                    "start": {
-                                                                        "line": line_num,
-                                                                        "character": start_utf16,
-                                                                    },
-                                                                    "end": {
-                                                                        "line": line_num,
-                                                                        "character": end_utf16,
-                                                                    },
-                                                                },
-                                                            }));
-                                                            // Early exit if we hit the cap
-                                                            if all_locations.len() >= cap {
-                                                                break 'doc_scan;
-                                                            }
-                                                        }
-                                                    }
                                                 }
+                                                let qualified_name = format!("{}::{}", pkg, name);
+                                                let all_locations =
+                                                    search_document_texts_for_references(
+                                                        docs_snapshot.iter().map(
+                                                            |(doc_uri, doc_text)| {
+                                                                (
+                                                                    doc_uri.as_str(),
+                                                                    doc_text.as_str(),
+                                                                )
+                                                            },
+                                                        ),
+                                                        TextReferenceQuery {
+                                                            needle: &qualified_name,
+                                                            sigil: None,
+                                                            include_declaration,
+                                                        },
+                                                        cap,
+                                                    );
 
                                                 if !all_locations.is_empty() {
                                                     let text_count = all_locations.len();
-                                                    // Truncate to cap
-                                                    all_locations.truncate(cap);
                                                     return Ok((
-                                                        Some(to_json_array(&all_locations)),
+                                                        Some(Value::Array(all_locations)),
                                                         ReferencesAnsweringTier::WorkspaceText,
                                                         index_state,
                                                         0,
@@ -1566,7 +1418,13 @@ impl LspServer {
                                         docs_snapshot.iter().map(|(doc_uri, doc_text)| {
                                             (doc_uri.as_str(), doc_text.as_str())
                                         }),
-                                        &needle,
+                                        TextReferenceQuery {
+                                            needle: &needle,
+                                            sigil: workspace_symbol_key
+                                                .as_ref()
+                                                .and_then(|key| key.sigil),
+                                            include_declaration,
+                                        },
                                         cap,
                                     );
                                     if !open_doc_locations.is_empty() {
@@ -1577,7 +1435,7 @@ impl LspServer {
                                         );
                                         let result_count = open_doc_locations.len();
                                         return Ok((
-                                            Some(to_json_array(&open_doc_locations)),
+                                            Some(Value::Array(open_doc_locations)),
                                             ReferencesAnsweringTier::OpenDocumentText,
                                             index_state,
                                             0,
@@ -1604,10 +1462,8 @@ impl LspServer {
                     let references = analyzer.find_all_references(offset, include_declaration);
 
                     if !references.is_empty() {
-                        // Cap same-file references
                         let locations: Vec<Value> = references
                             .iter()
-                            .take(cap)
                             .map(|loc| {
                                 let (start_line, start_char) = self.offset_to_pos16(doc, loc.start);
                                 let (end_line, end_char) = self.offset_to_pos16(doc, loc.end);
@@ -1627,6 +1483,7 @@ impl LspServer {
                                 })
                             })
                             .collect();
+                        let locations = finalize_reference_locations(locations, cap);
 
                         tracing::debug!(
                             count = locations.len(),
@@ -1634,7 +1491,7 @@ impl LspServer {
                             "References: returned same-file results"
                         );
                         return Ok((
-                            Some(to_json_array(&locations)),
+                            Some(Value::Array(locations)),
                             ReferencesAnsweringTier::SemanticAnalyzer,
                             index_state,
                             0,
@@ -2297,7 +2154,7 @@ impl LspServer {
         )?;
         let out = search_document_texts_for_references(
             docs_snapshot.iter().map(|(doc_uri, doc_text)| (doc_uri.as_str(), doc_text.as_str())),
-            &needle,
+            TextReferenceQuery { needle: &needle, sigil: None, include_declaration: true },
             references_cap(),
         );
 
@@ -2691,56 +2548,6 @@ mod tests {
             !line_has_initialized_lexical_declaration("my $other = $value;", '$', "value"),
             "RHS usages do not make the target variable's declaration initialized"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn should_skip_text_reference_match_omits_variable_declarations_when_requested()
-    -> Result<(), Box<dyn Error>> {
-        let line = "my $total = 1;";
-        let match_start = line.find("total").ok_or("missing total match")?;
-
-        assert!(
-            should_skip_text_reference_match(line, match_start, Some('$'), false),
-            "includeDeclaration=false must omit lexical declaration matches"
-        );
-        assert!(
-            !should_skip_text_reference_match(line, match_start, Some('$'), true),
-            "includeDeclaration=true must keep declaration matches"
-        );
-        assert!(
-            !should_skip_text_reference_match(line, match_start, None, false),
-            "subroutine/bareword text matches are not variable declarations"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn should_skip_text_reference_match_keeps_initializer_rhs_usages() -> Result<(), Box<dyn Error>>
-    {
-        let line = "my $other = $total;";
-        let match_start = line.find("total").ok_or("missing total match")?;
-
-        assert!(
-            !should_skip_text_reference_match(line, match_start, Some('$'), false),
-            "RHS usages inside a declaration statement are still references"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn should_skip_text_reference_match_omits_variable_list_declaration_targets()
-    -> Result<(), Box<dyn Error>> {
-        let line = "for my ($first, $total) {";
-        let match_start = line.find("total").ok_or("missing total match")?;
-
-        assert!(
-            should_skip_text_reference_match(line, match_start, Some('$'), false),
-            "declaration targets inside variable lists must be omitted"
-        );
-
         Ok(())
     }
 
@@ -3887,110 +3694,173 @@ mod tests {
         Ok(())
     }
 
-    fn location_start(location: &Value) -> Result<(u64, u64), Box<dyn Error>> {
-        let line = location["range"]["start"]["line"].as_u64().ok_or("missing start line")?;
-        let character =
-            location["range"]["start"]["character"].as_u64().ok_or("missing start character")?;
-        Ok((line, character))
+    fn location_identity_key(
+        location: &Value,
+    ) -> Result<(String, u64, u64, u64, u64), Box<dyn Error>> {
+        Ok((
+            location["uri"].as_str().ok_or("missing uri")?.to_string(),
+            location["range"]["start"]["line"].as_u64().ok_or("missing start line")?,
+            location["range"]["start"]["character"].as_u64().ok_or("missing start character")?,
+            location["range"]["end"]["line"].as_u64().ok_or("missing end line")?,
+            location["range"]["end"]["character"].as_u64().ok_or("missing end character")?,
+        ))
     }
 
+    fn line_text_at<'a>(
+        docs: &'a [(&'a str, &'a str)],
+        location: &Value,
+    ) -> Result<&'a str, Box<dyn Error>> {
+        let uri = location["uri"].as_str().ok_or("missing uri")?;
+        let line = location["range"]["start"]["line"].as_u64().ok_or("missing line")? as usize;
+        let text = docs
+            .iter()
+            .find(|(doc_uri, _)| *doc_uri == uri)
+            .map(|(_, text)| *text)
+            .ok_or("missing document for location")?;
+        Ok(text.lines().nth(line).ok_or("missing line text")?)
+    }
+
+    /// Production-path contract for #16638: `textDocument/references` on `sub name`
+    /// must retain method/declaration sites, drop hash-key literals, and not
+    /// repeat identical `(uri, range)` pairs.
     #[test]
-    fn search_document_texts_for_references_boundary_discriminator_input_that_hits_the_boundary_needle_is_empty_or_cap_zero_returns_empty()
+    fn handle_references_filters_hash_keys_and_dedupes_identical_locations()
     -> Result<(), Box<dyn Error>> {
-        let docs = [("file:///refs.pl", "$var\n")];
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
 
-        assert_eq!(
-            search_document_texts_for_references(
-                docs.iter().map(|(uri, text)| (*uri, *text)),
-                "",
-                10,
-            )
-            .len(),
-            0,
-            "empty needle must not produce references",
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+
+        let classic_uri = "file:///test/Classic.pm";
+        let consumer_uri = "file:///test/consumer_classic.pl";
+        let classic = concat!(
+            "package Classic;\n",
+            "\n",
+            "sub new {\n",
+            "    my ($class, %args) = @_;\n",
+            "    my $self = { name => $args{name} // 'anon' };\n",
+            "    bless $self, $class;\n",
+            "    return $self;\n",
+            "}\n",
+            "\n",
+            "sub name {\n",
+            "    my ($self) = @_;\n",
+            "    return $self->{name};\n",
+            "}\n",
+            "\n",
+            "sub describe {\n",
+            "    my ($self) = @_;\n",
+            "    return \"Classic: \" . $self->name;\n",
+            "}\n",
         );
-
-        Ok(())
-    }
-
-    #[test]
-    fn search_document_texts_for_references_boundary_discriminator_input_that_hits_the_boundary_cap_zero_returns_empty()
-    -> Result<(), Box<dyn Error>> {
-        let docs = [("file:///refs.pl", "$var\n")];
-
-        assert_eq!(
-            search_document_texts_for_references(
-                docs.iter().map(|(uri, text)| (*uri, *text)),
-                "var",
-                0,
-            )
-            .len(),
-            0,
-            "zero cap must not produce references",
+        let consumer = concat!(
+            "use Classic;\n",
+            "my $obj = Classic->new(name => 'x');\n",
+            "my $n = $obj->name;\n",
         );
+        server.test_apply_did_open(classic_uri, classic, 1)?;
+        server.test_apply_did_open(consumer_uri, consumer, 1)?;
 
-        Ok(())
-    }
-
-    #[test]
-    fn search_document_texts_for_references_boundary_discriminator_input_that_hits_the_boundary_out_len_reaches_cap_stops_scan()
-    -> Result<(), Box<dyn Error>> {
-        let docs = [("file:///refs.pl", "$var $var $var\n")];
-
-        assert_eq!(
-            search_document_texts_for_references(
-                docs.iter().map(|(uri, text)| (*uri, *text)),
-                "var",
-                2,
-            )
-            .len(),
-            2,
-            "cap-limited scan must stop at two references",
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn search_document_texts_for_references_keeps_word_boundaries() -> Result<(), Box<dyn Error>> {
-        let docs = [("file:///refs.pl", "my $var = 1;\nmy $variant = $var;\n")];
-
-        let refs = search_document_texts_for_references(
-            docs.iter().map(|(uri, text)| (*uri, *text)),
-            "var",
-            10,
-        );
-        if refs.len() != 2 {
-            return Err(format!("expected 2 references, got {}", refs.len()).into());
+        let result = server
+            .test_handle_references(Some(serde_json::json!({
+                "textDocument": {"uri": classic_uri},
+                "position": {"line": 9, "character": 4},
+                "context": {"includeDeclaration": true}
+            })))?
+            .ok_or("missing references result")?;
+        let locations = result.as_array().ok_or("references must return an array")?;
+        if locations.is_empty() {
+            return Err("sub name must have references".into());
         }
 
-        for location in &refs {
-            if location_start(location)? == (1, 4) {
-                return Err("embedded match in $variant must not be reported".into());
+        let docs = [(classic_uri, classic), (consumer_uri, consumer)];
+        let mut identities = Vec::new();
+        let mut saw_declaration = false;
+        let mut saw_method_call = false;
+        for location in locations {
+            let identity = location_identity_key(location)?;
+            let line = line_text_at(&docs, location)?;
+            if line.contains("name =>") || line.contains("{name}") {
+                return Err(format!("hash-key line leaked into sub-name references: {line}").into());
+            }
+            if line.contains("sub name") {
+                saw_declaration = true;
+            }
+            if line.contains("->name") {
+                saw_method_call = true;
+            }
+            identities.push(identity);
+        }
+        if !saw_declaration {
+            return Err("sub name declaration was dropped".into());
+        }
+        if !saw_method_call {
+            return Err("method-call sites were dropped by the hash-key filter".into());
+        }
+        let mut sorted = identities.clone();
+        sorted.sort();
+        sorted.dedup();
+        if sorted.len() != identities.len() {
+            return Err(format!(
+                "identical (uri, range) locations were published twice: {identities:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_references_variable_query_does_not_absorb_same_named_sub()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+
+        let uri = "file:///test/Auto.pm";
+        let text = concat!(
+            "package Dyn::Auto;\n",
+            "our $AUTOLOAD;\n",
+            "sub AUTOLOAD {\n",
+            "    my $method = $AUTOLOAD;\n",
+            "    return $method;\n",
+            "}\n",
+        );
+        server.test_apply_did_open(uri, text, 1)?;
+
+        let result = server
+            .test_handle_references(Some(serde_json::json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 1, "character": 6},
+                "context": {"includeDeclaration": true}
+            })))?
+            .ok_or("missing references result")?;
+        let locations = result.as_array().ok_or("references must return an array")?;
+        let docs = [(uri, text)];
+        for location in locations {
+            let line = line_text_at(&docs, location)?;
+            if line.contains("sub AUTOLOAD") {
+                return Err(format!(
+                    "$AUTOLOAD references absorbed the same-named sub declaration: {line}"
+                )
+                .into());
             }
         }
-
-        Ok(())
-    }
-
-    #[test]
-    fn search_document_texts_for_references_reports_utf16_columns() -> Result<(), Box<dyn Error>> {
-        let docs = [("file:///refs.pl", "my $heart = \"♥\"; $heart\n")];
-
-        let refs = search_document_texts_for_references(
-            docs.iter().map(|(uri, text)| (*uri, *text)),
-            "heart",
-            10,
-        );
-        if refs.len() != 2 {
-            return Err(format!("expected 2 references, got {}", refs.len()).into());
+        if !locations.iter().any(|location| {
+            line_text_at(&docs, location).is_ok_and(|line| line.contains("$AUTOLOAD"))
+        }) {
+            return Err("$AUTOLOAD usages were dropped".into());
         }
-
-        let starts: Vec<_> = refs.iter().map(location_start).collect::<Result<_, _>>()?;
-        if starts != vec![(0, 4), (0, 18)] {
-            return Err(format!("unexpected UTF-16 starts: {starts:?}").into());
-        }
-
         Ok(())
     }
 

@@ -2510,7 +2510,12 @@ pub struct ProjectFormattingConfig {
 ///
 /// Returns the path to the first `.perl-lsp.toml` found, or `None` if no
 /// candidate exists in any ancestor directory.
-fn discover_project_config_path(start_dir: &Path) -> Option<PathBuf> {
+///
+/// Exposed so a caller that loads via [`load_project_config`] can also name
+/// the file that discovery actually selected — the search root is not
+/// necessarily the selected config, and warning dedup identities keyed on
+/// the search root collide or split incorrectly (PR #16566 review).
+pub fn discover_project_config_path(start_dir: &Path) -> Option<PathBuf> {
     let mut current = Some(start_dir);
     while let Some(dir) = current {
         let candidate = dir.join(".perl-lsp.toml");
