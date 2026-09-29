@@ -2718,20 +2718,19 @@ fn collect_all_package_members_with_source(
                     result.push(symbol);
                 }
             }
+            // Current-buffer source wins for explicit methods; still consume
+            // persisted generated members (Moo `has` readers, etc.) so
+            // indexing the same package does not drop workspace facts.
+            push_index_method_symbols(index.get_generated_package_members(pkg), seen_names, result);
         } else {
-            let members = index
-                .get_package_members(pkg)
-                .into_iter()
-                .chain(index.get_generated_package_members(pkg));
-            for symbol in members {
-                match symbol.kind {
-                    WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
-                    _ => continue,
-                }
-                if seen_names.insert(symbol.name.clone()) {
-                    result.push(symbol);
-                }
-            }
+            push_index_method_symbols(
+                index
+                    .get_package_members(pkg)
+                    .into_iter()
+                    .chain(index.get_generated_package_members(pkg)),
+                seen_names,
+                result,
+            );
         }
 
         // Traverse @ISA ancestors in MRO order. C3 uses the same parent walk as
@@ -2784,6 +2783,22 @@ fn empty_source_package_facts() -> SourcePackageFacts {
         roles: Vec::new(),
         methods: Vec::new(),
         from_current_document: false,
+    }
+}
+
+fn push_index_method_symbols(
+    symbols: impl IntoIterator<Item = WorkspaceSymbol>,
+    seen_names: &mut HashSet<String>,
+    result: &mut Vec<WorkspaceSymbol>,
+) {
+    for symbol in symbols {
+        match symbol.kind {
+            WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
+            _ => continue,
+        }
+        if seen_names.insert(symbol.name.clone()) {
+            result.push(symbol);
+        }
     }
 }
 
@@ -3056,6 +3071,29 @@ with 'Printable';
         assert_eq!(
             stringify.and_then(|member| member.container_name.as_deref()),
             Some("Printable")
+        );
+    }
+
+    #[test]
+    fn collect_all_keeps_indexed_generated_members_for_current_document_package() {
+        let source = r#"
+package User;
+use Moo;
+has 'name' => (is => 'ro', isa => 'Str');
+sub own_method { 1 }
+"#;
+        let index = Arc::new(WorkspaceIndex::new());
+        must(index.index_file(must(Url::parse("file:///workspace/User.pm")), source.to_string()));
+        assert!(index.has_symbols(), "indexed current-document package must publish symbols");
+        let members = collect_all_package_members_with_source(index.as_ref(), "User", source);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"own_method"),
+            "current-document method must still be collected, got {names:?}"
+        );
+        assert!(
+            names.contains(&"name"),
+            "indexed generated reader must remain after current-document composition, got {names:?}"
         );
     }
 }
