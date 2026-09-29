@@ -537,8 +537,6 @@ pub fn perl_lsp::runtime::ShowDocumentOptions::clone(&self) -> perl_lsp::runtime
 pub fn perl_lsp::runtime::ShowDocumentOptions::default() -> perl_lsp::runtime::ShowDocumentOptions
 pub fn perl_lsp::runtime::ShowDocumentOptions::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lsp::security
-pub use perl_lsp::security::is_text_sync_method
-pub use perl_lsp::security::refusal_desynchronizes_document
 pub use perl_lsp::security::sanitize_string
 pub use perl_lsp::security::validate_buffer_line_lengths
 pub use perl_lsp::security::validate_document_uri
@@ -588,8 +586,6 @@ pub fn perl_lsp::security::sandbox::SandboxResult::fmt(&self, f: &mut core::fmt:
 pub fn perl_lsp::security::sandbox::SandboxResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp::security::sandbox::SandboxResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<perl_lsp::security::sandbox::SandboxResult, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub mod perl_lsp::security::validation
-pub use perl_lsp::security::validation::is_text_sync_method
-pub use perl_lsp::security::validation::refusal_desynchronizes_document
 pub use perl_lsp::security::validation::sanitize_string
 pub use perl_lsp::security::validation::validate_buffer_line_lengths
 pub use perl_lsp::security::validation::validate_document_uri
