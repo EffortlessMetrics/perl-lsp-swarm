@@ -190,7 +190,23 @@ fn version_tokens_agree_with_hir_and_numeric_versions_are_not_symbols() -> TestR
     let source = "use M 1.23;\nuse N v1.23;\n";
     assert_hir_identity_survives(source)?;
     let specs = workspace_specs(source)?;
-    let numeric = spec_named(&specs, "M")?;
+    let hir = lower_ast(&parse_ast(source)?);
+    let hir_specs = hir.compile_environment.import_specs(FILE_ID);
+
+    // Current HIR folds the numeric version into the module display name
+    // (`"M 1.23"`) rather than emitting module `"M"` plus a version field.
+    // The adapter must keep that identity and must not publish `1.23` as a
+    // symbol on either spelling.
+    let numeric = specs
+        .iter()
+        .find(|spec| spec.module == "M" || spec.module.starts_with("M "))
+        .ok_or_else(|| format!("missing numeric-version ImportSpec; got {specs:?}"))?;
+    let hir_numeric = hir_specs
+        .iter()
+        .find(|spec| spec.module == numeric.module)
+        .ok_or_else(|| format!("HIR lost numeric-version identity {}", numeric.module))?;
+    assert_eq!(numeric.module, hir_numeric.module);
+    assert_eq!(numeric.symbols, hir_numeric.symbols);
     match &numeric.symbols {
         ImportSymbols::Explicit(names) | ImportSymbols::Mixed { names, .. } => {
             assert!(
@@ -200,9 +216,8 @@ fn version_tokens_agree_with_hir_and_numeric_versions_are_not_symbols() -> TestR
         }
         _ => {}
     }
+
     let vstring = spec_named(&specs, "N")?;
-    let hir = lower_ast(&parse_ast(source)?);
-    let hir_specs = hir.compile_environment.import_specs(FILE_ID);
     let hir_vstring = spec_named(&hir_specs, "N")?;
     assert_eq!(
         vstring.symbols, hir_vstring.symbols,
