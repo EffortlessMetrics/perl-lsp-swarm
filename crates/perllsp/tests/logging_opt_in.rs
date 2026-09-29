@@ -215,7 +215,7 @@ fn rust_log_env_enables_info_without_the_flag() -> TestResult {
 
 #[test]
 fn spawn_clears_perl_lsp_log_planted_before_strip() -> TestResult {
-    let command = spawn_perllsp_with(&["--stdio"], |command| {
+    let mut command = spawn_perllsp_with(&["--stdio"], |command| {
         command.env("PERL_LSP_LOG", "info");
     });
     let stderr = successful_stderr(command.output())?;
@@ -228,7 +228,7 @@ fn spawn_clears_perl_lsp_log_planted_before_strip() -> TestResult {
 
 #[test]
 fn spawn_clears_rust_log_planted_before_strip() -> TestResult {
-    let command = spawn_perllsp_with(&["--stdio"], |command| {
+    let mut command = spawn_perllsp_with(&["--stdio"], |command| {
         command.env("RUST_LOG", "info");
     });
     let stderr = successful_stderr(command.output())?;
@@ -254,7 +254,7 @@ fn force_color_on_the_child_rewrites_piped_info_tokens() -> TestResult {
 
 #[test]
 fn spawn_clears_force_color_planted_before_strip() -> TestResult {
-    let command = spawn_perllsp_with(&["--stdio", "--log"], |command| {
+    let mut command = spawn_perllsp_with(&["--stdio", "--log"], |command| {
         command.env_remove("NO_COLOR");
         command.env("FORCE_COLOR", "1");
     });
