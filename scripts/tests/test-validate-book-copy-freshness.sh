@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Self-test for scripts/ci/validate_book_copy_freshness.sh (#16544):
 #   1. the checker passes on a fresh tree;
-#   2. the checker fails when a committed copy is artificially drifted.
+#   2. the checker fails when a committed copy or canonical source drifts.
 # The drift mutation is a scratch edit restored before exit; it is never
 # staged or committed.
 set -euo pipefail
@@ -51,20 +51,32 @@ if ! bash "$CHECKER" > /dev/null; then
     exit 1
 fi
 
-# 2. Artificial drift fails.
-target="$REPO_ROOT/book/src/user-guides/debugging.md"
-backup="$(mktemp)"
-cp "$target" "$backup"
+# 2. A stale committed projection fails.
+book_target="$REPO_ROOT/book/src/reference/editor-setup-canonical.md"
+book_backup="$(mktemp)"
+cp "$book_target" "$book_backup"
+# 3. A non-link canonical edit fails until the projection is regenerated.
+source_target="$REPO_ROOT/docs/how-to/EDITOR_SETUP.md"
+source_backup="$(mktemp)"
+cp "$source_target" "$source_backup"
 restore() {
-    cp "$backup" "$target"
-    rm -f "$backup"
+    cp "$book_backup" "$book_target"
+    cp "$source_backup" "$source_target"
+    rm -f "$book_backup" "$source_backup"
     cleanup_generated
 }
 trap restore EXIT
 
-printf '\nArtificial drift for the freshness-check self-test.\n' >> "$target"
+printf '\nArtificial drift for the freshness-check self-test.\n' >> "$book_target"
 if bash "$CHECKER" > /dev/null 2>&1; then
-    echo "FAIL: checker passed despite artificial drift" >&2
+    echo "FAIL: checker passed despite committed projection drift" >&2
+    exit 1
+fi
+cp "$book_backup" "$book_target"
+
+printf '\nArtificial canonical drift for the freshness-check self-test.\n' >> "$source_target"
+if bash "$CHECKER" > /dev/null 2>&1; then
+    echo "FAIL: checker passed despite canonical source drift" >&2
     exit 1
 fi
 
