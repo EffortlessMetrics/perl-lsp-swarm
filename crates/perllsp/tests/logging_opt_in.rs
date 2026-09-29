@@ -1,55 +1,267 @@
 //! Exercise the editor-visible stderr boundary, including the documented opt-in.
+//!
+//! Spawn, exit-status, and UTF-8 failures are fallible helpers so a setup
+//! problem reports a useful `Err` instead of panicking. Process-level cases
+//! still own the INFO / quiet / color-isolation assertions.
 
-use std::process::{Command, Stdio};
+#![deny(clippy::map_err_ignore)]
 
-/// Spawn `perllsp` with the log surface reduced to its documented defaults.
+use std::io;
+use std::process::{Command, Output, Stdio};
+
+type TestError = Box<dyn std::error::Error>;
+type TestResult = Result<(), TestError>;
+
+/// Child environment keys that must not leak from the test runner into the
+/// editor-visible stderr boundary.
 ///
-/// Color-forcing runner environments (`FORCE_COLOR`, `CLICOLOR_FORCE`,
-/// `TERM_PROGRAM=WarpTerminal`) make `should_use_ansi_stderr` enable ANSI on a
-/// piped stderr, so the child's own INFO token would carry escape codes and the
-/// plain-text assertions below would read the wrong boundary. The variables are
-/// removed from the child, matching the launcher's own ANSI tests.
-fn spawn_perllsp(args: &[&str]) -> Command {
+/// `RUST_LOG` / `PERL_LSP_LOG` enable INFO without `--log`. Color-forcing
+/// keys make `should_use_ansi_stderr` paint a piped stderr, so the INFO token
+/// would no longer match the plain-text assertions. `PERL_LSP_QUIET` is
+/// cleared so default and `--log` sessions can still emit the banner unless a
+/// test opts into quiet explicitly.
+const CLEARED_CHILD_ENV: &[&str] = &[
+    "RUST_LOG",
+    "PERL_LSP_LOG",
+    "PERL_LSP_LOG_FILE",
+    "PERL_LSP_QUIET",
+    "FORCE_COLOR",
+    "CLICOLOR_FORCE",
+    "TERM_PROGRAM",
+];
+
+/// Spawn `perllsp`, apply `setup`, then clear the runner-leak keys.
+///
+/// `setup` runs first so a test can plant `PERL_LSP_LOG` / `RUST_LOG` /
+/// `FORCE_COLOR` and prove `env_remove` still wins. Re-applying those keys
+/// *after* this function is the opposite-direction leak path.
+fn spawn_perllsp_with(args: &[&str], setup: impl FnOnce(&mut Command)) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_perllsp"));
-    command
-        .args(args)
-        .env_remove("RUST_LOG")
-        .env_remove("PERL_LSP_LOG")
-        .env_remove("PERL_LSP_LOG_FILE")
-        .env_remove("PERL_LSP_QUIET")
-        .env_remove("FORCE_COLOR")
-        .env_remove("CLICOLOR_FORCE")
-        .env_remove("TERM_PROGRAM")
-        .stdin(Stdio::null());
+    command.args(args).stdin(Stdio::null());
+    setup(&mut command);
+    for key in CLEARED_CHILD_ENV {
+        command.env_remove(key);
+    }
     command
 }
 
-fn stderr_for(args: &[&str]) -> String {
-    let output = spawn_perllsp(args).output().expect("start perllsp");
-    assert!(output.status.success(), "server failed: {}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stderr).expect("server stderr is UTF-8")
+/// Spawn `perllsp` with the log surface reduced to its documented defaults.
+fn spawn_perllsp(args: &[&str]) -> Command {
+    spawn_perllsp_with(args, |_| {})
+}
+
+/// Decode a successful server's stderr, or report spawn / status / UTF-8 failure.
+fn successful_stderr(output: Result<Output, io::Error>) -> Result<String, TestError> {
+    let output = output.map_err(|error| format!("start perllsp: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("server failed: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    String::from_utf8(output.stderr)
+        .map_err(|error| format!("server stderr is UTF-8: {error}").into())
+}
+
+fn stderr_for(args: &[&str]) -> Result<String, TestError> {
+    successful_stderr(spawn_perllsp(args).output())
+}
+
+/// Build a real [`Output`] with a chosen success bit and stderr payload.
+///
+/// Failure status is synthesized with `perllsp --completion nushell`, which
+/// `cli_smoke` also requires to stay rejected. If that CLI later succeeds,
+/// the guard below fails loudly instead of minting a false success `Output`.
+fn finished_output(success: bool, stderr: &[u8]) -> Result<Output, TestError> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_perllsp"));
+    if success {
+        command.arg("--version");
+    } else {
+        command.args(["--completion", "nushell"]);
+    }
+    let mut output = command
+        .output()
+        .map_err(|error| format!("synthesize exit status success={success}: {error}"))?;
+    if output.status.success() != success {
+        return Err(format!(
+            "perllsp could not synthesize success={success}: status={:?}, stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    output.stdout.clear();
+    output.stderr = stderr.to_vec();
+    Ok(output)
+}
+
+fn require_err(result: Result<String, TestError>, why: &str) -> Result<TestError, TestError> {
+    match result {
+        Err(error) => Ok(error),
+        Ok(stderr) => Err(format!("{why}: accepted stderr {stderr:?}").into()),
+    }
 }
 
 #[test]
-fn stderr_info_logging_requires_opt_in() {
-    let default = stderr_for(&["--stdio"]);
+fn spawn_failure_reports_start_context() -> TestResult {
+    let error = require_err(
+        successful_stderr(Err(io::Error::new(io::ErrorKind::NotFound, "missing perllsp"))),
+        "spawn IO failure must not decode as success",
+    )?;
+    let message = error.to_string();
+    assert!(message.contains("start perllsp"), "missing spawn context: {message}");
+    assert!(message.contains("missing perllsp"), "missing IO cause: {message}");
+    Ok(())
+}
+
+#[test]
+fn failed_status_reports_stderr_without_panic() -> TestResult {
+    let error = require_err(
+        successful_stderr(Ok(finished_output(false, b"boom from child")?)),
+        "non-success status must not decode as success",
+    )?;
+    let message = error.to_string();
+    assert!(message.contains("server failed"), "missing status context: {message}");
+    assert!(message.contains("boom from child"), "missing child stderr: {message}");
+    Ok(())
+}
+
+#[test]
+fn failed_status_keeps_invalid_utf8_on_the_status_path() -> TestResult {
+    let error = require_err(
+        successful_stderr(Ok(finished_output(false, b"boom\xff")?)),
+        "failed status with invalid UTF-8 must stay a status error",
+    )?;
+    let message = error.to_string();
+    assert!(message.contains("server failed"), "status path lost: {message}");
+    assert!(message.contains("boom"), "lossy status report dropped prefix: {message}");
+    assert!(
+        !message.to_ascii_lowercase().contains("utf-8"),
+        "invalid stderr on a failed status must not be reported as a UTF-8 success-path error: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn invalid_utf8_success_stderr_is_rejected() -> TestResult {
+    let error = require_err(
+        successful_stderr(Ok(finished_output(true, &[0xff])?)),
+        "invalid UTF-8 on a successful status must not become a string",
+    )?;
+    let message = error.to_string();
+    assert!(message.to_ascii_lowercase().contains("utf-8"), "missing UTF-8 context: {message}");
+    assert!(!message.contains('\u{FFFD}'), "lossy decode hid the UTF-8 failure: {message}");
+    Ok(())
+}
+
+#[test]
+fn successful_utf8_stderr_is_returned_verbatim() -> TestResult {
+    let stderr = successful_stderr(Ok(finished_output(true, "ok\nINFO token".as_bytes())?))?;
+    assert_eq!(stderr, "ok\nINFO token");
+    Ok(())
+}
+
+#[test]
+fn stderr_info_logging_requires_opt_in() -> TestResult {
+    let default = stderr_for(&["--stdio"])?;
     assert!(!default.contains(" INFO "), "default session leaked INFO logs: {default}");
     assert!(
         !default.contains("Workspace indexing receipt"),
         "default session leaked telemetry: {default}"
     );
-
-    let explicit = stderr_for(&["--stdio", "--log"]);
-    assert!(explicit.contains(" INFO "), "--log did not enable INFO logs: {explicit}");
-
-    let quiet = spawn_perllsp(&["--stdio"])
-        .env("PERL_LSP_QUIET", "1")
-        .output()
-        .expect("start quiet perllsp");
-    assert!(quiet.status.success());
     assert!(
-        quiet.stderr.is_empty(),
-        "quiet default session wrote stderr: {}",
-        String::from_utf8_lossy(&quiet.stderr)
+        !default.contains('\u{1b}'),
+        "default session leaked ANSI into the editor-visible boundary: {default:?}"
     );
+
+    let explicit = stderr_for(&["--stdio", "--log"])?;
+    assert!(explicit.contains(" INFO "), "--log did not enable INFO logs: {explicit}");
+    assert!(
+        !explicit.contains('\u{1b}'),
+        "stripped --log session leaked ANSI into the INFO token: {explicit:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn quiet_default_session_writes_no_stderr() -> TestResult {
+    let mut command = spawn_perllsp(&["--stdio"]);
+    command.env("PERL_LSP_QUIET", "1");
+    let quiet = successful_stderr(command.output())?;
+    assert!(quiet.is_empty(), "quiet default session wrote stderr: {quiet}");
+    Ok(())
+}
+
+#[test]
+fn perl_lsp_log_env_enables_info_without_the_flag() -> TestResult {
+    let mut command = spawn_perllsp(&["--stdio"]);
+    command.env("PERL_LSP_LOG", "info");
+    let stderr = successful_stderr(command.output())?;
+    assert!(
+        stderr.contains(" INFO "),
+        "re-applied PERL_LSP_LOG must enable INFO without --log: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rust_log_env_enables_info_without_the_flag() -> TestResult {
+    let mut command = spawn_perllsp(&["--stdio"]);
+    command.env("RUST_LOG", "info");
+    let stderr = successful_stderr(command.output())?;
+    assert!(
+        stderr.contains(" INFO "),
+        "re-applied RUST_LOG must enable INFO without --log: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn spawn_clears_perl_lsp_log_planted_before_strip() -> TestResult {
+    let mut command = spawn_perllsp_with(&["--stdio"], |command| {
+        command.env("PERL_LSP_LOG", "info");
+    });
+    let stderr = successful_stderr(command.output())?;
+    assert!(
+        !stderr.contains(" INFO "),
+        "env_remove(PERL_LSP_LOG) must win over a planted value: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn spawn_clears_rust_log_planted_before_strip() -> TestResult {
+    let mut command = spawn_perllsp_with(&["--stdio"], |command| {
+        command.env("RUST_LOG", "info");
+    });
+    let stderr = successful_stderr(command.output())?;
+    assert!(
+        !stderr.contains(" INFO "),
+        "env_remove(RUST_LOG) must win over a planted value: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn force_color_on_the_child_rewrites_piped_info_tokens() -> TestResult {
+    let mut command = spawn_perllsp(&["--stdio", "--log"]);
+    command.env_remove("NO_COLOR");
+    command.env("FORCE_COLOR", "1");
+    let stderr = successful_stderr(command.output())?;
+    assert!(
+        stderr.contains('\u{1b}'),
+        "re-applied FORCE_COLOR must color piped --log stderr: {stderr:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn spawn_clears_force_color_planted_before_strip() -> TestResult {
+    let mut command = spawn_perllsp_with(&["--stdio", "--log"], |command| {
+        command.env_remove("NO_COLOR");
+        command.env("FORCE_COLOR", "1");
+    });
+    let stderr = successful_stderr(command.output())?;
+    assert!(
+        !stderr.contains('\u{1b}'),
+        "env_remove(FORCE_COLOR) must win over a planted value: {stderr:?}"
+    );
+    Ok(())
 }

@@ -26,6 +26,7 @@ use perl_semantic_facts::{
     Confidence, DefinitionCandidate, EntityKind, FileId, PackageEdge, PackageEdgeKind, Provenance,
     VisibleSymbol, VisibleSymbolSource,
 };
+use perl_workspace::position::{Position, Range};
 use perl_workspace::semantic::{
     imports::ImportExportIndex,
     package_graph::PackageGraphIndex,
@@ -998,9 +999,9 @@ pub fn add_workspace_method_completions(
         return;
     };
 
-    if !index.has_symbols() {
-        return;
-    }
+    // Exact current-document method facts must run even when the persisted
+    // workspace index is still empty (#16809). Unknown-receiver fallback stays
+    // index-gated so an empty index cannot become an all-workspace scan.
 
     // Prefer semantic receiver facts only when they meet the narrow live pilot
     // bar. Medium, dynamic, unknown, and unsupported facts fall back through the
@@ -1021,8 +1022,8 @@ pub fn add_workspace_method_completions(
     let Some(package_name) = evidence.package().map(str::to_string) else {
         // No exact receiver package. Trigger bounded Unknown-receiver
         // fallback (#7929) only for `Unknown` evidence; `Dynamic` stays
-        // fail-closed.
-        if evidence.is_unknown_fallback_eligible() {
+        // fail-closed. An empty index must not open a workspace-wide scan.
+        if evidence.is_unknown_fallback_eligible() && index.has_symbols() {
             add_unknown_receiver_fallback(completions, context, source, index, used_modules);
         }
         return;
@@ -1034,6 +1035,7 @@ pub fn add_workspace_method_completions(
     // Collect all methods from the receiver package AND its ancestor chain
     // (parents + roles). Child methods take priority.
     let members = collect_all_package_members_with_source(index, &package_name, source);
+    drop_generic_local_methods_rebound_from_composition(completions, &package_name, &members);
 
     let method_symbols = {
         let existing_labels: HashSet<&str> =
@@ -1292,6 +1294,30 @@ fn add_unknown_receiver_fallback(
         }
     }
     completions.extend(pending);
+}
+
+/// Drop in-file generic method rows that composed-role / ancestor facts will
+/// rebind. Consumer-defined methods keep local precedence (#16809).
+fn drop_generic_local_methods_rebound_from_composition(
+    completions: &mut Vec<CompletionItem>,
+    receiver_package: &str,
+    members: &[WorkspaceSymbol],
+) {
+    let rebound: HashSet<&str> = members
+        .iter()
+        .filter(|symbol| {
+            symbol.container_name.as_deref().unwrap_or(receiver_package) != receiver_package
+        })
+        .map(|symbol| symbol.name.as_str())
+        .collect();
+    if rebound.is_empty() {
+        return;
+    }
+    completions.retain(|item| {
+        !(rebound.contains(item.label.as_ref())
+            && item.detail.as_deref() == Some("method")
+            && item.sort_text.as_deref().is_some_and(|sort| sort.starts_with("1_")))
+    });
 }
 
 fn workspace_method_symbols<'a>(
@@ -1807,6 +1833,11 @@ pub(super) fn collect_all_package_members(
 /// when the receiver package has not been indexed yet. This keeps completion
 /// useful during editing while retaining the workspace index as the authority
 /// for persisted members and inherited packages.
+///
+/// Current-document class models are parsed once and preferred over persisted
+/// index members for packages declared in the open buffer (#16809). This adapter
+/// retires when [`WorkspaceSemanticQueries`] can consume a source-only shard
+/// for the accepted document generation.
 fn collect_all_package_members_with_source(
     index: &WorkspaceIndex,
     package_name: &str,
@@ -1815,68 +1846,14 @@ fn collect_all_package_members_with_source(
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut result: Vec<WorkspaceSymbol> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
+    let (current_models, current_methods) = current_document_package_facts(source);
+    let mut model_cache: HashMap<String, SourcePackageFacts> = HashMap::new();
 
-    // Cache of package_name → (parents, roles, mro), populated lazily.
-    let mut model_cache: HashMap<
-        String,
-        (
-            Vec<String>,
-            Vec<String>,
-            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
-        ),
-    > = HashMap::new();
-
-    // Parse a package's source and extract its ClassModel data.
-    let load_model = |pkg: &str,
-                      cache: &mut HashMap<
-        String,
-        (
-            Vec<String>,
-            Vec<String>,
-            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
-        ),
-    >| {
+    let load_model = |pkg: &str, cache: &mut HashMap<String, SourcePackageFacts>| {
         cache
             .entry(pkg.to_string())
             .or_insert_with(|| {
-                let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
-                    index.document_store().get_text(&pkg_location.uri).or_else(|| {
-                        perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
-                            .and_then(|path| std::fs::read_to_string(path).ok())
-                    })
-                });
-
-                let fallback = || {
-                    (
-                        Vec::new(),
-                        Vec::new(),
-                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
-                    )
-                };
-
-                // A bare-symbol lookup can resolve an unrelated indexed symbol.
-                // Only suppress the open-document fallback when the indexed text
-                // actually contains the requested package model.
-                for text in indexed_text
-                    .into_iter()
-                    .chain((!source.is_empty()).then_some(source.to_string()))
-                {
-                    let mut parser = perl_semantic_analyzer::Parser::new(&text);
-                    let Ok(ast) = parser.parse() else {
-                        continue;
-                    };
-
-                    if let Some(model) =
-                        perl_semantic_analyzer::class_model::ClassModelBuilder::new()
-                            .build(&ast)
-                            .into_iter()
-                            .find(|model| model.name == pkg)
-                    {
-                        return (model.parents.clone(), model.roles.clone(), model.mro);
-                    }
-                }
-
-                fallback()
+                load_source_package_facts(pkg, index, &current_models, &current_methods)
             })
             .clone()
     };
@@ -1886,29 +1863,8 @@ fn collect_all_package_members_with_source(
     fn visit_mro(
         pkg: &str,
         index: &WorkspaceIndex,
-        load_model: &impl Fn(
-            &str,
-            &mut HashMap<
-                String,
-                (
-                    Vec<String>,
-                    Vec<String>,
-                    perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
-                ),
-            >,
-        ) -> (
-            Vec<String>,
-            Vec<String>,
-            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
-        ),
-        model_cache: &mut HashMap<
-            String,
-            (
-                Vec<String>,
-                Vec<String>,
-                perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
-            ),
-        >,
+        load_model: &impl Fn(&str, &mut HashMap<String, SourcePackageFacts>) -> SourcePackageFacts,
+        model_cache: &mut HashMap<String, SourcePackageFacts>,
         visited: &mut HashSet<String>,
         seen_names: &mut HashSet<String>,
         result: &mut Vec<WorkspaceSymbol>,
@@ -1919,65 +1875,46 @@ fn collect_all_package_members_with_source(
             return;
         }
 
-        // Collect direct members for this package
-        let members = index
-            .get_package_members(pkg)
-            .into_iter()
-            .chain(index.get_generated_package_members(pkg));
-        for symbol in members {
-            match symbol.kind {
-                WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
-                _ => continue,
+        let facts = load_model(pkg, model_cache);
+        if facts.from_current_document {
+            for symbol in facts.methods {
+                if seen_names.insert(symbol.name.clone()) {
+                    result.push(symbol);
+                }
             }
-            if seen_names.insert(symbol.name.clone()) {
-                result.push(symbol);
-            }
+            // Current-buffer source wins for explicit methods; still consume
+            // persisted generated members (Moo `has` readers, etc.) so
+            // indexing the same package does not drop workspace facts.
+            push_index_method_symbols(index.get_generated_package_members(pkg), seen_names, result);
+        } else {
+            push_index_method_symbols(
+                index
+                    .get_package_members(pkg)
+                    .into_iter()
+                    .chain(index.get_generated_package_members(pkg)),
+                seen_names,
+                result,
+            );
         }
 
-        // Get model data
-        let (parents, roles, mro) = load_model(pkg, model_cache);
-
-        // Traverse @ISA ancestors in MRO order
-        match mro {
-            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs => {
-                // DFS: leftmost-depth-first (Perl default)
-                for parent in &parents {
-                    visit_mro(
-                        parent,
-                        index,
-                        load_model,
-                        model_cache,
-                        visited,
-                        seen_names,
-                        result,
-                        depth + 1,
-                    );
-                }
-            }
-            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::C3 => {
-                // C3: approximate by visiting parents left-to-right depth-first
-                // for completion ordering. A full C3 linearization would require
-                // the complete model graph up front, but for completion we only
-                // need the visitation order to be consistent — DFS over parents
-                // is the standard fallback when C3 linearization cannot be
-                // fully computed (e.g. incomplete workspace) (#6326).
-                for parent in &parents {
-                    visit_mro(
-                        parent,
-                        index,
-                        load_model,
-                        model_cache,
-                        visited,
-                        seen_names,
-                        result,
-                        depth + 1,
-                    );
-                }
-            }
+        // Traverse @ISA ancestors in MRO order. C3 uses the same parent walk as
+        // DFS here: completion only needs consistent visitation, not a second
+        // linearization algorithm (#6326).
+        for parent in &facts.parents {
+            visit_mro(
+                parent,
+                index,
+                load_model,
+                model_cache,
+                visited,
+                seen_names,
+                result,
+                depth + 1,
+            );
         }
 
         // Traverse roles after @ISA (role composition is distinct from MRO)
-        for role in &roles {
+        for role in &facts.roles {
             visit_mro(role, index, load_model, model_cache, visited, seen_names, result, depth + 1);
         }
     }
@@ -1994,6 +1931,212 @@ fn collect_all_package_members_with_source(
     );
 
     result
+}
+
+#[derive(Clone)]
+struct SourcePackageFacts {
+    parents: Vec<String>,
+    roles: Vec<String>,
+    methods: Vec<WorkspaceSymbol>,
+    from_current_document: bool,
+}
+
+fn empty_source_package_facts() -> SourcePackageFacts {
+    SourcePackageFacts {
+        parents: Vec::new(),
+        roles: Vec::new(),
+        methods: Vec::new(),
+        from_current_document: false,
+    }
+}
+
+fn push_index_method_symbols(
+    symbols: impl IntoIterator<Item = WorkspaceSymbol>,
+    seen_names: &mut HashSet<String>,
+    result: &mut Vec<WorkspaceSymbol>,
+) {
+    for symbol in symbols {
+        match symbol.kind {
+            WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
+            _ => continue,
+        }
+        if seen_names.insert(symbol.name.clone()) {
+            result.push(symbol);
+        }
+    }
+}
+
+fn current_document_package_facts(
+    source: &str,
+) -> (
+    HashMap<String, perl_semantic_analyzer::class_model::ClassModel>,
+    HashMap<String, Vec<WorkspaceSymbol>>,
+) {
+    if source.is_empty() {
+        return (HashMap::new(), HashMap::new());
+    }
+    let mut parser = perl_semantic_analyzer::Parser::new(source);
+    let Ok(ast) = parser.parse() else {
+        return (HashMap::new(), HashMap::new());
+    };
+    let models = perl_semantic_analyzer::class_model::ClassModelBuilder::new()
+        .build(&ast)
+        .into_iter()
+        .map(|model| (model.name.clone(), model))
+        .collect();
+    (models, current_document_methods_from_ast(&ast, source))
+}
+
+fn current_document_methods_from_ast(
+    ast: &perl_semantic_analyzer::Node,
+    source: &str,
+) -> HashMap<String, Vec<WorkspaceSymbol>> {
+    let table =
+        perl_semantic_analyzer::symbol::SymbolExtractor::new_with_source(source).extract(ast);
+    let mut methods: HashMap<String, Vec<WorkspaceSymbol>> = HashMap::new();
+    for symbols in table.symbols.values() {
+        for symbol in symbols {
+            if !matches!(
+                symbol.kind,
+                perl_semantic_analyzer::symbol::SymbolKind::Subroutine
+                    | perl_semantic_analyzer::symbol::SymbolKind::Method
+            ) {
+                continue;
+            }
+            if matches!(symbol.declaration.as_deref(), Some("my") | Some("state")) {
+                continue;
+            }
+            let package =
+                package_name_from_qualified(&symbol.qualified_name).unwrap_or("main").to_string();
+            if let Some(member) = current_document_method_symbol_from_parts(
+                &package,
+                &symbol.name,
+                symbol.location.start,
+                symbol.location.end,
+            ) {
+                methods.entry(package).or_default().push(member);
+            }
+        }
+    }
+    methods
+}
+
+fn package_name_from_qualified(qualified_name: &str) -> Option<&str> {
+    qualified_name.rsplit_once("::").map(|(package, _)| package)
+}
+
+fn load_source_package_facts(
+    pkg: &str,
+    index: &WorkspaceIndex,
+    current_models: &HashMap<String, perl_semantic_analyzer::class_model::ClassModel>,
+    current_methods: &HashMap<String, Vec<WorkspaceSymbol>>,
+) -> SourcePackageFacts {
+    if let Some(model) = current_models.get(pkg) {
+        let methods = current_methods.get(pkg).cloned().unwrap_or_else(|| {
+            model
+                .methods
+                .iter()
+                .filter_map(|method| current_document_method_symbol(&model.name, method))
+                .collect()
+        });
+        return SourcePackageFacts {
+            parents: model.parents.clone(),
+            roles: model.roles.clone(),
+            methods,
+            from_current_document: true,
+        };
+    }
+
+    if let Some(methods) = current_methods.get(pkg) {
+        return SourcePackageFacts {
+            parents: Vec::new(),
+            roles: Vec::new(),
+            methods: methods.clone(),
+            from_current_document: true,
+        };
+    }
+
+    let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
+        index.document_store().get_text(&pkg_location.uri).or_else(|| {
+            perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
+                .and_then(|path| std::fs::read_to_string(path).ok())
+        })
+    });
+    let Some(text) = indexed_text else {
+        return empty_source_package_facts();
+    };
+    let mut parser = perl_semantic_analyzer::Parser::new(&text);
+    let Ok(ast) = parser.parse() else {
+        return empty_source_package_facts();
+    };
+    perl_semantic_analyzer::class_model::ClassModelBuilder::new()
+        .build(&ast)
+        .into_iter()
+        .find(|model| model.name == pkg)
+        .map(|model| source_package_facts_from_model(&model, false))
+        .unwrap_or_else(empty_source_package_facts)
+}
+
+fn source_package_facts_from_model(
+    model: &perl_semantic_analyzer::class_model::ClassModel,
+    from_current_document: bool,
+) -> SourcePackageFacts {
+    let methods = if from_current_document {
+        model
+            .methods
+            .iter()
+            .filter_map(|method| current_document_method_symbol(&model.name, method))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    SourcePackageFacts {
+        parents: model.parents.clone(),
+        roles: model.roles.clone(),
+        methods,
+        from_current_document,
+    }
+}
+
+fn current_document_method_symbol(
+    package: &str,
+    method: &perl_semantic_analyzer::class_model::MethodInfo,
+) -> Option<WorkspaceSymbol> {
+    if matches!(method.declarator.as_deref(), Some("my") | Some("state")) {
+        return None;
+    }
+    current_document_method_symbol_from_parts(
+        package,
+        &method.name,
+        method.location.start,
+        method.location.end,
+    )
+}
+
+fn current_document_method_symbol_from_parts(
+    package: &str,
+    name: &str,
+    start: usize,
+    end: usize,
+) -> Option<WorkspaceSymbol> {
+    if name.is_empty() {
+        return None;
+    }
+    Some(WorkspaceSymbol {
+        name: name.to_string(),
+        kind: WsSymbolKind::Method,
+        uri: String::new(),
+        range: Range {
+            start: Position { byte: start, line: 1, column: 1 },
+            end: Position { byte: end.max(start), line: 1, column: 1 },
+        },
+        qualified_name: Some(format!("{package}::{name}")),
+        documentation: None,
+        container_name: Some(package.to_string()),
+        has_body: true,
+        workspace_folder_uri: None,
+        is_lexical: false,
+    })
 }
 
 #[cfg(test)]
@@ -2047,6 +2190,54 @@ sub greet {
         assert!(
             names.contains(&"name"),
             "expected inherited generated reader from Parent, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn collect_all_uses_current_source_role_methods_when_index_is_empty() {
+        let index = Arc::new(WorkspaceIndex::new());
+        assert!(!index.has_symbols(), "empty index is the #16809 startup fixture");
+        let source = r#"
+package Printable;
+use Moo::Role;
+sub stringify { "ok" }
+package User;
+use Moo;
+with 'Printable';
+"#;
+        let members = collect_all_package_members_with_source(index.as_ref(), "User", source);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"stringify"),
+            "same-file composed-role method must be collected before indexing, got {names:?}"
+        );
+        let stringify = members.iter().find(|member| member.name == "stringify");
+        assert_eq!(
+            stringify.and_then(|member| member.container_name.as_deref()),
+            Some("Printable")
+        );
+    }
+
+    #[test]
+    fn collect_all_keeps_indexed_generated_members_for_current_document_package() {
+        let source = r#"
+package User;
+use Moo;
+has 'name' => (is => 'ro', isa => 'Str');
+sub own_method { 1 }
+"#;
+        let index = Arc::new(WorkspaceIndex::new());
+        must(index.index_file(must(Url::parse("file:///workspace/User.pm")), source.to_string()));
+        assert!(index.has_symbols(), "indexed current-document package must publish symbols");
+        let members = collect_all_package_members_with_source(index.as_ref(), "User", source);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"own_method"),
+            "current-document method must still be collected, got {names:?}"
+        );
+        assert!(
+            names.contains(&"name"),
+            "indexed generated reader must remain after current-document composition, got {names:?}"
         );
     }
 }

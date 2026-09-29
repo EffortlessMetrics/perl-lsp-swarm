@@ -1748,4 +1748,6 @@ mod defining_class_invocant_tests;
 #[cfg(test)]
 mod keyword_role_tests;
 #[cfg(test)]
+mod same_file_role_completion_tests;
+#[cfg(test)]
 mod tests;
