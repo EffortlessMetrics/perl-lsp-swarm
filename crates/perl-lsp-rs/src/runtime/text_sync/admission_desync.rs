@@ -53,10 +53,12 @@ impl LspServer {
     /// Called from the request preflight when
     /// [`validate_request_admission`](perl_lsp_rs_core::runtime::input_validation::validate_request_admission)
     /// refuses a `textDocument/didOpen`/`didChange`/`didSave` frame. For
-    /// notifications that refusal is silent, so the rejected sync must be
-    /// associated with its document here: the stored snapshot is marked
-    /// not-current (fail-closing user answers, including formatting) and the
-    /// client is told once per episode why the file went quiet.
+    /// notifications that refusal is silent. A rejected frame carrying text
+    /// must be associated with its document here: the stored snapshot is
+    /// marked not-current (fail-closing user answers, including formatting)
+    /// and the client is told once per episode why the file went quiet.
+    /// A textless `didSave` carries no replacement buffer and leaves the
+    /// snapshot current even when its envelope is rejected.
     ///
     /// `notify_client` is false for request-shaped text syncs, where the
     /// caller already receives the typed `InvalidRequest` response and a
@@ -73,6 +75,14 @@ impl LspServer {
         notify_client: bool,
     ) {
         if !is_text_sync_method(method) {
+            return;
+        }
+        // didSave.text is optional in LSP 3.17. Without a string replacement,
+        // rejecting the envelope does not lose document content, so the
+        // stored snapshot remains current even when the envelope is oversized.
+        if method == "textDocument/didSave"
+            && params.pointer("/text").and_then(Value::as_str).is_none()
+        {
             return;
         }
         let Some(uri) = params.pointer("/textDocument/uri").and_then(Value::as_str) else {
@@ -378,6 +388,125 @@ mod tests {
             !doc.full_sync_required(),
             "non-text-sync rejections must not mark the document desynchronized"
         );
+        Ok(())
+    }
+
+    /// A textless save has no replacement buffer to lose. Force admission to
+    /// reject its envelope with an inert extension field, then contrast that
+    /// with a rejected save that actually carries replacement text.
+    #[test]
+    fn over_ceiling_did_save_only_desynchronizes_when_text_is_present()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::runtime::input_validation::validate_request_admission;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(parking_lot::Mutex::new(Vec::<u8>::new()));
+        struct CaptureWriter(Arc<parking_lot::Mutex<Vec<u8>>>);
+        impl std::io::Write for CaptureWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let server = LspServer::with_io(
+            Box::new(Cursor::new(Vec::<u8>::new())),
+            Box::new(CaptureWriter(Arc::clone(&output))),
+        );
+        let uri = "file:///oversize_save_without_text.pl";
+        let original = "sub hello{my $x=1;return $x;}\n";
+        server.test_apply_did_open(uri, original, 1)?;
+        let before = {
+            let documents = server.documents.lock();
+            let doc = server.get_document(&documents, uri).ok_or("open document missing")?;
+            (doc.text.clone(), doc.version, doc.current_generation())
+        };
+        let ceiling = text_sync_params_ceiling();
+        let textless = json!({
+            "textDocument": { "uri": uri },
+            "extensionPadding": "x".repeat(ceiling + 1),
+        });
+        if validate_request_admission("textDocument/didSave", &textless).is_ok() {
+            return Err("textless save fixture must exceed the admission ceiling".into());
+        }
+        let notification = |params| JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/didSave".to_string(),
+            params: Some(params),
+        };
+        if server.handle_request(notification(textless)).is_some() {
+            return Err("didSave notification must not receive a response".into());
+        }
+        {
+            let documents = server.documents.lock();
+            let doc = server.get_document(&documents, uri).ok_or("document disappeared")?;
+            if doc.full_sync_required()
+                || doc.text != before.0
+                || doc.version != before.1
+                || doc.current_generation() != before.2
+            {
+                return Err("rejected textless save changed stored document currentness".into());
+            }
+        }
+        let formatting = server.handle_formatting(Some(json!({
+            "textDocument": { "uri": uri },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })))?;
+        if !formatting.as_ref().and_then(Value::as_array).is_some_and(|edits| !edits.is_empty()) {
+            return Err("formatting must remain available after a rejected textless save".into());
+        }
+
+        // A save with replacement text is different: rejecting it loses the
+        // client's buffer, so the existing fail-close must still apply.
+        let with_text = json!({
+            "textDocument": { "uri": uri },
+            "text": "x".repeat(ceiling + 1),
+        });
+        if validate_request_admission("textDocument/didSave", &with_text).is_ok() {
+            return Err("text-bearing save fixture must exceed the admission ceiling".into());
+        }
+        if server.handle_request(notification(with_text)).is_some() {
+            return Err("didSave notification must not receive a response".into());
+        }
+        {
+            let documents = server.documents.lock();
+            let doc = server.get_document(&documents, uri).ok_or("document disappeared")?;
+            if !doc.full_sync_required() || doc.current_generation() <= before.2 {
+                return Err("rejected text-bearing save must desynchronize the document".into());
+            }
+        }
+        let error = server
+            .handle_formatting(Some(json!({
+                "textDocument": { "uri": uri },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })))
+            .err()
+            .ok_or("formatting must refuse after rejected replacement text")?;
+        if error.code != crate::protocol::CONTENT_MODIFIED {
+            return Err(format!("unexpected formatting error: {}", error.code).into());
+        }
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": "sub recovered{my $y=2;return $y;}\n" }],
+        })))?;
+        let recovered = server.handle_formatting(Some(json!({
+            "textDocument": { "uri": uri },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })))?;
+        if !recovered.as_ref().and_then(Value::as_array).is_some_and(|edits| !edits.is_empty()) {
+            return Err("admitted full replacement must restore formatting edits".into());
+        }
+        drop(server);
+        let outbound = String::from_utf8(output.lock().clone())?;
+        if outbound.matches("window/showMessage").count() != 1 {
+            return Err(format!("only the text-bearing save should warn: {outbound}").into());
+        }
         Ok(())
     }
 

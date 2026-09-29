@@ -66,9 +66,10 @@ pub(super) fn prepare_request(
         // never learns its didChange/didOpen was discarded, and the stored
         // document keeps its predecessor text as if current — the stale
         // snapshot a following textDocument/formatting would format (#16659).
-        // Associate the rejection with the document before returning: mark it
-        // desynchronized (fail-closing user answers) and, for notifications,
-        // tell the client once per episode why the file went quiet.
+        // Associate a rejected text-bearing sync with its document before
+        // returning: mark it desynchronized (fail-closing user answers) and
+        // tell the client once per episode why the file went quiet. A textless
+        // didSave has no replacement buffer to lose and stays current.
         server.mark_text_sync_admission_rejected(
             &request.method,
             params_ref,

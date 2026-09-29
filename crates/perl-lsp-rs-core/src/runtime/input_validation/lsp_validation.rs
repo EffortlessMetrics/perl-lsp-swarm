@@ -62,7 +62,8 @@ pub fn text_sync_params_ceiling() -> usize {
 }
 
 /// Whether `method` is a text-synchronization notification whose rejection at
-/// admission silently desynchronizes a stored document (#16659).
+/// admission needs document-aware handling. A textless `didSave` carries no
+/// replacement buffer and does not desynchronize a stored document (#16659).
 pub fn is_text_sync_method(method: &str) -> bool {
     TEXT_SYNC_METHODS.contains(&method)
 }
