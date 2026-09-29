@@ -45,7 +45,7 @@ pub(super) fn complete_slot(
     }
     variables::add_special_variables(&mut completions, &slot_context, sigil);
     if geometry.braced {
-        completions.retain(|item| braced_name_is_admitted(item));
+        completions.retain(braced_name_is_admitted);
         strip_sigil_from_braced_inserts(&mut completions, geometry.name_start, position);
     }
     sort::deduplicate_and_sort(completions)
