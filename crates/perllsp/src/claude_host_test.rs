@@ -297,9 +297,12 @@ pub enum FailureReason {
     /// Required native LSP tool call was not observed.
     RequiredLspToolCallNotObserved,
     /// Semantic mismatch against independent expectations.
-    #[expect(
-        dead_code,
-        reason = "reserved #16872 vocabulary for later host-session/semantic leaves"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reserved #16872 vocabulary for later host-session/semantic leaves"
+        )
     )]
     SemanticMismatch,
     /// Stale result after edit/re-query.
@@ -1277,8 +1280,16 @@ fn result_from_execution(
         host_capability: request.host_capability,
         expected_subject_classes: plan.expected_subject_classes.clone(),
         later_observed: LaterObservedIdentities::unobserved(),
-        methods_attempted: execution.methods_attempted,
-        methods_observed: execution.methods_observed,
+        methods_attempted: execution
+            .methods_attempted
+            .iter()
+            .map(|value| redact_text(value))
+            .collect(),
+        methods_observed: execution
+            .methods_observed
+            .iter()
+            .map(|value| redact_text(value))
+            .collect(),
         dispositions: execution.dispositions,
         terminal,
         failure_reason,
@@ -1322,7 +1333,16 @@ fn derive_terminal(
     }
     if execution.dispositions.host_instrument != CellDisposition::ObservedPass
         || !required_methods_observed(execution)
+        || (failure_reason.is_some() && failure_reason != Some(FailureReason::HostInstrumentFailed))
     {
+        if evidence_class == EvidenceClass::ContractAdmission {
+            return TerminalResult::NotProven;
+        }
+        if failure_reason.is_some()
+            && execution.dispositions.host_instrument != CellDisposition::InstrumentFailure
+        {
+            return TerminalResult::Fail;
+        }
         return TerminalResult::NotProven;
     }
     if evidence_class == EvidenceClass::ActualHost {
@@ -2046,5 +2066,32 @@ mod claude_host_test_contract {
         assert_ne!(result.terminal, TerminalResult::Pass);
         assert_eq!(result.failure_reason, Some(FailureReason::InstrumentNotProven));
         assert_ne!(result.terminal, TerminalResult::InstrumentFailure);
+
+        let mut explicit_fail = InjectedExecution::all_observed_pass();
+        explicit_fail.failure_reason = Some(FailureReason::SemanticMismatch);
+        let mut executor = CountingExecutor::injected(explicit_fail);
+        let outcome = dispatch_request(
+            &admitted_request(CompatibilityResult::Compatible),
+            true,
+            &mut executor,
+        );
+        let result = must_some_with(outcome.result, "result");
+        assert_ne!(result.terminal, TerminalResult::Pass);
+        assert_eq!(result.failure_reason, Some(FailureReason::SemanticMismatch));
+    }
+
+    #[test]
+    fn executor_provided_private_methods_are_redacted() {
+        let mut execution = InjectedExecution::all_observed_pass();
+        execution.methods_observed[0] = "definition PROMPT_CANARY /home/user".to_string();
+        let mut executor = CountingExecutor::injected(execution);
+        let outcome = dispatch_request(
+            &admitted_request(CompatibilityResult::Compatible),
+            true,
+            &mut executor,
+        );
+        assert!(!contains_private_canary(&outcome.rendered));
+        let result = must_some_with(outcome.result, "result");
+        assert!(!result.methods_observed.iter().any(|method| contains_private_canary(method)));
     }
 }
