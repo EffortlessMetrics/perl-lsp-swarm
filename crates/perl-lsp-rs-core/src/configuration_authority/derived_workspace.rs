@@ -516,10 +516,10 @@ fn validate_live_row(
                 require_call(row.id, called, route, source, corpus, violations);
             }
             _ => {
-                for marker in &file_markers {
+                for marker in file_markers.iter().copied() {
                     violations.push(DerivedWorkspaceViolation::MissingInvalidation {
                         id: row.id,
-                        marker: *marker,
+                        marker,
                     });
                 }
             }
@@ -653,6 +653,10 @@ fn is_fn_definition(prefix: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{
+        ConfigConsumer, ConfigOwner, ConfigScope, ConfigSensitivity, ConfigSource,
+        ConfigValidation, ConfigValueKind, EvidencePolicy, InvalidValueFallback, InvalidationClass,
+    };
     use super::*;
     use perl_test_must::{must_some_with, must_with};
 

@@ -26,10 +26,11 @@ pub(crate) use declared::capability;
 
 pub(crate) use declared::{
     ConfigConsumer, ConfigOwner, ConfigScope, ConfigSensitivity, ConfigSource, ConfigValidation,
-    ConfigValueKind, ConfigurationAuthorityReport, DerivedWorkspaceLifecycleState,
-    DerivedWorkspaceRowStatus, DerivedWorkspaceViolation, EvidencePolicy, FieldAuthority,
-    InvalidValueFallback, InvalidationClass, check_configuration_authority,
-    derived_workspace_corpus_paths,
+    ConfigValueKind, EvidencePolicy, FieldAuthority, InvalidValueFallback, InvalidationClass,
+};
+pub use declared::{
+    ConfigurationAuthorityReport, DerivedWorkspaceLifecycleState, DerivedWorkspaceRowStatus,
+    DerivedWorkspaceViolation, check_configuration_authority, derived_workspace_corpus_paths,
 };
 
 use std::sync::LazyLock;

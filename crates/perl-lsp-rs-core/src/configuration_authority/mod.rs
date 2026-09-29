@@ -21,7 +21,7 @@ mod catalog;
 mod derived_workspace;
 
 pub(crate) use catalog::CONFIGURATION_AUTHORITY;
-pub(crate) use derived_workspace::{
+pub use derived_workspace::{
     ConfigurationAuthorityReport, DerivedWorkspaceLifecycleState, DerivedWorkspaceRowStatus,
     DerivedWorkspaceViolation, check_configuration_authority, derived_workspace_corpus_paths,
 };
