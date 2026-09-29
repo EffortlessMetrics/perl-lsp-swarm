@@ -41,9 +41,9 @@ first branching point in every large-workspace investigation.
 
 | Cause | How to confirm | Fix |
 |-------|----------------|-----|
-| `max_files` limit hit | `reason: ResourceLimit(Files)` | Add `.lspignore` exclusions (the internal index limit is not client-configurable via `perl.limits`) |
-| `max_total_symbols` limit hit | `reason: ResourceLimit(Symbols)` | Reduce indexed surface via `.lspignore` (the internal index limit is not client-configurable via `perl.limits`) |
-| Scan timeout | `reason: Timeout` | Narrow the workspace via `.lspignore` |
+| `max_files` limit hit | `reason: ResourceLimit(Files)` | Open a narrower workspace folder containing the project area you need (the internal index limit is not client-configurable via `perl.limits`) |
+| `max_total_symbols` limit hit | `reason: ResourceLimit(Symbols)` | Open a narrower workspace folder containing the project area you need (the internal index limit is not client-configurable via `perl.limits`) |
+| Scan timeout | `reason: Timeout` | Open a narrower workspace folder containing the project area you need |
 | IO error | `reason: IoError` | Check disk health; check NFS mount |
 | Parse storm | `reason: ParseStorm` | Reduce concurrent editors; check for watch loops |
 
@@ -220,8 +220,8 @@ to prevent concurrent writes. If you see it, check:
 
 ### Remediation
 
-Restart the LSP server. If corruption recurs after restart, reduce the
-indexed surface via `.lspignore` and report with a minimal reproduction.
+Restart the LSP server. If corruption recurs after restart, open a narrower
+workspace folder and report the issue with a minimal reproduction.
 
 ---
 
