@@ -688,7 +688,7 @@ impl LspServer {
                 return Err(error);
             }
         };
-        let outcome = self.handle_references_inner(params, request_id);
+        let outcome = self.handle_references_inner(params, request_id, reference_search_deadline());
         let (
             result,
             tier,
@@ -742,6 +742,7 @@ impl LspServer {
         &self,
         params: Option<Value>,
         request_id: Option<&Value>,
+        deadline: std::time::Duration,
     ) -> Result<
         (
             Option<Value>,
@@ -756,7 +757,6 @@ impl LspServer {
         JsonRpcError,
     > {
         let start = Instant::now();
-        let deadline = reference_search_deadline();
         let cap = references_cap();
         let mut source_backed_attempt: Option<SourceBackedReferenceAttempt> = None;
         let mut fallback_receipt = ReferenceTextFallbackReceipt::default();
@@ -1144,6 +1144,10 @@ impl LspServer {
                                             cap.saturating_add(index_count),
                                         )
                                     };
+                                    self.check_references_cancellation(
+                                        typed_request_id.as_ref(),
+                                        &mut fallback_receipt,
+                                    )?;
 
                                     // Combine workspace index results with text search results.
                                     // Capture counts BEFORE extending so classify_combined_tier
@@ -1364,6 +1368,10 @@ impl LspServer {
                                                         },
                                                         cap,
                                                     );
+                                                self.check_references_cancellation(
+                                                    typed_request_id.as_ref(),
+                                                    &mut fallback_receipt,
+                                                )?;
 
                                                 if !all_locations.is_empty() {
                                                     let text_count = all_locations.len();
@@ -1407,6 +1415,18 @@ impl LspServer {
                                                 partial_refs.into_iter().take(cap),
                                             );
                                         if !lsp_locations.is_empty() {
+                                            self.check_references_cancellation(
+                                                typed_request_id.as_ref(),
+                                                &mut fallback_receipt,
+                                            )?;
+                                            if start.elapsed() >= deadline {
+                                                fallback_receipt.deadline_exhausted = true;
+                                                fallback_receipt.fallback_completeness = "partial";
+                                                fallback_receipt.fallback_reason = Some(
+                                                    "reference_scan_deadline_before_partial_index_result"
+                                                        .to_owned(),
+                                                );
+                                            }
                                             tracing::debug!(
                                                 count = lsp_locations.len(),
                                                 elapsed = ?start.elapsed(),
@@ -1459,6 +1479,10 @@ impl LspServer {
                                         },
                                         cap,
                                     );
+                                    self.check_references_cancellation(
+                                        typed_request_id.as_ref(),
+                                        &mut fallback_receipt,
+                                    )?;
                                     if !open_doc_locations.is_empty() {
                                         tracing::debug!(
                                             count = open_doc_locations.len(),
@@ -2696,6 +2720,63 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
+    fn partial_index_result_marks_zero_deadline_before_success() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use perl_workspace::workspace_index::{
+            IndexCoordinator, SourceCommit, SourceCommitOutcome,
+        };
+        use std::num::NonZeroU32;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let mut server = LspServer::default();
+        let uri = "file:///partial-index-deadline.pl";
+        let text = "my $target = 1;\n$target++;\nprint $target;\n";
+        server.test_apply_did_open(uri, text, 1)?;
+
+        // didOpen promotes the normal coordinator to Ready in this unit-test
+        // environment. Replace it after open with a seeded Building coordinator
+        // so the partial index has real matches and passes the stale-index gate.
+        let coordinator = Arc::new(IndexCoordinator::new());
+        let generation = {
+            let documents = server.documents.lock();
+            documents
+                .values()
+                .next()
+                .and_then(|doc| NonZeroU32::new(doc.current_generation()))
+                .ok_or("opened document has no accepted generation")?
+        };
+        let commit = coordinator.index().index_live_file(
+            url::Url::parse(uri)?,
+            text.to_owned(),
+            SourceCommit::new(generation),
+        );
+        assert_eq!(commit, SourceCommitOutcome::Accepted);
+        server.index_coordinator = Some(coordinator);
+        assert!(matches!(route_index_access(server.coordinator()), IndexAccessMode::Partial(_)));
+
+        let outcome = server.handle_references_inner(
+            Some(json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": 5},
+                "context": {"includeDeclaration": true}
+            })),
+            None,
+            Duration::ZERO,
+        )?;
+        assert_eq!(outcome.1, ReferencesAnsweringTier::PartialIndex);
+        assert_eq!(outcome.2, "partial");
+        assert!(outcome.3 > 0, "seeded partial index must have candidate references");
+        assert!(outcome.7.deadline_exhausted);
+        assert_eq!(
+            outcome.7.fallback_reason.as_deref(),
+            Some("reference_scan_deadline_before_partial_index_result")
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
     fn bounded_reference_snapshot_marks_deadline_before_scan() -> Result<(), Box<dyn Error>> {
         use crate::runtime::LspServer;
         use parking_lot::Mutex;
@@ -3189,7 +3270,7 @@ mod tests {
                 latency_us,
                 source_backed_attempt,
                 fallback_receipt,
-            ) = server.handle_references_inner(Some(params), None)?;
+            ) = server.handle_references_inner(Some(params), None, reference_search_deadline())?;
 
             assert_eq!(index_state, "full", "the request must route through the full index first");
             server
@@ -3237,6 +3318,7 @@ mod tests {
                 "context": {"includeDeclaration": true}
             })),
             None,
+            reference_search_deadline(),
         )?;
         assert_eq!(indexed.2, "full");
         assert!(
