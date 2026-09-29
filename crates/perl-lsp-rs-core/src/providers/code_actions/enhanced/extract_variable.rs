@@ -131,24 +131,32 @@ fn collect_enclosing_scope_names(node: &Node, offset: usize, names: &mut HashSet
 fn collect_declared_names(node: &Node, names: &mut HashSet<String>) {
     match &node.kind {
         NodeKind::VariableDeclaration { variable, .. } => {
-            if let NodeKind::Variable { name, .. } = &variable.kind {
-                names.insert(name.clone());
-            }
+            record_scalar_variable(variable, names);
         }
         NodeKind::VariableListDeclaration { variables, .. } => {
             for v in variables {
-                if let NodeKind::Variable { name, .. } = &v.kind {
-                    names.insert(name.clone());
-                }
+                record_declared_target(v, names);
             }
         }
-        // Signature parameters are bound in the subroutine's scope without a
-        // `my`, so they need their own arm.
-        NodeKind::MandatoryParameter { variable }
-        | NodeKind::OptionalParameter { variable, .. } => {
-            if let NodeKind::Variable { name, .. } = &variable.kind {
-                names.insert(name.clone());
+        // A nested list target (`my ($x, ($result, $z)) = ...`) binds each
+        // item into the same scope; the wrapper itself declares nothing.
+        NodeKind::NestedVariableList { items } => {
+            for item in items {
+                record_declared_target(item, names);
             }
+        }
+        // Attributes wrap a base variable (`my $x :shared`); the base binds.
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            record_scalar_variable(variable, names);
+        }
+        // Signature parameters are bound in the subroutine's scope without a
+        // `my`, so they need their own arm. Named and slurpy parameters bind
+        // lexicals exactly like positional ones (#16676).
+        NodeKind::MandatoryParameter { variable }
+        | NodeKind::OptionalParameter { variable, .. }
+        | NodeKind::NamedParameter { variable, .. }
+        | NodeKind::SlurpyParameter { variable } => {
+            record_scalar_variable(variable, names);
         }
         _ => {}
     }
@@ -162,11 +170,36 @@ fn collect_declared_names(node: &Node, names: &mut HashSet<String>) {
     }
 }
 
+/// Record the variable only when it is a scalar binding: the action always
+/// generates `my $name`, and Perl keeps `@name` / `%name` separate from
+/// `$name`, so a same-named array or hash is no collision.
+fn record_scalar_variable(variable: &Node, names: &mut HashSet<String>) {
+    if let NodeKind::Variable { sigil, name } = &variable.kind
+        && sigil == "$"
+    {
+        names.insert(name.clone());
+    }
+}
+
+/// A declaration-list item is a variable (possibly carrying attributes) or a
+/// further nested list; both bind their scalars into the same scope.
+fn record_declared_target(node: &Node, names: &mut HashSet<String>) {
+    match &node.kind {
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            record_scalar_variable(variable, names);
+        }
+        NodeKind::NestedVariableList { .. } | NodeKind::VariableListDeclaration { .. } => {
+            collect_declared_names(node, names);
+        }
+        _ => record_scalar_variable(node, names),
+    }
+}
+
 /// Node kinds that introduce a new lexical scope in Perl.
 ///
-/// A `while`/`if` body is deliberately absent: those bodies do not open a new
-/// lexical scope, so a `my` in one is still visible to the enclosing block and
-/// must be treated as a collision.
+/// Every braced body is a scope: an `if`/`while` body is its own `Block`
+/// node, and `for`/`foreach` open a scope for their iterator variable, so a
+/// `my` declared there is invisible outside the loop.
 fn is_scope_boundary(kind: &NodeKind) -> bool {
     matches!(
         kind,
@@ -174,6 +207,8 @@ fn is_scope_boundary(kind: &NodeKind) -> bool {
             | NodeKind::Block { .. }
             | NodeKind::Subroutine { .. }
             | NodeKind::Package { .. }
+            | NodeKind::For { .. }
+            | NodeKind::Foreach { .. }
     )
 }
 
@@ -196,6 +231,7 @@ pub fn unique_variable_name(base: &str, visible: &HashSet<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_parser_core::Parser;
 
     fn set(names: &[&str]) -> HashSet<String> {
         names.iter().map(|s| (*s).to_string()).collect()
@@ -219,5 +255,82 @@ mod tests {
     fn unique_name_skips_a_taken_suffixed_candidate() {
         assert_eq!(unique_variable_name("len", &set(&["len", "len2"])), "len3");
         assert_eq!(unique_variable_name("len", &set(&["len", "len2", "len3"])), "len4");
+    }
+
+    fn visible_names_before(source: &str, needle: &str) -> HashSet<String> {
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().expect("fixture must parse");
+        let offset = source.find(needle).expect("needle present in fixture");
+        visible_names_at(&ast, offset)
+    }
+
+    /// #16676: a Perl 5.44 named parameter binds a lexical exactly like a
+    /// positional one, so an extraction inside that subroutine must treat the
+    /// name as taken instead of shadowing the argument.
+    #[test]
+    fn named_parameter_binding_is_visible() {
+        let source = "sub f (:$result) { my $total = 2 + 3; print $result; }";
+        let visible = visible_names_before(source, "2 + 3");
+        assert!(
+            visible.contains("result"),
+            "a named scalar parameter must be a taken name, got {visible:?}"
+        );
+    }
+
+    /// #16676: a same-scope name declared inside a nested list target binds in
+    /// the enclosing scope, so extraction must not reuse its spelling.
+    #[test]
+    fn nested_list_declarations_are_visible() {
+        let source = "my ($result, ($result2, $other)) = (1, 2, 3);\nmy $total = 2 + 3;";
+        let visible = visible_names_before(source, "2 + 3");
+        for taken in ["result", "result2", "other"] {
+            assert!(
+                visible.contains(taken),
+                "nested destructuring binds {taken} in this scope, got {visible:?}"
+            );
+        }
+    }
+
+    /// #16676: a scalar binding declared with attributes is still a taken
+    /// scalar name.
+    #[test]
+    fn attributed_scalar_binding_is_visible() {
+        let source = "my $result :shared;\nmy $total = 2 + 3;";
+        let visible = visible_names_before(source, "2 + 3");
+        assert!(
+            visible.contains("result"),
+            "an attributed scalar binding must be a taken name, got {visible:?}"
+        );
+    }
+
+    /// #16676: the generated declaration is always a scalar, and Perl keeps
+    /// `@name` / `%name` separate from `$name`, so a same-named array or hash
+    /// must not force a scalar rename.
+    #[test]
+    fn non_scalar_declarations_do_not_collide() {
+        let source = "my @result = (1);\nmy %result = (a => 1);\nmy $total = 2 + 3;";
+        let visible = visible_names_before(source, "2 + 3");
+        assert!(
+            !visible.contains("result"),
+            "array and hash bindings must not take the scalar name, got {visible:?}"
+        );
+    }
+
+    /// #16676: a `for my $i (...)` iterator is scoped to the loop. Outside the
+    /// loop the name is free; inside it, it must still be treated as taken.
+    #[test]
+    fn for_iterator_variable_is_scoped_to_the_loop() {
+        let source = "for my $i (1 .. 3) { my $inside = $i; }\nmy $total = 2 + 3;";
+        let outside = visible_names_before(source, "2 + 3");
+        assert!(
+            !outside.contains("i") && !outside.contains("inside"),
+            "loop-scoped names must be free after the loop, got {outside:?}"
+        );
+
+        let inside = visible_names_before(source, "$inside");
+        assert!(
+            inside.contains("i") && inside.contains("inside"),
+            "the loop's own names must be visible inside it, got {inside:?}"
+        );
     }
 }
