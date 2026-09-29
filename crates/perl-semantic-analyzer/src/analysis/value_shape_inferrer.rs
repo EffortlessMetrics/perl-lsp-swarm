@@ -30,14 +30,47 @@ impl ValueShapeInferrer {
     /// Walk the entire AST and return `(EntityId, ValueShape)` pairs for
     /// every variable whose shape can be inferred from syntactic patterns.
     pub fn infer(ast: &Node, _file_id: FileId) -> Vec<(EntityId, ValueShape)> {
+        Self::infer_state(ast).results
+    }
+
+    /// Name-keyed defining-class invocant shapes visible at `position`.
+    ///
+    /// [`named_shapes`] is method-scoped and restored at subroutine exit, so
+    /// invocants would otherwise disappear. This map keeps the last invocant
+    /// object shape whose source span starts at or before `position`, so a
+    /// later method or package cannot leak into an earlier `$self->` site.
+    pub fn named_invocant_shapes_at(ast: &Node, position: usize) -> HashMap<String, ValueShape> {
+        Self::infer_state_at(ast, position).invocant_shapes
+    }
+
+    /// Name-keyed shapes from the same walk as [`infer`].
+    ///
+    /// Last write wins for a repeated scalar name. Method-local maps are
+    /// restored at subroutine exit, matching the inferrer's lexical scope.
+    pub fn named_shapes(ast: &Node) -> HashMap<String, ValueShape> {
+        Self::infer_state(ast).variable_shapes
+    }
+
+    /// True for the defining-class invocant names this inferrer already records.
+    pub fn is_defining_class_invocant_name(name: &str) -> bool {
+        is_self_like_name(name)
+    }
+
+    fn infer_state(ast: &Node) -> InferrerState {
+        Self::infer_state_at(ast, usize::MAX)
+    }
+
+    fn infer_state_at(ast: &Node, position: usize) -> InferrerState {
         let mut state = InferrerState {
             current_package: "main".to_string(),
             in_method: false,
+            position,
             variable_shapes: HashMap::new(),
+            invocant_shapes: HashMap::new(),
             results: Vec::new(),
         };
         state.walk(ast);
-        state.results
+        state
     }
 }
 
@@ -47,8 +80,13 @@ struct InferrerState {
     current_package: String,
     /// Whether we are currently inside a subroutine/method body.
     in_method: bool,
+    /// Byte offset of the call site consuming invocant shapes.
+    position: usize,
     /// Current lexical receiver-shape environment, keyed by scalar variable name.
     variable_shapes: HashMap<String, ValueShape>,
+    /// Last defining-class invocant shape per name whose span starts at or before
+    /// [`position`](Self::position). Survives method-scope restore.
+    invocant_shapes: HashMap<String, ValueShape>,
     /// Accumulated (EntityId, ValueShape) pairs.
     results: Vec<(EntityId, ValueShape)>,
 }
@@ -221,6 +259,12 @@ impl InferrerState {
             variable,
             ValueShape::Object { package: self.current_package.clone(), confidence },
         );
+        if variable.location.start <= self.position {
+            self.invocant_shapes.insert(
+                name.to_string(),
+                ValueShape::Object { package: self.current_package.clone(), confidence },
+            );
+        }
     }
 
     fn record_variable_shape(&mut self, variable: &Node, shape: ValueShape) {
@@ -427,6 +471,60 @@ mod tests {
         let confidence =
             object_for_package(&results, "Widget").ok_or("expected @_ self unpack shape")?;
         assert_eq!(confidence, Confidence::Medium);
+        Ok(())
+    }
+
+    #[test]
+    fn named_shapes_expose_signature_class_and_ignore_bare_self() -> Result<(), String> {
+        let source = "package Widget;\nsub new($class) { return 1; }\n$self->name;\n";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
+        let class_pos =
+            source.find("$class").ok_or_else(|| "expected $class in fixture".to_string())?;
+        let named = ValueShapeInferrer::named_invocant_shapes_at(&ast, class_pos);
+        let class = named
+            .get("class")
+            .ok_or_else(|| format!("expected named $class invocant shape, got {named:?}"))?;
+        assert!(
+            matches!(class, ValueShape::Object { package, confidence }
+                if package == "Widget" && *confidence == Confidence::High),
+            "signature $class should be Widget/High, got {class:?}"
+        );
+        let file_self_pos = source
+            .rfind("$self")
+            .ok_or_else(|| "expected file-level $self in fixture".to_string())?;
+        let at_file_self = ValueShapeInferrer::named_invocant_shapes_at(&ast, file_self_pos);
+        assert!(
+            !at_file_self.contains_key("self"),
+            "file-level $self must not become an invocant shape: {at_file_self:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn named_invocant_shapes_at_earlier_method_ignore_later_package() -> Result<(), String> {
+        let source = concat!(
+            "package Animal;\n",
+            "sub speak { my ($self) = @_; $self->name; }\n",
+            "package Other;\n",
+            "sub fetch { my ($self) = @_; $self->name; }\n",
+        );
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().map_err(|err| format!("parse failed: {err:?}"))?;
+        let animal_pos =
+            source.find("$self->name").ok_or_else(|| "expected Animal $self-> site".to_string())?;
+        let other_pos =
+            source.rfind("$self->name").ok_or_else(|| "expected Other $self-> site".to_string())?;
+        let at_animal = ValueShapeInferrer::named_invocant_shapes_at(&ast, animal_pos);
+        let at_other = ValueShapeInferrer::named_invocant_shapes_at(&ast, other_pos);
+        assert!(
+            matches!(at_animal.get("self"), Some(ValueShape::Object { package, .. }) if package == "Animal"),
+            "earlier $self must stay Animal, got {at_animal:?}"
+        );
+        assert!(
+            matches!(at_other.get("self"), Some(ValueShape::Object { package, .. }) if package == "Other"),
+            "later $self must stay Other, got {at_other:?}"
+        );
         Ok(())
     }
 

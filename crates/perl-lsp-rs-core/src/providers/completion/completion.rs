@@ -100,6 +100,7 @@ mod lexical_context;
 pub(crate) mod lexical_visibility;
 mod methods;
 mod packages;
+mod receiver;
 mod regex_patterns;
 mod request;
 pub(crate) mod scope_distance;
@@ -1742,6 +1743,8 @@ impl CompletionProvider {
     }
 }
 
+#[cfg(test)]
+mod defining_class_invocant_tests;
 #[cfg(test)]
 mod keyword_role_tests;
 #[cfg(test)]

@@ -242,6 +242,38 @@ pri  # Developer is typing 'print'
 }
 
 #[test]
+fn test_user_story_defining_class_self_arrow_completion() -> TestResult {
+    let server = create_test_server();
+    initialize_server(&server);
+
+    let code = "package Animal;\nsub name { }\nsub speak {\n    my ($self) = @_;\n    $self->\n}\n";
+    open_document(&server, "file:///test/Animal.pm", code);
+
+    let line = 4_u32;
+    let character = "    $self->".encode_utf16().count() as u32;
+    let result = send_request(
+        &server,
+        "textDocument/completion",
+        Some(json!({
+            "textDocument": { "uri": "file:///test/Animal.pm" },
+            "position": { "line": line, "character": character }
+        })),
+    );
+
+    let completions = result.ok_or("Expected public textDocument/completion result")?;
+    let items = completions["items"].as_array().ok_or("Expected items array")?;
+    assert!(
+        items.iter().any(|item| item["label"] == "name"),
+        "$self-> after my ($self) = @_ must offer name via the public completion route; got {items:?}"
+    );
+    assert!(
+        items.iter().any(|item| item["label"] == "speak"),
+        "$self-> after my ($self) = @_ must offer speak via the public completion route; got {items:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_user_story_completion_tracks_document_updates() -> TestResult {
     let server = create_test_server();
     initialize_server(&server);

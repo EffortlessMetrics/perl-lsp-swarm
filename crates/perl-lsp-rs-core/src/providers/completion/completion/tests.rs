@@ -2274,8 +2274,8 @@ fn test_self_arrow_resolves_workspace_methods() -> Result<(), Box<dyn std::error
     //
     // The methods are ONLY in the workspace index (a separate .pm file), not in
     // the currently-parsed source. This tests the workspace path specifically:
-    // `classify_text_pattern_receiver` must return `SelfOrThis("MyService")` for `$self->` when
-    // `context.current_package == "MyService"`.
+    // proven `my $self = shift` consumes canonical invocant facts rather than
+    // `$self` spelling plus current_package.
     let index = Arc::new(WorkspaceIndex::new());
     let module_uri = Url::parse("file:///workspace/MyService.pm")?;
     let module_code = r#"package MyService;
@@ -4100,21 +4100,21 @@ fn classify_receiver_qualified_static_package() {
 }
 
 #[test]
-fn classify_receiver_self_is_high_confidence() {
+fn classify_receiver_self_spelling_is_not_text_pattern_evidence() {
     let source = "package MyService;\n$self->";
     let ctx = ctx_for("$self->", "MyService", source.len());
     let ev = classify_text_pattern_receiver(&ctx, source);
-    assert_eq!(ev, ReceiverEvidence::SelfOrThis("MyService".to_string()));
-    assert_eq!(ev.confidence(), Some(Confidence::High));
+    assert_eq!(ev, ReceiverEvidence::Unknown);
+    assert_eq!(ev.confidence(), None);
 }
 
 #[test]
-fn classify_receiver_this_is_high_confidence() {
+fn classify_receiver_this_spelling_is_not_text_pattern_evidence() {
     let source = "package MyHandler;\n$this->";
     let ctx = ctx_for("$this->", "MyHandler", source.len());
     let ev = classify_text_pattern_receiver(&ctx, source);
-    assert_eq!(ev, ReceiverEvidence::SelfOrThis("MyHandler".to_string()));
-    assert_eq!(ev.confidence(), Some(Confidence::High));
+    assert_eq!(ev, ReceiverEvidence::Unknown);
+    assert_eq!(ev.confidence(), None);
 }
 
 #[test]
