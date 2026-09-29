@@ -51,7 +51,6 @@ mod tests {
             && session.pending_request_ids.lock().is_empty()
             && session.pending_workspace_configuration_requests.lock().is_empty()
             && session.pending_startup_log.lock().is_none()
-            && !session.client_supports_pull_diags.load(Ordering::Acquire)
             && !session.client_capabilities.lock().work_done_progress_support
             && session.text_sync_session.lock().is_none()
             && session.position_encoding_session_context.lock().is_none()
@@ -64,6 +63,10 @@ mod tests {
 
         assert_eq!(session.begin_shutdown(), ShutdownAdmission::First);
         assert!(session_handles_are_empty(&session));
+        assert!(
+            session.client_supports_pull_diags.load(Ordering::Acquire),
+            "shutdown must not invert a pull client into a push-diagnostics transport"
+        );
         assert!(session.shutdown_received.load(Ordering::Acquire));
         assert!(
             !session.authorize_generation(generation),
@@ -86,6 +89,7 @@ mod tests {
         session.replace_connection();
 
         assert!(session_handles_are_empty(&session));
+        assert!(!session.client_supports_pull_diags.load(Ordering::Acquire));
         assert!(!session.initialize_requested.load(Ordering::Acquire));
         assert!(!session.initialized.load(Ordering::Acquire));
         assert!(!session.shutdown_received.load(Ordering::Acquire));
@@ -135,6 +139,21 @@ mod tests {
         assert!(session.initialized.load(Ordering::Acquire));
         assert!(session.shutdown_received.load(Ordering::Acquire));
         assert!(session_handles_are_empty(&session));
+        assert!(
+            session.client_supports_pull_diags.load(Ordering::Acquire),
+            "a terminal connection keeps its negotiated pull-diagnostics transport"
+        );
+    }
+
+    #[test]
+    fn shutdown_does_not_invert_pull_diagnostics_into_push() {
+        let session = session();
+        plant_connection_state(&session);
+        assert_eq!(session.begin_shutdown(), ShutdownAdmission::First);
+        assert!(
+            session.client_supports_pull_diags.load(Ordering::Acquire),
+            "publish_diagnostics treats a false pull flag as permission to push"
+        );
     }
 
     #[test]

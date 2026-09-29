@@ -174,6 +174,7 @@ impl ClientSession {
         *self.trace_level.lock() = "off".to_string();
         self.next_request_id.store(1, Ordering::Release);
         self.root_undetected_shown.store(false, Ordering::Release);
+        self.client_supports_pull_diags.store(false, Ordering::Release);
     }
 
     fn invalidate_identity_and_drain(&self) {
@@ -189,7 +190,9 @@ impl ClientSession {
         *self.initial_root_input.lock() = None;
         *self.client_capabilities.lock() = ClientCapabilities::default();
         *self.initialization_options_perl_settings.lock() = None;
-        self.client_supports_pull_diags.store(false, Ordering::Release);
+        // Do not flip `client_supports_pull_diags`: false means "push is
+        // allowed". Shutdown keeps the negotiated transport frozen on this
+        // terminal connection; [`Self::replace_connection`] resets it.
         self.session_warning_dedup.clear_all_families();
     }
 }
