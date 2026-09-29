@@ -15,7 +15,6 @@ use super::model::{
     ActivationClass, ActivationError, ActivationInventory, ActivationRow, INVENTORY_PATH,
     RegistrationState,
 };
-use super::validate;
 
 /// Machine identity for a checker report. Distinct from the inventory schema:
 /// this document is an evaluation, not a classification.
@@ -77,9 +76,11 @@ impl CheckReport {
     }
 }
 
-/// Validate the committed inventory, then evaluate every row fail-closed.
+/// Fail closed on a stale inventory, then evaluate every row against its
+/// class contract. Drift is a coverage defect: a clean evaluation of an
+/// outdated artifact does not prove current surfaces.
 pub fn check(root: &Path) -> Result<CheckReport, ActivationError> {
-    let inventory = validate::validate(root)?;
+    let inventory = super::check_drift(root)?;
     Ok(evaluate_inventory(root, &inventory))
 }
 
@@ -154,31 +155,55 @@ pub fn explain(root: &Path, surface_id: &str) -> Result<RowFinding, ActivationEr
         .ok_or_else(|| ActivationError::new(format!("unknown activation surface `{surface_id}`")))
 }
 
-/// Reviewer-readable rendering. Deterministic: inventory order, one line per
-/// failure reason, no wall-clock, no host path.
+/// Compact `activation check` output: counts plus failure reasons.
+/// Passing rows are omitted here so a fail-closed gate stays short.
 #[must_use]
-pub fn render_report(report: &CheckReport) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "activation check ({}, {}): {} passed, {} failed, {} row(s)\n",
-        report.schema,
-        report.controlling_issue,
-        report.passed,
-        report.failed,
-        report.findings.len()
-    ));
+pub fn render_summary(report: &CheckReport) -> String {
+    let mut out = header(report);
     if report.failed == 0 {
         out.push_str("all class contracts satisfied\n");
         return out;
     }
     out.push_str("failures\n");
     for finding in report.findings.iter().filter(|finding| finding.is_fail()) {
-        out.push_str(&format!("  {} ({})\n", finding.surface_id, finding.class));
-        for reason in &finding.reasons {
-            out.push_str(&format!("    - {reason}\n"));
-        }
+        push_finding(&mut out, finding);
     }
     out
+}
+
+/// Reviewer-readable `activation report`: every row, inventory order, one
+/// line per failure reason. Passing rows are listed so the report names the
+/// coverage it actually evaluated. Deterministic: no wall-clock, no host path.
+#[must_use]
+pub fn render_report(report: &CheckReport) -> String {
+    let mut out = header(report);
+    out.push_str("rows\n");
+    for finding in &report.findings {
+        push_finding(&mut out, finding);
+    }
+    out
+}
+
+fn header(report: &CheckReport) -> String {
+    format!(
+        "activation check ({}, {}): {} passed, {} failed, {} row(s)\n",
+        report.schema,
+        report.controlling_issue,
+        report.passed,
+        report.failed,
+        report.findings.len()
+    )
+}
+
+fn push_finding(out: &mut String, finding: &RowFinding) {
+    let mark = match finding.verdict {
+        Verdict::Pass => "pass",
+        Verdict::Fail => "fail",
+    };
+    out.push_str(&format!("  {mark}  {} ({})\n", finding.surface_id, finding.class));
+    for reason in &finding.reasons {
+        out.push_str(&format!("    - {reason}\n"));
+    }
 }
 
 /// Pretty JSON for `activation report --json`.
@@ -214,7 +239,7 @@ fn check_product(row: &ActivationRow, root: Option<&Path>, reasons: &mut Vec<Str
                 .to_string(),
         );
     }
-    if row.consumers.is_empty() {
+    if !has_named(&row.consumers) {
         reasons.push("product row requires at least one consumer".to_string());
     }
     if row.proof_references.is_empty() {
@@ -226,6 +251,13 @@ fn check_product(row: &ActivationRow, root: Option<&Path>, reasons: &mut Vec<Str
     for proof in &row.proof_references {
         if proof.class.trim().is_empty() || proof.id.trim().is_empty() {
             reasons.push("product row has unknown or blank proof evidence".to_string());
+            continue;
+        }
+        if !proof.id.contains('/') {
+            reasons.push(format!(
+                "product row has unknown proof evidence `{}` (named ids are not a path-like proof)",
+                proof.id
+            ));
             continue;
         }
         if let Some(root) = root
@@ -240,13 +272,14 @@ fn check_product(row: &ActivationRow, root: Option<&Path>, reasons: &mut Vec<Str
 }
 
 /// Preview: explicit limitation, no accidental GA. Missing proof is allowed.
+/// Notes are commentary, not a limitation: owned + established + notes
+/// would otherwise pass as unlimited preview.
 fn check_preview(row: &ActivationRow, reasons: &mut Vec<String>) {
     let limited = row.registration.state == RegistrationState::NotEstablished
-        || row.owner == super::derive::UNOWNED
-        || row.notes.as_deref().is_some_and(|notes| !notes.trim().is_empty());
+        || row.owner == super::derive::UNOWNED;
     if !limited {
         reasons.push(
-            "preview row has no limitation state (not-established registration, unowned, or notes) \
+            "preview row has no limitation state (not-established registration or unowned) \
              and would contribute as accidental GA"
                 .to_string(),
         );
@@ -257,15 +290,21 @@ fn check_preview(row: &ActivationRow, reasons: &mut Vec<String>) {
 /// consumer. Product routing is not required — a legitimate lab with no
 /// `perl-lsp-rs` consumer still passes.
 fn check_runnable_non_product(row: &ActivationRow, reasons: &mut Vec<String>) {
-    let runnable = !row.compile_profiles.is_empty()
-        || row.registration.state == RegistrationState::Established;
-    if !runnable {
+    let established = row.registration.state == RegistrationState::Established;
+    let named_profiles = has_named(&row.compile_profiles);
+    let generic_fuzz_only = only_generic_fuzz_profile(row);
+    if generic_fuzz_only && !established {
+        reasons.push(format!(
+            "{} row with only the generic `fuzz` profile requires established [[bin]] registration",
+            row.class.as_str()
+        ));
+    } else if !named_profiles && !established {
         reasons.push(format!(
             "{} row requires a runnable compile profile or established registration",
             row.class.as_str()
         ));
     }
-    if row.consumers.is_empty() {
+    if !has_named(&row.consumers) {
         reasons.push(format!(
             "{} row requires a decision consumer; product routing is not that consumer",
             row.class.as_str()
@@ -300,10 +339,10 @@ fn check_shim(row: &ActivationRow, reasons: &mut Vec<String>) {
 /// Test API: named harness/profile and a harness consumer. Absence from
 /// ordinary product binaries is #9207, not this checker.
 fn check_test_api(row: &ActivationRow, reasons: &mut Vec<String>) {
-    if row.compile_profiles.is_empty() {
+    if !has_named(&row.compile_profiles) {
         reasons.push("test_api row requires a named harness/compile profile".to_string());
     }
-    if row.consumers.is_empty() {
+    if !has_named(&row.consumers) {
         reasons.push("test_api row requires a named harness consumer".to_string());
     }
 }
@@ -326,8 +365,27 @@ fn blank(value: Option<&str>) -> bool {
     value.map(str::trim).unwrap_or("").is_empty()
 }
 
-/// Path-like proof ids must resolve inside `root`. Values without `/` are
-/// named evidence, not paths, and are left to their own authority.
+fn has_named(values: &[String]) -> bool {
+    values.iter().any(|value| !value.trim().is_empty())
+}
+
+/// `compile_profiles: ["fuzz"]` is the fuzz-crate label, not proof the
+/// target is registered as a `[[bin]]`. Whitespace-only entries are ignored.
+fn only_generic_fuzz_profile(row: &ActivationRow) -> bool {
+    let mut saw_fuzz = false;
+    for profile in
+        row.compile_profiles.iter().map(|value| value.trim()).filter(|value| !value.is_empty())
+    {
+        if profile != "fuzz" {
+            return false;
+        }
+        saw_fuzz = true;
+    }
+    saw_fuzz
+}
+
+/// Path-like proof ids must resolve inside `root`. Callers fail closed on
+/// slashless ids before using this helper.
 fn missing_path_like_evidence<'a>(root: &Path, value: &'a str) -> Option<&'a str> {
     if !value.contains('/') {
         return None;

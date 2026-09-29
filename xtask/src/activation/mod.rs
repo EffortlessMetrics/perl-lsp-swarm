@@ -15,7 +15,7 @@ mod validate;
 pub use check::{
     CHECK_SCHEMA, CONTROLLING_ISSUE as CHECK_CONTROLLING_ISSUE, CheckReport, RowFinding, Verdict,
     check, evaluate_inventory, evaluate_raw_row, evaluate_row, explain, render_report,
-    report_to_json,
+    render_summary, report_to_json,
 };
 pub use derive::{UNOWNED, derived_class_index};
 pub use model::{

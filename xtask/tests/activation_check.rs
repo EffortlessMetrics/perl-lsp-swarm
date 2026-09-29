@@ -331,6 +331,13 @@ fn unknown_or_blank_product_evidence_fails_closed() -> TestResult {
 }
 
 #[test]
+fn slashless_unknown_product_evidence_fails_closed() -> TestResult {
+    let mut row = product_fixture();
+    row["proof_references"] = json!([{ "class": "integration_test", "id": "not-a-proof" }]);
+    expect_fail(&row, "unknown proof evidence")
+}
+
+#[test]
 fn stale_product_proof_path_fails_closed() -> TestResult {
     let mut row = product_fixture();
     row["proof_references"] = json!([{
@@ -357,11 +364,28 @@ fn preview_without_limitation_is_accidental_ga() -> TestResult {
 }
 
 #[test]
+fn preview_notes_are_not_a_limitation() -> TestResult {
+    let mut row = preview_fixture();
+    row["registration"]["state"] = json!("established");
+    row["owner"] = json!("crates/perl-lsp-rs");
+    row["notes"] = json!("see also related work");
+    expect_fail(&row, "accidental GA")
+}
+
+#[test]
 fn lab_without_runnable_profile_or_registration_fails() -> TestResult {
     let mut row = lab_fixture();
     row["compile_profiles"] = json!([]);
     row["registration"]["state"] = json!("not_established");
     expect_fail(&row, "runnable compile profile")
+}
+
+#[test]
+fn unregistered_fuzz_target_is_not_runnable() -> TestResult {
+    let mut row = lab_fixture();
+    row["compile_profiles"] = json!(["fuzz"]);
+    row["registration"]["state"] = json!("not_established");
+    expect_fail(&row, "established [[bin]] registration")
 }
 
 #[test]
@@ -383,6 +407,22 @@ fn test_api_without_named_profile_fails() -> TestResult {
     let mut row = test_api_fixture();
     row["compile_profiles"] = json!([]);
     expect_fail(&row, "named harness/compile profile")
+}
+
+#[test]
+fn whitespace_only_harness_names_are_not_named() -> TestResult {
+    let mut row = test_api_fixture();
+    row["compile_profiles"] = json!([" "]);
+    row["consumers"] = json!(["\t"]);
+    expect_fail(&row, "named harness/compile profile")?;
+    expect_fail(&row, "named harness consumer")
+}
+
+#[test]
+fn whitespace_only_product_consumers_are_not_named() -> TestResult {
+    let mut row = product_fixture();
+    row["consumers"] = json!([" "]);
+    expect_fail(&row, "at least one consumer")
 }
 
 #[test]
@@ -441,6 +481,16 @@ fn report_render_is_deterministic_and_names_failures() -> TestResult {
     let second = activation::render_report(&report);
     assert_eq!(first, second);
     assert!(first.contains("activation check (activation_check.v1, #9205)"));
+    assert!(
+        first.contains("pass  feature:lsp.hover (product)"),
+        "human report must name passing rows: {first}"
+    );
+    let summary = activation::render_summary(&report);
+    assert!(summary.contains("all class contracts satisfied"), "{summary}");
+    assert!(
+        !summary.contains("feature:lsp.hover"),
+        "compact check output must not dump every passing row: {summary}"
+    );
     Ok(())
 }
 
@@ -469,6 +519,19 @@ fn cli_check_report_and_explain_operate_on_the_committed_inventory() -> TestResu
     let stdout = String::from_utf8_lossy(&check.stdout);
     assert!(stdout.contains("activation_check.v1"), "{stdout}");
     assert!(stdout.contains("#9205"), "{stdout}");
+    assert!(stdout.contains("all class contracts satisfied"), "{stdout}");
+
+    let human_report = run_activation(&["report"])?;
+    assert!(
+        human_report.status.success(),
+        "activation report must succeed; stderr={}",
+        String::from_utf8_lossy(&human_report.stderr)
+    );
+    let human = String::from_utf8_lossy(&human_report.stdout);
+    assert!(
+        human.contains("pass  feature:lsp.hover (product)"),
+        "human report must list passing rows: {human}"
+    );
 
     let report = run_activation(&["report", "--json"])?;
     assert!(

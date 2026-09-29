@@ -67,7 +67,7 @@ pub fn run(command: ActivationSubcommand) -> Result<()> {
         }
         ActivationSubcommand::Check => {
             let report = activation::check(&root).map_err(|error| eyre!("{error}"))?;
-            print!("{}", activation::render_report(&report));
+            print!("{}", activation::render_summary(&report));
             if !report.is_clean() {
                 bail!(
                     "activation check failed: {} row(s) missed their class contract",
