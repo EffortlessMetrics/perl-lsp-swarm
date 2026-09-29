@@ -55,13 +55,19 @@ EXIT_CODES = {
 
 # Aggregate precedence, worst first. Any non-success verdict fails the job,
 # so the ordering only decides which typed label a mixed stream reports.
+# Aggregate precedence, worst first. Any non-success verdict fails the job,
+# so the ordering only decides which typed label a mixed stream reports.
+# COMPLETE_WITH_FAILURES must outrank NO_TESTS_DISCOVERED: a filtered
+# workspace run legitimately yields zero-test packages alongside the
+# package that observed failures, and observed failures must never be
+# masked by an empty-package verdict (#15349).
 _VERDICT_PRECEDENCE = (
     "STREAM_INVALID",
     "COMMAND_FAILED",
     "STREAM_INCOMPLETE",
     "NOT_PROVEN",
-    "NO_TESTS_DISCOVERED",
     "COMPLETE_WITH_FAILURES",
+    "NO_TESTS_DISCOVERED",
     "COMPLETE_PASS",
 )
 
@@ -146,6 +152,12 @@ def _close_block(block, truncated_no_trailer):
     if block["suite_event"] == "failed" and exit_status == 0:
         block["verdict"] = "NOT_PROVEN"
         block["reasons"].append("suite reported failures but cargo exited 0")
+        return
+    if block["suite_event"] == "ok" and exit_status not in (None, 0):
+        block["verdict"] = "NOT_PROVEN"
+        block["reasons"].append(
+            f"suite reported ok but cargo exited {exit_status}"
+        )
         return
     if counts["discovered"] == 0:
         block["verdict"] = "NO_TESTS_DISCOVERED"

@@ -150,6 +150,11 @@ jobs:
 
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           echo "flake_count=$flake_count" >> "$GITHUB_OUTPUT"
+          # Persist the subject-defining cargo args so every exact replay
+          # runs the same feature/target/profile subject as the initial run
+          # (#15349). A replay under different cargo options is not evidence
+          # about the originally observed test event.
+          printf '%s\n' "${FILTER[@]}" > test-filter-args.txt
 
       - name: Retry failed tests 3x with exact identity
         if: steps.initial_run.outputs.verdict == 'COMPLETE_WITH_FAILURES'
@@ -160,16 +165,27 @@ jobs:
           declare -a STABLE_FAILURES=()
           declare -a INSTRUMENT_FAILURES=()
 
+          # Restore the exact subject-defining cargo args accepted by the
+          # initial run so replays cannot pass a test that only fails under
+          # the requested feature set/subject (#15349).
+          FILTER=()
+          if [ -f test-filter-args.txt ]; then
+            mapfile -t FILTER < test-filter-args.txt
+          fi
+
           # Replay the exact subject: same package, same target (--lib), same
-          # locked feature resolution, same test identity via --exact. A
-          # replay that does not run this exact test is an instrument
-          # failure, never evidence that the original event was flaky.
+          # subject-defining cargo args and locked feature resolution, and
+          # the same structured JSON harness output as the initial run. A
+          # replay that does not run this exact test in this exact subject —
+          # or that produces a stream the extractor cannot classify — is an
+          # instrument failure, never evidence that the original event was
+          # flaky.
           run_exact_replay() {
             local pkg="$1" name="$2" outfile="$3" rc=0
-            printf '{"type":"run","package":"%s","target":"lib","command":["cargo","test","-p","%s","--lib","--locked","--","--exact","%s","--test-threads=1"]}\n' \
-              "$pkg" "$pkg" "$name" > "$outfile"
-            cargo test -p "$pkg" --lib --locked -- --exact "$name" --test-threads=1 \
-              >> "$outfile" 2>&1 || rc=$?
+            local -a cmd=(cargo test -p "$pkg" --lib --locked "${FILTER[@]}" -- -Z unstable-options --format json --exact "$name" --test-threads=1)
+            python3 -c 'import json, sys; print(json.dumps({"type":"run","package":sys.argv[1],"target":"lib","command":sys.argv[2:]}))' \
+              "$pkg" "${cmd[@]}" > "$outfile"
+            "${cmd[@]}" >> "$outfile" 2>&1 || rc=$?
             printf '{"type":"run_end","package":"%s","exit_status":%d}\n' "$pkg" "$rc" >> "$outfile"
           }
 

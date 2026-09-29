@@ -234,6 +234,44 @@ class ExtractFailedTestsTest(unittest.TestCase):
         receipt = self.parse(lines)
         self.assertEqual(receipt["verdict"], "NOT_PROVEN")
 
+    def test_suite_ok_with_nonzero_exit_is_not_proven(self):
+        # A complete `suite: ok` block followed by a nonzero run_end trailer
+        # is a toolchain contradiction, never a complete pass (#15349).
+        lines = [
+            envelope("pkg_a"),
+            suite_start(1),
+            test_event("started", "a::one"),
+            test_event("ok", "a::one"),
+            suite_end("ok", 1, 0),
+            run_end("pkg_a", 101),
+        ]
+        receipt = self.parse(lines)
+        self.assertEqual(receipt["verdict"], "NOT_PROVEN")
+        self.assertFalse(receipt["success_verdict"])
+        self.assertEqual(receipt["exit_code"], 6)
+
+    def test_observed_failures_outrank_empty_packages_in_mixed_stream(self):
+        # A filtered workspace run yields NO_TESTS_DISCOVERED for packages
+        # without a matching test while the requested subject observes
+        # failures; the aggregate must stay COMPLETE_WITH_FAILURES so the
+        # workflow schedules exact replays instead of skipping them (#15349).
+        lines = [
+            envelope("pkg_empty"),
+            suite_start(0),
+            suite_end("ok", 0, 0),
+            run_end("pkg_empty", 0),
+            envelope("pkg_subject"),
+            suite_start(1),
+            test_event("failed", "s::flaky_case"),
+            suite_end("failed", 0, 1),
+            run_end("pkg_subject", 101),
+        ]
+        receipt = self.parse(lines)
+        self.assertEqual(receipt["verdict"], "COMPLETE_WITH_FAILURES")
+        self.assertEqual(receipt["counts"]["failed"], 1)
+        self.assertEqual(receipt["failures"][0]["package"], "pkg_subject")
+        self.assertEqual(receipt["failures"][0]["name"], "s::flaky_case")
+
     def test_mid_block_corruption_is_not_overwritten_by_valid_suite(self):
         lines = [
             envelope("pkg_a"),
