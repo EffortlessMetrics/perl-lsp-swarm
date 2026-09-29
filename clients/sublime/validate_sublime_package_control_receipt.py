@@ -203,6 +203,11 @@ def validate_shape(payload: dict[str, Any]) -> None:
         promotion.get("public_artifact_installed") in {"not_proven", "eligible"},
         "public_artifact_installed promotion is invalid",
     )
+    if promotion.get("public_artifact_installed") == "eligible":
+        require(
+            payload.get("result") == "pass",
+            "public_artifact_installed cannot be eligible without a pass",
+        )
     subject = _mapping(payload.get("public_subject"), "public_subject")
     require(
         subject.get("relative_path") == SUBJECT_RELATIVE_PATH,

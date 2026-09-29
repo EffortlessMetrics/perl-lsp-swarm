@@ -325,6 +325,13 @@ class PackageControlReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "leading Package Control setup"):
             validator.validate_subject(listed)
 
+    def test_not_run_receipt_cannot_mark_install_eligible(self) -> None:
+        validator = load_validator()
+        payload = validator.not_run_template()
+        payload["promotion"]["public_artifact_installed"] = "eligible"
+        with self.assertRaisesRegex(ValueError, "cannot be eligible without a pass"):
+            validator.validate_shape(payload)
+
     def test_pass_may_mark_install_eligible_but_not_leading_setup(self) -> None:
         validator = load_validator()
         subject = listed_subject()
