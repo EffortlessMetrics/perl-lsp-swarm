@@ -9,9 +9,10 @@ use perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint;
 use perl_parser_core::error::ParseError;
 
 #[test]
-fn hint_names_the_comma_for_a_literal_list_item() {
+fn hint_names_the_comma_for_a_literal_list_item() -> Result<(), String> {
     let error = ParseError::unexpected("')'", "number", 17);
-    let hint = build_parse_error_hint(&error, "").expect("value-like found must produce a hint");
+    let hint = build_parse_error_hint(&error, "")
+        .ok_or_else(|| "value-like found must produce a hint".to_string())?;
 
     assert!(hint.contains("`,`"), "hint must name the missing comma, got: {hint}");
     assert!(hint.contains("comma"), "hint must mention the comma, got: {hint}");
@@ -19,6 +20,7 @@ fn hint_names_the_comma_for_a_literal_list_item() {
         !hint.contains("unmatched opening"),
         "hint must not claim the group is unclosed, got: {hint}"
     );
+    Ok(())
 }
 
 #[test]

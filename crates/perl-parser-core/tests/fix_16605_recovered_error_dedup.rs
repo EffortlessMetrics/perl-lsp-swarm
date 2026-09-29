@@ -34,13 +34,11 @@ const REGEX_UNBALANCED: &str = concat!(
 
 /// The same unterminated-regex failure inside a `sub` block, exercising the
 /// `parse_block` recovery loop (the second duplicate site).
-const BLOCK_REGEX_UNBALANCED: &str =
-    "sub f {\n    my $m = $s =~ m/abc;\n}\n";
+const BLOCK_REGEX_UNBALANCED: &str = "sub f {\n    my $m = $s =~ m/abc;\n}\n";
 
 /// The same failure inside a `given` block, exercising the
 /// `parse_given_block` recovery loop (the third duplicate site).
-const GIVEN_BLOCK_REGEX_UNBALANCED: &str =
-    "given ($x) {\n    my $m = $s =~ m/abc;\n}\n";
+const GIVEN_BLOCK_REGEX_UNBALANCED: &str = "given ($x) {\n    my $m = $s =~ m/abc;\n}\n";
 
 /// `18_multi_errors.pl` from the typo corpus: two missing semicolons, a
 /// missing comma in a list, and an unclosed block.
@@ -57,17 +55,13 @@ const MULTI_ERRORS: &str = concat!(
 );
 
 #[test]
-fn recovered_statement_error_is_recorded_once() {
+fn recovered_statement_error_is_recorded_once() -> Result<(), String> {
     let mut parser = Parser::new(REGEX_UNBALANCED);
-    let ast = parser.parse().expect("recovery should still return an AST");
+    let ast = parser.parse().map_err(|e| format!("recovery failed: {e:?}"))?;
     let errors = parser.errors();
 
     let blocking: Vec<&ParseError> = errors.iter().filter(|e| e.blocks_clean_parse()).collect();
-    assert_eq!(
-        blocking.len(),
-        1,
-        "the failed statement must record one error, got: {errors:?}"
-    );
+    assert_eq!(blocking.len(), 1, "the failed statement must record one error, got: {errors:?}");
 
     // The surviving record is the ORIGINAL expression error, not the
     // synthetic `expected statement` recovery error.
@@ -92,14 +86,15 @@ fn recovered_statement_error_is_recorded_once() {
                 statements.len()
             );
         }
-        other => panic!("expected Program node, got {other:?}"),
+        other => return Err(format!("expected Program node, got {other:?}")),
     }
+    Ok(())
 }
 
 #[test]
-fn recovered_block_statement_error_is_recorded_once() {
+fn recovered_block_statement_error_is_recorded_once() -> Result<(), String> {
     let mut parser = Parser::new(BLOCK_REGEX_UNBALANCED);
-    let _ast = parser.parse().expect("recovery should still return an AST");
+    let _ast = parser.parse().map_err(|e| format!("recovery failed: {e:?}"))?;
     let errors = parser.errors();
 
     // The unterminated regex swallows the block's closing `}`, so an
@@ -113,12 +108,13 @@ fn recovered_block_statement_error_is_recorded_once() {
         errors.iter().any(|e| e.to_string().starts_with("expected expression")),
         "the original expression error must survive: {errors:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn recovered_given_block_statement_error_is_recorded_once() {
+fn recovered_given_block_statement_error_is_recorded_once() -> Result<(), String> {
     let mut parser = Parser::new(GIVEN_BLOCK_REGEX_UNBALANCED);
-    let _ast = parser.parse().expect("recovery should still return an AST");
+    let _ast = parser.parse().map_err(|e| format!("recovery failed: {e:?}"))?;
     let errors = parser.errors();
 
     assert!(
@@ -129,12 +125,13 @@ fn recovered_given_block_statement_error_is_recorded_once() {
         errors.iter().any(|e| e.to_string().starts_with("expected expression")),
         "the original expression error must survive: {errors:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn batched_errors_render_in_source_order() {
+fn batched_errors_render_in_source_order() -> Result<(), String> {
     let mut parser = Parser::new(MULTI_ERRORS);
-    let _ast = parser.parse().expect("recovery should still return an AST");
+    let _ast = parser.parse().map_err(|e| format!("recovery failed: {e:?}"))?;
 
     // Anchored (located) errors are non-decreasing by anchor; unanchored
     // diagnostics (`Unclosed block` carries an anchor, but budget/limit
@@ -158,14 +155,19 @@ fn batched_errors_render_in_source_order() {
     // must now render BEFORE the line-8 errors (anchor 88) that discovery
     // order previously put first.
     let anchors: Vec<usize> = parser.errors().iter().filter_map(|e| e.location()).collect();
-    let unclosed_block = anchors.iter().position(|&a| a == 74);
-    let unclosed_string = anchors.iter().position(|&a| a == 88);
-    assert!(unclosed_block.is_some(), "expected the block error at anchor 74: {anchors:?}");
-    assert!(unclosed_string.is_some(), "expected the string error at anchor 88: {anchors:?}");
+    let unclosed_block = anchors
+        .iter()
+        .position(|&a| a == 74)
+        .ok_or_else(|| format!("expected the block error at anchor 74: {anchors:?}"))?;
+    let unclosed_string = anchors
+        .iter()
+        .position(|&a| a == 88)
+        .ok_or_else(|| format!("expected the string error at anchor 88: {anchors:?}"))?;
     assert!(
-        unclosed_block.unwrap() < unclosed_string.unwrap(),
+        unclosed_block < unclosed_string,
         "line-7 error must precede line-8 errors, anchors: {anchors:?}"
     );
+    Ok(())
 }
 
 #[test]
