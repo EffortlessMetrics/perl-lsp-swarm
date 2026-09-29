@@ -45,9 +45,10 @@
 //! perl-lsp-rs-core and owns any cross-crate projection requiring generation
 //! handles.
 
-use super::scope_distance::ancestor_ids;
+use super::scope_distance::walk_ancestors;
 use perl_semantic_analyzer::symbol::{ScopeId, Symbol, SymbolKind, SymbolTable};
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
 /// Why a binding was admitted or rejected at the completion cursor (#8941).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,7 +168,16 @@ fn scope_chain_contains(
     if !symbol_table.scopes.contains_key(&cursor_scope) {
         return false;
     }
-    ancestor_ids(symbol_table, cursor_scope).contains(&target)
+    let mut found = false;
+    walk_ancestors(symbol_table, cursor_scope, |id| {
+        if id == target {
+            found = true;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+    found
 }
 
 /// Resolve exact identity among admitted bindings sharing one resolved slot.

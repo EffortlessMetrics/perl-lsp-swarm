@@ -9960,15 +9960,15 @@ fn test_package_block_lexical_does_not_leak_to_sibling_package() {
 /// This is provider-generation requery, not document close/reopen lifecycle.
 #[test]
 fn test_removed_lexical_is_absent_on_requery() {
-    let before = "my $gone_now = 1;\n$go";
-    let before_labels = variable_labels_at(before, "$go");
+    let before = "my $gone_now = 1;\n# cursor\n$go";
+    let before_labels = variable_labels_at(before, "# cursor\n$go");
     assert!(
         before_labels.iter().any(|l| l.contains("gone_now")),
         "control: the lexical must be offered before the edit; got {before_labels:?}"
     );
 
-    let after = "my $stays = 1;\n$go";
-    let after_labels = variable_labels_at(after, "$go");
+    let after = "my $stays = 1;\n# cursor\n$go";
+    let after_labels = variable_labels_at(after, "# cursor\n$go");
     assert!(
         !after_labels.iter().any(|l| l.contains("gone_now")),
         "requery after removing the declaration must drop it; got {after_labels:?}"
