@@ -353,55 +353,55 @@ test_check4_fires_with_git_dir_override() {
     fi
 }
 
-# ── Test 12: Sets CARGO_TARGET_DIR when unset ────────────────────────────────
+# ── Test 12: Accepts the per-worktree default target directory ──────────────
 
-test_sets_cargo_target_dir_when_unset() {
+test_accepts_unset_cargo_target_dir() {
     local repo
     repo="$(make_git_repo)"
     local wt
     wt="$(make_worktree "$repo" "agent-target-dir-test")"
 
     # Run preflight with CARGO_TARGET_DIR unset and capture output
-    local output
-    output="$(cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" 2>&1)" || true
+    local output code=0
+    output="$(cd "$wt" && unset CARGO_TARGET_DIR && bash "$PREFLIGHT" 2>&1)" || code=$?
 
     git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
     git -C "$repo" worktree prune 2>/dev/null || true
     rm -rf "$repo"
 
-    if echo "$output" | grep -q "CARGO_TARGET_DIR="; then
-        pass "sets CARGO_TARGET_DIR when unset"
+    if [[ "$code" -eq 0 ]] && [[ "$output" == *"CARGO_TARGET_DIR is unset"* ]]; then
+        pass "accepts unset CARGO_TARGET_DIR (exit 0)"
     else
-        fail "sets CARGO_TARGET_DIR when unset — output: $output"
+        fail "accepts unset CARGO_TARGET_DIR — exit $code; output: $output"
     fi
 }
 
-# ── Test 13: Respects existing CARGO_TARGET_DIR ──────────────────────────────
+# ── Test 13: Rejects an inherited CARGO_TARGET_DIR ──────────────────────────
 
-test_respects_existing_cargo_target_dir() {
+test_rejects_existing_cargo_target_dir() {
     local repo
     repo="$(make_git_repo)"
     local wt
     wt="$(make_worktree "$repo" "agent-target-existing-test")"
 
     # Run preflight with CARGO_TARGET_DIR already set
-    local output
-    output="$(cd "$wt" && CARGO_TARGET_DIR="/tmp/my-custom-target" bash "$PREFLIGHT" 2>&1)" || true
+    local output code=0
+    output="$(cd "$wt" && CARGO_TARGET_DIR="/tmp/my-custom-target" bash "$PREFLIGHT" 2>&1)" || code=$?
 
     git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true
     git -C "$repo" worktree prune 2>/dev/null || true
     rm -rf "$repo"
 
-    if echo "$output" | grep -q "CARGO_TARGET_DIR.*already set"; then
-        pass "respects existing CARGO_TARGET_DIR"
+    if [[ "$code" -eq 5 ]] && [[ "$output" == *"CARGO_TARGET_DIR is set"* ]]; then
+        pass "rejects existing CARGO_TARGET_DIR (exit 5)"
     else
-        fail "respects existing CARGO_TARGET_DIR — output: $output"
+        fail "rejects existing CARGO_TARGET_DIR — exit $code; output: $output"
     fi
 }
 
-# ── Test 14: CARGO_TARGET_DIR contains branch-derived path ───────────────────
+# ── Test 14: Guidance keeps Cargo's per-worktree default ────────────────────
 
-test_cargo_target_dir_contains_branch_name() {
+test_target_dir_guidance_uses_worktree_default() {
     local repo
     repo="$(make_git_repo)"
     local wt
@@ -415,10 +415,11 @@ test_cargo_target_dir_contains_branch_name() {
     git -C "$repo" worktree prune 2>/dev/null || true
     rm -rf "$repo"
 
-    if echo "$output" | grep -q "agent-branch-in-path"; then
-        pass "CARGO_TARGET_DIR contains branch name"
+    if [[ "$output" == *"this worktree's own target/"* ]] &&
+       [[ "$output" != *"CARGO_TARGET_DIR="* ]]; then
+        pass "target-dir guidance uses the worktree default"
     else
-        fail "CARGO_TARGET_DIR contains branch name — output: $output"
+        fail "target-dir guidance must not invent a branch-derived override — output: $output"
     fi
 }
 
@@ -502,10 +503,14 @@ test_stash_error_message() {
     git -C "$repo" worktree prune 2>/dev/null || true
     rm -rf "$repo"
 
-    if echo "$output" | grep -qi "stash"; then
-        pass "stash error message mentions stash"
+    if [[ "$output" == *"Identify the owner of each stash entry"* ]] &&
+       [[ "$output" == *"Do not edit until ownership and salvage are known"* ]] &&
+       [[ "$output" != *"git stash clear"* ]] &&
+       [[ "$output" != *"git stash pop"* ]] &&
+       [[ "$output" != *"git stash drop"* ]]; then
+        pass "stash error requires owner handoff without destructive recovery"
     else
-        fail "stash error message does not mention stash — got: $output"
+        fail "stash error gives unsafe or missing recovery guidance — got: $output"
     fi
 }
 
@@ -525,9 +530,9 @@ test_current_worktree_passes
 test_fails_when_cwd_is_main_repo_root
 test_worktree_path_prefix_no_false_positive
 test_check4_fires_with_git_dir_override
-test_sets_cargo_target_dir_when_unset
-test_respects_existing_cargo_target_dir
-test_cargo_target_dir_contains_branch_name
+test_accepts_unset_cargo_target_dir
+test_rejects_existing_cargo_target_dir
+test_target_dir_guidance_uses_worktree_default
 test_fails_with_stash_entries
 test_passes_with_empty_stash
 test_stash_error_message

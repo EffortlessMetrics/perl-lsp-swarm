@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Withhold the basic Extract to function fallback for all blocks because it cannot prove lexical-capture and brace safety; supported enhanced subroutine extraction remains available for admitted selections."
+time: 2026-09-29T02:09:02Z
+custom:
+  PR: "16793"
+  Slug: basic-block-extract-safety
+  Breaking: "no"

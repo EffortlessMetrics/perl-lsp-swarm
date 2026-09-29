@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # ---------------------------------------------------------------------------
 # Path setup: add scripts/ci to sys.path so we can import ci_classify directly.
@@ -35,10 +37,15 @@ from ci_classify import (  # noqa: E402
     CLASS_UNKNOWN,
     ROUTING,
     SCHEMA_VERSION,
+    classification_record,
     classify_one,
     filter_failing,
+    json_envelope,
     load_check_runs,
 )
+import ci_classify  # noqa: E402
+
+SCRIPT = _HERE / "ci_classify.py"
 
 # Fixtures directory (sibling to this test file).
 FIXTURES_DIR = _HERE / "fixtures"
@@ -70,6 +77,36 @@ def _check(
 def _cls(name: str, **kwargs: object) -> str:
     cls, _ = classify_one(_check(name, **kwargs))
     return cls
+
+
+def _cli(
+    args: list[str], *, input_text: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run the production ``ci_classify.py`` CLI in a child process."""
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        input=input_text,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def _cli_file(checks: object, *args: str) -> subprocess.CompletedProcess[str]:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8"
+    ) as handle:
+        json.dump(checks, handle)
+        path = handle.name
+    try:
+        return _cli([*args, path])
+    finally:
+        os.unlink(path)
+
+
+def _cli_json_file(checks: object) -> subprocess.CompletedProcess[str]:
+    return _cli_file(checks, "--json")
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +604,7 @@ class TestLoadCheckRuns(unittest.TestCase):
 
 
 class TestJsonEnvelope(unittest.TestCase):
-    """The ``--json`` flag must emit a versioned envelope object.
+    """``json_envelope`` owns the versioned ``--json`` object.
 
     Schema: ``{"schema_version": <str>, "classifications": [<record>, ...]}``.
 
@@ -576,59 +613,36 @@ class TestJsonEnvelope(unittest.TestCase):
     check ``schema_version`` first and refuse unknown shapes.
     """
 
-    @staticmethod
-    def _captured_json_for(checks: list[dict]) -> dict:
-        """Run ``run()`` with ``--json`` and parse the captured stdout."""
-        import argparse
-        import contextlib
-        import io
-
-        from ci_classify import run
-
-        args = argparse.Namespace(input=None, pr=None, json=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False, encoding="utf-8"
-        ) as f:
-            json.dump(checks, f)
-            fname = f.name
-        try:
-            args.input = fname
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = run(args)
-            assert rc == 0, f"ci_classify.run returned {rc}"
-            return json.loads(buf.getvalue())
-        finally:
-            os.unlink(fname)
-
-    def test_envelope_is_object_with_schema_version(self) -> None:
-        envelope = self._captured_json_for(
-            [{"name": "fmt", "conclusion": "failure"}]
+    def test_envelope_keys_are_exactly_schema_version_and_classifications(self) -> None:
+        envelope = json_envelope([])
+        self.assertEqual(
+            set(envelope.keys()), {"schema_version", "classifications"}
         )
-        self.assertIsInstance(envelope, dict)
-        self.assertEqual(envelope.get("schema_version"), SCHEMA_VERSION)
+
+    def test_schema_version_is_ci_classify_v1_string(self) -> None:
+        envelope = json_envelope([])
+        self.assertIsInstance(envelope["schema_version"], str)
+        self.assertEqual(envelope["schema_version"], "ci_classify.v1")
         self.assertEqual(SCHEMA_VERSION, "ci_classify.v1")
 
-    def test_envelope_records_under_classifications_key(self) -> None:
-        envelope = self._captured_json_for(
-            [
-                {"name": "fmt", "conclusion": "failure"},
-                {
-                    "name": "CI Gate shard (lsp)",
-                    "conclusion": "cancelled",
-                    "required": True,
-                },
-            ]
-        )
-        records = envelope.get("classifications")
-        self.assertIsInstance(records, list)
-        self.assertEqual(len(records), 2)
+    def test_empty_results_still_wrap_classifications_list(self) -> None:
+        envelope = json_envelope([])
+        self.assertIsInstance(envelope["classifications"], list)
+        self.assertEqual(envelope["classifications"], [])
 
-    def test_record_shape_preserved(self) -> None:
-        envelope = self._captured_json_for(
-            [{"name": "fmt", "conclusion": "failure"}]
+    def test_top_level_is_not_a_bare_list(self) -> None:
+        """Regression: previous stdout JSON was a bare list of records."""
+        envelope = json_envelope(
+            [(_check("fmt"), CLASS_POLICY_MISMATCH, "mechanical")]
         )
-        record = envelope["classifications"][0]
+        self.assertIsInstance(envelope, dict)
+        self.assertNotIsInstance(envelope, list)
+        self.assertNotIsInstance(envelope.get("classifications"), dict)
+
+    def test_record_shape_and_policy_routing(self) -> None:
+        check = _check("fmt")
+        cls, rationale = classify_one(check)
+        record = classification_record(check, cls, rationale)
         self.assertEqual(
             set(record.keys()),
             {"name", "conclusion", "class", "rationale", "routing"},
@@ -637,26 +651,236 @@ class TestJsonEnvelope(unittest.TestCase):
         self.assertEqual(record["conclusion"], "failure")
         self.assertEqual(record["class"], CLASS_POLICY_MISMATCH)
         self.assertEqual(record["routing"], ROUTING[CLASS_POLICY_MISMATCH])
-        self.assertIsInstance(record["rationale"], str)
+        self.assertEqual(record["rationale"], rationale)
         self.assertTrue(record["rationale"])
 
-    def test_empty_classifications_when_all_passing(self) -> None:
-        envelope = self._captured_json_for(
-            [{"name": "fmt", "conclusion": "success"}]
+    def test_missing_name_and_conclusion_become_empty_strings(self) -> None:
+        record = classification_record({}, CLASS_UNKNOWN, "no pattern")
+        self.assertEqual(record["name"], "")
+        self.assertEqual(record["conclusion"], "")
+        self.assertIsInstance(record["name"], str)
+        self.assertIsInstance(record["conclusion"], str)
+
+    def test_null_name_and_conclusion_become_empty_strings(self) -> None:
+        check = {"name": None, "conclusion": None}
+        cls, rationale = classify_one(check)
+        record = classification_record(check, cls, rationale)
+        self.assertEqual(record["name"], "")
+        self.assertEqual(record["conclusion"], "")
+        self.assertNotIn("None", rationale)
+        self.assertIn("''", rationale)
+        envelope = json_envelope([(check, cls, rationale)])
+        dumped = json.loads(json.dumps(envelope))
+        self.assertEqual(dumped["classifications"][0]["name"], "")
+        self.assertEqual(dumped["classifications"][0]["rationale"], rationale)
+        self.assertNotIn(None, dumped["classifications"][0].values())
+
+    def test_input_extra_keys_do_not_leak_into_records(self) -> None:
+        record = classification_record(
+            {
+                "name": "fmt",
+                "conclusion": "failure",
+                "html_url": "https://example.invalid/run",
+                "required": True,
+            },
+            CLASS_POLICY_MISMATCH,
+            "mechanical",
         )
-        self.assertEqual(envelope["schema_version"], SCHEMA_VERSION)
+        self.assertEqual(
+            set(record.keys()),
+            {"name", "conclusion", "class", "rationale", "routing"},
+        )
+        self.assertNotIn("html_url", record)
+        self.assertNotIn("required", record)
+
+    def test_unknown_class_still_emits_known_routing(self) -> None:
+        record = classification_record(
+            {"name": "mystery-lane", "conclusion": "failure"},
+            CLASS_UNKNOWN,
+            "no classification pattern matched",
+        )
+        self.assertEqual(record["class"], CLASS_UNKNOWN)
+        self.assertEqual(record["routing"], ROUTING[CLASS_UNKNOWN])
+
+    def test_unmapped_class_routing_is_empty_string_not_missing(self) -> None:
+        record = classification_record(
+            {"name": "fmt", "conclusion": "failure"},
+            "not_a_real_class",
+            "bogus",
+        )
+        self.assertEqual(record["routing"], "")
+        self.assertIn("routing", record)
+
+    def test_run_json_delegates_to_json_envelope(self) -> None:
+        """A duplicate inline serializer in ``run()`` must not pass.
+
+        Equality against ``json_envelope()`` cannot catch a private copy that
+        happens to match. A sentinel return from the helper can.
+        """
+        import argparse
+        import contextlib
+        import io
+
+        sentinel = {
+            "schema_version": "sentinel.v1",
+            "classifications": [{"name": "sentinel"}],
+        }
+        checks = [{"name": "fmt", "conclusion": "failure"}]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as handle:
+            json.dump(checks, handle)
+            path = handle.name
+        try:
+            buf = io.StringIO()
+            with mock.patch.object(
+                ci_classify, "json_envelope", return_value=sentinel
+            ) as patched:
+                with contextlib.redirect_stdout(buf):
+                    rc = ci_classify.run(
+                        argparse.Namespace(input=path, pr=None, json=True)
+                    )
+            patched.assert_called_once()
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(buf.getvalue()), sentinel)
+        finally:
+            os.unlink(path)
+
+    def test_json_envelope_delegates_to_classification_record(self) -> None:
+        """Bypassing ``classification_record`` inside ``json_envelope`` must fail."""
+        sentinel = {"name": "sentinel-record"}
+        with mock.patch.object(
+            ci_classify, "classification_record", return_value=sentinel
+        ) as patched:
+            envelope = ci_classify.json_envelope(
+                [({"name": "fmt", "conclusion": "failure"}, "cls", "why")]
+            )
+        patched.assert_called_once()
+        self.assertEqual(envelope["schema_version"], "ci_classify.v1")
+        self.assertEqual(envelope["classifications"], [sentinel])
+
+
+class TestJsonEnvelopeCli(unittest.TestCase):
+    """Production ``python ci_classify.py --json`` stdout is the envelope.
+
+    ``run()`` tests cannot catch an argparse wiring miss that drops ``--json``.
+    """
+
+    def test_cli_json_file_stdout_is_parseable_envelope(self) -> None:
+        completed = _cli_json_file([{"name": "fmt", "conclusion": "failure"}])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        envelope = json.loads(completed.stdout)
+        self.assertEqual(envelope["schema_version"], "ci_classify.v1")
+        self.assertEqual(len(envelope["classifications"]), 1)
+        self.assertEqual(envelope["classifications"][0]["name"], "fmt")
+        self.assertEqual(
+            envelope["classifications"][0]["class"], CLASS_POLICY_MISMATCH
+        )
+
+    def test_cli_json_stdin_stdout_is_parseable_envelope(self) -> None:
+        completed = _cli(
+            ["--json"],
+            input_text=json.dumps([{"name": "fmt", "conclusion": "failure"}]),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        envelope = json.loads(completed.stdout)
+        self.assertEqual(
+            set(envelope.keys()), {"schema_version", "classifications"}
+        )
+        self.assertEqual(envelope["classifications"][0]["name"], "fmt")
+
+    def test_cli_json_empty_array_still_emits_envelope(self) -> None:
+        completed = _cli_json_file([])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        envelope = json.loads(completed.stdout)
+        self.assertEqual(envelope["schema_version"], "ci_classify.v1")
         self.assertEqual(envelope["classifications"], [])
 
-    def test_top_level_is_not_a_bare_list(self) -> None:
-        """Regression guard: previous shape was a bare list at the top level.
-
-        A consumer that did ``for record in json.load(sys.stdin)`` would
-        silently miss the schema_version envelope. Assert the root is a dict.
-        """
-        envelope = self._captured_json_for(
-            [{"name": "fmt", "conclusion": "failure"}]
+    def test_cli_json_omits_non_failing_checks(self) -> None:
+        completed = _cli_json_file(
+            [
+                {"name": "fmt", "conclusion": "success"},
+                {"name": "fmt", "conclusion": "failure"},
+                {
+                    "name": "CI Gate shard (lsp)",
+                    "conclusion": "cancelled",
+                    "required": True,
+                },
+            ]
         )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        envelope = json.loads(completed.stdout)
+        names = [row["name"] for row in envelope["classifications"]]
+        self.assertEqual(names, ["fmt", "CI Gate shard (lsp)"])
+        self.assertEqual(
+            envelope["classifications"][1]["class"], CLASS_INFRA_ISSUE
+        )
+
+    def test_cli_json_stdout_is_only_the_envelope(self) -> None:
+        completed = _cli_json_file([{"name": "fmt", "conclusion": "failure"}])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(
+            completed.stdout.lstrip().startswith("{"),
+            f"expected object stdout, got {completed.stdout!r}",
+        )
+        envelope = json.loads(completed.stdout)
+        self.assertIsInstance(envelope, dict)
         self.assertNotIsInstance(envelope, list)
+        self.assertEqual(completed.stderr, "")
+
+    def test_cli_json_preserves_unicode_name(self) -> None:
+        completed = _cli_json_file(
+            [{"name": "café — CI Gate shard", "conclusion": "failure"}]
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        envelope = json.loads(completed.stdout)
+        self.assertEqual(
+            envelope["classifications"][0]["name"], "café — CI Gate shard"
+        )
+
+    def test_cli_json_includes_action_required(self) -> None:
+        completed = _cli_json_file(
+            [{"name": "mystery-lane", "conclusion": "action_required"}]
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        envelope = json.loads(completed.stdout)
+        self.assertEqual(len(envelope["classifications"]), 1)
+        self.assertEqual(
+            envelope["classifications"][0]["conclusion"], "action_required"
+        )
+        self.assertEqual(
+            envelope["classifications"][0]["class"], CLASS_UNKNOWN
+        )
+
+    def test_cli_json_null_name_is_empty_string(self) -> None:
+        completed = _cli_json_file([{"name": None, "conclusion": "failure"}])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        envelope = json.loads(completed.stdout)
+        record = envelope["classifications"][0]
+        self.assertEqual(record["name"], "")
+        self.assertIsInstance(record["name"], str)
+        self.assertNotIn("None", record["rationale"])
+        self.assertIn("''", record["rationale"])
+
+    def test_cli_json_all_passing_still_emits_envelope(self) -> None:
+        completed = _cli_json_file([{"name": "fmt", "conclusion": "success"}])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        envelope = json.loads(completed.stdout)
+        self.assertEqual(envelope["schema_version"], "ci_classify.v1")
+        self.assertEqual(envelope["classifications"], [])
+
+    def test_cli_without_json_is_not_an_envelope(self) -> None:
+        """Opposite-direction control: prose mode must not look like JSON."""
+        completed = _cli_file([{"name": "fmt", "conclusion": "failure"}])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("CLASS", completed.stdout)
+        with self.assertRaises(json.JSONDecodeError):
+            json.loads(completed.stdout)
+
+    def test_cli_prose_null_name_matches_empty_identity(self) -> None:
+        completed = _cli_file([{"name": None, "conclusion": "failure"}])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("'None'", completed.stdout)
 
 
 class TestPrEmptyFetchJsonEnvelope(unittest.TestCase):

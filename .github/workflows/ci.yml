@@ -70,7 +70,9 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "run_ci=true" >> "$GITHUB_OUTPUT"
-            # Off-PR events skip the API rails by their job-level event gate.
+            # api_scope stays a PR-diff selector. Main-push ratcheting is a
+            # job-level event gate on public-api-pr, not an overloaded scope
+            # bit; merge_group/dispatch stay out of that rail (#16815).
             echo "api_scope=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Non-PR event detected — running full CI"
           elif [ "${{ github.event.pull_request.draft }}" = "true" ]; then
@@ -370,7 +372,10 @@ jobs:
   windows-platform-smoke:
     name: Windows platform smoke
     runs-on: windows-2025
-    timeout-minutes: 20
+    # Cold windows-2025 cargo build exceeds 20m — job 108830411767 killed during
+    # compilation ("The job has exceeded the maximum execution time of 20m0s");
+    # same signature on #16624's job 108862152161 at 20m15s.
+    timeout-minutes: 45
     needs: [platform-overrides]
     if: needs.platform-overrides.outputs.windows_runner == 'true'
     steps:
@@ -458,7 +463,7 @@ jobs:
         run: |
           set +e
           mkdir -p "$RUNNER_TEMP/bin"
-          GOBIN="$RUNNER_TEMP/bin" go install github.com/aquaproj/aqua/v2/cmd/aqua@v2.57.0
+          bash scripts/tools/install-aqua.sh --dest "$RUNNER_TEMP/bin"
           export PATH="$RUNNER_TEMP/bin:$PATH"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           bash scripts/tools/aqua-doctor.sh
@@ -560,7 +565,7 @@ jobs:
           fi
           echo "✅ No conflict markers found"
 
-  # ── Public-API compatibility rails (#2266) ───────────────────────────
+  # ── Public-API compatibility rails (#2266, #16815) ───────────────────
   # Auto-run the nightly public-api/semver machinery on PRs that actually
   # touch a published facade surface or `.ci/public-api-baselines/`, closing
   # the label-only gating gap (issue #2266): humans forget labels and bot
@@ -572,38 +577,70 @@ jobs:
   # using the ci-nightly.yml pull_request(labeled) label gates.
   # Cost: ~1 min of detection-only work when no facade path changes; full
   # cargo-public-api / cargo-semver-checks runtime only where it matters.
+  # #16815: every push to main/master also runs the hard public-api ratchet
+  # against that landed SHA, including commits whose files sit outside
+  # facade/API scope. A paths-only filter cannot see inherited stale
+  # baselines or floating nightly rendering drift. api_scope stays a PR-diff
+  # selector; RUN_API_RATCHET is the one step-level decision. semver-pr stays
+  # PR-only. Schedule/manual coverage stays on ci-nightly.yml. Preflight
+  # superseded-SHA skipping is the cost control on stacked main pushes.
   public-api-pr:
     name: Public API Surface (facade PR)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs: [draft-pr-check, preflight-latest-check]
     if: >-
-      github.event_name == 'pull_request' &&
+      (github.event_name == 'pull_request' ||
+       (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))) &&
       needs.draft-pr-check.outputs.run_ci == 'true' &&
       needs.preflight-latest-check.outputs.is_latest == 'true'
+    env:
+      RUN_API_RATCHET: ${{ github.event_name == 'push' || needs.draft-pr-check.outputs.api_scope == 'true' }}
     permissions:
       contents: read
     steps:
       - name: Scoped no-op summary
         # A hard-failing ratchet must still settle green on out-of-scope diffs
         # so a future ruleset promotion resolves cleanly (issue #2266).
-        if: needs.draft-pr-check.outputs.api_scope != 'true'
+        if: env.RUN_API_RATCHET != 'true'
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          API_SCOPE: ${{ needs.draft-pr-check.outputs.api_scope }}
         run: |
           {
             echo "### Public API Surface scope"
             echo ""
-            echo "- api_scope: \`false\`"
+            echo "- event: \`$EVENT_NAME\`"
+            echo "- api_scope: \`$API_SCOPE\`"
             echo "- verdict: scoped-noop — no facade crate or .ci/public-api-baselines change"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::notice::public-api scoped-noop: no facade crate or baseline surface changed."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        if: env.RUN_API_RATCHET == 'true'
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify tested candidate identity
+        if: env.RUN_API_RATCHET == 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse 'HEAD^{commit}')" = "$TESTED_SHA"
+          {
+            echo "### Public API Surface check"
+            echo
+            echo "- event: \`$EVENT_NAME\`"
+            echo "- sha: \`$TESTED_SHA\`"
+            echo "- verdict: running \`just public-api-check\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Rust
-        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        if: env.RUN_API_RATCHET == 'true'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # stable (master)
         with:
           toolchain: 1.95.0
@@ -618,11 +655,11 @@ jobs:
       # need rustup sysroot symlinks (official names are not linkable), which
       # is more fragile than the slow drift risk it addresses (#12870 review).
       - name: Install nightly toolchain (cargo-public-api rustdoc JSON)
-        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        if: env.RUN_API_RATCHET == 'true'
         run: rustup toolchain install nightly --profile minimal
 
       - name: Cache cargo dependencies
-        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        if: env.RUN_API_RATCHET == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: public-api-${{ hashFiles('Cargo.lock') }}
@@ -630,23 +667,23 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-public-api
-        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        if: env.RUN_API_RATCHET == 'true'
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        if: env.RUN_API_RATCHET == 'true'
         uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff  # v2.87.8
         with:
           tool: just
 
       - name: Prove the surface filter folds (filter unit probes)
-        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        if: env.RUN_API_RATCHET == 'true'
         # The shared both-sides fold owns convergence; prove it before the
         # comparison that depends on it. Needs only awk, no nightly.
         run: python3 scripts/ci/test_public_api_filter.py
 
       - name: Check public API surface (.ci/public-api-baselines/ratchet-crates.txt)
-        if: needs.draft-pr-check.outputs.api_scope == 'true'
+        if: env.RUN_API_RATCHET == 'true'
         # Uses cargo public-api --simplified to omit blanket-impl noise; baselines in .ci/public-api-baselines/
         run: just public-api-check
 
@@ -1266,6 +1303,10 @@ jobs:
       - name: Verify candidate proof presence classification
         if: matrix.name == 'meta'
         run: python3 -m unittest scripts/ci/test_candidate_proof_presence.py
+
+      - name: Install pinned release schema dependencies
+        if: matrix.name == 'meta'
+        run: python3 -m pip install -r scripts/requirements-release.txt
 
       - name: Run merge-gate shard with receipts
         shell: bash
@@ -2056,6 +2097,16 @@ jobs:
       # to the four contracts above on the same required merge surface.
       - name: Gate-policy budget witness contract (required merge surface)
         run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
+
+      # #16133: the ripr-liveness dedup read's `--paginate`, `filter=all`,
+      # `per_page`, and `external_id` properties rest on inline Python inside
+      # `ripr-liveness.yml` and no other workflow or test exercises them. The
+      # advisory reporter is not a required gate, so without this contract a
+      # regression would only show up as duplicate posted check runs in
+      # production. Same reasoning as the contracts above, so it belongs on
+      # the same required merge surface.
+      - name: ripr-liveness dedup paginate contract (required merge surface)
+        run: cargo test -p xtask --test issue_16133_ripr_liveness_dedup_paginate --locked -- --nocapture
 
       # #13295: standalone semantic conformance corpus — oracle, mutation bank,
       # and CLI command wiring. These tests span corpus authoring rules,

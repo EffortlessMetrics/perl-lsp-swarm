@@ -207,7 +207,7 @@ describe('language client configuration', () => {
     ['perl-lsp.aiCompletion.enabled', 'reconstruct'],
     ['perl-lsp.featureProfile', 'restart'],
     ['perl-lsp.enableFormatting', 'restart'],
-    ['perl-lsp.autoPopulateNewFiles', 'unrelated'],
+    ['editor.tabSize', 'unrelated'],
   ])('classifies %s as %s', (setting, expected) => {
     expect(classifyConfigurationSetting(setting)).toBe(expected);
   });

@@ -23,6 +23,7 @@ pub mod change_set;
 pub mod changelog;
 pub mod check;
 pub mod check_agent_context;
+pub mod check_configuration_authority;
 pub mod check_lint_policy;
 pub mod check_naming_consistency;
 pub mod check_tautology;
@@ -167,7 +168,6 @@ pub mod publish_closure;
 pub mod publish_manifest_check;
 pub mod publish_receipts;
 pub mod quality_baseline;
-#[path = "quality_gate_facade.rs"]
 pub mod quality_gate;
 pub mod queue_health;
 pub mod queue_snapshot;

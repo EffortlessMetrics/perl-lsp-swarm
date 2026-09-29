@@ -487,6 +487,43 @@ mod tests {
     }
 
     #[test]
+    fn printf_metadata_rejects_list_valued_arguments() {
+        let format = Node::new(
+            NodeKind::String { value: "'%s %s'".to_string(), interpolated: false },
+            SourceLocation { start: 7, end: 14 },
+        );
+        let array = Node::new(
+            NodeKind::Variable { sigil: "@".to_string(), name: "values".to_string() },
+            SourceLocation { start: 16, end: 23 },
+        );
+        let call = Node::new(
+            NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, array] },
+            SourceLocation { start: 0, end: 23 },
+        );
+
+        assert_eq!(printf_format_arity_metadata_by_range(&call).get(&(0, 23)), None);
+
+        let command = Node::new(
+            NodeKind::String { value: "qx{printf 'a\\nb\\n'}".to_string(), interpolated: true },
+            SourceLocation { start: 16, end: 36 },
+        );
+        let command_call = Node::new(
+            NodeKind::FunctionCall {
+                name: "printf".to_string(),
+                args: vec![
+                    Node::new(
+                        NodeKind::String { value: "'%s %s'".to_string(), interpolated: false },
+                        SourceLocation { start: 7, end: 14 },
+                    ),
+                    command,
+                ],
+            },
+            SourceLocation { start: 0, end: 36 },
+        );
+        assert_eq!(printf_format_arity_metadata_by_range(&command_call).get(&(0, 36)), None);
+    }
+
+    #[test]
     fn printf_metadata_allows_literal_at_in_static_format() {
         let format = Node::new(
             NodeKind::String {
@@ -2601,7 +2638,8 @@ fn printf_format_arity_metadata_for_call(
     }
 
     let specifier_count = crate::providers::diagnostics::count_format_specifiers(format);
-    let supplied_arguments = args.len().saturating_sub(1);
+    let supplied_arguments =
+        crate::providers::diagnostics::known_scalar_argument_count(&args[1..])?;
     let missing_arguments = specifier_count.checked_sub(supplied_arguments)?;
     (missing_arguments > 0).then_some(QuickFixMetadata::PrintfFormatArity {
         call_name: call_name.to_string(),
