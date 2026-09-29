@@ -563,6 +563,8 @@ fn fixture_hostile_path_source_secret_log_canaries() {
         "package Foo;",
         "sub leak {",
         "password=hunter2",
+        "Password123",
+        "SECRET",
         "-----BEGIN RSA PRIVATE KEY-----",
         "PATH=/usr/bin",
         "$HOME",
@@ -772,6 +774,28 @@ fn schema_version_v1_is_supported_and_displayed() {
         WorkspaceLifecycleStatusSchemaVersion::V1.to_string(),
         "workspace_lifecycle_status.v1"
     );
+}
+
+#[test]
+fn status_metadata_deserialize_enforces_history_bound() {
+    let err = serde_json::from_value::<StatusMetadata>(json!({
+        "completeness": "complete",
+        "instrument_state": "ok",
+        "privacy_class": "public_safe",
+        "history_retained": 99
+    }));
+    assert!(err.is_err(), "standalone StatusMetadata must not bypass history bound");
+}
+
+#[test]
+fn raw_duplicate_reason_count_cannot_evade_row_bound() {
+    let mut parts = current_ready_parts();
+    parts.reasons = (0..17).map(|_| token("reason.ready")).collect();
+    let err = must_err_with(
+        WorkspaceLifecycleStatusRow::from_parts(parts),
+        "seventeen duplicate reasons",
+    );
+    assert_eq!(err.as_str(), "bound_exceeded");
 }
 
 #[test]

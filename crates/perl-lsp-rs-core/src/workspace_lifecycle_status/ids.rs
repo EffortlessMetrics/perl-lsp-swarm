@@ -71,11 +71,12 @@ fn looks_hostile(raw: &str) -> bool {
     if raw.contains('/') || raw.contains('\\') || raw.contains('=') || raw.contains('$') {
         return true;
     }
-    if raw.contains("-----BEGIN")
-        || raw.contains("password")
-        || raw.contains("SECRET")
-        || raw.contains("AKIA")
-        || raw.contains("ghp_")
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("-----begin")
+        || lower.contains("password")
+        || lower.contains("secret")
+        || lower.contains("akia")
+        || lower.contains("ghp_")
     {
         return true;
     }

@@ -147,8 +147,7 @@ impl RepairProjection {
 }
 
 /// Completeness, instrument state, privacy class, and retained-history bound.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct StatusMetadata {
     completeness: Completeness,
     instrument_state: InstrumentState,
@@ -194,6 +193,28 @@ impl StatusMetadata {
     #[must_use]
     pub const fn history_retained(&self) -> u16 {
         self.history_retained
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatusMetadataWire {
+    completeness: Completeness,
+    instrument_state: InstrumentState,
+    privacy_class: PrivacyClass,
+    history_retained: u16,
+}
+
+impl<'de> Deserialize<'de> for StatusMetadata {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = StatusMetadataWire::deserialize(deserializer)?;
+        Self::new(
+            wire.completeness,
+            wire.instrument_state,
+            wire.privacy_class,
+            wire.history_retained,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
@@ -251,6 +272,9 @@ impl WorkspaceLifecycleStatusRow {
     pub fn from_parts(
         mut parts: WorkspaceLifecycleStatusRowParts,
     ) -> Result<Self, ValidationError> {
+        check_bound("reasons", parts.reasons.len(), reason_limit())?;
+        check_bound("limitations", parts.limitations.len(), MAX_LIMITATIONS_PER_ROW)?;
+        check_bound("operation_links", parts.operation_links.len(), operation_link_limit())?;
         canonicalize_tokens(&mut parts.reasons);
         canonicalize_tokens(&mut parts.limitations);
         canonicalize_tokens(&mut parts.operation_links);
