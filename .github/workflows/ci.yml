@@ -1270,6 +1270,10 @@ jobs:
         if: matrix.name == 'meta'
         run: python3 -m unittest scripts/ci/test_candidate_proof_presence.py
 
+      - name: Install pinned release schema dependencies
+        if: matrix.name == 'meta'
+        run: python3 -m pip install -r scripts/requirements-release.txt
+
       - name: Run merge-gate shard with receipts
         shell: bash
         env:
