@@ -54,7 +54,13 @@ case "\$*" in
     *'rules/branches/'*) cat '$tmpdir/rules.json' ;;
     *'protection/required_status_checks'*)
         if [[ -f '$tmpdir/classic-404' ]]; then
+            printf '%s' '{"message":"Branch not protected","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-status-checks-protection","status":"404"}'
             echo 'gh: Branch not protected (HTTP 404)' >&2
+            exit 1
+        fi
+        if [[ -f '$tmpdir/classic-404-not-found' ]]; then
+            printf '%s' '{"message":"Branch not found","status":"404"}'
+            echo 'gh: Branch not found (HTTP 404)' >&2
             exit 1
         fi
         if [[ -f '$tmpdir/classic-403' ]]; then
@@ -242,6 +248,20 @@ test_unreadable_classic_protection_blocks() {
     fi
 }
 
+test_branch_not_found_404_blocks() {
+    local mock json output
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"fix: thing (#16958)"}'
+    mock="$(make_mock_gh "$json")"
+    touch "$mock/classic-404-not-found"
+    output="$(run_check_with_output "$mock")"
+    cleanup "$mock"
+    if grep -Fq 'EXIT:1' <<<"$output" && grep -Fq 'classic protection is unreadable' <<<"$output"; then
+        pass "branch-not-found 404 does not impersonate absent classic protection"
+    else
+        fail "branch-not-found 404 unexpectedly passed"
+    fi
+}
+
 test_semantic_not_proven_fails_even_when_native_facts_converge() {
     local mock json code output
     json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"feat: add thing (#3321)"}'
@@ -333,6 +353,7 @@ test_unstable_inherited_advisory_requires_evidence
 test_partial_check_snapshot_fails_closed
 test_absent_classic_protection_uses_active_ruleset
 test_unreadable_classic_protection_blocks
+test_branch_not_found_404_blocks
 test_semantic_not_proven_fails_even_when_native_facts_converge
 test_zero_or_generic_review_cannot_become_review_current
 test_public_wrappers_keep_authority_split

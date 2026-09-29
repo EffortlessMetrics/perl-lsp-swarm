@@ -78,7 +78,9 @@ read_classic_policy() {
         echo "FAIL PR #$PR: classic protection response is malformed" >&2
         return 1
     fi
-    if [[ ! -s "$TMP_DIR/classic.json" ]] && grep -Eq '\(HTTP 404\)' "$TMP_DIR/classic.err"; then
+    if grep -Fq '(HTTP 404)' "$TMP_DIR/classic.err" &&
+       jq -e 'type == "object" and .status == "404" and .message == "Branch not protected"' \
+           "$TMP_DIR/classic.json" >/dev/null 2>&1; then
         printf '%s' '{"contexts":[],"checks":[]}' >"$TMP_DIR/classic.json"
         return 0
     fi
