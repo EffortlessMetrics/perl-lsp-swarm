@@ -85,27 +85,61 @@ impl<'a> Parser<'a> {
     ///
     /// Perl permits `func { ... } @list` and DSL-style named args such as
     /// `func { ... } foreach => $items` without a comma after the block. We
-    /// still stop at real statement boundaries and at postfix modifiers / word
-    /// operators unless that token is being autoquoted before `=>`
-    /// (`has { 1 } or => 2`, #16639; `has { 1 } cmp => 2`, #16691).
+    /// still stop at real statement boundaries and at postfix modifiers / low-
+    /// precedence word operators unless that token is being autoquoted before
+    /// `=>` (`has { 1 } or => 2`, #16639). Comparison words are infix here:
+    /// `has { 1 } cmp => 2` is a Perl syntax error (`} cmp`); the valid form
+    /// uses an explicit comma (`has { 1 }, cmp => 2`, #16691). Comma and fat
+    /// arrow belong to the dedicated separator loop, not this implicit path.
     fn should_continue_bare_call_after_block(&mut self) -> bool {
         match self.peek_kind() {
             Some(kind) if kind.is_recovery_boundary() => false,
             None => false,
             // `?` begins a ternary on the block-call result, not an argument to it.
             Some(TokenKind::Question) => false,
-            Some(kind) if self.stops_bare_call_unless_autoquoted(kind) => {
+            Some(TokenKind::Comma | TokenKind::FatArrow) => false,
+            Some(_) if self.peek_is_comparison_word() => false,
+            Some(kind)
+                if kind.is_low_precedence_word_operator() || Self::is_stmt_modifier_kind(kind) =>
+            {
                 self.is_keyword_before_fat_arrow()
             }
             _ => true,
         }
     }
 
-    /// Word operators, statement modifiers, and Identifier comparison words
-    /// end a bare call unless they are the autoquoted left-hand side of `=>`.
-    fn stops_bare_call_unless_autoquoted(&mut self, kind: TokenKind) -> bool {
-        kind.is_word_operator()
-            || Self::is_stmt_modifier_kind(kind)
+    /// After an explicit `,` / `=>`, comparison words before `=>` are ordinary
+    /// list elements (`has { 1 }, cmp => 2`). The implicit after-block path
+    /// still refuses them.
+    fn should_continue_bare_call_after_separator(&mut self) -> bool {
+        if self.peek_is_comparison_word() {
+            return self.is_keyword_before_fat_arrow();
+        }
+        self.should_continue_bare_call_after_block()
+    }
+
+    /// Word-operator tokens Perl autoquotes before `=>` (`and`/`or`/`not`/`xor`/`cmp`).
+    /// These must not be treated as infix/no-arg terminators in that position.
+    fn peek_is_autoquoted_word_operator(&mut self) -> bool {
+        self.peek_kind().is_some_and(|kind| kind.is_word_operator())
+            && self.is_keyword_before_fat_arrow()
+    }
+
+    /// Turn a word-operator token immediately left of `=>` into an identifier
+    /// so every expression-start path, including `parse_shift`, can autoquote it.
+    fn consume_autoquoted_word_operator_identifier(&mut self) -> ParseResult<Option<Node>> {
+        if !self.peek_is_autoquoted_word_operator() {
+            return Ok(None);
+        }
+        let token = self.consume_token()?;
+        Ok(Some(self.charge_node(
+            NodeKind::Identifier { name: token.text.to_string() },
+            SourceLocation { start: token.start(), end: token.end() },
+        )?))
+    }
+
+    fn peek_is_comparison_word(&mut self) -> bool {
+        self.peek_kind() == Some(TokenKind::StringCompare)
             || self.peek_is_identifier_string_comparison()
     }
 

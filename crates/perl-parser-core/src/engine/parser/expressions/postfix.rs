@@ -635,7 +635,7 @@ impl<'a> Parser<'a> {
                                     }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if is_bare_func {
-                                        if !self.should_continue_bare_call_after_block() {
+                                        if !self.should_continue_bare_call_after_separator() {
                                             break;
                                         }
                                     } else if self.is_implicit_arg_terminator() {
@@ -981,8 +981,10 @@ impl<'a> Parser<'a> {
                             // Also applies to optional-arg builtins (defined, length, ord, etc.)
                             // that implicitly use $_ when no explicit argument is given, so that
                             // `defined && ...`, `length > 0`, `ord >= 32` parse correctly.
-                            let next_is_binary_operator =
-                                self.peek_kind().is_some_and(Self::is_binary_operator);
+                            let next_is_binary_operator = self
+                                .peek_kind()
+                                .is_some_and(Self::is_binary_operator)
+                                && !self.peek_is_autoquoted_word_operator();
                             let optional_arg_has_explicit_sub_arg =
                                 Self::is_optional_arg_builtin(bare_name)
                                     && self.is_explicit_sub_sigil_argument_start();
@@ -1238,6 +1240,14 @@ impl<'a> Parser<'a> {
                                     && self.peek_kind() != Some(TokenKind::LeftParen)
                                 {
                                     args.push(self.parse_shift()?);
+                                    // Named-unary arity: `foo(ref cmp => 1)` is
+                                    // `foo(ref('cmp'), 1)`. Autoquote the bareword
+                                    // argument and leave `=>` as the enclosing comma.
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
+                                    }
                                 } else {
                                     scalar_filehandle =
                                         self.is_expression_scalar_filehandle_pattern(name);

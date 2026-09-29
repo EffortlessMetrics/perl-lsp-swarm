@@ -83,6 +83,10 @@ impl<'a> Parser<'a> {
             self.reclassify_head_as_term()?;
         }
 
+        if let Some(identifier) = self.consume_autoquoted_word_operator_identifier()? {
+            return Ok(identifier);
+        }
+
         if self.is_contextual_await_start() {
             let op_token = self.advance_token()?;
             let start = op_token.start();

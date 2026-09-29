@@ -203,10 +203,67 @@ fn later_comparison_word_args_remain_autoquoted_slots() {
 }
 
 #[test]
-fn after_block_comparison_word_args_remain_autoquoted_slots() {
-    assert_has_leading_block_then_keys("has { 1 } cmp => 2;", &["cmp"]);
-    assert_has_leading_block_then_keys("has { 1 } eq => 2;", &["eq"]);
-    assert_has_leading_block_then_keys("has { 1 } ge => 2;", &["ge"]);
+fn after_block_comparison_word_fat_arrow_is_not_an_implicit_argument() {
+    for source in ["has { 1 } cmp => 2;", "has { 1 } eq => 2;", "has { 1 } ge => 2;"] {
+        let ast = parse_source(source);
+        if let Some(call) = find_named_call(&ast, "has")
+            && let Some((_, args)) = call_args(call)
+        {
+            assert!(
+                !args.iter().any(|arg| matches!(autoquoted_key(arg), Some("cmp" | "eq" | "ge"))),
+                "{source:?} must not implicitly autoquote a comparison word after the block:\n{}",
+                ast.to_sexp()
+            );
+        }
+        assert!(
+            find_kind(&ast, |kind| matches!(
+                kind,
+                NodeKind::Error { .. } | NodeKind::MissingExpression
+            )),
+            "{source:?} is invalid Perl (`}} cmp` / `}} eq`) and must retain parse residue:\n{}",
+            ast.to_sexp()
+        );
+    }
+}
+
+#[test]
+fn after_block_comma_comparison_word_args_remain_autoquoted_slots() {
+    assert_has_leading_block_then_keys("has { 1 }, cmp => 2;", &["cmp"]);
+    assert_has_leading_block_then_keys("has { 1 }, eq => 2;", &["eq"]);
+    assert_has_leading_block_then_keys("has { 1 }, ge => 2;", &["ge"]);
+}
+
+#[test]
+fn optional_arg_builtin_autoquotes_comparison_words_before_fat_arrow() {
+    for (source, callee, key) in [
+        ("foo(ref cmp => 1);", "ref", "cmp"),
+        ("foo(ref eq => 1);", "ref", "eq"),
+        ("ref cmp => 1;", "ref", "cmp"),
+        ("ref eq => 1;", "ref", "eq"),
+        ("length cmp => 1;", "length", "cmp"),
+        ("defined eq => 1;", "defined", "eq"),
+    ] {
+        assert_clean_parse(source);
+        assert_no_blocking_diagnostics(source);
+        let ast = parse_source(source);
+        let (_, args) = require_call_args(&ast, callee, source);
+        let first = must_some_with(
+            args.first(),
+            format!("{callee} {key} => must bind an autoquoted first argument:\n{}", ast.to_sexp()),
+        );
+        assert_eq!(
+            autoquoted_key(first),
+            Some(key),
+            "first argument of {callee} must be autoquoted `{key}` in {source:?}:\n{}",
+            ast.to_sexp()
+        );
+        assert_eq!(
+            args.len(),
+            1,
+            "{callee} is named-unary: `{source}` is `{callee}('{key}'), 1`, not `{callee}('{key}', 1)`:\n{}",
+            ast.to_sexp()
+        );
+    }
 }
 
 #[test]

@@ -245,16 +245,8 @@ impl<'a> Parser<'a> {
         // Word `not` enters through parse_unary so the levels above
         // still run after `parse_word_not_expr` returns. The
         // `parse_unary` WordNot arm remains the single entry point.
-        if let Some(kind) = self.peek_kind()
-            && kind.is_word_operator()
-            && self.is_keyword_before_fat_arrow()
-        {
-            let token = self.advance_token()?;
-            return self.charge_node(
-                NodeKind::Identifier { name: token.text.to_string() },
-                SourceLocation { start: token.start(), end: token.end() },
-            );
-        }
+        // Word-operator fat-arrow autoquote (`cmp =>`, `or =>`) also enters
+        // through parse_unary so `parse_shift` named-unary arguments see it.
 
         // Handle 'return' as an expression in expression context
         // This allows patterns like: open $fh, $file or return;
