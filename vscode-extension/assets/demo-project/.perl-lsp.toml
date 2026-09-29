@@ -1,0 +1,15 @@
+# Demo project configuration.
+#
+# The demo's module layout is `<root>/lib`. The server's built-in defaults happen
+# to include `lib`, so demo resolution works without this file -- but it works by
+# coincidence, not by declaration. A change to the default include roots, or a
+# demo root with a different layout, would silently stop resolving.
+#
+# This pins demo resolution to the layout the demo actually uses, and dogfoods
+# the surface the server's own hover message recommends: "add the directory that
+# contains it to `.perl-lsp.toml` `include_paths`".
+#
+# This file is byte-identical to the other tracked demo copy, by assertion in
+# `src/test/packageManifest.test.ts` ("first-run demo content").
+[perl]
+include_paths = ["lib"]
