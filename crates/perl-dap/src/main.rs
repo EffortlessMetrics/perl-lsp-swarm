@@ -198,39 +198,51 @@ fn run_external_peer_listen(spec: &str) -> anyhow::Result<()> {
 }
 
 /// Build a debug-session packet for `program`, deriving source facts from the
-/// program text when it is readable.
-fn build_session_packet(program: &Path) -> DebugSessionPacket {
+/// program text.
+///
+/// Takes the text rather than re-reading the path so that "readable" is decided
+/// in exactly one place ([`require_readable_program`]) and cannot drift from
+/// what the plan is actually built from.
+fn build_session_packet(program: &Path, text: &str) -> DebugSessionPacket {
     let mut builder = DebugSessionPlanBuilder::new(program);
-    if let Ok(text) = std::fs::read_to_string(program) {
-        let source = DebugSource::from_path(program);
-        builder = builder.source_facts_from_text(&source, &text);
-    }
+    let source = DebugSource::from_path(program);
+    builder = builder.source_facts_from_text(&source, text);
     builder.build()
 }
 
-/// Refuse a one-shot emit whose program cannot be read.
+/// Refuse a one-shot emit whose program cannot be read, and return its text.
 ///
-/// [`build_session_packet`] tolerates an unreadable program: it emits a plan
-/// with empty `source_facts`. That tolerance is right for the live adapter,
-/// where the program may be produced later, and wrong for the two one-shot
-/// arms - their whole product *is* the derived plan, so an unreadable path
-/// yields a plausible-looking artifact that exits 0. A typo in a Makefile then
-/// produces a bootstrap rc with no program-specific setup and no signal why.
+/// The two one-shot arms' whole product *is* the derived plan, so an unreadable
+/// path would otherwise yield a plausible-looking artifact and exit 0. A typo in
+/// a Makefile then produces a bootstrap rc with no program-specific setup and
+/// no signal why. (That tolerance is right for the live adapter, where the
+/// program may be produced later, which is why this is a one-shot-only guard.)
 ///
 /// Failing rather than warning is deliberate: these outputs are read by
 /// scripts, and a warning on stderr is invisible to anything checking exit
 /// status. A missing program is a caller error, not a degraded mode (#16553).
-fn require_readable_program(program: &Path) -> anyhow::Result<()> {
+///
+/// The readability test is [`std::fs::read_to_string`] itself, not `metadata` or
+/// `File::open`, because those two disagree with the consumer on exactly the
+/// cases that matter here:
+///
+/// * `fs::metadata` succeeds for a file with no read permission (`stat` needs
+///   none), and `File::open` would succeed on a directory on Unix.
+/// * `File::open` succeeds for a file that is not valid UTF-8, while
+///   `read_to_string` fails with `InvalidData` - and an unreadable-to-the-
+///   consumer program is precisely the degenerate-plan case.
+///
+/// `is_file()` still runs first so a directory is reported as "not a regular
+/// file" rather than as a decode error.
+fn require_readable_program(program: &Path) -> anyhow::Result<String> {
     let displayed = program.display();
     let metadata = std::fs::metadata(program)
         .map_err(|error| anyhow::anyhow!("program '{displayed}' cannot be read: {error}"))?;
-    // `metadata` succeeds for a directory, and `read_to_string` does not - so a
-    // bare existence check would let a directory through and land exactly in
-    // the silent-degenerate-plan case this guard exists to prevent.
     if !metadata.is_file() {
         return Err(anyhow::anyhow!("program '{displayed}' is not a regular file"));
     }
-    Ok(())
+    std::fs::read_to_string(program)
+        .map_err(|error| anyhow::anyhow!("program '{displayed}' cannot be read: {error}"))
 }
 
 fn resolve_socket_port(args: &perl_lsp_rs_core::runtime::launcher::TransportArgs) -> Option<u16> {
@@ -331,14 +343,14 @@ fn main() -> anyhow::Result<()> {
     // the stdout handle (rather than the print!/println! macros) so the shipped
     // binary stays clear of the `clippy::print_stdout` restriction lint.
     if let Some(program) = args.ptkdb_bootstrap_rc.as_deref() {
-        require_readable_program(Path::new(program))?;
-        let packet = build_session_packet(Path::new(program));
+        let text = require_readable_program(Path::new(program))?;
+        let packet = build_session_packet(Path::new(program), &text);
         write!(std::io::stdout(), "{}", render_ptkdbrc(&packet, true))?;
         return Ok(());
     }
     if let Some(program) = args.debug_session_plan.as_deref() {
-        require_readable_program(Path::new(program))?;
-        let packet = build_session_packet(Path::new(program));
+        let text = require_readable_program(Path::new(program))?;
+        let packet = build_session_packet(Path::new(program), &text);
         writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&packet)?)?;
         return Ok(());
     }
@@ -600,5 +612,30 @@ mod tests {
         let outcome = require_readable_program(&dir);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(outcome.is_err(), "a directory is not a readable program and must be refused");
+    }
+
+    #[test]
+    fn a_program_that_is_not_utf8_is_refused_because_the_plan_cannot_be_built_from_it() {
+        // `File::open` succeeds here and so would a `metadata`-only check, but
+        // `read_to_string` - the call the plan is actually built from - fails
+        // with `InvalidData`. Left unchecked this is the silent-degenerate-plan
+        // case: exit 0 with empty `source_facts` and no indication why.
+        //
+        // Permission-denied is the sibling case and needs a Unix ACL to stage,
+        // so this stands in for it: both are "metadata fine, consumer cannot
+        // read", and the guard must not be satisfied by metadata alone.
+        let dir = std::env::temp_dir().join(format!("dap-non-utf8-program-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("fixture directory must be creatable");
+        let program = dir.join("latin1.pl");
+        // 0xFF is never valid UTF-8.
+        std::fs::write(&program, [b'p', b'r', b'i', b'n', b't', b' ', 0xFF, b';', b'\n'])
+            .expect("fixture must be writable");
+        let outcome = require_readable_program(&program);
+        let _ = std::fs::remove_dir_all(&dir);
+        let error = outcome.expect_err("a program the plan cannot be read from must be refused");
+        assert!(
+            error.to_string().contains("cannot be read"),
+            "the refusal must name the reason and the path, got: {error}"
+        );
     }
 }

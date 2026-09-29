@@ -351,10 +351,19 @@ impl LspServer {
                         );
                         tracing::warn!(message = %user_msg, "Project config warning");
                         // Emit user-visible warning so devs can fix a broken .perl-lsp.toml.
-                        // Deduped per config path: the folder is re-read on every
+                        // Deduped per folder path: the folder is re-read on every
                         // `didOpen`, and repeating an identical popup trains the
                         // user to dismiss the one message that matters (#16548).
-                        let subject = folder.display_name().to_string();
+                        //
+                        // Keyed on the server-derived folder path, NOT on
+                        // `folder.display_name()`. The display name is
+                        // client-supplied: two distinct folders that a client
+                        // calls the same name would cross-suppress each other's
+                        // warning, and renaming a folder in the client would
+                        // re-fire a warning the user has already acknowledged.
+                        // (Reviewed: the earlier code used the display name while
+                        // the comment above claimed "per config path".)
+                        let subject = folder_path.display().to_string();
                         if matches!(
                             self.session_warning_dedup.note_project_config(&subject),
                             super::super::session_warning_dedup::SessionWarningDecision::Suppress

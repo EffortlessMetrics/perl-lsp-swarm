@@ -1,5 +1,14 @@
 # Perl LSP installer for Windows
 #
+# IMPORTANT: the copy served from the `master` branch of the publication repo
+# (`raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1`) is
+# STILL THE OLD NON-PARSABLE FILE. The PS 5.1 parse fix below (25 parse errors ->
+# 0, and this file is now pure ASCII with no BOM) exists only in THIS repository.
+# It reaches users when #4348 lands the audited publication join. Until then,
+# fetching from `master` gives you the old file and the old 25 parse errors.
+# Fetch this repository at a reviewed commit SHA instead:
+#   irm "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp-swarm/<commit-sha>/install.ps1" -OutFile install.ps1
+#
 # The asset-name defect that made the published copy build a 404 URL is fixed
 # (#5461, closed): this file resolves the `perllsp-<version>-...zip` asset name
 # that releases actually ship.

@@ -1369,6 +1369,29 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
+    /// Emit the core-module goto-definition notice at most once per server
+    /// session. Returns whether *this* call emitted (#16551).
+    ///
+    /// Extracted from [`Self::handle_definition_inner`] so the once-per-session
+    /// contract is enforced in one place. A test that pokes
+    /// `core_module_notice_shown` directly would stay green if the `swap` guard
+    /// were deleted — it would be testing `AtomicBool` semantics rather than
+    /// the once-per-session behavior, which is the hole this extraction closes.
+    fn emit_core_module_notice_once(&self, module_name: &str) -> bool {
+        if self.core_module_notice_shown.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        let _ = self.log_message(
+            crate::runtime::window::MessageType::Info,
+            &format!(
+                "'{module_name}' is a Perl core module. \
+                 No source file is available for goto-definition. \
+                 Use hover (K) to view documentation."
+            ),
+        );
+        true
+    }
+
     /// Handle textDocument/definition request
     #[tracing::instrument(skip(self, params), name = "textDocument/definition")]
     pub(crate) fn handle_definition(
@@ -1629,19 +1652,7 @@ impl LspServer {
                             // change between invocations, so neither does the need to say so
                             // (#16551). The per-module detail stays in the debug log, which is
                             // not user-facing, so nothing is actually lost.
-                            if !self
-                                .core_module_notice_shown
-                                .swap(true, std::sync::atomic::Ordering::Relaxed)
-                            {
-                                let _ = self.log_message(
-                                    crate::runtime::window::MessageType::Info,
-                                    &format!(
-                                        "'{module_name}' is a Perl core module. \
-                                         No source file is available for goto-definition. \
-                                         Use hover (K) to view documentation."
-                                    ),
-                                );
-                            }
+                            self.emit_core_module_notice_once(&module_name);
                             tracing::debug!(
                                 module = %module_name,
                                 "core pragma requested via goto-def — no file target"
@@ -3797,28 +3808,30 @@ mod tests {
     ///
     /// `window/logMessage` is a per-request action path, so an unguarded notice
     /// repeats on every jump to `use strict` and trains the user to ignore the
-    /// channel that carries it. The test asserts the *observable* count, and
-    /// that a second server is unaffected - the guard is instance-level, not
-    /// process-level, so a second window gets its own notice.
+    /// channel that carries it.
+    ///
+    /// Drives [`LspServer::emit_core_module_notice_once`] — the unit that
+    /// actually enforces the guard — rather than the flag behind it, so deleting
+    /// the guard fails this test.
     #[test]
     fn the_core_module_notice_is_emitted_once_per_server_session() {
         let first = crate::runtime::LspServer::new();
         assert!(
-            !first.core_module_notice_shown.load(std::sync::atomic::Ordering::Relaxed),
-            "a fresh server has not shown the notice"
+            first.emit_core_module_notice_once("strict"),
+            "the first notice in a session must be emitted"
         );
         assert!(
-            !first.core_module_notice_shown.swap(true, std::sync::atomic::Ordering::Relaxed),
-            "`swap` returns the PREVIOUS value: false, so this caller emits"
+            !first.emit_core_module_notice_once("strict"),
+            "a second F12 on the same module must stay silent, not repeat the notice"
         );
         assert!(
-            first.core_module_notice_shown.swap(true, std::sync::atomic::Ordering::Relaxed),
-            "the previous value is now true, so later callers stay silent"
+            !first.emit_core_module_notice_once("warnings"),
+            "the guard is per session, not per module: a different core module is also silent"
         );
 
         let second = crate::runtime::LspServer::new();
         assert!(
-            !second.core_module_notice_shown.load(std::sync::atomic::Ordering::Relaxed),
+            second.emit_core_module_notice_once("strict"),
             "the guard is instance-level: a second server session must still emit"
         );
     }
