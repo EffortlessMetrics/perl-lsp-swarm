@@ -86,7 +86,11 @@ outcome_owner = "#10230"
 # generic local rows before composed-role methods are appended, so it has
 # its own disposition below. The workspace method row now records mixed
 # current-document/index authority and its remaining stale-index risk.
-source_digest = "sha256:ef86be437dc94dab7e04cd61c45731b53886efd45d857480cb088a32d935a98c"
+# Re-anchor 2026-09-29 (#16938): source-commit fixture repair changed only
+# test setup in scanned completion/workspace.rs, and a test-only module already
+# excluded above. The 42-file product scan, discovered producer population,
+# authored dispositions, entry routes, delegations, and finalizer are unchanged.
+source_digest = "sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f"
 
 [[delegations]]
 module = "dancer2"
