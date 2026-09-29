@@ -46,6 +46,22 @@ function dependencies(activeClient?: {
   };
 }
 
+function extractEdit(uri = 'file:///workspace/lib/Example.pm') {
+  return {
+    changes: {
+      [uri]: [
+        {
+          range: {
+            start: { line: 2, character: 1 },
+            end: { line: 2, character: 12 },
+          },
+          newText: 'extracted',
+        },
+      ],
+    },
+  };
+}
+
 describe('refactoring command implementations', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -119,7 +135,7 @@ describe('refactoring command implementations', () => {
     setActiveEditor(editor);
     const asWorkspaceEdit = jest.fn(async (edit: unknown) => ({ edit }));
     const sendRequest = jest.fn(async () => [
-      { title: 'Renamed action', kind: 'refactor.extract.variable', edit: { changes: {} } },
+      { title: 'Renamed action', kind: 'refactor.extract.variable', edit: extractEdit() },
       {
         title: 'Extract Variable',
         kind: 'refactor.extract.subroutine',
@@ -138,8 +154,8 @@ describe('refactoring command implementations', () => {
       },
       context: { diagnostics: [], only: ['refactor.extract.variable'], triggerKind: 2 },
     });
-    expect(asWorkspaceEdit).toHaveBeenCalledWith({ changes: {} });
-    expect(vscode.workspace.applyEdit).toHaveBeenCalledWith({ edit: { changes: {} } });
+    expect(asWorkspaceEdit).toHaveBeenCalledWith(extractEdit());
+    expect(vscode.workspace.applyEdit).toHaveBeenCalledWith({ edit: extractEdit() });
   });
 
   test('selects a method action and dispatches command-based edits', async () => {
@@ -171,8 +187,8 @@ describe('refactoring command implementations', () => {
   test('applies the exact subroutine edit despite misleading titles and order', async () => {
     setActiveEditor(makeEditor());
     const asWorkspaceEdit = jest.fn(async (edit: unknown) => ({ edit }));
-    const variableEdit = { changes: { 'file:///variable.pl': [] } };
-    const subroutineEdit = { changes: { 'file:///subroutine.pl': [] } };
+    const variableEdit = extractEdit('file:///variable.pl');
+    const subroutineEdit = extractEdit('file:///subroutine.pl');
     const client = {
       sendRequest: jest.fn(async () => [
         { title: 'Extract Method', kind: 'refactor.extract.variable', edit: variableEdit },
@@ -192,7 +208,7 @@ describe('refactoring command implementations', () => {
   ])('runs a validated follow-up command after the %s edit succeeds', async (_name, run, kind) => {
     setActiveEditor(makeEditor());
     (vscode.workspace.applyEdit as jest.Mock).mockResolvedValueOnce(true);
-    const edit = { changes: {} };
+    const edit = extractEdit();
     const client = {
       sendRequest: jest.fn(async () => [
         {
@@ -235,7 +251,7 @@ describe('refactoring command implementations', () => {
           {
             title: 'Renamed action',
             kind,
-            edit: { changes: {} },
+            edit: extractEdit(),
             command: { command: 'perl.afterExtract' },
           },
         ]),
@@ -255,7 +271,7 @@ describe('refactoring command implementations', () => {
         {
           title: 'Renamed action',
           kind: 'refactor.extract.variable',
-          edit: { changes: {} },
+          edit: extractEdit(),
           command: { command: 'perl.afterExtract' },
         },
       ]),
@@ -333,6 +349,8 @@ describe('refactoring command implementations', () => {
     setActiveEditor(makeEditor());
     const responses = [
       { title: 'Old server', kind: 'refactor.extract', edit: { changes: {} } },
+      { kind, edit: extractEdit() },
+      { title: 7, kind, edit: extractEdit() },
       {
         title: 'Disabled',
         kind,
@@ -341,6 +359,19 @@ describe('refactoring command implementations', () => {
       },
       { title: 'Malformed edit', kind, edit: { changes: null } },
       { title: 'Malformed nested edit', kind, edit: { changes: { 'file:///x': 'not-an-array' } } },
+      { title: 'Empty changes', kind, edit: { changes: {} }, command: { command: 'follow-up' } },
+      {
+        title: 'Empty text edits',
+        kind,
+        edit: { changes: { 'file:///x': [] } },
+        command: { command: 'follow-up' },
+      },
+      {
+        title: 'Empty document changes',
+        kind,
+        edit: { documentChanges: [] },
+        command: { command: 'follow-up' },
+      },
       { title: 'Malformed command', kind, command: { command: 1 } },
     ];
     for (const response of responses) {
@@ -357,6 +388,28 @@ describe('refactoring command implementations', () => {
     }
   });
 
+  test.each([
+    ['variable', extractVariableCommand, 'refactor.extract.variable'],
+    ['method', extractMethodCommand, 'refactor.extract.subroutine'],
+  ])('skips an empty %s edit before a substantive action', async (_name, run, kind) => {
+    setActiveEditor(makeEditor());
+    const edit = extractEdit();
+    const asWorkspaceEdit = jest.fn(async (value: unknown) => ({ edit: value }));
+    const client = {
+      sendRequest: jest.fn(async () => [
+        { title: 'Empty edit', kind, edit: { changes: {} } },
+        { title: 'Substantive edit', kind, edit },
+      ]),
+      protocol2CodeConverter: { asWorkspaceEdit },
+    };
+
+    await run(dependencies(client));
+
+    expect(asWorkspaceEdit).toHaveBeenCalledTimes(1);
+    expect(asWorkspaceEdit).toHaveBeenCalledWith(edit);
+    expect(vscode.workspace.applyEdit).toHaveBeenCalledWith({ edit });
+  });
+
   test('refuses a typed edit when conversion rejects', async () => {
     setActiveEditor(makeEditor());
     const client = {
@@ -364,7 +417,7 @@ describe('refactoring command implementations', () => {
         {
           title: 'Variable',
           kind: 'refactor.extract.variable',
-          edit: { changes: {} },
+          edit: extractEdit(),
           command: { command: 'perl.afterExtract' },
         },
       ]),

@@ -31,15 +31,22 @@ function requestedAction(actions: CodeActionResult, kind: string): RefactoringAc
     return undefined;
   }
   return actions.find((action) => {
-    if (!isRecord(action) || action.kind !== kind || 'disabled' in action) {
+    if (
+      !isRecord(action) ||
+      typeof action.title !== 'string' ||
+      action.kind !== kind ||
+      'disabled' in action
+    ) {
       return false;
     }
     const edit = action.edit;
     const command = action.command;
     const validEdit =
       isRecord(edit) &&
-      ((isRecord(edit.changes) && Object.values(edit.changes).every(Array.isArray)) ||
-        Array.isArray(edit.documentChanges));
+      ((isRecord(edit.changes) &&
+        Object.values(edit.changes).every(Array.isArray) &&
+        Object.values(edit.changes).some((edits) => Array.isArray(edits) && edits.length > 0)) ||
+        (Array.isArray(edit.documentChanges) && edit.documentChanges.length > 0));
     const validCommand =
       isRecord(command) &&
       typeof command.command === 'string' &&
