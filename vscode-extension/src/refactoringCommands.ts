@@ -36,15 +36,20 @@ function requestedAction(actions: CodeActionResult, kind: string): RefactoringAc
     }
     const edit = action.edit;
     const command = action.command;
-    const validEdit = isRecord(edit) &&
+    const validEdit =
+      isRecord(edit) &&
       ((isRecord(edit.changes) && Object.values(edit.changes).every(Array.isArray)) ||
         Array.isArray(edit.documentChanges));
-    const validCommand = isRecord(command) &&
-      typeof command.command === 'string' && command.command.length > 0 &&
+    const validCommand =
+      isRecord(command) &&
+      typeof command.command === 'string' &&
+      command.command.length > 0 &&
       (!('arguments' in command) || Array.isArray(command.arguments));
-    return (edit === undefined || validEdit) &&
+    return (
+      (edit === undefined || validEdit) &&
       (command === undefined || validCommand) &&
-      (validEdit || validCommand);
+      (validEdit || validCommand)
+    );
   });
 }
 
