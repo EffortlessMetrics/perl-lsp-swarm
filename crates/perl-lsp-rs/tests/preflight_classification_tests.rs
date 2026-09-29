@@ -18,12 +18,64 @@
 mod support;
 
 use serde_json::{Value, json};
+use std::time::Duration;
 use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn error_code(response: &Value) -> Option<i64> {
     response.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64)
+}
+
+/// A refused first didOpen has no stored document or response envelope. The
+/// client must still receive a bounded refusal on the wire (#16653).
+#[test]
+fn refused_first_did_open_notifies_the_client() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    let uri = "file:///refused-first-open.pl";
+    let ceiling = perl_lsp_rs_core::runtime::input_validation::text_sync_params_ceiling();
+    harness.notify(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "x".repeat(ceiling + 1),
+            }
+        }),
+    );
+    let notice = harness.wait_for_notification("window/showMessage", Duration::from_secs(5))?;
+    let message = notice["message"].as_str().ok_or("missing refusal message")?;
+    assert_eq!(notice["type"], 2, "refusal must be a visible warning: {notice}");
+    assert!(message.contains(uri), "refusal must identify the unopened document: {notice}");
+    assert!(message.contains("was not opened"), "refusal must name the lost didOpen: {notice}");
+    assert!(message.len() < 1_024, "refusal UI message must be bounded: {} bytes", message.len());
+
+    // Missing URI still gets a generic refusal; there is no response to a
+    // notification, and no document identity can safely be inferred.
+    harness
+        .notify("textDocument/didOpen", json!({"textDocument": {"text": "x".repeat(ceiling + 1)}}));
+    let unknown = harness.wait_for_notification("window/showMessage", Duration::from_secs(5))?;
+    assert!(
+        unknown["message"].as_str().is_some_and(|message| message.contains("could be identified")),
+        "missing-URI refusal must still be visible: {unknown}"
+    );
+
+    // The URI itself can be the oversize input. It must identify the file
+    // without echoing megabytes or control characters into the client UI.
+    let long_uri = format!("file:///\n{}", "x".repeat(ceiling + 1));
+    harness.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {"uri": long_uri, "languageId": "perl", "version": 1, "text": "x"}}),
+    );
+    let bounded = harness.wait_for_notification("window/showMessage", Duration::from_secs(5))?;
+    let bounded_message = bounded["message"].as_str().ok_or("missing bounded refusal message")?;
+    assert!(bounded_message.len() < 1_024, "URI refusal echoed too much data");
+    assert!(!bounded_message.contains('\n'), "URI refusal contained a control character");
+    assert!(bounded_message.contains("file:///?"), "URI prefix was not preserved: {bounded}");
+    Ok(())
 }
 
 /// POD/documentation text containing `javascript:` is inert data. A
