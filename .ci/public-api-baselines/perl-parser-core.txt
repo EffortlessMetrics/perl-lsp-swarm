@@ -1895,6 +1895,26 @@ pub fn perl_parser_core::hir::ModuleResolutionStatus::clone(&self) -> perl_parse
 pub fn perl_parser_core::hir::ModuleResolutionStatus::eq(&self, other: &perl_parser_core::hir::ModuleResolutionStatus) -> bool
 pub fn perl_parser_core::hir::ModuleResolutionStatus::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::ModuleResolutionStatus::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::hir::NativeInvocantLimitation
+pub perl_parser_core::hir::NativeInvocantLimitation::NamedSubroutineBoundary
+pub perl_parser_core::hir::NativeInvocantLimitation::NotInMethod
+pub perl_parser_core::hir::NativeInvocantLimitation::OwnerUnavailable(perl_parser_core::hir::NativeMethodOwnerLimitation)
+pub fn perl_parser_core::hir::NativeInvocantLimitation::clone(&self) -> perl_parser_core::hir::NativeInvocantLimitation
+pub fn perl_parser_core::hir::NativeInvocantLimitation::eq(&self, other: &perl_parser_core::hir::NativeInvocantLimitation) -> bool
+pub fn perl_parser_core::hir::NativeInvocantLimitation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::NativeInvocantLimitation::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_parser_core::hir::NativeMethodOwnerLimitation
+pub perl_parser_core::hir::NativeMethodOwnerLimitation::ClassFeatureNotAdmitted
+pub perl_parser_core::hir::NativeMethodOwnerLimitation::DynamicPragmaEnvironment
+pub perl_parser_core::hir::NativeMethodOwnerLimitation::NotInBlockFormClass
+pub perl_parser_core::hir::NativeMethodOwnerLimitation::RecoveredClass
+pub perl_parser_core::hir::NativeMethodOwnerLimitation::RecoveredMethod
+pub perl_parser_core::hir::NativeMethodOwnerLimitation::UnanchoredClassName
+pub perl_parser_core::hir::NativeMethodOwnerLimitation::UnnamedMethodAnchor
+pub fn perl_parser_core::hir::NativeMethodOwnerLimitation::clone(&self) -> perl_parser_core::hir::NativeMethodOwnerLimitation
+pub fn perl_parser_core::hir::NativeMethodOwnerLimitation::eq(&self, other: &perl_parser_core::hir::NativeMethodOwnerLimitation) -> bool
+pub fn perl_parser_core::hir::NativeMethodOwnerLimitation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::NativeMethodOwnerLimitation::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::PragmaArgumentKind
 pub perl_parser_core::hir::PragmaArgumentKind::Broad
 pub perl_parser_core::hir::PragmaArgumentKind::Categories
@@ -2400,8 +2420,13 @@ pub perl_parser_core::hir::HirFile::scope_graph: perl_parser_core::hir::ScopeGra
 pub perl_parser_core::hir::HirFile::stash_graph: perl_parser_core::hir::StashGraph
 pub fn perl_parser_core::hir::HirFile::compile_effects(&self) -> alloc::vec::Vec<perl_parser_core::hir::CompileEffect>
 pub fn perl_parser_core::hir::HirFile::compile_effects_with_source_hash(&self, source_hash: core::option::Option<alloc::string::String>) -> alloc::vec::Vec<perl_parser_core::hir::CompileEffect>
+pub fn perl_parser_core::hir::HirFile::exact_invocant_owner(&self, scope_id: perl_parser_core::hir::HirScopeId) -> core::result::Result<&perl_parser_core::hir::NativeClassOwner, perl_parser_core::hir::NativeInvocantLimitation>
 pub fn perl_parser_core::hir::HirFile::framework_facts(&self) -> perl_parser_core::hir::FrameworkFactGraph
+pub fn perl_parser_core::hir::HirFile::invocant_binding(&self, owner: &perl_parser_core::hir::NativeClassOwner) -> core::option::Option<&perl_parser_core::hir::Binding>
 pub fn perl_parser_core::hir::HirFile::is_empty(&self) -> bool
+pub fn perl_parser_core::hir::HirFile::method_owner(&self, method_item: perl_parser_core::hir::HirId) -> core::option::Option<&core::result::Result<perl_parser_core::hir::NativeClassOwner, perl_parser_core::hir::NativeMethodOwnerLimitation>>
+pub fn perl_parser_core::hir::HirFile::method_owner_limitation(&self, method_item: perl_parser_core::hir::HirId) -> core::option::Option<perl_parser_core::hir::NativeMethodOwnerLimitation>
+pub fn perl_parser_core::hir::HirFile::native_class_owner(&self, method_item: perl_parser_core::hir::HirId) -> core::option::Option<&perl_parser_core::hir::NativeClassOwner>
 pub fn perl_parser_core::hir::HirFile::root_body(&self) -> core::option::Option<&perl_parser_core::hir::HirBody>
 pub fn perl_parser_core::hir::HirFile::clone(&self) -> perl_parser_core::hir::HirFile
 pub fn perl_parser_core::hir::HirFile::eq(&self, other: &perl_parser_core::hir::HirFile) -> bool
@@ -2567,6 +2592,7 @@ pub fn perl_parser_core::hir::MethodCallExpr::eq(&self, other: &perl_parser_core
 pub fn perl_parser_core::hir::MethodCallExpr::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::hir::MethodDecl
 pub perl_parser_core::hir::MethodDecl::attribute_count: usize
+pub perl_parser_core::hir::MethodDecl::class_owner: core::result::Result<perl_parser_core::hir::NativeClassOwner, perl_parser_core::hir::NativeMethodOwnerLimitation>
 pub perl_parser_core::hir::MethodDecl::has_signature: bool
 pub perl_parser_core::hir::MethodDecl::name: alloc::string::String
 pub fn perl_parser_core::hir::MethodDecl::clone(&self) -> perl_parser_core::hir::MethodDecl
@@ -2658,6 +2684,19 @@ pub fn perl_parser_core::hir::ModuleResolutionRoot::new(path: impl core::convert
 pub fn perl_parser_core::hir::ModuleResolutionRoot::clone(&self) -> perl_parser_core::hir::ModuleResolutionRoot
 pub fn perl_parser_core::hir::ModuleResolutionRoot::eq(&self, other: &perl_parser_core::hir::ModuleResolutionRoot) -> bool
 pub fn perl_parser_core::hir::ModuleResolutionRoot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_parser_core::hir::NativeClassOwner
+pub perl_parser_core::hir::NativeClassOwner::class_item: perl_parser_core::hir::HirId
+pub perl_parser_core::hir::NativeClassOwner::class_name: alloc::string::String
+pub perl_parser_core::hir::NativeClassOwner::class_name_range: perl_position_tracking::span::SourceLocation
+pub perl_parser_core::hir::NativeClassOwner::class_scope: perl_parser_core::hir::HirScopeId
+pub perl_parser_core::hir::NativeClassOwner::invocant: perl_parser_core::hir::HirBindingId
+pub perl_parser_core::hir::NativeClassOwner::method_item: perl_parser_core::hir::HirId
+pub perl_parser_core::hir::NativeClassOwner::method_name: alloc::string::String
+pub perl_parser_core::hir::NativeClassOwner::method_name_range: core::option::Option<perl_position_tracking::span::SourceLocation>
+pub perl_parser_core::hir::NativeClassOwner::method_scope: perl_parser_core::hir::HirScopeId
+pub fn perl_parser_core::hir::NativeClassOwner::clone(&self) -> perl_parser_core::hir::NativeClassOwner
+pub fn perl_parser_core::hir::NativeClassOwner::eq(&self, other: &perl_parser_core::hir::NativeClassOwner) -> bool
+pub fn perl_parser_core::hir::NativeClassOwner::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct perl_parser_core::hir::PackageDecl
 pub perl_parser_core::hir::PackageDecl::has_block: bool
 pub perl_parser_core::hir::PackageDecl::name: alloc::string::String
