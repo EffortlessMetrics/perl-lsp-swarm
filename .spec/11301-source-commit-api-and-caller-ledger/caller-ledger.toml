@@ -156,6 +156,9 @@ caller_paths = [
   "crates/perl-lsp-rs/src/runtime/language/misc.rs",
   "crates/perl-lsp-rs/src/runtime/language/navigation.rs",
   "crates/perl-lsp-rs/src/runtime/language/provider_decision_live_trace_tests.rs",
+  # #16654 fixture re-seeds a Building index with the open document's accepted
+  # nonzero generation so the partial-index deadline path is production-reachable.
+  "crates/perl-lsp-rs/src/runtime/language/references.rs",
   "crates/perl-lsp-rs/src/runtime/language/references_tier_scorecard_tests.rs",
   "crates/perl-lsp-rs/src/runtime/language/rename.rs",
   "crates/perl-lsp-rs/src/runtime/test_api.rs",
