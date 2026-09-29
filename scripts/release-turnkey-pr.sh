@@ -8,6 +8,9 @@ set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib/release-turnkey-handoff.sh"
 
+TURNKEY_ALLOW_HANDOFF_EXIT=0
+trap turnkey_remap_accidental_handoff_exit ERR
+
 # Turnkey release orchestrator for the PR-driven release flow.
 #
 # 1) Trigger Version Bump & Changelog Generation workflow.
@@ -241,18 +244,12 @@ emit_turnkey_handoff() {
     "$next_action" "$wake_event" \
     "$(turnkey_default_invalidators)")" || die "could not build the ${stage} transaction record"
 
-  if (( DRY_RUN )); then
-    log "DRY RUN: would persist ${stage} transaction at ${TRANSACTION_PATH} (non-authoritative plan only)"
-    turnkey_print_handoff "$record" "$TRANSACTION_PATH"
-    exit 0
-  fi
-
   turnkey_write_authoritative "$TRANSACTION_PATH" "$record" \
     || die "could not write the ${stage} transaction record to ${TRANSACTION_PATH}"
   turnkey_print_handoff "$record" "$TRANSACTION_PATH"
   exit_code="$(turnkey_exit_code_for_stage "$stage")" \
     || die "unknown handoff stage ${stage}"
-  exit "$exit_code"
+  turnkey_handoff_exit "$exit_code"
 }
 
 refuse_unproven_target_movement() {
@@ -260,6 +257,74 @@ refuse_unproven_target_movement() {
   if [[ "$current_sha" == "$HEAD_SHA" ]]; then
     die "origin/${REPO_BRANCH} is still ${HEAD_SHA} after alleged merge; refusing to dispatch Release Orchestration"
   fi
+}
+
+# Bind to a recorded T02 handoff instead of dispatching another Version Bump.
+# Still-open PRs re-emit the recorded stage. Merged PRs return so the caller
+# can prove target-branch movement and continue to orchestration.
+resume_existing_turnkey_transaction() {
+  local repository pr_number stage live_head live_url recorded_base next_action wake_event
+  repository="$(repo_url)"
+  turnkey_validate_existing_record \
+    "$TRANSACTION_PATH" "" "$VERSION" "$repository" "$REPO_BRANCH" \
+    || die "supplied transaction record is not valid for this invocation"
+
+  recorded_base="$(jq -r '.initial_base_commit // empty' "$TRANSACTION_PATH")"
+  if [[ -z "$recorded_base" ]]; then
+    die "transaction record at ${TRANSACTION_PATH} omits initial_base_commit"
+  fi
+  # Compare later landing proof against the recorded pre-bump SHA, not the
+  # SHA observed at the start of this resume invocation.
+  HEAD_SHA="$recorded_base"
+
+  pr_number="$(jq -r '.pr.number // empty' "$TRANSACTION_PATH")"
+  if [[ -z "$pr_number" ]]; then
+    die "transaction record at ${TRANSACTION_PATH} omits PR number; refusing to rediscover another version-bump PR"
+  fi
+
+  live_head="$(gh pr view "$pr_number" --json headRefOid -q '.headRefOid // empty')" \
+    || die "recorded PR #${pr_number} is not readable; refusing to rediscover another version-bump PR"
+  if [[ -z "$live_head" ]]; then
+    die "could not read the head SHA of recorded PR #${pr_number}"
+  fi
+  turnkey_validate_existing_record \
+    "$TRANSACTION_PATH" "$live_head" "$VERSION" "$repository" "$REPO_BRANCH" \
+    || die "supplied transaction record is not valid for the live PR head"
+
+  live_url="$(gh pr view "$pr_number" --json url -q .url)"
+  PR_NUMBER="$pr_number"
+  PR_URL="$live_url"
+  PR_HEAD_SHA="$live_head"
+  log "Resuming recorded PR #${PR_NUMBER} from ${TRANSACTION_PATH}"
+
+  if turnkey_pr_merged_now "$PR_NUMBER"; then
+    log "Recorded PR #${PR_NUMBER} is merged; skipping a second version-bump dispatch"
+    return 0
+  fi
+
+  stage="$(jq -r '.stage' "$TRANSACTION_PATH")"
+  log "Recorded PR #${PR_NUMBER} is still open; re-emitting ${stage} without a second bump"
+  case "$stage" in
+    "$TURNKEY_STAGE_MANUAL_MERGE")
+      next_action="$(turnkey_manual_merge_next_action "$VERSION" "$PR_NUMBER" "$PR_HEAD_SHA" "$TRANSACTION_PATH")"
+      wake_event="$(turnkey_manual_merge_wake "$PR_NUMBER" "$REPO_BRANCH" "$HEAD_SHA")"
+      ;;
+    "$TURNKEY_STAGE_MERGE_REQUESTED")
+      next_action="$(turnkey_merge_requested_next_action "$VERSION" "$PR_NUMBER" "$TRANSACTION_PATH")"
+      wake_event="$(turnkey_merge_requested_wake "$PR_NUMBER" "$REPO_BRANCH" "$HEAD_SHA")"
+      ;;
+    *)
+      die "transaction record at ${TRANSACTION_PATH} is not a T02 handoff stage (${stage})"
+      ;;
+  esac
+  emit_turnkey_handoff \
+    "$stage" \
+    "$PR_NUMBER" \
+    "$PR_URL" \
+    "$PR_HEAD_SHA" \
+    "$REPO_BRANCH" \
+    "$next_action" \
+    "$wake_event"
 }
 
 run_workflow() {
@@ -301,7 +366,6 @@ WAIT_RELEASE="$DEFAULT_WAIT_RELEASE"
 WORKFLOW_TIMEOUT="$DEFAULT_TIMEOUT_SECONDS"
 DRY_RUN=0
 TRANSACTION_PATH=""
-TRANSACTION_SUPPLIED=0
 LAST_WORKFLOW_DISPATCH_TS=""
 
 while (($#)); do
@@ -349,7 +413,6 @@ while (($#)); do
       ;;
     --transaction)
       TRANSACTION_PATH="$2"
-      TRANSACTION_SUPPLIED=1
       shift 2
       ;;
     --workflow-timeout)
@@ -412,19 +475,12 @@ fi
 HEAD_SHA="$BASE_SHA"
 
 BUMP_BRANCH="release/v${VERSION}"
-
-log "Dispatching version bump workflow"
 bump_inputs=("--field" "version=${VERSION}")
-VERSION_BUMP_DISPATCH_TS=""
-LAST_WORKFLOW_DISPATCH_TS=$(date -u +%s)
-if (( DRY_RUN )); then
-  run_workflow "$VERSION_BUMP_WORKFLOW" "$REPO_BRANCH" "$HEAD_SHA" "${bump_inputs[@]}"
-else
-  VERSION_BUMP_RUN_ID=$(run_workflow "$VERSION_BUMP_WORKFLOW" "$REPO_BRANCH" "$HEAD_SHA" "${bump_inputs[@]}")
-  VERSION_BUMP_DISPATCH_TS="$LAST_WORKFLOW_DISPATCH_TS"
-fi
 
 if (( DRY_RUN )); then
+  log "Dispatching version bump workflow"
+  LAST_WORKFLOW_DISPATCH_TS=$(date -u +%s)
+  run_workflow "$VERSION_BUMP_WORKFLOW" "$REPO_BRANCH" "$HEAD_SHA" "${bump_inputs[@]}"
   log "DRY RUN complete for version bump dispatch."
   if [[ "$AUTO_MERGE" == "false" ]]; then
     log "DRY RUN plan: --no-auto-merge would stop at ${TURNKEY_STAGE_MANUAL_MERGE} and would not dispatch Release Orchestration."
@@ -435,93 +491,102 @@ if (( DRY_RUN )); then
   exit 0
 fi
 
-log "Version bump run: https://github.com/$(repo_url)/actions/runs/${VERSION_BUMP_RUN_ID}"
-
-log "Waiting for version bump PR branch: $BUMP_BRANCH"
-PR_NUMBER=""
-if PR_NUMBER=$(wait_for_pr "$BUMP_BRANCH" "$REPO_BRANCH" 600); then
-  log "Found PR #${PR_NUMBER}"
-else
-  die "could not detect version bump PR for branch ${BUMP_BRANCH}"
+TURNKEY_SKIP_TO_ORCH=0
+if [[ -f "$TRANSACTION_PATH" ]]; then
+  resume_existing_turnkey_transaction
+  TURNKEY_SKIP_TO_ORCH=1
 fi
 
-PR_URL="$(gh pr view "$PR_NUMBER" --json url -q .url)"
-log "Version bump PR: ${PR_URL}"
+if (( TURNKEY_SKIP_TO_ORCH == 0 )); then
+  log "Dispatching version bump workflow"
+  VERSION_BUMP_DISPATCH_TS=""
+  LAST_WORKFLOW_DISPATCH_TS=$(date -u +%s)
+  VERSION_BUMP_RUN_ID=$(run_workflow "$VERSION_BUMP_WORKFLOW" "$REPO_BRANCH" "$HEAD_SHA" "${bump_inputs[@]}")
+  VERSION_BUMP_DISPATCH_TS="$LAST_WORKFLOW_DISPATCH_TS"
 
-PR_HEAD_SHA="$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)"
-if [[ -z "$PR_HEAD_SHA" ]]; then
-  die "could not read the head SHA of PR #${PR_NUMBER}"
-fi
+  log "Version bump run: https://github.com/$(repo_url)/actions/runs/${VERSION_BUMP_RUN_ID}"
 
-if (( TRANSACTION_SUPPLIED )) && [[ -f "$TRANSACTION_PATH" ]]; then
-  turnkey_validate_existing_record "$TRANSACTION_PATH" "$PR_HEAD_SHA" \
-    || die "supplied transaction record is not valid for the live PR head"
-fi
-
-if [[ "$AUTO_MERGE" != "true" ]]; then
-  emit_turnkey_handoff \
-    "$TURNKEY_STAGE_MANUAL_MERGE" \
-    "$PR_NUMBER" \
-    "$PR_URL" \
-    "$PR_HEAD_SHA" \
-    "$REPO_BRANCH" \
-    "$(turnkey_manual_merge_next_action "$VERSION" "$PR_NUMBER" "$PR_HEAD_SHA" "$TRANSACTION_PATH")" \
-    "$(turnkey_manual_merge_wake "$PR_NUMBER" "$REPO_BRANCH" "$HEAD_SHA")"
-fi
-
-log "Merging PR #${PR_NUMBER} with squash"
-# Compare-and-swap on the exact reviewed head (PLSP-SPEC-0006): if the PR
-# advanced between review and here, the merge must fail rather than land a
-# different subject.
-# No --delete-branch: an open PR that names ${BUMP_BRANCH} as its base is a
-# live dependency on it, and deleting the base auto-closes that child (#12885
-# — PRs #7810/#7819 were lost this way on August 15). Parent merge and
-# parent-branch deletion are separate decisions, and the cleanup below
-# re-reads the live graph rather than inheriting this moment's answer.
-gh pr merge "$PR_NUMBER" --squash --match-head-commit "$PR_HEAD_SHA"
-
-if [[ "$WAIT_PR_MERGE" == "true" ]]; then
-  if ! wait_for_pr_merge "$PR_NUMBER" 600; then
-    die "PR #${PR_NUMBER} did not merge within timeout"
+  log "Waiting for version bump PR branch: $BUMP_BRANCH"
+  PR_NUMBER=""
+  if PR_NUMBER=$(wait_for_pr "$BUMP_BRANCH" "$REPO_BRANCH" 600); then
+    log "Found PR #${PR_NUMBER}"
+  else
+    die "could not detect version bump PR for branch ${BUMP_BRANCH}"
   fi
-  log "PR #${PR_NUMBER} merged"
-elif ! turnkey_pr_merged_now "$PR_NUMBER"; then
-  emit_turnkey_handoff \
-    "$TURNKEY_STAGE_MERGE_REQUESTED" \
-    "$PR_NUMBER" \
-    "$PR_URL" \
-    "$PR_HEAD_SHA" \
-    "$REPO_BRANCH" \
-    "$(turnkey_merge_requested_next_action "$VERSION" "$PR_NUMBER" "$TRANSACTION_PATH")" \
-    "$(turnkey_merge_requested_wake "$PR_NUMBER" "$REPO_BRANCH" "$HEAD_SHA")"
-else
-  log "PR #${PR_NUMBER} already merged in this invocation; continuing"
-fi
 
-# ── Admitted branch cleanup (#12885) ─────────────────────────────────────────
-# The parent merged; that alone does not make its branch deletable. Re-read the
-# live graph now and delete only on SAFE_TO_DELETE. The planner is read-only and
-# exits 3 when it retains, so the deletion runs only when every subject was
-# actually read and none of them objected.
-log "Checking branch-deletion admission for ${BUMP_BRANCH}"
-admission_code=0
-# `cleanup` collects, evaluates, re-verifies the remote's identity and runs
-# the leased deletion itself, as argv. Nothing is parsed out of its output
-# and no shell evaluates a command built from remote data — a branch name
-# containing shell metacharacters cannot reach a command line from here.
-cargo run --quiet -p xtask --bin branch-deletion-admission -- \
-  cleanup --pr "$PR_NUMBER" --remote origin || admission_code=$?
-case "$admission_code" in
-  0)
-    log "${BUMP_BRANCH} deleted under the admitted lease"
-    ;;
-  3)
-    log "Retaining ${BUMP_BRANCH}: deletion was not admitted (see the disposition above)"
-    ;;
-  *)
-    warn "branch-deletion admission could not be evaluated (exit ${admission_code}); retaining ${BUMP_BRANCH}"
-    ;;
-esac
+  PR_URL="$(gh pr view "$PR_NUMBER" --json url -q .url)"
+  log "Version bump PR: ${PR_URL}"
+
+  PR_HEAD_SHA="$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)"
+  if [[ -z "$PR_HEAD_SHA" ]]; then
+    die "could not read the head SHA of PR #${PR_NUMBER}"
+  fi
+
+  if [[ "$AUTO_MERGE" != "true" ]]; then
+    emit_turnkey_handoff \
+      "$TURNKEY_STAGE_MANUAL_MERGE" \
+      "$PR_NUMBER" \
+      "$PR_URL" \
+      "$PR_HEAD_SHA" \
+      "$REPO_BRANCH" \
+      "$(turnkey_manual_merge_next_action "$VERSION" "$PR_NUMBER" "$PR_HEAD_SHA" "$TRANSACTION_PATH")" \
+      "$(turnkey_manual_merge_wake "$PR_NUMBER" "$REPO_BRANCH" "$HEAD_SHA")"
+  fi
+
+  log "Merging PR #${PR_NUMBER} with squash"
+  # Compare-and-swap on the exact reviewed head (PLSP-SPEC-0006): if the PR
+  # advanced between review and here, the merge must fail rather than land a
+  # different subject.
+  # No --delete-branch: an open PR that names ${BUMP_BRANCH} as its base is a
+  # live dependency on it, and deleting the base auto-closes that child (#12885
+  # — PRs #7810/#7819 were lost this way on August 15). Parent merge and
+  # parent-branch deletion are separate decisions, and the cleanup below
+  # re-reads the live graph rather than inheriting this moment's answer.
+  gh pr merge "$PR_NUMBER" --squash --match-head-commit "$PR_HEAD_SHA"
+
+  if [[ "$WAIT_PR_MERGE" == "true" ]]; then
+    if ! wait_for_pr_merge "$PR_NUMBER" 600; then
+      die "PR #${PR_NUMBER} did not merge within timeout"
+    fi
+    log "PR #${PR_NUMBER} merged"
+  elif ! turnkey_pr_merged_now "$PR_NUMBER"; then
+    emit_turnkey_handoff \
+      "$TURNKEY_STAGE_MERGE_REQUESTED" \
+      "$PR_NUMBER" \
+      "$PR_URL" \
+      "$PR_HEAD_SHA" \
+      "$REPO_BRANCH" \
+      "$(turnkey_merge_requested_next_action "$VERSION" "$PR_NUMBER" "$TRANSACTION_PATH")" \
+      "$(turnkey_merge_requested_wake "$PR_NUMBER" "$REPO_BRANCH" "$HEAD_SHA")"
+  else
+    log "PR #${PR_NUMBER} already merged in this invocation; continuing"
+  fi
+
+  # ── Admitted branch cleanup (#12885) ─────────────────────────────────────────
+  # The parent merged; that alone does not make its branch deletable. Re-read the
+  # live graph now and delete only on SAFE_TO_DELETE. The planner is read-only and
+  # exits 3 when it retains, so the deletion runs only when every subject was
+  # actually read and none of them objected.
+  log "Checking branch-deletion admission for ${BUMP_BRANCH}"
+  admission_code=0
+  # `cleanup` collects, evaluates, re-verifies the remote's identity and runs
+  # the leased deletion itself, as argv. Nothing is parsed out of its output
+  # and no shell evaluates a command built from remote data — a branch name
+  # containing shell metacharacters cannot reach a command line from here.
+  cargo run --quiet -p xtask --bin branch-deletion-admission -- \
+    cleanup --pr "$PR_NUMBER" --remote origin || admission_code=$?
+  case "$admission_code" in
+    0)
+      log "${BUMP_BRANCH} deleted under the admitted lease"
+      ;;
+    3)
+      log "Retaining ${BUMP_BRANCH}: deletion was not admitted (see the disposition above)"
+      ;;
+    *)
+      warn "branch-deletion admission could not be evaluated (exit ${admission_code}); retaining ${BUMP_BRANCH}"
+      ;;
+  esac
+fi
 
 git fetch origin "$REPO_BRANCH" --prune
 RELEASE_HEAD_SHA="$(git rev-parse "origin/$REPO_BRANCH")"

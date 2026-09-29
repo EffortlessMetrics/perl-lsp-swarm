@@ -102,7 +102,8 @@ pub fn run(config: ReleaseTurnkeyConfig) -> Result<()> {
         Some(0) => Ok(()),
         Some(2) => {
             // Typed `manual_merge_required` handoff (#16798): not a command
-            // failure and not release-orchestration success.
+            // failure and not release-orchestration success. The shell driver
+            // remaps accidental subprocess 2/4 to 1 before we observe them.
             std::process::exit(2);
         }
         Some(4) => {

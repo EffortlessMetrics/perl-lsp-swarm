@@ -9,9 +9,14 @@
 #   5. An old handoff is reused after PR head movement.
 #   6. Dry-run writes an authoritative transaction or mutates GitHub.
 #   7. Exit 0 is treated as orchestration success for a typed handoff.
+#   8. Re-running the advertised --transaction command redispatches Version Bump.
+#   9. A merged recorded PR cannot resume because wait_for_pr is open-only.
+#  10. A tampered digest, version, repository, or branch still validates.
+#  11. Accidental subprocess exit 2/4 is forwarded as a typed handoff.
 #
 # Opposite-direction control: auto-merge + proven merge + moved target SHA
-# still dispatches Release Orchestration.
+# still dispatches Release Orchestration. A merged recorded PR whose target
+# SHA has moved resumes to orchestration without a second bump.
 #
 # Everything runs offline against stub `gh`/`cargo` prepended to PATH.
 set -u
@@ -273,12 +278,14 @@ expect_eq "handoff without PR identity is refused" "refused" "$missing_pr"
 
 tx_path="$TMP_ROOT/tx.json"
 turnkey_write_authoritative "$tx_path" "$record"
-if turnkey_validate_existing_record "$tx_path" "abc123def"; then
+if turnkey_validate_existing_record "$tx_path" "abc123def" "0.9.2" \
+  "EffortlessMetrics/perl-lsp-swarm" main; then
   pass "matching PR head accepts record"
 else
   fail "matching PR head accepts record"
 fi
-if turnkey_validate_existing_record "$tx_path" "moved-head"; then
+if turnkey_validate_existing_record "$tx_path" "moved-head" "0.9.2" \
+  "EffortlessMetrics/perl-lsp-swarm" main; then
   fail "moved PR head invalidates record"
 else
   pass "moved PR head invalidates record"
@@ -288,6 +295,80 @@ if turnkey_validate_existing_record "$TMP_ROOT/missing.json" "abc123def"; then
 else
   pass "missing record refuses rediscovery"
 fi
+
+digest_tamper="$TMP_ROOT/digest-tamper.json"
+jq '.requested_version = "0.9.9"' "$tx_path" >"$digest_tamper"
+if turnkey_validate_existing_record "$digest_tamper" "abc123def" "0.9.9" \
+  "EffortlessMetrics/perl-lsp-swarm" main; then
+  fail "digest mismatch invalidates record"
+else
+  pass "digest mismatch invalidates record"
+fi
+
+version_mismatch="$TMP_ROOT/version-mismatch.json"
+jq '.requested_version = "0.9.9"' "$tx_path" | turnkey_attach_digest >"$version_mismatch"
+if turnkey_validate_existing_record "$version_mismatch" "abc123def" "0.9.2" \
+  "EffortlessMetrics/perl-lsp-swarm" main; then
+  fail "version mismatch invalidates record"
+else
+  pass "version mismatch invalidates record"
+fi
+
+repo_mismatch="$TMP_ROOT/repo-mismatch.json"
+jq '.repository = "other/repo"' "$tx_path" | turnkey_attach_digest >"$repo_mismatch"
+if turnkey_validate_existing_record "$repo_mismatch" "abc123def" "0.9.2" \
+  "EffortlessMetrics/perl-lsp-swarm" main; then
+  fail "repository mismatch invalidates record"
+else
+  pass "repository mismatch invalidates record"
+fi
+
+branch_mismatch="$TMP_ROOT/branch-mismatch.json"
+jq '.target_branch = "release"' "$tx_path" | turnkey_attach_digest >"$branch_mismatch"
+if turnkey_validate_existing_record "$branch_mismatch" "abc123def" "0.9.2" \
+  "EffortlessMetrics/perl-lsp-swarm" main; then
+  fail "branch mismatch invalidates record"
+else
+  pass "branch mismatch invalidates record"
+fi
+
+identity_stale_head="$TMP_ROOT/identity-stale-head.json"
+jq '.pr.head = "old-head"' "$tx_path" | turnkey_attach_digest >"$identity_stale_head"
+if turnkey_validate_existing_record "$identity_stale_head" "abc123def" "0.9.2" \
+  "EffortlessMetrics/perl-lsp-swarm" main; then
+  fail "digest-valid stale head still invalidates"
+else
+  pass "digest-valid stale head still invalidates"
+fi
+
+echo ""
+echo "=== accidental 2/4 remapping ==="
+set +e
+(
+  set -euo pipefail
+  TURNKEY_ALLOW_HANDOFF_EXIT=0
+  trap turnkey_remap_accidental_handoff_exit ERR
+  (exit 2)
+)
+remap_two=$?
+(
+  set -euo pipefail
+  TURNKEY_ALLOW_HANDOFF_EXIT=0
+  trap turnkey_remap_accidental_handoff_exit ERR
+  (exit 4)
+)
+remap_four=$?
+(
+  set -euo pipefail
+  TURNKEY_ALLOW_HANDOFF_EXIT=0
+  trap turnkey_remap_accidental_handoff_exit ERR
+  turnkey_handoff_exit 2
+)
+intentional_two=$?
+set -e
+expect_eq "accidental exit 2 is remapped to 1" "1" "$remap_two"
+expect_eq "accidental exit 4 is remapped to 1" "1" "$remap_four"
+expect_eq "intentional handoff exit 2 is preserved" "2" "$intentional_two"
 
 plan="$(turnkey_build_handoff \
   "$TURNKEY_STAGE_MANUAL_MERGE" false \
@@ -331,6 +412,92 @@ fi
 expect_contains "manual handoff names stage" "typed handoff: manual_merge_required" "$(cat "$out")"
 expect_not_contains "manual handoff is not a release failure" "[error]" "$(cat "$out")"
 expect_contains "manual handoff is not completed preparation" "not completed preparation" "$(cat "$out")"
+if grep -Fq "Version Bump" "$STUB_STATE/workflow.log"; then
+  pass "--no-auto-merge still dispatches Version Bump"
+else
+  fail "--no-auto-merge still dispatches Version Bump"
+fi
+
+echo ""
+echo "=== resume recorded handoff ==="
+out="$TMP_ROOT/resume-open.log"
+GH_STUB_MERGED_AT=""
+set +e
+run_turnkey "$out" --version 0.9.2 --base-branch main --workflow-timeout 8 --transaction "$TX1"
+code=$?
+set -e
+expect_eq "resume of open handoff re-emits exit 2" "$TURNKEY_EXIT_MANUAL_MERGE" "$code"
+if grep -Fq "Version Bump" "$STUB_STATE/workflow.log"; then
+  fail "resume of open handoff does not dispatch Version Bump"
+else
+  pass "resume of open handoff does not dispatch Version Bump"
+fi
+if grep -Fq "Release Orchestration" "$STUB_STATE/workflow.log"; then
+  fail "resume of open handoff does not dispatch Release Orchestration"
+else
+  pass "resume of open handoff does not dispatch Release Orchestration"
+fi
+expect_not_contains "resume of open handoff does not request merge" "pr merge" "$(cat "$STUB_STATE/merge.log")"
+expect_contains "resume names recorded PR" "Resuming recorded PR #42" "$(cat "$out")"
+
+out="$TMP_ROOT/resume-version.log"
+set +e
+run_turnkey "$out" --version 0.9.3 --base-branch main --workflow-timeout 8 --transaction "$TX1"
+code=$?
+set -e
+if [[ "$code" -eq 0 || "$code" -eq "$TURNKEY_EXIT_MANUAL_MERGE" || "$code" -eq "$TURNKEY_EXIT_MERGE_REQUESTED" ]]; then
+  fail "resume version mismatch is a hard failure (exit $code)"
+else
+  pass "resume version mismatch is a hard failure (exit $code)"
+fi
+if grep -Fq "Version Bump" "$STUB_STATE/workflow.log"; then
+  fail "resume version mismatch does not dispatch Version Bump"
+else
+  pass "resume version mismatch does not dispatch Version Bump"
+fi
+
+out="$TMP_ROOT/resume-merged-unchanged.log"
+GH_STUB_MERGED_AT="2026-09-29T00:00:00Z"
+set +e
+run_turnkey "$out" --version 0.9.2 --base-branch main --no-wait-release --workflow-timeout 8 --transaction "$TX1"
+code=$?
+set -e
+if [[ "$code" -eq 0 ]]; then
+  fail "resume merged but unchanged origin is blocking (got exit 0)"
+else
+  pass "resume merged but unchanged origin is blocking (exit $code)"
+fi
+if grep -Fq "Version Bump" "$STUB_STATE/workflow.log"; then
+  fail "resume merged unchanged does not dispatch Version Bump"
+else
+  pass "resume merged unchanged does not dispatch Version Bump"
+fi
+if grep -Fq "Release Orchestration" "$STUB_STATE/workflow.log"; then
+  fail "resume merged unchanged does not dispatch orchestration"
+else
+  pass "resume merged unchanged does not dispatch orchestration"
+fi
+expect_contains "resume merged unchanged refuses orch" "refusing to dispatch Release Orchestration" "$(cat "$out")"
+
+out="$TMP_ROOT/resume-merged-moved.log"
+GH_STUB_MERGED_AT="2026-09-29T00:00:00Z"
+"$STUB_STATE/advance-origin"
+set +e
+run_turnkey "$out" --version 0.9.2 --base-branch main --no-wait-release --workflow-timeout 8 --transaction "$TX1"
+code=$?
+set -e
+expect_eq "resume merged and moved continues (exit 0)" "0" "$code"
+if grep -Fq "Version Bump" "$STUB_STATE/workflow.log"; then
+  fail "resume merged and moved does not dispatch Version Bump"
+else
+  pass "resume merged and moved does not dispatch Version Bump"
+fi
+if grep -Fq "Release Orchestration" "$STUB_STATE/workflow.log"; then
+  pass "resume merged and moved dispatches Release Orchestration"
+else
+  fail "resume merged and moved dispatches Release Orchestration"
+fi
+GH_STUB_MERGED_AT=""
 
 TX2="$TMP_ROOT/waiting.json"
 out="$TMP_ROOT/no-wait.log"
@@ -460,6 +627,14 @@ if [[ "$FAIL" -ne 0 ]]; then
   cat "$TMP_ROOT/auto-landed.log" 2>/dev/null || true
   echo "---- already-landed log ----"
   cat "$TMP_ROOT/no-wait-already-landed.log" 2>/dev/null || true
+  echo "---- resume-open log ----"
+  cat "$TMP_ROOT/resume-open.log" 2>/dev/null || true
+  echo "---- resume-version log ----"
+  cat "$TMP_ROOT/resume-version.log" 2>/dev/null || true
+  echo "---- resume-merged-unchanged log ----"
+  cat "$TMP_ROOT/resume-merged-unchanged.log" 2>/dev/null || true
+  echo "---- resume-merged-moved log ----"
+  cat "$TMP_ROOT/resume-merged-moved.log" 2>/dev/null || true
   exit 1
 fi
 exit 0

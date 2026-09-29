@@ -165,11 +165,20 @@ turnkey_print_handoff() {
   printf '[release] invalidators: %s\n' "$(printf '%s' "$record" | jq -r '.invalidators | join("; ")')"
 }
 
-# Fail closed when a supplied record is missing, malformed, or its PR head moved.
+# Fail closed when a supplied record is missing, malformed, identity-mismatched,
+# digest-invalid, or its PR head moved.
+# Usage: turnkey_validate_existing_record <path> <live_pr_head> \
+#   [expected_version] [expected_repository] [expected_branch]
+# An empty live_pr_head skips the live-head comparison so callers can reject a
+# tampered file before they touch GitHub.
 turnkey_validate_existing_record() {
   local path="$1"
   local live_pr_head="$2"
-  local schema stage recorded_head authoritative
+  local expected_version="${3:-}"
+  local expected_repository="${4:-}"
+  local expected_branch="${5:-}"
+  local schema stage recorded_head authoritative recorded_digest recomputed
+  local recorded_version recorded_repository recorded_branch
   if [[ ! -f "$path" ]]; then
     printf 'turnkey-handoff: transaction record not found at %s; refusing to rediscover a partial transaction\n' "$path" >&2
     return 1
@@ -193,9 +202,48 @@ turnkey_validate_existing_record() {
     printf 'turnkey-handoff: record at %s is not marked authoritative\n' "$path" >&2
     return 1
   fi
+  recorded_digest="$(jq -r '.digest // empty' "$path")"
+  if [[ -z "$recorded_digest" ]]; then
+    printf 'turnkey-handoff: record at %s omits digest\n' "$path" >&2
+    return 1
+  fi
+  recomputed="sha256:$(jq 'del(.digest)' "$path" | turnkey_digest_of_record)" || return 1
+  if [[ "$recorded_digest" != "$recomputed" ]]; then
+    printf 'turnkey-handoff: record at %s digest mismatch (recorded %s, recomputed %s)\n' \
+      "$path" "$recorded_digest" "$recomputed" >&2
+    return 1
+  fi
+  if [[ -n "$expected_version" ]]; then
+    recorded_version="$(jq -r '.requested_version // empty' "$path")"
+    if [[ "$recorded_version" != "$expected_version" ]]; then
+      printf 'turnkey-handoff: record at %s requested_version %s != invocation %s\n' \
+        "$path" "${recorded_version:-<missing>}" "$expected_version" >&2
+      return 1
+    fi
+  fi
+  if [[ -n "$expected_repository" ]]; then
+    recorded_repository="$(jq -r '.repository // empty' "$path")"
+    if [[ "$recorded_repository" != "$expected_repository" ]]; then
+      printf 'turnkey-handoff: record at %s repository %s != invocation %s\n' \
+        "$path" "${recorded_repository:-<missing>}" "$expected_repository" >&2
+      return 1
+    fi
+  fi
+  if [[ -n "$expected_branch" ]]; then
+    recorded_branch="$(jq -r '.target_branch // empty' "$path")"
+    if [[ "$recorded_branch" != "$expected_branch" ]]; then
+      printf 'turnkey-handoff: record at %s target_branch %s != invocation %s\n' \
+        "$path" "${recorded_branch:-<missing>}" "$expected_branch" >&2
+      return 1
+    fi
+  fi
   recorded_head="$(jq -r '.pr.head // empty' "$path")"
   if [[ -z "$recorded_head" ]]; then
     printf 'turnkey-handoff: record at %s omits PR head identity\n' "$path" >&2
+    return 1
+  fi
+  if [[ -z "$(jq -r '.pr.number // empty' "$path")" ]]; then
+    printf 'turnkey-handoff: record at %s omits PR number\n' "$path" >&2
     return 1
   fi
   if [[ -n "$live_pr_head" && "$recorded_head" != "$live_pr_head" ]]; then
@@ -204,6 +252,25 @@ turnkey_validate_existing_record() {
     return 1
   fi
   return 0
+}
+
+# Intentional T02 exits must not be remapped by the ERR trap.
+turnkey_handoff_exit() {
+  TURNKEY_ALLOW_HANDOFF_EXIT=1
+  trap - ERR
+  exit "$1"
+}
+
+# Accidental subprocess 2/4 must not be forwarded as typed handoffs.
+turnkey_remap_accidental_handoff_exit() {
+  local code=$?
+  if [[ "${TURNKEY_ALLOW_HANDOFF_EXIT:-0}" -eq 1 ]]; then
+    exit "$code"
+  fi
+  if [[ "$code" -eq "$TURNKEY_EXIT_MANUAL_MERGE" || "$code" -eq "$TURNKEY_EXIT_MERGE_REQUESTED" ]]; then
+    printf '[error] a subprocess exited %s; remapping to 1 so this is not a typed handoff\n' "$code" >&2
+    exit 1
+  fi
 }
 
 turnkey_exit_code_for_stage() {

@@ -323,14 +323,11 @@ cargo xtask release-turnkey <0.x.y> --no-auto-merge
 
 # 2. Manually review and merge the generated version bump PR at the expected head.
 
-# 3. Dispatch Release Orchestration only after that preparation has landed.
-gh workflow run "Release Orchestration" \
-  --ref master \
-  --field version=<0.x.y> \
-  --field prerelease=false \
-  --field skip_crates=false \
-  --field skip_extension=false \
-  --field skip_docker=false
+# 3. After the PR has landed and origin has moved, resume the same transaction.
+#    This is the next_safe_action written into the handoff record. Do not
+#    dispatch a second Version Bump, and do not dispatch Release Orchestration
+#    by hand against an assumed branch name.
+cargo xtask release-turnkey <0.x.y> --transaction target/release-turnkey/<0.x.y>/transaction.json
 
 # 4. Optionally monitor release/publish workflows in GitHub Actions.
 
