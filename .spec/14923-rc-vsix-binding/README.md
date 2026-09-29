@@ -392,3 +392,13 @@ A permanent independently prepared production inventory producer, real RC
 qualification, authenticated terminal collection, installed server/DAP and full
 #14923 acceptance remain NOT_PROVEN. No Cargo/native bundle, installed launch,
 workflow dispatch, tag, credential or public registry operation was executed.
+
+The mapped verifier now closes non-extension metadata to exactly
+`[Content_Types].xml` and `extension.vsixmanifest`, requiring both through the
+same bounded regular-file metadata reader. Unexpected root files and nested
+non-extension payloads reject even when the whole-archive digest matches;
+generic inventory measurement retains its existing broader receipt boundary.
+The adapter workflow installs locked extension dependencies through the existing
+Node authority and runs the mapped archive, inventory-transition and packaging
+tests alongside its Python adapter tests. These source checks do not promote
+the mechanism receipt to installed behavior or release qualification.

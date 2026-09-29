@@ -64,7 +64,7 @@ jobs:
       - name: Setup repository Node authority
         uses: ./.github/actions/setup-vscode-toolchain
         with:
-          install-dependencies: 'false'
+          install-dependencies: 'true'
 
       - name: Setup release schema Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -76,3 +76,9 @@ jobs:
 
       - name: Run release evidence to VSIX adapter tests
         run: python3 -m unittest scripts.test_prepare_vsix_prebuilt_payload -v
+
+      - name: Run mapped packaging and archive tests
+        working-directory: vscode-extension
+        run: |
+          node --test scripts/check-vsix-prebuilt-payload.test.js scripts/check-vsix-inventory-transition.test.js
+          node --test --test-name-pattern='mapped' scripts/package-command.test.js

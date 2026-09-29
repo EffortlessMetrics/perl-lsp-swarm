@@ -39,6 +39,7 @@ async function mappedMetadata(vsix) {
     'extension/package.json',
     'extension/vsix-candidate-payload.json',
     'extension.vsixmanifest',
+    '[Content_Types].xml',
   ]);
   const values = new Map();
   const archive = await yauzl.fromBufferPromise(vsix, {
@@ -243,7 +244,12 @@ async function verifyMappedSnapshot(
     collectArchiveInventory,
     semanticInventorySha256,
   } = require('./check-vsix-inventory-transition');
-  const inventory = (await collectArchiveInventory(archiveBytes)).inventory;
+  const collected = await collectArchiveInventory(archiveBytes);
+  const expectedMetadata = ['[Content_Types].xml', 'extension.vsixmanifest'];
+  if (JSON.stringify(collected.metadata_entries) !== JSON.stringify(expectedMetadata)) {
+    throw new Error('Mapped VSIX contains unsupported root metadata members');
+  }
+  const inventory = collected.inventory;
   if (
     expectedPayloadBytes &&
     inventory.files['vsix-candidate-payload.json'] !== Buffer.byteLength(expectedPayloadBytes)

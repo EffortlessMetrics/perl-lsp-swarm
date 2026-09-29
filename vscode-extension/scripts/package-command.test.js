@@ -752,6 +752,7 @@ async function mappedPackageFixture(extraFile = '') {
       fs.readFileSync(path.join(root, 'vsix-candidate-payload.json')),
     );
     zip.file('extension.vsixmanifest', xml);
+    zip.file('[Content_Types].xml', '<Types/>');
     change(zip);
     fs.writeFileSync(output, await zip.generateAsync({ type: 'nodebuffer' }));
     return true;
