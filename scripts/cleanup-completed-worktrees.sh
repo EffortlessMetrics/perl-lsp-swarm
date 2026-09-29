@@ -280,16 +280,10 @@ emit() {
     fi
 }
 
-# `git worktree prune` rewrites .git/worktrees/**. It is mutation, and running it
-# before classification lets observation change its own subject: a registration
-# whose path is unreachable from this OS view is dropped, so the row disappears
-# from the report instead of being reported for review.
-prune_worktrees() {
-    $DRY_RUN && return 0
-    git_out git -C "$REPO_ROOT" worktree prune
-}
-
-prune_worktrees
+# Never prune here, including during a mutating sweep. A global prune can drop
+# administrative registrations for worktrees whose paths are only inaccessible
+# from this OS view. This command cannot revalidate or target those records, so
+# leave them visible for review instead of erasing their only Git-side evidence.
 
 # Parse porcelain output so paths containing spaces survive.
 WT_PATH=""; WT_BRANCH=""; WT_LOCKED=false; WT_DETACHED=false
@@ -403,8 +397,6 @@ while IFS= read -r line; do
     esac
 done < <(git_read -C "$REPO_ROOT" worktree list --porcelain)
 process_worktree "$WT_PATH" "$WT_BRANCH" "$WT_LOCKED" "$WT_DETACHED"
-
-prune_worktrees
 
 if $JSON; then
     WORKTREES_JSON="$(printf '%s\n' "${ROWS[@]}" | jq -s '.')"

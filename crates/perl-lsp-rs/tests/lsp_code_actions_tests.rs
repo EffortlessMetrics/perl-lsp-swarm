@@ -694,6 +694,79 @@ fn test_extract_subroutine_ignores_sub_text_inside_multiline_string()
     Ok(())
 }
 
+/// #16779: the basic extract-function fallback must not reach the wire with a
+/// parameterless edit that captures a surrounding `my` variable.
+#[test]
+fn test_extract_function_withholds_capturing_if_body() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "use strict;\nuse warnings;\n{\n    my $x = 1;\n    if (1) { warn $x; } else { warn 0; }\n}\n";
+    let original = run_perl(source)?;
+    assert!(
+        original.status.success(),
+        "fixture failed perl -c: {}",
+        String::from_utf8_lossy(&original.stderr)
+    );
+
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+    let uri = "file:///capture-extract.pl";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    // LSP line 4 / UTF-16 characters 11..23 selects `{ warn $x; }`.
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 82,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 4, "character": 11 },
+                    "end": { "line": 4, "character": 23 }
+                },
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let actions = response["result"].as_array().ok_or("Expected codeAction result array")?;
+    assert!(
+        actions.iter().all(|action| action["title"] != "Extract to function"),
+        "capturing if-body must not publish Extract to function: {actions:?}"
+    );
+    let published_extract_edits = actions.iter().flat_map(|action| {
+        action["edit"]["changes"][uri]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|edit| edit["newText"].as_str().map(str::to_string))
+    });
+    for new_text in published_extract_edits {
+        assert!(
+            !new_text.contains("sub extracted_function")
+                || new_text.contains("my ($x) = @_")
+                || !new_text.contains("warn $x"),
+            "parameterless extracted_function captured outer $x:\n{new_text}\nactions={actions:?}"
+        );
+    }
+    shutdown_and_exit(&server);
+    Ok(())
+}
+
 /// The legacy organize-imports action stays withdrawn (#8305)
 #[test]
 fn test_organize_imports() -> Result<(), Box<dyn std::error::Error>> {
