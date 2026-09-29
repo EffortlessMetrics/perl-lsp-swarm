@@ -271,17 +271,45 @@ fn run_aqua(root: &Path, tool: &str, args: &[String]) -> ToolResult {
         }
     };
     let detail = command_detail(&output.stdout, &output.stderr);
-    let result = if output.status.success() {
-        ResultClass::Pass
-    } else if args.len() == 1 && args[0] == "--version" {
+    if output.status.success() {
+        return ToolResult { result: ResultClass::Pass, command: rendered, detail };
+    }
+    if args.len() == 1 && args[0] == "--version" {
         // Aqua ran but the tool is not usable (missing download, checksum
         // failure, unsupported platform). That is an absent tool, not a
         // finding about the changed files (#15235).
-        ResultClass::ToolUnavailable
+        return ToolResult { result: ResultClass::ToolUnavailable, command: rendered, detail };
+    }
+    // A nonzero content-check exit is the tool's own finding only while the
+    // tool is still obtainable (#15235 review): Aqua can lose the pinned
+    // executable between the version probe and this invocation, and that
+    // later loss must never be read as dirty files. Re-probe once and
+    // reclassify a lost tool as unavailable.
+    let probe = run_aqua(root, tool, &["--version".to_string()]);
+    let result = classify_aqua_exit(args, probe.result == ResultClass::Pass);
+    let detail = if result == ResultClass::ToolUnavailable {
+        format!(
+            "{detail}\naqua could not re-obtain {tool} after the content check failed (probe: {})",
+            probe.detail
+        )
     } else {
-        ResultClass::PolicyFinding
+        detail
     };
     ToolResult { result, command: rendered, detail }
+}
+
+/// Classify a nonzero Aqua exit for `args`, given whether the tool could
+/// still be obtained afterwards.
+///
+/// A `--version` probe that fails is always an unavailable tool. For a
+/// content invocation, a nonzero exit is the tool's own finding only when a
+/// follow-up probe still obtains the tool; a probe that now fails means Aqua
+/// lost the pinned executable, so no content verdict exists.
+fn classify_aqua_exit(args: &[String], tool_still_obtainable: bool) -> ResultClass {
+    if args.len() == 1 && args[0] == "--version" {
+        return ResultClass::ToolUnavailable;
+    }
+    if tool_still_obtainable { ResultClass::PolicyFinding } else { ResultClass::ToolUnavailable }
 }
 
 fn overall_status(taplo: &[ToolResult], typos: Option<&ToolResult>) -> ResultClass {
@@ -583,6 +611,26 @@ mod tests {
             "a green tool run must not mask an absent one"
         );
         ensure!(overall_status(std::slice::from_ref(&clean), None) == ResultClass::Pass);
+        Ok(())
+    }
+
+    #[test]
+    fn a_lost_tool_after_a_failed_content_check_is_unavailable_not_a_finding() -> Result<()> {
+        // #15235 review: Aqua can lose the pinned executable between the
+        // version probe and the content check. The content invocation's
+        // nonzero exit is the tool's own finding only while a follow-up
+        // version probe still succeeds; a lost tool is reclassified as
+        // unavailable, never as dirty files.
+        let content_args = tool_file_args(&["fmt", "--check"], &["a.toml".to_string()]);
+        ensure!(content_args.len() > 1, "content invocations never take the --version arm");
+        ensure!(classify_aqua_exit(&content_args, true) == ResultClass::PolicyFinding);
+        ensure!(classify_aqua_exit(&content_args, false) == ResultClass::ToolUnavailable);
+        ensure!(
+            classify_aqua_exit(&["--version".to_string()], false) == ResultClass::ToolUnavailable
+        );
+        ensure!(
+            classify_aqua_exit(&["--version".to_string()], true) == ResultClass::ToolUnavailable
+        );
         Ok(())
     }
 
