@@ -66,6 +66,27 @@ read_pr_checks() {
     fi
 }
 
+read_classic_policy() {
+    local endpoint="repos/$REVIEW_REPO/branches/$BASE_BRANCH/protection/required_status_checks"
+    local rc=0
+    gh api "$endpoint" >"$TMP_DIR/classic.json" 2>"$TMP_DIR/classic.err" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        if jq -e 'type == "object" and (.contexts | type == "array") and (.checks | type == "array")' \
+            "$TMP_DIR/classic.json" >/dev/null 2>&1; then
+            return 0
+        fi
+        echo "FAIL PR #$PR: classic protection response is malformed" >&2
+        return 1
+    fi
+    if [[ ! -s "$TMP_DIR/classic.json" ]] && grep -Eq '\(HTTP 404\)' "$TMP_DIR/classic.err"; then
+        printf '%s' '{"contexts":[],"checks":[]}' >"$TMP_DIR/classic.json"
+        return 0
+    fi
+    echo "FAIL PR #$PR: classic protection is unreadable (exit=$rc)" >&2
+    cat "$TMP_DIR/classic.err" >&2
+    return 1
+}
+
 REVIEW_REPO="${GITHUB_REPOSITORY:-}"
 if [[ -z "$REVIEW_REPO" ]]; then
     REVIEW_REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
@@ -77,7 +98,7 @@ if [[ -z "$BASE_BRANCH" || "$BASE_BRANCH" == "null" ]]; then
     FAILED=1
 else
     if ! gh api "repos/$REVIEW_REPO/rules/branches/$BASE_BRANCH" >"$TMP_DIR/rules.json" ||
-       ! gh api "repos/$REVIEW_REPO/branches/$BASE_BRANCH/protection/required_status_checks" >"$TMP_DIR/classic.json"; then
+       ! read_classic_policy; then
         echo "FAIL PR #$PR: live required-check policy is NOT_PROVEN" >&2
         FAILED=1
     else

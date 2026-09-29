@@ -52,7 +52,17 @@ make_mock_gh() {
 case "\$*" in
     'repo view'*) printf '%s' 'test-owner/test-repo' ;;
     *'rules/branches/'*) cat '$tmpdir/rules.json' ;;
-    *'protection/required_status_checks'*) cat '$tmpdir/classic.json' ;;
+    *'protection/required_status_checks'*)
+        if [[ -f '$tmpdir/classic-404' ]]; then
+            echo 'gh: Branch not protected (HTTP 404)' >&2
+            exit 1
+        fi
+        if [[ -f '$tmpdir/classic-403' ]]; then
+            echo 'gh: Resource not accessible (HTTP 403)' >&2
+            exit 1
+        fi
+        cat '$tmpdir/classic.json'
+        ;;
     *'--required'*) cat '$tmpdir/required.json' ;;
     *'pr checks'*)
         cat '$tmpdir/checks.json'
@@ -176,7 +186,7 @@ test_unstable_inherited_advisory_requires_evidence() {
         pass "UNSTABLE advisory without evidence fails closed"
     fi
     printf '%s' '{"headRefOid":"fixture-head","advisories":[{"name":"PR Smoke","link":"https://example.test/advisory","classification":"inherited","discriminator":"same failing gate and signature at merge base","evidenceUrl":"https://example.test/advisory","mergeBaseRunUrl":"https://example.test/merge-base"}]}' >"$mock/evidence.json"
-    PRE_MERGE_ADVISORY_EVIDENCE="$mock/evidence.json" code="$(run_check "$mock")"
+    code="$(PRE_MERGE_ADVISORY_EVIDENCE="$mock/evidence.json" run_check "$mock")"
     cleanup "$mock"
     [[ "$code" -eq 0 ]] && pass "UNSTABLE inherited advisory with exact-head evidence passes" || fail "UNSTABLE inherited advisory with evidence failed"
 }
@@ -193,6 +203,42 @@ test_partial_check_snapshot_fails_closed() {
         pass "partial gh pr checks response fails closed"
     else
         fail "partial gh pr checks response unexpectedly passed"
+    fi
+}
+
+test_absent_classic_protection_uses_active_ruleset() {
+    local mock json output
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"fix: thing (#16958)"}'
+    mock="$(make_mock_gh "$json")"
+    touch "$mock/classic-404"
+    output="$(run_check_with_output "$mock")"
+    cleanup "$mock"
+    if grep -Fq 'EXIT:0' <<<"$output" && grep -Fq 'required contexts green' <<<"$output"; then
+        pass "definitive classic 404 contributes no contexts while ruleset remains enforced"
+    else
+        fail "definitive classic 404 incorrectly blocked ruleset checks"
+    fi
+}
+
+test_unreadable_classic_protection_blocks() {
+    local mock json output
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"fix: thing (#16958)"}'
+    mock="$(make_mock_gh "$json")"
+    touch "$mock/classic-403"
+    output="$(run_check_with_output "$mock")"
+    if ! grep -Fq 'EXIT:1' <<<"$output" || ! grep -Fq 'classic protection is unreadable' <<<"$output"; then
+        fail "classic 403 did not block"
+    else
+        pass "classic 403 remains NOT_PROVEN"
+    fi
+    printf '%s' 'not-json' >"$mock/classic.json"
+    rm "$mock/classic-403"
+    output="$(run_check_with_output "$mock")"
+    cleanup "$mock"
+    if grep -Fq 'EXIT:1' <<<"$output" && grep -Fq 'classic protection response is malformed' <<<"$output"; then
+        pass "malformed classic response remains NOT_PROVEN"
+    else
+        fail "malformed classic response did not block"
     fi
 }
 
@@ -285,6 +331,8 @@ test_clean_review_current_pr_passes
 test_behind_merge_state_passes
 test_unstable_inherited_advisory_requires_evidence
 test_partial_check_snapshot_fails_closed
+test_absent_classic_protection_uses_active_ruleset
+test_unreadable_classic_protection_blocks
 test_semantic_not_proven_fails_even_when_native_facts_converge
 test_zero_or_generic_review_cannot_become_review_current
 test_public_wrappers_keep_authority_split
