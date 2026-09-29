@@ -3,6 +3,8 @@
 pub use perl_lsp_ux_tests::regression_receipt::UxRegressionReceiptConfig;
 
 pub fn run(config: UxRegressionReceiptConfig) -> color_eyre::eyre::Result<()> {
-    perl_lsp_ux_tests::regression_receipt::run(config)
-        .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))
+    let output = perl_lsp_ux_tests::regression_receipt::run(config)
+        .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
+    println!("{}", output.cli_stdout());
+    Ok(())
 }

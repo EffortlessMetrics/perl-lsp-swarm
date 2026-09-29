@@ -1,5 +1,6 @@
 //! Small receipt emitter for the UX gate after the harness has already built.
 
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
@@ -26,10 +27,12 @@ fn main() -> Result<()> {
     let Some(input) = input else { bail!("--input is required") };
     let Some(sha) = sha else { bail!("--sha is required") };
     let Some(exit_status_file) = exit_status_file else { bail!("--exit-status-file is required") };
-    run(UxRegressionReceiptConfig {
+    let output = run(UxRegressionReceiptConfig {
         input,
         receipt,
         sha: Some(sha),
         exit_status_file: Some(exit_status_file),
-    })
+    })?;
+    writeln!(io::stdout(), "{}", output.cli_stdout())?;
+    Ok(())
 }

@@ -127,7 +127,33 @@ pub struct UxRegressionReceipt {
     platform: Option<String>,
 }
 
-pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
+/// Result of classifying a UX log: the JSON payload, and the path it was written
+/// to when a receipt file was requested.
+///
+/// This type does not print. CLI callers (`cargo xtask ux-regression-receipt`
+/// and the crate's `ux-regression-receipt` bin) own stdout and print
+/// [`Self::cli_stdout`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UxRegressionReceiptOutput {
+    /// Pretty-printed JSON body, matching the bytes written to a receipt file.
+    pub payload: String,
+    /// Path a receipt file was written to. `None` when the caller asked for
+    /// stdout-only emission.
+    pub written_path: Option<PathBuf>,
+}
+
+impl UxRegressionReceiptOutput {
+    /// The two historical CLI lines: `Wrote UX regression receipt: {path}` when
+    /// a file was written, otherwise the JSON payload.
+    pub fn cli_stdout(&self) -> String {
+        match &self.written_path {
+            Some(path) => format!("Wrote UX regression receipt: {}", path.display()),
+            None => self.payload.clone(),
+        }
+    }
+}
+
+pub fn run(config: UxRegressionReceiptConfig) -> Result<UxRegressionReceiptOutput> {
     validate_patterns()?;
     let raw = fs::read_to_string(&config.input)
         .with_context(|| format!("reading {}", config.input.display()))?;
@@ -151,12 +177,10 @@ pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
         }
         fs::write(&path, format!("{payload}\n"))
             .with_context(|| format!("writing {}", path.display()))?;
-        println!("Wrote UX regression receipt: {}", path.display());
-    } else {
-        println!("{payload}");
+        return Ok(UxRegressionReceiptOutput { payload, written_path: Some(path) });
     }
 
-    Ok(())
+    Ok(UxRegressionReceiptOutput { payload, written_path: None })
 }
 
 fn validate_patterns() -> Result<()> {
@@ -794,6 +818,50 @@ mod tests {
         assert!(PANIC_RE.is_ok());
         assert!(FAILURE_BLOCK_RE.is_ok());
         assert!(PASSING_TEST_RE.is_ok());
+    }
+
+    #[test]
+    fn run_returns_the_wrote_line_when_a_receipt_path_is_given() -> Result<()> {
+        let temp = tempfile::TempDir::new()?;
+        let input = temp.path().join("ux.log");
+        let receipt = temp.path().join("nested").join("ux.json");
+        fs::write(&input, "running 1 test\ntest result: ok. 1 passed; 0 failed\n")?;
+        let output = run(UxRegressionReceiptConfig {
+            input,
+            receipt: Some(receipt.clone()),
+            sha: Some("deadbeef".to_string()),
+            exit_status_file: None,
+        })?;
+        ensure!(output.written_path.as_ref() == Some(&receipt));
+        ensure!(
+            output.cli_stdout() == format!("Wrote UX regression receipt: {}", receipt.display()),
+            "cli_stdout was {}",
+            output.cli_stdout()
+        );
+        let on_disk = fs::read_to_string(&receipt)?;
+        ensure!(on_disk == format!("{}\n", output.payload));
+        Ok(())
+    }
+
+    #[test]
+    fn run_returns_the_payload_when_no_receipt_path_is_given() -> Result<()> {
+        let temp = tempfile::TempDir::new()?;
+        let input = temp.path().join("ux.log");
+        fs::write(&input, "running 1 test\ntest result: ok. 1 passed; 0 failed\n")?;
+        let output = run(UxRegressionReceiptConfig {
+            input,
+            receipt: None,
+            sha: Some("deadbeef".to_string()),
+            exit_status_file: None,
+        })?;
+        ensure!(output.written_path.is_none());
+        ensure!(output.cli_stdout() == output.payload);
+        ensure!(
+            output.payload.contains("\"kind\": \"ux_regression_receipt\""),
+            "payload was {}",
+            output.payload
+        );
+        Ok(())
     }
 
     #[test]
