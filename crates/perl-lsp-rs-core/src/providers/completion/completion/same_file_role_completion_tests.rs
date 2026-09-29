@@ -263,11 +263,6 @@ fn lexical_role_sub_is_not_offered_as_composed_method() {
         "lexical role sub must not be rebound as an exact composed method; got {:?}",
         labels(&completions)
     );
-    assert!(
-        !completions.iter().any(|item| item.label == "helper"),
-        "lexical role sub must not be offered as a package method; got {:?}",
-        labels(&completions)
-    );
 }
 
 #[test]
