@@ -70,6 +70,7 @@ pub(crate) fn fixture_cases() -> Vec<FixtureCase> {
         reject("stale_stage_pass.json", ReasonCode::NonTerminalStagePass, stale_stage_pass),
         reject("nonzero_exit_pass.json", ReasonCode::NonzeroExitPass, nonzero_exit_pass),
         reject("unclean_tree_pass.json", ReasonCode::UncleanTreePass, unclean_tree_pass),
+        reject("not_proven_tree_pass.json", ReasonCode::UncleanTreePass, not_proven_tree_pass),
         reject(
             "installed_member_mismatch.json",
             ReasonCode::InstalledMemberMismatch,
@@ -90,6 +91,7 @@ pub(crate) fn fixture_cases() -> Vec<FixtureCase> {
             ReasonCode::FailedCleanupHidden,
             unproven_cleanup_pass,
         ),
+        reject("skipped_cleanup_pass.json", ReasonCode::FailedCleanupHidden, skipped_cleanup_pass),
         reject("mutation_tag.json", ReasonCode::MutationAttempted, mutation_tag),
         reject("privacy_home_path.json", ReasonCode::PrivacyLeak, privacy_home_path),
         reject("privacy_credential.json", ReasonCode::PrivacyLeak, privacy_credential),
@@ -654,6 +656,12 @@ fn unclean_tree_pass() -> Result<RehearsalReceipt, RehearsalError> {
     })
 }
 
+fn not_proven_tree_pass() -> Result<RehearsalReceipt, RehearsalError> {
+    mutate_pass(|receipt| {
+        receipt.repository.tree_status = TreeStatus::NotProven;
+    })
+}
+
 fn installed_member_mismatch() -> Result<RehearsalReceipt, RehearsalError> {
     mutate_pass(|receipt| {
         if let Some(archive) = receipt.stages.iter_mut().find(|stage| stage.id == "archive_members")
@@ -690,6 +698,13 @@ fn failed_cleanup_hidden() -> Result<RehearsalReceipt, RehearsalError> {
 fn unproven_cleanup_pass() -> Result<RehearsalReceipt, RehearsalError> {
     mutate_pass(|receipt| {
         receipt.cleanup.disposition = CleanupDisposition::NotProven;
+        receipt.cleanup.status = Status::Pass;
+    })
+}
+
+fn skipped_cleanup_pass() -> Result<RehearsalReceipt, RehearsalError> {
+    mutate_pass(|receipt| {
+        receipt.cleanup.disposition = CleanupDisposition::Skipped;
         receipt.cleanup.status = Status::Pass;
     })
 }

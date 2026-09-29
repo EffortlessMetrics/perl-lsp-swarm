@@ -2,9 +2,10 @@ use color_eyre::eyre::Result;
 
 use super::fixtures::{Expect, build_case, fixture_cases, run_fixture_suite, sync_fixture_files};
 use super::model::{
-    ReasonCode, Status, canonical_json, compute_receipt_digest, project_human, project_json,
+    FIXTURE_DIR, ReasonCode, Status, canonical_json, compute_receipt_digest, project_human,
+    project_json,
 };
-use super::validate::{validate_receipt, validate_schema_file};
+use super::validate::{validate_bytes, validate_receipt, validate_schema_file};
 use crate::utils::project_root;
 
 #[test]
@@ -110,4 +111,23 @@ fn each_named_control_has_a_discriminating_fixture() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[test]
+fn committed_json_round_trips_through_validate_bytes() -> Result<()> {
+    let root = project_root()?;
+    let pass_bytes = std::fs::read(root.join(FIXTURE_DIR).join("valid_pass.json"))?;
+    let accepted = validate_bytes(&pass_bytes)?;
+    if accepted.status != Status::Pass {
+        color_eyre::eyre::bail!("valid_pass.json did not round-trip as pass");
+    }
+    let reject_bytes = std::fs::read(root.join(FIXTURE_DIR).join("nonzero_exit_pass.json"))?;
+    match validate_bytes(&reject_bytes) {
+        Err(error) if error.code == ReasonCode::NonzeroExitPass => Ok(()),
+        Ok(_) => color_eyre::eyre::bail!("nonzero_exit_pass.json validated through JSON bytes"),
+        Err(error) => color_eyre::eyre::bail!(
+            "nonzero_exit_pass.json expected nonzero_exit_pass, got {}",
+            error.code.as_str()
+        ),
+    }
 }
