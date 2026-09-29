@@ -25,6 +25,47 @@ export interface DocumentCommandDependencies {
 let incPathsChannel: vscode.OutputChannel | undefined;
 let parserAstChannel: vscode.OutputChannel | undefined;
 
+/** Wall-clock budget for `perl -c`, and the single source for the timeout message. */
+const CHECK_SYNTAX_TIMEOUT_MS = 10_000;
+
+/**
+ * Node attaches spawn metadata (`code`, `killed`) to the `execFile` error, but
+ * the injectable seam only promises a bare `Error`. Read the extra fields
+ * structurally so classification never depends on the concrete error class.
+ */
+type ExecFileFailure = Error & {
+  code?: string | number | null;
+  killed?: boolean;
+};
+
+/**
+ * Separate "perl never ran" from "perl ran and rejected the file" (#16574).
+ *
+ * On ENOENT the child never spawns, so stdout and stderr are both empty and the
+ * previous code rendered that as a bare `Syntax error: ` — a false verdict with
+ * no diagnosis for a file that was never checked.
+ */
+function classifyCheckSyntaxFailure(error: Error, output: string): string {
+  const failure: ExecFileFailure = error;
+  const code = typeof failure.code === 'string' ? failure.code : undefined;
+
+  if (code === 'ENOENT') {
+    return (
+      'Perl was not found on PATH. Install Perl (strawberryperl.com, Homebrew, or your ' +
+      'package manager) — the language server works without it, but syntax checking does not.'
+    );
+  }
+
+  // Node reports a timeout as a kill (`killed: true`); some platforms surface ETIMEDOUT.
+  if (code === 'ETIMEDOUT' || failure.killed === true) {
+    return `Perl syntax check exceeded the ${CHECK_SYNTAX_TIMEOUT_MS / 1000}s timeout.`;
+  }
+
+  const detail = output.trim();
+  // Fall back to the spawn message so an unusual failure still says something.
+  return detail.length > 0 ? `Syntax error: ${detail}` : `Syntax error: ${failure.message}`;
+}
+
 /** Check the active Perl document with the local Perl interpreter. */
 export async function runCheckSyntaxCommand(
   dependencies: DocumentCommandDependencies,
@@ -57,18 +98,19 @@ export async function runCheckSyntaxCommand(
 
   const run = dependencies.execFile ?? execFile;
   await new Promise<void>((resolve) => {
-    run('perl', perlArgs, { timeout: 10_000 }, (error, stdout, stderr) => {
+    run('perl', perlArgs, { timeout: CHECK_SYNTAX_TIMEOUT_MS }, (error, stdout, stderr) => {
       const output = (stdout + stderr).trim();
       if (error) {
-        vscode.window
-          .showErrorMessage(`Syntax error: ${output}`, 'Show Output')
-          .then((selection) => {
-            if (selection === 'Show Output') {
-              dependencies.outputChannel.appendLine(`[check-syntax] ${output}`);
-              dependencies.outputChannel.show();
-            }
-            resolve();
-          });
+        const failure = classifyCheckSyntaxFailure(error, output);
+        // Never write a bare `[check-syntax] ` line when the child produced no text (#16574).
+        const channelDetail = output.length > 0 ? output : failure;
+        vscode.window.showErrorMessage(failure, 'Show Output').then((selection) => {
+          if (selection === 'Show Output') {
+            dependencies.outputChannel.appendLine(`[check-syntax] ${channelDetail}`);
+            dependencies.outputChannel.show();
+          }
+          resolve();
+        });
         return;
       }
 
