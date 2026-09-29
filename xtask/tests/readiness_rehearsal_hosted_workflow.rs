@@ -113,15 +113,15 @@ fn yaml_invokes_repository_command_and_does_not_reimplement_verdicts() -> Result
     let bodies = all_run_bodies(&workflow)?;
 
     ensure!(
-        bodies.contains("cargo xtask readiness-rehearsal hosted-plan"),
+        bodies.contains("cargo run --locked -p xtask -- readiness-rehearsal hosted-plan"),
         "plan job must invoke hosted-plan"
     );
     ensure!(
-        bodies.contains("cargo xtask readiness-rehearsal hosted-row"),
+        bodies.contains("cargo run --locked -p xtask -- readiness-rehearsal hosted-row"),
         "row job must invoke hosted-row"
     );
     ensure!(
-        bodies.contains("cargo xtask readiness-rehearsal hosted-fanin"),
+        bodies.contains("cargo run --locked -p xtask -- readiness-rehearsal hosted-fanin"),
         "fan-in job must invoke hosted-fanin"
     );
     for forbidden in [

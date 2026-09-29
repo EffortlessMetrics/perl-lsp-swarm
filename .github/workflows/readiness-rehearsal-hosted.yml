@@ -61,7 +61,7 @@ jobs:
             echo "checkout $HEAD is not the dispatched commit $GITHUB_SHA" >&2
             exit 1
           fi
-          cargo xtask readiness-rehearsal hosted-plan \
+          cargo run --locked -p xtask -- readiness-rehearsal hosted-plan \
             --out target/readiness/hosted/plan.json \
             --summary target/readiness/hosted/plan.md \
             --github-output "$GITHUB_OUTPUT"
@@ -116,7 +116,7 @@ jobs:
           if [ -n "${REHEARSAL_RECEIPT_PATH}" ]; then
             extra+=(--rehearsal-receipt "${REHEARSAL_RECEIPT_PATH}")
           fi
-          cargo xtask readiness-rehearsal hosted-row \
+          cargo run --locked -p xtask -- readiness-rehearsal hosted-row \
             --head "$GITHUB_SHA" \
             --run-id "$GITHUB_RUN_ID" \
             --attempt "$GITHUB_RUN_ATTEMPT" \
@@ -177,7 +177,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo xtask readiness-rehearsal hosted-fanin \
+          cargo run --locked -p xtask -- readiness-rehearsal hosted-fanin \
             --plan target/readiness/hosted/plan-artifact/plan.json \
             --rows-dir target/readiness/hosted/inbox \
             --out target/readiness/hosted/fanin.json \
