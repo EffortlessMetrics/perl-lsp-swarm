@@ -728,7 +728,9 @@ fn test_execute_command_workspace_trust_report() -> Result<(), Box<dyn std::erro
     );
     let resolution_status =
         result.pointer("/setup_hints/perl_binary/resolution_status").and_then(Value::as_str);
-    if resolution_status != Some("uses_toolchain_resolution_when_needed_not_probed_by_report") {
+    if resolution_status
+        != Some("module_probe_uses_toolchain_resolution_when_needed_not_probed_by_report")
+    {
         return Err(format!("unexpected Perl resolution status: {resolution_status:?}").into());
     }
     let perl_hint = result
@@ -737,7 +739,7 @@ fn test_execute_command_workspace_trust_report() -> Result<(), Box<dyn std::erro
         .and_then(|hints| {
             hints.iter().find(|hint| {
                 hint.get("code").and_then(Value::as_str)
-                    == Some("perl_path_uses_toolchain_resolution")
+                    == Some("perl_module_probe_uses_toolchain_resolution")
             })
         })
         .ok_or("missing Perl resolution hint")?;
@@ -749,6 +751,17 @@ fn test_execute_command_workspace_trust_report() -> Result<(), Box<dyn std::erro
         if !(perlbrew < plenv && plenv < path) {
             return Err(format!("{field} must follow perlbrew, plenv, PATH order: {advice}").into());
         }
+    }
+    let action = perl_hint.get("action").and_then(Value::as_str).ok_or("missing Perl action")?;
+    if !action.contains("prefers Strawberry or ActiveState over MSYS") {
+        return Err("Windows startup selection difference missing from Perl advice".into());
+    }
+    if !perl_hint
+        .get("message")
+        .and_then(Value::as_str)
+        .is_some_and(|message| message.contains("This report does not probe Perl"))
+    {
+        return Err("Perl advice implies the trust report resolved an interpreter".into());
     }
     assert!(
         result

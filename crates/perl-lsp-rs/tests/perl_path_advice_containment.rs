@@ -105,11 +105,13 @@ const TROUBLESHOOTING_REFUSAL: &str = concat!(
     "If you manage the server binary yourself, set the VS Code extension setting\n",
     "`perl-lsp.serverPath` to the `perllsp` binary. The language server accepts no\n",
     "interpreter-path setting: `perl.workspace.perlPath` (and the project-config\n",
-    "equivalent) is refused on every channel and silently ignored, so the only way to\n",
-    "choose which Perl the server probes with is resolution order. Change the active\n",
+    "equivalent) is refused on every channel and silently ignored. To select Perl\n",
+    "for the optional startup `@INC` module probe, change the active\n",
     "perlbrew or plenv version when one is present; when neither is active, put the\n",
     "intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl`\n",
-    "elsewhere). The debugger is a separate channel: it takes a per-launch `perlPath` in\n",
+    "elsewhere). The separate initialization availability check prefers Strawberry\n",
+    "or ActiveState over MSYS on Windows, regardless of their `PATH` order. The\n",
+    "debugger is a separate channel: it takes a per-launch `perlPath` in\n",
     "`launch.json`, and that one is honored."
 );
 const TROUBLESHOOTING_PATH: &str = "../../docs/how-to/PERL_SETUP_TROUBLESHOOTING.md";
@@ -332,7 +334,7 @@ fn refused_setting_explanation_does_not_exempt_bad_advice_on_the_same_page()
         return Err("the guide's refusal paragraph must be allowed".into());
     }
     let adjacent_rewrite = TROUBLESHOOTING_REFUSAL.replace(
-        "equivalent) is refused on every channel and silently ignored, so the only way to",
+        "equivalent) is refused on every channel and silently ignored. To select Perl",
         "equivalent) in your editor or `.perl-lsp.toml` to choose the Perl to use.",
     );
     if unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), &adjacent_rewrite).is_empty() {

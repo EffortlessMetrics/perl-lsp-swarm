@@ -287,11 +287,13 @@ the workspace root. Absolute entries are honored as provided only when they
 still stay inside the workspace boundary. These paths are searched by
 `perl-lsp` and are not appended to Perl's runtime `@INC`.
 
-The server resolves `perl` in a fixed order: an active perlbrew interpreter,
-then an active plenv interpreter, then `perl` on `PATH`. perlbrew and plenv
-therefore take precedence over `PATH` — change the active version there, or
-reorder `PATH` when neither is active. Use `useSystemInc` to opt in to that
-system `@INC` lookup.
+The optional startup `@INC` module probe resolves `perl` in a fixed order: an
+active perlbrew interpreter, then an active plenv interpreter, then `perl` on
+`PATH`. perlbrew and plenv therefore take precedence over `PATH` — change the
+active version there, or reorder `PATH` when neither is active. Use
+`useSystemInc` to opt in to that system `@INC` lookup. The separate interpreter
+availability check during initialization uses OS-aware discovery; on Windows
+it prefers Strawberry or ActiveState over MSYS even if MSYS is first on `PATH`.
 
 #### `perl.workspace.perlPath` — refused, not configurable
 
@@ -309,10 +311,11 @@ editor settings would let a hostile cloned repository choose which program the
 server executes and with which arguments, so the keys are refused on every
 client-settings channel and `.perl-lsp.toml` has no field for them at all.
 
-To make the server probe with a specific Perl, control resolution order instead:
+To make the startup `@INC` module probe use a specific Perl, control resolution order instead:
 change the active perlbrew or plenv version when one is present. When neither is
 active, put the intended `perl` first on `PATH` (`where perl` on Windows,
-`which -a perl` elsewhere).
+`which -a perl` elsewhere). The read-only workspace trust report does not
+resolve or verify the selected interpreter.
 
 The debugger is a separate channel: `launch.json` accepts a per-launch
 `perlPath`, and that one is honored.
