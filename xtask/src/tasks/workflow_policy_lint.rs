@@ -931,8 +931,38 @@ fn token_references(script: &str) -> Vec<(usize, String)> {
     for (line_index, line) in script.lines().enumerate() {
         let bytes = line.as_bytes();
         let mut index = 0;
+        // Shell lexical state (#16263 review): a single-quoted region or
+        // an unquoted comment tail carries literal text, so a `$NAME`
+        // there is no expansion and must not read as a token reference.
+        // Double quotes still expand, so they stay scanned.
+        let mut in_single_quote = false;
         while index < bytes.len() {
-            if bytes[index] != b'$' || index + 1 >= bytes.len() {
+            let byte = bytes[index];
+            if in_single_quote {
+                if byte == b'\'' {
+                    in_single_quote = false;
+                }
+                index += 1;
+                continue;
+            }
+            match byte {
+                b'\'' => {
+                    in_single_quote = true;
+                    index += 1;
+                    continue;
+                }
+                b'\\' => {
+                    index += 2;
+                    continue;
+                }
+                b'#' if index == 0
+                    || matches!(bytes[index - 1], b' ' | b'\t' | b';' | b'&' | b'|') =>
+                {
+                    break;
+                }
+                _ => {}
+            }
+            if byte != b'$' || index + 1 >= bytes.len() {
                 index += 1;
                 continue;
             }
@@ -1220,6 +1250,13 @@ fn line_method(line: &str) -> Option<String> {
             }
             continue;
         }
+        // Equals-spelled options carry the method in the same token
+        // (#16263 review): `--method=DELETE`, `--request=POST`, `-XGET`.
+        if let Some(name) =
+            token.strip_prefix("--method=").or_else(|| token.strip_prefix("--request="))
+        {
+            return Some(name.trim_matches('"').to_string());
+        }
         if let Some(name) = token.strip_prefix("-X").filter(|name| !name.is_empty()) {
             return Some(name.trim_matches('"').to_string());
         }
@@ -1254,8 +1291,41 @@ fn rest_operations(line: &str) -> Vec<String> {
     // by the branch above.
     if let Some(position) = line.find("gh api") {
         let tail = line[position + "gh api".len()..].trim_start();
-        for token in tail.split_whitespace() {
+        let mut tokens = tail.split_whitespace().peekable();
+        while let Some(token) = tokens.next() {
             if token.starts_with('-') {
+                // Value-taking options must skip their value too, or the
+                // value (`-X GET`, `--method DELETE`, a field) is mistaken
+                // for the endpoint and the real path is never checked
+                // (#16263 review).
+                if matches!(
+                    token,
+                    "-X" | "--method"
+                        | "-H"
+                        | "--header"
+                        | "-F"
+                        | "--field"
+                        | "-f"
+                        | "--raw-field"
+                        | "-q"
+                        | "--jq"
+                        | "-t"
+                        | "--template"
+                        | "--input"
+                ) {
+                    // A quoted value may itself contain whitespace
+                    // (`-H "Accept: x"`), so consume until the closing
+                    // quote before resuming.
+                    if let Some(value) = tokens.next() {
+                        if value.starts_with('"') && !(value.len() >= 2 && value.ends_with('"')) {
+                            for extra in tokens.by_ref() {
+                                if extra.ends_with('"') {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
                 continue;
             }
             let path = token.trim_matches(|c| c == '"' || c == '\'');
@@ -1286,9 +1356,19 @@ enum BearerAuth {
 /// `Authorization: Bearer $NAME` and `Authorization: token $NAME` spellings.
 fn bearer_variable(line: &str) -> Option<String> {
     let lowered = line.to_ascii_lowercase();
-    let position = lowered.find("bearer ").or_else(|| lowered.find("token "))?;
-    let tail = line[position + "bearer ".len()..].trim_start();
-    let tail = tail.strip_prefix("${").unwrap_or(tail);
+    // The slice offset must come from the marker that matched: "token " is
+    // one character shorter than "bearer ", and hard-coding the longer
+    // length silently dropped the first character of the variable name
+    // (#16263 review).
+    let (position, marker) = lowered
+        .find("bearer ")
+        .map(|position| (position, "bearer "))
+        .or_else(|| lowered.find("token ").map(|position| (position, "token ")))?;
+    let tail = line[position + marker.len()..].trim_start();
+    // Both `$NAME` and `${NAME}` spellings must resolve; a bare `$` left
+    // in place makes `leading_identifier` return an empty name and the
+    // reference vanish (#16263 review).
+    let tail = tail.strip_prefix("${").or_else(|| tail.strip_prefix('$')).unwrap_or(tail);
     let name = leading_identifier(tail);
     if name.is_empty() { None } else { Some(name.to_string()) }
 }
@@ -1352,6 +1432,30 @@ fn collect_env_values(
 /// workflow token are judged: a `permissions:` block governs `GITHUB_TOKEN`
 /// alone, so a call carrying another secret is governed by scopes a static
 /// lint cannot see and is left alone.
+/// Physical script lines joined through trailing-backslash continuations,
+/// so one shell command is judged as one line (#16263 review): the Pages
+/// probe in docs-deploy.yml places its bearer header and its `/pages` URL on
+/// separate continuation lines, and per-physical-line parsing associates
+/// neither with the other.
+fn logical_shell_lines(script: &str) -> Vec<String> {
+    let mut logical: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for line in script.lines() {
+        let trimmed_end = line.trim_end();
+        if trimmed_end.ends_with('\\') {
+            current.push_str(trimmed_end[..trimmed_end.len() - 1].trim_end());
+            current.push(' ');
+            continue;
+        }
+        current.push_str(line);
+        logical.push(std::mem::take(&mut current));
+    }
+    if !current.is_empty() {
+        logical.push(current);
+    }
+    logical
+}
+
 fn check_rest_scopes(
     script: &str,
     grants: &PermissionGrants,
@@ -1360,12 +1464,12 @@ fn check_rest_scopes(
     workflow_name: &str,
     issues: &mut Vec<LintIssue>,
 ) {
-    for line in script.lines() {
-        if line_bearer_auth(line, env_values) != BearerAuth::WorkflowToken {
+    for line in logical_shell_lines(script) {
+        if line_bearer_auth(&line, env_values) != BearerAuth::WorkflowToken {
             continue;
         }
-        let method = line_method(line);
-        for path in rest_operations(line) {
+        let method = line_method(&line);
+        for path in rest_operations(&line) {
             let Some((scope, access)) = required_rest_scope(&path, method.as_deref()) else {
                 continue;
             };
@@ -1992,6 +2096,13 @@ fn normalize_self_hosted_labels(labels: &[Value]) -> Option<String> {
     }
     if label_strs.contains(&"cx43") {
         return Some("self_hosted_cx43".to_string());
+    }
+    // em-ci capability pools (#15957): the lane names a capacity class, not a
+    // physical host, so the declaration token is the pool itself. Physical
+    // labels keep matching their own tokens first, preserving legacy drift
+    // detection for workflows that still name a host.
+    if label_strs.contains(&"self-hosted") && label_strs.contains(&"rust-standard") {
+        return Some("self_hosted_rust_standard".to_string());
     }
     if label_strs.contains(&"self-hosted") && label_strs.contains(&"droid-review") {
         return Some("self_hosted_droid_review".to_string());
@@ -3492,6 +3603,16 @@ jobs:
     }
 
     #[test]
+    fn normalize_rust_standard_capability_pool() -> Result<()> {
+        let yaml = r#"
+group: em-ci-small
+labels: [self-hosted, linux, x64, em-ci, rust-standard, trusted-pr]
+"#;
+        let v: Value = serde_yaml_ng::from_str(yaml)?;
+        assert_eq!(normalize_runs_on(&v), Some("self_hosted_rust_standard".to_string()));
+        Ok(())
+    }
+
     fn line_method_spelled_forms_are_recognized() {
         assert_eq!(
             line_method(r#"curl -X POST -H "x" https://api.github.com/x"#).as_deref(),
@@ -3500,6 +3621,89 @@ jobs:
         assert_eq!(line_method("gh api --method DELETE repos/o/r/x").as_deref(), Some("DELETE"));
         assert_eq!(line_method("curl -d '{}' https://api.github.com/x").as_deref(), Some("POST"));
         assert_eq!(line_method("curl -sS https://api.github.com/x"), None);
+        // Equals-spelled methods (#16263 review).
+        assert_eq!(line_method("gh api --method=DELETE repos/o/r/x").as_deref(), Some("DELETE"));
+        assert_eq!(
+            line_method("curl --request=POST https://api.github.com/x").as_deref(),
+            Some("POST")
+        );
+        assert_eq!(line_method("curl -XGET https://api.github.com/x").as_deref(), Some("GET"));
+    }
+
+    #[test]
+    fn bearer_variable_parses_both_markers_and_dollar_spellings() {
+        // #16263 review: the "token " marker is one character shorter than
+        // "bearer "; hard-coding the longer offset dropped the first
+        // character of the name.
+        assert_eq!(bearer_variable("Authorization: token $GH_TOKEN").as_deref(), Some("GH_TOKEN"));
+        assert_eq!(
+            bearer_variable("Authorization: Bearer $GITHUB_TOKEN").as_deref(),
+            Some("GITHUB_TOKEN")
+        );
+        assert_eq!(
+            bearer_variable("Authorization: Bearer ${GH_TOKEN}").as_deref(),
+            Some("GH_TOKEN")
+        );
+        assert_eq!(
+            bearer_variable("Authorization: token ${GH_TOKEN}").as_deref(),
+            Some("GH_TOKEN")
+        );
+        assert_eq!(bearer_variable("Authorization: Bearer ${{ secrets.X }}"), None);
+    }
+
+    #[test]
+    fn rest_operations_skips_value_taking_gh_api_options() {
+        // #16263 review: `-X GET` / `--method DELETE` values were mistaken
+        // for the endpoint, so the real path was never scope-checked.
+        assert_eq!(
+            rest_operations(r#"gh api --method DELETE repos/o/r/issues/9"#),
+            vec!["repos/o/r/issues/9".to_string()]
+        );
+        assert_eq!(
+            rest_operations(r#"gh api -X GET repos/o/r/pulls"#),
+            vec!["repos/o/r/pulls".to_string()]
+        );
+        assert_eq!(
+            rest_operations(r#"gh api -H "Accept: x" -f title=t repos/o/r/issues"#),
+            vec!["repos/o/r/issues".to_string()]
+        );
+    }
+
+    #[test]
+    fn token_references_skip_single_quotes_comments_and_escapes() {
+        // #16263 review: literal text does not expand, so it is not a
+        // reference.
+        assert!(token_references("echo 'configure $GH_TOKEN before use'").is_empty());
+        assert!(token_references("# check $GH_TOKEN docs").is_empty());
+        assert!(token_references("echo done # uses $GH_TOKEN").is_empty());
+        assert!(token_references(r"echo \$GH_TOKEN").is_empty());
+        // Double-quoted and bare expansions still count.
+        assert_eq!(
+            token_references(r#"echo "send $GH_TOKEN""#),
+            vec![(0usize, "GH_TOKEN".to_string())]
+        );
+        assert_eq!(token_references("echo $GH_TOKEN"), vec![(0usize, "GH_TOKEN".to_string())]);
+    }
+
+    #[test]
+    fn rest_scope_check_joins_backslash_continuations() {
+        // #16263 review: one curl command split across continuation lines
+        // must be judged as one logical line. docs-deploy.yml's Pages probe
+        // uses exactly this shape.
+        let script = concat!(
+            "curl -sS -X POST \\\n",
+            "  -H \"Authorization: token $GH_TOKEN\" \\\n",
+            "  https://api.github.com/repos/o/r/pages\n",
+        );
+        let mut issues = Vec::new();
+        let grants = PermissionGrants::Scoped(std::collections::BTreeMap::new());
+        let mut env_values = std::collections::HashMap::new();
+        env_values.insert("GH_TOKEN".to_string(), r#"${{ github.token }}"#.to_string());
+        check_rest_scopes(script, &grants, &env_values, "probe", "probe.yml", &mut issues);
+        assert!(
+            issues.iter().any(|issue| issue.code == "REST_SCOPE_GAP"),
+            "the joined command must reach the scope check: {issues:?}"
+        );
     }
 
     /// The claim #5989 actually makes, asserted against the shipped workflow
