@@ -132,13 +132,21 @@ aqua_require_version() {
     local aqua_bin="$1"
     local expected="$2"
     local output
+    local status
 
     if [[ ! -x "${aqua_bin}" ]]; then
         echo "portable toolchain: NOT PROVEN — installed aqua is not executable: ${aqua_bin}" >&2
         return 2
     fi
-    output="$("${aqua_bin}" version 2>&1 || true)"
+    set +e
+    output="$("${aqua_bin}" version 2>&1)"
+    status=$?
+    set -e
     printf '%s\n' "${output}"
+    if [[ "${status}" -ne 0 ]]; then
+        echo "portable toolchain: NOT PROVEN — aqua version failed (exit ${status}): ${output}" >&2
+        return 2
+    fi
     if [[ "${output}" != *"${expected#v}"* ]]; then
         echo "portable toolchain: NOT PROVEN — installed aqua version did not contain ${expected}: ${output}" >&2
         return 2

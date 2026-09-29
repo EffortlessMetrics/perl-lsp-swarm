@@ -177,6 +177,21 @@ run_capture aqua_require_version "${WRONG_DIR}/aqua" "v2.57.0"
 assert_status "wrong installed version is NOT PROVEN" 2
 assert_contains "wrong version names NOT PROVEN" "NOT PROVEN"
 
+cat >"${FAKE_AQUA}" <<'EOF'
+#!/usr/bin/env bash
+printf 'aqua version 2.57.0\n'
+exit 1
+EOF
+chmod +x "${FAKE_AQUA}"
+FAILING_ARCHIVE="${TMP}/failing-version.tar.gz"
+tar -C "${TMP}/payload" -czf "${FAILING_ARCHIVE}" aqua
+FAILING_DIR="${TMP}/failing-version"
+run_capture aqua_extract_and_install "${FAILING_ARCHIVE}" "${FAILING_DIR}"
+run_capture aqua_require_version "${FAILING_DIR}/aqua" "v2.57.0"
+assert_status "version command that exits non-zero is NOT PROVEN" 2
+assert_contains "failed version check names NOT PROVEN" "NOT PROVEN"
+assert_contains "failed version check names the exit status" "exit 1"
+
 CURL_LOG="${TMP}/curl-log"
 CURL_BIN="${TMP}/bin"
 mkdir -p "${CURL_BIN}"
@@ -267,6 +282,7 @@ file_lacks "CI contract job does not go-install Aqua" "${CI_WORKFLOW}" "go insta
 file_lacks "portable tools job does not go-install Aqua" "${PORTABLE_WORKFLOW}" "go install github.com/aquaproj/aqua"
 file_contains "CI contract job uses the shared installer" "${CI_WORKFLOW}" "scripts/tools/install-aqua.sh"
 file_contains "portable tools job uses the shared installer" "${PORTABLE_WORKFLOW}" "scripts/tools/install-aqua.sh"
+file_contains "portable tools path filter watches ci.yml" "${PORTABLE_WORKFLOW}" ".github/workflows/ci.yml"
 file_contains "doctor points at the shared installer" "${DOCTOR}" "scripts/tools/install-aqua.sh"
 file_lacks "doctor no longer prescribes go install" "${DOCTOR}" "go install github.com/aquaproj/aqua"
 file_contains "docs point at the shared installer" "${DOCS}" "scripts/tools/install-aqua.sh"

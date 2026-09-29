@@ -11,6 +11,7 @@ on:
       - 'scripts/tests/fixtures/aqua-bootstrap/**'
       - 'docs/how-to/PORTABLE_CONTRACT_TOOLS.md'
       - '.github/workflows/portable-contract-tools.yml'
+      - '.github/workflows/ci.yml'
   workflow_dispatch: {}
 
 concurrency:
