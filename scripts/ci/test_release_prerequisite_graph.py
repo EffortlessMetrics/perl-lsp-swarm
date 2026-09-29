@@ -162,5 +162,80 @@ class PrivateGraphTests(unittest.TestCase):
             graph.validate_dispatch(orchestration.replace("      - name: Dispatch release transaction", "      - name: Dispatch release transaction\n        shell: bash -c true {0}", 1))
 
 
+
+    def test_upstream_job_defaults_and_custom_step_shells_refuse(self):
+        source = graph.WORKFLOW.read_text(encoding="utf-8")
+        for name in ("candidate", "build", "release-metadata"):
+            header = "  " + name + ":"
+            with self.subTest(job=name, seam="defaults"):
+                with self.assertRaises(graph.GraphError):
+                    graph.validate_graph(source.replace(header, header + "\n    defaults:\n      run:\n        shell: bash -c true {0}", 1))
+        with self.assertRaises(graph.GraphError):
+            graph.validate_graph(source.replace("        shell: bash", "        shell: bash -c true {0}", 1))
+        with self.assertRaises(graph.GraphError):
+            graph.validate_graph(source.replace("        shell: bash", '        shell: bash\n        "shell": bash -c true {0}', 1))
+        graph.validate_graph(source)
+
+
+
+    def test_quoted_permission_authority_decoys_refuse(self):
+        source = graph.WORKFLOW.read_text(encoding="utf-8")
+        start = source.index("  candidate:")
+        end = source.index("  publisher-eligibility:", start)
+        block = source[start:end]
+        for authority in ('"contents": write', 'contents: "write"', '"id-token": write', '"attestations": write'):
+            with self.subTest(authority=authority):
+                changed = block.replace("      contents: read", "      " + authority, 1)
+                with self.assertRaises(graph.GraphError):
+                    graph.validate_graph(source[:start] + changed + source[end:])
+        with self.assertRaises(graph.GraphError):
+            graph.validate_graph(source.replace("  contents: read", '  contents: "write"', 1))
+        with self.assertRaises(graph.GraphError):
+            graph.validate_graph(source.replace("  candidate:", '  candidate:\n    "environment": release', 1))
+
+
+
+    def test_fixed_upstream_productions_and_job_membership_refuse(self):
+        source = graph.WORKFLOW.read_text(encoding="utf-8")
+        for command in ('gh release create v0.0.0', 'gh api --method POST /repos/example/releases'):
+            with self.subTest(command=command):
+                with self.assertRaises(graph.GraphError):
+                    graph.validate_graph(source + "\n  extra-public-route:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Public mutation\n        run: |\n          " + command + "\n")
+        for name in ("release-metadata", "build", "candidate"):
+            header = "  " + name + ":"
+            for injection in ('    env:\n      TOKEN: ${{ secrets.PUBLIC_TOKEN }}', '    secrets: inherit'):
+                with self.subTest(job=name, injection=injection):
+                    with self.assertRaises(graph.GraphError):
+                        graph.validate_graph(source.replace(header, header + "\n" + injection, 1))
+        start = source.index("  candidate:")
+        end = source.index("  publisher-eligibility:", start)
+        block = source[start:end]
+        for needle, changed in [
+            ("uses: actions/checkout@", "uses: arbitrary/public-action@"),
+            ("        run: |", "        run: |\n          gh release create v0.0.0"),
+        ]:
+            self.assertIn(needle, block)
+            with self.assertRaises(graph.GraphError):
+                graph.validate_graph(source[:start] + block.replace(needle, changed, 1) + source[end:])
+        # YAML-only comments are safe trivia; opaque scalar comments/blanks are data.
+        graph.validate_graph(source.replace("  build:", "  build:\n    # reviewed upstream job", 1))
+        graph.validate_graph(source.replace("    needs: [build, release-metadata]", "    # dependency annotation\n    needs: [build, release-metadata]", 1))
+        for scalar in ("run: |", "run: >-"):
+            with self.subTest(scalar=scalar):
+                with self.assertRaises(graph.GraphError):
+                    graph.validate_graph(source.replace("        " + scalar, "        " + scalar + "\n          # opaque scalar data", 1))
+        graph.validate_graph(source)
+
+
+
+    def test_custom_shell_as_public_script_step_header_refuses(self):
+        source = graph.WORKFLOW.read_text(encoding="utf-8")
+        header = "      - name: Atomically create exact release tag"
+        self.assertIn(header, source)
+        with self.assertRaises(graph.GraphError):
+            graph.validate_graph(source.replace(header, "      - shell: bash -c true {0}", 1))
+        graph.validate_graph(source)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -7,6 +7,7 @@ YAML or shell interpreter, nor hosted execution/authentication evidence.
 """
 from pathlib import Path
 import re
+import hashlib
 import shlex
 import sys
 
@@ -397,9 +398,71 @@ def _default_shell_boundary(workflow):
         raise GraphError("unsupported workflow defaults")
 
 
+
+def _job_shell_boundary(job):
+    # Defaults are unsupported for every job, including future publishers.
+    # Shells affect command execution, not GitHub's job-condition evaluation.
+    if "defaults" in _plain_fields(job, 4):
+        raise GraphError("unsupported job defaults")
+    steps = _field(job, "steps", 4, mapping=True).splitlines()
+    starts = [i for i, line in enumerate(steps) if line.startswith("      - ")]
+    for number, start in enumerate(starts):
+        if not re.fullmatch(r"      - name: [^\s].*", _uncomment(steps[start])):
+            raise GraphError("unsupported step list header; plain named steps required")
+        end = starts[number + 1] if number + 1 < len(starts) else len(steps)
+        fields = _plain_fields("\n".join(steps[start + 1:end]), 8)
+        if "shell" in fields and fields["shell"] != "bash":
+            raise GraphError("unsupported custom step shell")
+
+
+
+def _read_only_permissions(block, key_indent):
+    permissions = _field(block, "permissions", key_indent, mapping=True)
+    fields = _plain_fields(permissions, key_indent + 2)
+    if not fields or any(key not in ("actions", "contents") or value != "read"
+                         for key, value in fields.items()):
+        raise GraphError("unsupported private permission authority")
+    # Nested values or different indentation cannot hide additional authority.
+    if any(_uncomment(line).strip() and len(line) - len(line.lstrip()) != key_indent + 2
+           for line in permissions.splitlines()):
+        raise GraphError("unsupported nested permission style")
+
+
+
+def _upstream_production(block):
+    """Ignore only YAML trivia outside opaque literal/folded scalar bodies."""
+    result, scalar_indent = [], None
+    for line in block.splitlines():
+        indent = len(line) - len(line.lstrip())
+        if scalar_indent is not None:
+            if not line.strip() or indent > scalar_indent:
+                result.append(line)
+                continue
+            scalar_indent = None
+        live = _uncomment(line)
+        if not live.strip():
+            continue
+        result.append(live)
+        if re.search(r":\s*[|>][-+0-9]*\s*$", live):
+            scalar_indent = indent
+    return "\n".join(result).encode("utf-8")
+
+
+# Fixed reviewed b5c6 productions; never computed from validator input.
+SUPPORTED_JOBS = ('release-metadata', 'build', 'candidate', 'publisher-eligibility', 'publish-release', 'dispatch-publishers')
+UPSTREAM_PRODUCTION_SHA256 = {'release-metadata': '526a1b8b7382517b152724c2b3aa893df0a67d883c02ce096f5941bf5e98c442', 'build': '83b7fa4bd16cde8f0f808d701aed701fe021f81b47eaed8185c0f32271f2473c', 'candidate': '62254ea65fd1558c143bb4df534a9846f775ab6e8ec09d1e366f86ad43358731'}
+
 def validate_graph(workflow):
     _default_shell_boundary(workflow)
+    _read_only_permissions(workflow, 0)
     _closed_production(_field(workflow, "env", 0, mapping=True), RELEASE_ENV_PRODUCTION, "global environment")
+    actual_jobs = tuple(re.findall(r"(?m)^  ([A-Za-z0-9_-]+):$", _jobs_text(workflow)))
+    _equals(set(actual_jobs), set(SUPPORTED_JOBS), "declared job membership")
+    for name, digest in UPSTREAM_PRODUCTION_SHA256.items():
+        actual = hashlib.sha256(_upstream_production(_job_block(workflow, name))).hexdigest()
+        _equals(actual, digest, name + " reviewed upstream production")
+    for match in re.finditer(r"(?m)^  ([A-Za-z0-9_-]+):$", _jobs_text(workflow)):
+        _job_shell_boundary(_job_block(workflow, match.group(1)))
     private_input = _input(workflow, "no_publish")
     _equals(_field(private_input, "type", 8), "boolean", "private input type")
     _equals(_field(private_input, "default", 8), "true", "private input default")
@@ -414,6 +477,11 @@ def validate_graph(workflow):
     # Retain the conservative pre-eligibility mutation/permission fence.
     for name in ("release-metadata", "build", "candidate", "publisher-eligibility"):
         job = _job_block(workflow, name)
+        fields = _plain_fields(job, 4)
+        if "environment" in fields:
+            raise GraphError("unsupported private job environment")
+        if "permissions" in fields:
+            _read_only_permissions(job, 4)
         live = "\n".join(_uncomment(line) for line in job.splitlines() if not line.lstrip().startswith("#"))
         if any(token in live for token in ("id-token: write", "attestations: write", "contents: write", "artifact-metadata: write", "environment:", "actions/attest@", "gh api -X POST", "git push")):
             raise GraphError("pre-eligibility public authority")

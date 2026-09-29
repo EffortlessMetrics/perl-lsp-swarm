@@ -433,3 +433,34 @@ extra steps, split-format output writes and shell-substitution decoys reject.
 This intentionally restricted source style is not a general YAML/shell parser,
 proof of arbitrary equivalent syntax, hosted execution, or authenticated authority.
 The live producer qualification remains `NOT_PROVEN`.
+
+
+Job-level `defaults` are unsupported throughout the selected release workflow,
+including all private predecessors and public jobs. Actual step mappings admit
+only the existing explicit `shell: bash` spelling; custom executable templates
+and duplicate/quoted shell keys reject. This shell boundary constrains command
+execution style; it does not imply that shells control GitHub job conditions or
+that all upstream shell programs have been semantically verified.
+
+
+Root and explicit private predecessor permission maps admit only plain unique
+`actions`/`contents` keys with unquoted `read` values. Missing job permissions
+inherit the checked read-only root map. Quoted keys/values, unknown permissions,
+nested permission syntax and private job environments reject. Remaining mutation
+marker scans are conservative source ratchets, not complete shell/action semantic
+proof or verification of every possible public-authority route.
+
+
+The release workflow admits exactly its six reviewed jobs. The upstream
+`release-metadata`, `build`, and `candidate` jobs are pinned by fixed SHA256
+productions from reviewed `b5c6c4116d657211ad86905bfbd9ea1afd39fb8a`.
+Only YAML comments/blank lines outside literal or folded scalar bodies are
+ignored there; every scalar-body line, including comments and blanks, is retained
+with indentation. Upstream action, secret, environment, metadata and command
+changes require a deliberate reviewed digest update. These constants are not
+computed from incoming workflow content. This closes the selected source style,
+not arbitrary YAML/shell equivalence or hosted public-authority execution.
+
+All selected release-job steps require the supported plain `- name:` list
+header. A shell or other authority key in the first list position rejects;
+subsequent step fields retain the explicit shell boundary described above.
