@@ -257,6 +257,7 @@ struct RemovedKey<'a> {
     found: bool,
 }
 
+#[cfg(test)]
 struct StorageUse<'a> {
     member: &'a str,
     writes: bool,
@@ -289,6 +290,7 @@ impl syn::parse::Parse for MatchesInput {
         Ok(Self { expression, guard })
     }
 }
+#[cfg(test)]
 impl StorageUse<'_> {
     // A place is written, not read. Its evaluated receiver/index expressions
     // can still read configuration, so do not discard the entire left operand.
@@ -327,6 +329,7 @@ impl StorageUse<'_> {
         }
     }
 }
+#[cfg(test)]
 impl<'ast> Visit<'ast> for StorageUse<'_> {
     fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
         self.visit_assignment_place(&node.left);
@@ -374,38 +377,10 @@ impl<'ast> Visit<'ast> for StorageUse<'_> {
     }
 }
 
-fn check_storage_join(row: &model::Row, projection: &Projection) -> CheckResult {
-    if row.kind != "active" {
-        return Ok(());
-    }
-    let (_, member) = row.rust_field.split_once('.').ok_or("invalid canonical storage identity")?;
-    let mut has_write = false;
-    let mut has_read = false;
-    for (references, writer) in [(&row.writers, true), (&row.consumers, false)] {
-        for reference in references {
-            let witness = projection.witnesses.get(reference).ok_or("unknown joined witness")?;
-            if witness.path.ends_with(".ts") || witness.function.starts_with('@') {
-                continue;
-            }
-            let expression: syn::Expr = syn::parse_str(&witness.expression)?;
-            let mut usage = StorageUse { member, writes: false, reads: false };
-            usage.visit_expr(&expression);
-            if writer {
-                has_write |= usage.writes;
-            } else {
-                has_read |= usage.reads;
-            }
-        }
-    }
-    if !has_write || (!row.consumers.is_empty() && !has_read) {
-        return Err(format!(
-            "{}: witness does not join canonical storage to writer/consumer",
-            row.id
-        )
-        .into());
-    }
-    Ok(())
-}
+#[path = "high_risk_storage.rs"]
+mod storage;
+use storage::{StorageAnchors, check_storage_join};
+
 impl RemovedKey<'_> {
     fn inspect_string(&mut self, value: &str) {
         // Conservative syntax evidence, including JSON-pointer path segments.
@@ -618,8 +593,9 @@ pub fn check(root: &Path, typescript: Option<&Path>) -> CheckResult {
             return Err("client adapter AST proof failed or unavailable".into());
         }
     }
+    let anchors = StorageAnchors::from_projection(root, &projection)?;
     for row in &projection.rows {
-        check_storage_join(row, &projection)?;
+        check_storage_join(row, &projection, &anchors)?;
         for reference in row.writers.iter().chain(&row.consumers) {
             if !projection.witnesses.contains_key(reference) {
                 return Err(format!("{}: missing witness {reference}", row.id).into());
@@ -733,15 +709,488 @@ mod tests {
                 },
             );
         }
-        check_storage_join(&row, &projection)?;
+        let mut anchors = StorageAnchors::default();
+        anchors.add_items("fixture.rs", "", &syn::parse_file("struct ConfigConfig { engine: u8, other: u8 } fn writer(config: &mut ConfigConfig, value: u8) { config.engine = value; } fn consumer(config: &ConfigConfig) { run(config.engine); }")?.items)?;
+        check_storage_join(&row, &projection, &anchors)?;
         for (id, expression) in
             [("writer", "config.other = value"), ("consumer", "run(config.other)")]
         {
             let mut changed = projection.clone();
             changed.witnesses.get_mut(id).ok_or("missing joined fixture witness")?.expression =
                 expression.into();
-            if check_storage_join(&row, &changed).is_ok() {
+            if check_storage_join(&row, &changed, &anchors).is_ok() {
                 return Err(format!("accepted missing storage {id}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_owner_rejects_another_type_with_the_same_member() -> CheckResult {
+        let projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let row = projection
+            .rows
+            .iter()
+            .find(|row| row.id == "ai.streaming.effective_enabled")
+            .ok_or("missing streaming fixture")?;
+        // Resolve the actual source from the workspace, independent of test cwd.
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().ok_or("missing workspace root")?;
+        let anchors = StorageAnchors::from_projection(root, &projection)?;
+        check_storage_join(row, &projection, &anchors)?;
+        let mut wrong = row.clone();
+        wrong.consumers = vec!["ai.enabled.consumer".into()];
+        let result = check_storage_join(&wrong, &projection, &anchors);
+        if !matches!(&result, Err(error) if error.to_string() == "ai.streaming.effective_enabled: witness does not join canonical storage to writer/consumer")
+        {
+            return Err(format!(
+                "cross-owner same-member witness did not reject exactly: {result:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_storage_aliases_closures_and_shadowing_are_scoped() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        let mut anchors = StorageAnchors::default();
+        let sources = "use std::sync::{LazyLock, RwLock}; struct ConfigConfig { enabled: bool } struct OtherConfig { enabled: bool } static CONFIG: LazyLock<RwLock<ConfigConfig>> = make(); fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &ConfigConfig, other: &OtherConfig) { let alias = config; run(alias.enabled); { let alias = other; run(alias.enabled); } run(alias.enabled); CONFIG.read().map(|config| config.enabled); let config = opaque(); run(config.enabled); CONFIG.read().map(|config| { let config = opaque(); config.enabled }); arbitrary().map(|config| config.enabled); }";
+        anchors.add_items("fixture.rs", "", &syn::parse_file(sources)?.items)?;
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        for (expression, accepted) in [
+            ("CONFIG.read().map(|config| config.enabled)", true),
+            ("{ let config = opaque(); config.enabled }", false),
+            ("arbitrary().map(|config| config.enabled)", false),
+            ("{ let alias = other; run(alias.enabled); }", false),
+        ] {
+            projection.witnesses.insert(
+                "consumer".into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: "consume".into(),
+                    expression: expression.into(),
+                },
+            );
+            let result = check_storage_join(&row, &projection, &anchors);
+            if result.is_ok() != accepted {
+                return Err(format!(
+                    "unexpected owner-join disposition for {expression}: {result:?}"
+                )
+                .into());
+            }
+        }
+        // A nested shadow does not erase the outer alias, but duplicate expressions
+        // are not a unique witness; use a distinct enclosing expression here.
+        let source = "struct ConfigConfig { enabled: bool } struct OtherConfig { enabled: bool } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &ConfigConfig, other: &OtherConfig) { let alias = config; { let alias = other; use_other(alias.enabled); } consume_outer(alias.enabled); }";
+        let mut scoped = StorageAnchors::default();
+        scoped.add_items("fixture.rs", "", &syn::parse_file(source)?.items)?;
+        projection.witnesses.get_mut("consumer").ok_or("missing consumer")?.expression =
+            "consume_outer(alias.enabled)".into();
+        check_storage_join(&row, &projection, &scoped)?;
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_same_leaf_and_custom_methods_cannot_supply_storage_owner() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        let mut accepted = Vec::new();
+        for (source, expression) in [
+            (
+                "struct ConfigConfig { enabled: bool } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &external::ConfigConfig) { observe(config.enabled); }",
+                "observe(config.enabled)",
+            ),
+            (
+                "#[derive(Clone)] struct ConfigConfig { enabled: bool } struct Other { enabled: bool } impl ConfigConfig { fn clone(&self) -> Other { make() } } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &ConfigConfig) { observe(config.clone().enabled); }",
+                "observe(config.clone().enabled)",
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } impl ConfigConfig { fn map<R>(&self, callback: impl FnOnce(&Other) -> R) -> R { callback(&make()) } } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &ConfigConfig) { config.map(|input| input.enabled); }",
+                "config.map(|input| input.enabled)",
+            ),
+        ] {
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(source)?.items)?;
+            projection.witnesses.insert(
+                "consumer".into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: "consume".into(),
+                    expression: expression.into(),
+                },
+            );
+            if check_storage_join(&row, &projection, &anchors).is_ok() {
+                accepted.push(expression);
+            }
+        }
+        if !accepted.is_empty() {
+            return Err(format!(
+                "unproved qualified owner or custom methods were accepted: {accepted:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generic_module_and_block_alias_shadows_cannot_supply_storage_owner() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        let mut accepted = Vec::new();
+        for (source, expression, expected) in [
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume<ConfigConfig: ::std::ops::Deref<Target=Other>>(config: &ConfigConfig) { observe(config.enabled); }",
+                "observe(config.enabled)",
+                false,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } mod std { pub mod sync { pub struct Mutex<T>(T); impl<T> Mutex<T> { fn lock(&self) -> ::std::result::Result<super::super::super::Other, ()> { make() } } } } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &std::sync::Mutex<ConfigConfig>) { config.lock().map(|input| input.enabled); }",
+                "config.lock().map(|input| input.enabled)",
+                false,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(other: &Other) { use self::Other as ConfigConfig; let config: &ConfigConfig = other; observe(config.enabled); }",
+                "observe(config.enabled)",
+                false,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } mod std {} fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &::std::sync::Mutex<ConfigConfig>) { config.lock().map(|input| input.enabled); }",
+                "config.lock().map(|input| input.enabled)",
+                true,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &ConfigConfig) { observe(config.enabled); }",
+                "observe(config.enabled)",
+                true,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } trait Read { fn consume(&self); } impl<ConfigConfig: ::std::ops::Deref<Target=Other>> Read for ConfigConfig { fn consume(&self) { observe(self.enabled); } } fn writer(config: &mut ConfigConfig) { config.enabled = true; }",
+                "observe(self.enabled)",
+                false,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } enum Option<T> { Some(T), None } impl<T> Option<T> { fn map<R>(&self, f: impl FnOnce(&Other) -> R) -> R { f(&make()) } } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &Option<ConfigConfig>) { config.map(|input| input.enabled); }",
+                "config.map(|input| input.enabled)",
+                false,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } enum Option<T> { Some(T), None } fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(config: &::std::option::Option<ConfigConfig>) { config.map(|input| input.enabled); }",
+                "config.map(|input| input.enabled)",
+                true,
+            ),
+            (
+                "struct ConfigConfig { enabled: bool } struct Other { enabled: bool } enum Option<T> { Some(Other), None(::std::marker::PhantomData<T>) } use Option::*; fn writer(config: &mut ConfigConfig) { config.enabled = true; } fn consume(input: Option<ConfigConfig>) { let Some(config) = input else { return; }; observe(config.enabled); }",
+                "observe(config.enabled)",
+                false,
+            ),
+        ] {
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(source)?.items)?;
+            projection.witnesses.insert(
+                "consumer".into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: if source.contains("trait Read") {
+                        "ConfigConfig::Read::consume"
+                    } else {
+                        "consume"
+                    }
+                    .into(),
+                    expression: expression.into(),
+                },
+            );
+            if check_storage_join(&row, &projection, &anchors).is_ok() != expected {
+                accepted.push(expression);
+            }
+        }
+        if !accepted.is_empty() {
+            return Err(format!(
+                "unproved qualified owner or custom methods were accepted: {accepted:?}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn guarded_matches_cannot_supply_storage_owner() -> CheckResult {
+        let parsed: MatchesInput =
+            syn::parse_str("other, Some(config) if observe(config.enabled)")?;
+        if parsed.guard.is_none() {
+            return Err("guarded matches fixture did not populate the explicit guard".into());
+        }
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        for (expression, expected) in [
+            ("observe(matches!(other, Some(config) if config.enabled))", false),
+            ("observe(matches!(other, Some(item) if config.enabled))", false),
+            ("observe(matches!(config.enabled, true))", true),
+        ] {
+            let source = format!(
+                "struct ConfigConfig {{ enabled: bool }} struct Other {{ enabled: bool }} fn writer(config: &mut ConfigConfig) {{ config.enabled = true; }} fn consume(config: &ConfigConfig, other: Option<Other>) {{ {expression}; }}"
+            );
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(&source)?.items)?;
+            projection.witnesses.insert(
+                "consumer".into(),
+                Witness {
+                    path: "fixture.rs".into(),
+                    function: "consume".into(),
+                    expression: expression.into(),
+                },
+            );
+            if check_storage_join(&row, &projection, &anchors).is_ok() != expected {
+                return Err(
+                    format!("unexpected guarded macro storage evidence: {expression}").into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pattern_shadowing_cannot_reuse_outer_storage_owner() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        projection.witnesses.insert(
+            "consumer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "consume".into(),
+                expression: "observe(config.enabled)".into(),
+            },
+        );
+        let mut mismatches = Vec::new();
+        for (body, expected) in [
+            ("if let Some(config) = other { observe(config.enabled); }", false),
+            ("match other { Some(config) => observe(config.enabled), None => {} }", false),
+            ("for config in others { observe(config.enabled); }", false),
+            ("while let Some(config) = other { observe(config.enabled); }", false),
+            ("if let whole @ Some(config) = other { observe(config.enabled); }", false),
+            ("if let Some(item) = other { observe(config.enabled); }", true),
+            ("match other { Some(item) => observe(config.enabled), None => {} }", true),
+            ("for item in others { observe(config.enabled); }", true),
+        ] {
+            let source = format!(
+                "struct ConfigConfig {{ enabled: bool }} struct Other {{ enabled: bool }} fn writer(config: &mut ConfigConfig) {{ config.enabled = true; }} fn consume(config: &ConfigConfig, other: Option<Other>, others: Vec<Other>) {{ {body} }}"
+            );
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(&source)?.items)?;
+            if check_storage_join(&row, &projection, &anchors).is_ok() != expected {
+                mismatches.push(body);
+            }
+        }
+        if !mismatches.is_empty() {
+            return Err(format!("pattern shadow ownership mismatches: {mismatches:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_import_and_public_reexport_edges_require_the_actual_declaration() -> CheckResult {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Config.enabled".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.enabled = true".into(),
+            },
+        );
+        projection.witnesses.insert(
+            "consumer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "consume".into(),
+                expression: "CONFIG.read().map(|input| input.enabled)".into(),
+            },
+        );
+        for (import, accepted) in [
+            ("use std::sync::{LazyLock,RwLock};", true),
+            ("", false),
+            ("use external::{LazyLock,RwLock};", false),
+        ] {
+            let source = format!(
+                "{import} struct ConfigConfig {{ enabled: bool }} static CONFIG: LazyLock<RwLock<ConfigConfig>> = make(); fn writer(config: &mut ConfigConfig) {{ config.enabled = true; }} fn consume() {{ CONFIG.read().map(|input| input.enabled); }}"
+            );
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(&source)?.items)?;
+            let result = check_storage_join(&row, &projection, &anchors);
+            if result.is_ok() != accepted {
+                return Err(
+                    format!("wrong container import disposition {import}: {result:?}").into()
+                );
+            }
+        }
+        projection.witnesses.get_mut("consumer").ok_or("missing consumer")?.expression =
+            "observe(config.enabled)".into();
+        for (reexport, accepted) in [
+            ("pub use inner::*;", true),
+            ("", false),
+            ("pub use wrong::*;", false),
+            ("pub use inner::Missing;", false),
+        ] {
+            let source = format!(
+                "mod inner {{ pub struct ConfigConfig {{ pub enabled: bool }} }} {reexport} fn writer(config: &mut inner::ConfigConfig) {{ config.enabled = true; }} fn consume(config: &ConfigConfig) {{ observe(config.enabled); }}"
+            );
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(&source)?.items)?;
+            let result = check_storage_join(&row, &projection, &anchors);
+            if result.is_ok() != accepted {
+                return Err(
+                    format!("wrong source reexport disposition {reexport}: {result:?}").into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_capture_requires_both_real_owner_branches_and_folder_anchor() -> CheckResult {
+        let projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).parent().ok_or("missing workspace root")?;
+        let row = projection
+            .rows
+            .iter()
+            .find(|row| row.id == "workspace.resolution_timeout_ms")
+            .ok_or("missing timeout row")?;
+        let mut anchors = StorageAnchors::from_projection(root, &projection)?;
+        check_storage_join(row, &projection, &anchors)?;
+        anchors.remove_declaration("perl_lsp_rs::runtime::workspace_folder::WorkspaceFolderState");
+        if check_storage_join(row, &projection, &anchors).is_ok() {
+            return Err("missing real folder declaration still proved timeout owner".into());
+        }
+        let mut wrong = row.clone();
+        wrong.consumers = vec!["workspace.timeout.consume".into()];
+        if check_storage_join(&wrong, &projection, &anchors).is_ok() {
+            return Err(
+                "derived EffectiveIncContext replaced canonical WorkspaceConfig owner".into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tuple_owner_requires_agreement_from_every_branch_without_annotation_fallback() -> CheckResult
+    {
+        let mut projection: Projection = serde_json::from_str(include_str!(
+            "../../fixtures/configuration_authority/high_risk_bindings.v1.json"
+        ))?;
+        let mut row = projection.rows.first().ok_or("missing fixture row")?.clone();
+        row.rust_field = "Workspace.resolution_timeout_ms".into();
+        row.writers = vec!["writer".into()];
+        row.consumers = vec!["consumer".into()];
+        projection.witnesses.insert(
+            "writer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "writer".into(),
+                expression: "config.resolution_timeout_ms = 1".into(),
+            },
+        );
+        projection.witnesses.insert(
+            "consumer".into(),
+            Witness {
+                path: "fixture.rs".into(),
+                function: "consume".into(),
+                expression: "observe(config.resolution_timeout_ms)".into(),
+            },
+        );
+        for (selection, annotation, accepted) in [
+            ("if flag { (0, workspace) } else { (1, workspace) }", "", true),
+            ("if flag { (0, workspace) } else { (1, other) }", "", false),
+            ("if flag { (0, other) } else { (1, workspace) }", "", false),
+            ("if flag { (0, opaque()) } else { (1, workspace) }", ": (u8, WorkspaceConfig)", false),
+            ("if flag { (0, workspace) } else { (1, opaque()) }", "", false),
+        ] {
+            let source = format!(
+                "struct WorkspaceConfig {{ resolution_timeout_ms: u64 }} struct OtherConfig {{ resolution_timeout_ms: u64 }} fn writer(config: &mut WorkspaceConfig) {{ config.resolution_timeout_ms = 1; }} fn consume(workspace: &WorkspaceConfig, other: &OtherConfig, flag: bool) {{ let (_, config){annotation} = {selection}; observe(config.resolution_timeout_ms); }}"
+            );
+            let mut anchors = StorageAnchors::default();
+            anchors.add_items("fixture.rs", "", &syn::parse_file(&source)?.items)?;
+            let result = check_storage_join(&row, &projection, &anchors);
+            if result.is_ok() != accepted {
+                return Err(format!(
+                    "wrong all-branch tuple disposition {selection}{annotation}: {result:?}"
+                )
+                .into());
             }
         }
         Ok(())

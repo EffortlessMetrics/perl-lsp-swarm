@@ -34,6 +34,29 @@ AI channel remains rejected and #10817 owns trusted adapter admission.
 The extension's local-only `perl-lsp.formatOnSave` is not evidence that the
 server's separately stored `format_on_save` field drives an automatic trigger.
 
+Canonical storage joins must retain the declared owner as well as the member.
+The source checker resolves selected receivers from actual struct fields,
+function signatures and static declarations. Supported syntactic steps are typed
+parameters and `self`, field paths, lexical local aliases, references, transparent
+`lock`/`read` outputs on qualified std/parking_lot containers, source-derived
+`Clone` without a conflicting inherent method, and actual Option/Result `map` inputs. Local shadowing and
+block scope must not reuse an earlier receiver's identity. Same-member accesses
+on another declared type cannot establish a canonical storage join. Unsupported
+or ambiguous receiver derivations remain unresolved and cannot fall back to a
+leaf-name match. Qualified paths retain module identity; bare types require
+a declaration/import anchor. Custom methods with familiar names are unsupported.
+The owner resolver reads 14 actual source files: the 11 Rust witness files plus
+`crates/perl-lsp-rs/src/state/mod.rs` and `state/config.rs`, whose public re-export
+edges bind server configuration imports to their core declarations, and
+`crates/perl-lsp-rs/src/runtime/workspace_folder.rs`, which declares the folder
+configuration owner. Flat unannotated tuple aliases require every if/else arm to
+prove the same qualified owner. Vec iterator/find/Some bindings follow the actual
+container element declaration; missing arms, unknown values, conflicting owners,
+missing declarations and annotated tuple fallback remain unsupported. Derived
+EffectiveIncContext fields do not substitute for canonical WorkspaceConfig storage.
+This is bounded syntactic type/provenance evidence, not compiler
+resolution, whole-program alias analysis or executed runtime dataflow.
+
 AST snapshots deliberately make changes to the selected expression reviewable.
 They are source identity checks, not a Rust/TypeScript type checker, whole-program
 dataflow proof, runtime containment test, or proof that a referenced issue landed.
@@ -107,3 +130,17 @@ the projection model; parser/storage/consumer relocation uses AST fixtures;
 schema-only additions use the published schema coverage check. The TypeScript
 controls alter input keys, output values and function identity while preserving
 the original text elsewhere. None performs an external effect.
+
+Pattern bindings in if-let, while-let, match arms, and for loops invalidate any
+outer owner fact for the same name, including nested `@` bindings. Their
+unsupported bound values remain unresolved; supported tuple provenance is
+established separately from every branch.
+
+Function and impl generic type parameters cannot stand in for canonical
+declarations. Local type namespace declarations reserve their names against
+prelude inference.
+Local module roots retain their module identity; explicit `::std`
+remains external. Block-local item/type/import resolution is unsupported and
+cannot prove a typed owner. These controls preserve unshadowed canonical and
+explicit external-container positives. Guarded `matches!` expressions remain
+unresolved and cannot establish owner evidence.
