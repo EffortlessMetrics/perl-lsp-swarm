@@ -8,10 +8,11 @@
 //!
 //! `fun` / `func` currently parse as calls whose following block becomes a
 //! `{}` binary. Name, parameter, and body ranges are recovered from that
-//! accepted syntax geometry, not from display strings. Parameter facts are
-//! emitted only at the strength the canonical signature owner already admits
-//! (positional, literal-default optional, slurpy). Type constraints, named
-//! `:$param` forms, and invocant `:` syntax stay limitations.
+//! accepted syntax geometry: the Binary node's AST end closes the body, so a
+//! comment `}` cannot truncate the range. Parameter facts are emitted only at
+//! the strength the canonical signature owner already admits (positional,
+//! literal-default optional, slurpy). Type constraints, named `:$param` forms,
+//! and invocant `:` syntax stay limitations.
 
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::signature_keywords::{
@@ -346,7 +347,8 @@ fn try_extract_call_declaration<'a>(node: &'a Node, state: &mut WalkState<'_>) -
     if !is_declaration_name(name) {
         return None;
     }
-    let (body_start, body_end) = matching_brace_span(state.source, left.location.end)?;
+    let (body_start, body_end) =
+        block_operator_span(state.source, left.location.end, arg.location.end)?;
     let (parameters, parameter_limitations) = parameters_from_call_args(param_args);
     let name_anchor = name_anchor_from_call(left, name, state.file_id);
     let signature_anchor =
@@ -542,43 +544,25 @@ fn is_literal_default(node: &Node) -> bool {
     )
 }
 
-fn matching_brace_span(source: &str, from: usize) -> Option<(usize, usize)> {
+/// Opening `{` after the callee, closed by the Binary `{}` node's AST end.
+///
+/// The closer is not found by scanning source for a matching `}`, so a
+/// comment `}` cannot truncate the body range.
+fn block_operator_span(
+    source: &str,
+    after_callee: usize,
+    block_end: usize,
+) -> Option<(usize, usize)> {
     let bytes = source.as_bytes();
-    let mut index = from.min(bytes.len());
-    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+    let mut index = after_callee.min(bytes.len());
+    let end = block_end.min(bytes.len());
+    while index < end && bytes[index].is_ascii_whitespace() {
         index = index.saturating_add(1);
     }
     if bytes.get(index).copied() != Some(b'{') {
         return None;
     }
-    let start = index;
-    let mut depth = 0_usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escaped = false;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if escaped {
-            escaped = false;
-            index = index.saturating_add(1);
-            continue;
-        }
-        match byte {
-            b'\\' if in_single || in_double => escaped = true,
-            b'\'' if !in_double => in_single = !in_single,
-            b'"' if !in_single => in_double = !in_double,
-            b'{' if !in_single && !in_double => depth = depth.saturating_add(1),
-            b'}' if !in_single && !in_double => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some((start, index.saturating_add(1)));
-                }
-            }
-            _ => {}
-        }
-        index = index.saturating_add(1);
-    }
-    None
+    Some((index, end))
 }
 
 fn saturate_u32(value: usize) -> u32 {

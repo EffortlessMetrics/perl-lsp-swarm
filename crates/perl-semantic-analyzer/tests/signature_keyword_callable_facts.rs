@@ -393,6 +393,21 @@ fun add { 1 }
 }
 
 #[test]
+fn body_range_comes_from_ast_not_a_later_comment_brace() {
+    let code = "package App;\nuse Function::Parameters;\nfun add ($x) {\n  # }\n  $x\n}\n";
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    let add = query(&facts, Some("App"), "add");
+    let body = add.body_anchor.as_ref().and_then(|anchor| {
+        let start = usize::try_from(anchor.start_byte).ok()?;
+        let end = usize::try_from(anchor.end_byte).ok()?;
+        code.get(start..end)
+    });
+    let body = must_some(body);
+    assert!(body.contains("$x"), "body range was {body:?}");
+    assert!(body.starts_with('{') && body.ends_with('}'), "body range was {body:?}");
+}
+
+#[test]
 fn nested_module_and_require_do_not_activate_keywords() {
     let nested = minted(
         "package App;\nuse Function::Parameters::Strict;\nfun add ($x) { $x }\n",
