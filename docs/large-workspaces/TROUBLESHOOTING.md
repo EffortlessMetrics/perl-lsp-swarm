@@ -92,9 +92,10 @@ Compare against the expected baseline from `TESTING_GUIDE.md`.
 
    Values are exact directory names compared against each path component —
    not globs, regular expressions, or path fragments — so `build` skips a
-   `build/` directory but not `build-out/`. A `includePaths` entry that
-   points into a skipped directory (for example `local/lib/perl5`) is still
-   traversed.
+   `build/` directory but not `build-out/`. An `includePaths` entry can
+   permit discovery inside a skipped directory when the files are included
+   in Git's file listing, or when discovery uses its filesystem walk fallback.
+   Untracked files ignored by Git remain absent from Git's listing.
 
 3. **Very large individual files**: A single 50 000-line Perl script can
    take hundreds of milliseconds to parse. Confirm with:
@@ -104,9 +105,7 @@ Compare against the expected baseline from `TESTING_GUIDE.md`.
    ```
 
    Break up files larger than ~5 000 lines into modules. There is no
-   per-file exclusion list: `perl.limits.maxFileSizeBytes` is a byte ceiling,
-   and a file above it is indexed with an empty AST and no diagnostics, so
-   raising it trades a slow start for missing facts rather than a fix.
+   per-file exclusion list for workspace discovery.
 
 ---
 

@@ -339,9 +339,10 @@ name is trimmed and duplicates are removed.
 This list is **additive**. Discovery already skips `.git`, `.hg`, `.svn`,
 `target`, `node_modules`, `.cache`, `blib`, `local`, `vendor`, and
 `.perl-lsp` in both enumeration modes, so listing any of those here has no
-effect. A `includePaths` entry that points *into* a skipped directory (for
-example `local/lib/perl5`) is still traversed, which is how a vendored
-Perl dependency tree stays visible.
+effect. An `includePaths` entry can permit discovery inside a skipped
+directory (for example `local/lib/perl5`) when its files are included in
+Git's file listing, or when discovery uses its filesystem walk fallback.
+Untracked files ignored by Git remain absent from Git's listing.
 
 Project configuration exposes the same control as `[perl].discovery_skipped_dirs`:
 
