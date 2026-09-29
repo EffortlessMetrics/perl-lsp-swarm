@@ -20,6 +20,27 @@ fn is_plain_bareword_glob_name(inner: &str) -> bool {
 /// leading `{` as a dynamic, non-static glob name (#15650). Reporting the
 /// bare expression text (`foo()`, `"name"`) as a static glob name would mint
 /// a symbol that no static consumer can resolve (#15712).
+/// A list-declaration slot that real Perl classifies as a constant item.
+///
+/// `my`/`our`/`state` reject a sigil-less name, number, string, v-string, or
+/// signed numeric literal. `local` still rejects those literals, but a bare
+/// identifier stays eligible: `local(slot)` can name an `:lvalue` subroutine
+/// (#16732). Variables, `undef`, nested lists, typeglobs, and subscripted
+/// lvalues stay outside this class.
+fn is_constant_declaration_list_item(declarator: &str, item: &Node) -> bool {
+    match &item.kind {
+        NodeKind::Identifier { name } => {
+            declarator != "local" && !name.starts_with(['$', '@', '%', '*', '&'])
+        }
+        NodeKind::Number { .. } | NodeKind::String { .. } | NodeKind::VString { .. } => true,
+        NodeKind::Unary { operand, .. } => is_constant_declaration_list_item(declarator, operand),
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            is_constant_declaration_list_item(declarator, variable)
+        }
+        _ => false,
+    }
+}
+
 fn normalize_dynamic_typeglob_name(name: &str) -> String {
     let Some(inner) = name.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else {
         return name.trim().trim_end_matches(';').trim().to_string();
@@ -43,7 +64,7 @@ impl<'a> Parser<'a> {
 
             // Parse comma-separated list of variables with their individual attributes
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
-                let var = self.parse_variable_list_item()?;
+                let var = self.parse_variable_list_item(&declarator)?;
                 variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {
@@ -251,7 +272,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse one slot in a lexical list declaration.
-    fn parse_variable_list_item(&mut self) -> ParseResult<Node> {
+    fn parse_variable_list_item(&mut self, declarator: &str) -> ParseResult<Node> {
         match self.peek_kind() {
             Some(TokenKind::Undef) => {
                 let undef_token = self.consume_token()?;
@@ -265,7 +286,7 @@ impl<'a> Parser<'a> {
                 self.consume_token()?; // consume (
                 let mut items = Vec::new();
                 while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
-                    items.push(self.parse_variable_list_item()?);
+                    items.push(self.parse_variable_list_item(declarator)?);
                     if self.peek_kind() == Some(TokenKind::Comma) {
                         self.consume_token()?; // consume ,
                     } else if self.peek_kind() != Some(TokenKind::RightParen) {
@@ -297,8 +318,42 @@ impl<'a> Parser<'a> {
                     ),
                 }
             }
-            _ => self.parse_ternary(),
+            _ => {
+                let item = self.parse_ternary()?;
+                Ok(self.recover_constant_declaration_list_item(declarator, item))
+            }
         }
+    }
+
+    /// Recover a sigil-less / constant slot in `my`/`our`/`state`/`local` lists.
+    ///
+    /// Real `perl -c` rejects `my (base)` with `Can't declare constant item in
+    /// "my"`. The previous path parsed the bareword through `parse_ternary` and
+    /// kept a clean AST, so `perllsp --check` answered `ok` (#16732). Record a
+    /// blocking diagnostic on the offending range and wrap the item so later
+    /// list slots and later statements still parse.
+    fn recover_constant_declaration_list_item(&mut self, declarator: &str, item: Node) -> Node {
+        if !is_constant_declaration_list_item(declarator, &item) {
+            return item;
+        }
+        let message = if declarator == "local" {
+            "Can't modify constant item in local".to_string()
+        } else {
+            format!("Can't declare constant item in \"{declarator}\"")
+        };
+        let location = item.location;
+        self.record_error(ParseError::syntax(message.clone(), location.start));
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
+        Node::new(
+            NodeKind::Error {
+                message,
+                expected: vec![],
+                found: None,
+                partial: Some(Box::new(item)),
+            },
+            location,
+        )
     }
 
     /// Attach optional per-item attributes after a list-declaration slot.

@@ -63,7 +63,7 @@ fn check_format_args(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
     }
 
     let specifier_count = count_format_specifiers(fmt_content);
-    let arg_count = args.len().saturating_sub(1); // exclude the format arg itself
+    let Some(arg_count) = known_scalar_argument_count(&args[1..]) else { return };
 
     if specifier_count != arg_count {
         let msg = format!(
@@ -99,6 +99,23 @@ fn check_format_args(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
             )),
         });
     }
+}
+
+/// Count only values whose cardinality is known in Perl list context.
+/// Arrays, slices, calls, and other expressions may produce zero or many values;
+/// treating one AST argument as one value would fabricate an arity mismatch.
+pub(crate) fn known_scalar_argument_count(args: &[Node]) -> Option<usize> {
+    args.iter()
+        .all(|arg| match &arg.kind {
+            NodeKind::Number { .. } | NodeKind::VString { .. } | NodeKind::Undef => true,
+            // The parser currently represents qx/backticks as String nodes,
+            // but they return output lines in list context.
+            NodeKind::String { value, .. } => !value.starts_with("qx") && !value.starts_with('`'),
+            NodeKind::Heredoc { command, .. } => !command,
+            NodeKind::Variable { sigil, .. } => sigil == "$",
+            _ => false,
+        })
+        .then_some(args.len())
 }
 
 /// Count argument-consuming format specifiers in a format string.

@@ -5682,19 +5682,60 @@ fn test_hash_key_completion_empty_prefix() {
 }
 
 #[test]
-fn test_hash_key_completion_does_not_fire_for_hashref_deref() {
-    // $ref->{ho<cursor> -- hashref deref, must NOT suggest hash keys
+fn test_hashref_key_role_does_not_fabricate_uncollectable_keys() {
+    // $ref->{ho<cursor> -- the hashref form is the same hash-key role (#5159),
+    // but `my $ref = {host => ...}` is not a shape collect_hash_keys_from_source
+    // can read (%var = (...) literals and $ref->{key} = assignments only), so
+    // no key may be fabricated for it.
     let code = "my $ref = {host => 'localhost'};\n$ref->{ho";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let provider = CompletionProvider::new(&ast);
     let completions = provider.get_completions(code, code.len());
-    // Must not return a Property-kinded "host" completion (hash key detection
-    // must bail when `->` precedes the `{`)
     assert!(
         !completions.iter().any(|c| c.label == "host" && c.kind == CompletionItemKind::Property),
         "hashref deref `$ref->{{ho` must not produce Property-kinded 'host' completion; got: {:?}",
         completions.iter().map(|c| (&c.label, &c.kind)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn hash_key_classifier_recognizes_the_hashref_form() {
+    // The variable scan must step over the `->` arrow; #5159 removed the
+    // bail-out, so `$ref->{` classifies exactly like `$ref{`.
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$ref->{ho", 9),
+        Some(("ref".to_string(), "ho".to_string()))
+    );
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$ref->{", 7),
+        Some(("ref".to_string(), String::new()))
+    );
+    // The direct form is unchanged.
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context("$hash{ap", 8),
+        Some(("hash".to_string(), "ap".to_string()))
+    );
+    // Double-sigil derefs stay refused.
+    assert_eq!(CompletionProvider::detect_hash_key_context("$$ref{ap", 8), None);
+}
+
+#[test]
+fn hash_key_classifier_refuses_a_brace_inside_comment_string_or_regex() {
+    // The finding shape: the only `{` before the cursor sits in an earlier
+    // comment line. The later line is ordinary code and must keep enrichment.
+    let comment = "# $hash{\napi";
+    assert_eq!(CompletionProvider::detect_hash_key_context(comment, comment.len()), None);
+
+    // Same for a brace inside a string literal.
+    let string = "my $s = \"%hash{\";\napi";
+    assert_eq!(CompletionProvider::detect_hash_key_context(string, string.len()), None);
+
+    // Live syntax one line above still classifies.
+    let live = "my %hash = (api => 1);\n$hash{ap";
+    assert_eq!(
+        CompletionProvider::detect_hash_key_context(live, live.len()),
+        Some(("hash".to_string(), "ap".to_string()))
     );
 }
 

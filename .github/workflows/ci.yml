@@ -370,7 +370,10 @@ jobs:
   windows-platform-smoke:
     name: Windows platform smoke
     runs-on: windows-2025
-    timeout-minutes: 20
+    # Cold windows-2025 cargo build exceeds 20m — job 108830411767 killed during
+    # compilation ("The job has exceeded the maximum execution time of 20m0s");
+    # same signature on #16624's job 108862152161 at 20m15s.
+    timeout-minutes: 45
     needs: [platform-overrides]
     if: needs.platform-overrides.outputs.windows_runner == 'true'
     steps:
@@ -458,7 +461,7 @@ jobs:
         run: |
           set +e
           mkdir -p "$RUNNER_TEMP/bin"
-          GOBIN="$RUNNER_TEMP/bin" go install github.com/aquaproj/aqua/v2/cmd/aqua@v2.57.0
+          bash scripts/tools/install-aqua.sh --dest "$RUNNER_TEMP/bin"
           export PATH="$RUNNER_TEMP/bin:$PATH"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           bash scripts/tools/aqua-doctor.sh
@@ -2056,6 +2059,16 @@ jobs:
       # to the four contracts above on the same required merge surface.
       - name: Gate-policy budget witness contract (required merge surface)
         run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
+
+      # #16133: the ripr-liveness dedup read's `--paginate`, `filter=all`,
+      # `per_page`, and `external_id` properties rest on inline Python inside
+      # `ripr-liveness.yml` and no other workflow or test exercises them. The
+      # advisory reporter is not a required gate, so without this contract a
+      # regression would only show up as duplicate posted check runs in
+      # production. Same reasoning as the contracts above, so it belongs on
+      # the same required merge surface.
+      - name: ripr-liveness dedup paginate contract (required merge surface)
+        run: cargo test -p xtask --test issue_16133_ripr_liveness_dedup_paginate --locked -- --nocapture
 
       # #13295: standalone semantic conformance corpus — oracle, mutation bank,
       # and CLI command wiring. These tests span corpus authoring rules,

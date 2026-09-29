@@ -85,7 +85,7 @@ hover, and go-to-definition.
 - **Breakpoints** -- Set breakpoints with conditional support
 - **Step Debugging** -- Step into, over, and out of function calls
 - **Variable Inspection** -- View variables, watch expressions, and call stack
-- **TCP Attach** -- Connect to a Perl debugger peer by host and port. Attaching by PID is not supported.
+- **TCP Attach (transport preview)** -- Handshake connectivity to a Perl debugger peer by host and port; interactive control/inspection over attach is not yet supported, and attaching by PID is not supported (see the [debugging guide's current status](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/DEBUGGING.md)).
 
 Debugging is optional and powered by the managed `perl-dap` adapter shipped
 alongside the `perl-lsp` release artifacts -- the extension downloads it for you,
@@ -314,10 +314,16 @@ trying again; this avoids launching a second server over an unknown process.
 | Command                              | Description                                    |
 | ------------------------------------ | ---------------------------------------------- |
 | **Perl: Open Module**                | Open a module by name, resolved through `@INC` |
+| **Perl: Create Module**              | Create a new `.pm` beneath a workspace `lib` directory with a matching package declaration |
+| **Perl: Create Test**                | Create a new `.t` in a local workspace folder with `Test::More` starter content |
 | **Perl: Show @INC Paths**            | Show the `@INC` paths the server is using      |
 | **Perl: Preview POD**                | Render the POD in the active file              |
 | **Perl: Show Parser AST**            | Show the parser AST for the active file        |
 | **Perl: Create Debug Configuration** | Generate a `launch.json` debug configuration   |
+
+Creating a file through another editor action leaves it untouched. The former
+`perl-lsp.autoPopulateNewFiles` setting has been retired; remove an old `true` or
+`false` value from your settings and use the explicit commands above.
 
 ### Explainability and previews
 

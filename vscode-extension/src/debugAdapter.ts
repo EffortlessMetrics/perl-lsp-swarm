@@ -95,7 +95,7 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
     type: 'perl',
     request: 'launch',
     name: 'Perl: Launch Script',
-    program: '${workspaceFolder}/script.pl',
+    program: '${file}',
     stopOnEntry: true,
     args: [],
     perlPath: 'perl',
@@ -711,6 +711,7 @@ function resolveExternalPeerListenBind(
 export function buildDapExecutableArgs(
   config: vscode.DebugConfiguration | undefined,
   hostWorkspaceRoot?: string,
+  trustedRoots?: readonly string[],
 ): string[] {
   const peer = resolveExternalPeerAddress(config);
   if (peer) {
@@ -725,10 +726,38 @@ export function buildDapExecutableArgs(
   // create or widen authority. The root is canonicalized first: the native
   // adapter rejects symlink roots, so forwarding the link would refuse every
   // launch in a symlinked workspace instead of debugging it.
+  //
+  // #16554: user-configured roots (`perl-lsp.debug.trustedRoots`) are
+  // forwarded after the host root, one `--trusted-root` per entry, so the
+  // server refusal advice is followable from editor settings. Entries are
+  // canonicalized with the same realpath fallback. Folder-less launches stay
+  // refused earlier (resolveDebugConfiguration) unless at least one configured
+  // root supplies the launch authority the server requires.
+  const args: string[] = [];
+  // The native adapter rejects duplicate (raw or canonical) trusted roots at
+  // startup (#16554 review), so the host root and the configured roots are
+  // deduplicated by their canonical path: one flag per distinct directory.
+  // Canonicalization doubles as the alias check — a configured root that
+  // resolves to the same realpath as the session root is a duplicate, not a
+  // second authority.
+  const seenRoots = new Set<string>();
   if (hostWorkspaceRoot && hostWorkspaceRoot.trim().length > 0) {
-    return ['--trusted-root', canonicalizeWorkspaceRoot(hostWorkspaceRoot.trim())];
+    const canonicalRoot = canonicalizeWorkspaceRoot(hostWorkspaceRoot.trim());
+    args.push('--trusted-root', canonicalRoot);
+    seenRoots.add(canonicalRoot);
   }
-  return [];
+  if (trustedRoots) {
+    for (const root of trustedRoots) {
+      if (typeof root === 'string' && root.trim().length > 0) {
+        const canonicalRoot = canonicalizeWorkspaceRoot(root.trim());
+        if (!seenRoots.has(canonicalRoot)) {
+          args.push('--trusted-root', canonicalRoot);
+          seenRoots.add(canonicalRoot);
+        }
+      }
+    }
+  }
+  return args;
 }
 
 /** Resolve symlinks/aliases in a host workspace root, falling back to the
@@ -739,6 +768,73 @@ export function canonicalizeWorkspaceRoot(root: string): string {
   } catch {
     return root;
   }
+}
+
+/** #16554: warning shown when a debug launch cannot obtain startup authority.
+ * The message names the machine-scoped setting that supplies the alternative
+ * authority, because this warning is the only guidance the user sees. */
+export const FOLDERLESS_DEBUG_LAUNCH_MESSAGE =
+  'Perl debugging requires an open workspace folder or a configured trusted root. ' +
+  'Set `perl-lsp.debug.trustedRoots` (a machine-scoped setting) in your user settings, ' +
+  'then reload the window.';
+
+const TRUSTED_ROOTS_SECTION = 'perl-lsp';
+const TRUSTED_ROOTS_KEY = 'debug.trustedRoots';
+
+/**
+ * The user-owned trusted roots (`perl-lsp.debug.trustedRoots`) forwarded to
+ * perl-dap as launch authority (#16554).
+ *
+ * The setting is machine-scoped so committed workspace settings can never
+ * widen launch authority. Non-string and blank entries are ignored so a
+ * malformed value degrades to "no configured roots", never to a broken argv.
+ */
+export function configuredTrustedRoots(): string[] {
+  const value: unknown = vscode.workspace
+    .getConfiguration(TRUSTED_ROOTS_SECTION)
+    .get(TRUSTED_ROOTS_KEY, [] as string[]);
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0,
+  );
+}
+
+/**
+ * The refusal reason for a folder-less debug launch, or `undefined` when the
+ * launch may proceed (#16554).
+ *
+ * A launch with no open workspace folder, no configured trusted root, and no
+ * external peer can never obtain startup authority: perl-dap refuses it over
+ * the wire with CLI flags (`--trusted-root` / `--allow-unbounded`) the
+ * extension UI does not expose — a first-contact dead end. Refusing in the
+ * extension, before the adapter is spawned, replaces that dead end with
+ * guidance the user can act on.
+ *
+ * The launch stays allowed whenever the spawned adapter would carry its own
+ * startup authority: a configured trusted root (forwarded by
+ * `buildDapExecutableArgs`) or an external peer connection, which perl-dap
+ * starts before its launch-authority gate. Re-projecting the argv here —
+ * instead of listing authority sources again — keeps this predicate from
+ * drifting from what the adapter is actually spawned with.
+ */
+export function folderlessDebugLaunchRefusal(
+  config: vscode.DebugConfiguration | undefined,
+  workspaceFolder?: vscode.WorkspaceFolder,
+): string | undefined {
+  // The launch's own folder decides, not whether any folder happens to be
+  // open (#16554 review): a folderless session (VS Code passes
+  // `startDebugging(undefined, …)` / `folder === undefined`) carries no
+  // workspace root, so the descriptor emits no `--trusted-root` and perl-dap
+  // would reach exactly the refusal this predicate exists to prevent.
+  if (workspaceFolder) {
+    return undefined;
+  }
+  if (buildDapExecutableArgs(config, undefined, configuredTrustedRoots()).length > 0) {
+    return undefined;
+  }
+  return FOLDERLESS_DEBUG_LAUNCH_MESSAGE;
 }
 
 export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFactory {
@@ -781,6 +877,7 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
     const args = buildDapExecutableArgs(
       session?.configuration,
       session?.workspaceFolder?.uri.fsPath,
+      configuredTrustedRoots(),
     );
     return new vscode.DebugAdapterExecutable(dapPath, args, {
       env: { ...process.env, RUST_LOG: 'debug' },
@@ -885,7 +982,7 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
 
 export class PerlDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
   resolveDebugConfiguration(
-    _folder: vscode.WorkspaceFolder | undefined,
+    folder: vscode.WorkspaceFolder | undefined,
     config: vscode.DebugConfiguration,
     _token?: vscode.CancellationToken,
   ): vscode.ProviderResult<vscode.DebugConfiguration> {
@@ -927,6 +1024,19 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
         }
       }
       return config;
+    }
+
+    // #16554: refuse folder-less launches before the adapter is spawned. The
+    // synthesized launch above and explicit launch configurations share this
+    // path; returning undefined aborts the debug session per the
+    // resolveDebugConfiguration contract. Attach requests are exempt: no
+    // debuggee is launched, so no workspace-rooted launch authority is needed.
+    if (config.request === 'launch') {
+      const refusal = folderlessDebugLaunchRefusal(config, folder);
+      if (refusal) {
+        void vscode.window.showWarningMessage(refusal);
+        return undefined;
+      }
     }
 
     if (!config.program) {
@@ -1013,7 +1123,26 @@ export function activateDebugger(context: vscode.ExtensionContext) {
         args: target.args,
       };
 
-      return vscode.debug.startDebugging(undefined, config);
+      // #16554: this command synthesizes a launch too, so it refuses
+      // folder-less launches under the same conditions as
+      // resolveDebugConfiguration, and before any adapter is spawned. The
+      // unresolvable-target error above stays first: a broken test payload
+      // deserves its specific message, not the workspace guidance. The
+      // launch's own folder is the one containing the debugged program —
+      // resolved here instead of letting VS Code treat
+      // `startDebugging(undefined, …)` as a folderless session (#16554
+      // review); the containing folder, not the first folder, so a
+      // multi-root workspace still roots the session where the program lives.
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(
+        vscode.Uri.file(target.program),
+      );
+      const refusal = folderlessDebugLaunchRefusal(config, workspaceFolder);
+      if (refusal) {
+        void vscode.window.showWarningMessage(refusal);
+        return undefined;
+      }
+
+      return vscode.debug.startDebugging(workspaceFolder, config);
     }),
   );
 
