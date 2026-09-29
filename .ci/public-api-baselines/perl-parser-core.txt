@@ -2078,6 +2078,7 @@ pub perl_parser_core::hir::Binding::scope_id: perl_parser_core::hir::HirScopeId
 pub perl_parser_core::hir::Binding::shadows: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::hir::Binding::sigil: alloc::string::String
 pub perl_parser_core::hir::Binding::storage: perl_parser_core::hir::StorageClass
+pub perl_parser_core::hir::Binding::visible_from: usize
 pub fn perl_parser_core::hir::Binding::clone(&self) -> perl_parser_core::hir::Binding
 pub fn perl_parser_core::hir::Binding::eq(&self, other: &perl_parser_core::hir::Binding) -> bool
 pub fn perl_parser_core::hir::Binding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
