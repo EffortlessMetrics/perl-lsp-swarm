@@ -521,6 +521,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn perl5lib_precedence_labels_preserve_report_values() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for (precedence, expected) in
+            [(Perl5LibPrecedence::Prepend, "prepend"), (Perl5LibPrecedence::Append, "append")]
+        {
+            let actual = perl5lib_precedence_label(&precedence);
+            if actual != expected {
+                return Err(format!("unexpected PERL5LIB precedence label: {actual}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn setup_hints_report_module_probe_policy_without_claiming_a_probe()
     -> Result<(), Box<dyn std::error::Error>> {
         let hints = setup_hints_summary(&WorkspaceConfig::default());
