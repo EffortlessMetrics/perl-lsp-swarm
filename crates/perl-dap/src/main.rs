@@ -20,7 +20,7 @@ use perl_dap::ptkdb_bootstrap::render_ptkdbrc;
 use perl_dap::session_plan::DebugSessionPlanBuilder;
 use perl_dap::{DapConfig, DapMode, DapServer};
 use perl_lsp_rs_core::product_identity::{
-    BinaryIdentityPacketV1, IdentityOutputFormat, requested_identity_output,
+    BinaryIdentityPacketV1, IdentityOutputFormat, IdentityRequest, requested_identity,
 };
 use perl_lsp_rs_core::runtime::launcher::{init_logging, log_server_startup};
 
@@ -260,25 +260,31 @@ fn run_external_peer_listen(spec: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build a debug-session packet for `program`, deriving source facts from the
-/// program text.
+/// Decode one-shot program bytes with the product-side source contract (#1387):
+/// UTF-8 first, then per-byte Latin-1. Supported non-UTF-8 Perl sources are
+/// readable; they must not fail closed as "unreadable."
+fn decode_one_shot_source(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => err.into_bytes().into_iter().map(char::from).collect(),
+    }
+}
+
+/// Load a session packet for a one-shot emit flag.
 ///
 /// An unreadable program is a hard error, not a degenerate emit (#16553): both
-/// one-shot consumers render program-specific setup from `source_facts`, so a
-/// silently emitted packet (`"source_facts": {}`, no program setup) would look
-/// complete while missing every program-specific fact, and the exit 0 would
-/// hide the typo from scripts and Makefiles. The underlying read error is
-/// preserved so a bad path is diagnosable.
-///
-/// # Errors
-/// Fails when `program` cannot be read, naming the path and the OS error.
-fn build_session_packet(program: &Path) -> anyhow::Result<DebugSessionPacket> {
-    let mut builder = DebugSessionPlanBuilder::new(program);
-    let text = std::fs::read_to_string(program)
-        .map_err(|e| anyhow::anyhow!("program '{}' could not be read: {e}", program.display()))?;
+/// `--ptkdb-bootstrap-rc` and `--debug-session-plan` render from this packet, so
+/// a silently emitted `source_facts: {}` plan would look complete while missing
+/// every program-specific fact, and exit 0 would hide the typo from scripts.
+/// "Unreadable" means IO could not obtain the bytes (missing, directory,
+/// permission). Decode uses UTF-8 then Latin-1; it is not a fail-closed path.
+fn load_one_shot_packet(flag: &str, program: &Path) -> anyhow::Result<DebugSessionPacket> {
+    let bytes = std::fs::read(program).map_err(|error| {
+        anyhow::anyhow!("{flag}: program '{}' could not be read: {error}", program.display())
+    })?;
+    let text = decode_one_shot_source(bytes);
     let source = DebugSource::from_path(program);
-    builder = builder.source_facts_from_text(&source, &text);
-    Ok(builder.build())
+    Ok(DebugSessionPlanBuilder::new(program).source_facts_from_text(&source, &text).build())
 }
 
 fn resolve_socket_port(args: &perl_lsp_rs_core::runtime::launcher::TransportArgs) -> Option<u16> {
@@ -309,7 +315,11 @@ fn write_runtime_identity(format: IdentityOutputFormat) -> anyhow::Result<()> {
 with `--external-peer` / `--external-peer-listen` — fails before bind. Use \
 `perl-dap --stdio`, `perl-dap --stdio --external-peer HOST:PORT`, or \
 `perl-dap --stdio --external-peer-listen HOST[:PORT]`. Authenticated debugger-peer \
-TCP remains a backend transport, not an editor listener."
+TCP remains a backend transport, not an editor listener.\n\nIdentity one-shot (each \
+must be the only argument): `perl-dap --identity` prints the installed-binary \
+identity packet; `perl-dap --identity-json` prints the same packet as \
+perl_lsp.binary_identity.v1 JSON; `perl-dap --info --json` prints that packet \
+through the composed form."
 )]
 struct Args {
     #[command(flatten)]
@@ -369,7 +379,16 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
-    if let Some(format) = requested_identity_output(&raw_args) {
+    // The shared resolver owns this decision for both binaries: a mix is
+    // rejected with a message naming the flag rather than falling through to
+    // clap, which would deny `--identity` as unknown.
+    let identity = requested_identity(&raw_args);
+    // The rejecting binary owns the help pointer: `perl-dap --help`, not the
+    // server binary's help.
+    if let Some(message) = identity.rejection_message_for("perl-dap") {
+        anyhow::bail!("{message}");
+    }
+    if let IdentityRequest::Output(format) = identity {
         write_runtime_identity(format)?;
         return Ok(());
     }
@@ -379,14 +398,12 @@ fn main() -> anyhow::Result<()> {
     // the stdout handle (rather than the print!/println! macros) so the shipped
     // binary stays clear of the `clippy::print_stdout` restriction lint.
     if let Some(program) = args.ptkdb_bootstrap_rc.as_deref() {
-        let packet = build_session_packet(program)
-            .map_err(|e| anyhow::anyhow!("--ptkdb-bootstrap-rc: {e}"))?;
+        let packet = load_one_shot_packet("--ptkdb-bootstrap-rc", program)?;
         write!(std::io::stdout(), "{}", render_ptkdbrc(&packet, true))?;
         return Ok(());
     }
     if let Some(program) = args.debug_session_plan.as_deref() {
-        let packet = build_session_packet(program)
-            .map_err(|e| anyhow::anyhow!("--debug-session-plan: {e}"))?;
+        let packet = load_one_shot_packet("--debug-session-plan", program)?;
         writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&packet)?)?;
         return Ok(());
     }
@@ -470,16 +487,20 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, DEFAULT_DAP_PORT, build_session_packet, editor_socket_retired,
-        native_editor_socket_retired, parse_listen_bind, parse_peer_connect_spec,
-        resolve_socket_port, windows_shell_quote,
+        Args, DEFAULT_DAP_PORT, decode_one_shot_source, editor_socket_retired,
+        load_one_shot_packet, native_editor_socket_retired, parse_listen_bind,
+        parse_peer_connect_spec, resolve_socket_port, windows_shell_quote,
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
-        BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, requested_identity_output,
+        BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, IdentityRequest,
+        requested_identity,
     };
     use perl_test_must::{must, must_err_with, must_with};
     use std::path::Path;
+
+    /// Parseable Perl with Latin-1 `é` (0xE9), not UTF-8 `c3 a9`.
+    const LATIN1_PARSEABLE: &[u8] = b"sub run {\n    my $x = \"caf\xe9\";\n    return $x;\n}\n";
 
     #[test]
     fn native_socket_flags_fail_with_stdio_migration_before_any_bind() {
@@ -523,6 +544,26 @@ mod tests {
     }
 
     #[test]
+    fn cli_help_documents_the_identity_one_shot_forms() {
+        // The mixed-identity rejection points at `perl-dap --help`, so the help
+        // must name every form the rejection can defend: the rejection fires on
+        // `--identity`, `--identity-json`, and the composed `--info --json`.
+        let help = Args::command().render_long_help().to_string();
+        assert!(
+            help.contains("perl-dap --identity"),
+            "help must name the identity packet form: {help}"
+        );
+        assert!(
+            help.contains("`perl-dap --identity-json`"),
+            "help must name the JSON identity form: {help}"
+        );
+        assert!(
+            help.contains("`perl-dap --info --json`"),
+            "help must name the composed identity form: {help}"
+        );
+    }
+
+    #[test]
     fn cli_rejects_removed_bridge_flag() {
         let result = Args::try_parse_from(["perl-dap", "--bridge"]);
         assert!(result.is_err());
@@ -532,12 +573,36 @@ mod tests {
     fn dap_identity_flags_select_the_shared_packet_without_starting_clap() {
         let json_args = vec!["perl-dap".to_owned(), "--info".to_owned(), "--json".to_owned()];
         let human_args = vec!["perl-dap".to_owned(), "--identity".to_owned()];
-        assert_eq!(requested_identity_output(&json_args), Some(IdentityOutputFormat::Json));
-        assert_eq!(requested_identity_output(&human_args), Some(IdentityOutputFormat::Human));
+        assert_eq!(
+            requested_identity(&json_args),
+            IdentityRequest::Output(IdentityOutputFormat::Json)
+        );
+        assert_eq!(
+            requested_identity(&human_args),
+            IdentityRequest::Output(IdentityOutputFormat::Human)
+        );
 
         let packet = BinaryIdentityPacketV1::embedded_dap("0.18.0");
         assert_eq!(packet.binary.role, BinaryRole::Dap);
         assert_eq!(packet.binary.executable, "perl-dap");
+    }
+
+    /// A DAP peer invocation must not be answered with the identity packet, so
+    /// it is rejected as a mix rather than claimed. `perl-dap` has no `--info`
+    /// option, so this shape is invalid for the binary either way.
+    #[test]
+    fn a_dap_peer_invocation_is_rejected_rather_than_claimed_as_identity() {
+        let peer = vec![
+            "perl-dap".to_owned(),
+            "--external-peer".to_owned(),
+            "127.0.0.1:5000".to_owned(),
+            "--info".to_owned(),
+            "--json".to_owned(),
+        ];
+        assert_eq!(
+            requested_identity(&peer),
+            IdentityRequest::MixedOperands { flag: "--info --json".to_owned() }
+        );
     }
 
     #[test]
@@ -610,28 +675,76 @@ mod tests {
     }
 
     #[test]
-    fn one_shot_packet_refuses_an_unreadable_program_with_a_named_path() {
+    fn one_shot_packet_refuses_a_missing_program_and_names_the_flag() {
         let missing = Path::new("./no-such-dir/no-such-16553.pl");
         let error = must_err_with(
-            build_session_packet(missing),
-            "an unreadable program must fail the one-shot emit instead of exiting 0 (#16553)",
+            load_one_shot_packet("--debug-session-plan", missing),
+            "a missing program must fail the one-shot emit instead of exiting 0 (#16553)",
         );
         let message = error.to_string();
+        assert!(message.contains("--debug-session-plan"), "{message}");
         assert!(message.contains("could not be read"), "{message}");
         assert!(message.contains("no-such-16553.pl"), "{message}");
     }
 
     #[test]
-    fn one_shot_packet_still_attaches_source_facts_for_a_readable_program() {
+    fn one_shot_packet_refuses_a_directory() {
+        let dir = must_with(tempfile::tempdir(), "test fixture tempdir must be created");
+        let error = must_err_with(
+            load_one_shot_packet("--ptkdb-bootstrap-rc", dir.path()),
+            "a directory must fail closed; Path::exists is true for directories (#16553)",
+        );
+        let message = error.to_string();
+        assert!(message.contains("--ptkdb-bootstrap-rc"), "{message}");
+        assert!(message.contains("could not be read"), "{message}");
+    }
+
+    #[test]
+    fn decode_one_shot_source_keeps_utf8_and_maps_latin1() {
+        assert_eq!(decode_one_shot_source(b"ok\n".to_vec()), "ok\n");
+        assert_eq!(decode_one_shot_source(vec![b'c', b'a', b'f', 0xe9]), "café");
+    }
+
+    #[test]
+    fn one_shot_packet_decodes_latin1_source() {
+        let dir = must_with(tempfile::tempdir(), "test fixture tempdir must be created");
+        let program = dir.path().join("latin1.pl");
+        must_with(std::fs::write(&program, LATIN1_PARSEABLE), "latin-1 fixture must be written");
+        let packet = must_with(
+            load_one_shot_packet("--debug-session-plan", &program),
+            "a readable Latin-1 program must build a packet, not fail closed (#1387)",
+        );
+        assert!(
+            !packet.source_facts.is_empty(),
+            "a parseable Latin-1 program must keep its source facts"
+        );
+    }
+
+    #[test]
+    fn one_shot_packet_attaches_source_facts_for_a_parseable_program() {
         let dir = must_with(tempfile::tempdir(), "test fixture tempdir must be created");
         let program = dir.path().join("prog.pl");
         must_with(
             std::fs::write(&program, "sub run {\n    my $x = 1;\n    return $x;\n}\n"),
-            "test fixture program must be written",
+            "parseable fixture must be written",
         );
-        let packet =
-            must_with(build_session_packet(&program), "a readable program must build a packet");
-        assert!(!packet.source_facts.is_empty(), "a readable program must keep its source facts");
+        let packet = must_with(
+            load_one_shot_packet("--debug-session-plan", &program),
+            "a readable parseable program must build a packet",
+        );
+        assert!(!packet.source_facts.is_empty(), "a parseable program must keep its source facts");
+    }
+
+    #[test]
+    fn one_shot_packet_succeeds_for_an_empty_readable_file() {
+        let dir = must_with(tempfile::tempdir(), "test fixture tempdir must be created");
+        let program = dir.path().join("empty.pl");
+        must_with(std::fs::write(&program, ""), "empty fixture must be written");
+        let packet = must_with(
+            load_one_shot_packet("--debug-session-plan", &program),
+            "an empty readable file is a successful read, not an unreadable program",
+        );
+        assert_eq!(packet.program, program);
     }
 
     #[test]

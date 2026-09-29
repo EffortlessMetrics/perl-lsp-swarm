@@ -314,10 +314,16 @@ trying again; this avoids launching a second server over an unknown process.
 | Command                              | Description                                    |
 | ------------------------------------ | ---------------------------------------------- |
 | **Perl: Open Module**                | Open a module by name, resolved through `@INC` |
+| **Perl: Create Module**              | Create a new `.pm` beneath a workspace `lib` directory with a matching package declaration |
+| **Perl: Create Test**                | Create a new `.t` in a local workspace folder with `Test::More` starter content |
 | **Perl: Show @INC Paths**            | Show the `@INC` paths the server is using      |
 | **Perl: Preview POD**                | Render the POD in the active file              |
 | **Perl: Show Parser AST**            | Show the parser AST for the active file        |
 | **Perl: Create Debug Configuration** | Generate a `launch.json` debug configuration   |
+
+Creating a file through another editor action leaves it untouched. The former
+`perl-lsp.autoPopulateNewFiles` setting has been retired; remove an old `true` or
+`false` value from your settings and use the explicit commands above.
 
 ### Explainability and previews
 

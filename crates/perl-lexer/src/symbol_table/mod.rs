@@ -852,10 +852,13 @@ fn heredoc_allowed_before(
 
     // A callable that can still take arguments makes `<<MARKER` its heredoc
     // argument (`print <<END`, unprototyped `foo <<END`). A nullary authority
-    // instead completes a term: `sub foo ()` and `time` leave `<<` as the
-    // left-shift operator (local Perl oracle, #16165). A sigiled word is a
-    // variable, not a callable: `$print <<'END'` is a left shift too, so only
-    // a sigil-free callable word introduces a heredoc.
+    // instead completes a bare call: `sub foo ()` and `time` leave `<<` as the
+    // left-shift operator (local Perl oracle, #16165). An explicit `&foo` call
+    // completes the same way on the pinned 5.38.2 oracle — it takes `@_` and
+    // leaves `<<` a shift, and binary `1 & foo` never names a call at all —
+    // so the ampersand never reopens a heredoc slot here (#16445 records the
+    // 5.42 divergence; the garbage-body oracle receipts pin this reading).
+    // Variable sigils name completed terms: `$print <<'END'` is left shift.
     previous_word_and_sigil_before(line, offset).is_some_and(|(sigil, word)| {
         // A sigiled word is a completed term first: `$print <<'END'` and the
         // typeglob/last-index forms are left shifts, never heredoc
@@ -1088,6 +1091,28 @@ mod tests {
             "print <<END;\nsub fake { }\nEND\nsub real { }\n",
             &["real"],
             &["fake"],
+        );
+    }
+
+    #[test]
+    fn ampersand_calls_keep_the_shift_reading_on_the_pinned_oracle() {
+        // perl 5.38.2 (this crate's pinned oracle) reads `<<` as a left shift
+        // after an explicit `&foo` call: the call completes by taking `@_`, so
+        // the following line is live code. Oracle receipts: a garbage body
+        // line is a syntax error under `&foo <<END` (heredoc denied) while
+        // `&foo(<<END)` consumes one (parenthesized form is the heredoc).
+        // The 5.42 divergence recorded in #16445 stays tracked there.
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = &foo <<END;\nsub visible { }\nEND\n",
+            &["visible"],
+            &[],
+        );
+        // A binary `&` before a nullary call never names a call: `1 & foo`
+        // completes a term and `<<END` is a shift there too.
+        assert_membership_and_slash(
+            "sub foo () { 2 }\nmy $x = 1 & foo <<END;\nsub visible { }\nEND\n",
+            &["visible"],
+            &[],
         );
     }
 
