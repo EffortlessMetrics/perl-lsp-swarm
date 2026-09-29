@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "total_files": 30,
-  "total_bytes": 1892342,
+  "total_bytes": 1892579,
   "files": {
-    "readme.md": 27166,
+    "readme.md": 27403,
     "package.nls.json": 2210,
     "package.json": 62099,
     "LICENSE.txt": 1069,
