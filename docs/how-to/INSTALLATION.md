@@ -197,15 +197,14 @@ BASE="https://github.com/EffortlessMetrics/perl-lsp/releases/download/${TAG}"
 curl -fsSL -O "${BASE}/${ASSET}"
 curl -fsSL -O "${BASE}/SHA256SUMS"
 
-# Fail closed if SHA256SUMS has no row for this asset. Do not extract an
-# unverified archive: an empty grep|sha256sum pipeline is not a match.
+# Fail closed if SHA256SUMS has no row for this asset, and do not extract
+# unless that row verifies. An interactive paste has neither `set -e` nor
+# `pipefail`, so extraction is chained with `&&`.
 ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1
 # GNU coreutils (Linux):
-printf '%s\n' "$ROW" | sha256sum -c -
+printf '%s\n' "$ROW" | sha256sum -c - && tar -xzf "$ASSET"
 # macOS:
-# printf '%s\n' "$ROW" | shasum -a 256 -c -
-
-tar -xzf "$ASSET"
+# printf '%s\n' "$ROW" | shasum -a 256 -c - && tar -xzf "$ASSET"
 ```
 
 Put the extracted directory (`perllsp-${VERSION}-${TARGET}`) on your `PATH`,

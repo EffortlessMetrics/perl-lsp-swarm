@@ -50,6 +50,28 @@ posix_manual_archive_section() {
     ' "$ROOT/docs/how-to/INSTALLATION.md"
 }
 
+# The documented recovery names both GNU sha256sum and macOS shasum. The
+# fixture must follow whichever tool this host actually has.
+posix_sha256_sum() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1"
+    else
+        return 1
+    fi
+}
+
+posix_sha256_check() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -c -
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 -c -
+    else
+        return 1
+    fi
+}
+
 assert_identity_dead_end_is_actionable() {
     local name="$1" needle="$2"
     if [ "$LAST_STATUS" -ne 0 ] \
@@ -365,7 +387,7 @@ if [[ "$SECTION" == "$POSIX_MANUAL_ARCHIVE_HEADING"$'\n'* ]] \
     && [[ "$SECTION" == *'ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1'* ]] \
     && [[ "$SECTION" == *'sha256sum'* ]] \
     && [[ "$SECTION" == *'shasum'* ]] \
-    && [[ "$SECTION" == *'tar -xzf'* ]] \
+    && [[ "$SECTION" == *'&& tar -xzf "$ASSET"'* ]] \
     && [[ "$SECTION" == *'perl-dap'* ]] \
     && [[ "$SECTION" != *'.zip'* ]] \
     && [[ "$SECTION" != *'.exe'* ]]; then
@@ -386,7 +408,7 @@ ASSET="perllsp-0.17.0-x86_64-unknown-linux-gnu.tar.gz"
 (
     cd "$FIXTURE"
     tar -czf "$ASSET" perllsp-0.17.0-x86_64-unknown-linux-gnu
-    sha256sum "$ASSET" > SHA256SUMS
+    posix_sha256_sum "$ASSET" > SHA256SUMS
     printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  perllsp-0.17.0-x86_64-pc-windows-msvc.zip\n' >> SHA256SUMS
 )
 EXTRACT="$TMP/manual-archive-extract"
@@ -395,8 +417,7 @@ mkdir -p "$EXTRACT"
     cd "$EXTRACT"
     cp "$FIXTURE/$ASSET" "$FIXTURE/SHA256SUMS" .
     ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1
-    printf '%s\n' "$ROW" | sha256sum -c -
-    tar -xzf "$ASSET"
+    printf '%s\n' "$ROW" | posix_sha256_check && tar -xzf "$ASSET"
 )
 if grep -qx 'fixture-perllsp' "$EXTRACT/perllsp-0.17.0-x86_64-unknown-linux-gnu/perllsp" \
     && grep -qx 'fixture-perl-dap' "$EXTRACT/perllsp-0.17.0-x86_64-unknown-linux-gnu/perl-dap"; then
@@ -415,8 +436,7 @@ set +e
 MISSING_OUTPUT="$(
     cd "$MISSING_ROW"
     ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1
-    printf '%s\n' "$ROW" | sha256sum -c -
-    tar -xzf "$ASSET"
+    printf '%s\n' "$ROW" | posix_sha256_check && tar -xzf "$ASSET" || exit 1
     echo EXTRACTED
 )"
 MISSING_STATUS=$?
@@ -428,6 +448,29 @@ if [ "$MISSING_STATUS" -ne 0 ] \
 else
     fail_case "missing SHA256SUMS row fails closed before extract" \
         "status=$MISSING_STATUS output=$MISSING_OUTPUT"
+fi
+
+MISMATCH="$TMP/manual-archive-mismatch"
+mkdir -p "$MISMATCH"
+cp "$FIXTURE/$ASSET" "$MISMATCH/"
+printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  %s\n' "$ASSET" \
+    > "$MISMATCH/SHA256SUMS"
+set +e
+MISMATCH_OUTPUT="$(
+    cd "$MISMATCH"
+    ROW="$(grep -F "$ASSET" SHA256SUMS)" || exit 1
+    printf '%s\n' "$ROW" | posix_sha256_check && tar -xzf "$ASSET" || exit 1
+    echo EXTRACTED
+)"
+MISMATCH_STATUS=$?
+set -e
+if [ "$MISMATCH_STATUS" -ne 0 ] \
+    && [[ "$MISMATCH_OUTPUT" != *"EXTRACTED"* ]] \
+    && [ ! -e "$MISMATCH/perllsp-0.17.0-x86_64-unknown-linux-gnu" ]; then
+    pass "checksum mismatch fails closed before extract"
+else
+    fail_case "checksum mismatch fails closed before extract" \
+        "status=$MISMATCH_STATUS output=$MISMATCH_OUTPUT"
 fi
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS" "$FAIL"
