@@ -152,6 +152,15 @@ describe('package.json walkthrough contribution', () => {
     expect(step.description).toMatch(/command:perl-lsp\.runHealthCheck/);
   });
 
+  test('verify-perl step distinguishes optional runtime from core language server', () => {
+    const wt = findRequired(pkg.contributes.walkthroughs, () => true, 'a walkthrough');
+    const step = findRequired(wt.steps, (s) => s.id === 'verify-perl', 'verify-perl step');
+    expect(step.title).toMatch(/optional/i);
+    expect(step.description).toMatch(/core language server works without Perl/i);
+    expect(step.description).toMatch(/Perl for running tests and debugging/i);
+    expect(step.description).not.toMatch(/Perl 5\.10|full LSP support/i);
+  });
+
   test('open-project step offers the bundled demo project (#1635)', () => {
     const wt = findRequired(pkg.contributes.walkthroughs, () => true, 'a walkthrough');
     const step = findRequired(
@@ -218,4 +227,21 @@ describe('walkthrough step media files', () => {
       expect(fs.existsSync(absPath)).toBe(true);
     }
   });
+
+  test('verify-perl artwork states the core server does not need Perl', () => {
+    const wt = findRequired(pkg.contributes.walkthroughs, () => true, 'a walkthrough');
+    const step = findRequired(wt.steps, (s) => s.id === 'verify-perl', 'verify-perl step');
+    const artwork = fs.readFileSync(path.join(EXT_ROOT, step.media.image ?? ''), 'utf8');
+    expect(artwork).toMatch(/Core language server works without a Perl interpreter/);
+    expect(artwork).toMatch(/Perl is needed to run tests and debug/);
+    expect(artwork).not.toMatch(/5\.10|full LSP support/i);
+  });
+});
+
+test('DAP guide retains its Perl 5.10+ debugger prerequisite', () => {
+  const guide = fs.readFileSync(
+    path.resolve(EXT_ROOT, '..', 'docs/tutorials/DAP_USER_GUIDE.md'),
+    'utf8',
+  );
+  expect(guide).toMatch(/Perl 5\.10 or newer available on `PATH`/);
 });

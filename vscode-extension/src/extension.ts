@@ -2208,7 +2208,7 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
     void (async () => {
       // Probe the binary to get an actionable OS-level diagnosis (#3280).
       // If the probe result is Unknown (binary gave no useful output), fall
-      // back to the health check (#3312) which can detect missing Perl etc.
+      // back to the health check (#3312) for binary or diagnostic evidence.
       // lastStartupDiagnosis is updated so that serverNotRunningMessage() in
       // command handlers surfaces the specific root cause rather than a generic prompt.
       const probeResult = await probeStartupFailure(failedServerPath);

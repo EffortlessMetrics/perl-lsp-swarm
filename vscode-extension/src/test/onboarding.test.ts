@@ -21,7 +21,6 @@ import {
   resolveUnixShellInvocationFallback,
   toPosixShellCommand,
   classifyStartupFailure,
-  PERL_MISSING_MESSAGE,
   STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE,
 } from '../onboarding';
 import type { HealthCheckResult } from '../onboarding';
@@ -524,20 +523,16 @@ describe('classifyStartupFailure', () => {
     return { label, ok, status, detail };
   }
 
-  test('returns Perl-missing message when the Perl check explicitly failed', () => {
+  test('does not blame optional Perl when binary evidence is healthy', () => {
     const results: HealthCheckResult[] = [
       makeResult('Perl interpreter', false, HealthCheckStatus.Error, 'perl: command not found'),
       makeResult('perltidy', true, HealthCheckStatus.Ok, 'perltidy found'),
       makeResult('LSP binary', true, HealthCheckStatus.Ok, 'Binary found: /usr/bin/perllsp'),
     ];
     const msg = classifyStartupFailure(results);
-    expect(msg).toBe(PERL_MISSING_MESSAGE);
-    expect(msg).toContain('5.10');
-    expect(msg).toContain('strawberryperl.com');
-    expect(msg).toContain('brew install perl');
-    expect(msg).toContain('package manager');
-    expect(msg).toMatch(/install|Install/);
-    expect(msg).not.toContain('Restart the server');
+    expect(msg).toContain('failed to start');
+    expect(msg).not.toContain('Perl interpreter not found');
+    expect(msg).not.toContain('5.10');
   });
 
   test('returns binary-missing message when binary check failed and Perl is present', () => {
@@ -549,6 +544,37 @@ describe('classifyStartupFailure', () => {
     const msg = classifyStartupFailure(results);
     expect(msg).not.toContain('Install Perl');
     expect(msg).toMatch(/binary|perllsp/i);
+  });
+
+  test('returns binary-missing message when optional Perl check is absent', () => {
+    const msg = classifyStartupFailure([
+      makeResult('LSP binary', false, HealthCheckStatus.Error, 'binary not found'),
+    ]);
+    expect(msg).toContain('perllsp');
+    expect(msg).toContain('reinstall the extension');
+    expect(msg).not.toContain('Perl interpreter not found');
+  });
+
+  test('returns unknown failure when optional Perl result is absent', () => {
+    const msg = classifyStartupFailure([
+      makeResult('LSP binary', true, HealthCheckStatus.Ok, 'Binary found: /usr/bin/perllsp'),
+    ]);
+    expect(msg).toContain('failed to start');
+    expect(msg).not.toBe(STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE);
+    expect(msg).not.toContain('Perl interpreter not found');
+  });
+
+  test.each([
+    [false, HealthCheckStatus.Warning],
+    [true, HealthCheckStatus.Error],
+  ])('does not infer a root cause from malformed binary result (%s, %s)', (ok, status) => {
+    const msg = classifyStartupFailure([
+      makeResult('Perl interpreter', false, HealthCheckStatus.Error, 'perl missing'),
+      makeResult('LSP binary', ok, status, 'ambiguous binary check'),
+    ]);
+    expect(msg).toContain('failed to start');
+    expect(msg).not.toContain('Perl interpreter not found');
+    expect(msg).not.toContain('binary (perllsp) not found');
   });
 
   test('returns generic message when all checks pass (unknown crash)', () => {
@@ -563,7 +589,7 @@ describe('classifyStartupFailure', () => {
     expect(msg).not.toContain('perl-lsp binary not found');
   });
 
-  test('returns unavailable diagnostics when required result rows are absent', () => {
+  test('returns unavailable diagnostics when binary result is absent', () => {
     const msg = classifyStartupFailure([]);
     expect(msg).toBe(STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE);
     expect(msg).not.toContain('Install Perl');
@@ -629,6 +655,20 @@ describe('OnboardingManager.showWelcomeNotification', () => {
 // ---------------------------------------------------------------------------
 
 describe('OnboardingManager.runStartupDiagnostics', () => {
+  test('keeps absent optional Perl as a warning and leaves healthy binary startup unknown', async () => {
+    const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
+    mockExecCheck(mgr, () => Promise.reject(new Error('perl: command not found')));
+
+    const warning = await mgr.checkPerlInstalled();
+    expect(warning.status).toBe(HealthCheckStatus.Warning);
+    expect(warning.detail).toContain('core language server does not require Perl');
+
+    const msg = await mgr.runStartupDiagnostics(process.execPath);
+    expect(msg).toContain('failed to start');
+    expect(msg).not.toContain('Perl interpreter not found');
+    expect(msg).not.toContain('5.10');
+  });
+
   test('does not blame optional Perl when the explicit binary check failed', async () => {
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
     mockExecCheck(mgr, () => Promise.reject(new Error('command not found')));
@@ -636,6 +676,7 @@ describe('OnboardingManager.runStartupDiagnostics', () => {
     const msg = await mgr.runStartupDiagnostics(null);
 
     expect(msg).toMatch(/binary|perllsp/i);
+    expect(msg).toContain('reinstall the extension');
     expect(msg).not.toContain('Install Perl 5.10');
   });
 
@@ -644,6 +685,7 @@ describe('OnboardingManager.runStartupDiagnostics', () => {
     mockExecCheck(mgr, (_cmd: string) => Promise.resolve({ stdout: '5.036000', stderr: '' }));
     const msg = await mgr.runStartupDiagnostics(null);
     expect(msg).toMatch(/binary|perllsp/i);
+    expect(msg).toContain('reinstall the extension');
     expect(msg).not.toContain('Install Perl 5.10');
   });
 
