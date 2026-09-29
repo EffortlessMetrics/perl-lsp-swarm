@@ -526,21 +526,24 @@ mod tests {
         let begun = producer.join().map_err(|_| "progress producer thread panicked")?;
         thread::sleep(Duration::from_millis(50));
         let after_producer = output.messages()?;
-        assert!(begun.is_none(), "post-shutdown create must not start a progress frame");
-        assert!(
-            server.client_session.progress_tokens.lock().is_empty(),
-            "late create must not retain a session-owned progress token"
-        );
-        assert_eq!(
-            method_count(&after_producer, "window/workDoneProgress/create"),
-            create_before,
-            "shutdown must refuse the outbound create request, not only token retention: {after_producer:?}"
-        );
-        assert_eq!(
-            method_count(&after_producer, "$/progress"),
-            progress_before,
-            "shutdown must not emit $/progress after drain: {after_producer:?}"
-        );
+        if begun.is_some() {
+            return Err("post-shutdown create must not start a progress frame".to_string());
+        }
+        if !server.client_session.progress_tokens.lock().is_empty() {
+            return Err("late create must not retain a session-owned progress token".to_string());
+        }
+        let create_after = method_count(&after_producer, "window/workDoneProgress/create");
+        if create_after != create_before {
+            return Err(format!(
+                "shutdown must refuse the outbound create request, not only token retention: {after_producer:?}"
+            ));
+        }
+        let progress_after = method_count(&after_producer, "$/progress");
+        if progress_after != progress_before {
+            return Err(format!(
+                "shutdown must not emit $/progress after drain: {after_producer:?}"
+            ));
+        }
         Ok(())
     }
 

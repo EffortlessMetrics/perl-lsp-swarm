@@ -203,8 +203,7 @@ impl LspServer {
         });
 
         // Send request without holding session progress locks across I/O.
-        #[cfg(test)]
-        self.fire_progress_create_outbound_hook();
+        // Reverse-request enqueue is fenced with shutdown inside `send_request`.
         self.send_request_internal("window/workDoneProgress/create", params)?;
 
         match self.client_session.install_progress_token(token.to_string(), None) {
@@ -254,7 +253,7 @@ impl LspServer {
             "value": value,
         });
 
-        self.notify("$/progress", params)
+        self.notify_progress(params)
     }
 
     /// Report progress update notification
@@ -290,7 +289,7 @@ impl LspServer {
             "value": value,
         });
 
-        self.notify("$/progress", params)
+        self.notify_progress(params)
     }
 
     /// Report progress end notification
@@ -317,9 +316,8 @@ impl LspServer {
             "value": value,
         });
 
-        // Remove token from active set
+        let _enqueue = self.client_session.admit_outbound_enqueue("$/progress")?;
         self.client_session.progress_tokens.lock().remove(token);
-
         self.notify("$/progress", params)
     }
 
@@ -420,11 +418,9 @@ impl LspServer {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn fire_progress_create_outbound_hook(&self) {
-        if let Some(hook) = self.progress_create_outbound_hook.lock().take() {
-            hook();
-        }
+    fn notify_progress(&self, params: Value) -> io::Result<()> {
+        let _enqueue = self.client_session.admit_outbound_enqueue("$/progress")?;
+        self.notify("$/progress", params)
     }
 }
 

@@ -36,10 +36,23 @@ impl LspServer {
                 format!("server request `{method}` refused: session is shut down"),
             ));
         }
+        // Test barrier sits between successful admission and enqueue so the
+        // race can finish shutdown, then observe that the enqueue fence
+        // refuses rather than emitting.
+        #[cfg(test)]
+        self.fire_progress_create_outbound_hook();
+        let _enqueue = self.client_session.admit_outbound_enqueue(method)?;
 
         let id = self.next_server_request_id();
         self.outbound_sink().send_request(id, method, params)?;
         Ok(id)
+    }
+
+    #[cfg(test)]
+    fn fire_progress_create_outbound_hook(&self) {
+        if let Some(hook) = self.progress_create_outbound_hook.lock().take() {
+            hook();
+        }
     }
 
     pub(crate) fn next_server_request_id(&self) -> ServerRequestId {
@@ -262,10 +275,11 @@ mod tests {
     #[test]
     fn send_request_after_shutdown_is_refused_and_emits_no_frame() -> TestResult {
         let (server, output) = server_with_output_capture();
-        assert_eq!(
-            server.client_session.begin_shutdown(),
-            crate::runtime::client_session::ShutdownAdmission::First
-        );
+        if server.client_session.begin_shutdown()
+            != crate::runtime::client_session::ShutdownAdmission::First
+        {
+            return Err("expected first-caller shutdown admission".into());
+        }
 
         let error = match server.send_request("workspace/configuration", json!({"items": []})) {
             Ok(id) => {
@@ -276,17 +290,23 @@ mod tests {
             }
             Err(error) => error,
         };
-        assert_eq!(
-            error.kind(),
-            io::ErrorKind::NotConnected,
-            "exact NotConnected on shutdown send_request boundary"
-        );
-        assert!(
-            error.to_string().contains("shut down"),
-            "rejection should name the shutdown boundary: {error}"
-        );
+        if error.kind() != io::ErrorKind::NotConnected {
+            return Err(format!(
+                "exact NotConnected on shutdown send_request boundary, got {:?}",
+                error.kind()
+            )
+            .into());
+        }
+        if !error.to_string().contains("shut down") {
+            return Err(format!("rejection should name the shutdown boundary: {error}").into());
+        }
         thread::sleep(Duration::from_millis(50));
-        assert!(output.messages()?.is_empty(), "no server request frame may escape after shutdown");
+        let messages = output.messages()?;
+        if !messages.is_empty() {
+            return Err(
+                format!("no server request frame may escape after shutdown: {messages:?}").into()
+            );
+        }
         Ok(())
     }
 

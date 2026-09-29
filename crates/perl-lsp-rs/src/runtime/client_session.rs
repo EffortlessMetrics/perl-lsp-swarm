@@ -34,10 +34,11 @@
 //! component drains session-owned handles.
 
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use perl_lsp_rs_core::governance::FeatureProfile;
 use serde_json::Value;
 
@@ -62,10 +63,10 @@ pub(crate) enum ShutdownAdmission {
 /// Outcome of installing a session-owned progress token.
 ///
 /// Token installation is serialized with [`ClientSession::begin_shutdown`]
-/// through the `progress_tokens` mutex: drain sets `shutdown_received` and
-/// then clears under that lock, so a late producer either refuses or inserts
-/// before drain and is then cleared. An independent atomic precheck before
-/// outbound I/O is not this gate.
+/// through the `progress_tokens` mutex: drain holds `outbound_enqueue`, sets
+/// `shutdown_received`, then clears under `progress_tokens`, so a late
+/// producer either refuses or inserts before drain and is then cleared. An
+/// independent atomic precheck before outbound I/O is not the enqueue gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProgressTokenInstall {
     Installed,
@@ -102,6 +103,11 @@ pub(crate) struct ClientSession {
         Arc<Mutex<HashMap<ServerRequestId, PendingWorkspaceConfigurationRequest>>>,
     pub(crate) progress_tokens: Arc<Mutex<HashSet<String>>>,
     pub(crate) progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
+    /// Serializes reverse-request and `$/progress` enqueue with shutdown.
+    /// Held across the live-session recheck and the sink send so a producer
+    /// that already passed `shutdown_received` still cannot emit after drain.
+    /// This is not `progress_tokens`; do not hold that map across I/O.
+    outbound_enqueue: Mutex<()>,
     pub(crate) trace_level: Arc<Mutex<String>>,
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
     /// Once-per-session core-module goto-definition notice (#16551).
@@ -136,6 +142,7 @@ impl ClientSession {
             pending_workspace_configuration_requests: Arc::new(Mutex::new(HashMap::new())),
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
+            outbound_enqueue: Mutex::new(()),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
             core_module_notice_shown: Arc::new(AtomicBool::new(false)),
@@ -163,6 +170,11 @@ impl ClientSession {
     /// generation and resetting negotiated client facts; lifecycle flags stay
     /// terminal for this connection.
     pub(crate) fn begin_shutdown(&self) -> ShutdownAdmission {
+        // Take the enqueue fence before flipping shutdown so an in-flight
+        // send that already holds this lock settles as pre-shutdown, and a
+        // producer paused after the atomic precheck still observes the flag
+        // at enqueue.
+        let _enqueue = self.outbound_enqueue.lock();
         if self.shutdown_received.swap(true, Ordering::AcqRel) {
             return ShutdownAdmission::AlreadyShutdown;
         }
@@ -180,6 +192,7 @@ impl ClientSession {
         )
     )]
     pub(crate) fn replace_connection(&self) {
+        let _enqueue = self.outbound_enqueue.lock();
         let _ = self.shutdown_received.swap(true, Ordering::AcqRel);
         self.invalidate_identity_and_drain();
         self.initialize_requested.store(false, Ordering::Release);
@@ -193,6 +206,21 @@ impl ClientSession {
         self.root_undetected_shown.store(false, Ordering::Release);
         self.core_module_notice_shown.store(false, Ordering::Release);
         self.client_supports_pull_diags.store(false, Ordering::Release);
+    }
+
+    /// Admit one reverse-request or `$/progress` enqueue if this session is
+    /// still live. Hold the returned guard across the sink send. Shutdown
+    /// takes the same lock before draining, so this is the settlement fence;
+    /// `progress_tokens` stays out of that I/O.
+    pub(crate) fn admit_outbound_enqueue(&self, method: &str) -> io::Result<MutexGuard<'_, ()>> {
+        let guard = self.outbound_enqueue.lock();
+        if self.shutdown_received.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                format!("`{method}` refused: session is shut down"),
+            ));
+        }
+        Ok(guard)
     }
 
     /// Install a progress token if this session is still live.
