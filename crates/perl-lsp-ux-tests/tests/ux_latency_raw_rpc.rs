@@ -197,6 +197,24 @@ fn workspace_symbols_with_budget(
     }
 }
 
+fn observe_immediate_workspace_symbols(
+    request: impl FnOnce() -> Result<WorkspaceSymbolObservation>,
+    readiness_after_rpc: impl FnOnce() -> std::result::Result<(), WaitEnd>,
+    ready_before_query: bool,
+) -> Result<WorkspaceSymbolObservation> {
+    match request() {
+        Ok(observation) => Ok(observation),
+        Err(error) => {
+            // The first RPC can consume the whole scenario budget. Preserve the
+            // exact-document readiness state already buffered when it ends.
+            let readiness = readiness_after_rpc();
+            bail!(
+                "workspace/symbol immediate request failed; ready_before_query={ready_before_query}; active_document_readiness_after_rpc={readiness:?}: {error:#}"
+            )
+        }
+    }
+}
+
 fn registration_seen(events: &[LspEvent], method_name: &str) -> bool {
     events.iter().any(|event| {
         let LspEvent::Other { method, params } = event else {
@@ -422,7 +440,11 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
     let deadline = opened_at + ARRIVAL_BUDGET;
     let uri = harness.workspace.uri("lib/Latency/Symbols.pm");
     let ready_before_query = harness.wait_for_active_document_ready(&uri, Duration::ZERO);
-    let first = workspace_symbols_with_budget(&harness, deadline, "immediate after didOpen")?;
+    let first = observe_immediate_workspace_symbols(
+        || workspace_symbols_with_budget(&harness, deadline, "immediate after didOpen"),
+        || harness.wait_for_active_document_ready_result(&uri, Duration::ZERO),
+        ready_before_query,
+    )?;
     let first_has_alpha = first.symbols.iter().any(|symbol| symbol["name"] == "alpha");
     let ready_by_response = harness.wait_for_active_document_ready(&uri, Duration::ZERO);
 
@@ -442,20 +464,22 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
             );
         }
     }
-    let readiness_elapsed = opened_at.elapsed();
+    // The event may have arrived while the first RPC was in flight. This is
+    // the latest time by which readiness is confirmed, not its arrival time.
+    let readiness_confirmed_by = opened_at.elapsed();
 
     let after_ready = workspace_symbols_with_budget(&harness, deadline, "after active-document-ready")
         .with_context(|| {
             format!(
-                "active-document-ready observed after {}ms; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
-                readiness_elapsed.as_millis()
+                "active-document-ready confirmed by {}ms; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
+                readiness_confirmed_by.as_millis()
             )
         })?;
     let after_ready_has_alpha = after_ready.symbols.iter().any(|symbol| symbol["name"] == "alpha");
     if !after_ready_has_alpha {
         bail!(
-            "workspace/symbol empty or missing alpha after active-document-ready ({}ms); ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}, after_ready={after_ready:?}",
-            readiness_elapsed.as_millis()
+            "workspace/symbol empty or missing alpha after active-document-ready (confirmed by {}ms); ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}, after_ready={after_ready:?}",
+            readiness_confirmed_by.as_millis()
         );
     }
     harness.assert_no_crash();
@@ -470,7 +494,7 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
         "immediate_alpha": first_has_alpha,
         "ready_before_query": ready_before_query,
         "ready_by_response": ready_by_response,
-        "readiness_observed_ms": readiness_elapsed.as_millis(),
+        "readiness_confirmed_by_ms": readiness_confirmed_by.as_millis(),
         "after_ready_rpc_ms": after_ready.elapsed.as_millis(),
         "after_ready_budget_ms": after_ready.budget.as_millis(),
         "after_ready_alpha": after_ready_has_alpha,
@@ -500,6 +524,37 @@ fn symbol_tree_contains_name_searches_nested_children() -> Result<()> {
     assert!(symbol_tree_contains_name(&symbols, "alpha"));
     assert!(symbol_tree_contains_name(&symbols, "beta"));
     assert!(!symbol_tree_contains_name(&symbols, "gamma"));
+    Ok(())
+}
+
+#[test]
+fn stalled_immediate_rpc_reports_readiness_that_arrived_during_request() -> Result<()> {
+    let ready = std::cell::Cell::new(false);
+    let error = observe_immediate_workspace_symbols(
+        || {
+            ready.set(true);
+            Err(anyhow::anyhow!("deadline expired after 30s"))
+        },
+        || ready.get().then_some(()).ok_or(WaitEnd::Deadline { timeout: Duration::ZERO }),
+        false,
+    )
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("simulated stalled request unexpectedly succeeded"))?;
+    let message = format!("{error:#}");
+    anyhow::ensure!(message.contains("active_document_readiness_after_rpc=Ok(())"), "{message}");
+    anyhow::ensure!(message.contains("deadline expired after 30s"), "{message}");
+
+    let not_ready = observe_immediate_workspace_symbols(
+        || Err(anyhow::anyhow!("deadline expired after 30s")),
+        || Err(WaitEnd::Deadline { timeout: Duration::ZERO }),
+        false,
+    )
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("simulated stalled request unexpectedly succeeded"))?;
+    anyhow::ensure!(
+        format!("{not_ready:#}").contains("active_document_readiness_after_rpc=Err(Deadline"),
+        "{not_ready:#}"
+    );
     Ok(())
 }
 
