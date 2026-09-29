@@ -362,6 +362,18 @@ struct QueuedRead {
     freshness: Option<ReadFreshness>,
 }
 
+/// Re-capture freshness after prior mutations when ingress could not see the
+/// document yet. This preserves request ordering for `didOpen` followed by a
+/// position request while keeping later opens subject to final delivery checks.
+fn refresh_after_mutation_barrier(queued: &QueuedRead) -> bool {
+    queued.wait_for_seq > 0
+        && (queued.request.method == "textDocument/completion"
+            || queued
+                .freshness
+                .as_ref()
+                .is_some_and(|freshness| freshness.document_generation.is_none()))
+}
+
 impl PartialEq for QueuedRead {
     fn eq(&self, other: &Self) -> bool {
         self.priority.value() == other.priority.value() && self.arrival_seq == other.arrival_seq
@@ -1006,8 +1018,7 @@ impl Scheduler {
         mutation_seq_done: &Arc<AtomicU64>,
         mutation_notify: &Arc<Notify>,
     ) {
-        let refresh_after_barrier =
-            queued.request.method == "textDocument/completion" && queued.wait_for_seq > 0;
+        let refresh_after_barrier = refresh_after_mutation_barrier(&queued);
 
         // Stale check 1: position dedupe — newer same-position request supersedes.
         if let Some(ref key) = queued.dedup_key
@@ -1853,6 +1864,34 @@ mod tests {
         ));
         assert_eq!(f.document_generation, None, "no open doc => no generation");
         assert_eq!(f.document_version, None);
+    }
+
+    #[test]
+    fn unopened_hover_refreshes_freshness_after_prior_did_open() -> Result<(), JsonRpcError> {
+        let server = crate::LspServer::new();
+        let uri = "file:///hover-did-open-barrier.pl";
+        let params = position_params_at(uri, 0, 4);
+        let priority = request_priority("textDocument/hover");
+        let queued = QueuedRead {
+            request: JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(81)),
+                method: "textDocument/hover".to_string(),
+                params: Some(params.clone()),
+            },
+            wait_for_seq: 1,
+            priority,
+            arrival_seq: 1,
+            dedup_key: extract_dedup_key("textDocument/hover", Some(&params), priority),
+            freshness: extract_freshness(&server, "textDocument/hover", Some(&params), priority),
+        };
+
+        assert!(refresh_after_mutation_barrier(&queued));
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+        let refreshed =
+            must_some(Scheduler::refresh_read_freshness(&server, queued.freshness.as_ref()));
+        assert_eq!(refreshed.document_generation, Some(1));
+        Ok(())
     }
 
     #[test]
