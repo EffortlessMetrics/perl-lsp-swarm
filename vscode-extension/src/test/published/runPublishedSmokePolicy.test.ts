@@ -8,10 +8,32 @@ import Mocha from 'mocha';
 import {
   assertCandidateBoundInstallSource,
   assertCandidateBoundPlatform,
+  configureCurrentSourceSmoke,
   isDeterministicPublishedInstallFailure,
   retryPublishedInstall,
 } from './runPublishedSmoke';
 import { assertSmokeSelector, run as runPublishedSuite } from './suite';
+
+void test('current-source installed smoke selects the staged bundled server', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'published-bundled-selection-'));
+  const previous = process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
+  try {
+    const server = path.join(directory, 'source-server');
+    fs.writeFileSync(server, 'server bytes staged into the VSIX');
+    process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH = server;
+    const userData = path.join(directory, 'profile');
+    configureCurrentSourceSmoke(userData, path.join(directory, 'extensions'), 'disabled');
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(userData, 'User', 'settings.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.equal(settings['perl-lsp.serverPath'], '');
+    assert.equal(settings['perl-lsp.autoDownload'], false);
+  } finally {
+    if (previous === undefined) delete process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
+    else process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH = previous;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 void test('published smoke rejects a recovery leg without its failure selector', () => {
   assert.throws(

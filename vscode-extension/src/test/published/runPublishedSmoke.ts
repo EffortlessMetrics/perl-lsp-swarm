@@ -371,7 +371,7 @@ async function installExtension(
   }
 }
 
-function configureCurrentSourceSmoke(
+export function configureCurrentSourceSmoke(
   userDataDir: string,
   extensionsDir: string,
   workspaceTrustMode: 'disabled' | 'untrusted',
@@ -389,7 +389,9 @@ function configureCurrentSourceSmoke(
   fs.mkdirSync(settingsDir, { recursive: true });
   const settings: Record<string, unknown> = {
     'perl-lsp.autoDownload': false,
-    'perl-lsp.serverPath': path.resolve(serverPath),
+    // The supplied server is staged into the VSIX. Select that installed copy
+    // so the first-hour receipt observes the binary the extension actually runs.
+    'perl-lsp.serverPath': '',
     'perl-lsp.includePaths': [],
     'perl-lsp.critic.enabled': false,
   };
