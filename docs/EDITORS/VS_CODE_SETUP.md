@@ -28,7 +28,9 @@ server installation is only required for offline/pinned deployments or when
 
 ### Optional but Recommended
 
-- **Perl** runtime if you want to run Perl programs; the language server itself does not require one
+- **Perl** runtime if you want to run Perl programs; the language server itself does not
+  require one. See the [DAP User Guide](../tutorials/DAP_USER_GUIDE.md) for debugger
+  requirements.
 - **perltidy** only if you select explicit external formatting compatibility
 
 ---
