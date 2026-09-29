@@ -41,7 +41,6 @@ pub use metadata_dependencies::{
 pub use native_build_hints::{
     NativeBuildHintDiagnostic, NativeBuildHintLimitation, NativeBuildHintLimitationReason,
     NativeBuildHintParseReason, NativeBuildHints, NativeBuildScript, detect_native_build_hints,
-    native_build_hints_from_reads,
 };
 pub use perl_lsp_perltidy::FormatterMode;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1699,19 +1698,8 @@ impl WorkspaceConfig {
         &mut self,
         reads: &[(DeclaredDependencySource, MetadataSourceRead)],
     ) {
-        let script_reads: Vec<(NativeBuildScript, MetadataSourceRead)> = reads
-            .iter()
-            .filter_map(|(source, read)| {
-                let script = match source {
-                    DeclaredDependencySource::MakefilePl => NativeBuildScript::MakefilePl,
-                    DeclaredDependencySource::BuildPl => NativeBuildScript::BuildPl,
-                    _ => return None,
-                };
-                Some((script, read.clone()))
-            })
-            .collect();
         self.native_build_hints =
-            native_build_hints_from_reads(&script_reads, &self.native_build_hints);
+            native_build_hints::native_build_hints_from_reads(reads, &self.native_build_hints);
     }
 
     /// Refresh declared dependency facts from the selected workspace root.

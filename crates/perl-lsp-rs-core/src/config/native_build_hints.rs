@@ -23,7 +23,7 @@
 use std::fs;
 use std::path::Path;
 
-use super::metadata_dependencies::MetadataSourceRead;
+use super::metadata_dependencies::{DeclaredDependencySource, MetadataSourceRead};
 
 /// Native build hints derived from workspace-root build scripts.
 ///
@@ -84,13 +84,24 @@ pub enum NativeBuildScript {
 
 impl NativeBuildScript {
     /// Workspace-root build scripts in detection order (`Makefile.PL` first).
-    pub const ALL: [Self; 2] = [Self::MakefilePl, Self::BuildPl];
+    pub(crate) const ALL: [Self; 2] = [Self::MakefilePl, Self::BuildPl];
 
     /// Workspace-root-relative file name of this build script.
     pub fn file_name(self) -> &'static str {
         match self {
             Self::MakefilePl => "Makefile.PL",
             Self::BuildPl => "Build.PL",
+        }
+    }
+
+    fn from_declared_source(source: DeclaredDependencySource) -> Option<Self> {
+        match source {
+            DeclaredDependencySource::MakefilePl => Some(Self::MakefilePl),
+            DeclaredDependencySource::BuildPl => Some(Self::BuildPl),
+            DeclaredDependencySource::Cpanfile
+            | DeclaredDependencySource::DistIni
+            | DeclaredDependencySource::MetaJson
+            | DeclaredDependencySource::MetaYml => None,
         }
     }
 
@@ -158,24 +169,29 @@ pub fn detect_native_build_hints(workspace_root: &Path) -> NativeBuildHints {
     compose_native_build_hints(contributions, Vec::new())
 }
 
-/// Compose native build hints from per-script captured reads.
+/// Compose native build hints from the same captured metadata reads used
+/// for declared dependencies.
 ///
-/// Sources are consumed in [`NativeBuildScript::ALL`] order. An
+/// Only `Makefile.PL` / `Build.PL` entries are native-hint sources; other
+/// declared-dependency files in `reads` are ignored. Sources are consumed
+/// in [`NativeBuildScript::ALL`] order. An
 /// [`MetadataSourceRead::Unreadable`] script keeps only its own previous
 /// contribution and records a limitation; [`MetadataSourceRead::Absent`]
-/// drops that script. A source the slice does not mention is unknown, not
+/// drops that script. A script the slice does not mention is unknown, not
 /// absent, and retains its previous contribution exactly as an unreadable
 /// one does — without a limitation, because nothing was observed.
 #[must_use]
-pub fn native_build_hints_from_reads(
-    reads: &[(NativeBuildScript, MetadataSourceRead)],
+pub(crate) fn native_build_hints_from_reads(
+    reads: &[(DeclaredDependencySource, MetadataSourceRead)],
     previous: &NativeBuildHints,
 ) -> NativeBuildHints {
     let mut contributions = previous.unboxed_contributions();
     let mut limitations = Vec::new();
 
     for script in NativeBuildScript::ALL {
-        let Some((_, read)) = reads.iter().find(|(candidate, _)| *candidate == script) else {
+        let Some((_, read)) = reads.iter().find(|(candidate, _)| {
+            NativeBuildScript::from_declared_source(*candidate) == Some(script)
+        }) else {
             continue;
         };
         match read {
@@ -201,17 +217,9 @@ fn contribution_from_source(
     script: NativeBuildScript,
     source: &str,
 ) -> NativeBuildHintContribution {
-    let mut scratch = NativeBuildHints::default();
-    merge_script_hints(&mut scratch, script, source);
-    NativeBuildHintContribution {
-        include_dirs: scratch.include_dirs,
-        libs_flags: scratch.libs_flags,
-        libs_alternatives: scratch.libs_alternatives,
-        define_flags: scratch.define_flags,
-        object_files: scratch.object_files,
-        myextlib_files: scratch.myextlib_files,
-        diagnostics: scratch.diagnostics,
-    }
+    let mut contribution = NativeBuildHintContribution::default();
+    merge_script_hints(&mut contribution, script, source);
+    contribution
 }
 
 fn compose_native_build_hints(
@@ -243,15 +251,19 @@ impl NativeBuildHints {
     }
 }
 
-fn merge_script_hints(hints: &mut NativeBuildHints, script: NativeBuildScript, source: &str) {
+fn merge_script_hints(
+    contribution: &mut NativeBuildHintContribution,
+    script: NativeBuildScript,
+    source: &str,
+) {
     match script {
         NativeBuildScript::MakefilePl => {
-            merge_include_dirs(hints, script, source, "INC", flatten_include_flags);
+            merge_include_dirs(contribution, script, source, "INC", flatten_include_flags);
         }
         NativeBuildScript::BuildPl => {
-            merge_include_dirs(hints, script, source, "include_dirs", keep_value_verbatim);
+            merge_include_dirs(contribution, script, source, "include_dirs", keep_value_verbatim);
             merge_include_dirs(
-                hints,
+                contribution,
                 script,
                 source,
                 "extra_compiler_flags",
@@ -261,33 +273,33 @@ fn merge_script_hints(hints: &mut NativeBuildHints, script: NativeBuildScript, s
     }
 
     for key in ["LIBS", "DEFINE", "OBJECT", "MYEXTLIB"] {
-        merge_typed_key(hints, script, source, key);
+        merge_typed_key(contribution, script, source, key);
     }
 }
 
 fn merge_include_dirs(
-    hints: &mut NativeBuildHints,
+    contribution: &mut NativeBuildHintContribution,
     script: NativeBuildScript,
     source: &str,
     key: &'static str,
     expand: fn(&str) -> Vec<String>,
 ) {
     let extraction = extract_key_literal_values(source, key);
-    push_failures(hints, script, key, extraction.failures);
+    push_failures(contribution, script, key, extraction.failures);
     collect_unique(
-        &mut hints.include_dirs,
+        &mut contribution.include_dirs,
         extraction.values.iter().flat_map(|value| expand(value)),
     );
 }
 
 fn merge_typed_key(
-    hints: &mut NativeBuildHints,
+    contribution: &mut NativeBuildHintContribution,
     script: NativeBuildScript,
     source: &str,
     key: &'static str,
 ) {
     let extraction = extract_key_literal_values(source, key);
-    push_failures(hints, script, key, extraction.failures);
+    push_failures(contribution, script, key, extraction.failures);
 
     if key == "LIBS" {
         for value in &extraction.values {
@@ -296,28 +308,28 @@ fn merge_typed_key(
                 .filter(|token| is_library_link_input(token))
                 .collect::<Vec<_>>();
             if !tokens.is_empty() {
-                hints.libs_alternatives.push(tokens.clone());
-                collect_unique(&mut hints.libs_flags, tokens.into_iter());
+                contribution.libs_alternatives.push(tokens.clone());
+                collect_unique(&mut contribution.libs_flags, tokens.into_iter());
             }
         }
     } else {
         let target = match key {
-            "DEFINE" => &mut hints.define_flags,
-            "OBJECT" => &mut hints.object_files,
-            _ => &mut hints.myextlib_files,
+            "DEFINE" => &mut contribution.define_flags,
+            "OBJECT" => &mut contribution.object_files,
+            _ => &mut contribution.myextlib_files,
         };
         collect_unique(target, extraction.values.iter().flat_map(|value| hint_tokens(key, value)));
     }
 }
 
 fn push_failures(
-    hints: &mut NativeBuildHints,
+    contribution: &mut NativeBuildHintContribution,
     script: NativeBuildScript,
     key: &'static str,
     reasons: Vec<NativeBuildHintParseReason>,
 ) {
     for reason in reasons {
-        hints.diagnostics.push(NativeBuildHintDiagnostic { script, key, reason });
+        contribution.diagnostics.push(NativeBuildHintDiagnostic { script, key, reason });
     }
 }
 
@@ -1426,16 +1438,21 @@ Module::Build->new(
 "#;
     const MALFORMED_LIBS: &str = "WriteMakefile(LIBS => q(-lfoo));\n";
 
-    fn text(script: NativeBuildScript, source: &str) -> (NativeBuildScript, MetadataSourceRead) {
-        (script, MetadataSourceRead::Text(source.to_string()))
+    fn text(
+        source: DeclaredDependencySource,
+        contents: &str,
+    ) -> (DeclaredDependencySource, MetadataSourceRead) {
+        (source, MetadataSourceRead::Text(contents.to_string()))
     }
 
-    fn absent(script: NativeBuildScript) -> (NativeBuildScript, MetadataSourceRead) {
-        (script, MetadataSourceRead::Absent)
+    fn absent(source: DeclaredDependencySource) -> (DeclaredDependencySource, MetadataSourceRead) {
+        (source, MetadataSourceRead::Absent)
     }
 
-    fn unreadable(script: NativeBuildScript) -> (NativeBuildScript, MetadataSourceRead) {
-        (script, MetadataSourceRead::Unreadable)
+    fn unreadable(
+        source: DeclaredDependencySource,
+    ) -> (DeclaredDependencySource, MetadataSourceRead) {
+        (source, MetadataSourceRead::Unreadable)
     }
 
     fn unreadable_limitation(script: NativeBuildScript) -> NativeBuildHintLimitation {
@@ -1446,8 +1463,8 @@ Module::Build->new(
     fn captured_makefile_only_populates_every_typed_field() {
         let hints = native_build_hints_from_reads(
             &[
-                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
-                absent(NativeBuildScript::BuildPl),
+                text(DeclaredDependencySource::MakefilePl, MAKEFILE_HINTS),
+                absent(DeclaredDependencySource::BuildPl),
             ],
             &NativeBuildHints::default(),
         );
@@ -1468,7 +1485,10 @@ Module::Build->new(
     #[test]
     fn captured_build_pl_only_populates_every_typed_field() {
         let hints = native_build_hints_from_reads(
-            &[absent(NativeBuildScript::MakefilePl), text(NativeBuildScript::BuildPl, BUILD_HINTS)],
+            &[
+                absent(DeclaredDependencySource::MakefilePl),
+                text(DeclaredDependencySource::BuildPl, BUILD_HINTS),
+            ],
             &NativeBuildHints::default(),
         );
 
@@ -1489,15 +1509,15 @@ Module::Build->new(
     fn captured_merge_is_makefile_then_build_regardless_of_slice_order() {
         let canonical = native_build_hints_from_reads(
             &[
-                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
-                text(NativeBuildScript::BuildPl, BUILD_HINTS),
+                text(DeclaredDependencySource::MakefilePl, MAKEFILE_HINTS),
+                text(DeclaredDependencySource::BuildPl, BUILD_HINTS),
             ],
             &NativeBuildHints::default(),
         );
         let reversed = native_build_hints_from_reads(
             &[
-                text(NativeBuildScript::BuildPl, BUILD_HINTS),
-                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
+                text(DeclaredDependencySource::BuildPl, BUILD_HINTS),
+                text(DeclaredDependencySource::MakefilePl, MAKEFILE_HINTS),
             ],
             &NativeBuildHints::default(),
         );
@@ -1532,8 +1552,8 @@ Module::Build->new(
     fn malformed_makefile_keeps_valid_build_pl_and_records_diagnostics() {
         let hints = native_build_hints_from_reads(
             &[
-                text(NativeBuildScript::MakefilePl, MALFORMED_LIBS),
-                text(NativeBuildScript::BuildPl, BUILD_HINTS),
+                text(DeclaredDependencySource::MakefilePl, MALFORMED_LIBS),
+                text(DeclaredDependencySource::BuildPl, BUILD_HINTS),
             ],
             &NativeBuildHints::default(),
         );
@@ -1558,16 +1578,16 @@ Module::Build->new(
     fn unreadable_makefile_retains_only_its_previous_contribution() {
         let previous = native_build_hints_from_reads(
             &[
-                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
-                text(NativeBuildScript::BuildPl, BUILD_HINTS),
+                text(DeclaredDependencySource::MakefilePl, MAKEFILE_HINTS),
+                text(DeclaredDependencySource::BuildPl, BUILD_HINTS),
             ],
             &NativeBuildHints::default(),
         );
         let hints = native_build_hints_from_reads(
             &[
-                unreadable(NativeBuildScript::MakefilePl),
+                unreadable(DeclaredDependencySource::MakefilePl),
                 text(
-                    NativeBuildScript::BuildPl,
+                    DeclaredDependencySource::BuildPl,
                     "Module::Build->new(include_dirs => ['xs/fresh']);\n",
                 ),
             ],
@@ -1591,13 +1611,16 @@ Module::Build->new(
     fn absent_makefile_drops_only_that_script() {
         let previous = native_build_hints_from_reads(
             &[
-                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
-                text(NativeBuildScript::BuildPl, BUILD_HINTS),
+                text(DeclaredDependencySource::MakefilePl, MAKEFILE_HINTS),
+                text(DeclaredDependencySource::BuildPl, BUILD_HINTS),
             ],
             &NativeBuildHints::default(),
         );
         let hints = native_build_hints_from_reads(
-            &[absent(NativeBuildScript::MakefilePl), text(NativeBuildScript::BuildPl, BUILD_HINTS)],
+            &[
+                absent(DeclaredDependencySource::MakefilePl),
+                text(DeclaredDependencySource::BuildPl, BUILD_HINTS),
+            ],
             &previous,
         );
 
@@ -1617,13 +1640,13 @@ Module::Build->new(
     fn omitted_script_is_unknown_and_retains_without_a_limitation() {
         let previous = native_build_hints_from_reads(
             &[
-                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
-                absent(NativeBuildScript::BuildPl),
+                text(DeclaredDependencySource::MakefilePl, MAKEFILE_HINTS),
+                absent(DeclaredDependencySource::BuildPl),
             ],
             &NativeBuildHints::default(),
         );
         let hints = native_build_hints_from_reads(
-            &[text(NativeBuildScript::BuildPl, BUILD_HINTS)],
+            &[text(DeclaredDependencySource::BuildPl, BUILD_HINTS)],
             &previous,
         );
 
@@ -1642,17 +1665,23 @@ Module::Build->new(
     fn unreadability_is_not_exact_emptiness() {
         let previous = native_build_hints_from_reads(
             &[
-                text(NativeBuildScript::MakefilePl, MAKEFILE_HINTS),
-                absent(NativeBuildScript::BuildPl),
+                text(DeclaredDependencySource::MakefilePl, MAKEFILE_HINTS),
+                absent(DeclaredDependencySource::BuildPl),
             ],
             &NativeBuildHints::default(),
         );
         let empty = native_build_hints_from_reads(
-            &[absent(NativeBuildScript::MakefilePl), absent(NativeBuildScript::BuildPl)],
+            &[
+                absent(DeclaredDependencySource::MakefilePl),
+                absent(DeclaredDependencySource::BuildPl),
+            ],
             &previous,
         );
         let retained = native_build_hints_from_reads(
-            &[unreadable(NativeBuildScript::MakefilePl), absent(NativeBuildScript::BuildPl)],
+            &[
+                unreadable(DeclaredDependencySource::MakefilePl),
+                absent(DeclaredDependencySource::BuildPl),
+            ],
             &previous,
         );
 
@@ -1663,5 +1692,50 @@ Module::Build->new(
             retained.limitations,
             vec![unreadable_limitation(NativeBuildScript::MakefilePl)]
         );
+    }
+
+    #[test]
+    fn unrelated_declared_sources_do_not_count_as_script_reads() {
+        let previous = native_build_hints_from_reads(
+            &[
+                text(DeclaredDependencySource::MakefilePl, MAKEFILE_HINTS),
+                absent(DeclaredDependencySource::BuildPl),
+            ],
+            &NativeBuildHints::default(),
+        );
+        let hints = native_build_hints_from_reads(
+            &[
+                (
+                    DeclaredDependencySource::Cpanfile,
+                    MetadataSourceRead::Text("requires 'JSON::PP';\n".to_string()),
+                ),
+                unreadable(DeclaredDependencySource::MetaJson),
+                absent(DeclaredDependencySource::DistIni),
+                text(DeclaredDependencySource::MetaYml, "requires:\n  YAML: 0\n"),
+            ],
+            &previous,
+        );
+
+        assert_eq!(hints, previous);
+        assert!(
+            hints.limitations.is_empty(),
+            "unreadability of a non-script metadata file is not a native-hint limitation"
+        );
+    }
+
+    #[test]
+    fn unreadable_with_no_previous_contribution_records_limitation_not_values() {
+        let hints = native_build_hints_from_reads(
+            &[
+                unreadable(DeclaredDependencySource::MakefilePl),
+                absent(DeclaredDependencySource::BuildPl),
+            ],
+            &NativeBuildHints::default(),
+        );
+
+        assert!(hints.include_dirs.is_empty());
+        assert!(hints.libs_flags.is_empty());
+        assert_eq!(hints.limitations, vec![unreadable_limitation(NativeBuildScript::MakefilePl)]);
+        assert_ne!(hints, NativeBuildHints::default());
     }
 }
