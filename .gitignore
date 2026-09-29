@@ -291,6 +291,9 @@ test_corpus/workspaces/xlarge/bin/
 # matching these patterns is currently tracked).
 .env
 .env.*
+# Shared examples are safe to commit and should remain visible to Git.
+!.env.example
+!.env.template
 *.pem
 *.key
 *.token
