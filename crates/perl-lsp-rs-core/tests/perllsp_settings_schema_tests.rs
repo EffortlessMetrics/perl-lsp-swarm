@@ -165,6 +165,10 @@ fn hidden_next_edit_setting_stays_absent_from_public_configuration_surfaces() {
     let surfaces = [
         ("settings schema", include_str!("../../../schemas/perllsp-settings.schema.json")),
         ("configuration reference", include_str!("../../../docs/reference/CONFIG.md")),
+        (
+            "configuration schema reference",
+            include_str!("../../../docs/reference/CONFIGURATION_SCHEMA.md"),
+        ),
         ("configuration guide", include_str!("../../../docs/reference/CONFIGURATION.md")),
         (
             "configuration schema reference",
@@ -657,10 +661,34 @@ fn discovery_skipped_dirs_guidance_is_published_on_every_configuration_surface()
          directory names, not globs (#16946)"
     );
     assert!(
+        reference.contains("#### `perl.workspace.discoverySkippedDirs`"),
+        "the configuration reference must have a discoverySkippedDirs setting section (#16946)"
+    );
+    assert!(
         !reference.contains("excludePatterns"),
         "the retired perl.workspace.excludePatterns advice must not return to the \
          configuration reference (#16946)"
     );
+
+    let schema_reference = include_str!("../../../docs/reference/CONFIGURATION_SCHEMA.md");
+    let schema_section = schema_reference
+        .split_once("## JSON Schema")
+        .ok_or("configuration schema reference has no JSON Schema section")?
+        .1;
+    let embedded_json = schema_section
+        .split_once("```json")
+        .ok_or("configuration schema reference has no embedded JSON schema")?
+        .1
+        .split_once("```")
+        .ok_or("configuration schema reference has an unterminated JSON schema")?
+        .0;
+    let embedded: Value = serde_json::from_str(embedded_json)?;
+    let published = load_schema()?;
+    let embedded_key = &embedded["definitions"]["workspace"]["properties"][SKIPPED_DIRS];
+    let published_key =
+        &published["properties"]["perl"]["properties"]["workspace"]["properties"][SKIPPED_DIRS];
+    assert_eq!(embedded_key["type"], published_key["type"]);
+    assert_eq!(embedded_key["default"], published_key["default"]);
 
     Ok(())
 }
