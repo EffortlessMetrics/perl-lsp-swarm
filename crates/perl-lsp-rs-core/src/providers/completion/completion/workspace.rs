@@ -2688,7 +2688,8 @@ struct IndexedSourceScope {
 impl IndexedSourceScope {
     fn new(index: &WorkspaceIndex, current_uri: Option<&str>) -> Self {
         Self {
-            current_uri_key: current_uri.map(DocumentStore::uri_key),
+            current_uri_key: current_uri
+                .map(|uri| DocumentStore::uri_key(&perl_uri::normalize_uri(uri))),
             current_root: current_uri.and_then(|uri| index.workspace_folder_for_uri(uri)),
             roots_configured: !index.workspace_folders().is_empty(),
         }
@@ -3304,6 +3305,24 @@ sub own_method { 1 }
         assert!(names.contains(&"live"), "current method missing: {names:?}");
         assert!(!names.contains(&"removed"), "stale method resurfaced: {names:?}");
         assert!(!names.contains(&"inherited"), "stale ISA resurfaced: {names:?}");
+    }
+
+    #[test]
+    fn collect_all_excludes_indexed_predecessor_for_filesystem_path() {
+        let index = WorkspaceIndex::new();
+        let path = std::env::temp_dir().join("perl-lsp-completion-open-child.pm");
+        let uri = must(Url::from_file_path(&path));
+        must(index.index_initial_file(uri, "package Child; sub removed { 1 }".to_string()));
+        let current_path = path.to_string_lossy();
+        let members = collect_all_package_members_with_source(
+            &index,
+            "Child",
+            "package Child; sub live { 1 }",
+            Some(&current_path),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"live"), "current method missing: {names:?}");
+        assert!(!names.contains(&"removed"), "stale method resurfaced: {names:?}");
     }
 
     #[test]

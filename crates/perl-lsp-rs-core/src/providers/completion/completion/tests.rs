@@ -2402,6 +2402,31 @@ fn split_file_completion_excludes_indexed_predecessor_of_open_document()
 }
 
 #[test]
+fn method_completion_filesystem_path_excludes_indexed_predecessor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::temp_dir().join("perl-lsp-completion-open-child.pm");
+    let uri = Url::from_file_path(&path)
+        .map_err(|()| std::io::Error::other("absolute test path has no file URI"))?;
+    let split_uri = Url::from_file_path(path.with_file_name("perl-lsp-completion-split-child.pm"))
+        .map_err(|()| std::io::Error::other("absolute split path has no file URI"))?;
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(uri, "package Child; sub removed { 1 }".to_string())?;
+    index.index_initial_file(split_uri, "package Child; sub from_split { 1 }".to_string())?;
+
+    let current = "package Child; sub run { my $self = shift; $self->";
+    let mut parser = Parser::new(current);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let current_path = path.to_string_lossy();
+    let items = provider.get_completions_with_path(current, current.len(), Some(&current_path));
+    let labels: Vec<_> = items.iter().map(|item| item.label.as_ref()).collect();
+    assert!(labels.contains(&"run"), "current method missing: {labels:?}");
+    assert!(labels.contains(&"from_split"), "split-file method missing: {labels:?}");
+    assert!(!labels.contains(&"removed"), "predecessor method resurfaced: {labels:?}");
+    Ok(())
+}
+
+#[test]
 fn split_file_completion_scopes_inherited_methods_and_generated_members_to_root()
 -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
