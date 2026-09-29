@@ -854,11 +854,11 @@ fn heredoc_allowed_before(
     // argument (`print <<END`, unprototyped `foo <<END`). A nullary authority
     // instead completes a bare call: `sub foo ()` and `time` leave `<<` as the
     // left-shift operator (local Perl oracle, #16165). An explicit `&foo` call
-    // completes the same way on the pinned 5.38.2 oracle — it takes `@_` and
-    // leaves `<<` a shift, and binary `1 & foo` never names a call at all —
-    // so the ampersand never reopens a heredoc slot here (#16445 records the
-    // 5.42 divergence; the garbage-body oracle receipts pin this reading).
-    // Variable sigils name completed terms: `$print <<'END'` is left shift.
+    // bypasses that prototype, so `<<END` is a heredoc argument (perl 5.42 and
+    // lexer `preceding_bareword`, #16445). Immediate adjacency is the call
+    // sigil, matching the lexer; binary `1 & foo` and spaced `& foo` keep the
+    // shift reading. Variable sigils name completed terms: `$print <<'END'`
+    // is left shift.
     previous_word_and_sigil_before(line, offset).is_some_and(|(sigil, word)| {
         // A sigiled word is a completed term first: `$print <<'END'` and the
         // typeglob/last-index forms are left shifts, never heredoc
@@ -874,9 +874,11 @@ fn heredoc_allowed_before(
         // slice before the word carries the same trailing-space trim as the
         // helper, so spaced forms (`$object-> return`) are recognized as
         // method invocations as well (#16336).
-        let before_word = prefix[..prefix.len() - word.len()].trim_end_matches([' ', '\t']);
+        let immediately_before = &prefix[..prefix.len() - word.len()];
+        let before_word = immediately_before.trim_end_matches([' ', '\t']);
         let is_return_keyword = word == "return" && !before_word.ends_with("->");
         is_return_keyword
+            || immediately_before.ends_with('&')
             || (is_callable_word(word, known_subs, &hints.callables)
                 && !is_nullary_word(word, nullaries, hints)
                 && !is_nullary_builtin(word))
@@ -1095,24 +1097,56 @@ mod tests {
     }
 
     #[test]
-    fn ampersand_calls_keep_the_shift_reading_on_the_pinned_oracle() {
-        // perl 5.38.2 (this crate's pinned oracle) reads `<<` as a left shift
-        // after an explicit `&foo` call: the call completes by taking `@_`, so
-        // the following line is live code. Oracle receipts: a garbage body
-        // line is a syntax error under `&foo <<END` (heredoc denied) while
-        // `&foo(<<END)` consumes one (parenthesized form is the heredoc).
-        // The 5.42 divergence recorded in #16445 stays tracked there.
+    fn ampersand_call_bypasses_nullary_prototype_and_consumes_the_heredoc() {
+        // perl 5.42 + lexer `preceding_bareword` (#16445): `&foo` is a
+        // prototype-bypassing call, so `<<END` is a heredoc argument and the
+        // following declaration is body prose. Immediate adjacency is the
+        // call sigil; a space after `&` is not.
         assert_membership_and_slash(
-            "sub foo () { 1 }\nmy $x = &foo <<END;\nsub visible { }\nEND\n",
+            "sub foo () { 1 }\nmy $x = &foo <<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        // Parenthesized form is independently a heredoc via the `(` term
+        // introducer; it must keep consuming the body after the bypass lands.
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = &foo(<<END);\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        // Opposite: bare nullary `foo <<END` still completes a term (#16165).
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = foo <<END;\nsub visible { }\nEND\n",
             &["visible"],
             &[],
         );
-        // A binary `&` before a nullary call never names a call: `1 & foo`
-        // completes a term and `<<END` is a shift there too.
+        // Opposite: binary AND is not a call sigil (`1 & foo` / spaced `& foo`).
         assert_membership_and_slash(
             "sub foo () { 2 }\nmy $x = 1 & foo <<END;\nsub visible { }\nEND\n",
             &["visible"],
             &[],
+        );
+        assert_membership_and_slash(
+            "sub foo () { 2 }\nmy $x = & foo <<END;\nsub visible { }\nEND\n",
+            &["visible"],
+            &[],
+        );
+        // `&time` is a prototype-bypassing call of the name, not the nullary
+        // builtin, and no-space `&foo<<END` still has an adjacent call sigil.
+        assert_membership_and_slash(
+            "my $x = &time <<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        assert_membership_and_slash(
+            "sub foo () { 1 }\nmy $x = &foo<<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
+        );
+        assert_membership_and_slash(
+            "sub Foo::bar () { 1 }\nmy $x = &Foo::bar <<END;\nsub phantom { }\nEND\nsub real { }\n",
+            &["real"],
+            &["phantom"],
         );
     }
 
