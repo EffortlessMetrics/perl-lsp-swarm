@@ -1,8 +1,10 @@
-//! #16300: direct unit shape coverage for parser arms whose behavior is
-//! already proven by corpus/differential testing (ground-truthed against
-//! Strawberry perl 5.42 `perl -c`) but had no unit test pinning the AST.
-//! Each test asserts the proven node shape so a refactor cannot silently
-//! reroute the arm.
+//! #16300: direct unit shape coverage for parser arms whose acceptance
+//! behavior is ground-truthed by the corpus/differential suites against
+//! Strawberry perl 5.42 (`perl -c`). `perl -c` establishes that the inputs
+//! are accepted Perl; it does not establish this parser's internal AST, so
+//! the node shapes pinned below are this parser's own contract, and each
+//! test asserts the proven node shape so a refactor cannot silently reroute
+//! the arm.
 
 use super::*;
 use perl_tdd_support::must_some;
