@@ -165,10 +165,6 @@ fn hidden_next_edit_setting_stays_absent_from_public_configuration_surfaces() {
     let surfaces = [
         ("settings schema", include_str!("../../../schemas/perllsp-settings.schema.json")),
         ("configuration reference", include_str!("../../../docs/reference/CONFIG.md")),
-        (
-            "configuration schema reference",
-            include_str!("../../../docs/reference/CONFIGURATION_SCHEMA.md"),
-        ),
         ("configuration guide", include_str!("../../../docs/reference/CONFIGURATION.md")),
         (
             "configuration schema reference",
@@ -635,6 +631,10 @@ fn discovery_skipped_dirs_guidance_is_published_on_every_configuration_surface()
     const SURFACES: &[(&str, &str)] = &[
         ("settings schema", include_str!("../../../schemas/perllsp-settings.schema.json")),
         ("configuration reference", include_str!("../../../docs/reference/CONFIG.md")),
+        (
+            "configuration schema reference",
+            include_str!("../../../docs/reference/CONFIGURATION_SCHEMA.md"),
+        ),
         (
             "large-workspaces troubleshooting guide",
             include_str!("../../../docs/large-workspaces/TROUBLESHOOTING.md"),
