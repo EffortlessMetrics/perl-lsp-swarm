@@ -138,6 +138,7 @@ jobs:
         run: xvfb-run -a npm run test:published:local
 
       - name: Run installed first-hour byte leaf under Xvfb
+        # #16987: separate source-SHA leaf; candidate-manifest smoke above remains authoritative for its own claim.
         if: ${{ always() && matrix.vscode_version == 'stable' && steps.build.outcome == 'success' }}
         env:
           PERL_LSP_E2E: '1'

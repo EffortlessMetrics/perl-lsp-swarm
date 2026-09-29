@@ -24,6 +24,7 @@ permissions:
 jobs:
   installed-first-hour-windows:
     name: Installed first-hour bytes (Windows, stable)
+    # Governed as vscode_installed_first_hour_windows in policy/ci-lane-whitelist.toml.
     runs-on: windows-latest
     timeout-minutes: 35
 
