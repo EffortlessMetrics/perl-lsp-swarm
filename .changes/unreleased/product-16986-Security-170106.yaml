@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Security
+body: Windows DAP launch authority now refuses a replaced trusted-root directory even when its creation timestamp matches the original, using the directory's volume and file ID.
+time: 2026-09-29T17:01:06Z
+custom:
+  PR: 16986
+  Slug: windows-dap-launch-root-identity
+  Breaking: "no"
