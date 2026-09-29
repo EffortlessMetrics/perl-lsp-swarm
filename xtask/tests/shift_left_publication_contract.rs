@@ -327,6 +327,8 @@ fn validate_template(template: &str) -> Result<(), String> {
             "no local rust toolchain",
             "named hosted checks are the first-class proof",
             "missing proof is not broken proof",
+            "cancelled and instrument-failed are not broken",
+            "candidate-attributable result",
             "commit they actually evaluated",
         ],
     )?;
@@ -339,6 +341,7 @@ fn validate_template(template: &str) -> Result<(), String> {
             "missing proof",
             "broken proof",
             "hosted-only",
+            "cancelled and instrument-failed runs are not broken",
         ],
     )?;
     require_phrases(
@@ -392,6 +395,8 @@ fn validate_provider_skill(provider: &str, skill: &str) -> Result<(), String> {
             "hosted proof",
             "hosted-only",
             "named hosted checks",
+            "does not rewrite the ready publication threshold",
+            "include hosted proof",
             "realistic wrong implementation",
             "negative stale failure recovery or opposite direction controls",
             "simplify before publication",
@@ -569,6 +574,17 @@ fn ratchet_rejects_collapsing_missing_and_broken_hosted_proof()
     assert!(
         validate_template(&unmarked).is_err(),
         "removing the hosted-only author mark must fail the publication contract"
+    );
+
+    let cancelled_as_broken = template.replacen(
+        "cancelled and instrument-failed are not broken",
+        "cancelled and instrument-failed are broken",
+        1,
+    );
+    assert_ne!(cancelled_as_broken, template, "cancelled-vs-broken mutation fixture must apply");
+    assert!(
+        validate_template(&cancelled_as_broken).is_err(),
+        "classifying cancelled runs as broken proof must fail the publication contract"
     );
 
     let codex = read(&root, ".agents/skills/publish-pr/SKILL.md")?;
