@@ -671,6 +671,10 @@ fn discovery_skipped_dirs_guidance_is_published_on_every_configuration_surface()
     );
 
     let schema_reference = include_str!("../../../docs/reference/CONFIGURATION_SCHEMA.md");
+    assert!(
+        schema_reference.contains("#### `perl.workspace.discoverySkippedDirs`"),
+        "the configuration schema reference must have a discoverySkippedDirs setting section (#16946)"
+    );
     let schema_section = schema_reference
         .split_once("## JSON Schema")
         .ok_or("configuration schema reference has no JSON Schema section")?
@@ -688,6 +692,7 @@ fn discovery_skipped_dirs_guidance_is_published_on_every_configuration_surface()
     let published_key =
         &published["properties"]["perl"]["properties"]["workspace"]["properties"][SKIPPED_DIRS];
     assert_eq!(embedded_key["type"], published_key["type"]);
+    assert_eq!(embedded_key["items"]["type"], published_key["items"]["type"]);
     assert_eq!(embedded_key["default"], published_key["default"]);
 
     Ok(())
