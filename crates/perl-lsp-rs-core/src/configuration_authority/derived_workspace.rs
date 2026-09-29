@@ -4,12 +4,13 @@
 //! in implementation source. This module requires an explicit lifecycle record
 //! per derived workspace-folder authority: production writer identity, a
 //! registered initialization/invalidation route, absence disposition, owner,
-//! and (for live rows) a discriminating behavior test.
+//! and (for live rows) a discriminating `#[test]` identity.
 //!
-//! Exact production call-graphs are not inferred. Routes are named in a
-//! checked manifest and then confirmed as symbols in the named production
-//! files. Planned, dormant, and retired rows stay non-live until their owner
-//! lands the missing route.
+//! Catalog `source_markers` plus evidence `contributing_sources` are the
+//! invalidation set. Exact production call-graphs are not inferred: a writer
+//! must be called from the named route's function body, not merely mentioned
+//! elsewhere in the same file. Planned, dormant, and retired rows stay
+//! non-live until their owner lands the missing route.
 
 use super::{CONFIGURATION_AUTHORITY, ConfigScope, FieldAuthority};
 use serde::Serialize;
@@ -64,6 +65,9 @@ pub(crate) struct DerivedWorkspaceEvidence {
     invalidation_route_source: Option<&'static str>,
     invalidation_markers: &'static [&'static str],
     initialization_only_markers: &'static [&'static str],
+    /// Extra contributing files that are not catalog `source_markers` but still
+    /// feed the derived fact and must be covered by invalidation evidence.
+    contributing_sources: &'static [&'static str],
     marker_authority_source: Option<&'static str>,
     delete_disposition: AbsenceDisposition,
     unavailable_disposition: AbsenceDisposition,
@@ -274,8 +278,16 @@ const DERIVED_WORKSPACE_EVIDENCE: &[DerivedWorkspaceEvidence] = &[
         refresh_writer: Some("apply_declared_dependency_reads"),
         invalidation_route: Some("refresh_workspace_metadata_from_reads"),
         invalidation_route_source: Some(WORKSPACE_FOLDER),
-        invalidation_markers: &["META.json", "cpanfile"],
+        invalidation_markers: &[
+            "META.json",
+            "cpanfile",
+            "Makefile.PL",
+            "Build.PL",
+            "dist.ini",
+            "META.yml",
+        ],
         initialization_only_markers: &["declared_dependencies"],
+        contributing_sources: &["Makefile.PL", "Build.PL", "dist.ini", "META.yml"],
         marker_authority_source: Some(METADATA_DEPENDENCIES),
         delete_disposition: AbsenceDisposition::RecomputeFromRemainingSources,
         unavailable_disposition: AbsenceDisposition::RetainPreviousWithLimitation,
@@ -297,6 +309,7 @@ const DERIVED_WORKSPACE_EVIDENCE: &[DerivedWorkspaceEvidence] = &[
         invalidation_route_source: None,
         invalidation_markers: &["Makefile.PL", "Build.PL"],
         initialization_only_markers: &["native_build_hints"],
+        contributing_sources: &[],
         marker_authority_source: None,
         delete_disposition: AbsenceDisposition::RecomputeFromRemainingSources,
         unavailable_disposition: AbsenceDisposition::RetainPreviousWithLimitation,
@@ -339,7 +352,7 @@ fn check_with(
     corpus: &BTreeMap<&str, &str>,
 ) -> ConfigurationAuthorityReport {
     let violations = validate_derived_workspace(catalog, evidence, corpus);
-    let failing: BTreeSet<&str> = violations.iter().filter_map(violation_id).collect();
+    let failing: BTreeSet<&str> = violations.iter().flat_map(violation_ids).collect();
     let evidence_by_id: BTreeMap<&str, &DerivedWorkspaceEvidence> =
         evidence.iter().map(|row| (row.id, row)).collect();
 
@@ -374,7 +387,14 @@ fn violation_id(violation: &DerivedWorkspaceViolation) -> Option<&'static str> {
         | DerivedWorkspaceViolation::NonLiveMissingWake { id }
         | DerivedWorkspaceViolation::UnknownSource { id, .. }
         | DerivedWorkspaceViolation::NonProductionSource { id, .. } => Some(*id),
-        DerivedWorkspaceViolation::DuplicateWriter { ids, .. } => ids.first().copied(),
+        DerivedWorkspaceViolation::DuplicateWriter { .. } => None,
+    }
+}
+
+fn violation_ids(violation: &DerivedWorkspaceViolation) -> Vec<&'static str> {
+    match violation {
+        DerivedWorkspaceViolation::DuplicateWriter { ids, .. } => ids.clone(),
+        other => violation_id(other).into_iter().collect(),
     }
 }
 
@@ -499,14 +519,7 @@ fn validate_live_row(
         }),
     }
 
-    let file_markers: Vec<&'static str> = field
-        .source_markers
-        .iter()
-        .copied()
-        .filter(|marker| {
-            *marker != field.rust_field && !row.initialization_only_markers.contains(marker)
-        })
-        .collect();
+    let file_markers = file_markers_for(field, row);
     if !file_markers.is_empty() {
         match (row.invalidation_route, row.invalidation_route_source) {
             (Some(route), Some(source)) => {
@@ -552,7 +565,7 @@ fn validate_live_row(
             None => {
                 violations.push(DerivedWorkspaceViolation::UnknownSource { id: row.id, source })
             }
-            Some(text) if !defines_function(text, proof_test) => {
+            Some(text) if !defines_test_function(text, proof_test) => {
                 violations.push(DerivedWorkspaceViolation::StaleProofId {
                     id: row.id,
                     proof_test,
@@ -605,31 +618,71 @@ fn require_call(
 ) {
     match corpus.get(source) {
         None => violations.push(DerivedWorkspaceViolation::UnknownSource { id, source }),
-        Some(text) if !mentions_call(text, writer) => {
-            violations.push(DerivedWorkspaceViolation::WriterUnreachable {
-                id,
-                writer,
-                route,
-                source,
-            });
+        Some(text) => {
+            let reachable =
+                function_body(text, route).is_some_and(|body| mentions_call(body, writer));
+            if !reachable {
+                violations.push(DerivedWorkspaceViolation::WriterUnreachable {
+                    id,
+                    writer,
+                    route,
+                    source,
+                });
+            }
         }
-        Some(_) => {}
     }
 }
 
+fn file_markers_for(field: &FieldAuthority, row: &DerivedWorkspaceEvidence) -> Vec<&'static str> {
+    let mut markers = Vec::new();
+    let mut seen = BTreeSet::new();
+    let candidates =
+        field.source_markers.iter().copied().chain(row.contributing_sources.iter().copied());
+    for marker in candidates {
+        if marker == field.rust_field || row.initialization_only_markers.contains(&marker) {
+            continue;
+        }
+        if seen.insert(marker) {
+            markers.push(marker);
+        }
+    }
+    markers
+}
+
 fn defines_function(source: &str, name: &str) -> bool {
+    function_definition_name_start(source, name).is_some()
+}
+
+fn defines_test_function(source: &str, name: &str) -> bool {
+    function_definition_name_start(source, name)
+        .is_some_and(|start| has_test_attribute(&source[..start]))
+}
+
+fn function_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let start = function_definition_name_start(source, name)?;
+    let after_sig = start.checked_add(name.len())?.checked_add(1)?;
+    let open = find_next_code_byte(source, after_sig, b'{')?;
+    let close = matching_brace_end(source, open)?;
+    source.get(open.checked_add(1)?..close)
+}
+
+fn function_definition_name_start(source: &str, name: &str) -> Option<usize> {
     if name.is_empty() {
-        return false;
+        return None;
     }
     let needle = format!("{name}(");
     let mut rest = source;
+    let mut absolute: usize = 0;
     while let Some(idx) = rest.find(&needle) {
-        if is_fn_definition(&rest[..idx]) {
-            return true;
+        let start = absolute.checked_add(idx)?;
+        if is_fn_definition(&source[..start]) {
+            return Some(start);
         }
-        rest = &rest[idx + needle.len()..];
+        let skip = idx.checked_add(needle.len())?;
+        rest = rest.get(skip..)?;
+        absolute = absolute.checked_add(skip)?;
     }
-    false
+    None
 }
 
 fn mentions_call(source: &str, name: &str) -> bool {
@@ -642,13 +695,125 @@ fn mentions_call(source: &str, name: &str) -> bool {
         if !is_fn_definition(&rest[..idx]) {
             return true;
         }
-        rest = &rest[idx + needle.len()..];
+        let Some(skip) = idx.checked_add(needle.len()) else {
+            return false;
+        };
+        let Some(next) = rest.get(skip..) else {
+            return false;
+        };
+        rest = next;
     }
     false
 }
 
 fn is_fn_definition(prefix: &str) -> bool {
     prefix.trim_end().ends_with("fn")
+}
+
+fn has_test_attribute(prefix: &str) -> bool {
+    let trimmed = prefix.trim_end();
+    let Some(without_fn) = trimmed.strip_suffix("fn") else {
+        return false;
+    };
+    let without_fn = without_fn.trim_end();
+    let attr_start = without_fn.rfind(['}', ';', '{']).map(|idx| idx + 1).unwrap_or(0);
+    let Some(attrs) = without_fn.get(attr_start..) else {
+        return false;
+    };
+    contains_test_attr(attrs)
+}
+
+fn contains_test_attr(attrs: &str) -> bool {
+    let mut rest = attrs;
+    while let Some(idx) = rest.find("#[test") {
+        let Some(after) = rest.get(idx + 6..) else {
+            return false;
+        };
+        if after.starts_with(']') || after.starts_with('(') {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+fn find_next_code_byte(source: &str, from: usize, needle: u8) -> Option<usize> {
+    walk_code(source, from, |byte, _depth| byte == needle)
+}
+
+fn matching_brace_end(source: &str, open: usize) -> Option<usize> {
+    if source.as_bytes().get(open).copied() != Some(b'{') {
+        return None;
+    }
+    walk_code(source, open, |byte, depth| byte == b'}' && depth == 0)
+}
+
+fn walk_code(source: &str, from: usize, mut hit: impl FnMut(u8, usize) -> bool) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut i = from;
+    let mut depth = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < bytes.len() && !(bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/')) {
+                    i += 1;
+                }
+                i = i.saturating_add(2);
+                continue;
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = i.saturating_add(2);
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = i.saturating_add(2);
+                        continue;
+                    }
+                    if bytes[i] == b'\'' {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'{' => {
+                if hit(b'{', depth) {
+                    return Some(i);
+                }
+                depth = depth.saturating_add(1);
+            }
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if hit(b'}', depth) {
+                    return Some(i);
+                }
+            }
+            byte => {
+                if hit(byte, depth) {
+                    return Some(i);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -713,6 +878,7 @@ mod tests {
             invalidation_route_source: Some("route.rs"),
             invalidation_markers: &["META.json", "cpanfile"],
             initialization_only_markers: &["declared_dependencies"],
+            contributing_sources: &[],
             marker_authority_source: Some("markers.rs"),
             delete_disposition: AbsenceDisposition::RecomputeFromRemainingSources,
             unavailable_disposition: AbsenceDisposition::RetainPreviousWithLimitation,
@@ -786,6 +952,7 @@ mod tests {
             invalidation_route_source: Some(WORKSPACE_FOLDER),
             invalidation_markers: &["Makefile.PL", "Build.PL"],
             initialization_only_markers: &["native_build_hints"],
+            contributing_sources: &[],
             marker_authority_source: Some(CONFIG_MOD),
             delete_disposition: AbsenceDisposition::RecomputeFromRemainingSources,
             unavailable_disposition: AbsenceDisposition::RetainPreviousWithLimitation,
@@ -1013,14 +1180,21 @@ mod tests {
         corpus.insert("prod.rs", "pub fn refresh_all_metadata(&mut self) {}\n");
         corpus
             .insert("route.rs", "pub fn init_folder(&mut self) { self.refresh_all_metadata(); }\n");
-        let violations = validate_derived_workspace(&catalog, &[first, second], &corpus);
+        let report = check_with(&catalog, &[first, second], &corpus);
         assert!(
-            violations.iter().any(|violation| matches!(
+            report.violations.iter().any(|violation| matches!(
                 violation,
                 DerivedWorkspaceViolation::DuplicateWriter { writer: "refresh_all_metadata", .. }
             )),
-            "{violations:?}"
+            "{:?}",
+            report.violations
         );
+        assert!(
+            report.rows.iter().all(|row| !row.live),
+            "every duplicate-writer owner must be non-live: {:?}",
+            report.rows
+        );
+        assert_eq!(report.rows.len(), 2);
     }
 
     #[test]
@@ -1068,6 +1242,101 @@ mod tests {
             "self.effective_workspace_config.refresh_native_build_hints(path);",
             "refresh_native_build_hints"
         ));
+    }
+
+    #[test]
+    fn writer_call_outside_the_registered_route_does_not_count() {
+        let catalog = [derived_row(
+            "workspace.declared_dependencies",
+            "declared_dependencies",
+            &["declared_dependencies", "META.json", "cpanfile"],
+        )];
+        let evidence =
+            [live_template("workspace.declared_dependencies", "refresh_declared_dependencies")];
+        let mut corpus = valid_corpus();
+        corpus.insert(
+            "route.rs",
+            concat!(
+                "pub fn init_folder(&mut self) {}\n",
+                "pub fn refresh_from_reads(&mut self, reads: &[]) { self.apply_reads(reads); }\n",
+                "pub fn unrelated(&mut self) { self.refresh_declared_dependencies(path); }\n",
+            ),
+        );
+        let violations = validate_derived_workspace(&catalog, &evidence, &corpus);
+        assert!(
+            violations.iter().any(|violation| matches!(
+                violation,
+                DerivedWorkspaceViolation::WriterUnreachable {
+                    id: "workspace.declared_dependencies",
+                    writer: "refresh_declared_dependencies",
+                    route: "init_folder",
+                    source: "route.rs"
+                }
+            )),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn live_row_fails_when_the_proof_symbol_is_not_a_test() {
+        let catalog = [derived_row(
+            "workspace.declared_dependencies",
+            "declared_dependencies",
+            &["declared_dependencies", "META.json", "cpanfile"],
+        )];
+        let evidence =
+            [live_template("workspace.declared_dependencies", "refresh_declared_dependencies")];
+        let mut corpus = valid_corpus();
+        corpus.insert("proof.rs", "fn deleted_source_downgrades_fact() { assert!(true); }\n");
+        let violations = validate_derived_workspace(&catalog, &evidence, &corpus);
+        assert!(
+            violations.iter().any(|violation| matches!(
+                violation,
+                DerivedWorkspaceViolation::StaleProofId {
+                    id: "workspace.declared_dependencies",
+                    proof_test: "deleted_source_downgrades_fact",
+                    source: "proof.rs"
+                }
+            )),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn cfg_test_module_is_not_a_behavior_test_identity() {
+        assert!(!defines_test_function(
+            "#[cfg(test)]\nfn deleted_source_downgrades_fact() {}\n",
+            "deleted_source_downgrades_fact"
+        ));
+        assert!(defines_test_function(
+            "#[test]\nfn deleted_source_downgrades_fact() {}\n",
+            "deleted_source_downgrades_fact"
+        ));
+    }
+
+    #[test]
+    fn live_row_fails_when_a_contributing_source_is_omitted_from_invalidation() {
+        let catalog = [derived_row(
+            "workspace.declared_dependencies",
+            "declared_dependencies",
+            &["declared_dependencies", "META.json", "cpanfile"],
+        )];
+        let mut evidence =
+            live_template("workspace.declared_dependencies", "refresh_declared_dependencies");
+        evidence.contributing_sources = &["Makefile.PL", "Build.PL", "dist.ini", "META.yml"];
+        let violations = validate_derived_workspace(&catalog, &[evidence], &valid_corpus());
+        for marker in ["Makefile.PL", "Build.PL", "dist.ini", "META.yml"] {
+            assert!(
+                violations.iter().any(|violation| matches!(
+                    violation,
+                    DerivedWorkspaceViolation::MissingInvalidation {
+                        id: "workspace.declared_dependencies",
+                        marker: omitted
+                    } if *omitted == marker
+                )),
+                "missing {marker}: {violations:?}"
+            );
+        }
     }
 
     #[test]
