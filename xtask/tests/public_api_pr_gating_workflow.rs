@@ -1000,7 +1000,34 @@ const PUSH_OR_SCOPE_STEP_GATED: &str = r#"
         run: just public-api-check
 "#;
 
+const PUSH_OR_SCOPE_WITH_EXPRESSION_IN_RUN: &str = r#"
+  public-api-pr:
+    if: (github.event_name == 'pull_request' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))) && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    env:
+      RUN_API_RATCHET: ${{ github.event_name == 'push' || needs.draft-pr-check.outputs.api_scope == 'true' }}
+    steps:
+      - name: Scoped no-op summary
+        if: env.RUN_API_RATCHET != 'true'
+        run: echo "- event: `${{ github.event_name }}`"
+      - name: Check public API surface
+        if: env.RUN_API_RATCHET == 'true'
+        run: just public-api-check
+"#;
+
+fn reject_github_expressions_in_run_source(job: &str) -> Result<(), String> {
+    for step in parse_job_steps(job) {
+        if let Some(line) = step.run.lines().find(|line| line.contains("${{")) {
+            return Err(format!(
+                "step {} embeds a GitHub expression in run source; pass it through env: {line}",
+                step.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn matrix_ready_job(job: &str) -> Result<(), String> {
+    reject_github_expressions_in_run_source(job)?;
     let pr_full = ApiRatchetScenario {
         event: "pull_request",
         git_ref: "refs/pull/1/merge",
@@ -1086,6 +1113,10 @@ fn public_api_pr_event_matrix_rejects_pr_only_and_push_scoped_noop() -> Result<(
     if still_scoped.is_ok() {
         return Err("admitting push at job if while leaving steps on api_scope must fail".into());
     }
+    let interpolated_run = matrix_ready_job(PUSH_OR_SCOPE_WITH_EXPRESSION_IN_RUN);
+    if interpolated_run.is_ok() {
+        return Err("interpolating github.event_name into run source must fail".into());
+    }
     matrix_ready_job(PUSH_OR_SCOPE_STEP_GATED)?;
     Ok(())
 }
@@ -1112,6 +1143,45 @@ fn public_api_pr_live_workflow_covers_the_event_matrix() -> Result<(), Box<dyn s
             )
             .into());
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn public_api_pr_run_sources_pass_github_context_through_env()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workflow = read(&project_root()?, ".github/workflows/ci.yml")?;
+    let public_api = job_section(&workflow, "public-api-pr")
+        .ok_or("ci.yml must define the public-api-pr rail")?;
+    let mut saw_scoped_noop = false;
+    let mut saw_identity = false;
+    for step in parse_job_steps(public_api) {
+        if step.name.contains("Scoped no-op") {
+            saw_scoped_noop = true;
+            if !step.run.contains("$EVENT_NAME") || !step.run.contains("$API_SCOPE") {
+                return Err(
+                    "scoped-noop summary must print EVENT_NAME and API_SCOPE from env".into()
+                );
+            }
+        }
+        if step.name.contains("Verify tested candidate identity") {
+            saw_identity = true;
+            if !step.run.contains("$EVENT_NAME") || !step.run.contains("$TESTED_SHA") {
+                return Err("identity summary must print EVENT_NAME and TESTED_SHA from env".into());
+            }
+        }
+    }
+    if !saw_scoped_noop {
+        return Err("public-api-pr must keep a scoped-noop summary step".into());
+    }
+    if !saw_identity {
+        return Err("public-api-pr must keep an exact-head identity step".into());
+    }
+    if !public_api.contains("EVENT_NAME: ${{ github.event_name }}") {
+        return Err("EVENT_NAME must bind github.event_name as env data".into());
+    }
+    if !public_api.contains("API_SCOPE: ${{ needs.draft-pr-check.outputs.api_scope }}") {
+        return Err("API_SCOPE must bind draft-pr-check.api_scope as env data".into());
     }
     Ok(())
 }

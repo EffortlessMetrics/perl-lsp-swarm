@@ -605,12 +605,15 @@ jobs:
         # so a future ruleset promotion resolves cleanly (issue #2266).
         if: env.RUN_API_RATCHET != 'true'
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          API_SCOPE: ${{ needs.draft-pr-check.outputs.api_scope }}
         run: |
           {
             echo "### Public API Surface scope"
             echo ""
-            echo "- event: \`${{ github.event_name }}\`"
-            echo "- api_scope: \`${{ needs.draft-pr-check.outputs.api_scope }}\`"
+            echo "- event: \`$EVENT_NAME\`"
+            echo "- api_scope: \`$API_SCOPE\`"
             echo "- verdict: scoped-noop — no facade crate or .ci/public-api-baselines change"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::notice::public-api scoped-noop: no facade crate or baseline surface changed."
@@ -623,6 +626,7 @@ jobs:
       - name: Verify tested candidate identity
         if: env.RUN_API_RATCHET == 'true'
         env:
+          EVENT_NAME: ${{ github.event_name }}
           TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
@@ -630,7 +634,7 @@ jobs:
           {
             echo "### Public API Surface check"
             echo
-            echo "- event: \`${{ github.event_name }}\`"
+            echo "- event: \`$EVENT_NAME\`"
             echo "- sha: \`$TESTED_SHA\`"
             echo "- verdict: running \`just public-api-check\`"
           } >> "$GITHUB_STEP_SUMMARY"
