@@ -24,7 +24,7 @@ json_read() {
     printf '%s' "$PR_JSON" | jq -r "$filter" | tr -d '\r'
 }
 
-PR_JSON="$(gh pr view "$PR" --json isDraft,title,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup)"
+PR_JSON="$(gh pr view "$PR" --json isDraft,title,mergeable,mergeStateStatus,headRefOid,baseRefName)"
 
 IS_DRAFT="$(json_read '.isDraft')"
 MERGEABLE="$(json_read '.mergeable // empty')"
@@ -71,19 +71,22 @@ else
     else
         # gh pr checks exits nonzero for a red required check; its JSON still
         # carries the diagnostic state. The classifier rejects missing data.
-        gh pr checks "$PR" --required --json name,state >"$TMP_DIR/required.json" || true
+        gh pr checks "$PR" --required --json name,state,link >"$TMP_DIR/required.json" || true
+        gh pr checks "$PR" --json name,state,bucket,link,workflow >"$TMP_DIR/checks.json" || true
         printf '%s' "$PR_JSON" >"$TMP_DIR/pr.json"
         if [[ -n "${PRE_MERGE_ADVISORY_EVIDENCE:-}" ]]; then
             if ! jq -n --slurpfile pr "$TMP_DIR/pr.json" --slurpfile rules "$TMP_DIR/rules.json" \
                 --slurpfile classic "$TMP_DIR/classic.json" --slurpfile required_checks "$TMP_DIR/required.json" \
+                --slurpfile checks "$TMP_DIR/checks.json" \
                 --slurpfile evidence "$PRE_MERGE_ADVISORY_EVIDENCE" \
-                '{pr:$pr[0],rules:$rules[0],classic:$classic[0],required_checks:$required_checks[0],evidence:$evidence[0]}' \
+                '{pr:$pr[0],rules:$rules[0],classic:$classic[0],required_checks:$required_checks[0],checks:$checks[0],evidence:$evidence[0]}' \
                 | python3 "$SCRIPT_DIR/ci/classify-pre-merge-status.py"; then
                 FAILED=1
             fi
         elif ! jq -n --slurpfile pr "$TMP_DIR/pr.json" --slurpfile rules "$TMP_DIR/rules.json" \
             --slurpfile classic "$TMP_DIR/classic.json" --slurpfile required_checks "$TMP_DIR/required.json" \
-            '{pr:$pr[0],rules:$rules[0],classic:$classic[0],required_checks:$required_checks[0]}' \
+            --slurpfile checks "$TMP_DIR/checks.json" \
+            '{pr:$pr[0],rules:$rules[0],classic:$classic[0],required_checks:$required_checks[0],checks:$checks[0]}' \
             | python3 "$SCRIPT_DIR/ci/classify-pre-merge-status.py"; then
             FAILED=1
         fi

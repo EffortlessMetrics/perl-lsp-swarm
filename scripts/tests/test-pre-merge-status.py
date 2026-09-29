@@ -16,19 +16,19 @@ URL = "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/36551986
 
 def fixture():
     return {
-        "pr": {"headRefOid": HEAD, "statusCheckRollup": [
-            {"name": "Required A", "conclusion": "SUCCESS", "detailsUrl": "https://example.test/required"}]},
+        "pr": {"headRefOid": HEAD},
+        "checks": [{"name": "Required A", "state": "SUCCESS", "link": "https://example.test/required"}],
         "rules": [{"type": "required_status_checks", "parameters": {
             "required_status_checks": [{"context": "Required A"}]}}],
         "classic": {"contexts": [], "checks": []},
-        "required_checks": [{"name": "Required A", "state": "SUCCESS"}],
+        "required_checks": [{"name": "Required A", "state": "SUCCESS", "link": "https://example.test/required"}],
     }
 
 
 def red(data, name="PR Smoke (Fast Feedback, advisory)", url=URL):
-    data["pr"]["statusCheckRollup"].append(
-        {"name": name, "conclusion": "FAILURE", "detailsUrl": url})
-    return {"name": name, "detailsUrl": url, "classification": "inherited",
+    data["checks"].append(
+        {"name": name, "state": "FAILURE", "link": url})
+    return {"name": name, "link": url, "classification": "inherited",
             "discriminator": "same gate and failure signature on merge-base run",
             "evidenceUrl": url,
             "mergeBaseRunUrl": "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/36545615698"}
@@ -45,14 +45,27 @@ class StatusFixtures(unittest.TestCase):
 
     def test_missing_required_context_fails_closed(self):
         data = fixture()
-        data["pr"]["statusCheckRollup"] = []
+        data["checks"] = []
         self.assertIn("required context missing", run(data).stderr)
 
     def test_failed_required_context_blocks_even_with_advisory_evidence(self):
         data = fixture()
-        data["pr"]["statusCheckRollup"][0]["conclusion"] = "FAILURE"
+        data["checks"][0]["state"] = "FAILURE"
         data["required_checks"][0]["state"] = "FAILURE"
         self.assertIn("required context is not successful", run(data).stderr)
+
+    def test_conflicting_required_results_cannot_hide_failure(self):
+        data = fixture()
+        data["checks"].append({"name": "Required A", "state": "FAILURE", "link": "https://example.test/older"})
+        self.assertIn("ambiguous current results", run(data).stderr)
+
+    def test_running_check_is_controlled_not_proven(self):
+        data = fixture()
+        data["checks"].append({"name": "Running advisory", "state": None, "link": "https://example.test/running"})
+        result = run(data)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("advisory result pending or unknown", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_classic_policy_is_additive(self):
         data = fixture()
@@ -91,17 +104,46 @@ class StatusFixtures(unittest.TestCase):
 
     def test_16939_mixed_advisory_evidence_preserves_not_proven(self):
         data = fixture()
-        inherited = red(data)
-        stable_url = "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/36551987082/job/109352098183"
-        uncertain = red(data, "Current-source Linux smoke (stable)", stable_url)
-        uncertain.pop("mergeBaseRunUrl")
-        uncertain["classification"] = "not_proven_nonmaterial"
-        uncertain["discriminator"] = "stable VS Code host-resolution lane has no matching merge-base proof; changed launcher paths do not reach this lane"
-        uncertain["nonmaterialReason"] = "stable VS Code host resolution is outside the four changed CLI launcher paths"
-        data["evidence"] = {"headRefOid": HEAD, "advisories": [inherited, uncertain]}
+        required = [
+            ("ripr+ New Gap Gate", "36551986972/job/109396113490"),
+            ("validate-title", "36558049300/job/109371886643"),
+            ("Perl LSP Rust Small Result", "36551986899/job/109356771370"),
+            ("Compile All Targets (bit-rot guard)", "36551986994/job/109352822178"),
+            ("Conflict marker check", "36551986994/job/109352822207"),
+        ]
+        base = "https://github.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/"
+        data["rules"][0]["parameters"]["required_status_checks"] = [{"context": name} for name, _ in required]
+        data["checks"] = [{"name": name, "state": "SUCCESS", "link": base + path} for name, path in required]
+        data["required_checks"] = copy.deepcopy(data["checks"])
+        # Current gh pr checks snapshot from merged #16939, head 6129bf77.
+        # Superseded failed/cancelled attempts in statusCheckRollup are absent.
+        failed = [
+            ("CI Gate (Advisory Aggregate)", "36551986994/job/109361447358", "inherited"),
+            ("CI Gate shard (lsp)", "36551986994/job/109352894172", "inherited"),
+            ("CI Gate shard (meta)", "36551986994/job/109352894241", "inherited"),
+            ("CI Gate shard (policy)", "36551986994/job/109352894182", "inherited"),
+            ("Public API Surface (facade PR)", "36551986994/job/109352822167", "inherited"),
+            ("PR Smoke (Fast Feedback, advisory)", "36551986994/job/109352822130", "not_proven_nonmaterial"),
+            ("Current-source Linux smoke (stable)", "36551987082/job/109352098183", "not_proven_nonmaterial"),
+        ]
+        entries = []
+        for name, path, classification in failed:
+            entry = red(data, name, base + path)
+            entry["classification"] = classification
+            if classification == "not_proven_nonmaterial":
+                entry.pop("mergeBaseRunUrl")
+                entry["nonmaterialReason"] = (
+                    "PR Smoke has different first unit failures at head and merge base, both outside four changed launcher paths"
+                    if name.startswith("PR Smoke") else
+                    "stable VS Code host-resolution failure has no matching merge-base proof and is outside four changed launcher paths"
+                )
+                entry["discriminator"] = "changed-path and production-route comparison for four CLI launcher paths"
+            entries.append(entry)
+        self.assertEqual(len(data["checks"]), 12)
+        data["evidence"] = {"headRefOid": HEAD, "advisories": entries}
         self.assertEqual(run(data).returncode, 0)
         bad = copy.deepcopy(data)
-        bad["evidence"]["advisories"][1].pop("nonmaterialReason")
+        bad["evidence"]["advisories"][-1].pop("nonmaterialReason")
         self.assertNotEqual(run(bad).returncode, 0)
 
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fail-closed classification of live required and advisory PR checks.
 
-Input is a JSON object with pr, rules, classic, required_checks, and evidence.
-The shell guard obtains the first four values from GitHub. Evidence is a
+Input is a JSON object with pr, rules, classic, checks, required_checks, and evidence.
+The shell guard obtains the first five values from GitHub. Evidence is a
 maintainer-reviewed, head-bound JSON document, never a substitute for policy.
 """
 
@@ -21,11 +21,11 @@ def fail(message):
 
 
 def identity(check):
-    return (check.get("name", check.get("context")), check.get("detailsUrl", check.get("targetUrl")))
+    return (check.get("name"), check.get("link"))
 
 
 def result(check):
-    return check.get("conclusion", check.get("state", check.get("status", ""))).upper()
+    return (check.get("state") or "").upper()
 
 
 def main():
@@ -33,7 +33,7 @@ def main():
         data = json.load(sys.stdin)
         pr = data["pr"]
         head = pr["headRefOid"]
-        checks = pr["statusCheckRollup"]
+        checks = data["checks"]
         rules = data["rules"]
         classic = data["classic"]
         required_checks = data["required_checks"]
@@ -46,6 +46,8 @@ def main():
                 required.update(item["context"] for item in rule["parameters"]["required_status_checks"])
         if not required:
             return fail("live policy supplied no required contexts")
+        if not isinstance(required_checks, list):
+            return fail("gh pr checks --required response has the wrong shape")
         observed_required = {item["name"] for item in required_checks}
         if observed_required != required:
             return fail(f"required policy and gh pr checks disagree: policy={sorted(required)}, checks={sorted(observed_required)}")
@@ -56,9 +58,12 @@ def main():
             matches = by_name.get(name, [])
             if not matches:
                 return fail(f"required context missing: {name}")
-            if not any(result(check) == "SUCCESS" for check in matches):
+            required_matches = [item for item in required_checks if item["name"] == name]
+            if len(matches) != 1 or len(required_matches) != 1:
+                return fail(f"required context has ambiguous current results: {name}")
+            if result(matches[0]) != "SUCCESS":
                 return fail(f"required context is not successful: {name}")
-            if not any(item["name"] == name and item["state"] == "SUCCESS" for item in required_checks):
+            if required_matches[0]["state"] != "SUCCESS" or required_matches[0]["link"] != matches[0]["link"]:
                 return fail(f"gh pr checks does not report required success: {name}")
         reds = {identity(check) for check in checks if identity(check)[0] not in required and result(check) in RED}
         pending = {identity(check) for check in checks if identity(check)[0] not in required and result(check) not in GOOD | RED}
@@ -75,7 +80,7 @@ def main():
             return fail("advisory evidence must contain an advisories list")
         mapped = {}
         for entry in entries:
-            key = (entry.get("name"), entry.get("detailsUrl"))
+            key = (entry.get("name"), entry.get("link"))
             if key in mapped:
                 return fail(f"duplicate advisory evidence: {key}")
             mapped[key] = entry

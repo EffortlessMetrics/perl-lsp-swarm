@@ -237,14 +237,17 @@ specific production-path or changed-path discriminator establishes why it cannot
 affect this candidate's reviewed claim. This is not a passing result for that advisory.
 
 `scripts/pre-merge-check.sh` reads current ruleset and classic protection, compares
-them with `gh pr checks --required`, and matches advisory reds by check name and run
-URL. For `UNSTABLE`, supply `PRE_MERGE_ADVISORY_EVIDENCE` as a JSON file with the
+them with `gh pr checks --required`, and uses current `gh pr checks` results to avoid
+counting superseded attempts in the raw status rollup. It matches advisory reds by
+check name and run URL. For `UNSTABLE`, supply `PRE_MERGE_ADVISORY_EVIDENCE` as a JSON file with the
 current `headRefOid` and one `advisories` entry per red check. Each entry names
-`name`, `detailsUrl`, `classification`, `discriminator`, and `evidenceUrl`.
+`name`, `link`, `classification`, `discriminator`, and `evidenceUrl`.
 `inherited` also requires `mergeBaseRunUrl`; `not_proven_nonmaterial` also requires
 `nonmaterialReason`. Missing, stale, duplicate, candidate-owned, or unclassified
 entries fail closed. This record supports the handoff guard; GitHub protection and
-the substantive review remain independent merge authorities.
+the substantive review remain independent merge authorities. The helper validates
+identity and required evidence fields; a substantive reviewer must judge whether
+the cited merge-base signature and nonmateriality claims are true.
 
 ## Stacked candidates under squash merge
 

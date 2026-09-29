@@ -41,11 +41,12 @@ make_mock_gh() {
     semantic_class="${2:-REVIEW_CURRENT}"
     semantic_reason="${3:-fixture}"
     semantic_rc="${4:-0}"
-    json="$(jq -c '. + {headRefOid:"fixture-head",baseRefName:"main",statusCheckRollup:[{name:"Required A",conclusion:"SUCCESS",detailsUrl:"https://example.test/required"}]}' <<<"$json")"
+    json="$(jq -c '. + {headRefOid:"fixture-head",baseRefName:"main"}' <<<"$json")"
     printf '%s' "$json" >"$tmpdir/pr.json"
+    printf '%s' '[{"name":"Required A","state":"SUCCESS","link":"https://example.test/required"}]' >"$tmpdir/checks.json"
     printf '%s' '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Required A"}]}}]' >"$tmpdir/rules.json"
     printf '%s' '{"contexts":[],"checks":[]}' >"$tmpdir/classic.json"
-    printf '%s' '[{"name":"Required A","state":"SUCCESS"}]' >"$tmpdir/required.json"
+    printf '%s' '[{"name":"Required A","state":"SUCCESS","link":"https://example.test/required"}]' >"$tmpdir/required.json"
     cat > "$tmpdir/gh" <<EOF_MOCK
 #!/usr/bin/env bash
 case "\$*" in
@@ -53,6 +54,7 @@ case "\$*" in
     *'rules/branches/'*) cat '$tmpdir/rules.json' ;;
     *'protection/required_status_checks'*) cat '$tmpdir/classic.json' ;;
     *'--required'*) cat '$tmpdir/required.json' ;;
+    *'pr checks'*) cat '$tmpdir/checks.json' ;;
     *) cat '$tmpdir/pr.json' ;;
 esac
 EOF_MOCK
@@ -159,15 +161,15 @@ test_unstable_inherited_advisory_requires_evidence() {
     local mock json code
     json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"UNSTABLE","title":"fix: launcher (#16939)"}'
     mock="$(make_mock_gh "$json")"
-    jq '.statusCheckRollup += [{name:"PR Smoke",conclusion:"FAILURE",detailsUrl:"https://example.test/advisory"}]' "$mock/pr.json" >"$mock/updated.json"
-    mv "$mock/updated.json" "$mock/pr.json"
+    jq '. += [{name:"PR Smoke",state:"FAILURE",link:"https://example.test/advisory"}]' "$mock/checks.json" >"$mock/updated.json"
+    mv "$mock/updated.json" "$mock/checks.json"
     code="$(run_check "$mock")"
     if [[ "$code" -eq 0 ]]; then
         fail "UNSTABLE advisory without evidence unexpectedly passed"
     else
         pass "UNSTABLE advisory without evidence fails closed"
     fi
-    printf '%s' '{"headRefOid":"fixture-head","advisories":[{"name":"PR Smoke","detailsUrl":"https://example.test/advisory","classification":"inherited","discriminator":"same failing gate and signature at merge base","evidenceUrl":"https://example.test/advisory","mergeBaseRunUrl":"https://example.test/merge-base"}]}' >"$mock/evidence.json"
+    printf '%s' '{"headRefOid":"fixture-head","advisories":[{"name":"PR Smoke","link":"https://example.test/advisory","classification":"inherited","discriminator":"same failing gate and signature at merge base","evidenceUrl":"https://example.test/advisory","mergeBaseRunUrl":"https://example.test/merge-base"}]}' >"$mock/evidence.json"
     PRE_MERGE_ADVISORY_EVIDENCE="$mock/evidence.json" code="$(run_check "$mock")"
     cleanup "$mock"
     [[ "$code" -eq 0 ]] && pass "UNSTABLE inherited advisory with exact-head evidence passes" || fail "UNSTABLE inherited advisory with evidence failed"
