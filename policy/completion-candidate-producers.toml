@@ -70,7 +70,19 @@ outcome_owner = "#10230"
 # trigger predicate, not a candidate producer, and the dash branch now routes
 # through the existing receiver scan with the finalizer route untouched;
 # scanned set unchanged. Projection diff is digest-only, `check` passes.
-source_digest = "sha256:ebfd92835f0614e1536867af4045bddde70f02d9ecf2b009b2d7f6f64e7c9b3a"
+# Re-audit 2026-09-29 (#16791): #16484 (workspace enrichment gated out of
+# method and hash-key roles) drifted the surface to 4e07962e... via two
+# production files under the scan roots (`completion/completion.rs`,
+# `runtime/language/completion.rs`) plus the excluded test file
+# `completion/completion/tests.rs`. Scanned set unchanged at 42 files; no
+# producer add/remove/re-channel. `detect_hash_key_context` became `pub` but
+# is not a candidate producer (returns `Option<(String, String)>`). Existing
+# producer `add_runtime_workspace_completions` now early-returns for method
+# and hash-key roles the same way it already skipped module-import context;
+# reached_by, finalizer_route, and disposition enums are unchanged. The new
+# `CompletionProvider::` path is already fully scanned (`providers::completion`).
+# Projection diff is digest-only, `check` passes.
+source_digest = "sha256:4e07962ef527ce07ef6f6735eb3eeefbafe2ca1f490b6a7ef0ecc6b528b0c527"
 
 [[delegations]]
 module = "dancer2"
