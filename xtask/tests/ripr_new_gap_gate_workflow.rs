@@ -2255,6 +2255,36 @@ fn ripr_cancelled_gate_requires_current_job_timeout_annotation() -> Result<()> {
             );
         }
     }
+    // The log endpoint can remain unavailable for the entire cancelled-lane
+    // retrieval window. Each failed request consumes 30 seconds so the old
+    // shared-deadline loop would use all 240 seconds before API evidence.
+    // The gate must preserve time for the exact annotation and current job.
+    let (unavailable_log_outcome, unavailable_log_output, unavailable_log_artifact) =
+        run_gate_with_fake_gh_logs(
+            None,
+            "",
+            0,
+            0,
+            GateRoute::github_cancelled(),
+            GhApiControl::Valid,
+            Some("gate-token"),
+            0,
+            30,
+            exact,
+            steps,
+        )?;
+    if unavailable_log_outcome.status.success()
+        || !unavailable_log_output.contains("RIPR_GATE_VERDICT=configured-timeout-no-proof")
+        || !unavailable_log_artifact
+            .as_deref()
+            .unwrap_or("")
+            .contains("classification=configured-timeout-no-proof")
+        || !unavailable_log_artifact.as_deref().unwrap_or("").contains("evidence=api-evidence")
+    {
+        bail!(
+            "unavailable cancelled-lane log must leave time for exact timeout API evidence:\n{unavailable_log_output}\n{unavailable_log_artifact:?}"
+        );
+    }
     let (outcome, output, artifact) = run_gate_with_fake_gh_logs(
         Some("quality gate failed; see receipt\n"),
         "",

@@ -1850,9 +1850,11 @@ jobs:
             # Keep both retrieval phases inside the one job-level deadline.
             # The deadline was established before checkout/setup, reserving the
             # finalization interval for the verdict, summary, and artifact upload.
-            bounded_gh_api() {
+            bounded_gh_api_until() {
+              local cutoff="$1"
+              shift
               local remaining
-              remaining="$(remaining_until_deadline)"
+              remaining=$((cutoff - $(date +%s)))
               if [ "$remaining" -le 0 ]; then
                 return 124
               fi
@@ -1862,14 +1864,20 @@ jobs:
               fi
               timeout --signal=TERM --kill-after=5s "${request_timeout}s" gh api "$@"
             }
-            bounded_sleep() {
-              local delay="$1"
+            bounded_gh_api() {
+              bounded_gh_api_until "$gate_deadline" "$@"
+            }
+            bounded_sleep_until() {
+              local cutoff="$1" delay="$2"
               local remaining
-              remaining="$(remaining_until_deadline)"
+              remaining=$((cutoff - $(date +%s)))
               if [ "$remaining" -le 0 ] || [ "$delay" -gt "$remaining" ]; then
                 return 124
               fi
               sleep "$delay"
+            }
+            bounded_sleep() {
+              bounded_sleep_until "$gate_deadline" "$1"
             }
             # #14774: the bound on both retrieval phases is the gate's own
             # budget, not a fixed attempt count. A five-attempt schedule of
@@ -1925,9 +1933,16 @@ jobs:
               lane_log=$(mktemp)
               fetched=false
               lane_fetch_attempts=0
-              while [ "$(remaining_until_deadline)" -gt 0 ]; do
+              # Cancelled jobs can expose the configured timeout only through
+              # their check-run annotation. Reserve the final 120 seconds for
+              # that API lookup when the log endpoint never becomes readable.
+              log_fetch_deadline="$gate_deadline"
+              if [ "$lane_result" = "cancelled" ]; then
+                log_fetch_deadline=$((gate_deadline - 120))
+              fi
+              while [ "$((log_fetch_deadline - $(date +%s)))" -gt 0 ]; do
                 lane_fetch_attempts=$((lane_fetch_attempts + 1))
-                if bounded_gh_api "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
+                if bounded_gh_api_until "$log_fetch_deadline" "repos/${GITHUB_REPOSITORY}/actions/jobs/${lane_job_id}/logs" > "$lane_log" 2>/dev/null; then
                   fetched=true
                   lane_evidence_source="lane-log"
                   clf_out=$(bash scripts/ci/classify-ripr-lane-termination "$lane_log") || clf_out=""
@@ -1945,7 +1960,7 @@ jobs:
                 if [ "$fetched" = "true" ]; then
                   break
                 fi
-                if ! bounded_sleep "$(next_backoff "$lane_fetch_attempts")"; then
+                if ! bounded_sleep_until "$log_fetch_deadline" "$(next_backoff "$lane_fetch_attempts")"; then
                   break
                 fi
               done
