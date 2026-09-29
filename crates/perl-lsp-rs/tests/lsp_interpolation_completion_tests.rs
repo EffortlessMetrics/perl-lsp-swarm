@@ -102,16 +102,14 @@ fn interpolation_completion_stdio_is_lexical_and_quiet_on_boundaries()
         .iter()
         .find(|item| item["label"].as_str() == Some("$name"))
         .ok_or("$name item")?;
-    let range = name_item.get("textEdit").and_then(|edit| edit.get("range"));
-    if let Some(range) = range {
-        assert_eq!(range["start"]["line"].as_u64(), Some(2));
-        assert_eq!(
-            range["start"]["character"].as_u64(),
-            Some((interpolating_character - 1) as u64)
-        );
-        assert_eq!(range["end"]["line"].as_u64(), Some(2));
-        assert_eq!(range["end"]["character"].as_u64(), Some(interpolating_character as u64));
-    }
+    let range = name_item
+        .get("textEdit")
+        .and_then(|edit| edit.get("range"))
+        .ok_or("stdio interpolation $name must carry textEdit.range")?;
+    assert_eq!(range["start"]["line"].as_u64(), Some(2));
+    assert_eq!(range["start"]["character"].as_u64(), Some((interpolating_character - 1) as u64));
+    assert_eq!(range["end"]["line"].as_u64(), Some(2));
+    assert_eq!(range["end"]["character"].as_u64(), Some(interpolating_character as u64));
 
     let quiet = send_request(
         &server,

@@ -252,10 +252,10 @@ fn interpolation_sigil_before(bytes: &[u8], index: usize) -> Option<(usize, usiz
         return None;
     }
     match bytes.get(index - 1).copied() {
-        Some(b'{') if index >= 2 && bytes.get(index - 2) == Some(&b'$') => {
+        Some(b'{') if index >= 2 && matches!(bytes.get(index - 2), Some(&b'$' | &b'@')) => {
             Some((index - 2, index, true))
         }
-        Some(b'$' | b'@' | b'%') => Some((index - 1, index, false)),
+        Some(b'$' | b'@') => Some((index - 1, index, false)),
         _ => None,
     }
 }
@@ -2445,5 +2445,20 @@ my $after = "op"#;
             interpolation_admission(replacement, slot + 3),
             InterpolationAdmission::NotOwned
         );
+
+        let array = r#"my @names = qw(a); my $text = "Hello @na"#;
+        assert_eq!(
+            interpolation_admission(array, array.len()),
+            InterpolationAdmission::VariableSlot { braced: false }
+        );
+
+        let braced_array = r#"my @names = qw(a); my $text = "Hello @{na"#;
+        assert_eq!(
+            interpolation_admission(braced_array, braced_array.len()),
+            InterpolationAdmission::VariableSlot { braced: true }
+        );
+
+        let hash = r#"my %hash = (a => 1); my $text = "value %ha"#;
+        assert_eq!(interpolation_admission(hash, hash.len()), InterpolationAdmission::Quiet);
     }
 }

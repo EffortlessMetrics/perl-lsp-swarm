@@ -19,10 +19,12 @@ pub(super) fn complete_slot(
         return Vec::new();
     }
 
+    // Perl interpolates `$name` / `@array` (and their `${}` / `@{}` forms)
+    // in double-quoted strings, `qq`, backticks, and interpolating heredocs.
+    // Bare `%hash` stays literal, so hash sigils are not interpolation slots.
     let (sigil, kind) = match geometry.prefix.chars().next() {
         Some('$') => ("$", SymbolKind::scalar()),
         Some('@') => ("@", SymbolKind::array()),
-        Some('%') => ("%", SymbolKind::hash()),
         _ => return Vec::new(),
     };
 
@@ -41,13 +43,20 @@ pub(super) fn complete_slot(
     if is_cancelled() {
         return Vec::new();
     }
-    if !geometry.braced {
-        variables::add_special_variables(&mut completions, &slot_context, sigil);
-    }
+    variables::add_special_variables(&mut completions, &slot_context, sigil);
     if geometry.braced {
+        completions.retain(|item| braced_name_is_admitted(item));
         strip_sigil_from_braced_inserts(&mut completions, geometry.name_start, position);
     }
     sort::deduplicate_and_sort(completions)
+}
+
+fn braced_name_is_admitted(item: &CompletionItem) -> bool {
+    let Some(insert) = item.insert_text.as_deref() else {
+        return false;
+    };
+    let name = insert.trim_start_matches(['$', '@', '%']);
+    !name.is_empty() && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn strip_sigil_from_braced_inserts(
@@ -59,6 +68,10 @@ fn strip_sigil_from_braced_inserts(
         if let Some(insert) = item.insert_text.as_deref() {
             let stripped = insert.trim_start_matches(['$', '@', '%']);
             item.insert_text = Some(Cow::Owned(stripped.to_string()));
+        }
+        if let Some(filter) = item.filter_text.as_deref() {
+            let stripped = filter.trim_start_matches(['$', '@', '%']);
+            item.filter_text = Some(Cow::Owned(stripped.to_string()));
         }
         item.text_edit_range = Some((name_start, position));
     }

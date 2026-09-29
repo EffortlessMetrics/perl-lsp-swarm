@@ -17,7 +17,9 @@ fn completions_with_workspace(
     package_source: &str,
 ) -> Result<Vec<CompletionItem>, Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(Url::parse("file:///lib/Animal.pm")?, package_source.to_string())?;
+    // Canonical initial-name fixture seeding (#16449 burndown): this seeds
+    // on-disk workspace state, so call index_initial_file directly.
+    index.index_initial_file(Url::parse("file:///lib/Animal.pm")?, package_source.to_string())?;
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     Ok(CompletionProvider::new_with_index(&ast, Some(index)).get_completions(source, position))
@@ -67,10 +69,17 @@ fn interpolation_filters_prefix_among_multiple_lexicals() {
 
 #[test]
 fn interpolation_prefers_inner_shadowed_binding() {
-    let source = "my $name = 1;\n{\n    my $name = 2;\n    my $text = \"Hello $na\";\n}\n";
+    let source = "my $name = 1;\n{\n    our $name = 2;\n    my $text = \"Hello $na\";\n}\n";
     let position = must_some(source.find("$na")) + 3;
     let items = completions_at(source, position);
-    assert!(has_label(&items, "$name"), "missing shadowed $name: {:?}", labels(&items));
+    let name_items: Vec<_> = items.iter().filter(|item| item.label == "$name").collect();
+    assert_eq!(name_items.len(), 1, "shadowing must emit one $name: {:?}", labels(&items));
+    let item = must_some(name_items.into_iter().next());
+    assert!(
+        item.detail.as_deref().is_some_and(|detail| detail.contains("our")),
+        "expected the inner our binding, got {:?}",
+        item.detail
+    );
 }
 
 #[test]
@@ -79,9 +88,17 @@ fn braced_interpolation_replaces_the_name_inside_braces() {
     let items = completions_at(source, source.len());
     let item = must_some(items.iter().find(|item| item.label == "$name"));
     assert_eq!(item.insert_text.as_deref(), Some("name"));
+    assert_eq!(item.filter_text.as_deref(), Some("name"));
     let dollar = must_some(source.rfind('$'));
     let name_start = dollar + 2; // `${`
     assert_eq!(item.text_edit_range, Some((name_start, source.len())));
+}
+
+#[test]
+fn qq_paired_delimiter_admits_interpolation_slot() {
+    let source = r#"my $name = "hi"; my $text = qq{Hello $na"#;
+    let items = completions_at(source, source.len());
+    assert!(has_label(&items, "$name"), "qq{} slot missing $name: {:?}", labels(&items));
 }
 
 #[test]
@@ -121,6 +138,65 @@ fn doubled_backslash_still_interpolates() {
     let source = r#"my $name = "hi"; my $text = "Hello \\$na"#;
     let items = completions_at(source, source.len());
     assert!(has_label(&items, "$name"), "\\\\$name should interpolate, got {:?}", labels(&items));
+}
+
+#[test]
+fn single_quote_and_q_are_quiet() {
+    let single = r#"my $name = "hi"; my $text = 'Hello $na"#;
+    assert!(
+        !has_label(&completions_at(single, single.len()), "$name"),
+        "single-quoted slot leaked $name"
+    );
+
+    let q = r#"my $name = "hi"; my $text = q($na"#;
+    assert!(!has_label(&completions_at(q, q.len()), "$name"), "q() slot leaked $name");
+}
+
+#[test]
+fn interpolating_array_slot_offers_array_binding() {
+    let source = r#"my @names = qw(a b); my $text = "Hello @na"#;
+    let items = completions_at(source, source.len());
+    assert!(has_label(&items, "@names"), "interpolating @names missing: {:?}", labels(&items));
+}
+
+#[test]
+fn braced_array_interpolation_replaces_the_name_inside_braces() {
+    let source = r#"my @names = qw(a); my $text = "Hello @{na"#;
+    let items = completions_at(source, source.len());
+    let item = must_some(items.iter().find(|item| item.label == "@names"));
+    assert_eq!(item.insert_text.as_deref(), Some("names"));
+    assert_eq!(item.filter_text.as_deref(), Some("names"));
+}
+
+#[test]
+fn interpolating_string_does_not_admit_hash_sigil() {
+    let source = r#"my %hash = (a => 1); my $text = "value %ha"#;
+    let items = completions_at(source, source.len());
+    assert!(
+        !has_label(&items, "%hash"),
+        "bare %hash is literal in interpolating strings: {:?}",
+        labels(&items)
+    );
+}
+
+#[test]
+fn interpolating_heredoc_does_not_admit_hash_sigil() {
+    let source = "my %hash = (a => 1);\nmy $text = <<EOF;\nvalue %ha";
+    let items = completions_at(source, source.len());
+    assert!(
+        !has_label(&items, "%hash"),
+        "bare %hash is literal in interpolating heredocs: {:?}",
+        labels(&items)
+    );
+}
+
+#[test]
+fn braced_interpolation_admits_identifier_special_variables() {
+    let source = r#"my $text = "${_"#;
+    let items = completions_at(source, source.len());
+    let item = must_some(items.iter().find(|item| item.label == "$_"));
+    assert_eq!(item.insert_text.as_deref(), Some("_"));
+    assert_eq!(item.filter_text.as_deref(), Some("_"));
 }
 
 #[test]
@@ -165,5 +241,11 @@ fn code_state_sigil_completion_is_retained() {
     assert!(
         has_label(&completions_at(source, source.len()), "$name"),
         "ordinary code-state sigil completion must stay owned by the existing path"
+    );
+
+    let hash = "my %hash = (a => 1);\n%ha";
+    assert!(
+        has_label(&completions_at(hash, hash.len()), "%hash"),
+        "ordinary code-state hash completion must stay owned by the existing path"
     );
 }
