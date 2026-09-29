@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "total_files": 30,
-  "total_bytes": 1892579,
+  "total_files": 31,
+  "total_bytes": 1893312,
   "files": {
     "readme.md": 27403,
     "package.nls.json": 2210,
@@ -31,6 +31,7 @@
     "media/walkthrough/ai-completion.svg": 1624,
     "assets/demo-project/README.md": 842,
     "assets/demo-project/main.pl": 199,
+    "assets/demo-project/.perl-lsp.toml": 733,
     "assets/demo-project/lib/Utils.pm": 272,
     "assets/demo-project/lib/Database.pm": 257
   }
