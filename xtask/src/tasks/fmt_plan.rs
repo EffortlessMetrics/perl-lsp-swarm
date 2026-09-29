@@ -100,6 +100,7 @@ pub(crate) fn plan_formatter_batches(
 
 /// The flattened, ordered file list a plan will format. Used to prove check
 /// and apply consume the same denominator.
+#[cfg(test)]
 pub(crate) fn planned_files(batches: &[FormatterBatch]) -> Vec<&Path> {
     batches.iter().flat_map(|batch| batch.files.iter().map(PathBuf::as_path)).collect()
 }
