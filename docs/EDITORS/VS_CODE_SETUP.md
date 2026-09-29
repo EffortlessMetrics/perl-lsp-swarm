@@ -197,8 +197,8 @@ settings.
 | `perl-lsp.autoUpdate` | boolean | `false` | Automatically download and install a new `perllsp` binary when available. |
 | `perl-lsp.updateCheckInterval` | number | `24` | Hours between automatic update checks. |
 | `perl-lsp.trace.server` | string | `"off"` | LSP traffic logging: `off`, `messages`, `verbose`. |
-| `perl-lsp.channel` | string | `"latest"` | `latest` considers public releases including prereleases; `stable` excludes prereleases. Both sort by strict semantic version and require proven compatibility and target availability. Unproven metadata or no compatible release returns an error; there is no first-entry fallback. `tag` selects the exact configured tag only when compatible. |
-| `perl-lsp.versionTag` | string | `""` | Specific release tag when channel is `tag`. |
+| `perl-lsp.channel` | string | `"latest"` | With GitHub-backed downloads (`downloadBaseUrl` empty), `latest` includes prereleases and `stable` filters them out. Both sort by strict semantic version and require proven compatibility and target availability; unproven metadata or no compatible release returns an error, with no first-entry fallback. `tag` selects the exact public tag only when compatible. A configured mirror bypasses this selector and uses `versionTag` or `latest`. |
+| `perl-lsp.versionTag` | string | `""` | Exact public release tag when `channel` is `tag`; with a mirror configured, selects the mirror artifact version regardless of channel. |
 | `perl-lsp.downloadBaseUrl` | string | `""` | Internal base URL for hosting `perllsp` archives and SHA256SUMS. |
 
 ---
@@ -556,13 +556,16 @@ Pin to a specific release or use a different download channel:
 }
 ```
 
-The `latest` and `stable` channels use the same public release list, sorted by
-strict semantic version. `latest` includes prereleases; `stable` filters them
-out. A release is selected only when compatibility and target availability are
-proven. If a newer release has unresolved compatibility or target evidence, or
-no compatible release is available, selection returns an error instead of
-falling back to the first list entry. Use `tag` to pin one exact release tag;
-the selector still requires that tag to be public and proven compatible.
+With GitHub-backed downloads (`perl-lsp.downloadBaseUrl` empty), `latest` and
+`stable` use the same public release list, sorted by strict semantic version.
+`latest` includes prereleases; `stable` filters them out. A release is selected
+only when compatibility and target availability are proven. If a newer release
+has unresolved compatibility or target evidence, or no compatible release is
+available, selection returns an error instead of falling back to the first list
+entry. Use `tag` to pin one exact public release tag; the selector still
+requires that tag to be proven compatible. Configuring `downloadBaseUrl` bypasses
+this selector; see [Internal Deployment](#internal-deployment) for mirror
+behavior.
 
 ### Internal Deployment
 
@@ -576,6 +579,12 @@ For teams hosting their own `perllsp` binaries:
 ```
 
 Or with an internal download mirror:
+
+Setting `perl-lsp.downloadBaseUrl` bypasses the GitHub release selector. The
+extension requests artifacts for `perl-lsp.versionTag`, or uses the mirror's
+`latest` artifact name when no tag is configured. The mirror must provide the
+correct target archives and a usable `SHA256SUMS`; GitHub compatibility evidence
+and `stable` prerelease filtering do not apply to mirror downloads.
 
 ```json
 {
@@ -631,6 +640,9 @@ Logs appear in the VS Code Output panel under "Perl Language Server".
 ## Complete Example Configuration
 
 Here is a typical `.vscode/settings.json` for a Perl project using only real extension settings:
+
+This example adds `.` and `vendor/lib` to the defaults for projects that use
+those paths; omit either path when the project does not need it.
 
 ```json
 {
