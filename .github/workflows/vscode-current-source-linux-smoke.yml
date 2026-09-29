@@ -135,6 +135,21 @@ jobs:
           PERL_LSP_TEST_EXPLORER_JOURNEY: '1'
         run: xvfb-run -a npm run test:published:local
 
+      - name: Run installed first-hour byte leaf under Xvfb
+        if: ${{ always() && matrix.vscode_version == 'stable' && steps.build.outcome == 'success' }}
+        env:
+          PERL_LSP_E2E: '1'
+          PERL_LSP_DIAGNOSTIC_MODE: normal
+          PERL_LSP_FIRST_HOUR_SERVER_PATH: ${{ runner.temp }}/perl-lsp-current-source-target/release/perllsp
+          PERL_LSP_DAP_PATH: ${{ runner.temp }}/perl-lsp-current-source-target/release/perl-dap
+          PERL_LSP_PACKAGE_BASE_MODE: ${{ github.event_name == 'pull_request' && 'pull_request' || 'accepted' }}
+          PERL_LSP_PACKAGE_PR_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+          PERL_LSP_PACKAGE_BASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.accepted_base_sha || '' }}
+          PERL_LSP_SERVER_SOURCE_SHA: ${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}
+          PERL_LSP_SMOKE_SOURCE_LABEL: hosted-linux-installed-first-hour
+          PERL_LSP_SMOKE_RECEIPTS_DIR: ${{ github.workspace }}/target/receipts/vscode-smoke/installed-first-hour-stable
+        run: xvfb-run -a npm run test:published:local
+
       - name: Record exact-subject scheduling result
         if: always()
         working-directory: .

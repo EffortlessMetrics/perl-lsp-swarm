@@ -167,10 +167,11 @@ function validateTestExplorerReceipt({
 }
 
 function hasCandidateIdentity(env) {
+  // The first-hour child always carries its source SHA. Only candidate-only
+  // fields opt into candidate-bound failure classification.
   return [
     env.PERL_LSP_CANDIDATE_ID,
     env.PERL_LSP_ARTIFACT_SET_ID,
-    env.PERL_LSP_CURRENT_SOURCE_SHA,
     env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
   ].some((value) => typeof value === 'string' && value.trim().length > 0);
 }
@@ -3331,6 +3332,7 @@ module.exports = {
   concludeRun,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
+  hasCandidateIdentity,
   initialReceipt,
   interpretBehavioralSmokeExit,
   interpretTestExplorerExit,
