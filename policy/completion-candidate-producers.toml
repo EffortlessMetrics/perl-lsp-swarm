@@ -70,7 +70,14 @@ outcome_owner = "#10230"
 # trigger predicate, not a candidate producer, and the dash branch now routes
 # through the existing receiver scan with the finalizer route untouched;
 # scanned set unchanged. Projection diff is digest-only, `check` passes.
-source_digest = "sha256:ebfd92835f0614e1536867af4045bddde70f02d9ecf2b009b2d7f6f64e7c9b3a"
+# Re-anchor 2026-09-28 (#16791): #16484 changed hash-key role detection and
+# suppressed generic workspace enrichment in method/hash-key roles. The only
+# scan-root changes are completion/completion.rs and runtime/language/completion.rs,
+# plus the excluded completion/completion/tests.rs; the 42 scanned product files,
+# producer identities, entry routes, and finalizer route are unchanged. The
+# existing workspace producer emits fewer candidates in those roles; this is
+# a source re-audit, not a claim that completion behavior is unchanged.
+source_digest = "sha256:4e07962ef527ce07ef6f6735eb3eeefbafe2ca1f490b6a7ef0ecc6b528b0c527"
 
 [[delegations]]
 module = "dancer2"

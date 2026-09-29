@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16531,
-  "reason": "Second heal merge: main advanced by #16724 (demo-first-run VSIX union), so this claim's downloader-union measurement is re-taken on top of it from the exact merge-tip archive; totals and digests recomputed by propose-vsix-inventory-transition.",
+  "owner_issue": 16544,
+  "reason": "Second heal merge: main advanced by #16724 (demo-first-run VSIX union), so this claim's packaged readme.md growth is re-measured on top of it from the exact merge-tip archive; totals and digests recomputed by propose-vsix-inventory-transition.",
   "base_baseline_file_sha256": "d41ed817a5b282aec1462b2a1a2538bd630480d4c24ea2c0c9fab9f4c4fd5d23",
-  "candidate_baseline_file_sha256": "b1d09d64594aa026c3567c444a287028558f22c41a8f16dabfac977435aabd24",
+  "candidate_baseline_file_sha256": "85401e8cbacd7b7a4355537fd3e1fd735c5fd289fe6dec141337de1fca074560",
   "base_inventory_sha256": "97969d09252414a76a27e62b3351b8739c353d46fe44fdb0f6ae99e781e51d33",
-  "candidate_inventory_sha256": "5fa22020742db7683c660057b6a515b1f14cc270cab750727b2d0feaa2dfc81d"
+  "candidate_inventory_sha256": "1beb2e2cc4e7878c0983141be19cab5da3bb9b1bed545aa0344a18c0f81bcfe3"
 }
