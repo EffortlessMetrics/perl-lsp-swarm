@@ -9923,6 +9923,9 @@ pub fn perl_lsp_rs_core::runtime::LaunchAction::clone(&self) -> perl_lsp_rs_core
 pub fn perl_lsp_rs_core::runtime::LaunchAction::eq(&self, other: &perl_lsp_rs_core::runtime::LaunchAction) -> bool
 pub fn perl_lsp_rs_core::runtime::LaunchAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::runtime::launcher::LaunchParseError
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticDebounceMs
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticDebounceMs::raw_value: alloc::string::String
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticDebounceMs::reason: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticMode
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticMode::raw_mode: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidFeatureProfile
@@ -10269,6 +10272,9 @@ pub fn perl_lsp_rs_core::runtime::LaunchAction::clone(&self) -> perl_lsp_rs_core
 pub fn perl_lsp_rs_core::runtime::LaunchAction::eq(&self, other: &perl_lsp_rs_core::runtime::LaunchAction) -> bool
 pub fn perl_lsp_rs_core::runtime::LaunchAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::runtime::LaunchParseError
+pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticDebounceMs
+pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticDebounceMs::raw_value: alloc::string::String
+pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticDebounceMs::reason: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticMode
 pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticMode::raw_mode: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidFeatureProfile
