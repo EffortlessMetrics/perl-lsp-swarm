@@ -127,7 +127,11 @@ function sampleLabels(items: readonly vscode.CompletionItem[]): string[] {
   });
 }
 
-function assertSuccessfulStartupMetrics(metrics: Record<string, unknown>, label: string): void {
+function assertSuccessfulStartupMetrics(
+  metrics: Record<string, unknown>,
+  label: string,
+  requireFirstUsefulRequest = true,
+): void {
   assert.equal(metrics.binary_resolution_status, 'ok', `${label} binary resolution should succeed`);
   assert.equal(metrics.server_start_status, 'ok', `${label} server start should succeed`);
   assert.equal(metrics.initialize_status, 'ok', `${label} initialize should succeed`);
@@ -148,9 +152,13 @@ function assertSuccessfulStartupMetrics(metrics: Record<string, unknown>, label:
     'process_started',
     'initialize_completed',
     'workspace_ready',
-    'first_useful_request',
   ] as const;
-  for (const ordered of [activationOrdered, startupOrdered]) {
+  // The installed-byte snapshot runs before the first provider call; only the
+  // post-provider check may require its first-useful-request milestone.
+  for (const ordered of [
+    activationOrdered,
+    requireFirstUsefulRequest ? [...startupOrdered, 'first_useful_request'] : startupOrdered,
+  ]) {
     let previous = -1;
     for (const milestone of ordered) {
       const value = values[milestone];
@@ -182,7 +190,7 @@ async function waitForRunningStartupMetrics(
     await delay(100);
     metrics = getMetrics();
   }
-  assertSuccessfulStartupMetrics(metrics, label);
+  assertSuccessfulStartupMetrics(metrics, label, false);
   return metrics;
 }
 
@@ -617,7 +625,7 @@ suite('First-hour VS Code receipt', function () {
     let inputServer: ArtifactObservation | undefined;
     let selectedVsix: ArtifactObservation | undefined;
     const observeSelectedInstalled = (metrics: Record<string, unknown>): ArtifactObservation => {
-      assertSuccessfulStartupMetrics(metrics, 'installed identity');
+      assertSuccessfulStartupMetrics(metrics, 'installed identity', false);
       assert.equal(
         metrics.binary_resolution_source,
         'bundled',
