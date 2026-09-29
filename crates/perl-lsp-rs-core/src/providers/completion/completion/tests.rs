@@ -2369,6 +2369,73 @@ $this->"#;
 }
 
 #[test]
+fn split_file_completion_excludes_indexed_predecessor_of_open_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///workspace/Parent.pm")?,
+        "package Parent;\nsub inherited { 1 }\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///workspace/Child.pm")?,
+        "package Child;\nuse parent 'Parent';\nsub removed { 1 }\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///workspace/Split.pm")?,
+        "package Child;\nsub from_split { 1 }\n".to_string(),
+    )?;
+
+    let current = "package Child;\nsub run {\nmy $self = shift;\n$self->";
+    let mut parser = Parser::new(current);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let items = provider.get_completions_with_path(
+        current,
+        current.len(),
+        Some("file:///workspace/Child.pm"),
+    );
+    let labels: Vec<_> = items.iter().map(|item| item.label.as_ref()).collect();
+    assert!(labels.contains(&"from_split"), "split-file method missing: {labels:?}");
+    assert!(!labels.contains(&"removed"), "predecessor method resurfaced: {labels:?}");
+    assert!(!labels.contains(&"inherited"), "predecessor ISA resurfaced: {labels:?}");
+    Ok(())
+}
+
+#[test]
+fn split_file_completion_scopes_inherited_methods_and_generated_members_to_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.set_workspace_folders(vec!["file:///root-a".to_string(), "file:///root-b".to_string()]);
+    index.index_initial_file(
+        Url::parse("file:///root-a/ChildEdge.pm")?,
+        "package Child;\nuse parent 'Parent';\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///root-a/Parent.pm")?,
+        "package Parent;\nuse Moo;\nhas 'same_root' => (is => 'ro');\nsub own { 1 }\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///root-b/Parent.pm")?,
+        "package Parent;\nuse Moo;\nhas 'foreign_accessor' => (is => 'ro');\nsub foreign_method { 1 }\n".to_string(),
+    )?;
+    let current = "package Child;\nsub run {\nmy $self = shift;\n$self->";
+    let mut parser = Parser::new(current);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let items = provider.get_completions_with_path(
+        current,
+        current.len(),
+        Some("file:///root-a/Current.pl"),
+    );
+    let labels: Vec<_> = items.iter().map(|item| item.label.as_ref()).collect();
+    assert!(labels.contains(&"own"), "same-root method missing: {labels:?}");
+    assert!(labels.contains(&"same_root"), "same-root accessor missing: {labels:?}");
+    assert!(!labels.contains(&"foreign_method"), "cross-root method leaked: {labels:?}");
+    assert!(!labels.contains(&"foreign_accessor"), "cross-root accessor leaked: {labels:?}");
+    Ok(())
+}
+
+#[test]
 fn test_method_completion_semantic_inheritance_detail() -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(

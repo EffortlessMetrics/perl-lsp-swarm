@@ -2051,6 +2051,13 @@ impl WorkspaceIndex {
         self.workspace_folders.read().clone()
     }
 
+    /// Return the owning configured workspace folder for a document URI.
+    /// Uses the same longest-prefix rule as indexed symbol attribution.
+    #[must_use]
+    pub fn workspace_folder_for_uri(&self, uri: &str) -> Option<String> {
+        self.determine_folder_uri(&Self::normalize_uri(uri))
+    }
+
     /// Return the document generation represented by the indexed file snapshot.
     #[must_use]
     pub fn indexed_generation(&self, uri: &str) -> Option<u32> {
