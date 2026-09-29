@@ -856,7 +856,10 @@ mod tests {
                 assert_eq!(output.to_string(), *payload);
             }
             super::UxRegressionReceiptOutput::Written(_) => {
-                panic!("expected Payload when no receipt path is configured")
+                // `bail!`, not `panic!`: the panic-test hygiene ratchet
+                // (ci/panic_test_identities.json) rejects new `panic!`
+                // identities in test modules.
+                bail!("expected Payload when no receipt path is configured")
             }
         }
 
