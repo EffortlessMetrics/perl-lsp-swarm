@@ -86,6 +86,8 @@ fn our_and_state_sigilless_list_items_are_blocking() {
 fn numeric_and_string_list_items_are_constant_items() {
     assert_blocking_constant_item("my (1) = @_;\n", "my");
     assert_blocking_constant_item("my (\"base\") = @_;\n", "my");
+    assert_blocking_constant_item("my (v1.2);\n", "my");
+    assert_blocking_constant_item("my (-1);\n", "my");
 }
 
 #[test]
@@ -164,6 +166,28 @@ fn valid_array_hash_undef_and_nested_lists_stay_clean() {
     assert_clean_parse("our ($Foo::bar);\n");
     assert_clean_parse("local ($a, $b) = @_;\n");
     assert_clean_parse("my ($x :lvalue);\n");
+}
+
+#[test]
+fn local_bare_identifier_slot_is_not_a_lexical_constant() {
+    // `local(slot)` can name an `:lvalue` subroutine. Rejecting every
+    // Identifier under `local` would fail valid Perl such as
+    // `sink(local(slot))`.
+    assert_clean_parse("sub slot : lvalue { our $x } sub sink {} sink(local(slot));\n");
+}
+
+#[test]
+fn local_numeric_slot_uses_perl_modify_wording() {
+    // Statement-form `local (1) = @_;` is `parse_local_statement` /
+    // expression lvalue, not list admission. Declaration-as-arg
+    // `foo(local (1))` shares `parse_variable_list_item` with `my`/`our`/`state`.
+    let (ast, errors) = parse_with_errors("foo(local (1));\n");
+    let messages = blocking_messages(&errors);
+    assert!(
+        messages.iter().any(|message| message.contains("Can't modify constant item in local")),
+        "expected Perl local wording, got {messages:?}\n{}",
+        ast.to_sexp()
+    );
 }
 
 #[test]

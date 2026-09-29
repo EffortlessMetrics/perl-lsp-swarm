@@ -20,17 +20,22 @@ fn is_plain_bareword_glob_name(inner: &str) -> bool {
 /// leading `{` as a dynamic, non-static glob name (#15650). Reporting the
 /// bare expression text (`foo()`, `"name"`) as a static glob name would mint
 /// a symbol that no static consumer can resolve (#15712).
-/// A list-declaration slot that real Perl classifies as a constant item:
-/// a sigil-less name, number, or string. Variables, `undef`, nested lists,
-/// typeglobs, and subscripted `local` lvalues stay outside this class.
-fn is_constant_declaration_list_item(item: &Node) -> bool {
+/// A list-declaration slot that real Perl classifies as a constant item.
+///
+/// `my`/`our`/`state` reject a sigil-less name, number, string, v-string, or
+/// signed numeric literal. `local` still rejects those literals, but a bare
+/// identifier stays eligible: `local(slot)` can name an `:lvalue` subroutine
+/// (#16732). Variables, `undef`, nested lists, typeglobs, and subscripted
+/// lvalues stay outside this class.
+fn is_constant_declaration_list_item(declarator: &str, item: &Node) -> bool {
     match &item.kind {
         NodeKind::Identifier { name } => {
-            !name.starts_with(['$', '@', '%', '*', '&'])
+            declarator != "local" && !name.starts_with(['$', '@', '%', '*', '&'])
         }
-        NodeKind::Number { .. } | NodeKind::String { .. } => true,
+        NodeKind::Number { .. } | NodeKind::String { .. } | NodeKind::VString { .. } => true,
+        NodeKind::Unary { operand, .. } => is_constant_declaration_list_item(declarator, operand),
         NodeKind::VariableWithAttributes { variable, .. } => {
-            is_constant_declaration_list_item(variable)
+            is_constant_declaration_list_item(declarator, variable)
         }
         _ => false,
     }
@@ -328,11 +333,11 @@ impl<'a> Parser<'a> {
     /// blocking diagnostic on the offending range and wrap the item so later
     /// list slots and later statements still parse.
     fn recover_constant_declaration_list_item(&mut self, declarator: &str, item: Node) -> Node {
-        if !is_constant_declaration_list_item(&item) {
+        if !is_constant_declaration_list_item(declarator, &item) {
             return item;
         }
         let message = if declarator == "local" {
-            "Can't localize a constant item".to_string()
+            "Can't modify constant item in local".to_string()
         } else {
             format!("Can't declare constant item in \"{declarator}\"")
         };
