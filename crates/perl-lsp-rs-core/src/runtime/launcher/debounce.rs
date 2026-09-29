@@ -9,7 +9,9 @@
 //! number at all, decided by shape rather than by a wider re-parse.
 
 use super::LaunchParseError;
-use super::offending_value::{has_surrounding_whitespace, render_offending_value};
+use super::offending_value::{
+    HAS_SURROUNDING_WHITESPACE_REASON, has_surrounding_whitespace, render_offending_value,
+};
 
 /// Upper bound of the accepted range, spelled out for the user-facing message.
 ///
@@ -23,8 +25,9 @@ const DEBOUNCE_MAX_MS_TEXT: &str = "18446744073709551615";
 /// Same disposition as the `--port` sibling, and for the same reason: the
 /// padding is rejected rather than trimmed, and it is named before the range
 /// so that a padded in-range value is not reported as a malformed number
-/// (#16561).
-const DEBOUNCE_HAS_SURROUNDING_WHITESPACE: &str = "Remove the leading or trailing whitespace.";
+/// (#16561). The text is owned by `offending_value` so the two options cannot
+/// drift apart.
+const DEBOUNCE_HAS_SURROUNDING_WHITESPACE: &str = HAS_SURROUNDING_WHITESPACE_REASON;
 
 /// Rejection reason for a token that is a number outside `0..=u64::MAX`.
 fn debounce_out_of_range_reason() -> String {
@@ -91,6 +94,11 @@ fn is_numeric_out_of_range(raw_value: &str) -> bool {
     // because of the minus, so it is not a number here rather than out of
     // range. Same disposition as the `--port` sibling.
     !(raw_value.starts_with('-') && digits.bytes().all(|byte| byte == b'0'))
+}
+
+#[cfg(test)]
+pub(super) fn debounce_rejection_reason_for_test(raw_value: &str) -> String {
+    debounce_rejection_reason(raw_value)
 }
 
 #[cfg(test)]

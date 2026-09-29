@@ -5,7 +5,9 @@
 //! renders a rejected value so that invisible padding is visible (#16561).
 
 use super::LaunchParseError;
-use super::offending_value::{has_surrounding_whitespace, render_offending_value};
+use super::offending_value::{
+    HAS_SURROUNDING_WHITESPACE_REASON, has_surrounding_whitespace, render_offending_value,
+};
 
 /// Rejection reason for a `--port` token that is a number outside 0-65535.
 const PORT_OUT_OF_RANGE: &str = "Expected a port in 0-65535.";
@@ -13,13 +15,12 @@ const PORT_OUT_OF_RANGE: &str = "Expected a port in 0-65535.";
 /// Rejection reason for a `--port` token that is not an unsigned whole number.
 const PORT_NOT_A_NUMBER: &str = "Expected a whole number in 0-65535.";
 
-/// Rejection reason for a `--port` token padded with surrounding whitespace.
-///
-/// Whitespace is rejected rather than trimmed: silently accepting a padded
-/// value would make the CLI accept a spelling the documented grammar does not
-/// allow, and trimming before the shape test would classify a padded valid
-/// port as out of range (#16561).
-const PORT_HAS_SURROUNDING_WHITESPACE: &str = "Remove the leading or trailing whitespace.";
+/// A `--port` token padded with surrounding whitespace is rejected, not
+/// trimmed: silently accepting a padded value would make the CLI accept a
+/// spelling the documented grammar does not allow, and trimming before the
+/// shape test would classify a padded valid port as out of range (#16561). The
+/// reason text is shared with the `--diagnostic-debounce-ms` sibling.
+const PORT_HAS_SURROUNDING_WHITESPACE: &str = HAS_SURROUNDING_WHITESPACE_REASON;
 
 /// Parse a `u16` port token, or reject it with an actionable range reason.
 ///
@@ -249,6 +250,20 @@ mod tests {
                 "an undelimited value leaves the padding invisible: {rendered}"
             );
         }
+
+        // The reason must be the same text too, not just a delimited value:
+        // a user who makes the same mistake on either option should be told
+        // the same thing. Both option constants alias the single owner in
+        // `offending_value`, so comparing the two rendered sentences is what
+        // pins the shared wording to what a user actually sees.
+        let port_reason = port_rejection_reason(" 65535");
+        let debounce_reason = super::super::debounce::debounce_rejection_reason_for_test(" 250");
+        assert_eq!(port_reason, debounce_reason, "the two options must share one reason text");
+        assert!(port.ends_with(port_reason), "the port message must carry that reason: {port}");
+        assert!(
+            debounce.ends_with(&debounce_reason),
+            "the debounce message must carry that reason: {debounce}"
+        );
     }
 
     /// A rejected port must still name the accepted range on the paths that

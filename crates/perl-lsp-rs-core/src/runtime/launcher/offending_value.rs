@@ -14,9 +14,24 @@
 //!
 //! Rendering only. Whether a value is *rejected*, and which reason applies, is
 //! still each option's own classification; this module never decides that.
+//!
+//! Scope: this covers ASCII control characters and whitespace as `str::trim`
+//! defines it. Zero-width and other format characters (U+200B, U+FEFF, U+2060)
+//! are neither, so they still render verbatim and can still leave an invisible
+//! prefix — a known remaining gap, not a claim of coverage.
 
 /// Stand-in for a value that is not safe to write to a terminal verbatim.
 pub(super) const UNRENDERABLE_TOKEN: &str = "<unprintable>";
+
+/// Rejection reason for a value padded with surrounding whitespace.
+///
+/// Shared rather than repeated per option, because the two options must not be
+/// able to drift: a user who fixes the same mistake on `--port` and
+/// `--diagnostic-debounce-ms` should be told the same thing. Owning the text
+/// here is what makes that true, rather than two constants that merely happen
+/// to match today.
+pub(super) const HAS_SURROUNDING_WHITESPACE_REASON: &str =
+    "Remove the leading or trailing whitespace.";
 
 /// Render a rejected option value so that invisible characters are visible.
 ///
