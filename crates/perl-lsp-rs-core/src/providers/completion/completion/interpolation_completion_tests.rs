@@ -137,6 +137,17 @@ fn interpolating_heredoc_admits_lexical() {
 }
 
 #[test]
+fn interpolating_heredoc_admits_slot_starting_first_body_line() {
+    let source = "my $name = 1;\nmy $text = <<EOF;\n$na";
+    let items = completions_at(source, source.len());
+    assert!(
+        has_label(&items, "$name"),
+        "interpolating slot on the first heredoc body line missing $name: {:?}",
+        labels(&items)
+    );
+}
+
+#[test]
 fn interpolating_heredoc_admits_slot_after_hash() {
     // `#` in a heredoc body is literal text, not a Perl comment. Completion must
     // still admit `$name` when the slot follows `#` on the same body line.

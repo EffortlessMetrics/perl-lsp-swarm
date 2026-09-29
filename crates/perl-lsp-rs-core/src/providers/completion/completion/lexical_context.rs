@@ -124,11 +124,11 @@ fn string_like_region_at(source: &str, position: usize) -> StringLikeRegion {
 
         if let Some(delimiter) = active_delimiters.front() {
             if delimiter.matches_close(line) {
-                if position_within_line(position, line_start, line_end) {
+                if position_within_line(position, line_start, line_end, source.len(), raw_line) {
                     return StringLikeRegion::None;
                 }
                 active_delimiters.pop_front();
-            } else if position_within_line(position, line_start, line_end) {
+            } else if position_within_line(position, line_start, line_end, source.len(), raw_line) {
                 return if delimiter.interpolates {
                     StringLikeRegion::InterpolatingHeredoc
                 } else {
@@ -140,7 +140,7 @@ fn string_like_region_at(source: &str, position: usize) -> StringLikeRegion {
         }
 
         if !matches!(pod_state, PodState::Code) {
-            if position_within_line(position, line_start, line_end) {
+            if position_within_line(position, line_start, line_end, source.len(), raw_line) {
                 return StringLikeRegion::None;
             }
             advance_pod_state(&mut pod_state, line);
@@ -149,14 +149,14 @@ fn string_like_region_at(source: &str, position: usize) -> StringLikeRegion {
         }
 
         if !literal_state.is_active() && advance_pod_state(&mut pod_state, line) {
-            if position_within_line(position, line_start, line_end) {
+            if position_within_line(position, line_start, line_end, source.len(), raw_line) {
                 return StringLikeRegion::None;
             }
             line_start = line_end;
             continue;
         }
 
-        if position_within_line(position, line_start, line_end) {
+        if position_within_line(position, line_start, line_end, source.len(), raw_line) {
             literal_state.scan_segment(source.as_bytes(), line_start, position);
             return literal_state_region(&literal_state);
         }
@@ -179,6 +179,14 @@ fn string_like_region_at(source: &str, position: usize) -> StringLikeRegion {
         }
 
         line_start = line_end;
+    }
+
+    if let Some(delimiter) = active_delimiters.front() {
+        return if delimiter.interpolates {
+            StringLikeRegion::InterpolatingHeredoc
+        } else {
+            StringLikeRegion::LiteralHeredoc
+        };
     }
 
     StringLikeRegion::None
@@ -274,8 +282,28 @@ fn invalid_string_position(source: &str, position: usize) -> bool {
     position > source.len() || !source.is_char_boundary(position)
 }
 
-fn position_within_line(position: usize, line_start: usize, line_end: usize) -> bool {
-    position >= line_start && position <= line_end
+/// Half-open `[line_start, line_end)` so the first byte of the next line is not
+/// attributed to this line. `split_inclusive('\n')` makes `line_end` equal the
+/// next line's start; an inclusive bound classified that body-start byte as
+/// still on the opener, which leaked general completions after this PR stopped
+/// rejecting whole heredocs (#16863).
+///
+/// A source-EOF cursor on a last line with no trailing newline stays on that
+/// line so end-of-file completion remains possible.
+fn position_within_line(
+    position: usize,
+    line_start: usize,
+    line_end: usize,
+    source_len: usize,
+    raw_line: &str,
+) -> bool {
+    if position >= line_start && position < line_end {
+        return true;
+    }
+    position == source_len
+        && line_end == source_len
+        && position >= line_start
+        && !raw_line.ends_with('\n')
 }
 
 /// Heuristic to check if position is inside a regex literal.
@@ -1782,11 +1810,16 @@ mod tests {
 
     #[test]
     fn position_within_line_boundary_discriminator() {
-        assert!(!position_within_line(9, 10, 15));
-        assert!(position_within_line(10, 10, 15));
-        assert!(position_within_line(12, 10, 15));
-        assert!(position_within_line(15, 10, 15));
-        assert!(!position_within_line(16, 10, 15));
+        // Next-line start equals this line_end when the line has a trailing newline.
+        assert!(!position_within_line(9, 10, 15, 20, "line\n"));
+        assert!(position_within_line(10, 10, 15, 20, "line\n"));
+        assert!(position_within_line(12, 10, 15, 20, "line\n"));
+        assert!(!position_within_line(15, 10, 15, 20, "line\n"));
+        assert!(!position_within_line(16, 10, 15, 20, "line\n"));
+
+        // EOF on a last line with no trailing newline stays on that line.
+        assert!(position_within_line(15, 10, 15, 15, "line"));
+        assert!(!position_within_line(15, 10, 15, 15, "line\n"));
     }
 
     #[test]
@@ -2438,6 +2471,17 @@ my $after = "op"#;
         assert_eq!(
             interpolation_admission(interpolating_heredoc, interpolating_heredoc.len()),
             InterpolationAdmission::VariableSlot { braced: false }
+        );
+
+        let heredoc_body_start = "my $name = 1;\nmy $text = <<EOF;\n$na";
+        let body_start = must_some(heredoc_body_start.find("\n$na")) + 1;
+        assert_eq!(
+            string_like_region_at(heredoc_body_start, body_start),
+            StringLikeRegion::InterpolatingHeredoc
+        );
+        assert_ne!(
+            interpolation_admission(heredoc_body_start, body_start),
+            InterpolationAdmission::NotOwned
         );
 
         let literal_heredoc = "my $name = 1;\nmy $text = <<'EOF';\nHello $na";
