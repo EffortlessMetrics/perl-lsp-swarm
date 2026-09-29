@@ -3363,14 +3363,18 @@ mod tests {
     /// source scan, which cannot see the gating attribute on its parent. Keep
     /// those proof-only files out of the production producer denominator.
     #[test]
-    fn completion_test_modules_are_excluded_from_product_scan() {
-        let root = project_root().expect("project root");
+    fn completion_test_modules_are_excluded_from_product_scan() -> Result<()> {
+        let root = project_root()?;
         let parent = "crates/perl-lsp-rs-core/src/providers/completion/completion.rs";
-        let source = fs::read_to_string(root.join(parent)).expect("completion module source");
-        let parsed = syn::parse_file(&source).expect("completion module parses");
-        let tracked = tracked_files(&root).expect("git ls-files runs");
-        let scanned = scanned_files(&root).expect("completion scan runs");
-        assert!(scanned.iter().any(|path| path == parent), "product module must stay scanned");
+        let source =
+            fs::read_to_string(root.join(parent)).context("read completion module source")?;
+        let parsed = syn::parse_file(&source).context("parse completion module source")?;
+        let tracked = tracked_files(&root).context("list tracked source files")?;
+        let scanned = scanned_files(&root).context("discover completion product source")?;
+        color_eyre::eyre::ensure!(
+            scanned.iter().any(|path| path == parent),
+            "product completion module `{parent}` must stay scanned"
+        );
         let mut gated_modules = BTreeSet::new();
 
         for item in parsed.items {
@@ -3383,22 +3387,26 @@ mod tests {
                 module.ident
             );
             gated_modules.insert(file.clone());
-            assert!(tracked.contains(&file), "test module `{file}` must be tracked");
-            assert!(
+            color_eyre::eyre::ensure!(
+                tracked.contains(&file),
+                "test module `{file}` must be tracked"
+            );
+            color_eyre::eyre::ensure!(
                 TEST_SURFACE_FILES.contains(&file.as_str()),
                 "test module `{file}` would be counted as product source"
             );
-            assert!(
+            color_eyre::eyre::ensure!(
                 !scanned.contains(&file),
                 "test module `{file}` entered the product source digest"
             );
         }
         let excluded: BTreeSet<String> =
             TEST_SURFACE_FILES.iter().map(|path| (*path).to_string()).collect();
-        assert_eq!(
-            excluded, gated_modules,
-            "every excluded source file must still be an external #[cfg(test)] completion module"
+        color_eyre::eyre::ensure!(
+            excluded == gated_modules,
+            "every excluded source file must still be an external #[cfg(test)] completion module; excluded: {excluded:?}; gated: {gated_modules:?}"
         );
+        Ok(())
     }
 
     /// Discovery is not vacuous. A denominator that quietly became empty would
