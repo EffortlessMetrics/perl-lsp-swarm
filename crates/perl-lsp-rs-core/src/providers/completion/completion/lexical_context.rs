@@ -470,7 +470,17 @@ fn count_unescaped_slashes(s: &str) -> usize {
 /// a comment start (#4956 bug 4). Previously this was a naive `line.contains('#')`
 /// check, which suppressed completion whenever a `#` appeared anywhere on the
 /// line — including inside strings like `my $x = "a # b";`.
+///
+/// The current-line quote scan cannot see a heredoc or `q`/`qq` opener on an
+/// earlier line, so a `#` in those bodies would otherwise look like a comment
+/// and `prepare_context` would drop the request before interpolation admission
+/// (#16863). Any region already classified by [`string_like_region_at`] treats
+/// `#` as literal text.
 pub(super) fn is_in_comment(source: &str, position: usize) -> bool {
+    if !matches!(string_like_region_at(source, position), StringLikeRegion::None) {
+        return false;
+    }
+
     let line_start = source[..position].rfind('\n').map_or(0, |p| p + 1);
     let line = &source[line_start..position];
     let bytes = line.as_bytes();
@@ -2460,5 +2470,30 @@ my $after = "op"#;
 
         let hash = r#"my %hash = (a => 1); my $text = "value %ha"#;
         assert_eq!(interpolation_admission(hash, hash.len()), InterpolationAdmission::Quiet);
+    }
+
+    #[test]
+    fn is_in_comment_does_not_treat_hash_in_string_like_regions() {
+        let heredoc = "my $name = 1;\nmy $text = <<EOF;\nHello # $na";
+        assert!(
+            !is_in_comment(heredoc, heredoc.len()),
+            "unquoted # in an interpolating heredoc body is not a comment"
+        );
+        assert_eq!(
+            interpolation_admission(heredoc, heredoc.len()),
+            InterpolationAdmission::VariableSlot { braced: false }
+        );
+
+        let qq = r#"my $name = 1; my $text = qq{Hello # $na"#;
+        assert!(
+            !is_in_comment(qq, qq.len()),
+            "unquoted # inside qq paired delimiters is not a comment"
+        );
+
+        let code_comment = "my $name = 1; # $na";
+        assert!(
+            is_in_comment(code_comment, code_comment.len()),
+            "ordinary line comments must still suppress completion"
+        );
     }
 }

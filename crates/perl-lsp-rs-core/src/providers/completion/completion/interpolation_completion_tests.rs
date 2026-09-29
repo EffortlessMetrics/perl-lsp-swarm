@@ -108,6 +108,17 @@ fn qq_paired_delimiter_admits_interpolation_slot() {
 }
 
 #[test]
+fn qq_paired_delimiter_admits_slot_after_hash() {
+    let source = r#"my $name = 1; my $text = qq{Hello # $na"#;
+    let items = completions_at(source, source.len());
+    assert!(
+        has_label(&items, "$name"),
+        "qq paired-delimiter after # missing $name: {:?}",
+        labels(&items)
+    );
+}
+
+#[test]
 fn qq_non_paired_delimiter_admits_interpolation_slot() {
     let source = r#"my $name = "hi"; my $text = qq!Hello $na"#;
     let items = completions_at(source, source.len());
@@ -126,10 +137,34 @@ fn interpolating_heredoc_admits_lexical() {
 }
 
 #[test]
+fn interpolating_heredoc_admits_slot_after_hash() {
+    // `#` in a heredoc body is literal text, not a Perl comment. Completion must
+    // still admit `$name` when the slot follows `#` on the same body line.
+    let source = "my $name = 1;\nmy $text = <<EOF;\nHello # $na";
+    let items = completions_at(source, source.len());
+    assert!(
+        has_label(&items, "$name"),
+        "interpolating heredoc after # missing $name: {:?}",
+        labels(&items)
+    );
+}
+
+#[test]
 fn literal_heredoc_is_quiet() {
     let source = "my $name = \"hi\";\nmy $text = <<'EOF';\nHello $na";
     let items = completions_at(source, source.len());
     assert!(!has_label(&items, "$name"), "literal heredoc leaked $name: {:?}", labels(&items));
+}
+
+#[test]
+fn literal_heredoc_after_hash_is_quiet() {
+    let source = "my $name = 1;\nmy $text = <<'EOF';\nHello # $na";
+    let items = completions_at(source, source.len());
+    assert!(
+        !has_label(&items, "$name"),
+        "literal heredoc after # leaked $name: {:?}",
+        labels(&items)
+    );
 }
 
 #[test]
