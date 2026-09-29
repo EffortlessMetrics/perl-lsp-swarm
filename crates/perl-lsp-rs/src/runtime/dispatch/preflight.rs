@@ -14,6 +14,8 @@ use super::super::{
     JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, LspServer, Ordering, Value,
 };
 use super::request_cancellation::{handle_cancel_notification, register_request_cancellation};
+use crate::runtime::window::MessageType;
+use crate::security::{is_text_sync_method, refusal_desynchronizes_document};
 
 pub(super) struct RequestContext {
     pub(super) id: Option<Value>,
@@ -64,6 +66,13 @@ pub(super) fn prepare_request(
     if let Err(err) = crate::security::validate_request_admission(&request.method, params_ref) {
         tracing::debug!(method = %request.method, %err, "Rejected request: structural admission failed");
         if !context.should_respond {
+            // A notification has no response envelope, so returning here alone
+            // makes the refusal invisible: the client keeps a buffer it believes
+            // this server holds, and every later answer about that URI is
+            // computed from different bytes. For text synchronization that is
+            // not a silent no-op, so the refusal is reported to the client and
+            // the document is desynchronized instead (#16653).
+            report_refused_text_sync_notification(server, &request.method, params_ref, &err);
             return PreflightOutcome::NotificationHandled;
         }
         return PreflightOutcome::Respond(JsonRpcResponse {
@@ -89,6 +98,87 @@ pub(super) fn prepare_request(
     auto_initialize_for_compat(server, request);
 
     PreflightOutcome::Continue
+}
+
+/// What a refused text-sync notification changed, and therefore whether the
+/// client still needs to be told.
+enum RefusalDisposition {
+    /// Nothing to desynchronize: either the method does not carry document
+    /// content, or no open document backs this URI. A refused `didOpen` names a
+    /// document this server never stored, so no provider can read it and the
+    /// refusal is reported every time — it is a discrete client action, not a
+    /// repeating stream.
+    NothingToDesynchronize,
+    /// The document entered full-sync desynchronization on this refusal.
+    EnteredDesync,
+    /// An earlier refusal already desynchronized the document and already told
+    /// the client. Repeating it would raise one popup per keystroke for a
+    /// client still editing a buffer this server cannot accept.
+    AlreadyDesynchronized,
+}
+
+/// Report a refused text-synchronization notification to the client, and put an
+/// already-open document into the desynchronization its user-facing providers
+/// already honour.
+///
+/// The refusal happens before routing, so no handler runs and no error envelope
+/// exists: without this the client would believe its buffer is synchronized
+/// while the server's copy of it is not (#16653).
+fn report_refused_text_sync_notification(
+    server: &LspServer,
+    method: &str,
+    params: &Value,
+    err: &anyhow::Error,
+) {
+    if !is_text_sync_method(method) {
+        return;
+    }
+
+    let Some(uri) = params
+        .get("textDocument")
+        .and_then(|text_document| text_document.get("uri"))
+        .and_then(Value::as_str)
+    else {
+        // Params that never decoded to a URI name no document and
+        // desynchronize nothing. The `tracing::debug!` at the call site is the
+        // receipt; there is nothing to tell the client about.
+        return;
+    };
+
+    let disposition = if refusal_desynchronizes_document(method) {
+        desynchronize_open_document(server, uri)
+    } else {
+        RefusalDisposition::NothingToDesynchronize
+    };
+
+    let recovery = match disposition {
+        RefusalDisposition::NothingToDesynchronize => "",
+        RefusalDisposition::EnteredDesync => " Analysis is paused until the document is reopened.",
+        RefusalDisposition::AlreadyDesynchronized => return,
+    };
+
+    server.show_message_or_log(
+        MessageType::Error,
+        &format!("{method} for {uri} was refused: {err}.{recovery}"),
+    );
+}
+
+/// Enter full-sync desynchronization for `uri` when this server holds it open.
+fn desynchronize_open_document(server: &LspServer, uri: &str) -> RefusalDisposition {
+    let mut documents = server.documents.lock();
+    let Some(document) = server.get_document_mut(&mut documents, uri) else {
+        return RefusalDisposition::NothingToDesynchronize;
+    };
+    if document.full_sync_required() {
+        return RefusalDisposition::AlreadyDesynchronized;
+    }
+    // The same transition the rejected-`didChange` contract uses: user-facing
+    // providers stop answering from the stored text until an accepted full
+    // replacement recovers it. Formatting already refuses in this state
+    // (`CONTENT_MODIFIED`), so a stale snapshot can no longer be returned as
+    // edits against a buffer holding different bytes.
+    document.mark_full_sync_required();
+    RefusalDisposition::EnteredDesync
 }
 
 fn auto_initialize_for_compat(server: &LspServer, request: &JsonRpcRequest) {

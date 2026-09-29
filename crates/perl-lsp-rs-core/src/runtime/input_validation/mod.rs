@@ -9,7 +9,8 @@ mod workspace_validation;
 
 pub use file_validation::{validate_file_content, validate_file_path};
 pub use lsp_validation::{
-    validate_buffer_line_lengths, validate_document_uri, validate_request_admission,
+    is_text_sync_method, refusal_desynchronizes_document, validate_buffer_line_lengths,
+    validate_document_uri, validate_request_admission,
 };
 pub use sanitize::sanitize_string;
 pub use workspace_validation::validate_workspace_root;

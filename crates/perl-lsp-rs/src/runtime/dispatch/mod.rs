@@ -449,6 +449,125 @@ mod tests {
         server
     }
 
+    // ==================== refused text-sync notification (#16653) ====================
+    //
+    // A notification has no response envelope, so a structural-admission refusal
+    // was previously a log line and nothing else: the client kept a buffer it
+    // believed the server held. For `didOpen`/`didChange` that leaves the two
+    // copies in disagreement, so the refusal must desynchronize the document
+    // the providers already know how to fail closed on.
+
+    /// Serialized params comfortably past the admission ceiling for any
+    /// configured `maxFileSizeBytes`, so these tests do not pin the default.
+    fn oversize_payload() -> Value {
+        let over = perl_lsp_rs_core::runtime::limits::max_file_size_bytes() * 2 + 8_192;
+        Value::String("a".repeat(over))
+    }
+
+    fn is_desynchronized(server: &LspServer, uri: &str) -> bool {
+        let documents = server.documents.lock();
+        server.get_document(&documents, uri).is_some_and(|doc| doc.full_sync_required())
+    }
+
+    #[test]
+    fn refused_oversize_did_change_desynchronizes_the_open_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = initialized_server();
+        let uri = "file:///oversize-did-change.pl";
+        server.test_apply_did_open(uri, "my $x = 1;\n", 1)?;
+        assert!(!is_desynchronized(&server, uri), "a freshly opened document is in sync");
+
+        let response = server.handle_request(notification(
+            "textDocument/didChange",
+            Some(json!({
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": oversize_payload()}],
+            })),
+        ));
+
+        assert!(
+            response.is_none(),
+            "a refused notification must still produce no response envelope: {response:?}"
+        );
+        assert!(
+            is_desynchronized(&server, uri),
+            "a refused didChange must desynchronize the open document, or formatting answers \
+             from bytes the client no longer holds"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn refused_oversize_did_open_reports_without_desynchronizing_an_unopened_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = initialized_server();
+        let uri = "file:///oversize-did-open.pl";
+
+        let response = server.handle_request(notification(
+            "textDocument/didOpen",
+            Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": oversize_payload(),
+                }
+            })),
+        ));
+
+        assert!(response.is_none(), "a refused notification must not answer: {response:?}");
+        let documents = server.documents.lock();
+        assert!(
+            server.get_document(&documents, uri).is_none(),
+            "a refused didOpen must not store a document"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn refused_oversize_non_text_sync_notification_leaves_documents_synchronized()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = initialized_server();
+        let uri = "file:///oversize-unrelated.pl";
+        server.test_apply_did_open(uri, "my $x = 1;\n", 1)?;
+
+        let response = server.handle_request(notification(
+            "custom/blobSink",
+            Some(json!({"blob": oversize_payload()})),
+        ));
+
+        assert!(response.is_none(), "a refused notification must not answer: {response:?}");
+        assert!(
+            !is_desynchronized(&server, uri),
+            "an unrelated refused notification says nothing about this document's content"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn refused_oversize_did_save_leaves_an_in_sync_document_synchronized()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = initialized_server();
+        let uri = "file:///oversize-did-save.pl";
+        server.test_apply_did_open(uri, "my $x = 1;\n", 1)?;
+
+        let response = server.handle_request(notification(
+            "textDocument/didSave",
+            Some(json!({
+                "textDocument": {"uri": uri},
+                "text": oversize_payload(),
+            })),
+        ));
+
+        assert!(response.is_none(), "a refused notification must not answer: {response:?}");
+        assert!(
+            !is_desynchronized(&server, uri),
+            "didSave carries no document version authority, so refusing it does not put the \
+             client's buffer and the server's copy in disagreement"
+        );
+        Ok(())
+    }
+
     // ==================== method direction containment (#8896) ====================
     //
     // `workspace/configuration` and `workspace/applyEdit` are standard

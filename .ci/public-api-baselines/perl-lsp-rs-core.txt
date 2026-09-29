@@ -3147,6 +3147,7 @@ pub perl_lsp_rs_core::providers::completion::CompletionItem::text_edit_range: co
 pub fn perl_lsp_rs_core::providers::CompletionItem::clone(&self) -> perl_lsp_rs_core::providers::CompletionItem
 pub fn perl_lsp_rs_core::providers::CompletionItem::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::completion::CompletionProvider
+pub fn perl_lsp_rs_core::providers::CompletionProvider::detect_hash_key_context(source: &str, position: usize) -> core::option::Option<(alloc::string::String, alloc::string::String)>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions(&self, source: &str, position: usize) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions_with_path(&self, source: &str, position: usize, filepath: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions_with_path_cancellable(&self, source: &str, position: usize, filepath: core::option::Option<&str>, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
@@ -8492,6 +8493,7 @@ pub fn perl_lsp_rs_core::providers::CompletionItemLabelDetails::clone(&self) -> 
 pub fn perl_lsp_rs_core::providers::CompletionItemLabelDetails::default() -> perl_lsp_rs_core::providers::CompletionItemLabelDetails
 pub fn perl_lsp_rs_core::providers::CompletionItemLabelDetails::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::providers::CompletionProvider
+pub fn perl_lsp_rs_core::providers::CompletionProvider::detect_hash_key_context(source: &str, position: usize) -> core::option::Option<(alloc::string::String, alloc::string::String)>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions(&self, source: &str, position: usize) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions_with_path(&self, source: &str, position: usize, filepath: core::option::Option<&str>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
 pub fn perl_lsp_rs_core::providers::CompletionProvider::get_completions_with_path_cancellable(&self, source: &str, position: usize, filepath: core::option::Option<&str>, is_cancelled: &dyn core::ops::function::Fn() -> bool) -> alloc::vec::Vec<perl_lsp_rs_core::providers::CompletionItem>
@@ -9819,6 +9821,8 @@ pub fn perl_lsp_rs_core::runtime::cancellation::CancellableProvider::check_cance
 pub fn perl_lsp_rs_core::runtime::cancellation::CancellableProvider::cleanup_on_cancel(&self, context: &perl_lsp_rs_core::runtime::ProviderCleanupContext)
 pub fn perl_lsp_rs_core::runtime::cancellation::CancellableProvider::provider_name(&self) -> &'static str
 pub mod perl_lsp_rs_core::runtime::input_validation
+pub fn perl_lsp_rs_core::runtime::input_validation::is_text_sync_method(method: &str) -> bool
+pub fn perl_lsp_rs_core::runtime::input_validation::refusal_desynchronizes_document(method: &str) -> bool
 pub fn perl_lsp_rs_core::runtime::input_validation::sanitize_string(input: &str) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::input_validation::validate_buffer_line_lengths(text: &str) -> anyhow::Result<()>
 pub fn perl_lsp_rs_core::runtime::input_validation::validate_document_uri(uri: &str) -> anyhow::Result<()>
@@ -10524,6 +10528,7 @@ pub fn perl_lsp_rs_core::runtime::format_startup_banner(version: &str, profile: 
 pub fn perl_lsp_rs_core::runtime::help_text() -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::init_logging(default_filter: &str)
 pub fn perl_lsp_rs_core::runtime::inlay_hints_cap() -> usize
+pub fn perl_lsp_rs_core::runtime::is_text_sync_method(method: &str) -> bool
 pub fn perl_lsp_rs_core::runtime::log_server_startup(server_name: &str, version: &str, transport: perl_lsp_rs_core::runtime::TransportMode, feature_profile: core::option::Option<perl_lsp_rs_core::features::policy::FeatureProfile>, startup_report: core::option::Option<&perl_lsp_rs_core::runtime::timing::StartupReport>)
 pub fn perl_lsp_rs_core::runtime::logging_filter(explicit_flag: bool, explicit_default_filter: &str, implicit_default_filter: &str) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::max_file_size_bytes() -> usize
@@ -10533,6 +10538,7 @@ pub fn perl_lsp_rs_core::runtime::parse_args<I>(args: I) -> core::result::Result
 pub fn perl_lsp_rs_core::runtime::port_in_use_message(port: u16) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::reference_search_deadline() -> core::time::Duration
 pub fn perl_lsp_rs_core::runtime::references_cap() -> usize
+pub fn perl_lsp_rs_core::runtime::refusal_desynchronizes_document(method: &str) -> bool
 pub fn perl_lsp_rs_core::runtime::regex_scan_deadline() -> core::time::Duration
 pub fn perl_lsp_rs_core::runtime::sanitize_string(input: &str) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::semantic_tokens_deadline() -> core::time::Duration

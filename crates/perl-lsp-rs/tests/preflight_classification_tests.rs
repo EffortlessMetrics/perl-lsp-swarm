@@ -86,6 +86,53 @@ fn code_action_context_quoting_script_tag_passes_through() -> TestResult {
     Ok(())
 }
 
+/// A refused text-sync **notification** is the one preflight outcome with no
+/// response envelope to carry the reason. Before #16653 the client learned
+/// nothing at all: it kept a buffer it believed the server held, while
+/// hover/symbols/formatting answered about bytes the client had since replaced.
+/// The refusal must reach the client as a `window/showMessage`.
+///
+/// This is the client-visible half; the desynchronization it must also cause is
+/// pinned at the dispatch seam in `dispatch::tests`.
+#[test]
+fn refused_oversize_did_change_notification_is_visible_to_the_client() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+
+    let uri = "file:///oversize-notification.pl";
+    harness.open(uri, "my $x = 1;\n")?;
+    harness.barrier();
+
+    // Sized from the configured limit rather than the default so this test does
+    // not pin `maxFileSizeBytes`; the JSON envelope only adds overhead, so this
+    // clears the `limit * 2 + 4_096` text-sync ceiling.
+    let over = perl_lsp_rs_core::runtime::limits::max_file_size_bytes() * 2 + 8_192;
+    harness.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": uri, "version": 2},
+            "contentChanges": [{"text": "a".repeat(over)}],
+        }),
+    );
+
+    let messages = harness.drain_notifications(Some("window/showMessage"), 10_000);
+    let message = messages
+        .iter()
+        .filter_map(|notification| notification.pointer("/params/message")?.as_str())
+        .find(|message| message.contains(uri))
+        .ok_or("no window/showMessage named the refused document")?;
+
+    assert!(
+        message.contains("textDocument/didChange"),
+        "the refusal must name the refused method, got: {message}"
+    );
+    assert!(
+        message.contains("too large"),
+        "the refusal must carry the admission reason, got: {message}"
+    );
+    Ok(())
+}
+
 /// One initialized server proves the whole classification matrix:
 ///
 /// - oversized params -> -32600 (generic resource bound, explicit);

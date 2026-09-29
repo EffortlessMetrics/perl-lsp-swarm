@@ -28,6 +28,32 @@ use anyhow::{Result, anyhow};
 const TEXT_SYNC_METHODS: &[&str] =
     &["textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"];
 
+/// Whether `method` is a text-synchronization method whose params legitimately
+/// carry a whole editor buffer.
+///
+/// One owner for the set: the admission ceiling and the refusal consequences
+/// both ask this question, and a second list could answer it differently.
+#[must_use]
+pub fn is_text_sync_method(method: &str) -> bool {
+    TEXT_SYNC_METHODS.contains(&method)
+}
+
+/// Whether refusing `method` leaves the client's buffer ahead of the server's copy.
+///
+/// `didOpen` and `didChange` exist to bring the server's document up to date.
+/// Refusing one leaves the client editing a buffer this server never received,
+/// so every later fact computed from the stored text is computed from different
+/// bytes than the client holds.
+///
+/// `didSave` is deliberately excluded. LSP defines it as a best-effort "the file
+/// was written" event that carries no document version authority, so refusing
+/// it does not put the two copies in disagreement. Marking such a document
+/// desynchronized would pause analysis of a document that is still in sync.
+#[must_use]
+pub fn refusal_desynchronizes_document(method: &str) -> bool {
+    matches!(method, "textDocument/didOpen" | "textDocument/didChange")
+}
+
 /// Serialized-params ceiling for `method`.
 ///
 /// The flat [`MAX_PARAMS_SIZE`] guard is a generic resource bound, but for
@@ -39,15 +65,16 @@ const TEXT_SYNC_METHODS: &[&str] =
 /// limit is 1,048,576, so a document in that band — or any document at all once
 /// an operator *raised* `maxFileSizeBytes` — was rejected here before the
 /// configured limit was ever consulted. On `didOpen`/`didChange`, which are
-/// notifications, that rejection is silent: the document is simply never
-/// stored, with no diagnostic explaining why.
+/// notifications, that rejection cannot be answered with an error envelope, so
+/// the refusal is reported to the client and the document is desynchronized by
+/// the caller (issue #16653) rather than failing silently.
 ///
 /// So text-sync methods get a ceiling derived from the configured file limit,
 /// with headroom for JSON envelope and string escaping (worst-case escaping
 /// roughly doubles the payload). `validate_file_content` then enforces the real
 /// configured limit precisely. Every other method keeps the flat bound.
 fn max_params_size_for(method: &str) -> usize {
-    if TEXT_SYNC_METHODS.contains(&method) {
+    if is_text_sync_method(method) {
         let file_limit = limits_max_file_size_bytes();
         MAX_PARAMS_SIZE.max(file_limit.saturating_mul(2).saturating_add(4_096))
     } else {
