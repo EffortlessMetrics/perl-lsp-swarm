@@ -197,6 +197,12 @@ ELIGIBILITY_PRODUCTION = ('    if: ${{ always() }}',
  '        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
  '        with:',
  '          persist-credentials: false',
+ '      - name: Setup eligibility schema Python',
+ '        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97',
+ '        with:',
+ "          python-version: '3.12'",
+ '      - name: Install pinned eligibility schema dependencies',
+ '        run: python3 -m pip install -r scripts/requirements-release.txt',
  '      - name: Download unqualified source context',
  "        if: ${{ inputs.source_context_run_id != '' && inputs.source_context_artifact_name != '' && "
  "inputs.source_context_sha256 != '' }}",
@@ -451,6 +457,9 @@ def _upstream_production(block):
 # Fixed reviewed b5c6 productions; never computed from validator input.
 SUPPORTED_JOBS = ('release-metadata', 'build', 'candidate', 'publisher-eligibility', 'publish-release', 'dispatch-publishers')
 UPSTREAM_PRODUCTION_SHA256 = {'release-metadata': '526a1b8b7382517b152724c2b3aa893df0a67d883c02ce096f5941bf5e98c442', 'build': '83b7fa4bd16cde8f0f808d701aed701fe021f81b47eaed8185c0f32271f2473c', 'candidate': '62254ea65fd1558c143bb4df534a9846f775ab6e8ec09d1e366f86ad43358731'}
+# Reviewed 32a59036 validate job, including opaque scalar bodies; never input-derived.
+SUPPORTED_ORCHESTRATION_JOBS = ('validate', 'trigger-release')
+ORCHESTRATION_VALIDATE_SHA256 = '2a484848f8916aba5214059cb0336b793c08cf37be92a106459f9199a6095523'
 
 def validate_graph(workflow):
     _default_shell_boundary(workflow)
@@ -541,6 +550,14 @@ def validate_graph(workflow):
 
 def validate_dispatch(workflow):
     _default_shell_boundary(workflow)
+    _read_only_permissions(workflow, 0)
+    jobs = tuple(re.findall(r"(?m)^  ([A-Za-z0-9_-]+):$", _jobs_text(workflow)))
+    _equals(set(jobs), set(SUPPORTED_ORCHESTRATION_JOBS), "orchestration job membership")
+    validate = _job_block(workflow, "validate")
+    digest = hashlib.sha256(_upstream_production(validate)).hexdigest()
+    _equals(digest, ORCHESTRATION_VALIDATE_SHA256, "reviewed orchestration validation production")
+    for name in jobs:
+        _job_shell_boundary(_job_block(workflow, name))
     _closed_production(_field(workflow, "env", 0, mapping=True), ORCHESTRATION_ENV_PRODUCTION, "orchestration global environment")
     trigger = _job_block(workflow, "trigger-release")
     _closed_production(trigger, DISPATCH_PRODUCTION, "dispatch job")

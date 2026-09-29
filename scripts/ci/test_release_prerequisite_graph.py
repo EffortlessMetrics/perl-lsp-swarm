@@ -237,5 +237,47 @@ class PrivateGraphTests(unittest.TestCase):
         graph.validate_graph(source)
 
 
+class ReviewFeedbackGrammarTests(unittest.TestCase):
+    def test_orchestration_membership_and_validate_authority_are_closed(self):
+        source = graph.ORCHESTRATION.read_text(encoding="utf-8")
+        graph.validate_dispatch(source)
+        for command in ("echo private", "gh release create v0.0.0", "gh api -X POST /repos/example/releases"):
+            with self.subTest(command=command):
+                with self.assertRaises(graph.GraphError):
+                    graph.validate_dispatch(source + "\n  undeclared-job:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: write\n    steps:\n      - name: Extra\n        run: " + command + "\n")
+        validate = graph._job_block(source, "validate")
+        for original, changed in (("      contents: read", "      contents: write"),
+                                  ("      statuses: read", "      statuses: write"),
+                                  ("uses: actions/checkout@", "uses: arbitrary/action@"),
+                                  ("        run: |", "        run: |\n          gh release create v0.0.0")):
+            self.assertIn(original, validate)
+            with self.subTest(original=original):
+                with self.assertRaises(graph.GraphError):
+                    graph.validate_dispatch(source.replace(validate, validate.replace(original, changed, 1), 1))
+        graph.validate_dispatch(source.replace("  validate:", "  validate:\n    # safe YAML-only annotation", 1))
+
+    def test_eligibility_schema_dependencies_are_required_before_inspection(self):
+        source = graph.WORKFLOW.read_text(encoding="utf-8")
+        job = graph._job_block(source, "publisher-eligibility")
+        headers = ["      - name: Setup eligibility schema Python",
+                   "      - name: Install pinned eligibility schema dependencies",
+                   "      - name: Validate unqualified source context before checkout"]
+        positions = [job.index(header) for header in headers]
+        self.assertEqual(positions, sorted(positions))
+        graph.validate_graph(source)
+        for name in ("Setup eligibility schema Python", "Install pinned eligibility schema dependencies"):
+            header = "      - name: " + name
+            start = job.index(header)
+            end = job.index("      - name:", start + len(header))
+            missing = job[:start] + job[end:]
+            with self.subTest(name=name):
+                with self.assertRaises(graph.GraphError):
+                    graph.validate_graph(source.replace(job, missing, 1))
+        with self.assertRaises(graph.GraphError):
+            changed_job = job.replace("run: python3 -m pip install -r scripts/requirements-release.txt",
+                                      "run: echo python3 -m pip install -r scripts/requirements-release.txt", 1)
+            graph.validate_graph(source.replace(job, changed_job, 1))
+
+
 if __name__ == '__main__':
     unittest.main()

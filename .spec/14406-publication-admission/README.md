@@ -464,3 +464,13 @@ not arbitrary YAML/shell equivalence or hosted public-authority execution.
 All selected release-job steps require the supported plain `- name:` list
 header. A shell or other authority key in the first list position rejects;
 subsequent step fields retain the explicit shell boundary described above.
+
+The orchestration workflow admits exactly `validate` and `trigger-release`.
+Its existing validation job is pinned to a fixed reviewed production, including
+read-only permissions and its commands; extra jobs or validation-job mutations
+reject. The legacy combined-status polling in that production is not proof of
+all current required branch checks or authenticated publisher qualification.
+Publisher eligibility provisions the pinned Python/schema dependencies before
+inspecting source context. Removing that setup, or replacing installation with
+an echo, rejects. These are source-routing prerequisites; clean hosted execution
+and release qualification remain `NOT_PROVEN`.
