@@ -51,6 +51,20 @@ pub fn create_extract_subroutine_action(
     let body_text = body_text.strip_suffix('}').unwrap_or(body_text);
     let sub_name = suggest_subroutine_name(node);
     let params = detect_parameters(node);
+    // Faithfulness gates: an extraction whose generated code would change the
+    // program's observable behavior is never offered, no matter how valid the
+    // result looks to the syntax-only parse gate (#16705).
+    if extraction_would_change_semantics(node) {
+        return None;
+    }
+    // Perl expands aggregates into the flat call argument list, so a list or
+    // hash parameter followed by any other parameter would swallow the rest in
+    // the generated `my (...) = @_;` binding and leave it undefined.
+    if let Some(pos) = params.iter().position(|param| param.sigil != "$") {
+        if pos + 1 < params.len() {
+            return None;
+        }
+    }
     let returns = detect_return_values(node);
 
     let param_list = join_spelled(&params);
@@ -200,6 +214,82 @@ pub fn detect_return_values(node: &Node) -> Vec<VariableRef> {
     }
 
     Vec::new()
+}
+
+/// Whether extraction would change the program's observable behavior, so the
+/// action must not be offered at all (#16705).
+///
+/// Three shapes are declined outright, because the generated `sub` + call pair
+/// cannot express them faithfully and the syntax-only parse gate accepts the
+/// corrupted result:
+///
+/// - a `return` anywhere in the block would exit the generated subroutine
+///   instead of the caller's, so the caller resumes where the original would
+///   have returned;
+/// - an assignment to an outer lexical binds a parameter copy via
+///   `my (...) = @_;`, so the caller no longer observes the write;
+/// - element or slice access on an outer aggregate (`$values[0]`,
+///   `%hash{key}`) is spelled with the wrong sigil in the parameter list and
+///   called with a variable that names nothing.
+///
+/// Repairs that could preserve these semantics (aliasing, write-back,
+/// reference passing) would change the generated shape; declining is the
+/// honest contract until that generator exists.
+fn extraction_would_change_semantics(node: &Node) -> bool {
+    let mut declared_inside: HashSet<String> = HashSet::new();
+    if let NodeKind::Block { statements } = &node.kind {
+        for stmt in statements {
+            collect_declared_variables(stmt, &mut declared_inside);
+        }
+    }
+    subtree_has_semantic_hazard(node, &declared_inside)
+}
+
+fn subtree_has_semantic_hazard(node: &Node, declared_inside: &HashSet<String>) -> bool {
+    match &node.kind {
+        NodeKind::Return { .. } => true,
+        NodeKind::Assignment { lhs, .. } => {
+            subtree_names_outer_variable(lhs, declared_inside)
+                || node
+                    .children()
+                    .iter()
+                    .any(|child| subtree_has_semantic_hazard(child, declared_inside))
+        }
+        // Scalar element access and slices (`$values[0]`, `@arr[1,2]`,
+        // `%hash{a,b}`): the storage is an aggregate, which the parameter
+        // spelling cannot mirror when the aggregate is outer.
+        NodeKind::Binary { op, left, .. } if op == "[]" || op == "{}" => {
+            subtree_names_outer_variable(left, declared_inside)
+                || node
+                    .children()
+                    .iter()
+                    .any(|child| subtree_has_semantic_hazard(child, declared_inside))
+        }
+        // Array/hash slices (`@arr[1,2]`, `%hash{a,b}`): the storage is the
+        // aggregate named by the target, which the parameter spelling cannot
+        // mirror when that aggregate is outer.
+        NodeKind::ArraySlice { target, .. }
+        | NodeKind::HashSlice { target, .. }
+        | NodeKind::KeyValueSlice { target, .. } => {
+            subtree_names_outer_variable(target, declared_inside)
+                || node
+                    .children()
+                    .iter()
+                    .any(|child| subtree_has_semantic_hazard(child, declared_inside))
+        }
+        _ => {
+            node.children().iter().any(|child| subtree_has_semantic_hazard(child, declared_inside))
+        }
+    }
+}
+
+/// Whether any variable occurrence under `node` names a lexical that is not
+/// declared inside the extracted block.
+fn subtree_names_outer_variable(node: &Node, declared_inside: &HashSet<String>) -> bool {
+    if let NodeKind::Variable { sigil, name } = &node.kind {
+        return !declared_inside.contains(&format!("{}{}", sigil, name));
+    }
+    node.children().iter().any(|child| subtree_names_outer_variable(child, declared_inside))
 }
 
 /// Collect the spelled names (sigil + name) of all variables declared via a
@@ -686,6 +776,106 @@ mod tests {
         assert!(
             parses_cleanly(&edited),
             "the applied edit must parse cleanly under the crate parser; got:\n{edited}"
+        );
+    }
+
+    /// #16705: extracting a block that writes an outer lexical produces
+    /// `my ($x) = @_;`, so the generated sub would update only its local copy
+    /// and the caller's variable would never change. The action must not be
+    /// offered at all.
+    #[test]
+    fn outer_variable_write_is_never_offered() {
+        let source = concat!(
+            "use strict;\n",
+            "sub f {\n",
+            "    my $count = 0;\n",
+            "    { $count = $count + 1; }\n",
+            "    return $count;\n",
+            "}\n",
+        );
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.to_string());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (33, 55));
+
+        assert!(
+            actions.iter().all(|a| a.title != "Extract to subroutine"),
+            "a write to an outer lexical must suppress the extraction; got {actions:?}"
+        );
+    }
+
+    /// #16705: an aggregate parameter followed by another parameter flattens
+    /// the call into one list and `my (@items, $suffix) = @_;` gives @items
+    /// every value, leaving $suffix undefined. The action must not be offered.
+    #[test]
+    fn aggregate_parameter_before_another_is_never_offered() {
+        let source = concat!(
+            "use strict;\n",
+            "sub f {\n",
+            "    my @items = (1, 2);\n",
+            "    my $suffix = 3;\n",
+            "    { my $first = $items[0]; return $first . $suffix; }\n",
+            "}\n",
+        );
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.to_string());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (66, 116));
+
+        assert!(
+            actions.iter().all(|a| a.title != "Extract to subroutine"),
+            "an aggregate followed by another parameter must suppress the extraction; got {actions:?}"
+        );
+    }
+
+    /// #16705: element access carries the scalar sigil, so extraction spelled
+    /// `process_data($values)` while the body still read the undeclared
+    /// aggregate. The action must not be offered for outer aggregates.
+    #[test]
+    fn outer_aggregate_element_access_is_never_offered() {
+        let source = concat!(
+            "use strict;\n",
+            "sub f {\n",
+            "    my @values = (1, 2);\n",
+            "    { return $values[0]; }\n",
+            "}\n",
+        );
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.to_string());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (45, 66));
+
+        assert!(
+            actions.iter().all(|a| a.title != "Extract to subroutine"),
+            "element access on an outer aggregate must suppress the extraction; got {actions:?}"
+        );
+    }
+
+    /// #16705: a `return` inside the extracted block would exit the generated
+    /// subroutine instead of the caller's, so the caller resumes where the
+    /// original program returned. The action must not be offered.
+    #[test]
+    fn block_containing_return_is_never_offered() {
+        let source = concat!(
+            "use strict;\n",
+            "sub f {\n",
+            "    my $x = 1;\n",
+            "    { return $x; }\n",
+            "    return 2;\n",
+            "}\n",
+        );
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.to_string());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (28, 42));
+
+        assert!(
+            actions.iter().all(|a| a.title != "Extract to subroutine"),
+            "a block containing return must suppress the extraction; got {actions:?}"
         );
     }
 }
