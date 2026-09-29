@@ -50,12 +50,14 @@ use std::path::{Path, PathBuf};
 /// setting. Every one of them is refused: `ProjectPerlConfig` has no such
 /// field, and `WorkspaceConfig::update_from_value` drops the keys from every
 /// client-settings payload so a hostile workspace cannot choose the program the
-/// server spawns or its arguments (#3729).
+/// server spawns or its arguments.
 ///
 /// Bare `perl_path` is deliberately absent: it is the internal Rust field name
 /// and appears legitimately throughout the config module. The `[perl]`
 /// table-qualified form is matched instead, because that is the spelling a
 /// document uses when instructing a user, and no such table field exists.
+/// A fenced TOML example may separate `[perl]` and `perl_path` with comments
+/// or other keys; `toml_perl_path_offenders` catches that section-scoped form.
 const LSP_SETTING_TOKENS: &[&str] =
     &["perl.workspace.perlPath", "perl.workspace.perlArgs", "perl.path", "[perl] perl_path"];
 
@@ -78,16 +80,121 @@ const ALLOWED: &[(&str, &str)] = &[
         "src/runtime/language/missing_module_lookup.rs",
         "asserts the startup-INC remediation names no unsettable route",
     ),
-    ("../../docs/reference/CONFIG.md", "documents that the keys are refused and why (#16612)"),
-    (
-        "../../docs/how-to/PERL_SETUP_TROUBLESHOOTING.md",
-        "documents that the server accepts no interpreter-path setting (#16612)",
-    ),
     (
         "../../docs/project/discovery/cross-session-triage-2026-05-30.md",
-        "historical triage record describing the unreachability (#3729)",
+        "historical triage record describing the unreachability",
     ),
 ];
+
+/// Exact refusal headings in the reference. The rest of each page remains
+/// scanned, including any second occurrence of the same token.
+const DOC_ALLOWED_LINES: &[(&str, &str)] = &[
+    (
+        "../../docs/reference/CONFIG.md",
+        "#### `perl.workspace.perlPath` — refused, not configurable",
+    ),
+    (
+        "../../docs/reference/CONFIG.md",
+        "#### `perl.workspace.perlArgs` — refused, not configurable",
+    ),
+];
+
+/// The guide's token is in a wrapped sentence. Exempt the complete paragraph
+/// so changing an adjacent line into advice invalidates the exemption.
+const TROUBLESHOOTING_REFUSAL: &str = concat!(
+    "If you manage the server binary yourself, set the VS Code extension setting\n",
+    "`perl-lsp.serverPath` to the `perllsp` binary. The language server accepts no\n",
+    "interpreter-path setting: `perl.workspace.perlPath` (and the project-config\n",
+    "equivalent) is refused on every channel and silently ignored, so the only way to\n",
+    "choose which Perl the server probes with is resolution order. Change the active\n",
+    "perlbrew or plenv version when one is present; when neither is active, put the\n",
+    "intended `perl` first on `PATH` (`where perl` on Windows, `which -a perl`\n",
+    "elsewhere). The debugger is a separate channel: it takes a per-launch `perlPath` in\n",
+    "`launch.json`, and that one is honored."
+);
+const TROUBLESHOOTING_PATH: &str = "../../docs/how-to/PERL_SETUP_TROUBLESHOOTING.md";
+
+fn unexpected_tokens(relative: &Path, text: &str) -> Vec<String> {
+    let mut offenders = Vec::new();
+    let mut screened = text.lines().collect::<Vec<_>>().join("\n");
+    if relative == Path::new(TROUBLESHOOTING_PATH)
+        && let Some(start) = screened.find(TROUBLESHOOTING_REFUSAL)
+    {
+        let end = start + TROUBLESHOOTING_REFUSAL.len();
+        let masked = TROUBLESHOOTING_REFUSAL
+            .chars()
+            .map(|ch| if ch == '\n' { '\n' } else { ' ' })
+            .collect::<String>();
+        screened.replace_range(start..end, &masked);
+    }
+    for (index, line) in screened.lines().enumerate() {
+        if DOC_ALLOWED_LINES
+            .iter()
+            .any(|(path, allowed)| relative == Path::new(path) && line == *allowed)
+        {
+            continue;
+        }
+        for token in LSP_SETTING_TOKENS {
+            if line.contains(token) {
+                offenders.push(format!("{}:{} ({token})", relative.display(), index + 1));
+            }
+        }
+    }
+    offenders.extend(toml_perl_path_offenders(relative, &screened));
+    offenders
+}
+
+fn toml_perl_path_offenders(relative: &Path, text: &str) -> Vec<String> {
+    if !relative.extension().is_some_and(|extension| extension == "md" || extension == "toml") {
+        return Vec::new();
+    }
+    let toml_file = relative.extension().is_some_and(|extension| extension == "toml");
+    let mut fence: Option<&str> = None;
+    let mut in_perl_section = false;
+    let mut offenders = Vec::new();
+
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if !toml_file {
+            if let Some(marker) = fence {
+                if trimmed == marker {
+                    fence = None;
+                    in_perl_section = false;
+                    continue;
+                }
+            } else if let Some(marker) =
+                ["```", "~~~"].into_iter().find(|marker| trimmed.starts_with(marker))
+            {
+                if trimmed[marker.len()..].trim().eq_ignore_ascii_case("toml") {
+                    fence = Some(marker);
+                    in_perl_section = false;
+                }
+                continue;
+            }
+            if fence.is_none() {
+                continue;
+            }
+        }
+
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+        if let Some(section) = trimmed.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+            in_perl_section = section.0 == "perl";
+            continue;
+        }
+        if in_perl_section
+            && trimmed.split_once('=').is_some_and(|(key, _)| key.trim() == "perl_path")
+        {
+            offenders.push(format!(
+                "{}:{} ([perl] perl_path in TOML)",
+                relative.display(),
+                index + 1
+            ));
+        }
+    }
+    offenders
+}
 
 /// Directories scanned recursively, relative to the crate, and what each is.
 ///
@@ -139,12 +246,17 @@ fn only_the_remediation_owner_and_its_guards_name_the_unsettable_setting()
             files_with_extension(&dir, "rs", &mut sources)?;
         } else {
             files_with_extension(&dir, "md", &mut sources)?;
+            files_with_extension(&dir, "toml", &mut sources)?;
         }
-        assert!(sources.len() > before, "scan root {root} matched no files");
+        if sources.len() == before {
+            return Err(format!("scan root {root} matched no files").into());
+        }
     }
     for file in SCAN_FILES {
         let path = crate_root.join(file);
-        assert!(path.is_file(), "scanned file {file} is missing; repoint SCAN_FILES");
+        if !path.is_file() {
+            return Err(format!("scanned file {file} is missing; repoint SCAN_FILES").into());
+        }
         sources.push(path);
     }
 
@@ -156,14 +268,8 @@ fn only_the_remediation_owner_and_its_guards_name_the_unsettable_setting()
             continue;
         }
         let text = std::fs::read_to_string(&path)?;
-        for token in LSP_SETTING_TOKENS {
-            if text.contains(token) {
-                offenders.push(format!(
-                    "{} ({token})",
-                    path.strip_prefix(crate_root).unwrap_or(&path).display()
-                ));
-            }
-        }
+        let relative = path.strip_prefix(crate_root).unwrap_or(&path);
+        offenders.extend(unexpected_tokens(relative, &text));
     }
 
     assert!(
@@ -178,6 +284,91 @@ fn only_the_remediation_owner_and_its_guards_name_the_unsettable_setting()
         offenders.join(", ")
     );
 
+    Ok(())
+}
+
+#[test]
+fn toml_perl_path_containment_respects_section_and_fence_boundaries()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../../docs/example.md");
+    let bad = "```toml\n[perl]\n# choose an interpreter\ninclude_paths = [\"lib\"]\nperl_path = \"/tmp/perl\"\n```";
+    if toml_perl_path_offenders(path, bad).len() != 1 {
+        return Err("intervening TOML comments and keys hid [perl] perl_path advice".into());
+    }
+    let other_section =
+        "```toml\n[perl]\ninclude_paths = [\"lib\"]\n[other]\nperl_path = \"/tmp/perl\"\n```";
+    if !toml_perl_path_offenders(path, other_section).is_empty() {
+        return Err("perl_path in another TOML section was treated as [perl] advice".into());
+    }
+    let other_fence = "```toml\n[perl]\n```\n```toml\nperl_path = \"/tmp/perl\"\n```";
+    if !toml_perl_path_offenders(path, other_fence).is_empty() {
+        return Err("[perl] state leaked across TOML fences".into());
+    }
+    let raw_toml = "[perl]\n# explanatory comment\nperl_path = \"/tmp/perl\"\n[other]\nperl_path = \"ignored\"";
+    if toml_perl_path_offenders(Path::new("../../docs/example.toml"), raw_toml).len() != 1 {
+        return Err("raw TOML section boundary failed to isolate [perl] perl_path".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn refused_setting_explanation_does_not_exempt_bad_advice_on_the_same_page()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (relative, allowed_line) in DOC_ALLOWED_LINES {
+        if !unexpected_tokens(Path::new(relative), allowed_line).is_empty() {
+            return Err(format!("refusal heading in {relative} must be allowed").into());
+        }
+        let with_bad_advice = format!(
+            "{allowed_line}\nIf Perl is missing, configure `perl.workspace.perlPath` in your editor."
+        );
+        if unexpected_tokens(Path::new(relative), &with_bad_advice).is_empty() {
+            return Err(format!(
+                "a second setting reference in {relative} was hidden by its refusal line"
+            )
+            .into());
+        }
+    }
+    if !unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), TROUBLESHOOTING_REFUSAL).is_empty() {
+        return Err("the guide's refusal paragraph must be allowed".into());
+    }
+    let adjacent_rewrite = TROUBLESHOOTING_REFUSAL.replace(
+        "equivalent) is refused on every channel and silently ignored, so the only way to",
+        "equivalent) in your editor or `.perl-lsp.toml` to choose the Perl to use.",
+    );
+    if unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), &adjacent_rewrite).is_empty() {
+        return Err(
+            "advice rewritten next to the token did not invalidate the guide exemption".into()
+        );
+    }
+    let repeated_refusal = format!("{TROUBLESHOOTING_REFUSAL}\n{TROUBLESHOOTING_REFUSAL}");
+    if unexpected_tokens(Path::new(TROUBLESHOOTING_PATH), &repeated_refusal).is_empty() {
+        return Err("a second guide paragraph inherited the one allowed occurrence".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn every_allowed_doc_line_exists_exactly_once() -> Result<(), Box<dyn std::error::Error>> {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (relative, allowed_line) in DOC_ALLOWED_LINES {
+        let text = std::fs::read_to_string(crate_root.join(relative))?;
+        let count = text.lines().filter(|line| line == allowed_line).count();
+        if count != 1 {
+            return Err(format!(
+                "documented refusal in {relative} occurs {count} times; review its exception"
+            )
+            .into());
+        }
+    }
+    let guide = std::fs::read_to_string(crate_root.join(TROUBLESHOOTING_PATH))?;
+    let normalized = guide.lines().collect::<Vec<_>>().join("\n");
+    let count = normalized.matches(TROUBLESHOOTING_REFUSAL).count();
+    if count != 1 {
+        return Err(format!(
+            "the guide's refusal paragraph occurs {count} times; review its exception"
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -206,21 +397,16 @@ fn every_allowlisted_file_exists_and_still_needs_its_entry()
 /// spot reopens silently. Asserted directly rather than left to the reader of
 /// SCAN_ROOTS.
 #[test]
-fn the_scan_covers_first_party_user_facing_docs() {
+fn the_scan_covers_first_party_user_facing_docs() -> Result<(), Box<dyn std::error::Error>> {
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    assert!(
-        crate_root.join("../../docs").is_dir(),
-        "documented scan root ../../docs is missing; if the docs moved, repoint SCAN_ROOTS and \
-         re-check that no user-facing page advises the setting"
-    );
-    assert!(
-        SCAN_ROOTS.len() > 1,
-        "SCAN_ROOTS collapsed to a single root; the docs are where four of the #16612 offenders \
-         lived"
-    );
-    assert!(
-        SCAN_FILES.iter().any(|file| file.ends_with("README.md")),
-        "no root-level README is scanned; it is the most widely read file in the repository and \
-         no recursive root reaches it"
-    );
+    if !crate_root.join("../../docs").is_dir() {
+        return Err("documented scan root ../../docs is missing; repoint SCAN_ROOTS".into());
+    }
+    if SCAN_ROOTS.len() <= 1 {
+        return Err("SCAN_ROOTS collapsed to a single root; docs are no longer scanned".into());
+    }
+    if !SCAN_FILES.iter().any(|file| file.ends_with("README.md")) {
+        return Err("no root-level README is scanned; repoint SCAN_FILES".into());
+    }
+    Ok(())
 }
