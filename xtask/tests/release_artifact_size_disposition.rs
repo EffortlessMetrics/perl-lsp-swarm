@@ -15,7 +15,7 @@ mod policy;
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::json;
 use tempfile::TempDir;
 
