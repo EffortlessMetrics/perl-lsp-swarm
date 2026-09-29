@@ -25,10 +25,14 @@ cargo xtask worktree-recovery backup
 
 `--backup-dir` is required and is the only permitted write location. The parent
 of that directory must already exist; the command refuses to create intermediate
-paths outside the destination. The destination must not overlap the selected
-repository, common directory, or candidate. Existing destinations must be empty
-regular directories. Any symlink, junction, or reparse component in the
-destination path is refused.
+paths outside the destination. A relative destination with no slash (`backup`)
+uses the current directory as that parent. The destination must not overlap the
+selected repository, common directory, or candidate. Existing destinations must
+be empty regular directories. Any symlink, junction, or reparse component in the
+destination path is refused. After the named directory is created or admitted
+and canonicalized, backup revalidates it with `symlink_metadata` so a swapped
+symlink is refused. Residual races after that pin remain sampled-interval, the
+same class as the evidence observer.
 
 ## Capture set
 
@@ -37,14 +41,20 @@ A verified backup captures, when present as regular non-reparse files:
 - the candidate `.git` pointer bytes, even when the pointer does not parse;
 - candidate source-like files (`pl`/`pm`/`pod`/`t`/`plx`/`xs`), including ignored
   source, without following `.git` or unselected sibling worktrees;
-- surviving administrative files under the parsed administrative path;
+- surviving administrative files under the parsed administrative path, and only
+  when that path is inside the selected common-dir `worktrees` namespace (the
+  same `is_in_admin_namespace` gate as the evidence observer). A forged or
+  outside pointer still captures pointer bytes; host files outside that
+  namespace are not copied;
 - `HEAD`, `packed-refs`, and `refs/**` from the common directory;
 - `logs/**` reflogs from the common directory;
 - common `.git/config`.
 
 Absent subjects are recorded as `missing`. A symlink, reparse, race, or bound
 overflow during capture refuses a verified receipt rather than following an
-escape or claiming completeness.
+escape or claiming completeness. Capture uses the shared `TraversalLimits`
+surface, including `max_directories`. A file that lands exactly on `max_bytes`
+is admitted; later skipped entries do not refuse the backup.
 
 Captured bytes are stored as content-addressed `objects/<sha256>` files. The
 receipt lists role, logical path, source path, size, and digest.
@@ -57,7 +67,9 @@ with `created_at` and `verification_digest` cleared. Timestamp changes do not
 change identity; material evidence changes do.
 
 `verify` re-reads the receipt and every named object through the stable-read
-path and refuses a digest, size, or schema mismatch.
+path and refuses a digest, size, or schema mismatch. Object file names are
+admitted only as lowercase SHA-256 hex (64 characters) before they are joined
+under `objects/`; `..`, separators, and non-hex names are refused.
 
 ## Retention and restore instructions
 

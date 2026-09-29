@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::{TempDir, tempdir};
 use xtask::worktree_forensic_backup::{
-    BACKUP_SCHEMA_VERSION, BackupReceipt, BackupRole, create, verify,
+    BACKUP_SCHEMA_VERSION, BackupReceipt, BackupRole, create, create_with_limits, verify,
 };
+use xtask::worktree_forensic_recovery::TraversalLimits;
 
 struct LinkedFixture {
     _temporary: TempDir,
@@ -386,6 +387,156 @@ fn tampered_object_fails_verification() -> Result<()> {
 }
 
 #[test]
+fn forged_pointer_outside_admin_namespace_does_not_copy_host_files() -> Result<()> {
+    let fixture = LinkedFixture::create()?;
+    let host_dir = fixture.backup_parent.join("outside-admin");
+    fs::create_dir(&host_dir)?;
+    let secret = host_dir.join("secret.pl");
+    fs::write(&secret, "SECRET_MUST_NOT_BE_COPIED\n")?;
+    fs::write(host_dir.join("HEAD"), "ref: refs/heads/stolen\n")?;
+    fs::write(fixture.candidate.join(".git"), format!("gitdir: {}\n", path_text(&host_dir)?))?;
+    let before = fixture.snapshot()?;
+    let destination = fixture.backup_dir("forged-pointer");
+    let receipt = backup_result(create(&fixture.repository, &fixture.candidate, &destination))?;
+    ensure!(
+        receipt.missing.iter().any(|missing| missing.role == BackupRole::Admin
+            && missing.detail.contains("worktrees namespace")),
+        "outside-namespace admin was not recorded: {receipt:?}"
+    );
+    ensure!(
+        receipt.entries.iter().all(|entry| entry.role != BackupRole::Admin),
+        "outside-namespace admin files were captured: {receipt:?}"
+    );
+    let objects = destination.join("objects");
+    for entry in &receipt.entries {
+        let bytes = fs::read(objects.join(&entry.sha256))?;
+        ensure!(
+            !bytes
+                .windows(b"SECRET_MUST_NOT_BE_COPIED".len())
+                .any(|window| window == b"SECRET_MUST_NOT_BE_COPIED"),
+            "host secret was copied into backup object {}",
+            entry.logical_path
+        );
+    }
+    ensure!(fs::read_to_string(&secret)? == "SECRET_MUST_NOT_BE_COPIED\n", "host secret mutated");
+    ensure!(fixture.snapshot()? == before, "forged-pointer backup mutated the subject");
+    Ok(())
+}
+
+#[test]
+fn relative_backup_dir_without_slash_uses_current_directory_parent() -> Result<()> {
+    let fixture = LinkedFixture::create()?;
+    let before = fixture.snapshot()?;
+    let original = std::env::current_dir()?;
+    let restore = RestoreDir(original);
+    std::env::set_current_dir(&fixture.backup_parent)?;
+    let receipt = backup_result(create(
+        &fixture.repository,
+        &fixture.candidate,
+        Path::new("relative-backup"),
+    ))?;
+    drop(restore);
+    ensure!(receipt.complete, "relative destination backup was incomplete");
+    ensure!(
+        fixture.backup_dir("relative-backup").join("receipt.json").is_file(),
+        "relative destination was not created under the current directory"
+    );
+    ensure!(fixture.snapshot()? == before, "relative destination backup mutated the subject");
+    Ok(())
+}
+
+#[test]
+fn directory_bound_refuses_a_verified_receipt() -> Result<()> {
+    let fixture = LinkedFixture::create()?;
+    let destination = fixture.backup_dir("dir-bound");
+    let error = create_with_limits(
+        &fixture.repository,
+        &fixture.candidate,
+        &destination,
+        TraversalLimits { max_directories: 1, ..TraversalLimits::default() },
+    )
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("directory bound emitted a verified receipt"))?;
+    ensure!(
+        error.to_string().contains("maximum directories"),
+        "directory bound error lacked bound context: {error}"
+    );
+    ensure!(
+        !destination.join("receipt.json").exists(),
+        "directory bound still wrote a verified receipt"
+    );
+    Ok(())
+}
+
+#[test]
+fn exact_byte_limit_admits_capture_and_does_not_refuse_later_skipped_files() -> Result<()> {
+    let fixture = LinkedFixture::create()?;
+    fs::write(fixture.candidate.join("zzz-not-source.txt"), "later skipped\n")?;
+    let measured = fixture.backup_dir("byte-measure");
+    let baseline = backup_result(create(&fixture.repository, &fixture.candidate, &measured))?;
+    let captured_bytes: u64 = baseline.entries.iter().map(|entry| entry.bytes).sum();
+    ensure!(captured_bytes > 0, "measured backup captured no bytes");
+
+    let exact = fixture.backup_dir("byte-exact");
+    let receipt = backup_result(create_with_limits(
+        &fixture.repository,
+        &fixture.candidate,
+        &exact,
+        TraversalLimits { max_bytes: captured_bytes, ..TraversalLimits::default() },
+    ))?;
+    ensure!(receipt.complete, "exact byte limit refused a capture that lands on the bound");
+    ensure!(
+        receipt.entries.iter().all(|entry| !entry.logical_path.ends_with("zzz-not-source.txt")),
+        "non-source file was captured under the exact byte limit"
+    );
+
+    let over = fixture.backup_dir("byte-over");
+    let error = create_with_limits(
+        &fixture.repository,
+        &fixture.candidate,
+        &over,
+        TraversalLimits {
+            max_bytes: captured_bytes.saturating_sub(1),
+            ..TraversalLimits::default()
+        },
+    )
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("over-budget capture emitted a verified receipt"))?;
+    ensure!(
+        error.to_string().contains("maximum bytes"),
+        "over-budget error lacked byte-limit context: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_refuses_object_names_that_escape_the_objects_directory() -> Result<()> {
+    let fixture = LinkedFixture::create()?;
+    let destination = fixture.backup_dir("object-escape");
+    let mut receipt = backup_result(create(&fixture.repository, &fixture.candidate, &destination))?;
+    let escape = destination.join("escape");
+    fs::write(&escape, b"should-not-be-read")?;
+    let Some(entry) = receipt.entries.first_mut() else {
+        bail!("verified backup had no entries to retarget");
+    };
+    entry.sha256 = String::from("../escape");
+    let mut copy = receipt.clone();
+    copy.created_at.clear();
+    copy.verification_digest.clear();
+    receipt.verification_digest = digest(&serde_json::to_vec(&copy)?);
+    fs::write(destination.join("receipt.json"), serde_json::to_vec_pretty(&receipt)?)?;
+    let error = verify(&destination)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("path-escaping object name verified"))?;
+    ensure!(
+        error.to_string().contains("hex digest") || error.to_string().contains("object name"),
+        "escape error lacked object-name context: {error}"
+    );
+    ensure!(fs::read(&escape)? == b"should-not-be-read", "escape target was consumed as an object");
+    Ok(())
+}
+
+#[test]
 fn missing_backup_dir_flag_is_a_usage_error() -> Result<()> {
     let output = cargo_bin_cmd!("xtask")
         .arg("worktree-recovery")
@@ -478,4 +629,12 @@ fn read_dir_names(path: &Path) -> Result<Vec<String>> {
         .collect::<std::io::Result<Vec<_>>>()?;
     names.sort();
     Ok(names)
+}
+
+struct RestoreDir(PathBuf);
+
+impl Drop for RestoreDir {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
 }

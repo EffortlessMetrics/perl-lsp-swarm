@@ -1455,7 +1455,7 @@ fn resolve_relative(base: &Path, value: &Path) -> PathBuf {
     if value.is_absolute() { value.to_path_buf() } else { base.join(value) }
 }
 
-fn is_in_admin_namespace(common_dir: &Path, administrative_path: &Path) -> bool {
+pub(crate) fn is_in_admin_namespace(common_dir: &Path, administrative_path: &Path) -> bool {
     [common_dir.join("worktrees"), common_dir.join(".git").join("worktrees")]
         .iter()
         .any(|root| lexical_is_within(root, administrative_path))

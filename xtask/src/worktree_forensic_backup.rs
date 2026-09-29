@@ -15,7 +15,7 @@ use crate::worktree_forensic_fs::{
     os_str_order, paths_overlap, read_bounded_entries, read_stable_file, sha256,
 };
 use crate::worktree_forensic_recovery::{
-    CandidateIdentity, OutputFormat, RepositoryIdentity, TraversalLimits,
+    CandidateIdentity, OutputFormat, RepositoryIdentity, TraversalLimits, is_in_admin_namespace,
     observe_candidate_identity, observe_repository, parse_pointer,
 };
 use chrono::{SecondsFormat, Utc};
@@ -116,6 +116,7 @@ struct CaptureState {
     complete: bool,
     details: BTreeSet<String>,
     bytes: u64,
+    directories_seen: usize,
 }
 
 impl CaptureState {
@@ -127,6 +128,7 @@ impl CaptureState {
             complete: true,
             details: BTreeSet::new(),
             bytes: 0,
+            directories_seen: 0,
         }
     }
 }
@@ -136,6 +138,17 @@ impl CaptureState {
 /// `destination` must be explicit, must not overlap the selected repository /
 /// candidate / common directory, and is the only permitted write location.
 pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result<BackupReceipt> {
+    create_with_limits(repository, candidate, destination, TraversalLimits::default())
+}
+
+/// Same as [`create`], with explicit traversal bounds for proof of directory and
+/// byte limits.
+pub fn create_with_limits(
+    repository: &Path,
+    candidate: &Path,
+    destination: &Path,
+    limits: TraversalLimits,
+) -> Result<BackupReceipt> {
     let repository_identity = observe_repository(repository)?;
     let candidate_identity = observe_candidate_identity(candidate)?;
     let destination = admit_destination(destination, &repository_identity, &candidate_identity)?;
@@ -144,7 +157,6 @@ pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result
         .wrap_err_with(|| format!("creating backup objects directory {}", objects_dir.display()))?;
 
     let mut state = CaptureState::new();
-    let limits = TraversalLimits::default();
     let reader = FilesystemReader;
     let pointer_path = candidate_identity.canonical_path.join(".git");
     capture_named_file(
@@ -153,6 +165,7 @@ pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result
         "pointer",
         &objects_dir,
         &reader,
+        limits,
         &mut state,
     );
     let administrative_path =
@@ -175,19 +188,33 @@ pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result
             }
         };
     if let Some(administrative_path) = administrative_path.as_ref() {
-        capture_tree(
-            administrative_path,
-            &TreeWalk {
+        if !is_in_admin_namespace(&repository_identity.common_dir, administrative_path) {
+            state.missing.push(MissingSubject {
                 role: BackupRole::Admin,
-                filter: FileFilter::AllRegular,
-                skip_names: SKIP_NONE,
-                logical_prefix: "",
-                limits,
-                objects_dir: &objects_dir,
-                reader: &reader,
-            },
-            &mut state,
-        );
+                detail: format!(
+                    "administrative path is outside the repository common-dir worktrees namespace: {}",
+                    administrative_path.display()
+                ),
+            });
+            state.skipped.push(SkippedPath {
+                path: administrative_path.display().to_string(),
+                reason: String::from("administrative path outside repository worktrees namespace"),
+            });
+        } else {
+            capture_tree(
+                administrative_path,
+                &TreeWalk {
+                    role: BackupRole::Admin,
+                    filter: FileFilter::AllRegular,
+                    skip_names: SKIP_NONE,
+                    logical_prefix: "",
+                    limits,
+                    objects_dir: &objects_dir,
+                    reader: &reader,
+                },
+                &mut state,
+            );
+        }
     }
     capture_tree(
         &candidate_identity.canonical_path,
@@ -208,6 +235,7 @@ pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result
         "HEAD",
         &objects_dir,
         &reader,
+        limits,
         &mut state,
     );
     capture_named_file(
@@ -216,6 +244,7 @@ pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result
         "packed-refs",
         &objects_dir,
         &reader,
+        limits,
         &mut state,
     );
     capture_tree(
@@ -250,6 +279,7 @@ pub fn create(repository: &Path, candidate: &Path, destination: &Path) -> Result
         "config",
         &objects_dir,
         &reader,
+        limits,
         &mut state,
     );
 
@@ -308,6 +338,9 @@ pub fn verify(destination: &Path) -> Result<BackupReceipt> {
         serde_json::from_slice(&bytes).wrap_err("decoding forensic backup receipt")?;
     if !receipt.complete {
         bail!("backup receipt is marked incomplete");
+    }
+    for entry in &receipt.entries {
+        admit_object_name(&entry.sha256)?;
     }
     let expected_digest = digest_receipt(&receipt)?;
     if expected_digest != receipt.verification_digest {
@@ -414,9 +447,7 @@ fn admit_destination(
     if has_link_or_reparse_component(destination) {
         bail!("backup destination contains a symlink or reparse point: {}", destination.display());
     }
-    let parent = destination
-        .parent()
-        .ok_or_else(|| eyre!("backup destination has no parent: {}", destination.display()))?;
+    let parent = destination_parent(destination);
     if !parent.exists() {
         bail!(
             "backup destination parent does not exist; refusing to create paths outside the explicit destination: {}",
@@ -461,6 +492,7 @@ fn admit_destination(
             format!("canonicalizing empty backup destination {}", resolved.display())
         })?;
         refuse_overlap(&canonical, repository, candidate)?;
+        pin_named_destination(&resolved, &canonical)?;
         return Ok(canonical);
     }
     fs::create_dir(&resolved)
@@ -469,7 +501,41 @@ fn admit_destination(
         format!("canonicalizing created backup destination {}", resolved.display())
     })?;
     refuse_overlap(&canonical, repository, candidate)?;
+    pin_named_destination(&resolved, &canonical)?;
     Ok(canonical)
+}
+
+fn destination_parent(destination: &Path) -> &Path {
+    match destination.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+fn pin_named_destination(named: &Path, canonical: &Path) -> Result<()> {
+    let named_meta = fs::symlink_metadata(named)
+        .wrap_err_with(|| format!("revalidating named backup destination {}", named.display()))?;
+    if is_link_or_reparse(&named_meta) {
+        bail!("backup destination was replaced by a symlink or reparse point: {}", named.display());
+    }
+    if !named_meta.is_dir() {
+        bail!("backup destination is not a regular directory: {}", named.display());
+    }
+    if has_link_or_reparse_component(canonical) {
+        bail!(
+            "canonical backup destination contains a symlink or reparse point: {}",
+            canonical.display()
+        );
+    }
+    Ok(())
+}
+
+fn admit_object_name(name: &str) -> Result<()> {
+    if name.len() == 64 && name.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+        Ok(())
+    } else {
+        bail!("backup object name is not a lowercase SHA-256 hex digest: {name:?}");
+    }
 }
 
 fn refuse_overlap(
@@ -505,6 +571,7 @@ fn capture_named_file(
     logical_path: &str,
     objects_dir: &Path,
     reader: &FilesystemReader,
+    limits: TraversalLimits,
     state: &mut CaptureState,
 ) {
     match fs::symlink_metadata(path) {
@@ -516,7 +583,7 @@ fn capture_named_file(
                 reason: String::from("symlink or reparse"),
             });
         }
-        Ok(_) => capture_regular_file(path, role, logical_path, objects_dir, reader, state),
+        Ok(_) => capture_regular_file(path, role, logical_path, objects_dir, reader, limits, state),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             state
                 .missing
@@ -594,6 +661,14 @@ fn capture_tree_inner(
         state.details.insert(format!("maximum depth {} exceeded", walk.limits.max_depth));
         return;
     }
+    state.directories_seen = state.directories_seen.saturating_add(1);
+    if state.directories_seen > walk.limits.max_directories {
+        state.complete = false;
+        state
+            .details
+            .insert(format!("maximum directories {} exceeded", walk.limits.max_directories));
+        return;
+    }
     let before = match directory_fingerprint(current) {
         Ok(value) => value,
         Err(error) => {
@@ -627,16 +702,6 @@ fn capture_tree_inner(
     }
     entries.sort_by(|left, right| os_str_order(&left.file_name(), &right.file_name()));
     for entry in entries {
-        if state.entries.len() >= walk.limits.max_files {
-            state.complete = false;
-            state.details.insert(format!("maximum files {} exceeded", walk.limits.max_files));
-            return;
-        }
-        if state.bytes >= walk.limits.max_bytes {
-            state.complete = false;
-            state.details.insert(format!("maximum bytes {} exceeded", walk.limits.max_bytes));
-            return;
-        }
         let name = entry.file_name();
         if walk.skip_names.iter().any(|skip| name == *skip) {
             continue;
@@ -675,6 +740,11 @@ fn capture_tree_inner(
         if !include {
             continue;
         }
+        if state.entries.len() >= walk.limits.max_files {
+            state.complete = false;
+            state.details.insert(format!("maximum files {} exceeded", walk.limits.max_files));
+            return;
+        }
         let logical_path = match logical_path_from(root, &path) {
             Ok(path) if walk.logical_prefix.is_empty() => path,
             Ok(path) => format!("{}{path}", walk.logical_prefix),
@@ -684,7 +754,15 @@ fn capture_tree_inner(
                 continue;
             }
         };
-        capture_regular_file(&path, walk.role, &logical_path, walk.objects_dir, walk.reader, state);
+        capture_regular_file(
+            &path,
+            walk.role,
+            &logical_path,
+            walk.objects_dir,
+            walk.reader,
+            walk.limits,
+            state,
+        );
     }
     let _ = directory_still_matches(current, before, state);
 }
@@ -721,14 +799,14 @@ fn capture_regular_file(
     logical_path: &str,
     objects_dir: &Path,
     reader: &FilesystemReader,
+    limits: TraversalLimits,
     state: &mut CaptureState,
 ) {
     match read_stable_file(path, reader, MAX_FILE_BYTES) {
         StableRead::Stable(bytes) => {
-            if state.bytes.saturating_add(bytes.len() as u64) > TraversalLimits::default().max_bytes
-            {
+            if state.bytes.saturating_add(bytes.len() as u64) > limits.max_bytes {
                 state.complete = false;
-                state.details.insert(String::from("maximum captured bytes exceeded"));
+                state.details.insert(format!("maximum bytes {} exceeded", limits.max_bytes));
                 return;
             }
             let digest = sha256(&bytes);
@@ -834,6 +912,30 @@ mod tests {
         assert!(paths_overlap(parent, child));
         assert!(paths_overlap(child, parent));
         assert!(!paths_overlap(Path::new("/tmp/repo"), Path::new("/tmp/other")));
+    }
+
+    #[test]
+    fn relative_destination_without_slash_uses_cwd_parent() {
+        assert_eq!(destination_parent(Path::new("backup")), Path::new("."));
+        assert_eq!(destination_parent(Path::new("nested/backup")), Path::new("nested"));
+        assert_eq!(destination_parent(Path::new("/backup")), Path::new("/"));
+    }
+
+    #[test]
+    fn object_name_admission_refuses_path_escape_and_non_hex() -> Result<()> {
+        admit_object_name("ab".repeat(32).as_str())?;
+        ensure!(admit_object_name("../escape").is_err(), "relative object path was admitted");
+        ensure!(admit_object_name("..").is_err(), "`..` object name was admitted");
+        ensure!(
+            admit_object_name(&format!("{}{}", "..", "a".repeat(62))).is_err(),
+            "dot-dot padded to digest length was admitted"
+        );
+        ensure!(
+            admit_object_name(&"g".repeat(64)).is_err(),
+            "non-hex digest-length name was admitted"
+        );
+        ensure!(admit_object_name(&"A".repeat(64)).is_err(), "uppercase hex digest was admitted");
+        Ok(())
     }
 
     fn sample_receipt() -> BackupReceipt {
