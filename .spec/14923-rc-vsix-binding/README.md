@@ -345,6 +345,50 @@ input processors supplied the expected README and CHANGELOG transformed sizes;
 no expectation was derived from the resulting ZIP. Earlier fixture setup failures
 (missing staging filename, omitted ignore rules and raw-source inventory sizes)
 remain recorded as corrected fixture evidence. This local composition proof does
-not establish a production expected-inventory producer, the real full extension
-bundle, installed server/DAP, authenticated terminal production or full #14923
-acceptance; those remain NOT_PROVEN. This integration does not grant publication or qualification.
+not establish a production expected-inventory producer, installed server/DAP,
+authenticated terminal production or full #14923 acceptance; those remain
+NOT_PROVEN. The full extension bundle was not proven at that fixture checkpoint;
+the later mechanism proof below supplies that narrower evidence. This integration
+does not grant publication or qualification.
+
+
+### Current-source full-product mechanism proof
+
+The bounded #9933 mechanism run at
+`fabf9d202f337e115b37e4ed38bc72f708dccac3` passed an ordinary real extension
+`npm run build` and actual mapped VSCE 3.9.2 packaging with the unmodified
+`EffortlessMetrics.perl-lsp-rs` version `0.17.0` manifest, scripts and dependencies.
+Normal `vscode:prepublish` ran doctor and build again; the tracked source, locked
+tools and real build outputs remained identical. The real `out/extension.js`
+was 1,707,695 bytes with SHA-256
+`93165246e0c792f864dc9124c6fa5015d5d64d2ee17bca4b4a1f8e39c469fa4d`.
+
+Before ZIP creation, the external instrument declared the complete packaged
+inventory using locked VSCE input processors and its exact writer byte rules:
+in-memory strings become UTF-8, in-memory buffers retain raw bytes, and on-disk
+files retain raw bytes. The 31 extension members totaled 1,893,644 bytes,
+including 746 canonical payload bytes. The existing baseline projection remained
+30 members and 1,892,898 bytes; no policy or baseline change was required.
+The independently predeclared expectation preceded the actual VSCE invocation.
+
+The 418,408-byte output passed production mapped verification and a second
+verification of one captured buffer, including every extension member's exact
+predeclared transformed hash and exact canonical payload bytes. Its SHA-256 was
+`3482bb3264f9223b7aa6691f284992b5ac3d050ab79832a754911e5cb5e7875b`.
+A same-length `out/extension.js` substitution in a copied buffer, retaining the
+selected basename and recomputing only the mutant archive hash, was rejected at
+`Predeclared bytes differ: out/extension.js`. The accepted artifact and expected
+inventory were not changed by that control.
+
+This is full current-source product packaging mechanics with explicitly synthetic
+RC metadata. The synthetic frozen `a*40` marker has no corresponding candidate
+authority; the actual source in the prepared/source field does not establish a
+freeze or preparation transaction. Earlier equal-field input and UTF-8 binary
+collector attempts remain instrument-failed evidence, not baseline or product
+failures; the mutant's descriptive-basename mismatch was corrected before that
+control executed. Executable proof is attributed to the pinned source above;
+this later documentation does not imply a rerun or qualify newer main.
+A permanent independently prepared production inventory producer, real RC
+qualification, authenticated terminal collection, installed server/DAP and full
+#14923 acceptance remain NOT_PROVEN. No Cargo/native bundle, installed launch,
+workflow dispatch, tag, credential or public registry operation was executed.
