@@ -147,6 +147,14 @@ fn lsp_frame(body: &str) -> String {
     format!("Content-Length: {}\r\n\r\n{body}", body.len())
 }
 
+fn has_timing_jsonl(stream: &str) -> bool {
+    stream.lines().filter(|line| line.starts_with('{')).any(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .is_some_and(|event| event["t"] == "perl_lsp_timing")
+    })
+}
+
 fn timing_stdio_output(
     mode: &str,
     cwd: &std::path::Path,
@@ -156,6 +164,7 @@ fn timing_stdio_output(
         .current_dir(cwd)
         .env("PERL_LSP_TIMING", mode)
         .env_remove("RUST_LOG")
+        .env_remove("PERL_LSP_LOG")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -196,10 +205,7 @@ fn documented_timing_modes_use_stderr_without_creating_token_named_files()
         assert!(output.status.success(), "{mode}: server failed: {stderr}");
         assert!(stdout.contains("Content-Length:"), "{mode}: no LSP response: {stdout}");
         assert!(!stdout.contains("perl_lsp_timing"), "{mode}: timing corrupted LSP stdout");
-        assert!(
-            stderr.contains("\"t\":\"perl_lsp_timing\""),
-            "{mode}: no JSONL timing event: {stderr}"
-        );
+        assert!(has_timing_jsonl(&stderr), "{mode}: no JSONL timing event: {stderr}");
         assert!(!cwd.path().join(mode).exists(), "{mode}: server created a file named {mode}");
 
         let notice_count = stderr.matches("PERL_LSP_TIMING=spans is not implemented").count();
@@ -220,9 +226,6 @@ fn documented_timing_modes_use_stderr_without_creating_token_named_files()
     let file = cwd.path().join("timing.jsonl");
     assert!(file.exists(), "an explicit path must still create a timing file");
     let content = std::fs::read_to_string(file)?;
-    assert!(
-        content.contains("\"t\":\"perl_lsp_timing\""),
-        "file sink has no JSONL timing event: {content}"
-    );
+    assert!(has_timing_jsonl(&content), "file sink has no JSONL timing event: {content}");
     Ok(())
 }
