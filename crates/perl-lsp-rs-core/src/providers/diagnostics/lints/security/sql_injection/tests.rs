@@ -531,16 +531,106 @@ fn eval_error_interpolation_in_sql_is_flagged() {
 }
 
 #[test]
-fn dollar_followed_by_space_is_not_interpolation() {
+fn spaced_scalar_after_dollar_interpolates_and_is_flagged() {
+    // Perl skips whitespace between `$` and the name: `"cost is $ each"`
+    // interpolates `$each` (`perl -MO=Deparse` rewrites it to `$each`).
     let source = format!(
-        "{}\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE label = 'cost is $ each'\");\n",
+        "{}\nmy $each = <STDIN>;\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE label = 'cost is $ each'\");\n",
         dbh_connect()
     );
     let diags = sql_diags(&source);
     assert!(
-        pl607(&diags).is_none(),
-        "`$` followed by whitespace is not an interpolating scalar: {diags:?}"
+        pl607(&diags).is_some(),
+        "`$ each` interpolates `$each` and must be flagged: {diags:?}"
     );
+}
+
+#[test]
+fn trailing_dollar_with_only_whitespace_stays_silent() {
+    // Perl rejects `"...$ "` (`Final $ should be \$ or $name`). The parser
+    // recovers; the AST still wraps the token in `"..."`. Scanning that
+    // closer as `$"` would be a false positive on recovered source.
+    let source = format!(
+        "{}\nmy $sth = $dbh->prepare(\"SELECT * FROM t WHERE label = cost is $ \");\n",
+        dbh_connect()
+    );
+    let diags = sql_diags(&source);
+    assert!(pl607(&diags).is_none(), "recovered trailing `$ ` is not `$LIST_SEPARATOR`: {diags:?}");
+}
+
+#[test]
+fn numeric_array_interpolation_is_flagged() {
+    let source = format!("{}\nmy $sth = $dbh->prepare(\"SELECT @1 FROM t\");\n", dbh_connect());
+    let diags = sql_diags(&source);
+    assert!(
+        pl607(&diags).is_some(),
+        "`@1` interpolates in double-quoted SQL and must be flagged: {diags:?}"
+    );
+}
+
+#[test]
+fn array_sigil_followed_by_space_stays_silent() {
+    // Perl does not skip whitespace after `@`: `"@ ids"` deparses as `'@ ids'`.
+    let source = format!("{}\nmy $sth = $dbh->prepare(\"SELECT @ ids FROM t\");\n", dbh_connect());
+    let diags = sql_diags(&source);
+    assert!(pl607(&diags).is_none(), "`@ ids` is literal text, not array interpolation: {diags:?}");
+}
+
+#[test]
+fn list_separator_interpolation_is_flagged() {
+    let source = format!(
+        "{}\nmy $sth = $dbh->prepare(qq{{SELECT * FROM t WHERE sep = $\"}});\n",
+        dbh_connect()
+    );
+    let diags = sql_diags(&source);
+    assert!(
+        pl607(&diags).is_some(),
+        "`$\"` interpolates `$LIST_SEPARATOR` and must be flagged: {diags:?}"
+    );
+}
+
+#[test]
+fn list_declaration_from_connect_still_flags() {
+    let source = concat!(
+        "my ($dbh) = DBI->connect('dbi:SQLite:dbname=x');\n",
+        "my $id = <STDIN>;\n",
+        "my $sth = $dbh->prepare(\"SELECT * FROM t WHERE id = $id\");\n",
+    );
+    let diags = sql_diags(source);
+    assert!(
+        pl607(&diags).is_some(),
+        "`my ($dbh) = DBI->connect(...)` is proven receiver evidence: {diags:?}"
+    );
+}
+
+#[test]
+fn list_declaration_rebinding_suppresses_the_warning() {
+    let source = concat!(
+        "my $dbh = DBI->connect('dbi:SQLite:dbname=x');\n",
+        "sub query {\n",
+        "my ($dbh) = @_;\n",
+        "my $id = <STDIN>;\n",
+        "return $dbh->selectrow_array(\"SELECT * FROM t WHERE id = $id\");\n",
+        "}\n",
+    );
+    let diags = sql_diags(source);
+    assert!(
+        pl607(&diags).is_none(),
+        "a later `my ($dbh) = @_` is mixed receiver evidence: {diags:?}"
+    );
+}
+
+#[test]
+fn signature_parameter_rebinding_suppresses_the_warning() {
+    let source = concat!(
+        "my $dbh = DBI->connect('dbi:SQLite:dbname=x');\n",
+        "sub query ($dbh) {\n",
+        "my $id = <STDIN>;\n",
+        "return $dbh->selectrow_array(\"SELECT * FROM t WHERE id = $id\");\n",
+        "}\n",
+    );
+    let diags = sql_diags(source);
+    assert!(pl607(&diags).is_none(), "a signature `$dbh` is unproven receiver evidence: {diags:?}");
 }
 
 #[test]

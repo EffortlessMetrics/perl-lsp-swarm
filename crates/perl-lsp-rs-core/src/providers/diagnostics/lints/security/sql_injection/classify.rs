@@ -43,7 +43,7 @@ impl SqlTextEvidence {
 pub(super) fn classify_sql_text(node: &Node) -> SqlTextEvidence {
     match &node.kind {
         NodeKind::String { value, interpolated } => {
-            if *interpolated && string_contains_interpolation(value) {
+            if *interpolated && string_contains_interpolation(interpolating_string_body(value)) {
                 SqlTextEvidence::Interpolated
             } else {
                 // Single-quoted literal, `q{}`, or a double-quoted literal
@@ -95,6 +95,24 @@ fn classify_operand(operand: &Node) -> SqlTextEvidence {
     }
 }
 
+/// The interpolating body of an AST string value.
+///
+/// `NodeKind::String` stores the token text, including wrapping `"` / `` ` ``
+/// (`engine/parser/expressions/primary.rs`). Scanning that wrapper would treat
+/// a recovered trailing `$ ` as `$"` (`$LIST_SEPARATOR`). Perl rejects
+/// `"...$ "` (`Final $ should be \$ or $name`); the closer is not content.
+fn interpolating_string_body(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    let (Some(&first), Some(&last)) = (bytes.first(), bytes.last()) else {
+        return value;
+    };
+    if bytes.len() >= 2 && matches!((first, last), (b'"', b'"') | (b'`', b'`')) {
+        value.get(1..value.len() - 1).unwrap_or(value)
+    } else {
+        value
+    }
+}
+
 /// Whether an interpolating string's text interpolates a variable.
 ///
 /// Escaping follows Perl backslash parity: only an odd-length run of
@@ -102,11 +120,11 @@ fn classify_operand(operand: &Node) -> SqlTextEvidence {
 /// backslash itself, so the sigil still interpolates (`"\\$id"` interpolates
 /// `$id` after emitting a literal backslash) (#5035 review).
 ///
-/// Scalar interpolation follows the parser-core name-start rule: almost every
-/// non-whitespace character after `$` names a scalar (`$id`, `$1`, `${...}`,
-/// `$&`, `` $` ``, `$'`, `$+`, `$@`, `$!`, `$$`, `$?`). Array interpolation
-/// stays narrower: identifier starts, `${}`-style braces, package `::`, and
-/// the match-offset arrays `@-` / `@+`.
+/// Scalar interpolation follows Perl's double-quoted scanner: whitespace
+/// between `$` and the name is skipped (`"cost is $ each"` interpolates
+/// `$each`). After that skip, almost every remaining character names a scalar
+/// (`$id`, `$1`, `${...}`, `$&`, `$@`, `$!`, `$"`). Array interpolation does
+/// not skip whitespace (`"@ ids"` stays literal) but does admit digits (`@1`).
 fn string_contains_interpolation(value: &str) -> bool {
     let chars: Vec<char> = value.chars().collect();
     chars.iter().enumerate().any(|(index, &ch)| {
@@ -117,14 +135,26 @@ fn string_contains_interpolation(value: &str) -> bool {
         if escaped_by_backslash_run(&chars, index) {
             return false;
         }
-        chars.get(index + 1).copied().is_some_and(|next| is_interpolation_successor(sigil, next))
+        let successor_index =
+            if sigil == '$' { skip_whitespace(&chars, index + 1) } else { index + 1 };
+        chars
+            .get(successor_index)
+            .copied()
+            .is_some_and(|next| is_interpolation_successor(sigil, next))
     })
+}
+
+fn skip_whitespace(chars: &[char], mut index: usize) -> usize {
+    while chars.get(index).is_some_and(|ch| ch.is_ascii_whitespace()) {
+        index += 1;
+    }
+    index
 }
 
 fn is_interpolation_successor(sigil: char, next: char) -> bool {
     match sigil {
         '$' => !next.is_whitespace(),
-        '@' => next.is_alphabetic() || matches!(next, '_' | '{' | ':' | '-' | '+'),
+        '@' => next.is_alphanumeric() || matches!(next, '_' | '{' | ':' | '-' | '+'),
         _ => false,
     }
 }
