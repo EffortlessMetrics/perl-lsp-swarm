@@ -204,7 +204,7 @@ Independent review separated prerelease-false from unknown skip-field rejection.
 ## Authorized private-byte adapter, second preparation step
 
 Root decision [5751253711](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14406#issuecomment-5751253711)
-authorizes exact-file canonical integration from main465880221, not full-main merge
+authorizes exact-file canonical integration from main `46588022115d4bec71c7db544323528852b5ffb9`, not full-main merge
 or graph activation. `canonical-ports.json` records all16 exact source blobs;
 `bash_binary.py` is the retained topology-test import dependency. Existing canonical
 tests remain byte-for-byte with their inherited assertion debt; these ports and
