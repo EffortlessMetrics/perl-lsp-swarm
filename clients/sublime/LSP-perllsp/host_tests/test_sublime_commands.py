@@ -38,6 +38,17 @@ class SublimePerllspCommandJourney(DeferrableTestCase):
             "timeout": TIMEOUT_MS,
         }
 
+        expected_build = os.environ.get("PERLLSP_EXPECTED_SUBLIME_BUILD")
+        if expected_build and sublime.version() != expected_build:
+            raise AssertionError(
+                f"selected Sublime build {sublime.version()} != {expected_build}"
+            )
+        # Poll the registry itself, not a one-time None snapshot. The CI-only
+        # launcher logs its state at 0/1/5/15 seconds in both build arms.
+        yield {
+            "condition": lambda: windows.lookup(cls.window) is not None,
+            "timeout": TIMEOUT_MS,
+        }
         cls.wm = windows.lookup(cls.window)
         yield {
             "condition": lambda: cls.wm.get_session("LSP-perllsp", str(cls.path)) is not None,

@@ -198,6 +198,7 @@ def _diagnose(package: str) -> None:
     shim = os.path.join(PACKAGES_DIR_PATH, "UnitTesting", "zzz_run_scheduler.py")
     print(f"===== shim present: {os.path.isfile(shim)} ({shim}) =====")
     _dump("launcher log", os.path.expanduser("~/perllsp_sublime_host_ci.log"))
+    _dump("Sublime process stdout/stderr", os.path.expanduser("~/perllsp_sublime_process.log"))
     home = os.path.expanduser("~")
     for crash_dir in (
         os.path.join(home, "Library", "Caches", "Sublime Text", "Crash Reports"),
@@ -283,7 +284,11 @@ def _read_output(path: str, idle_timeout: int) -> bool | None:
 
 def _start_sublime_text() -> None:
     if IS_WINDOWS:
-        subprocess.Popen(["sublime_text.exe"])
+        with open(
+            os.path.expanduser("~/perllsp_sublime_process.log"),
+            "w", encoding="utf-8", errors="replace",
+        ) as output:
+            subprocess.Popen(["sublime_text.exe"], stdout=output, stderr=subprocess.STDOUT)
     else:
         subprocess.Popen(["subl", "--stay"], start_new_session=True)
 
@@ -372,6 +377,8 @@ def main() -> int:
         _remove(SCHEDULE_RUNNER_TARGET)
         _kill_sublime_text()
         return 1
+    if success is not True:
+        _diagnose(package)
     _remove(SCHEDULE_RUNNER_TARGET)
     _kill_sublime_text()
     return 0 if success is True else 1

@@ -17,7 +17,10 @@ never starts test runs. It is not collected by the suite itself (only
 from __future__ import annotations
 
 import os
+import sys
 import traceback
+
+import sublime
 
 _LAUNCHER_LOG = os.path.join(
     os.path.expanduser("~"), "perllsp_sublime_host_ci.log"
@@ -27,6 +30,33 @@ _LAUNCHER_LOG = os.path.join(
 def _log(message: str) -> None:
     with open(_LAUNCHER_LOG, "a", encoding="utf-8") as handle:
         handle.write(message + "\n")
+
+
+def _probe_host(delay_ms: int) -> None:
+    """Observe the loaded host without importing LSP or changing its timing."""
+    try:
+        window = sublime.active_window()
+        registry = sys.modules.get("LSP.plugin.core.registry")
+        windows = getattr(registry, "windows", None)
+        fields = {}
+        if windows is not None:
+            for key, value in vars(windows).items():
+                if isinstance(value, (dict, list, tuple, set)):
+                    fields[key] = f"{type(value).__name__}[{len(value)}]"
+                else:
+                    fields[key] = type(value).__name__
+        _log(
+            f"host probe {delay_ms}ms: python={sys.version!r} "
+            f"sublime={sublime.version()} expected={os.environ.get('PERLLSP_EXPECTED_SUBLIME_BUILD')} "
+            f"window_id={window.id() if window else None} "
+            f"window_valid={window.is_valid() if window else None} "
+            f"lsp_loaded={'LSP.plugin' in sys.modules} registry_loaded={registry is not None} "
+            f"registry_fields={fields!r} "
+            f"enabled={getattr(windows, '_enabled', None)!r} "
+            f"registered_window_ids={list(getattr(windows, '_windows', {}))!r}"
+        )
+    except Exception:
+        _log(f"host probe {delay_ms}ms failed\n{traceback.format_exc()}")
 
 
 def plugin_loaded() -> None:
@@ -40,6 +70,8 @@ def plugin_loaded() -> None:
     if not os.path.isfile(schedule):
         return
     _log(f"launcher: schedule found at {schedule}")
+    for delay_ms in (0, 1000, 5000, 15000):
+        sublime.set_timeout(lambda delay_ms=delay_ms: _probe_host(delay_ms), delay_ms)
     try:
         from UnitTesting.unittesting import run_scheduler
     except Exception:
