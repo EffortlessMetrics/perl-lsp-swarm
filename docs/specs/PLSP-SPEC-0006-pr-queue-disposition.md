@@ -235,6 +235,10 @@ source evidence. An unclassified material failure remains `NOT_PROVEN` and block
 An advisory that is still `NOT_PROVEN` may be recorded as nonmaterial only when a
 specific production-path or changed-path discriminator establishes why it cannot
 affect this candidate's reviewed claim. This is not a passing result for that advisory.
+Pending, cancelled, and action-required advisory checks have no verdict; report them
+as such without making them required gates. Unknown or malformed check states remain
+`NOT_PROVEN` for the guard. Required contexts still need an unambiguous current
+`SUCCESS` result.
 
 `scripts/pre-merge-check.sh` reads current ruleset and classic protection, compares
 them with `gh pr checks --required`, and uses current `gh pr checks` results to avoid

@@ -59,13 +59,36 @@ class StatusFixtures(unittest.TestCase):
         data["checks"].append({"name": "Required A", "state": "FAILURE", "link": "https://example.test/older"})
         self.assertIn("ambiguous current results", run(data).stderr)
 
-    def test_running_check_is_controlled_not_proven(self):
+    def test_pending_advisory_has_no_verdict_and_does_not_gate(self):
+        data = fixture()
+        data["checks"].append({"name": "Running advisory", "state": "PENDING", "link": "https://example.test/running"})
+        result = run(data)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("1 advisories have no verdict", result.stdout)
+
+    def test_cancelled_and_action_required_advisories_have_no_verdict(self):
+        data = fixture()
+        data["checks"].extend([
+            {"name": "Cancelled advisory", "state": "CANCELLED", "link": "https://example.test/cancelled"},
+            {"name": "Approval advisory", "state": "ACTION_REQUIRED", "link": "https://example.test/approval"},
+        ])
+        result = run(data)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("2 advisories have no verdict", result.stdout)
+
+    def test_unknown_advisory_state_is_controlled_failure(self):
         data = fixture()
         data["checks"].append({"name": "Running advisory", "state": None, "link": "https://example.test/running"})
         result = run(data)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("advisory result pending or unknown", result.stderr)
+        self.assertIn("advisory result state is unknown", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_required_pending_still_blocks(self):
+        data = fixture()
+        data["checks"][0]["state"] = "PENDING"
+        data["required_checks"][0]["state"] = "PENDING"
+        self.assertIn("required context is not successful", run(data).stderr)
 
     def test_classic_policy_is_additive(self):
         data = fixture()
@@ -118,7 +141,7 @@ class StatusFixtures(unittest.TestCase):
         # Current gh pr checks snapshot from merged #16939, head 6129bf77.
         # Superseded failed/cancelled attempts in statusCheckRollup are absent.
         failed = [
-            ("CI Gate (Advisory Aggregate)", "36551986994/job/109361447358", "inherited"),
+            ("CI Gate (Advisory Aggregate)", "36551986994/job/109361447358", "not_proven_nonmaterial"),
             ("CI Gate shard (lsp)", "36551986994/job/109352894172", "inherited"),
             ("CI Gate shard (meta)", "36551986994/job/109352894241", "inherited"),
             ("CI Gate shard (policy)", "36551986994/job/109352894182", "inherited"),
@@ -135,9 +158,15 @@ class StatusFixtures(unittest.TestCase):
                 entry["nonmaterialReason"] = (
                     "PR Smoke has different first unit failures at head and merge base, both outside four changed launcher paths"
                     if name.startswith("PR Smoke") else
+                    "CI Gate aggregate reflects lsp, meta, and policy shard failures; its own combined verdict is not independent candidate evidence"
+                    if name.startswith("CI Gate (Advisory Aggregate)") else
                     "stable VS Code host-resolution failure has no matching merge-base proof and is outside four changed launcher paths"
                 )
-                entry["discriminator"] = "changed-path and production-route comparison for four CLI launcher paths"
+                entry["discriminator"] = (
+                    "constituent lsp, meta, and policy shard failure signatures matched merge-base run"
+                    if name.startswith("CI Gate (Advisory Aggregate)") else
+                    "changed-path and production-route comparison for four CLI launcher paths"
+                )
             entries.append(entry)
         self.assertEqual(len(data["checks"]), 12)
         data["evidence"] = {"headRefOid": HEAD, "advisories": entries}

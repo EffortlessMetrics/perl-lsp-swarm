@@ -54,7 +54,13 @@ case "\$*" in
     *'rules/branches/'*) cat '$tmpdir/rules.json' ;;
     *'protection/required_status_checks'*) cat '$tmpdir/classic.json' ;;
     *'--required'*) cat '$tmpdir/required.json' ;;
-    *'pr checks'*) cat '$tmpdir/checks.json' ;;
+    *'pr checks'*)
+        cat '$tmpdir/checks.json'
+        if [[ -f '$tmpdir/checks-error' ]]; then
+            echo 'API partial response' >&2
+            exit 1
+        fi
+        ;;
     *) cat '$tmpdir/pr.json' ;;
 esac
 EOF_MOCK
@@ -175,6 +181,21 @@ test_unstable_inherited_advisory_requires_evidence() {
     [[ "$code" -eq 0 ]] && pass "UNSTABLE inherited advisory with exact-head evidence passes" || fail "UNSTABLE inherited advisory with evidence failed"
 }
 
+test_partial_check_snapshot_fails_closed() {
+    local mock json output
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"fix: thing (#16958)"}'
+    mock="$(make_mock_gh "$json")"
+    touch "$mock/checks-error"
+    output="$(run_check_with_output "$mock")"
+    cleanup "$mock"
+    if grep -Fq 'gh pr checks did not return a reliable current snapshot' <<<"$output" &&
+       grep -Fq 'EXIT:1' <<<"$output"; then
+        pass "partial gh pr checks response fails closed"
+    else
+        fail "partial gh pr checks response unexpectedly passed"
+    fi
+}
+
 test_semantic_not_proven_fails_even_when_native_facts_converge() {
     local mock json code output
     json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"feat: add thing (#3321)"}'
@@ -263,6 +284,7 @@ test_missing_issue_ref_fails
 test_clean_review_current_pr_passes
 test_behind_merge_state_passes
 test_unstable_inherited_advisory_requires_evidence
+test_partial_check_snapshot_fails_closed
 test_semantic_not_proven_fails_even_when_native_facts_converge
 test_zero_or_generic_review_cannot_become_review_current
 test_public_wrappers_keep_authority_split

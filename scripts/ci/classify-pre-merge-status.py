@@ -11,7 +11,8 @@ import sys
 
 
 GOOD = {"SUCCESS", "NEUTRAL", "SKIPPED"}
-RED = {"FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"}
+RED = {"FAILURE", "ERROR", "TIMED_OUT"}
+NO_VERDICT = {"PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "CANCELLED", "ACTION_REQUIRED"}
 ALLOWED = {"inherited", "instrument", "environment", "not_proven_nonmaterial"}
 
 
@@ -66,11 +67,12 @@ def main():
             if required_matches[0]["state"] != "SUCCESS" or required_matches[0]["link"] != matches[0]["link"]:
                 return fail(f"gh pr checks does not report required success: {name}")
         reds = {identity(check) for check in checks if identity(check)[0] not in required and result(check) in RED}
-        pending = {identity(check) for check in checks if identity(check)[0] not in required and result(check) not in GOOD | RED}
-        if pending:
-            return fail(f"advisory result pending or unknown: {sorted(pending)}")
+        no_verdict = {identity(check) for check in checks if identity(check)[0] not in required and result(check) in NO_VERDICT}
+        unknown = {identity(check) for check in checks if identity(check)[0] not in required and result(check) not in GOOD | RED | NO_VERDICT}
+        if unknown:
+            return fail(f"advisory result state is unknown: {sorted(unknown)}")
         if not reds:
-            print("OK pre-merge status: required contexts green and no advisory reds")
+            print(f"OK pre-merge status: required contexts green; no advisory reds; {len(no_verdict)} advisories have no verdict")
             return 0
         evidence = data.get("evidence")
         if not isinstance(evidence, dict) or evidence.get("headRefOid") != head:
@@ -96,7 +98,7 @@ def main():
                 return fail(f"inherited advisory requires matching merge-base run evidence: {key}")
             if classification == "not_proven_nonmaterial" and not entry.get("nonmaterialReason"):
                 return fail(f"NOT_PROVEN advisory requires an explicit nonmaterial reason: {key}")
-        print(f"OK pre-merge status: {len(required)} required contexts green; {len(reds)} advisory reds explicitly classified")
+        print(f"OK pre-merge status: {len(required)} required contexts green; {len(reds)} advisory reds explicitly classified; {len(no_verdict)} advisories have no verdict")
         return 0
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return fail(f"invalid GitHub or evidence data: {exc}")

@@ -54,6 +54,18 @@ TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
+read_pr_checks() {
+    local output="$1" rc=0
+    shift
+    gh pr checks "$PR" "$@" >"$output" 2>"$output.err" || rc=$?
+    if [[ "$rc" -ne 0 && "$rc" -ne 1 && "$rc" -ne 8 ]] ||
+       [[ -s "$output.err" ]] || ! jq -e 'type == "array"' "$output" >/dev/null 2>&1; then
+        echo "FAIL PR #$PR: gh pr checks did not return a reliable current snapshot (exit=$rc)" >&2
+        cat "$output.err" >&2
+        return 1
+    fi
+}
+
 REVIEW_REPO="${GITHUB_REPOSITORY:-}"
 if [[ -z "$REVIEW_REPO" ]]; then
     REVIEW_REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
@@ -69,26 +81,29 @@ else
         echo "FAIL PR #$PR: live required-check policy is NOT_PROVEN" >&2
         FAILED=1
     else
-        # gh pr checks exits nonzero for a red required check; its JSON still
-        # carries the diagnostic state. The classifier rejects missing data.
-        gh pr checks "$PR" --required --json name,state,link >"$TMP_DIR/required.json" || true
-        gh pr checks "$PR" --json name,state,bucket,link,workflow >"$TMP_DIR/checks.json" || true
-        printf '%s' "$PR_JSON" >"$TMP_DIR/pr.json"
-        if [[ -n "${PRE_MERGE_ADVISORY_EVIDENCE:-}" ]]; then
-            if ! jq -n --slurpfile pr "$TMP_DIR/pr.json" --slurpfile rules "$TMP_DIR/rules.json" \
+        # gh pr checks may use exit 1 for red or 8 for pending; malformed or
+        # partially failed API reads cannot stand in for a complete snapshot.
+        if ! read_pr_checks "$TMP_DIR/required.json" --required --json name,state,link ||
+           ! read_pr_checks "$TMP_DIR/checks.json" --json name,state,bucket,link,workflow; then
+            FAILED=1
+        else
+            printf '%s' "$PR_JSON" >"$TMP_DIR/pr.json"
+            if [[ -n "${PRE_MERGE_ADVISORY_EVIDENCE:-}" ]]; then
+                if ! jq -n --slurpfile pr "$TMP_DIR/pr.json" --slurpfile rules "$TMP_DIR/rules.json" \
+                    --slurpfile classic "$TMP_DIR/classic.json" --slurpfile required_checks "$TMP_DIR/required.json" \
+                    --slurpfile checks "$TMP_DIR/checks.json" \
+                    --slurpfile evidence "$PRE_MERGE_ADVISORY_EVIDENCE" \
+                    '{pr:$pr[0],rules:$rules[0],classic:$classic[0],required_checks:$required_checks[0],checks:$checks[0],evidence:$evidence[0]}' \
+                    | python3 "$SCRIPT_DIR/ci/classify-pre-merge-status.py"; then
+                    FAILED=1
+                fi
+            elif ! jq -n --slurpfile pr "$TMP_DIR/pr.json" --slurpfile rules "$TMP_DIR/rules.json" \
                 --slurpfile classic "$TMP_DIR/classic.json" --slurpfile required_checks "$TMP_DIR/required.json" \
                 --slurpfile checks "$TMP_DIR/checks.json" \
-                --slurpfile evidence "$PRE_MERGE_ADVISORY_EVIDENCE" \
-                '{pr:$pr[0],rules:$rules[0],classic:$classic[0],required_checks:$required_checks[0],checks:$checks[0],evidence:$evidence[0]}' \
+                '{pr:$pr[0],rules:$rules[0],classic:$classic[0],required_checks:$required_checks[0],checks:$checks[0]}' \
                 | python3 "$SCRIPT_DIR/ci/classify-pre-merge-status.py"; then
                 FAILED=1
             fi
-        elif ! jq -n --slurpfile pr "$TMP_DIR/pr.json" --slurpfile rules "$TMP_DIR/rules.json" \
-            --slurpfile classic "$TMP_DIR/classic.json" --slurpfile required_checks "$TMP_DIR/required.json" \
-            --slurpfile checks "$TMP_DIR/checks.json" \
-            '{pr:$pr[0],rules:$rules[0],classic:$classic[0],required_checks:$required_checks[0],checks:$checks[0]}' \
-            | python3 "$SCRIPT_DIR/ci/classify-pre-merge-status.py"; then
-            FAILED=1
         fi
     fi
 fi
