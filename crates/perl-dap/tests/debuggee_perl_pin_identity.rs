@@ -48,12 +48,11 @@ impl Drop for EnvGuard {
 #[test]
 #[serial(dap_debuggee_environment)]
 fn live_debug_adapter_executes_the_pinned_interpreter_identity() -> Result<(), Box<dyn Error>> {
-    let Some(source_perl) = find_pipe_usable_path_perl()? else {
-        eprintln!(
-            "SKIP live_debug_adapter_executes_the_pinned_interpreter_identity: Perl unavailable"
-        );
-        return Ok(());
-    };
+    let source_perl = find_pipe_usable_path_perl()?.ok_or_else(|| {
+        std::io::Error::other(
+            "pinned identity proof requires a pipe-usable Perl interpreter that survives staging",
+        )
+    })?;
     let controls = tempfile::tempdir()?;
     if cfg!(windows) {
         let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
