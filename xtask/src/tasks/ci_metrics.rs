@@ -624,7 +624,9 @@ struct RetainedRun {
     conclusion: String,
     head_sha: Option<String>,
     duration_seconds: u64,
-    recency: DateTime<Utc>,
+    /// `createdAt` decides supersession: a rerun replaces the attempt it
+    /// was created later than, regardless of when either finished.
+    created: DateTime<Utc>,
 }
 
 /// Fold rows that describe the same (workflow, head SHA) evaluation to the
@@ -647,7 +649,7 @@ fn reconcile_attempts(runs: Vec<RetainedRun>) -> (Vec<RetainedRun>, u64) {
         let key = (run.workflow_key.clone(), sha);
         if let Some(&position) = index.get(&key) {
             folded += 1;
-            if run.recency > reconciled[position].recency {
+            if run.created > reconciled[position].created {
                 reconciled[position] = run;
             }
             continue;
@@ -735,9 +737,10 @@ fn build_baseline_report(
             conclusion: conclusion.to_string(),
             head_sha,
             duration_seconds,
-            // Recency decides supersession below; fall back to creation
-            // when the run has no update timestamp yet.
-            recency: end.unwrap_or(created),
+            // Supersession orders by creation, not completion
+            // (#15377): a slow old run that finished after a newer one
+            // must not replace it just because its `updatedAt` is later.
+            created,
         });
     }
 
@@ -749,6 +752,20 @@ fn build_baseline_report(
     // group is reconciled to its latest row before aggregation (#15377).
     // Rows without a head SHA cannot be proven identical and always stand
     // alone.
+    //
+    // Billable cost is a property of every executed attempt, not of the
+    // reconciled representative: folding repeats for logical outcomes must
+    // not erase the minutes the superseded attempts actually spent, so the
+    // billable totals sum the pre-fold rows while outcome metrics use the
+    // folded set (#15377).
+    let mut billable_by_workflow: BTreeMap<String, u64> = BTreeMap::new();
+    for run in &retained {
+        if run.conclusion == "skipped" || run.duration_seconds == 0 {
+            continue;
+        }
+        *billable_by_workflow.entry(run.workflow_key.clone()).or_default() +=
+            run.duration_seconds.div_ceil(60);
+    }
     let (retained, duplicate_runs_folded) = reconcile_attempts(retained);
 
     for run in &retained {
@@ -774,8 +791,13 @@ fn build_baseline_report(
 
         if run.duration_seconds > 0 {
             counters.durations.push(run.duration_seconds);
-            counters.billable_minutes += run.duration_seconds.div_ceil(60);
         }
+    }
+
+    // Billable minutes come from every executed attempt (pre-fold); the
+    // folded loop above only contributed the latency distribution.
+    for (key, counters) in &mut workflow_counters {
+        counters.billable_minutes = billable_by_workflow.get(key).copied().unwrap_or_default();
     }
 
     if workflow_counters.is_empty() {
@@ -1134,7 +1156,7 @@ fn build_baseline_markdown(report: &BaselineReport) -> Result<String> {
     out.push_str("- Median Duration: 50th percentile of run duration (in seconds)\n");
     out.push_str("- P95 Duration: 95th percentile of run duration (in seconds)\n");
     out.push_str(
-        "- Billable Minutes: Estimated billable time (each run rounded up to nearest minute)\n",
+        "- Billable Minutes: Estimated billable time (every executed attempt, including superseded ones, rounded up to nearest minute)\n",
     );
     out.push_str("- Success Rate: Calculated excluding skipped runs\n\n");
     out.push_str("- Unique Catches: Failures where this workflow was the only failing lane on a commit SHA\n");
@@ -1684,7 +1706,8 @@ mod tests {
         // One evaluation seen twice: an earlier failure superseded by a
         // later success for the same workflow and head SHA (rerun, or
         // duplicate push/pull_request events). Counting both rows would
-        // double-count the run and let one failure vote twice.
+        // double-count the run and let one failure vote twice; both
+        // attempts still spent billable minutes.
         vec![
             json!({
                 "workflowName": "CI",
@@ -1692,7 +1715,7 @@ mod tests {
                 "createdAt": "2026-03-25T10:00:00Z",
                 "headSha": "sha-a",
                 "startedAt": "2026-03-25T10:00:00Z",
-                "updatedAt": "2026-03-25T10:01:00Z"
+                "updatedAt": "2026-03-25T10:03:00Z"
             }),
             json!({
                 "workflowName": "CI",
@@ -1729,7 +1752,49 @@ mod tests {
             let ci = report.workflows.get("CI").ok_or_else(|| eyre!("expected CI workflow"))?;
             assert_eq!(ci.success_count, 1);
             assert_eq!(ci.failure_count, 0);
+            // Both attempts actually executed: the billable total must keep
+            // the superseded attempt's minutes, not only the representative's.
+            assert_eq!(ci.billable_minutes, 4);
+            assert_eq!(report.summary.total_billable_minutes, 4);
         }
+
+        Ok(())
+    }
+
+    /// Supersession orders by `createdAt`, not completion: a slow earlier
+    /// attempt that finishes after a newer one must not replace it.
+    #[test]
+    fn supersession_orders_by_creation_not_completion() -> Result<()> {
+        let generated_at =
+            DateTime::parse_from_rfc3339("2026-03-25T13:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-03-24T13:00:00Z")?.with_timezone(&Utc);
+        let runs = vec![
+            // Created earlier, finished later (slow overlap).
+            json!({
+                "workflowName": "CI",
+                "conclusion": "success",
+                "createdAt": "2026-03-25T10:00:00Z",
+                "headSha": "sha-a",
+                "startedAt": "2026-03-25T10:00:00Z",
+                "updatedAt": "2026-03-25T12:00:00Z"
+            }),
+            // Created later, finished earlier.
+            json!({
+                "workflowName": "CI",
+                "conclusion": "failure",
+                "createdAt": "2026-03-25T11:00:00Z",
+                "headSha": "sha-a",
+                "startedAt": "2026-03-25T11:00:00Z",
+                "updatedAt": "2026-03-25T11:05:00Z"
+            }),
+        ];
+
+        let report = build_baseline_report("main", 1, generated_at, cutoff, 200, &runs)
+            .ok_or_else(|| eyre!("expected baseline report"))?;
+        assert_eq!(report.summary.duplicate_runs_folded, 1);
+        let ci = report.workflows.get("CI").ok_or_else(|| eyre!("expected CI workflow"))?;
+        assert_eq!(ci.success_count, 0, "the earlier-created run must not stand");
+        assert_eq!(ci.failure_count, 1, "the later-created run supersedes");
 
         Ok(())
     }
