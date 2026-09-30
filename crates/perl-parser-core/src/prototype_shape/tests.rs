@@ -113,6 +113,10 @@ fn ascii_tab_and_newline_are_formatting_not_invalid() {
     assert_eq!(newlined.semantic_digest(), compact.semantic_digest());
     assert_eq!(tabbed.raw(), "$\t$");
     assert_eq!(newlined.raw(), "$\n$");
+    let tab_only = project("\t\n");
+    assert!(tab_only.is_exact());
+    assert!(tab_only.slots().is_empty());
+    assert_eq!(tab_only.syntax_class(), PrototypeSyntaxClass::Nullary);
 }
 
 #[test]

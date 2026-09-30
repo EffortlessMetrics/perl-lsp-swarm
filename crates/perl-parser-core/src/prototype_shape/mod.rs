@@ -18,7 +18,8 @@ mod project;
 mod tests;
 
 pub use digest::PrototypeSemanticDigest;
-pub use project::{is_prototype_char, project_prototype_shape, raw_from_attribute};
+pub(crate) use project::is_prototype_char;
+pub use project::{project_prototype_shape, raw_from_attribute};
 
 /// Ordered, typed projection of one prototype string.
 #[derive(Debug, Clone, PartialEq, Eq)]

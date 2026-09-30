@@ -147,7 +147,7 @@ pub fn raw_from_attribute(attr: &str) -> Option<&str> {
 /// ASCII whitespace is formatting, not a slot. Tab, newline, CR, and form-feed
 /// are therefore valid, matching Perl's prototype character class.
 #[must_use]
-pub const fn is_prototype_char(c: char) -> bool {
+pub(crate) const fn is_prototype_char(c: char) -> bool {
     c.is_ascii_whitespace() || is_prototype_sigil(c)
 }
 
