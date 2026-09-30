@@ -1191,7 +1191,7 @@ pub fn collect_semantic_tokens_controlled(
             TokenType::Comment(_) => "comment",
 
             // POD documentation blocks
-            TokenType::Pod => "comment",
+            TokenType::Pod | TokenType::DataMarker(_) | TokenType::DataBody(_) => "comment",
             _ => continue,
         };
 
