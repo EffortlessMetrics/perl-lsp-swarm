@@ -1680,6 +1680,31 @@ fn named_type(type_ref: &str) -> String {
     type_ref.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect()
 }
 
+/// Whether a variable's declared type `bound` is assignable to an argument's
+/// declared type `wanted`, comparing the full wrapper shape (GraphQL input
+/// contravariance): a non-null variable may bind at a nullable argument, but
+/// not the reverse, and list nesting must agree. This keeps a future edit
+/// that drops a `!` (or adds one in the wrong place) from passing offline.
+fn variable_binds(bound: &str, wanted: &str) -> bool {
+    if let Some(wanted_inner) = wanted.strip_suffix('!') {
+        return match bound.strip_suffix('!') {
+            Some(bound_inner) => variable_binds(bound_inner, wanted_inner),
+            None => false, // nullable variable at a non-null argument
+        };
+    }
+    let bound_inner = bound.strip_suffix('!').unwrap_or(bound);
+    match (
+        wanted.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')),
+        bound_inner.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')),
+    ) {
+        (Some(wanted_element), Some(bound_element)) => {
+            variable_binds(bound_element, wanted_element)
+        }
+        (Some(_), None) | (None, Some(_)) => false,
+        (None, None) => bound_inner == wanted,
+    }
+}
+
 /// Render an introspection `__Type` reference the way the pinned fixture
 /// stores it: `NON_NULL` appends `!`, `LIST` brackets, the innermost named
 /// type survives.
@@ -1771,19 +1796,15 @@ impl<'a> SelectionValidator<'a> {
                     bail!("document is malformed: the variable definitions never close");
                 };
                 self.expect(":")?;
-                let mut named = String::new();
-                while let Some(token) = self.peek() {
-                    if token == "," || token == ")" {
-                        break;
-                    }
-                    let Some(token) = self.advance() else {
-                        bail!("document is malformed: the type of {variable} never closes");
-                    };
-                    if token.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '[') {
-                        named = named_type(&token);
-                    }
-                }
-                self.variables.insert(variable, named);
+                // The tokenizer keeps `[`, `]`, and `!` attached to the type
+                // token, so the declared wrapper shape survives verbatim:
+                // `$pr: Int!` and `$pr: Int` must compare differently against
+                // the contract, or a future nullable-variable edit would
+                // quietly pass while GitHub rejects the document.
+                let Some(declared) = self.advance() else {
+                    bail!("document is malformed: the type of {variable} never closes");
+                };
+                self.variables.insert(variable, declared);
                 if self.peek() == Some(",") {
                     self.advance();
                 }
@@ -1819,6 +1840,7 @@ impl<'a> SelectionValidator<'a> {
                 })?;
             if self.peek() == Some("(") {
                 self.advance();
+                let mut provided = std::collections::BTreeSet::new();
                 while self.peek() != Some(")") {
                     if self.peek() == Some(",") {
                         self.advance();
@@ -1829,6 +1851,7 @@ impl<'a> SelectionValidator<'a> {
                             "document is malformed: the argument list of {parent}.{field} never closes"
                         );
                     };
+                    provided.insert(argument.clone());
                     self.expect(":")?;
                     let Some(value) = self.advance() else {
                         bail!(
@@ -1851,7 +1874,7 @@ impl<'a> SelectionValidator<'a> {
                              binds an undeclared variable"
                         )
                     })?;
-                    if &named_type(declared) != bound {
+                    if !variable_binds(bound, declared) {
                         bail!(
                             "schema drift: {parent}.{field}({argument}:) is declared {declared}, \
                              but the document binds {value}: {bound}"
@@ -1859,16 +1882,52 @@ impl<'a> SelectionValidator<'a> {
                     }
                 }
                 self.advance();
-            }
-            if self.peek() == Some("{") {
-                let child = named_type(declared_type);
-                if self.types.get(&child).is_none() {
-                    bail!(
-                        "schema drift: the document selects into {parent}.{field}, whose type \
-                         {child} the pinned GitHub GraphQL contract does not declare"
-                    );
+                // GitHub rejects a document that omits a non-null argument,
+                // and the failure mode offline is the quiet `instrument_failed`
+                // this proof exists to prevent: require every non-null
+                // argument the pinned contract declares. (The pinned fixture
+                // stores only types, not default values, so a non-null
+                // argument carrying a default would also be demanded — the
+                // failure is loud in CI, which is the safe direction.)
+                let args = definition.get("args").and_then(serde_json::Value::as_object);
+                if let Some(args) = args {
+                    for (argument, declared) in args {
+                        let required = declared.as_str().is_some_and(|t| t.ends_with('!'));
+                        if required && !provided.contains(argument) {
+                            bail!(
+                                "schema drift: {parent}.{field} requires the non-null argument \
+                                 {argument}, which the document does not pass"
+                            );
+                        }
+                    }
                 }
-                self.selection_set(&child)?;
+            }
+            // GraphQL rejects a selection set on a leaf and requires one on a
+            // composite field. Classify by the contract's kind: the nine
+            // pinned types cover every composite the document descends into;
+            // any other innermost named type is a scalar or enum.
+            let innermost = named_type(declared_type);
+            let contract_kind = self
+                .types
+                .get(&innermost)
+                .and_then(|entry| entry.get("kind"))
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            match (self.peek() == Some("{"), contract_kind.as_deref()) {
+                (true, None) => bail!(
+                    "schema drift: the document selects into {parent}.{field}, whose type \
+                     {innermost} the pinned GitHub GraphQL contract does not declare"
+                ),
+                (true, Some(kind)) if !matches!(kind, "OBJECT" | "INTERFACE" | "UNION") => bail!(
+                    "schema drift: the document selects into {parent}.{field}, whose type \
+                     {innermost} is a {kind} leaf and takes no selection set"
+                ),
+                (false, Some("OBJECT" | "INTERFACE" | "UNION")) => bail!(
+                    "schema drift: the document omits the selection set that {parent}.{field}'s \
+                     composite type {innermost} requires"
+                ),
+                (true, Some(_)) => self.selection_set(&innermost)?,
+                (false, _) => {}
             }
         }
         self.advance(); // closing brace
@@ -1916,6 +1975,45 @@ fn the_document_validator_fails_loudly_when_a_selection_drifts() -> Result<()> {
     };
     if !error.to_string().contains("reviewThreads(first:)") {
         bail!("mistyped-variable error omitted the argument location: {error}");
+    }
+
+    // Nullability of a variable binding is part of the contract: GitHub
+    // rejects a nullable variable at a non-null argument, so erasing the `!`
+    // in a future edit must fail validation, not pass.
+    let nullable = GH_REVIEW_GRAPHQL.replace("$pr: Int!", "$pr: Int");
+    if nullable == GH_REVIEW_GRAPHQL {
+        bail!("the nullability mutation did not change the GraphQL document");
+    }
+    let Err(error) = validate_review_document(&contract["types"], &nullable) else {
+        bail!("a nullable variable at a non-null argument must fail validation");
+    };
+    if !error.to_string().contains("pullRequest(number:)") {
+        bail!("nullability error omitted the argument location: {error}");
+    }
+
+    // An omitted mandatory argument is rejected by GitHub; the offline proof
+    // must catch the same drift.
+    let omitted = GH_REVIEW_GRAPHQL.replace("owner: $owner, ", "");
+    if omitted == GH_REVIEW_GRAPHQL {
+        bail!("the omitted-argument mutation did not change the GraphQL document");
+    }
+    let Err(error) = validate_review_document(&contract["types"], &omitted) else {
+        bail!("an omitted non-null argument must fail validation");
+    };
+    if !error.to_string().contains("repository requires the non-null argument owner") {
+        bail!("omitted-argument error omitted the argument name: {error}");
+    }
+
+    // A composite field without its selection set is rejected by GitHub.
+    let denuded = GH_REVIEW_GRAPHQL.replace("commit { oid }", "commit");
+    if denuded == GH_REVIEW_GRAPHQL {
+        bail!("the missing-selection-set mutation did not change the GraphQL document");
+    }
+    let Err(error) = validate_review_document(&contract["types"], &denuded) else {
+        bail!("a composite field without a selection set must fail validation");
+    };
+    if !error.to_string().contains("omits the selection set") {
+        bail!("missing-selection-set error was not the composite drift: {error}");
     }
     Ok(())
 }
