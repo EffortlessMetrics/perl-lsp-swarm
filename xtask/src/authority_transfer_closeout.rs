@@ -485,6 +485,15 @@ fn validate_request(request: &CloseoutRequest) -> Vec<Violation> {
             "policy floor declares no forbidden surfaces; empty scope exclusion is vacuous",
         ));
     }
+    for surface in &request.forbidden_surfaces {
+        let normalized = normalize_path(surface);
+        if normalized.split('/').all(|component| component.trim().is_empty()) {
+            violations.push(Violation::new(
+                CloseoutResult::ContractDrift,
+                "policy floor declares a blank forbidden surface; a blank entry excludes nothing and is vacuous",
+            ));
+        }
+    }
     if request.required_changes.iter().next().is_none() {
         violations.push(Violation::new(
             CloseoutResult::ContractDrift,
@@ -731,9 +740,8 @@ fn bind_packet_subjects(request: &CloseoutRequest) -> Vec<Violation> {
             // through the frontier and the leaf packets.
             continue;
         }
-        if value.get("repository").and_then(serde_json::Value::as_str)
-            != Some(request.repository.as_str())
-        {
+        let bound_repository = packet_repository(artifact.role, &value);
+        if bound_repository != Some(request.repository.as_str()) {
             violations.push(Violation::new(
                 CloseoutResult::WrongSubject,
                 format!(
@@ -742,9 +750,7 @@ fn bind_packet_subjects(request: &CloseoutRequest) -> Vec<Violation> {
                 ),
             ));
         }
-        if value.get("node_id").and_then(serde_json::Value::as_str)
-            != Some(request.identity.node_id.as_str())
-        {
+        if !packet_names_leaf_node(artifact.role, &value, &request.identity.node_id) {
             violations.push(Violation::new(
                 CloseoutResult::WrongSubject,
                 format!(
@@ -755,6 +761,40 @@ fn bind_packet_subjects(request: &CloseoutRequest) -> Vec<Violation> {
         }
     }
     violations
+}
+
+/// Read the request repository from a packet's canonical layout. The
+/// implementation contract stores it as `repository.name`; the review
+/// contract as `subject.repository.name`; the module-internal observation,
+/// frontier, and manifest contracts as a flat `repository` string.
+fn packet_repository<'a>(role: ArtifactRole, value: &'a serde_json::Value) -> Option<&'a str> {
+    match role {
+        ArtifactRole::BuilderPacket => {
+            value.pointer("/repository/name").and_then(serde_json::Value::as_str)
+        }
+        ArtifactRole::ReviewerPacket => {
+            value.pointer("/subject/repository/name").and_then(serde_json::Value::as_str)
+        }
+        _ => value.get("repository").and_then(serde_json::Value::as_str),
+    }
+}
+
+/// Whether a packet's canonical layout names the leaf node. The
+/// implementation contract stores `work.node_id`; the review contract embeds
+/// the node as a path component of `packet_id` (`<node>/review`); the
+/// module-internal observation and frontier contracts use a flat `node_id`.
+fn packet_names_leaf_node(role: ArtifactRole, value: &serde_json::Value, node_id: &str) -> bool {
+    match role {
+        ArtifactRole::BuilderPacket => {
+            value.pointer("/work/node_id").and_then(serde_json::Value::as_str) == Some(node_id)
+        }
+        ArtifactRole::ReviewerPacket => value
+            .get("packet_id")
+            .and_then(serde_json::Value::as_str)
+            .map(|packet_id| packet_id.split('/').any(|component| component == node_id))
+            .unwrap_or(false),
+        _ => value.get("node_id").and_then(serde_json::Value::as_str) == Some(node_id),
+    }
 }
 
 fn bind_subject(request: &CloseoutRequest, facts: &GitFacts) -> Vec<Violation> {
@@ -1571,11 +1611,21 @@ mod tests {
         // Same schema, same shape, fresh digests — but the packet names
         // another leaf node, so the subject bind must reject it.
         for artifact in &mut request.artifacts {
-            if artifact.role == ArtifactRole::BuilderPacket {
-                let mut parsed: serde_json::Value = serde_json::from_str(&artifact.contents)?;
-                parsed["node_id"] =
-                    serde_json::Value::String("at.node.leaf.elsewhere.99999".to_string());
-                artifact.contents = serde_json::to_string(&parsed)?;
+            match artifact.role {
+                ArtifactRole::BuilderPacket => {
+                    let mut parsed: serde_json::Value = serde_json::from_str(&artifact.contents)?;
+                    parsed["work"]["node_id"] =
+                        serde_json::Value::String("at.node.leaf.elsewhere.99999".to_string());
+                    artifact.contents = serde_json::to_string(&parsed)?;
+                }
+                ArtifactRole::ReviewerPacket => {
+                    let mut parsed: serde_json::Value = serde_json::from_str(&artifact.contents)?;
+                    parsed["packet_id"] = serde_json::Value::String(
+                        "at.node.leaf.elsewhere.99999/review".to_string(),
+                    );
+                    artifact.contents = serde_json::to_string(&parsed)?;
+                }
+                _ => {}
             }
         }
         rebind_all_digest_binds(&mut request);
@@ -1630,6 +1680,24 @@ mod tests {
         request.required_changes = RequiredChanges::default();
         let without_required = evaluate(&request, &facts);
         assert_eq!(without_required.result, CloseoutResult::ContractDrift);
+        Ok(())
+    }
+
+    #[test]
+    fn blank_forbidden_surfaces_are_contract_drift() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        for blank in ["", " ", "/"] {
+            request.forbidden_surfaces = vec![blank.to_string()];
+            let outcome = evaluate(&request, &facts);
+            assert_eq!(outcome.result, CloseoutResult::ContractDrift, "surface {blank:?}");
+            assert!(
+                outcome.reasons.iter().any(|reason| reason.contains("blank forbidden surface")),
+                "a blank forbidden surface must be named as the cause: {blank:?} {:?}",
+                outcome.reasons
+            );
+            assert!(outcome.handoff.is_none());
+        }
         Ok(())
     }
 
@@ -1811,14 +1879,31 @@ mod tests {
     }
 
     /// A canonical packet body carrying the schema discriminator and the
-    /// repository/node subject binds required by `bind_packet_subjects`.
+    /// repository/node subject binds required by `bind_packet_subjects`,
+    /// using the layouts the repository's real packet generators emit
+    /// (`repository.name` and `work.node_id` for implementation packets;
+    /// `subject.repository.name` and the node embedded in `packet_id` for
+    /// review packets).
     fn canonical_packet(schema: &str, packet_id: &str, node: &str) -> String {
-        serde_json::json!({
-            "schema": schema,
-            "packet_id": packet_id,
-            "repository": "owner/name",
-            "node_id": node,
-        })
+        match schema {
+            "agent_implementation_packet.v1" => serde_json::json!({
+                "schema": schema,
+                "packet_id": packet_id,
+                "repository": { "name": "owner/name" },
+                "work": { "node_id": node },
+            }),
+            "agent_review_packet.v1" => serde_json::json!({
+                "schema": schema,
+                "packet_id": format!("{node}/review"),
+                "subject": { "repository": { "name": "owner/name" } },
+            }),
+            _ => serde_json::json!({
+                "schema": schema,
+                "packet_id": packet_id,
+                "repository": "owner/name",
+                "node_id": node,
+            }),
+        }
         .to_string()
     }
 
