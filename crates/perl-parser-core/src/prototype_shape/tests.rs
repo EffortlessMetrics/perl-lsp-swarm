@@ -101,6 +101,72 @@ fn whitespace_is_formatting_not_a_slot() {
 }
 
 #[test]
+fn ascii_tab_and_newline_are_formatting_not_invalid() {
+    let tabbed = project("$\t$");
+    let newlined = project("$\n$");
+    let compact = project("$$");
+    assert!(tabbed.is_exact(), "tab is admitted perlsub whitespace");
+    assert!(newlined.is_exact(), "newline is admitted perlsub whitespace");
+    assert_eq!(kinds(&tabbed), ["scalar", "scalar"]);
+    assert_eq!(kinds(&newlined), ["scalar", "scalar"]);
+    assert_eq!(tabbed.semantic_digest(), compact.semantic_digest());
+    assert_eq!(newlined.semantic_digest(), compact.semantic_digest());
+    assert_eq!(tabbed.raw(), "$\t$");
+    assert_eq!(newlined.raw(), "$\n$");
+}
+
+#[test]
+fn non_ascii_whitespace_is_not_admitted() {
+    let shape = project("$\u{a0}$");
+    assert!(!shape.is_exact());
+    assert!(matches!(
+        shape.completeness(),
+        PrototypeCompleteness::Recovered { reason: PrototypeRecovery::InvalidCharacter }
+    ));
+}
+
+#[test]
+fn tab_between_backslash_and_referent_is_still_a_reference() {
+    let shape = project("\\\t$");
+    assert!(shape.is_exact());
+    assert_eq!(kinds(&shape), ["ref:scalar"]);
+}
+
+#[test]
+fn slot_after_unbackslashed_slurpy_cannot_be_exact() {
+    let after_array = project("@$");
+    let after_hash = project("%$");
+    let after_optional = project("@;$");
+    assert!(!after_array.is_exact());
+    assert!(!after_hash.is_exact());
+    assert!(!after_optional.is_exact());
+    assert!(matches!(
+        after_array.completeness(),
+        PrototypeCompleteness::Recovered { reason: PrototypeRecovery::SlotAfterSlurpy }
+    ));
+    assert!(matches!(
+        after_hash.completeness(),
+        PrototypeCompleteness::Recovered { reason: PrototypeRecovery::SlotAfterSlurpy }
+    ));
+    assert_eq!(kinds(&after_array), ["array-slurpy", "scalar"]);
+}
+
+#[test]
+fn backslashed_array_then_scalar_stays_exact() {
+    let shape = project(r"\@$");
+    assert!(shape.is_exact(), r"`\@$` is a reference then a scalar, not slurpy-then-slot");
+    assert_eq!(kinds(&shape), ["ref:array", "scalar"]);
+}
+
+#[test]
+fn slurpy_as_last_slot_stays_exact() {
+    assert!(project("@").is_exact());
+    assert!(project("$@").is_exact());
+    assert!(project("$;@").is_exact());
+    assert!(project("@;").is_exact());
+}
+
+#[test]
 fn empty_prototype_is_nullary_and_exact() {
     let shape = project("");
     assert!(shape.is_exact());

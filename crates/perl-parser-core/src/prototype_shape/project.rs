@@ -22,11 +22,11 @@ pub fn project_prototype_shape(raw: &str) -> PrototypeShape {
             None => break,
         };
         let ch_len = ch.len_utf8();
-        if ch == ' ' {
+        if ch.is_ascii_whitespace() {
             index = index.saturating_add(ch_len);
             continue;
         }
-        if !is_prototype_alphabet(ch) {
+        if !is_prototype_sigil(ch) {
             note_recovery(&mut recovery, PrototypeRecovery::InvalidCharacter);
             index = index.saturating_add(ch_len);
             continue;
@@ -115,6 +115,10 @@ pub fn project_prototype_shape(raw: &str) -> PrototypeShape {
         }
     }
 
+    if slot_follows_unbackslashed_slurpy(&slots) {
+        note_recovery(&mut recovery, PrototypeRecovery::SlotAfterSlurpy);
+    }
+
     let completeness = match recovery {
         None => PrototypeCompleteness::Exact,
         Some(reason) => PrototypeCompleteness::Recovered { reason },
@@ -136,6 +140,15 @@ pub fn project_prototype_shape(raw: &str) -> PrototypeShape {
 #[must_use]
 pub fn raw_from_attribute(attr: &str) -> Option<&str> {
     attr.strip_prefix("prototype(").and_then(|rest| rest.strip_suffix(')'))
+}
+
+/// Return true if `c` is admitted in an old-style prototype (`perlsub`).
+///
+/// ASCII whitespace is formatting, not a slot. Tab, newline, CR, and form-feed
+/// are therefore valid, matching Perl's prototype character class.
+#[must_use]
+pub const fn is_prototype_char(c: char) -> bool {
+    c.is_ascii_whitespace() || is_prototype_sigil(c)
 }
 
 fn project_reference(
@@ -171,7 +184,7 @@ fn project_group(
         let Some(ch) = next_char(raw, index) else {
             break;
         };
-        if ch == ' ' {
+        if ch.is_ascii_whitespace() {
             index = index.saturating_add(ch.len_utf8());
             continue;
         }
@@ -210,7 +223,7 @@ fn next_char(raw: &str, index: usize) -> Option<char> {
 fn next_significant(raw: &str, mut index: usize) -> Option<SignificantChar> {
     while index < raw.len() {
         let ch = next_char(raw, index)?;
-        if ch != ' ' {
+        if !ch.is_ascii_whitespace() {
             return Some(SignificantChar { index, ch });
         }
         index = index.saturating_add(ch.len_utf8());
@@ -236,8 +249,15 @@ fn referent_from_char(ch: char) -> Option<PrototypeReferent> {
     }
 }
 
-fn is_prototype_alphabet(ch: char) -> bool {
-    matches!(ch, '$' | '@' | '%' | '&' | '*' | '\\' | ';' | '+' | '_' | '[' | ']' | ' ')
+const fn is_prototype_sigil(ch: char) -> bool {
+    matches!(ch, '$' | '@' | '%' | '&' | '*' | '\\' | ';' | '+' | '_' | '[' | ']')
+}
+
+fn slot_follows_unbackslashed_slurpy(slots: &[PrototypeSlot]) -> bool {
+    slots.iter().enumerate().any(|(index, slot)| {
+        matches!(slot.kind, PrototypeSlotKind::ArraySlurpy | PrototypeSlotKind::HashSlurpy)
+            && index.saturating_add(1) < slots.len()
+    })
 }
 
 fn note_recovery(slot: &mut Option<PrototypeRecovery>, reason: PrototypeRecovery) {

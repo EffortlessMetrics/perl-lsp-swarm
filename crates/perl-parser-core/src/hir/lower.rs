@@ -3035,22 +3035,25 @@ fn has_empty_prototype(node: Option<&Node>) -> bool {
 
 /// Raw prototype text plus the best available source range.
 ///
-/// The AST `Prototype` node is preferred. `:prototype(...)` attributes fill
-/// the same table so compiler consumers do not reparse attribute strings.
+/// The last `:prototype(...)` attribute wins, matching Perl's attribute
+/// override of a parenthesized prototype. The AST `Prototype` node is used
+/// only when no prototype attribute is present.
 fn prototype_payload(
     prototype: Option<&Node>,
     attributes: &[String],
     declaration_range: SourceLocation,
 ) -> Option<(String, SourceLocation)> {
+    if let Some(raw) = attributes
+        .iter()
+        .rev()
+        .find_map(|attr| crate::prototype_shape::raw_from_attribute(attr).map(str::to_string))
+    {
+        return Some((raw, declaration_range));
+    }
     if let Some(node) = prototype
         && let NodeKind::Prototype { content } = &node.kind
     {
         return Some((content.clone(), node.location));
-    }
-    for attr in attributes {
-        if let Some(raw) = crate::prototype_shape::raw_from_attribute(attr) {
-            return Some((raw.to_string(), declaration_range));
-        }
     }
     None
 }

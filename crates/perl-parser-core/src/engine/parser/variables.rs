@@ -1901,8 +1901,9 @@ impl<'a> Parser<'a> {
             .to_string();
 
         // Validate every character in the collected prototype string.
-        // Perl allows: $ @ % & * \ ; + _ bracketed ref groups, and ASCII space.
-        // Anything else triggers Perl's "Illegal character in prototype" warning.
+        // Perl allows: $ @ % & * \ ; + _ bracketed ref groups, and ASCII
+        // whitespace (space, tab, newline, CR, form-feed). Anything else
+        // triggers Perl's "Illegal character in prototype" warning.
         // We emit a SyntaxError diagnostic (collected as a warning by the LSP layer
         // via DiagnosticCode::InvalidPrototype / PL302) but do NOT abort parsing —
         // the prototype string is preserved so the caller still gets a Subroutine node.
@@ -2177,10 +2178,10 @@ fn shift_node_locations(node: &mut Node, offset: usize) -> bool {
 
 /// Return `true` if `c` is a character that Perl permits in old-style prototypes.
 ///
-/// Valid characters (from perlsub):
-/// `$` `@` `%` `&` `*` `\` `;` `+` `_`, bracketed ref groups, and ASCII space.
+/// Valid characters (from perlsub): `$` `@` `%` `&` `*` `\` `;` `+` `_`,
+/// bracketed ref groups, and ASCII whitespace.
 fn is_valid_prototype_char(c: char) -> bool {
-    matches!(c, '$' | '@' | '%' | '&' | '*' | '\\' | ';' | '+' | '_' | '[' | ']' | ' ')
+    crate::prototype_shape::is_prototype_char(c)
 }
 
 /// Return `true` if `name` is a simple bareword identifier suitable for the

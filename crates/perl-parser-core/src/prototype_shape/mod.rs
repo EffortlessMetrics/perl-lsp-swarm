@@ -18,7 +18,7 @@ mod project;
 mod tests;
 
 pub use digest::PrototypeSemanticDigest;
-pub use project::{project_prototype_shape, raw_from_attribute};
+pub use project::{is_prototype_char, project_prototype_shape, raw_from_attribute};
 
 /// Ordered, typed projection of one prototype string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +125,9 @@ pub enum PrototypeRecovery {
     DanglingBackslash,
     /// `]` or other closer outside a group.
     UnexpectedCloser,
+    /// A slot follows an unbackslashed `@` or `%`. Those slurps remaining
+    /// arguments, so later slots are not an exact prototype (`perlsub`).
+    SlotAfterSlurpy,
     /// Form that is not projected as exact (reserved for oracle-disputed cases).
     UnsupportedForm,
 }
@@ -265,6 +268,7 @@ impl PrototypeRecovery {
             Self::EmptyGroup => "empty-group",
             Self::DanglingBackslash => "dangling-backslash",
             Self::UnexpectedCloser => "unexpected-closer",
+            Self::SlotAfterSlurpy => "slot-after-slurpy",
             Self::UnsupportedForm => "unsupported-form",
         }
     }

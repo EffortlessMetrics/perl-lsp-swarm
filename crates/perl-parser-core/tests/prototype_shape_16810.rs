@@ -87,6 +87,67 @@ fn whitespace_equivalent_prototypes_share_a_digest_not_raw_text() {
 }
 
 #[test]
+fn tabbed_prototype_retains_whitespace_and_stays_exact() {
+    let source = "sub tabbed(\t$) { }";
+    let file = lower_source(source);
+    let proto = fact(&file, "tabbed");
+    assert_eq!(proto.content, "\t$");
+    assert!(proto.shape.is_exact(), "ASCII tab is formatting, not an invalid character");
+    assert_eq!(proto.shape.slots().len(), 1);
+    assert!(matches!(proto.shape.slots()[0].kind(), PrototypeSlotKind::Scalar));
+}
+
+#[test]
+fn newline_prototype_retains_whitespace_and_stays_exact() {
+    let source = "sub nl($\n$) { }";
+    let file = lower_source(source);
+    let proto = fact(&file, "nl");
+    assert_eq!(proto.content, "$\n$");
+    assert!(proto.shape.is_exact(), "ASCII newline is formatting, not an invalid character");
+    assert_eq!(proto.shape.slots().len(), 2);
+    assert!(matches!(proto.shape.slots()[0].kind(), PrototypeSlotKind::Scalar));
+    assert!(matches!(proto.shape.slots()[1].kind(), PrototypeSlotKind::Scalar));
+}
+
+#[test]
+fn prototype_attribute_overrides_inline_parentheses() {
+    let source = "sub overridden ($) :prototype(@) { }";
+    let file = lower_source(source);
+    let proto = fact(&file, "overridden");
+    assert_eq!(proto.content, "@");
+    assert!(proto.shape.is_exact());
+    assert!(matches!(proto.shape.slots()[0].kind(), PrototypeSlotKind::ArraySlurpy));
+}
+
+#[test]
+fn last_prototype_attribute_wins() {
+    let source = "sub last_attr :prototype($) :prototype(@) { }";
+    let file = lower_source(source);
+    let proto = fact(&file, "last_attr");
+    assert_eq!(proto.content, "@");
+    assert!(matches!(proto.shape.slots()[0].kind(), PrototypeSlotKind::ArraySlurpy));
+}
+
+#[test]
+fn slot_after_unbackslashed_slurpy_is_recovered_on_the_fact() {
+    let file =
+        lower_source("sub after_array (@$) { }\nsub after_hash (%$) { }\nsub refs (\\@$) { }");
+    let after_array = fact(&file, "after_array");
+    let after_hash = fact(&file, "after_hash");
+    let refs = fact(&file, "refs");
+    assert!(!after_array.shape.is_exact());
+    assert!(!after_hash.shape.is_exact());
+    assert!(matches!(
+        after_array.shape.completeness(),
+        perl_parser_core::prototype_shape::PrototypeCompleteness::Recovered {
+            reason: PrototypeRecovery::SlotAfterSlurpy
+        }
+    ));
+    assert!(refs.shape.is_exact(), r"`\@$` is a reference then a scalar");
+    assert_eq!(refs.shape.slots().len(), 2);
+}
+
+#[test]
 fn empty_prototype_is_nullary_on_the_fact() {
     let file = lower_source("sub empty () { }");
     let proto = fact(&file, "empty");
