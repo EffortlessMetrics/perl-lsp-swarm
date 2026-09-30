@@ -658,8 +658,6 @@ impl UxHarness {
             if predicate(&last_inserts) {
                 return Ok((last_inserts, QualityPollOutcome::Matched));
             }
-            // ux-timing: product-retry
-            //
             // Cap the inter-poll sleep to the remaining budget so the poll
             // cannot sleep past its own deadline and start another request
             // with none left.
@@ -667,6 +665,7 @@ impl UxHarness {
             if remaining.is_zero() {
                 return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
             }
+            // ux-timing: product-retry
             std::thread::sleep(Duration::from_millis(100).min(remaining));
         }
     }
