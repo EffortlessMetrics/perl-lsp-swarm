@@ -2719,7 +2719,18 @@ impl ProjectConfig {
     ///
     /// Only fields explicitly set in the TOML override defaults; unset fields are untouched.
     /// LSP `didChangeConfiguration` is expected to run after this, overriding any values here.
-    pub fn apply_to_server_config(&self, config: &mut ServerConfig) {
+    ///
+    /// Returns every value that was rejected while applying, in application
+    /// order, so the calling server can tell the user instead of leaving the
+    /// rejection in a `tracing::warn!` the editor never sees (#16598). The
+    /// tracing warnings are unchanged — logs keep the structured `setting` /
+    /// `value` fields, and the returned facts are the same rejections in a form
+    /// a UI layer can render.
+    ///
+    /// A rejection never partially applies: the prior accepted value for that
+    /// setting is retained whether or not the caller renders the warning.
+    pub fn apply_to_server_config(&self, config: &mut ServerConfig) -> Vec<RejectedSettingValue> {
+        let mut rejected_setting_values = Vec::new();
         if let Some(hints) = self.features.inlay_hints {
             config.inlay_hints_enabled = hints;
         }
@@ -2767,14 +2778,18 @@ impl ProjectConfig {
         if let Some(ref engine) = self.formatting.engine {
             match parse_formatter_mode(engine) {
                 Some(mode) => config.formatting_engine = mode,
-                None => tracing::warn!(
-                    target: "perl_lsp::config",
-                    setting = "formatting.engine",
-                    value = %engine,
-                    valid = FORMATTER_MODE_VALID_OPTIONS,
-                    "unrecognized formatting.engine value in .perl-lsp.toml; \
-                     keeping current setting",
-                ),
+                None => {
+                    tracing::warn!(
+                        target: "perl_lsp::config",
+                        setting = "formatting.engine",
+                        value = %engine,
+                        valid = FORMATTER_MODE_VALID_OPTIONS,
+                        "unrecognized formatting.engine value in .perl-lsp.toml; \
+                         keeping current setting",
+                    );
+                    rejected_setting_values
+                        .push(RejectedSettingValue::new("formatting.engine", engine.clone()));
+                }
             }
         }
         // Critic initialization from the trusted project file also advances as
@@ -2788,7 +2803,10 @@ impl ProjectConfig {
                     candidate.apply_to(config);
                 }
             }
-            Err(rejection) => rejection.emit_single_condition(),
+            Err(rejection) => {
+                rejection.emit_single_condition();
+                rejected_setting_values.extend(rejection.rejected_setting_values());
+            }
         }
         if let Some(ref profile) = self.formatting.perltidy_profile {
             config.perltidy_profile = Some(profile.clone());
@@ -2826,6 +2844,7 @@ impl ProjectConfig {
         if let Some(timeout) = self.formatting.perltidy_timeout_secs {
             config.perltidy_timeout_secs = timeout;
         }
+        rejected_setting_values
     }
 
     /// Apply project config to `WorkspaceConfig` as the base layer.
@@ -2931,6 +2950,45 @@ impl ProjectConfig {
             config.perl5lib_precedence = prec.clone();
         }
         rejected
+    }
+}
+
+/// A `.perl-lsp.toml` setting value that was rejected while applying project
+/// config to the shared `ServerConfig`.
+///
+/// Rejections are produced by [`ProjectConfig::apply_to_server_config`] and
+/// returned to the caller so an editor can be told, instead of the rejection
+/// existing only as a `tracing::warn!` on stderr the user never sees
+/// (#16598). The setting is the authority; the prior accepted value for it is
+/// always retained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedSettingValue {
+    /// The dotted setting path as written in `.perl-lsp.toml`, e.g.
+    /// `critic.profile` or `formatting.engine`.
+    pub setting: String,
+    /// The raw, as-configured value that was rejected.
+    pub value: String,
+}
+
+impl RejectedSettingValue {
+    /// Build one rejection from a setting path and its raw value.
+    #[must_use]
+    pub fn new(setting: impl Into<String>, value: impl Into<String>) -> Self {
+        Self { setting: setting.into(), value: value.into() }
+    }
+
+    /// Render a single human-readable line for `window/showMessage` and doctor
+    /// reports.
+    ///
+    /// Both the setting and the value are escaped via [`escape_for_display`]:
+    /// the value is workspace-controlled, so it is echoed back, not trusted.
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "{} = {} was ignored (the previous value is kept)",
+            self.setting,
+            escape_for_display(&self.value)
+        )
     }
 }
 
@@ -4861,6 +4919,71 @@ profile = "recommended"
         let captured = capture_warnings(|| project.apply_to_server_config(&mut config));
         assert_eq!(config.formatting_engine, prior);
         assert_warned_contains(&captured, &["formatting.engine", "perltide"]);
+    }
+
+    /// #16598: a rejected value must be *returned*, not only logged. Before
+    /// this, the only disposition of an unusable `[critic]` / `[formatting]`
+    /// value was a `tracing::warn!`, which an editor-launched server writes to
+    /// an stderr the user never sees — so the setting silently did nothing.
+    #[test]
+    fn toml_invalid_formatting_engine_is_returned_as_a_rejection() {
+        let mut config = ServerConfig::default();
+        let prior = config.formatting_engine;
+        let mut project = ProjectConfig::default();
+        project.formatting.engine = Some("perltide".to_string());
+
+        let rejected = project.apply_to_server_config(&mut config);
+
+        assert_eq!(
+            rejected,
+            vec![RejectedSettingValue::new("formatting.engine", "perltide")],
+            "the unusable value must reach the caller so it can be shown to the user"
+        );
+        assert_eq!(config.formatting_engine, prior, "the prior accepted value is retained");
+    }
+
+    /// A rejected `[critic]` candidate rejects the whole critic transaction, so
+    /// every offending sibling is reported — otherwise fixing the first one
+    /// silently trips the second with no message at all.
+    #[test]
+    fn toml_invalid_critic_candidate_returns_every_offending_sibling() {
+        let mut config = ServerConfig::default();
+        let prior_profile = config.native_critic_profile;
+        let prior_engine = config.critic_engine;
+        let mut project = ProjectConfig::default();
+        project.critic.engine = Some("turbo".to_string());
+        project.critic.profile = Some("recomended".to_string());
+
+        let rejected = project.apply_to_server_config(&mut config);
+
+        let settings: Vec<&str> = rejected.iter().map(|r| r.setting.as_str()).collect();
+        assert!(
+            settings.contains(&"critic.engine") && settings.contains(&"critic.profile"),
+            "every unusable critic sibling must be reported, not just the first: {settings:?}"
+        );
+        assert_eq!(config.native_critic_profile, prior_profile, "prior profile is retained");
+        assert_eq!(config.critic_engine, prior_engine, "prior engine is retained");
+    }
+
+    /// A clean file must not manufacture a warning; the emitter is a no-op on
+    /// an empty rejection list.
+    #[test]
+    fn a_valid_project_config_returns_no_rejections() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.formatting.engine = Some("native".to_string());
+        project.critic.profile = Some("recommended".to_string());
+
+        assert!(project.apply_to_server_config(&mut config).is_empty());
+    }
+
+    /// `render` is the user-facing line, so it must name both the setting and
+    /// the offending value.
+    #[test]
+    fn rejected_setting_value_render_names_setting_and_value() {
+        let rendered = RejectedSettingValue::new("critic.engine", "turbo").render();
+        assert!(rendered.contains("critic.engine"), "{rendered}");
+        assert!(rendered.contains("turbo"), "{rendered}");
     }
 
     #[test]
