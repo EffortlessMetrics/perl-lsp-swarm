@@ -543,6 +543,21 @@ mod tests {
     }
 
     #[test]
+    fn topic_default_slot_documents_the_omitted_argument() -> Result<(), String> {
+        let source = "sub foo :prototype(_) {}";
+        let ast = Parser::new(source).parse().map_err(|error| error.to_string())?;
+        let provider = SignatureHelpProvider::new(&ast);
+        let signatures = provider.get_signatures("foo");
+        let signature = signatures.first().ok_or("missing prototype signature")?;
+        assert_eq!(signature.parameters.len(), 1);
+        assert_eq!(
+            signature.parameters[0].documentation.as_deref(),
+            Some("Scalar parameter 1 (defaults to $_ if omitted)")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn prototype_separator_does_not_consume_a_parameter_number() -> Result<(), String> {
         for prototype in ["$$;$$", " $ $ ; $ $ "] {
             let source = format!("sub foo :prototype({prototype}) {{}}");

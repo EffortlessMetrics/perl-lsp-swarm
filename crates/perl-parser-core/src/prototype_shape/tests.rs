@@ -71,6 +71,15 @@ fn topic_default_after_semicolon_is_optional() {
 }
 
 #[test]
+fn required_scalar_then_optional_topic_default() {
+    let shape = project("$;_");
+    assert!(shape.is_exact(), "`$;_` is a required scalar then optional topic-default");
+    assert_eq!(kinds(&shape), ["scalar", "topic-default-scalar"]);
+    assert_eq!(optionality(&shape), [false, true]);
+    assert_eq!(shape.slots()[1].default(), PrototypeDefault::TopicVariable);
+}
+
+#[test]
 fn underscore_before_dollar_is_not_exact() {
     let shape = project("_$");
     assert!(!shape.is_exact(), "`_` is only last, or immediately before `;`, `@`, or `%`");

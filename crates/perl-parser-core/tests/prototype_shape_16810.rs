@@ -53,6 +53,18 @@ fn topic_default_shape_reaches_the_hir_fact() {
 }
 
 #[test]
+fn required_then_optional_topic_default_reaches_the_hir_fact() {
+    let file = lower_source("sub topic_after ($;_) { }");
+    let proto = fact(&file, "topic_after");
+    assert_eq!(proto.content, "$;_");
+    assert!(proto.shape.is_exact());
+    assert_eq!(proto.shape.slots().len(), 2);
+    assert!(!proto.shape.slots()[0].is_optional());
+    assert!(proto.shape.slots()[1].is_optional());
+    assert!(matches!(proto.shape.slots()[1].kind(), PrototypeSlotKind::TopicDefaultScalar));
+}
+
+#[test]
 fn required_forms_from_the_issue_matrix_stay_ordered() {
     let source = r#"
         sub scalar ($) { }
