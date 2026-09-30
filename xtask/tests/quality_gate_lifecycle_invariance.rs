@@ -198,7 +198,7 @@ fn unsupported_due_review_still_emits_fail_closed_artifacts() -> TestResult {
 }
 
 #[test]
-fn facade_success_output_names_only_caller_artifacts() -> TestResult {
+fn success_output_names_only_caller_artifacts() -> TestResult {
     let root = repo_root()?;
     let dir = tempdir()?;
     let coverage = dir.path().join("coverage.json");
@@ -221,19 +221,18 @@ fn facade_success_output_names_only_caller_artifacts() -> TestResult {
     let output = patch_gate(&root, &coverage, &policy, &receipt, &summary)?.output()?;
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
-    // Exactly one success line, naming the published caller artifacts: the
-    // engine evaluates in a temporary workspace whose paths vanish on return.
+    // Exactly one success line, naming the published caller artifacts.
     assert_eq!(
         stdout.matches("quality gate passed").count(),
         1,
-        "expected a single facade success line, got: {stdout}"
+        "expected a single quality-gate success line, got: {stdout}"
     );
     assert!(
         !stdout.contains("perl-lsp-quality-gate-"),
-        "success output names a deleted temporary workspace path: {stdout}"
+        "success output names a temporary workspace path: {stdout}"
     );
     assert!(
-        stdout.contains(&receipt.to_string_lossy().replace('\\', "/")),
+        stdout.contains(&*receipt.to_string_lossy()),
         "success output does not name the caller receipt: {stdout}"
     );
     Ok(())
@@ -312,6 +311,56 @@ fn rejected_duplicate_id_row_cannot_corrupt_active_lifecycle_dates() -> TestResu
     Ok(())
 }
 
+#[test]
+fn two_valid_duplicate_rows_keep_per_occurrence_lifecycle_dates() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let coverage = dir.path().join("coverage.json");
+    let policy = dir.path().join("policy.toml");
+    let receipt = dir.path().join("receipt.json");
+    let summary = dir.path().join("summary.md");
+    write_json(
+        &coverage,
+        json!({
+            "schema_version": 1,
+            "kind": "coverage_baseline",
+            "head": current_head(&root)?,
+            "lcov": "target/lcov.info",
+            "coverage": { "patch": 97.1 },
+            "files_below_target": []
+        }),
+    )?;
+    fs::write(&policy, two_valid_duplicate_policy())?;
+
+    patch_gate(&root, &coverage, &policy, &receipt, &summary)?.assert().success();
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("pass"));
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/active_count").and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/active/0/review_after").and_then(Value::as_str),
+        Some("2026-09-16"),
+        "the first occurrence must keep its own committed review_after"
+    );
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/active/0/expires").and_then(Value::as_str),
+        Some("2026-09-30")
+    );
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/active/1/review_after").and_then(Value::as_str),
+        Some("2026-10-16"),
+        "the second occurrence must keep its own committed review_after"
+    );
+    assert_eq!(
+        payload.pointer("/temporary_exceptions/active/1/expires").and_then(Value::as_str),
+        Some("2026-10-30")
+    );
+    Ok(())
+}
+
 fn patch_gate(
     root: &Path,
     coverage: &Path,
@@ -362,6 +411,47 @@ review_after = "{review_after}"
 expires = "{expires}"
 "##
     )
+}
+
+fn two_valid_duplicate_policy() -> &'static str {
+    r##"schema_version = 1
+policy = "quality-gate-exceptions"
+owner = "test"
+status = "active"
+updated = "2026-09-10"
+due_review = "fail"
+
+[requirements]
+required_active = ["fixture"]
+
+[[exception]]
+id = "fixture"
+kind = "temporary_burndown"
+scope = "project_coverage"
+owner = "proof"
+issue = "#15267"
+reason = "first occurrence"
+final_target = "fixture target"
+evidence = "fixture evidence"
+removal_criteria = "fixture removal"
+created = "2026-01-01"
+review_after = "2026-09-16"
+expires = "2026-09-30"
+
+[[exception]]
+id = "fixture"
+kind = "temporary_burndown"
+scope = "project_coverage"
+owner = "proof"
+issue = "#15267"
+reason = "second occurrence"
+final_target = "fixture target"
+evidence = "fixture evidence"
+removal_criteria = "fixture removal"
+created = "2026-01-01"
+review_after = "2026-10-16"
+expires = "2026-10-30"
+"##
 }
 
 fn malformed_created_duplicate_policy() -> &'static str {

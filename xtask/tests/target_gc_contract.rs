@@ -33,10 +33,23 @@ fn target_gc_is_dry_run_default_and_apply_gated() -> Result<(), Box<dyn std::err
         "deletion must target vetted candidates only"
     );
     // The candidate shape guard must reject anything that is not a target/
-    // dir at the root or directly under .worktrees.
+    // dir at the repo root, directly under .worktrees, or under the real
+    // agent-worktree home .claude/worktrees (the home clean-worktrees.sh
+    // reconciled agents to, #3573). Each allowed alternative is asserted
+    // separately so extending the allowlist does not invalidate the other
+    // alternatives' needles, and the last alternative is asserted with the
+    // case-pattern terminator so the allowlist still ends closed.
     assert!(
-        script.contains("\"$root\"/target|\"$root\"/.worktrees/*/target)"),
-        "the candidate shape guard must restrict deletion to repo target/ dirs"
+        script.contains("\"$root\"/target|"),
+        "the candidate shape guard must allow the repo root target/ dir"
+    );
+    assert!(
+        script.contains("\"$root\"/.worktrees/*/target"),
+        "the candidate shape guard must allow .worktrees/*/target dirs"
+    );
+    assert!(
+        script.contains("\"$root\"/.claude/worktrees/*/target)"),
+        "the candidate shape guard must allow .claude/worktrees/*/target dirs and terminate the allowlist there"
     );
 
     let justfile = fs::read_to_string(root.join("justfile"))?;
@@ -56,8 +69,12 @@ fn target_gc_self_test_discriminates_stale_from_fresh() -> Result<(), Box<dyn st
     // in a temp dir, asserts only the stale target/ is selected, that --apply
     // preserves the fresh tree and registry/lockfile decoys, and that a held
     // devplane flock refuses the run.
-    let output =
-        Command::new("bash").arg(root.join("scripts/target-gc.sh")).arg("--self-test").output()?;
+    // MSYS bash strips backslashes from absolute Windows paths passed as
+    // argv, so forward-slash the script path before handing it to bash on
+    // Windows (#15435 / #15423 family C8).
+    let script = root.join("scripts/target-gc.sh");
+    let script_arg = script.to_string_lossy().replace('\\', "/");
+    let output = Command::new("bash").arg(script_arg).arg("--self-test").output()?;
     assert!(
         output.status.success(),
         "target-gc --self-test failed:\nstdout: {}\nstderr: {}",
@@ -76,8 +93,11 @@ fn target_gc_self_test_plumbing_requires_an_injected_root() -> Result<(), Box<dy
 {
     let root = project_root()?;
     let script = root.join("scripts/target-gc.sh");
+    // MSYS bash strips backslashes from absolute Windows paths (#15435 / #15423
+    // family C8); forward-slash the script path before handing it to bash.
+    let script_arg = script.to_string_lossy().replace('\\', "/");
     let output = Command::new("bash")
-        .arg(script)
+        .arg(script_arg)
         .arg("--self-test-apply")
         .env_remove("TARGET_GC_SELFTEST_ROOT")
         .env_remove("TARGET_GC_SELFTEST_DRY_RUN")

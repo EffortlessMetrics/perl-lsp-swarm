@@ -87,9 +87,7 @@
     {
       "command": "disconnect",
       "expectSuccess": true,
-      "expectedEventsAfter": [
-        { "event": "terminated" }
-      ]
+      "forbiddenEventsAfter": ["terminated"]
     }
   ]
 }

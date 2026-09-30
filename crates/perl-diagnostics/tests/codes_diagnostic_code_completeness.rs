@@ -392,25 +392,7 @@ fn heredoc_tied_handle_code_exists() -> Result<(), Box<dyn std::error::Error>> {
 /// All codes must start with PL or PC prefix.
 #[test]
 fn all_codes_have_valid_prefix() -> Result<(), Box<dyn std::error::Error>> {
-    // Existing codes that are already stable
-    let existing_codes = [
-        DiagnosticCode::ParseError,
-        DiagnosticCode::SyntaxError,
-        DiagnosticCode::UnexpectedEof,
-        DiagnosticCode::MissingStrict,
-        DiagnosticCode::MissingWarnings,
-        DiagnosticCode::UnusedVariable,
-        DiagnosticCode::UndefinedVariable,
-        DiagnosticCode::MissingPackageDeclaration,
-        DiagnosticCode::DuplicatePackage,
-        DiagnosticCode::DuplicateSubroutine,
-        DiagnosticCode::MissingReturn,
-        DiagnosticCode::BarewordFilehandle,
-        DiagnosticCode::TwoArgOpen,
-        DiagnosticCode::ImplicitReturn,
-    ];
-
-    for code in &existing_codes {
+    for code in DiagnosticCode::ALL {
         let s = code.as_str();
         assert!(
             s.starts_with("PL") || s.starts_with("PC"),
@@ -423,9 +405,7 @@ fn all_codes_have_valid_prefix() -> Result<(), Box<dyn std::error::Error>> {
 /// parse_code round-trip: as_str() output must be parseable back.
 #[test]
 fn existing_codes_round_trip_through_parse_code() -> Result<(), Box<dyn std::error::Error>> {
-    let codes =
-        [DiagnosticCode::ParseError, DiagnosticCode::MissingStrict, DiagnosticCode::TwoArgOpen];
-    for code in codes {
+    for code in DiagnosticCode::ALL.iter().copied() {
         let s = code.as_str();
         let parsed = DiagnosticCode::parse_code(s);
         assert_eq!(parsed, Some(code), "parse_code({s}) should return {code:?}");

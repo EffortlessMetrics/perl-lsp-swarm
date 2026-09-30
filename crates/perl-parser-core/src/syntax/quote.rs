@@ -32,6 +32,59 @@ pub fn extract_regex_parts(text: &str) -> (String, String, String) {
     (pattern, body, modifiers.to_string())
 }
 
+/// Strict counterpart to [`extract_regex_parts`].
+///
+/// Returns `Err(MatchError::InvalidModifier(c))` for any alphabetic modifier
+/// letter that is not a valid match-family modifier (`m s i x p o d u a l n g c`)
+/// or a doubled `xx`/`aa` form, and surfaces the same modifier-position
+/// non-alphabetic character handling as [`validate_substitution_modifiers`].
+/// The `e` and `r` modifiers belong to `s///` only and are rejected here.
+///
+/// The accepted set is operator-specific, as in Perl: `qr//` compiles a
+/// pattern without running a match loop, so the match-loop letters `g` and
+/// `c` are rejected there ("Unknown regexp modifier"), while `m//` and the
+/// bare `/.../` form accept the full set.
+///
+/// Used by `primary.rs` so the parser diagnoses malformed match-family
+/// modifiers with a typed `SyntaxError` whose location is bound to the
+/// operator, matching the `s///` and `tr///` contract (#14980).
+pub fn extract_regex_parts_strict(text: &str) -> Result<(String, String, String), MatchError> {
+    // Decide the accepted modifier set before a prefix is consumed.
+    let is_qr = text.starts_with("qr");
+
+    // Handle different prefixes
+    let content = if let Some(stripped) = text.strip_prefix("qr") {
+        skip_paired_replacement_gap(stripped)
+    } else if let Some(stripped) = strip_match_prefix(text) {
+        skip_paired_replacement_gap(stripped)
+    } else {
+        text
+    };
+
+    // Get delimiter - content must be non-empty to have a delimiter.
+    // An empty body is still valid Perl (`m//`, `qr//`) so we report a
+    // distinct `MissingDelimiter` only when there is no delimiter character
+    // at all, mirroring `SubstitutionError::MissingDelimiter`.
+    let delimiter = match content.chars().next() {
+        Some(d) => d,
+        None => return Err(MatchError::MissingDelimiter),
+    };
+    if !is_valid_delimiter(delimiter) {
+        return Err(MatchError::InvalidDelimiter(delimiter));
+    }
+    let closing = get_closing_delimiter(delimiter);
+
+    // Extract body and modifiers
+    let (body, modifiers_raw) = extract_delimited_content(content, delimiter, closing);
+
+    let modifiers = validate_match_modifiers_for(modifiers_raw, !is_qr)?;
+
+    // Include delimiters in the pattern string for compatibility
+    let pattern = format!("{}{}{}", delimiter, body, closing);
+
+    Ok((pattern, body, modifiers))
+}
+
 fn strip_match_prefix(text: &str) -> Option<&str> {
     let stripped = text.strip_prefix('m')?;
     let delimiter = skip_paired_replacement_gap(stripped).chars().next()?;
@@ -85,6 +138,30 @@ pub enum TransliterationError {
     MissingReplacement,
     /// Closing delimiter is missing
     MissingClosingDelimiter,
+}
+
+/// Error type for match-family operator parsing failures.
+///
+/// Mirrors [`SubstitutionError`] and [`TransliterationError`] so the parser
+/// can convert each variant into a typed `SyntaxError` with a consistent
+/// location contract. The strict contract was introduced by #14980.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchError {
+    /// Invalid modifier character found
+    InvalidModifier(char),
+    /// Invalid delimiter after the match-family operator (`m`, `qr`, or bare `/`)
+    InvalidDelimiter(char),
+    /// Missing delimiter (e.g. just `m` or `qr` with no body)
+    MissingDelimiter,
+}
+
+impl From<char> for MatchError {
+    /// Lift the bare-character error returned by [`validate_match_modifiers`]
+    /// into the typed `MatchError::InvalidModifier` variant. The `char` is
+    /// always the offending modifier letter, never the delimiter.
+    fn from(c: char) -> Self {
+        MatchError::InvalidModifier(c)
+    }
 }
 
 /// Extract pattern, replacement, and modifiers from a substitution token with strict validation
@@ -245,7 +322,7 @@ fn extract_delimited_content_strict(text: &str, open: char, close: char) -> (Str
         }
 
         match ch {
-            '\\' => {
+            '\\' if open != '\\' => {
                 body.push(ch);
                 escaped = true;
             }
@@ -910,6 +987,80 @@ pub fn validate_substitution_modifiers(modifiers_str: &str) -> Result<String, ch
     Ok(valid_modifiers)
 }
 
+/// Validate match-family modifier letters for `m//` and the bare `/.../` form:
+/// `m s i x p o d u a l n g c`, plus the doubled `xx` and `aa` forms. The `e`
+/// and `r` modifiers belong to `s///` only and are explicitly rejected (#14980).
+///
+/// `qr//` takes a narrower set: it compiles a pattern without running a match
+/// loop, so the match-loop letters `g` and `c` are invalid there, as in Perl
+/// ("Unknown regexp modifier"). [`extract_regex_parts_strict`] selects that
+/// narrower set; this function stays the full-set validator.
+///
+/// Behaves like [`validate_substitution_modifiers`]: a non-alphabetic
+/// character that is whitespace or a statement terminator (`;`, `\n`,
+/// `\r`) ends the modifier run; any other non-alphabetic character
+/// (including a stray operator like `/`) is itself the error, so the
+/// caller can surface a typed `MatchError::InvalidModifier` and bind the
+/// diagnostic to the operator.
+pub fn validate_match_modifiers(modifiers_str: &str) -> Result<String, char> {
+    validate_match_modifiers_for(modifiers_str, true)
+}
+
+/// Operator-aware tail of [`validate_match_modifiers`]: `allow_match_loop`
+/// selects between the `m//`/bare form set (`g`/`c` accepted) and the
+/// `qr//` set (`g`/`c` rejected, #14980).
+fn validate_match_modifiers_for(
+    modifiers_str: &str,
+    allow_match_loop: bool,
+) -> Result<String, char> {
+    let mut valid_modifiers = String::new();
+    let mut chars = modifiers_str.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        // Stop at non-alphabetic characters (end of modifiers).
+        if !c.is_ascii_alphabetic() {
+            if c.is_whitespace() || c == ';' || c == '\n' || c == '\r' {
+                break;
+            }
+            return Err(c);
+        }
+
+        // The doubled `xx` and `aa` forms are valid match modifiers
+        // when they appear together (`/x` doubled twice reads as `xx`).
+        if matches!(c, 'x' | 'a') && chars.peek() == Some(&c) {
+            chars.next();
+            valid_modifiers.push(c);
+            valid_modifiers.push(c);
+            continue;
+        }
+
+        if is_match_modifier(c) {
+            if !allow_match_loop && matches!(c, 'g' | 'c') {
+                // `g` and `c` only make sense when the operator runs a
+                // match loop; `qr//` does not, and Perl rejects them there
+                // even in a mixed tail such as `aag`.
+                return Err(c);
+            }
+            valid_modifiers.push(c);
+        } else {
+            // `e` and `r` land here: substitution-only modifiers that the
+            // match family must reject. Any other letter is also invalid
+            // (e.g. `z`, `q`, `t`).
+            return Err(c);
+        }
+    }
+
+    Ok(valid_modifiers)
+}
+
+/// Single-letter match-family modifiers accepted by [`validate_match_modifiers`].
+///
+/// Excludes `e` and `r` (substitution-only) and the doubled-form
+/// `x`/`a` which are handled by their own branch.
+fn is_match_modifier(ch: char) -> bool {
+    matches!(ch, 'm' | 's' | 'i' | 'x' | 'p' | 'o' | 'd' | 'u' | 'a' | 'l' | 'n' | 'g' | 'c')
+}
+
 // ============================================================================
 // Canonical qw / q / qq operator content extractor (Wave D centralization)
 // ============================================================================
@@ -987,6 +1138,27 @@ pub fn parse_qw_words(s: &str) -> Option<Vec<String>> {
     Some(inner.split_whitespace().map(str::to_string).collect())
 }
 
+/// Parse a complete qw token, including tokens adapted from lexer errors.
+/// Preserve the compatibility word spelling, but require an unescaped, balanced closer.
+pub(crate) fn parse_qw_words_strict(s: &str) -> Option<Vec<String>> {
+    let body = parse_quote_operator_content_strict(s, "qw")?;
+    Some(body.split_whitespace().map(str::to_string).collect())
+}
+
+/// Extract a complete quote token using the canonical escape and nesting scanner.
+pub(crate) fn parse_quote_operator_content_strict(s: &str, operator: &str) -> Option<String> {
+    let (open, content) = quote_operator_open_and_content(s, operator)?;
+    // `content` is the original suffix after the opener; recover that opener's
+    // byte offset so the shared strict scanner owns escape and nesting rules.
+    let start = s.len().checked_sub(content.len())?.checked_sub(open.len_utf8())?;
+    let (body, rest, closed) =
+        extract_delimited_content_strict(s.get(start..)?, open, get_closing_delimiter(open));
+    if !closed || !rest.is_empty() {
+        return None;
+    }
+    Some(body)
+}
+
 // ============================================================================
 // shared_scanner_invariants — pins the contracts the shared quote-scanning
 // helpers must keep, so a future edit to one cannot silently diverge from the
@@ -995,6 +1167,31 @@ pub fn parse_qw_words(s: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 mod shared_scanner_invariants {
     use super::*;
+
+    #[test]
+    fn backslash_delimiter_closure_and_remainder() -> Result<(), String> {
+        for (text, expected_body, expected_rest, expected_closed) in [
+            (r"\abc\tail", "abc", "tail", true),
+            (r"\\tail", "", "tail", true),
+            (r"\a\\b\", "a", r"\b\", true),
+            (r"\abc", "abc", "", false),
+        ] {
+            let (body, rest, closed) = extract_delimited_content_strict(text, '\\', '\\');
+            if body != expected_body || rest != expected_rest || closed != expected_closed {
+                return Err(format!("wrong backslash scan: {body:?}, {rest:?}, {closed}"));
+            }
+        }
+        for operator in ["q", "qq", "qw"] {
+            for suffix in [r"\abc\junk", r"\a\\b\", r"\abc"] {
+                if parse_quote_operator_content_strict(&format!("{operator}{suffix}"), operator)
+                    .is_some()
+                {
+                    return Err("strict scanner accepted trailing or missing closure".into());
+                }
+            }
+        }
+        Ok(())
+    }
 
     /// Delimiter/body shapes exercised by the substitution, transliteration and
     /// regex extractors.

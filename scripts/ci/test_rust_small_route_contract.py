@@ -29,6 +29,9 @@ claim owns its placement and this file does not move it.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -195,6 +198,79 @@ def validate_rust_small_route_contract(workflow_text: str) -> None:
             f"{CONTRACT_TEST_FILE} so a silent revert of the canonical-route "
             "consolidation fails a required check (#8407)"
         )
+
+
+class RustStandardProofScriptTests(unittest.TestCase):
+    """Preparation for #17018; active routes retain their existing proof wiring."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.log = self.directory / "cargo.log"
+        self.config = self.directory / "gitconfig"
+        binary = self.directory / "cargo"
+        binary.write_text(
+            '#!/usr/bin/env bash\n'
+            'printf "%s\\n" "$*" >> "$PROOF_TEST_LOG"\n'
+            'if [ "$1" = fmt ]; then exit "${FMT_STATUS:-0}"; fi\n'
+            'exit "${PROOF_STATUS:-0}"\n',
+            encoding="utf-8",
+        )
+        binary.chmod(0o755)
+        self.environment = {
+            **os.environ,
+            "PATH": f"{self.directory}{os.pathsep}{os.environ['PATH']}",
+            "GIT_CONFIG_GLOBAL": str(self.config),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GITHUB_WORKSPACE": str(self.directory / "workspace with spaces"),
+            "PROOF_TEST_LOG": str(self.log),
+        }
+
+    def run_script(self, **environment: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(ROOT / ".ci/rust-standard-proof.sh")],
+            env={**self.environment, **environment},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_repeated_runs_preserve_canonical_proof_and_one_safe_directory(self) -> None:
+        subprocess.run(
+            ["git", "config", "--global", "--add", "safe.directory", "/unrelated/workspace"],
+            env=self.environment,
+            check=True,
+        )
+        for _ in range(2):
+            result = self.run_script()
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.log.read_text().splitlines(),
+            ["fmt --all -- --check", "run -p xtask --locked -- rust-small-proof"] * 2,
+        )
+        safe_directories = subprocess.check_output(
+            ["git", "config", "--global", "--get-all", "safe.directory"],
+            env=self.environment,
+            text=True,
+        ).splitlines()
+        self.assertEqual(
+            safe_directories, ["/unrelated/workspace", self.environment["GITHUB_WORKSPACE"]]
+        )
+
+    def test_format_failure_prevents_proof(self) -> None:
+        result = self.run_script(FMT_STATUS="17")
+        self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertEqual(self.log.read_text().splitlines(), ["fmt --all -- --check"])
+
+    def test_proof_failure_propagates(self) -> None:
+        result = self.run_script(PROOF_STATUS="23")
+        self.assertEqual(result.returncode, 23, result.stderr)
+
+    def test_safe_directory_write_failure_prevents_cargo(self) -> None:
+        result = self.run_script(GIT_CONFIG_GLOBAL=str(self.directory / "absent/config"))
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.log.exists())
 
 
 class RustSmallRouteContractTests(unittest.TestCase):

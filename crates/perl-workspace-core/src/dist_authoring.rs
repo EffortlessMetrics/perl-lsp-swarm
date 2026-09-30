@@ -529,7 +529,12 @@ impl<'a> DistCollector<'a> {
         if self.limitations.iter().any(|item| item.id == id) {
             return;
         }
-        self.limitations.push(ModelLimitation { id, kind, message: message.into() });
+        self.limitations.push(ModelLimitation {
+            id,
+            kind,
+            message: message.into(),
+            paths: Vec::new(),
+        });
     }
 
     fn set_name_from_package(&mut self, pair: &ScanPair) {

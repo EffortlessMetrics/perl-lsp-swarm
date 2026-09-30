@@ -228,8 +228,9 @@ impl LspServer {
             let dancer2_probe = {
                 let documents = self.documents_guard();
                 self.get_document(&documents, uri).and_then(|doc| {
+                    let text = doc.text_for_user_answers()?.to_string();
                     doc.current_parsed().and_then(|snapshot| {
-                        snapshot.ast().cloned().map(|ast| (snapshot, doc.text_arc.to_string(), ast))
+                        snapshot.ast().cloned().map(|ast| (snapshot, text, ast))
                     })
                 })
             };
@@ -243,6 +244,13 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
+                // Full-sync unavailability is not an ordinary parse failure.
+                // The AST-less regex fallback must keep using live `doc.text`
+                // for synchronized pending-parse gaps, and must not scan
+                // predecessor text while `full_sync_required` is set.
+                if doc.text_for_user_answers().is_none() {
+                    return Ok(Some(json!([])));
+                }
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     // Source-backed compiler document symbols are live for fresh,
@@ -358,17 +366,45 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         let uri = self.admit_folding_range_request(params.as_ref())?;
 
-        // Snapshot the document text and parsed AST under the documents
-        // lock, then drop the guard so the expensive scanning, AST walk,
-        // and deduplication run off-lock (#4966). This is the same pattern
-        // already used by the sibling hover and formatting providers.
-        let (text, parsed) = {
+        // Snapshot current user-answer text and parsed AST under the
+        // documents lock, then drop the guard so the expensive scanning,
+        // AST walk, and deduplication run off-lock (#4966). Predecessor
+        // `text_arc` remains stored as evidence and must not publish folds
+        // while Full-sync is outstanding.
+        //
+        // Prefer the generation-current snapshot; fall back to the latest
+        // published one when the current generation has no snapshot yet —
+        // the workspace indexer bumps the generation after didOpen, which
+        // would otherwise make every AST-derived fold vanish behind a
+        // keyword-free empty response (#11858 pattern, #15430).
+        let (text, parsed, captured_generation) = {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
-                Some(doc) => (doc.text_arc.to_string(), doc.current_parsed()),
+                Some(doc) => match doc.text_for_user_answers() {
+                    // Clone the Arc (O(1)) under the lock; the full string
+                    // copy happens after release, keeping the lock hold short.
+                    // The latest_parsed fallback is gated on the snapshot's
+                    // content hash matching the current text: a stale AST's
+                    // offsets paired with shifted text would fold the wrong
+                    // lines (#15776 review). It only runs for synchronized
+                    // text — when Full-sync is outstanding, the arm above
+                    // returns empty before any predecessor snapshot is read.
+                    Some(_) => {
+                        let current_or_matching = doc.current_parsed().or_else(|| {
+                            let latest = doc.latest_parsed()?;
+                            let matches =
+                                perl_lsp_rs_core::tooling::perl_critic::hash_content(&doc.text)
+                                    == latest.content_hash();
+                            matches.then_some(latest)
+                        });
+                        (doc.text_arc.clone(), current_or_matching, doc.current_generation())
+                    }
+                    None => return Ok(Some(json!([]))),
+                },
                 None => return Ok(Some(json!([]))),
             }
         };
+        let text = text.to_string();
 
         let doc_text = &text;
         let mut lsp_ranges = Vec::new();
@@ -414,7 +450,24 @@ impl LspServer {
                 // Calculate actual line numbers from document content
                 let start_line = offset_to_line(doc_text, range.start_offset);
                 let end_line = offset_to_line(doc_text, range.end_offset);
-                if let Some(lsp_end_line) = lsp_inclusive_multiline_end_line(start_line, end_line) {
+                let lsp_end_line = match lsp_inclusive_multiline_end_line(start_line, end_line) {
+                    Some(end) => Some(end),
+                    None => {
+                        // A span rejected by the inclusive filter may still
+                        // genuinely cover multiple lines when its end offset
+                        // sits at the start of its last line (heredoc bodies
+                        // end at content, not at line starts). Count the
+                        // newlines inside the span: any newline means real
+                        // multiline content that must not be dropped
+                        // (#15430 residue).
+                        let newlines = doc_text
+                            .get(range.start_offset..range.end_offset)
+                            .map(|span| span.matches('\n').count())
+                            .unwrap_or(0);
+                        (newlines >= 1).then_some(start_line + newlines)
+                    }
+                };
+                if let Some(lsp_end_line) = lsp_end_line {
                     let mut lsp_range = json!({
                         "startLine": start_line,
                         "endLine": lsp_end_line,  // LSP folding ranges are inclusive
@@ -451,14 +504,16 @@ impl LspServer {
 
             // If no ranges from AST, try fallback
             if lsp_ranges.is_empty() {
-                return Ok(Some(json!(folding_ranges_from_text(doc_text, 1000))));
+                lsp_ranges = folding_ranges_from_text(doc_text, 1000);
             }
-
-            return Ok(Some(json!(lsp_ranges)));
+        } else {
+            lsp_ranges = folding_ranges_from_text(doc_text, 1000);
         }
 
-        // No AST, use fallback
-        Ok(Some(json!(folding_ranges_from_text(doc_text, 1000))))
+        if !self.user_answer_text_is_current(uri, captured_generation) {
+            return Ok(Some(json!([])));
+        }
+        Ok(Some(json!(lsp_ranges)))
     }
 
     /// Non-blocking folding range handler with text-based fallback.
@@ -1128,6 +1183,178 @@ mod tests {
             Some(json!({ "textDocument": { "uri": "file:///instrument-failure-folds.pl" } })),
         )?;
         assert_folding_range_error(&response, INTERNAL_ERROR, "instrument failure")?;
+        Ok(())
+    }
+
+    fn ranged_violation(uri: &str, version: i32) -> Value {
+        json!({
+            "textDocument": { "uri": uri, "version": version },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "text": "x"
+            }]
+        })
+    }
+
+    fn malformed_outer_did_change(uri: &str, version: i32) -> Value {
+        json!({
+            "textDocument": { "uri": uri, "version": version },
+            "contentChanges": null
+        })
+    }
+
+    fn document_symbol_names(value: &Value) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let mut names = Vec::new();
+        fn walk(value: &Value, names: &mut Vec<String>) {
+            match value {
+                Value::Array(items) => {
+                    for item in items {
+                        walk(item, names);
+                    }
+                }
+                Value::Object(map) => {
+                    if let Some(name) = map.get("name").and_then(Value::as_str) {
+                        names.push(name.to_string());
+                    }
+                    if let Some(children) = map.get("children") {
+                        walk(children, names);
+                    }
+                }
+                _ => {}
+            }
+        }
+        walk(value, &mut names);
+        Ok(names)
+    }
+
+    #[test]
+    fn document_symbol_fails_closed_after_rejected_change_and_recovers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let ranged_uri = "file:///desync-document-symbol.pl";
+        let predecessor = "sub pred_symbol { 1 }\n";
+        let recovered = "sub recovered_symbol { 1 }\n";
+
+        server.test_apply_did_open(ranged_uri, predecessor, 1)?;
+        let live = server
+            .handle_document_symbol(Some(json!({ "textDocument": { "uri": ranged_uri } })))?
+            .ok_or("live documentSymbol must return a result")?;
+        let live_names = document_symbol_names(&live)?;
+        assert!(
+            live_names.iter().any(|name| name == "pred_symbol"),
+            "live documentSymbol must publish the current subroutine: {live}"
+        );
+
+        server.handle_did_change(Some(ranged_violation(ranged_uri, 2)))?;
+        {
+            let documents = server.documents_guard();
+            let doc =
+                server.get_document(&documents, ranged_uri).ok_or("desynchronized document")?;
+            assert!(doc.full_sync_required());
+            assert!(
+                doc.text.contains("pred_symbol"),
+                "predecessor text remains stored and must not be reused for outline answers"
+            );
+        }
+        let desync = server
+            .handle_document_symbol(Some(json!({ "textDocument": { "uri": ranged_uri } })))?
+            .ok_or("desync documentSymbol must return a result")?;
+        let desync_names = document_symbol_names(&desync)?;
+        assert!(
+            desync_names.is_empty(),
+            "Full-sync unavailability must not publish predecessor outline symbols: {desync}"
+        );
+
+        server.test_apply_did_change(ranged_uri, recovered, 3)?;
+        let restored = server
+            .handle_document_symbol(Some(json!({ "textDocument": { "uri": ranged_uri } })))?
+            .ok_or("recovered documentSymbol must return a result")?;
+        let restored_names = document_symbol_names(&restored)?;
+        assert!(
+            restored_names.iter().any(|name| name == "recovered_symbol"),
+            "accepted full replacement must restore current documentSymbol: {restored}"
+        );
+        assert!(
+            !restored_names.iter().any(|name| name == "pred_symbol"),
+            "recovered documentSymbol must not keep the predecessor name: {restored}"
+        );
+
+        let malformed_uri = "file:///malformed-outer-document-symbol.pl";
+        server.test_apply_did_open(malformed_uri, predecessor, 1)?;
+        let malformed_live = server
+            .handle_document_symbol(Some(json!({ "textDocument": { "uri": malformed_uri } })))?
+            .ok_or("malformed-path live documentSymbol must return a result")?;
+        assert!(
+            document_symbol_names(&malformed_live)?.iter().any(|name| name == "pred_symbol"),
+            "malformed-path live documentSymbol must publish the current subroutine: {malformed_live}"
+        );
+        server.handle_did_change(Some(malformed_outer_did_change(malformed_uri, 2)))?;
+        let malformed_desync = server
+            .handle_document_symbol(Some(json!({ "textDocument": { "uri": malformed_uri } })))?
+            .ok_or("malformed desync documentSymbol must return a result")?;
+        assert!(
+            document_symbol_names(&malformed_desync)?.is_empty(),
+            "malformed-outer didChange must fail-close documentSymbol: {malformed_desync}"
+        );
+        server.test_apply_did_change(malformed_uri, recovered, 3)?;
+        let malformed_restored = server
+            .handle_document_symbol(Some(json!({ "textDocument": { "uri": malformed_uri } })))?
+            .ok_or("malformed-path recovered documentSymbol must return a result")?;
+        let malformed_restored_names = document_symbol_names(&malformed_restored)?;
+        assert!(
+            malformed_restored_names.iter().any(|name| name == "recovered_symbol"),
+            "full replacement must recover documentSymbol after malformed-outer didChange: {malformed_restored}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn folding_range_fails_closed_after_ranged_did_change_and_recovers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///desync-folding-range.pl";
+        let predecessor = "print \"ok\\n\";\n__DATA__\nalpha\nbeta\n";
+        let recovered = "print \"ok\\n\";\n__DATA__\ngamma\ndelta\n";
+
+        server.test_apply_did_open(uri, predecessor, 1)?;
+        let live = server
+            .handle_folding_range(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("live foldingRange must return a result")?;
+        let live_ranges = live.as_array().ok_or("live foldingRange must return an array")?;
+        assert!(!live_ranges.is_empty(), "live foldingRange must publish current folds: {live}");
+
+        server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+        {
+            let documents = server.documents_guard();
+            let doc = server.get_document(&documents, uri).ok_or("desynchronized document")?;
+            assert!(doc.full_sync_required());
+            assert!(
+                doc.text.contains("__DATA__"),
+                "predecessor text remains stored and must not be reused for folds"
+            );
+        }
+        let desync = server
+            .handle_folding_range(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("desync foldingRange must return a result")?;
+        let desync_ranges = desync.as_array().ok_or("desync foldingRange must return an array")?;
+        assert!(
+            desync_ranges.is_empty(),
+            "Full-sync unavailability must not publish predecessor folds: {desync}"
+        );
+
+        server.test_apply_did_change(uri, recovered, 3)?;
+        let restored = server
+            .handle_folding_range(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("recovered foldingRange must return a result")?;
+        let restored_ranges =
+            restored.as_array().ok_or("recovered foldingRange must return an array")?;
+        assert!(
+            !restored_ranges.is_empty(),
+            "accepted full replacement must restore current foldingRange: {restored}"
+        );
         Ok(())
     }
 }

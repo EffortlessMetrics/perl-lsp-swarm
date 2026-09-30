@@ -29,6 +29,13 @@ fn script() -> PathBuf {
     project_root().join("scripts/ci/release_artifact_size_stage.sh")
 }
 
+/// MSYS bash strips backslashes from absolute Windows paths passed as argv;
+/// forward-slash the script path before handing it to bash on Windows
+/// (#15435 / #15423 family C8).
+fn script_arg_for_bash() -> String {
+    script().to_string_lossy().replace('\\', "/")
+}
+
 fn package_name() -> String {
     format!("perllsp-{VERSION}-{TARGET}")
 }
@@ -53,7 +60,7 @@ fn staged_root() -> Result<TempDir> {
 
 fn stage(root: &Path, variant: &str) -> Result<Output> {
     Command::new("bash")
-        .arg(script())
+        .arg(script_arg_for_bash())
         .args([variant, TARGET, VERSION])
         .env("RELEASE_ARTIFACT_SIZE_ROOT", root)
         .output()

@@ -114,7 +114,7 @@ fn run_to_termination(session: &DapWorkflowSession) -> RunToTermination {
         let Ok(msg) = session.rx.recv_timeout(remaining) else {
             break;
         };
-        let DapMessage::Event { event, body, .. } = &msg else {
+        let (DapMessage::Event { event, body, .. }, _) = &msg else {
             continue;
         };
         if event == "terminated" {

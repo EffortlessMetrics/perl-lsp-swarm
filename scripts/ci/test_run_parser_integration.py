@@ -452,7 +452,12 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
         outside = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: outside.rmdir())
         linked_parent = root / "linked"
-        os.symlink(outside, linked_parent, target_is_directory=True)
+        try:
+            os.symlink(outside, linked_parent, target_is_directory=True)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                self.skipTest(f"symlink privilege unavailable: {error}")
+            raise
         receipt = linked_parent / "receipt.json"
 
         with mock.patch.object(

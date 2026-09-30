@@ -213,10 +213,17 @@ fn every_phase_keyword_label_remains_distinct_from_its_phase_block() -> Result<(
         "UNITCHECK { phase_work(); }\n",
     );
     let (ast, inferred) = parse_with_inferred_semicolons(source)?;
+    // A labeled body owns its own terminator, so the outer statement check
+    // must not re-examine it: keyword labels return directly exactly like
+    // `parse_labeled_statement` does for identifier labels (#13489 review).
+    // The old fall-through recovered one spurious InferredSemicolon per
+    // keyword-labeled statement even though each body already ended with
+    // `;`; the count below pins the corrected zero. The label-vs-block
+    // distinction assertions that follow are this test's purpose and hold
+    // either way.
     assert_eq!(
-        inferred,
-        PHASES.len(),
-        "current main recovers one InferredSemicolon per phase-keyword label statement"
+        inferred, 0,
+        "keyword-labeled bodies own their terminators; no outer inference may remain"
     );
     let mut labels = Vec::new();
     let mut phase_blocks = Vec::new();

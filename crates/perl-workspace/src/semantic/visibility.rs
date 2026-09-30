@@ -618,6 +618,97 @@ mod tests {
     }
 
     #[test]
+    fn sub_exporter_setup_exports_reach_the_importer_visible_set()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #2517: a module configuring its exports through Sub::Exporter's
+        // `-setup` hash has no @EXPORT/@EXPORT_OK stash variables, so before
+        // the HIR lowering recognized `-setup` its symbols never reached an
+        // importer's visible set at all.
+        let exporter = lower_hir_source(
+            "package HIR::SubExporter;\n\
+             use Sub::Exporter -setup => {\n\
+                 exports => [ qw(defaulted optional), generated => \\&build_generated ],\n\
+                 groups  => { default => [qw(defaulted)] },\n\
+             };\n",
+        );
+        let importer_source = "package HIR::Consumer;\n\
+             use HIR::SubExporter qw(optional :all);\n\
+             optional();\n\
+             defaulted();\n\
+             generated();\n";
+        let importer = lower_hir_source(importer_source);
+        let importer_file_id = FileId(93);
+        let shard = empty_shard(importer_file_id);
+        let mut index = ImportExportIndex::new();
+
+        let export_set = exporter
+            .stash_graph
+            .export_sets()
+            .into_iter()
+            .find(|set| set.module_name.as_deref() == Some("HIR::SubExporter"))
+            .ok_or("expected HIR::SubExporter export set")?;
+        assert_eq!(export_set.default_exports, vec!["defaulted".to_string()]);
+        index.add_module_exports("file:///lib/HIR/SubExporter.pm", "HIR::SubExporter", export_set);
+
+        let import_specs = importer.compile_environment.import_specs(importer_file_id);
+        index.add_file_imports("file:///lib/HIR/Consumer.pm", importer_file_id, import_specs);
+
+        let after_import =
+            importer_source.find("generated();").ok_or("expected post-import call")? as u32;
+        let symbols = visible_symbols_at(importer_file_id, after_import, None, &shard, &index);
+
+        let optional = visible_symbol(&symbols, "optional", VisibleSymbolSource::ExplicitImport)?;
+        assert_eq!(
+            optional.context.as_ref().and_then(|c| c.source_module.as_deref()),
+            Some("HIR::SubExporter")
+        );
+        // Reached through Sub::Exporter's implicit `all` group.
+        let generated = visible_symbol(&symbols, "generated", VisibleSymbolSource::ExportTag)?;
+        assert_eq!(
+            generated.context.as_ref().and_then(|c| c.source_module.as_deref()),
+            Some("HIR::SubExporter")
+        );
+        assert!(visible_names(&symbols).contains(&"defaulted"));
+        Ok(())
+    }
+
+    #[test]
+    fn sub_exporter_dynamic_setup_does_not_invent_importer_visibility()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Negative control for #2517: an exports list that cannot be
+        // enumerated statically must leave the importer's visible set empty
+        // rather than fabricating symbols.
+        let exporter = lower_hir_source(
+            "package HIR::DynamicExporter;\n\
+             use Sub::Exporter -setup => { exports => $computed };\n",
+        );
+        let importer_source = "package HIR::Consumer;\n\
+             use HIR::DynamicExporter qw(whatever);\n\
+             whatever();\n";
+        let importer = lower_hir_source(importer_source);
+        let importer_file_id = FileId(94);
+        let shard = empty_shard(importer_file_id);
+        let mut index = ImportExportIndex::new();
+
+        assert!(
+            exporter.stash_graph.export_sets().is_empty(),
+            "a computed exports value must not produce an export set"
+        );
+        let import_specs = importer.compile_environment.import_specs(importer_file_id);
+        index.add_file_imports("file:///lib/HIR/Consumer.pm", importer_file_id, import_specs);
+
+        let after_import =
+            importer_source.find("whatever();").ok_or("expected post-import call")? as u32;
+        let symbols = visible_symbols_at(importer_file_id, after_import, None, &shard, &index);
+        let names = visible_names(&symbols);
+        assert!(
+            !names.contains(&"defaulted") && !names.contains(&"optional"),
+            "dynamic Sub::Exporter setup must not invent visibility: {names:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn canonical_hir_empty_import_does_not_invent_default_visibility()
     -> Result<(), Box<dyn std::error::Error>> {
         let exporter = lower_hir_source(

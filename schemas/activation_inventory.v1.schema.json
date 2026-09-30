@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/activation_inventory.v1.schema.json",
+  "title": "activation_inventory.v1",
+  "description": "Versioned classified inventory of activation surfaces (#9204): product, preview, compatibility_shim, test_api, lab, oracle, benchmark, and gate rows derived from existing repository authorities plus a narrow, typed override ledger. Does not establish an activation verdict; #9205 owns checking semantics.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "policy",
+    "owner",
+    "controlling_issue",
+    "derivation",
+    "rows"
+  ],
+  "properties": {
+    "schema": {
+      "$comment": "Pinned like schema_version, policy, and controlling_issue: validation always loads this exact path, so a loose string would let a hand edit point a reader at a contract the artifact was never checked against. `owner` below stays open because ownership can legitimately change hands without the contract changing.",
+      "const": "schemas/activation_inventory.v1.schema.json"
+    },
+    "schema_version": { "const": "activation_inventory.v1" },
+    "policy": { "const": "activation-inventory" },
+    "owner": { "type": "string", "minLength": 1 },
+    "controlling_issue": { "const": "#9204" },
+    "derivation": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/derivation_entry" }
+    },
+    "rows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/activation_row" }
+    }
+  },
+  "$defs": {
+    "activation_class": {
+      "type": "string",
+      "enum": [
+        "product",
+        "preview",
+        "compatibility_shim",
+        "test_api",
+        "lab",
+        "oracle",
+        "benchmark",
+        "gate"
+      ]
+    },
+    "derivation_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "authority", "emits", "considered", "emitted", "not_seeded_reason"],
+      "properties": {
+        "rule": { "type": "string", "minLength": 1 },
+        "authority": { "type": "string", "minLength": 1 },
+        "emits": { "type": "string", "minLength": 1 },
+        "considered": { "type": "integer", "minimum": 0 },
+        "emitted": { "type": "integer", "minimum": 0 },
+        "not_seeded_reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "class_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "authority", "rule"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["derived", "override"] },
+        "authority": { "type": "string", "minLength": 1 },
+        "rule": { "type": "string", "minLength": 1 }
+      }
+    },
+    "registration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "type": "string", "enum": ["established", "not_established"] },
+        "authority": { "type": "string", "minLength": 1 },
+        "detail": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "$comment": "`established` asserts that a surface is actually wired into its consuming mechanism. That is a checkable claim only if the row names where it is wired, so the authority is required exactly when the claim is made. `not_established` carries no such burden.",
+          "if": {
+            "required": ["state"],
+            "properties": { "state": { "const": "established" } }
+          },
+          "then": { "required": ["authority"] }
+        }
+      ]
+    },
+    "proof_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "id"],
+      "properties": {
+        "class": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "authority"],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "published",
+            "publish_allowed",
+            "private_workspace_member",
+            "unpublished",
+            "not_applicable"
+          ]
+        },
+        "authority": { "type": "string", "minLength": 1 }
+      }
+    },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "const": "not_evaluated" },
+        "blocker": { "type": "string", "minLength": 1 }
+      }
+    },
+    "retirement": {
+      "$comment": "`minLength: 1` admits \"   \". A retirement plan needs a nameable owner and a stateable boundary, so both must carry a non-whitespace character. The override ledger enforces the same rule on its side via `is_blank`; this is the artifact-level half.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "boundary"],
+      "properties": {
+        "owner": { "type": "string", "pattern": "\\S" },
+        "boundary": { "type": "string", "pattern": "\\S" }
+      }
+    },
+    "activation_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface_id",
+        "class",
+        "class_authority",
+        "semantic_authority",
+        "consumers",
+        "compile_profiles",
+        "registration",
+        "proof_references",
+        "publication",
+        "owner",
+        "promotion"
+      ],
+      "properties": {
+        "surface_id": {
+          "type": "string",
+          "pattern": "^(feature|gate|bench|cargo-feature|fuzz|crate):[A-Za-z0-9][A-Za-z0-9._/-]*$"
+        },
+        "class": { "$ref": "#/$defs/activation_class" },
+        "class_authority": { "$ref": "#/$defs/class_authority" },
+        "semantic_authority": { "type": "string", "minLength": 1 },
+        "consumers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "compile_profiles": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "registration": { "$ref": "#/$defs/registration" },
+        "data_authority": { "type": "string", "minLength": 1 },
+        "observable_contract": { "type": "string", "minLength": 1 },
+        "proof_references": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/proof_reference" }
+        },
+        "publication": { "$ref": "#/$defs/publication" },
+        "maturity_authority": { "type": "string", "minLength": 1 },
+        "owner": { "type": "string", "minLength": 1 },
+        "promotion": { "$ref": "#/$defs/promotion" },
+        "retirement": { "$ref": "#/$defs/retirement" },
+        "notes": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "$comment": "Retirement is required IFF the class is compatibility_shim. The `else` arm is what makes it an iff: a retirement plan on a product or lab row states a lifecycle nothing owns, and the model documents the field as `Required iff class == compatibility_shim`.",
+          "if": {
+            "properties": { "class": { "const": "compatibility_shim" } },
+            "required": ["class"]
+          },
+          "then": { "required": ["retirement"] },
+          "else": { "not": { "required": ["retirement"] } }
+        },
+        {
+          "if": {
+            "properties": { "class": { "const": "product" } },
+            "required": ["class"]
+          },
+          "then": {
+            "properties": {
+              "consumers": { "type": "array", "minItems": 1 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

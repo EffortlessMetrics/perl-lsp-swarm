@@ -3,7 +3,8 @@
 //!
 //! Generic registry dispatch and canonical shard publication are owned by the
 //! framework registry/publication issues; the adapters here are
-//! framework-specific and shadow-only until those land.
+//! framework-specific, and each descriptor declares its own detection or
+//! publication disposition.
 
 /// Dancer2 framework adapter (#8914).
 pub mod dancer2;
@@ -18,9 +19,14 @@ pub mod dbix_class;
 
 /// Mojo::Base framework adapter (#9681).
 pub mod mojo_base;
+/// Registry-activated Mojo::Base object-fact minting (#9682).
+pub mod mojo_base_facts;
 
 /// Mojolicious application/controller identity adapter (#9688).
 pub mod mojolicious;
+
+/// Checked Moose and Moose::Role activation detection (#7788).
+pub mod moose;
 
 /// Version-bound DBIx::QuickORM API return and preserving-method contract (#13374).
 pub mod quickorm_api;

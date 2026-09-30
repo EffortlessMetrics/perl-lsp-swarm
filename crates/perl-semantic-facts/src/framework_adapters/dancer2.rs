@@ -338,7 +338,10 @@ pub enum AppNameSelection {
     /// Unambiguous literal `appname => 'Name'`.
     Literal(String),
     /// Computed or unsupported app identity — an explicit dynamic boundary.
-    Dynamic { reason: String },
+    Dynamic {
+        /// Why the application identity is dynamic.
+        reason: String,
+    },
 }
 
 /// DSL selection from the activating import.
@@ -350,7 +353,10 @@ pub enum DslSelection {
     /// Literal `dsl => 'Some::DSL'` with exact source/module evidence.
     CustomLiteral(String),
     /// Computed/configured DSL selection — an explicit dynamic boundary.
-    Dynamic { reason: String },
+    Dynamic {
+        /// Why the DSL selection is dynamic.
+        reason: String,
+    },
 }
 
 /// Import evidence extracted from the activating `use Dancer2 ...;` argument

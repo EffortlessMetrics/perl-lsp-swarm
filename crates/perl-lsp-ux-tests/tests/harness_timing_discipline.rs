@@ -28,7 +28,8 @@ use std::path::{Path, PathBuf};
 /// inherited by every scenario. Scenario files are covered as they are
 /// migrated; `ux_scenario_01_simple_file.rs` is covered because #13319 names it.
 const GOVERNED: &[&str] = &[
-    "src/client.rs",
+    "src/client/mod.rs",
+    "src/client/server_request_script.rs",
     "src/diagnostics.rs",
     "src/env.rs",
     "src/lib.rs",
@@ -36,6 +37,7 @@ const GOVERNED: &[&str] = &[
     "src/project_fixture.rs",
     "src/recorder.rs",
     "src/scorecard.rs",
+    "src/server_request_fixture.rs",
     "src/taxonomy.rs",
     "src/workspace.rs",
     "tests/ux_scenario_01_simple_file.rs",
@@ -45,7 +47,12 @@ const GOVERNED: &[&str] = &[
 ///
 /// These are the transport and wait substrate itself. There is no legitimate
 /// reason for the layer that *implements* event-driven waiting to sleep.
-const SLEEP_FREE: &[&str] = &["src/client.rs", "src/diagnostics.rs", "src/observation.rs"];
+const SLEEP_FREE: &[&str] = &[
+    "src/client/mod.rs",
+    "src/client/server_request_script.rs",
+    "src/diagnostics.rs",
+    "src/observation.rs",
+];
 
 /// Timing classes a sleep may declare.
 const CLASSES: &[&str] = &["deliberate-stimulus", "product-retry"];

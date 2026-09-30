@@ -194,7 +194,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         counters: Option<&mut NativePipelineCounters>,
     ) -> Result<FormattingDecision, FormattingError> {
         match self.mode {
-            FormatterMode::Native | FormatterMode::Compat => {
+            FormatterMode::Native => {
                 self.native_document_decision(content, options, context, counters)
             }
             FormatterMode::ExternalLegacy => self.external_document_decision(
@@ -284,7 +284,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         };
 
         match self.mode {
-            FormatterMode::Native | FormatterMode::Compat => {
+            FormatterMode::Native => {
                 self.native_range_decision(content, &geometry, admitted, options, context, counters)
             }
             FormatterMode::ExternalLegacy if is_whole_document_range(content, range) => {
@@ -1134,7 +1134,6 @@ fn line_ending_kind(source: &str) -> (bool, bool, bool) {
 const fn formatter_mode_name(mode: FormatterMode) -> &'static str {
     match mode {
         FormatterMode::Native => "native",
-        FormatterMode::Compat => "compat",
         FormatterMode::ExternalLegacy => "external-legacy",
         FormatterMode::Off => "off",
     }

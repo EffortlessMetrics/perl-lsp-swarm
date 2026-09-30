@@ -1,8 +1,10 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-# Discriminating product-unit promotion proof for install.ps1 (#8359).
-# PATH-visible names and .perl-lsp/current must observe one complete unit.
+# Discriminating product-unit promotion proof for install.ps1 (#8359) and
+# selector-commit atomicity proof for the source-only <-> release transitions
+# described by #14052. PATH-visible names and .perl-lsp/current must observe
+# one complete unit.
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $Installer = Join-Path $Root "install.ps1"
@@ -103,6 +105,60 @@ function Assert-CompletePair {
     if (-not $dir) { return $false }
     if ((Hash-BytesFile (Join-Path $dir "perllsp.exe")) -ne $wantServer) { return $false }
     if ((Hash-BytesFile (Join-Path $dir "perl-dap.exe")) -ne $wantDap) { return $false }
+    return $true
+}
+
+# Returns $true when the cmd shim is present but its current pointer
+# resolves to a candidate directory that does not contain the expected
+# perllsp.exe / perl-dap.exe. Get-StandalonePathVisibleObservation reports
+# the same `-` hash for absent and dangling selectors; tests that need to
+# discriminate use this helper instead.
+function Is-DanglingShim {
+    param([string]$ShimPath, [string]$ExeName)
+    if (-not (Test-Path -LiteralPath $ShimPath)) { return $false }
+    $dir = Get-StandaloneCurrentDir -InstallDir $script:InstallDir
+    if (-not $dir) { return $false }
+    $exe = Join-Path $dir $ExeName
+    return -not (Test-Path -LiteralPath $exe)
+}
+
+# Stages a complete pair with executable batch content on both members so the
+# PATH-visible shim or symlink can be proven to actually launch the right
+# executable body.
+function Stage-ExecutablePair {
+    param([string]$Dest, [string]$Server, [string]$Dap)
+    if (Test-Path -LiteralPath $Dest) {
+        Remove-Item -LiteralPath $Dest -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $Dest -Force | Out-Null
+    $serverExe = Join-Path $Dest "perllsp.exe"
+    $dapExe = Join-Path $Dest "perl-dap.exe"
+    [IO.File]::WriteAllBytes($serverExe, [Text.Encoding]::ASCII.GetBytes("@echo off`r`necho $Server`r`n"))
+    [IO.File]::WriteAllBytes($dapExe, [Text.Encoding]::ASCII.GetBytes("@echo off`r`necho $Dap`r`n"))
+}
+
+# Verifies a published pair advertises working selectors on Windows: the cmd
+# shim exists, the current pointer resolves to a candidate that carries the
+# expected perllsp.exe / perl-dap.exe, and the staged bodies are non-empty so
+# the cmd shim would have something to launch.
+function Assert-ExecutablePair {
+    param([string]$Server, [string]$Dap)
+    $serverCmd = Join-Path $script:InstallDir "perllsp.cmd"
+    $dapCmd = Join-Path $script:InstallDir "perl-dap.cmd"
+    if (-not (Test-Path -LiteralPath $serverCmd)) { return $false }
+    if (-not (Test-Path -LiteralPath $dapCmd)) { return $false }
+    if (Is-DanglingShim -ShimPath $serverCmd -ExeName "perllsp.exe") { return $false }
+    if (Is-DanglingShim -ShimPath $dapCmd -ExeName "perl-dap.exe") { return $false }
+    $dir = Get-StandaloneCurrentDir -InstallDir $script:InstallDir
+    if (-not $dir) { return $false }
+    $serverExe = Join-Path $dir "perllsp.exe"
+    $dapExe = Join-Path $dir "perl-dap.exe"
+    if (-not (Test-Path -LiteralPath $serverExe)) { return $false }
+    if (-not (Test-Path -LiteralPath $dapExe)) { return $false }
+    $serverBytes = (Get-Item -LiteralPath $serverExe).Length
+    $dapBytes = (Get-Item -LiteralPath $dapExe).Length
+    if ($serverBytes -le 0) { return $false }
+    if ($dapBytes -le 0) { return $false }
     return $true
 }
 
@@ -401,6 +457,82 @@ try {
     } finally {
         Remove-Item Env:PERL_LSP_INSTALL_OBSERVE -ErrorAction SilentlyContinue
         Remove-Item Env:PERL_LSP_INSTALL_OBSERVE_FILE -ErrorAction SilentlyContinue
+    }
+
+    # --- #14052: source-only <-> release transition atomicity ------------------
+    # The selectors are created before the current-pointer commits so both
+    # names become visible together, but a failed commit must roll back the
+    # DAP name on the source-only -> release path so a non-pair current never
+    # coexists with a dangling PATH-visible adapter. The basic transition
+    # rollback is already covered by "source-to-release commit fault preserves
+    # the source-only selection" above; the cases below add the executability
+    # and pointer-mode coverage #14052 calls out.
+
+    # First-install commit fault must leave no newly advertised selector that
+    # cannot execute (#14052 acceptance).
+    Setup-Root
+    Stage-Pair -Dest $ExtractDir -Server "server-first" -Dap "dap-first"
+    $env:PERL_LSP_INSTALL_FAULT = "before_commit"
+    Invoke-Promote
+    Remove-Item Env:PERL_LSP_INSTALL_FAULT -ErrorAction SilentlyContinue
+    $firstServerCmd = Join-Path $script:InstallDir "perllsp.cmd"
+    $firstDapCmd = Join-Path $script:InstallDir "perl-dap.cmd"
+    if (($LastStatus -ne 0) -and
+        (-not (Test-Path -LiteralPath $firstServerCmd)) -and
+        (-not (Test-Path -LiteralPath $firstDapCmd)) -and
+        ($LastOutput -like "*before_commit*")) {
+        Pass-Case "first-install commit fault leaves no newly advertised selector that cannot execute"
+    } else {
+        Fail-Case "first-install commit fault leaves no newly advertised selector that cannot execute" "status=$LastStatus output=$LastOutput server=$([bool](Test-Path -LiteralPath $firstServerCmd)) dap=$([bool](Test-Path -LiteralPath $firstDapCmd))"
+    }
+
+    # A successful source-only -> release must publish a complete executable
+    # pair without a mixed, dangling, or missing-member observation
+    # (#14052 acceptance).
+    Setup-Root
+    Stage-ServerOnly -Dest $ExtractDir -Server "source-server"
+    Invoke-Promote -Mode source
+    Stage-ExecutablePair -Dest $ExtractDir -Server "exec-server-b" -Dap "exec-dap-b"
+    Invoke-Promote
+    $exeCurrent = Get-StandaloneCurrentObservation -InstallDir $script:InstallDir
+    $exePathv = Get-StandalonePathVisibleObservation -InstallDir $script:InstallDir
+    if (($LastStatus -eq 0) -and
+        (Assert-ExecutablePair -Server "exec-server-b" -Dap "exec-dap-b") -and
+        ($exeCurrent -like "*disposition=archive_pair_required*") -and
+        ($exePathv -notlike "state=mixed*") -and
+        ($exePathv -notlike "state=none*")) {
+        Pass-Case "source-only-to-release success publishes a complete executable pair"
+    } else {
+        Fail-Case "source-only-to-release success publishes a complete executable pair" "status=$LastStatus output=$LastOutput current=$exeCurrent pathv=$exePathv"
+    }
+
+    # A first-install pair must publish a complete executable pair
+    # (#14052 acceptance: no newly advertised selector can be unexecutable).
+    Setup-Root
+    Stage-ExecutablePair -Dest $ExtractDir -Server "exec-server-fresh" -Dap "exec-dap-fresh"
+    Invoke-Promote
+    if (($LastStatus -eq 0) -and
+        (Assert-ExecutablePair -Server "exec-server-fresh" -Dap "exec-dap-fresh")) {
+        Pass-Case "first-install release publishes a complete executable pair"
+    } else {
+        Fail-Case "first-install release publishes a complete executable pair" "status=$LastStatus output=$LastOutput current=$(Get-StandaloneCurrentObservation -InstallDir $script:InstallDir)"
+    }
+
+    # The accepted test surface must not advertise a PERL_LSP_INSTALL_POINTER
+    # switch; the installer no longer reads that variable. A non-deliberate
+    # test must not reintroduce it (#14052 acceptance). Scoped to the
+    # installer surface so the scan stays bounded.
+    $installerHits = @()
+    foreach ($f in @("scripts/install.sh", "install.sh", "install.ps1")) {
+        $path = Join-Path $Root $f
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $matches = Select-String -Path $path -Pattern 'PERL_LSP_INSTALL_POINTER' -SimpleMatch
+        if ($matches) { $installerHits += $matches }
+    }
+    if ($installerHits.Count -eq 0) {
+        Pass-Case "no installer reads PERL_LSP_INSTALL_POINTER"
+    } else {
+        Fail-Case "no installer reads PERL_LSP_INSTALL_POINTER" ($installerHits | Out-String)
     }
 } finally {
     Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue

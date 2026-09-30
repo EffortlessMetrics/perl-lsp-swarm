@@ -110,7 +110,7 @@ impl<'a> Parser<'a> {
         }
 
         if self.pending_heredocs.len() >= MAX_HEREDOC_DEPTH {
-            self.errors.push(ParseError::syntax(
+            self.record_error(ParseError::syntax(
                 format!("Heredoc depth limit exceeded (max {})", MAX_HEREDOC_DEPTH),
                 decl_start,
             ));
@@ -146,7 +146,11 @@ impl<'a> Parser<'a> {
             .iter()
             .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }));
         if !already_reported {
-            self.errors.push(ParseError::HeredocBudgetExhausted { limit, usage, location });
+            // Not terminal: this reports a drain that *overran* but finished,
+            // so the parse is complete and the diagnostic is an ordinary one.
+            // Only the pre-check refuses work and records the terminal, so only
+            // `report_heredoc_budget_refusal` may outlive the budget (#8786).
+            self.record_error(ParseError::HeredocBudgetExhausted { limit, usage, location });
         }
     }
 
@@ -177,7 +181,7 @@ impl<'a> Parser<'a> {
             .find(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }))
         {
             Some(existing) => *existing = refusal,
-            None => self.errors.push(refusal),
+            None => self.retain_terminal_diagnostic(refusal),
         }
     }
 
@@ -307,7 +311,7 @@ impl<'a> Parser<'a> {
                 // later heredocs on the same declaration line share one
                 // `body_start` at queue time, while FIFO collection advances the
                 // actual body offset.
-                self.errors.push(ParseError::SyntaxError {
+                self.record_error(ParseError::SyntaxError {
                     message: format!("Unterminated heredoc: {}", label),
                     location: decl.decl_span.start,
                 });
@@ -322,7 +326,7 @@ impl<'a> Parser<'a> {
                 };
                 if let Some(body_location) = body_location
                     && body_location != decl.decl_span.start {
-                        self.errors.push(ParseError::SyntaxError {
+                        self.record_error(ParseError::SyntaxError {
                             message: format!("Unterminated heredoc body: {}", label),
                             location: body_location,
                         });

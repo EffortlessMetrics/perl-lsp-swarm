@@ -41,6 +41,17 @@ lua clients/lite-xl/tests/<suite>.lua <path-to-module-copy>
 
 Documented falsifiers live in each suite's header comment.
 
+The materializer and integration compose suites keep scratch under the first
+nonempty `TMPDIR`, `TEMP`, or `TMP`, falling back to gitignored `target/` when
+run from the repository root (#15517). On Unix, check the fallback with
+`env -u TMPDIR -u TEMP -u TMP lua clients/lite-xl/tests/compose_materializer_test.lua`
+(and likewise `compose_integration_test.lua`). Neither command should create a
+root-level `compose_*_scratch/` directory or a literal `nul` file. Directory
+creation uses the host's null device; Windows retains `nul`, Unix uses
+`/dev/null`. This scratch-placement check does not establish that the manifest's
+composed bytes match the staged upstream tree; the integration suite checks
+that separately.
+
 ## Journey harness (`harness.lua` + `journey_session_test.lua`)
 
 `harness.lua` (#11103) generalizes the scaffolding the focused suites share -

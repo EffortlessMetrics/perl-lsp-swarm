@@ -724,6 +724,100 @@ fn scope_local_typeglob_alias_keeps_rhs_target_visible() -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// #15712: `*{$x . $y} = \&target;` has a computed body, not a single variable
+/// named "x . $y". Recording the raw body text as one variable fabricated a
+/// false undeclared-variable diagnostic under strict mode; only a body that is
+/// exactly one simple variable may be recorded.
+#[test]
+fn computed_typeglob_body_records_no_fabricated_variable() -> Result<(), Box<dyn std::error::Error>>
+{
+    let issues = scope_issues_strict("use strict;\nmy ($x, $y);\n*{$x . $y} = \\&target;\n");
+
+    assert!(
+        !has_issue(&issues, IssueKind::UndeclaredVariable, "x . $y"),
+        "compound braced glob body must not fabricate an undeclared variable; got: {issues:?}"
+    );
+    assert!(
+        !issues.iter().any(|issue| issue.variable_name.contains("x . $y")),
+        "no diagnostic may name the compound body text; got: {issues:?}"
+    );
+    Ok(())
+}
+
+/// Even when the compound body's parts are undeclared, the analyzer must not
+/// invent one variable named after the whole expression.
+#[test]
+fn computed_typeglob_body_with_undeclared_parts_stays_unfabricated()
+-> Result<(), Box<dyn std::error::Error>> {
+    let issues = scope_issues_strict("use strict;\n*{$x . $y} = \\&target;\n");
+
+    assert!(
+        !issues.iter().any(|issue| issue.variable_name.contains("x . $y")),
+        "compound braced glob body must not be reported as one variable; got: {issues:?}"
+    );
+    Ok(())
+}
+
+/// Control: a braced body that is exactly one simple variable stays recorded —
+/// an undeclared capture still gets the strict-mode diagnostic.
+#[test]
+fn simple_variable_typeglob_body_still_reports_undeclared_capture()
+-> Result<(), Box<dyn std::error::Error>> {
+    let issues = scope_issues_strict("use strict;\n*{$undeclared} = \\&target;\n");
+
+    assert!(
+        has_issue(&issues, IssueKind::UndeclaredVariable, "$undeclared"),
+        "simple-variable braced glob body must remain a recorded use; got: {issues:?}"
+    );
+    Ok(())
+}
+
+/// Declared variables used only inside a computed glob body count as used:
+/// no false UnusedVariable diagnostics (#15731).
+#[test]
+fn computed_typeglob_body_counts_declared_variables_as_used()
+-> Result<(), Box<dyn std::error::Error>> {
+    let issues =
+        scope_issues_strict("use strict;\nuse warnings;\nmy ($x, $y);\n*{$x . $y} = \\&target;\n");
+
+    let false_unused: Vec<_> = issues
+        .iter()
+        .filter(|issue| {
+            issue.kind == IssueKind::UnusedVariable
+                && (issue.variable_name == "x" || issue.variable_name == "y")
+        })
+        .collect();
+    assert!(
+        false_unused.is_empty(),
+        "variables used inside a computed glob body must not be reported unused; got: {issues:?}"
+    );
+    Ok(())
+}
+
+/// Undeclared variables inside a computed glob body each earn their own
+/// strict-mode diagnostic — never one fabricated compound name (#15731).
+#[test]
+fn computed_typeglob_body_reports_each_undeclared_variable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let issues = scope_issues_strict("use strict;\n*{$x . $y} = \\&target;\n");
+
+    let undeclared_x = issues
+        .iter()
+        .any(|issue| issue.kind == IssueKind::UndeclaredVariable && issue.variable_name == "$x");
+    let undeclared_y = issues
+        .iter()
+        .any(|issue| issue.kind == IssueKind::UndeclaredVariable && issue.variable_name == "$y");
+    assert!(
+        undeclared_x && undeclared_y,
+        "each undeclared variable in a computed glob body needs its own diagnostic; got: {issues:?}"
+    );
+    assert!(
+        !issues.iter().any(|issue| issue.variable_name.contains("x . $y")),
+        "the compound body text must never become one variable name; got: {issues:?}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 3b. local with builtin special variables — issue #3502
 // ---------------------------------------------------------------------------

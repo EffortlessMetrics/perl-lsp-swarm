@@ -23,6 +23,8 @@ pub use modifier_analysis::{
     TransliterationModifiers,
 };
 
+/// Facade over the analyzer submodules: capture projection, modifier
+/// analysis, and hover-text rendering for Perl regex operators.
 pub struct RegexAnalyzer;
 
 impl RegexAnalyzer {
@@ -75,6 +77,8 @@ impl RegexAnalyzer {
         modifier_analysis::analyze_modifiers(operator, sequence, profile)
     }
 
+    /// Render the editor hover text for one regex body under the given
+    /// suffix modifiers.
     pub fn hover_text_for_regex(pattern: &str, modifiers: &str) -> String {
         hover::hover_text_for_regex(pattern, modifiers)
     }

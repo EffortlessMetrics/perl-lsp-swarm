@@ -665,17 +665,70 @@ impl ReloadExecution {
         outcome: LoadedModuleReloadOutcome,
         generation: GenerationAdvance,
     ) -> Self {
-        let phase_reached = match &outcome {
-            LoadedModuleReloadOutcome::Reloaded => ReloadTransactionPhase::TerminalProjection,
-            LoadedModuleReloadOutcome::Refused { .. } => ReloadTransactionPhase::Admission,
-            LoadedModuleReloadOutcome::FailedBeforeMutation { phase, .. }
-            | LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { phase, .. } => *phase,
-        };
+        let phase_reached = Self::preview_phase_for(&outcome);
         Self {
             operation_id: generation.operation(),
             outcome,
             phase_reached,
             mutation_issued: generation.advanced(),
+            mechanism: ReloadMechanism::IncDeletionAndRequire,
+            generation,
+        }
+    }
+
+    /// The phase one terminal outcome settles at on the preview route.
+    ///
+    /// Single-sourced so the R03 composer (`route_terminal`) can validate
+    /// the phase/outcome pairing against `phase_permits_outcome` *before*
+    /// the clock moves (FC-CLOCK-BEFORE-VALIDATE): a malformed pair must
+    /// never advance the generation and then fail projection with pending
+    /// state still installed.
+    pub(crate) fn preview_phase_for(outcome: &LoadedModuleReloadOutcome) -> ReloadTransactionPhase {
+        match outcome {
+            LoadedModuleReloadOutcome::Reloaded => ReloadTransactionPhase::TerminalProjection,
+            LoadedModuleReloadOutcome::Refused { .. } => ReloadTransactionPhase::Admission,
+            LoadedModuleReloadOutcome::FailedBeforeMutation { phase, .. }
+            | LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { phase, .. } => *phase,
+        }
+    }
+
+    /// Settle a preview-profile (R03, #10102) terminal without running a
+    /// mechanism transaction.
+    ///
+    /// The R03 composer owns no debugger channel: admitted operations on an
+    /// unbacked runtime (and seeded test terminals) settle against the
+    /// session clock here through the same
+    /// [`RuntimeModuleGenerationClock::apply`] every production execution
+    /// uses, then project through `project_execution`. `phase_reached`
+    /// derives from the outcome by the fixture rule above and
+    /// `mutation_issued` reports the witness, so the projector's
+    /// direction/contiguity checks still bind.
+    ///
+    /// `mechanism` records no execution fact here — `project_execution`
+    /// never publishes it — so a reader must not treat a preview-settled
+    /// execution as evidence that a mechanism ran. Production mechanism
+    /// executions come exclusively from [`execute_reload`]; if a future
+    /// consumer publishes `mechanism`, this constructor must grow a real
+    /// mechanism parameter instead of reusing the placeholder below.
+    ///
+    /// The caller owns pairing validity: [`ReloadSessionWiring::
+    /// route_terminal`](super::reconciliation::ReloadSessionWiring::route_terminal)
+    /// validates the phase/outcome pair before the clock moves. Calling
+    /// this directly with a contract-invalid pair advances the clock for
+    /// an outcome no projector will publish.
+    pub(crate) fn settle_preview_terminal(
+        outcome: LoadedModuleReloadOutcome,
+        operation_id: u64,
+        clock: &mut RuntimeModuleGenerationClock,
+    ) -> Self {
+        let phase_reached = Self::preview_phase_for(&outcome);
+        let generation = clock.apply(&outcome, operation_id);
+        let mutation_issued = generation.advanced();
+        Self {
+            operation_id,
+            outcome,
+            phase_reached,
+            mutation_issued,
             mechanism: ReloadMechanism::IncDeletionAndRequire,
             generation,
         }
@@ -770,13 +823,19 @@ pub fn execute_reload<C: ReloadRuntimeChannel + ?Sized>(
 
     // Admission: the generation clock must still be able to move.
     //
-    // `RuntimeModuleGenerationClock::apply` saturates at `u64::MAX` and
-    // still reports `Advanced`, while `reference_is_stale` compares
-    // generations strictly (`<`). At exhaustion those two combine into a
-    // fail-open: a mutation would report a generation advance that did not
-    // happen, and every reference minted at `u64::MAX` would stay current
-    // across it — exactly the "old identities survive a possibly applied
-    // outcome" shape the invalidation contract forbids.
+    // `RuntimeModuleGenerationClock::apply` saturates at `u64::MAX`. With
+    // the lower-level saturation guard landed in #14643, a mutating
+    // outcome applied at the ceiling now produces
+    // `{previous: MAX, current: MAX, advanced: false}` and the wire
+    // projector refuses to publish it via `GenerationAdvanceMismatch`,
+    // so the executor no longer needs to second-guess `apply`. It still
+    // refuses here, both to keep this admission authoritative and
+    // because a saturated advance could otherwise let
+    // `reference_is_stale` keep a `MAX`-bound reference current — the
+    // `is_exhausted` clause in `reference_is_stale` closes that hole in
+    // depth, but refusing at admission means no `Reloaded` or
+    // `IndeterminatePossiblyApplied` outcome can ever be minted against
+    // an exhausted clock.
     //
     // `RuntimeModuleGeneration::is_exhausted`'s own doc requires treating
     // everything at that ceiling as stale rather than risking a reused
@@ -2019,6 +2078,10 @@ mod tests {
         mut command: std::process::Command,
         deadline: std::time::Duration,
     ) -> DebuggerProbe {
+        // #15538: the deadline paths below must reach descendants, not only
+        // the direct child. On Unix this makes the child a process-group
+        // leader.
+        crate::process_tree::prepare_owned_command(&mut command);
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => return DebuggerProbe::InstrumentFailed(format!("spawn: {error}")),
@@ -2035,15 +2098,14 @@ mod tests {
                 }
                 Ok(None) => {
                     if std::time::Instant::now() >= expiry {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        // #15538: kill the whole owned tree and reap.
+                        let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                         return DebuggerProbe::TimedOut;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(25));
                 }
                 Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    let _ = crate::process_tree::terminate_tree_and_reap(&mut child);
                     return DebuggerProbe::InstrumentFailed(format!("try_wait: {error}"));
                 }
             }
@@ -2985,11 +3047,15 @@ mod tests {
 
     /// An exhausted generation clock refuses before mutating.
     ///
-    /// `RuntimeModuleGenerationClock::apply` saturates at `u64::MAX` and
-    /// still reports `Advanced`, while `reference_is_stale` compares
-    /// strictly — so mutating at the ceiling would claim an advance that
-    /// did not happen and leave references minted there current across the
-    /// reload. The executor refuses instead.
+    /// After #14643 the lower-level clock no longer claims an advance at
+    /// the saturating ceiling (`apply` reports `advanced = false` when
+    /// `previous.next() == previous`) and `reference_is_stale` fails
+    /// closed at exhaustion regardless of the bind point, so neither
+    /// invariant relies on this refusal alone. The refusal here is the
+    /// authoritative upstream guard: no `Reloaded` or
+    /// `IndeterminatePossiblyApplied` outcome can ever be minted against
+    /// an exhausted clock, and the wire projector therefore never has to
+    /// consider one.
     #[test]
     fn exhausted_generation_clock_refuses_before_mutating() -> TestResult {
         let plan = admitted_plan()?;

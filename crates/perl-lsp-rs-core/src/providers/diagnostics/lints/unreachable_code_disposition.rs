@@ -186,7 +186,7 @@ pub const PL406_DISPOSITIONS: &[Pl406Disposition] = &[
     disposition!("Undef", Leaf, &[], &[], &[], Inherited, None, ConservativeFallthrough, None),
     disposition!("Readline", Leaf, &[], &[], &[], Inherited, None, ConservativeFallthrough, None),
     disposition!("Glob", Leaf, &[], &[], &[], Inherited, None, ConservativeFallthrough, None),
-    disposition!("Typeglob", Leaf, &[], &[], &[], Inherited, None, ConservativeFallthrough, None),
+    disposition!("Typeglob", ExpressionContainer, &["body"], &[], &[], Inherited, None, ConservativeFallthrough, None),
     disposition!("Number", Leaf, &[], &[], &[], Inherited, None, ConservativeFallthrough, None),
     disposition!("String", Leaf, &[], &[], &[], Inherited, None, ConservativeFallthrough, None),
     disposition!("VString", Leaf, &[], &[], &[], Inherited, None, ConservativeFallthrough, None),

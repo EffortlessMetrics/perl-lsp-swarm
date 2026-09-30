@@ -8,6 +8,7 @@
 #[cfg(test)]
 use super::CriticConfig;
 use super::{CriticFindingShape, Severity, insertion_range};
+use crate::providers::diagnostics::known_scalar_argument_count;
 use crate::providers::diagnostics::unreachable_code::check_unreachable_code;
 use perl_parser_core::Node;
 use perl_parser_core::NodeKind;
@@ -24,6 +25,14 @@ pub use native_contract::{
     CriticTextEdit, FixSafety,
 };
 pub use native_registry::{NativeCriticProfile, NativeCriticRegistry};
+/// Proof-only rebuild/reuse instrumentation; see `native_registry`. Compiled
+/// for this crate's tests and for downstream crates that opt in with the
+/// `test-instrumentation` feature, never in a production build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub use native_registry::{
+    native_critic_scope_rebuild_count, native_critic_scope_reuse_count,
+    reset_native_critic_scope_rebuild_count, reset_native_critic_scope_reuse_count,
+};
 pub use native_suppressions::{CriticSuppression, CriticSuppressionMap, CriticSuppressionScope};
 
 /// Resolve scope analysis issues for a rule, using pre-computed results from
@@ -1839,7 +1848,7 @@ fn push_printf_format_arity_finding(
     }
 
     let specifier_count = count_format_specifiers(format_content);
-    let arg_count = args.len().saturating_sub(1);
+    let Some(arg_count) = known_scalar_argument_count(&args[1..]) else { return };
     if specifier_count != arg_count {
         out.push(printf_format_arity_finding(
             rule,
@@ -3310,6 +3319,17 @@ mod tests {
         let findings = registry.check(&ctx);
 
         assert!(findings.is_empty(), "matching and dynamic formats should be accepted");
+    }
+
+    #[test]
+    fn native_printf_format_arity_skips_unknown_list_cardinality() {
+        let source = "my @values = ('a', 'b'); printf '%s %s', @values; sprintf '%s %s', $prefix, @values; printf '%s %s', qx{printf 'a\\nb\\n'};";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(PrintfFormatArityRule)]);
+
+        assert!(registry.check(&ctx).is_empty());
     }
 
     #[test]

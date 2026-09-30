@@ -370,6 +370,7 @@ describe('package.json contributes', () => {
         'onLanguage:gherkin',
         'onWalkthrough:perl-lsp.gettingStarted',
         'onDebugResolve:perl',
+        'onDebugResolve:perl5',
         'onDebugInitialConfigurations',
       ]);
     });
@@ -742,13 +743,6 @@ describe('package.json contributes', () => {
       expect(setting.scope).toBe('machine');
     });
 
-    test('defines autoPopulateNewFiles with default true', () => {
-      const setting = getSetting(properties, 'perl-lsp.autoPopulateNewFiles');
-      expect(setting).toBeDefined();
-      expect(setting.type).toBe('boolean');
-      expect(setting.default).toBe(true);
-    });
-
     test('defines updateCheckInterval setting used by background update checker', () => {
       const setting = getSetting(properties, 'perl-lsp.updateCheckInterval');
       expect(setting).toBeDefined();
@@ -803,7 +797,6 @@ describe('package.json contributes', () => {
         'perl-lsp.perlcritic.enabled',
         'perl-lsp.perlcritic.severity',
         'perl-lsp.enableTestIntegration',
-        'perl-lsp.autoPopulateNewFiles',
       ];
       for (const key of resourceScoped) {
         expect(getSetting(properties, key).scope).toBe('resource');
@@ -948,7 +941,7 @@ describe('package.json contributes', () => {
       expect(kb.key.toLowerCase()).toBe('shift+alt+m');
     });
 
-    test('refactoring keybindings are scoped to perl with selection', () => {
+    test('refactoring keybindings are scoped to perl or perl5 with selection', () => {
       const keybindings = pkg.contributes.keybindings;
       const extractVarKb = required(
         keybindings.find((keybinding) => keybinding.command === 'perl-lsp.extractVariable'),
@@ -958,13 +951,13 @@ describe('package.json contributes', () => {
         keybindings.find((keybinding) => keybinding.command === 'perl-lsp.extractMethod'),
         'extractMethod keybinding',
       );
-      expect(extractVarKb.when).toContain('editorLangId == perl');
-      expect(extractMethodKb.when).toContain('editorLangId == perl');
+      expect(extractVarKb.when).toContain('editorLangId == perl || editorLangId == perl5');
+      expect(extractMethodKb.when).toContain('editorLangId == perl || editorLangId == perl5');
     });
 
-    test('keybindings are scoped to perl language', () => {
+    test('keybindings are scoped to perl or perl5 language', () => {
       for (const kb of pkg.contributes.keybindings) {
-        expect(kb.when).toContain('editorLangId == perl');
+        expect(kb.when).toContain('editorLangId == perl || editorLangId == perl5');
       }
     });
   });

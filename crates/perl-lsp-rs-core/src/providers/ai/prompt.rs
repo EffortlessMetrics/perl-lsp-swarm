@@ -80,6 +80,8 @@ pub fn build_fim_prompt(context: &PreparedInlineCompletionContext) -> (String, S
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some_with;
+
     use super::*;
 
     #[test]
@@ -100,8 +102,8 @@ mod tests {
         // closest line.
         assert!(user.contains("use warnings;"), "preceding lines must be included, got: {user}");
         // And it must precede the cursor marker, not be silently dropped.
-        let cursor = user.find("<CURSOR>").expect("cursor marker");
-        let warn = user.find("use warnings;").expect("warnings line");
+        let cursor = must_some_with(user.find("<CURSOR>"), "cursor marker");
+        let warn = must_some_with(user.find("use warnings;"), "warnings line");
         assert!(warn < cursor, "preceding line must precede cursor, got: {user}");
     }
 

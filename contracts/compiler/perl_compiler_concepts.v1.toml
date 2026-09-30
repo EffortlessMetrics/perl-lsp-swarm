@@ -232,7 +232,7 @@ title = "Try/catch/finally regions"
 ast_kinds = ["Try"]
 parser_ast = "parsed"
 flat_hir = "modeled"
-body_hir = "opaque"
+body_hir = "modeled"
 pir_a = "boundary"
 compile_effects_world = "not_applicable"
 eir_profile = "absent"
@@ -242,8 +242,8 @@ composition = "missing"
 provider_eligibility = "ineligible"
 ownership = "active"
 owner_issue = "#6661"
-claim_boundary = "A flat shell exists; exception regions, handlers, bindings, and exceptional CFG are not canonical."
-evidence = ["docs/project/status/hir_lowering.md", "#6661"]
+claim_boundary = "Canonical body HIR models the try/catch/finally regions and the catch binding, and PIR-A lowers the statements inside each region (#15567). Exceptional control flow is not modeled: which operations throw, which handler a throw selects, and the guarantee that finally runs on every exit path. Handler and finally entry therefore use the conservative Unknown edge, and PIR-A records a TryExceptionalEdges boundary."
+evidence = ["docs/project/status/hir_lowering.md", "#6661", "#15567", "crates/perl-parser-core/tests/hir_pir_try_regions.rs"]
 
 [[concepts]]
 concept_id = "formats.declaration"

@@ -7,12 +7,24 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::tasks::metrics::lsp_stats::{
     LatencyMetric, MeasuredEditorUxScorecard, RateMetric, WorkflowResult,
 };
+
+/// Highest `MeasuredEditorUxScorecard.schema_version` this consumer accepts.
+/// Fail closed on any other value (issue #15341): a future producer version
+/// must never silently drive the quality.md surface with stale assumptions.
+const SUPPORTED_EDITOR_UX_SCHEMA_VERSION: u32 = 1;
+
+/// `schema_version` written into the editor UX receipt
+/// (`docs/project/status/editor_ux.json`). The token is a self-describing
+/// `String` so consumers can perform a string-equality check and a v2
+/// evolution can be expressed as a different value rather than a magic
+/// integer (#15329).
+const EDITOR_UX_RECEIPT_SCHEMA_VERSION: &str = "editor_ux.v1";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -113,7 +125,7 @@ pub(super) fn generate_editor_ux_receipt(root: &Path) -> Result<String> {
     let known_blockers = load_active_known_blockers(root)?;
 
     let receipt = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": EDITOR_UX_RECEIPT_SCHEMA_VERSION,
         "receipt_kind": if measured_scorecard.is_some() { "measured_status" } else { "planning_scaffold" },
         "scorecard": "editor_ux",
         "harness": {
@@ -166,6 +178,15 @@ fn load_measured_scorecard(root: &Path) -> Result<Option<MeasuredEditorUxScoreca
     let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let scorecard: MeasuredEditorUxScorecard =
         serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    if scorecard.schema_version != SUPPORTED_EDITOR_UX_SCHEMA_VERSION {
+        bail!(
+            "{}: unsupported MeasuredEditorUxScorecard schema_version \
+             (expected {}, found {})",
+            path.display(),
+            SUPPORTED_EDITOR_UX_SCHEMA_VERSION,
+            scorecard.schema_version
+        );
+    }
     Ok(Some(scorecard))
 }
 

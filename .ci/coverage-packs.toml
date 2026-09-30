@@ -195,6 +195,36 @@ coverage_filters = [
 ]
 
 [[pack]]
+id = "patch-coverage-xtask-parser-semantic-facade-guard"
+lcov = false
+files = [
+  "xtask/tests/parser_semantic_facade_consumers.rs",
+]
+commands = [
+  "cargo test -p xtask --test parser_semantic_facade_consumers --profile agent --locked -- --nocapture",
+]
+coverage_filters = [
+  "parser_semantic_facade_consumers",
+]
+
+[[pack]]
+id = "patch-coverage-xtask-product-topology"
+lcov = false
+files = [
+  "policy/product-topology.toml",
+  "xtask/src/bin/product-topology.rs",
+  "xtask/tests/product_topology_cli.rs",
+]
+commands = [
+  "cargo test -p xtask --bin product-topology --profile agent --locked -- --nocapture",
+  "cargo test -p xtask --test product_topology_cli --profile agent --locked -- --nocapture",
+]
+coverage_filters = [
+  "product_topology",
+  "product-topology",
+]
+
+[[pack]]
 id = "patch-coverage-xtask-parser-tdd-facade-guard"
 lcov = false
 files = [
@@ -213,13 +243,11 @@ lcov = false
 files = [
   "scripts/ci/route-codecov-packs.py",
   "scripts/ci/test_route_codecov_packs.py",
-  "scripts/ci/test_route_codecov_binary_targets.py",
   "xtask/src/tasks/ci_route.rs",
   "xtask/tests/ci_route_cli.rs",
 ]
 commands = [
   "python -m unittest scripts/ci/test_route_codecov_packs.py",
-  "python -m unittest scripts/ci/test_route_codecov_binary_targets.py",
   "cargo test -p xtask --bin xtask --profile agent --locked ci_route -- --nocapture",
   "cargo test -p xtask --test ci_route_cli --profile agent --locked -- --nocapture",
   "cargo run -p xtask --profile agent --locked -- ci route --base origin/main --head HEAD --receipt target/receipts/ci-route.json",

@@ -1,0 +1,9 @@
+project: product
+component: Language server
+kind: Changed
+body: "The `compat` formatter mode is retired from the public contract (#7129). `compat` was a bare alias: it selected the native formatter and produced byte-identical output, so it named no behavior. It is removed from every public surface — the settings schema, its LSP4IJ projection, the `formatting.engine` valid-value lists, and the configuration reference — and the retired `compat` / `perltidy-compat` tokens are rejected on both configuration channels (#15624 closed the deprecation window before any release accepted the aliases). Migration: set `[formatting] engine = \"native\"` (or remove the key; `native` is the default). No formatting output changes — the alias always ran the native formatter."
+time: 2026-09-16T00:00:00Z
+custom:
+  PR: "15621"
+  Slug: formatter-compat-retired-7129
+  Breaking: "yes"

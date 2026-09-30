@@ -36,6 +36,8 @@ import textwrap
 scripts_dir = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, scripts_dir)
 
+from bash_binary import bash_binary  # noqa: E402  (path set above)
+
 # Import via importlib because the module name contains a hyphen.
 import importlib.util
 
@@ -175,7 +177,7 @@ class TestPublishWorkflowStep(unittest.TestCase):
         )
         try:
             result = subprocess.run(
-                ["bash", "-lc", stub_cargo],
+                [bash_binary(), "-lc", stub_cargo],
                 cwd=repository,
                 check=False,
                 capture_output=True,

@@ -1,5 +1,6 @@
 import {
   StaleDocumentReplayError,
+  V0_18_TEXT_SYNC_ENVELOPE,
   replayOpenPerlDocuments,
   replayOpenPerlDocumentsWhenReady,
 } from '../languageClientDocumentSync';
@@ -75,6 +76,29 @@ describe('replayOpenPerlDocuments', () => {
     });
   });
 
+  test('replays perl5 alias documents to the same server generation (#7699)', async () => {
+    const sendNotification = jest.fn().mockResolvedValue(undefined);
+
+    await replayOpenPerlDocuments({ sendNotification }, [
+      {
+        uri: 'file:///workspace/probe.pl',
+        languageId: 'perl5',
+        version: 3,
+        text: '1;\n',
+      },
+    ]);
+
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    expect(sendNotification).toHaveBeenCalledWith('textDocument/didOpen', {
+      textDocument: {
+        uri: 'file:///workspace/probe.pl',
+        languageId: 'perl5',
+        version: 3,
+        text: '1;\n',
+      },
+    });
+  });
+
   test('preserves notification failures for restart callers', async () => {
     const failure = new Error('client stopped');
     const sendNotification = jest.fn().mockRejectedValue(failure);
@@ -127,5 +151,15 @@ describe('replayOpenPerlDocuments', () => {
     await expect(
       replayOpenPerlDocumentsWhenReady(client, [PERL_DOCUMENT], 2, () => true, 1000),
     ).rejects.toBe(failure);
+  });
+});
+
+describe('V0_18_TEXT_SYNC_ENVELOPE', () => {
+  test('v0.18 envelope is full-document UTF-16', () => {
+    expect(V0_18_TEXT_SYNC_ENVELOPE).toEqual({
+      decision: 'full_document_utf16',
+      textSyncKind: 'Full',
+      positionEncoding: 'utf-16',
+    });
   });
 });

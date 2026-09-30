@@ -12,6 +12,9 @@ mod quick_fix;
 mod remediation;
 mod result_identity;
 mod semantic;
+mod service;
+#[cfg(test)]
+mod test_core_authority_policy;
 mod types;
 mod work_receipt;
 
@@ -32,22 +35,33 @@ pub use native::{
     RequireUseStrictRule, RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule,
     UndefComparisonRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
 };
+/// Proof-only rebuild/reuse instrumentation; see
+/// `native::native_registry::native_critic_scope_rebuild_count`. Never present
+/// in a production build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub use native::{
+    native_critic_scope_rebuild_count, native_critic_scope_reuse_count,
+    reset_native_critic_scope_rebuild_count, reset_native_critic_scope_reuse_count,
+};
 pub use normalized::{
-    CriticFindingCandidate, CriticFindingContributor, CriticSourceIdentity,
+    CriticFindingCandidate, CriticFindingContributor, CriticPolicyRetention, CriticSourceIdentity,
     NormalizedCriticFinding, OwnedCriticObservedIdentity, normalize_critic_findings,
 };
 pub use quick_fix::{QuickFix, TextEdit};
 pub use remediation::{CriticRemediationClass, CriticRemediationEligibility};
 pub use result_identity::{
-    CriticPolicyIdentity, CriticPolicyIdentityError, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION,
-    DiagnosticFactIdentity, DiagnosticResultIdentity, DiagnosticResultIdentityInput,
-    DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
+    AcceptedCriticPolicyIdentity, CriticPolicyIdentity, CriticPolicyIdentityError,
+    DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity, DiagnosticResultIdentity,
+    DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
 };
 pub use semantic::{
     BuiltInCriticObservation, NativeCriticPolicy, UnresolvedNativeFindingIdentity,
     account_unresolved_native_identities, built_in_observation_candidates,
     critic_source_identity_for_uri, native_finding_candidates,
     native_finding_candidates_with_accounting, normalize_with_native_policy,
+};
+pub use service::{
+    NativeCriticRun, NativeCriticRunCompleteness, NativeCriticService, NativeCriticSubject, RunGate,
 };
 pub use types::{CriticConfig, Severity, Violation};
 pub use work_receipt::NativeCriticWorkReceipt;

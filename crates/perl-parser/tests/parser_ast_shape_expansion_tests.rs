@@ -328,7 +328,7 @@ fn collect_loop_controls<'a>(node: &'a Node, controls: &mut Vec<&'a Node>) {
                 collect_loop_controls(default, controls);
             }
         }
-        NodeKind::OptionalParameter { variable, default_value } => {
+        NodeKind::OptionalParameter { variable, default_value, .. } => {
             collect_loop_controls(variable, controls);
             collect_loop_controls(default_value, controls);
         }
@@ -636,7 +636,7 @@ fn diamond_readline_glob_and_typeglob_expression_shapes_are_preserved() -> Resul
     let names: Vec<&str> = typeglobs
         .iter()
         .filter_map(|node| match &node.kind {
-            NodeKind::Typeglob { name } => Some(name.as_str()),
+            NodeKind::Typeglob { name, .. } => Some(name.as_str()),
             _ => None,
         })
         .collect();

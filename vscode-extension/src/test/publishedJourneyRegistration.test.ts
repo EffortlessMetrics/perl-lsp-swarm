@@ -171,8 +171,18 @@ function fakeVscode(
     ConfigurationTarget: { Global: 1 },
     WorkspaceEdit,
     Position,
+    // The packaged journey (`packagedBundleJourney.test.ts`) reaches for
+    // `vscode.Uri.file(...)` from its cleanup path (#15558, #15572). The local
+    // double must keep the `Uri` surface in lock-step with the shared mock
+    // (`src/test/__mocks__/vscode.ts`); otherwise a future journey change can
+    // silently outrun the registration test's double again.
     Uri: {
-      file: (fsPath: string) => ({ fsPath, toString: () => `file://${fsPath}` }),
+      parse: (value: string) => ({ toString: () => value, fsPath: value }),
+      file: (fsPath: string) => ({
+        fsPath,
+        toString: () => `file://${fsPath}`,
+        scheme: 'file',
+      }),
     },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: workspacePath } }],
@@ -458,131 +468,194 @@ describe('registered packaged journey readiness contract', () => {
     }
   }
 
-  test('candidate registered callback withholds providers until readiness resolves', async () => {
-    const source = journeySource();
-    let release: (() => void) | undefined;
-    const readiness = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const harness = await makeHarness(source, readiness, true, 25);
-    const run = harness.journey.call({ timeout: () => undefined });
-    let watchdog: NodeJS.Timeout | undefined;
-    try {
-      const watchdogPromise = new Promise<never>((_, reject) => {
-        watchdog = setTimeout(() => reject(new Error('readiness gate was not entered')), 1_000);
-      });
-      const readinessObserved = await Promise.race([
-        harness.readinessEntered.then(() => 'entered' as const),
-        harness.firstProviderCall.then(() => 'provider' as const),
-        watchdogPromise,
-      ]);
-      expect(readinessObserved).toBe('entered');
-      expect(harness.calls).toEqual([]);
-      release?.();
-      await run;
-      expect(harness.calls).toContain('vscode.executeCompletionItemProvider');
-      expect(harness.calls).toContain('vscode.executeDocumentSymbolProvider');
-      expect(harness.readinessArguments).toEqual([
-        { uri: 'file:///workspace/packaged_daily_driver.pl', timeoutMs: 30_000 },
-      ]);
-      const receipt = JSON.parse(
-        fs.readFileSync(
-          path.join(harness.receiptDirectory, 'packaged_bundle_journey_receipt.json'),
-          'utf8',
-        ),
-      ) as {
-        readiness_before?: Record<string, unknown>;
-        readiness_wait?: Record<string, unknown>;
-        readiness_after?: Record<string, unknown>;
-        requests?: { immediate_phase?: unknown };
-      };
-      expect(receipt.readiness_wait).toMatchObject({
-        scope: 'active_document',
-        status: 'ready',
-      });
-      expect(receipt.readiness_after).toMatchObject({
-        indexState: 'building',
-        fullyReady: false,
-      });
-      expect(receipt.requests?.immediate_phase).toBe('after_active_document_readiness');
-      expect((receipt.readiness_before as { generation?: number }).generation).toBe(0);
-    } finally {
-      if (watchdog) clearTimeout(watchdog);
-      release?.();
-      await run.catch(() => undefined);
-      harness.cleanup();
-    }
-  });
+  // Each test transpiles the packaged journey with the real pinned tsc inside
+  // makeHarness, so the jest-level timeout must budget compiler startups, not
+  // just the assertions. The readiness timing assertions below keep their own
+  // 1s watchdogs; this bound only covers the transpile + execution envelope.
+  const transpileTimeoutMs = 120_000;
 
-  test('warm registered callback does not wait for a new generation', async () => {
-    const readiness = Promise.resolve();
-    const harness = await makeHarness(journeySource(), readiness, true, 0, 1);
-    try {
-      await harness.journey.call({ timeout: () => undefined });
-      expect(harness.readinessArguments).toEqual([
-        { uri: 'file:///workspace/packaged_daily_driver.pl', timeoutMs: 30_000 },
-      ]);
-      expect(harness.calls).toContain('vscode.executeCompletionItemProvider');
-      const receipt = readReceipt(harness.receiptDirectory);
-      const requests = receipt.requests as {
-        after_edit?: { status?: string };
-        rename?: { status?: string };
-      };
-      expect(requests.after_edit?.status).toBe('ok');
-      expect(requests.rename?.status).toBe('applied_text_edits_verified');
-    } finally {
-      harness.cleanup();
-    }
-  });
+  test(
+    'candidate registered callback withholds providers until readiness resolves',
+    async () => {
+      const source = journeySource();
+      let release: (() => void) | undefined;
+      const readiness = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const harness = await makeHarness(source, readiness, true, 25);
+      const run = harness.journey.call({ timeout: () => undefined });
+      let watchdog: NodeJS.Timeout | undefined;
+      try {
+        const watchdogPromise = new Promise<never>((_, reject) => {
+          watchdog = setTimeout(() => reject(new Error('readiness gate was not entered')), 1_000);
+        });
+        const readinessObserved = await Promise.race([
+          harness.readinessEntered.then(() => 'entered' as const),
+          harness.firstProviderCall.then(() => 'provider' as const),
+          watchdogPromise,
+        ]);
+        expect(readinessObserved).toBe('entered');
+        expect(harness.calls).toEqual([]);
+        release?.();
+        await run;
+        expect(harness.calls).toContain('vscode.executeCompletionItemProvider');
+        expect(harness.calls).toContain('vscode.executeDocumentSymbolProvider');
+        expect(harness.readinessArguments).toEqual([
+          { uri: 'file:///workspace/packaged_daily_driver.pl', timeoutMs: 30_000 },
+        ]);
+        const receipt = JSON.parse(
+          fs.readFileSync(
+            path.join(harness.receiptDirectory, 'packaged_bundle_journey_receipt.json'),
+            'utf8',
+          ),
+        ) as {
+          readiness_before?: Record<string, unknown>;
+          readiness_wait?: Record<string, unknown>;
+          readiness_after?: Record<string, unknown>;
+          requests?: { immediate_phase?: unknown };
+        };
+        expect(receipt.readiness_wait).toMatchObject({
+          scope: 'active_document',
+          status: 'ready',
+        });
+        expect(receipt.readiness_after).toMatchObject({
+          indexState: 'building',
+          fullyReady: false,
+        });
+        expect(receipt.requests?.immediate_phase).toBe('after_active_document_readiness');
+        expect((receipt.readiness_before as { generation?: number }).generation).toBe(0);
+      } finally {
+        if (watchdog) clearTimeout(watchdog);
+        release?.();
+        await run.catch(() => undefined);
+        harness.cleanup();
+      }
+    },
+    transpileTimeoutMs,
+  );
+
+  test(
+    'warm registered callback does not wait for a new generation',
+    async () => {
+      const readiness = Promise.resolve();
+      const harness = await makeHarness(journeySource(), readiness, true, 0, 1);
+      try {
+        await harness.journey.call({ timeout: () => undefined });
+        expect(harness.readinessArguments).toEqual([
+          { uri: 'file:///workspace/packaged_daily_driver.pl', timeoutMs: 30_000 },
+        ]);
+        expect(harness.calls).toContain('vscode.executeCompletionItemProvider');
+        const receipt = readReceipt(harness.receiptDirectory);
+        const requests = receipt.requests as {
+          after_edit?: { status?: string };
+          rename?: { status?: string };
+        };
+        expect(requests.after_edit?.status).toBe('ok');
+        expect(requests.rename?.status).toBe('applied_text_edits_verified');
+      } finally {
+        harness.cleanup();
+      }
+    },
+    transpileTimeoutMs,
+  );
 
   test.each([
     ['rejected readiness', true],
     ['missing readiness API', false],
-  ])('%s withholds providers and records not proven', async (_label, exposeReadiness) => {
-    let rejectReadiness: ((error: Error) => void) | undefined;
-    const readiness = new Promise<void>((_resolve, reject) => {
-      rejectReadiness = reject;
-    });
-    void readiness.catch(() => undefined);
-    const harness = await makeHarness(journeySource(), readiness, exposeReadiness);
-    const run = harness.journey.call({ timeout: () => undefined });
-    let watchdog: NodeJS.Timeout | undefined;
-    try {
-      if (exposeReadiness) {
-        const observed = await Promise.race([
-          harness.readinessEntered.then(() => 'entered' as const),
-          harness.firstProviderCall.then(() => 'provider' as const),
-          run.then(() => 'completed' as const),
-          new Promise<never>((_, reject) => {
-            watchdog = setTimeout(() => reject(new Error('readiness gate was not entered')), 1_000);
-          }),
-        ]);
-        expect(observed).toBe('entered');
-        rejectReadiness?.(new Error('readiness refused'));
-      } else {
-        await Promise.race([
-          run,
-          new Promise<never>((_, reject) => {
-            watchdog = setTimeout(
-              () => reject(new Error('missing readiness journey stalled')),
-              1_000,
-            );
-          }),
-        ]);
-      }
-      await run;
-      expect(harness.calls).toEqual([]);
-      const receipt = readReceipt(harness.receiptDirectory);
-      expect(receipt.readiness_wait).toMatchObject({
-        scope: 'active_document',
-        status: 'not_proven',
+  ])(
+    '%s withholds providers and records not proven',
+    async (_label, exposeReadiness) => {
+      let rejectReadiness: ((error: Error) => void) | undefined;
+      const readiness = new Promise<void>((_resolve, reject) => {
+        rejectReadiness = reject;
       });
-      assertProvidersNotProven(receipt);
+      void readiness.catch(() => undefined);
+      const harness = await makeHarness(journeySource(), readiness, exposeReadiness);
+      const run = harness.journey.call({ timeout: () => undefined });
+      let watchdog: NodeJS.Timeout | undefined;
+      try {
+        if (exposeReadiness) {
+          const observed = await Promise.race([
+            harness.readinessEntered.then(() => 'entered' as const),
+            harness.firstProviderCall.then(() => 'provider' as const),
+            run.then(() => 'completed' as const),
+            new Promise<never>((_, reject) => {
+              watchdog = setTimeout(
+                () => reject(new Error('readiness gate was not entered')),
+                1_000,
+              );
+            }),
+          ]);
+          expect(observed).toBe('entered');
+          rejectReadiness?.(new Error('readiness refused'));
+        } else {
+          await Promise.race([
+            run,
+            new Promise<never>((_, reject) => {
+              watchdog = setTimeout(
+                () => reject(new Error('missing readiness journey stalled')),
+                1_000,
+              );
+            }),
+          ]);
+        }
+        await run;
+        expect(harness.calls).toEqual([]);
+        const receipt = readReceipt(harness.receiptDirectory);
+        expect(receipt.readiness_wait).toMatchObject({
+          scope: 'active_document',
+          status: 'not_proven',
+        });
+        assertProvidersNotProven(receipt);
+      } finally {
+        if (watchdog) clearTimeout(watchdog);
+        rejectReadiness?.(new Error('readiness test teardown'));
+        await run.catch(() => undefined);
+        harness.cleanup();
+      }
+    },
+    transpileTimeoutMs,
+  );
+
+  // Regression guard for #15572 / #15558: the registration test's local
+  // `vscode` double must keep the same surface the published journey reaches
+  // for at runtime. Asserting the shape here means a future journey change
+  // that reaches for a new `vscode.*` member fails this unit test with a
+  // clear pointer to the missing mock, rather than as an opaque
+  // `TypeError: Cannot read properties of undefined (reading '...')` from
+  // inside the transpiled journey at the next CI run.
+  test('local vscode double exposes the Uri and WorkspaceEdit surface the journey uses', () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-shape-workspace-'));
+    const extensionPath = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-shape-extension-'));
+    try {
+      const shape = fakeVscode(
+        extensionPath,
+        workspacePath,
+        Promise.resolve(),
+        [],
+        () => undefined,
+        () => undefined,
+        [],
+        true,
+        0,
+        1,
+      );
+      expect(shape.Uri).toBeDefined();
+      const uri = shape.Uri as {
+        file: (p: string) => unknown;
+        parse: (value: string) => unknown;
+      };
+      expect(typeof uri.file).toBe('function');
+      expect(typeof uri.parse).toBe('function');
+      const probeUri = uri.file('C:/probe');
+      expect(probeUri).toMatchObject({ fsPath: 'C:/probe' });
+      const edit = new (shape.WorkspaceEdit as new () => {
+        deleteFile: (uri: { fsPath: string }) => void;
+      })();
+      expect(typeof edit.deleteFile).toBe('function');
     } finally {
-      if (watchdog) clearTimeout(watchdog);
-      rejectReadiness?.(new Error('readiness test teardown'));
-      await run.catch(() => undefined);
-      harness.cleanup();
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+      fs.rmSync(extensionPath, { recursive: true, force: true });
     }
   });
 });

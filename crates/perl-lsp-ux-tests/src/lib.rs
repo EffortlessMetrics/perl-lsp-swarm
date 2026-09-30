@@ -53,11 +53,20 @@ pub mod env;
 pub mod observation;
 pub mod project_fixture;
 pub mod recorder;
+/// Structured evidence for an exact-subject UX regression run.
+pub mod regression_receipt;
+pub mod reverse_request_fixture;
 pub mod scorecard;
+pub mod server_request_fixture;
 pub mod taxonomy;
 pub mod workspace;
 
-pub use client::{LspEvent, UxClient};
+pub use client::{
+    CapabilityViolation, LspEvent, UxClient,
+    server_request_script::{
+        ObservedServerRequest, ScriptedServerRequest, ScriptedServerResponse, ServerRequestDelivery,
+    },
+};
 pub use diagnostics::DiagnosticsTracker;
 pub use env::{PathGuard, RestrictedPath};
 pub use observation::{Inbox, InboxSnapshot, ObservationId, StreamEnd, WaitEnd};
@@ -556,6 +565,9 @@ impl UxHarness {
     /// or an empty vec if the server returned null/empty. `DocumentSymbol`
     /// objects may include nested `children`; use [`document_symbol_names`] for
     /// recursive name assertions.
+    ///
+    /// The LSP result envelope is exactly one array variant or `null`; a bare
+    /// object is a malformed envelope and is rejected rather than normalized.
     pub fn document_symbols(&self, relative_path: &str) -> Result<Vec<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
@@ -568,16 +580,7 @@ impl UxHarness {
         if resp.get("error").is_some() {
             return Err(anyhow!("documentSymbol returned error: {}", resp["error"]));
         }
-        match resp["result"].as_array() {
-            Some(syms) => Ok(syms.clone()),
-            None => {
-                if resp["result"].is_null() {
-                    Ok(Vec::new())
-                } else {
-                    Ok(vec![resp["result"].clone()])
-                }
-            }
-        }
+        normalize_document_symbol_result(&resp["result"])
     }
 
     /// Request workspace symbols (`workspace/symbol`).
@@ -585,12 +588,22 @@ impl UxHarness {
     /// Returns the flat list of workspace symbol objects, or an empty vec if
     /// the server returned null/empty.
     pub fn workspace_symbols(&self, query: &str) -> Result<Vec<Value>> {
+        self.workspace_symbols_with_timeout(query, self.config.timeout)
+    }
+
+    /// Request workspace symbols with a caller-supplied RPC deadline budget.
+    /// Useful when an overall scenario deadline must also bound this request.
+    pub fn workspace_symbols_with_timeout(
+        &self,
+        query: &str,
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         let resp = self.client.request(
             "workspace/symbol",
             json!({
                 "query": query
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp.get("error").is_some() {
             return Err(anyhow!("workspace/symbol returned error: {}", resp["error"]));
@@ -652,14 +665,22 @@ impl UxHarness {
         self.client.peek_events().iter().filter(|event| is_index_ready_event(event)).count()
     }
 
-    /// Wait until the server confirms that a specific active document has
-    /// completed its E2E background indexing pass.
+    /// Wait until the server confirms parser-core readiness for a specific
+    /// active document's diagnostics and document-symbol effects.
     pub fn wait_for_active_document_ready(&self, uri: &str, timeout: Duration) -> bool {
-        self.client
-            .wait_for_events(timeout, |events| {
-                events.iter().any(|event| is_active_document_ready_event(event, uri)).then_some(())
-            })
-            .is_ok()
+        self.wait_for_active_document_ready_result(uri, timeout).is_ok()
+    }
+
+    /// Wait for active-document readiness while retaining the reason a wait ended.
+    /// A live-stream deadline and a closed or failed stream have different causes.
+    pub fn wait_for_active_document_ready_result(
+        &self,
+        uri: &str,
+        timeout: Duration,
+    ) -> std::result::Result<(), observation::WaitEnd> {
+        self.client.wait_for_events(timeout, |events| {
+            events.iter().any(|event| is_active_document_ready_event(event, uri)).then_some(())
+        })
     }
 
     /// Wait until a ready-index notification arrives after `already_seen` events.
@@ -773,6 +794,18 @@ impl UxHarness {
                 eprintln!("wait_for_diagnostics ended without a match: {}", end.describe());
                 Vec::new()
             })
+    }
+
+    /// Wait for the first diagnostics publication for a file, preserving a
+    /// matching empty payload as success and the typed reason for no event.
+    /// Use this for readiness gates where absence must fail closed.
+    pub fn wait_for_diagnostics_event(
+        &self,
+        relative_path: &str,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<Vec<Value>, WaitEnd> {
+        let uri = self.workspace.uri(relative_path);
+        DiagnosticsTracker::wait_for_first_uri_event(&self.client, &uri, timeout)
     }
 
     /// Wait up to `timeout` for a `textDocument/publishDiagnostics` notification
@@ -1434,6 +1467,19 @@ pub fn find_perlcritic() -> Option<String> {
     which::which("perlcritic").ok().map(|p| p.to_string_lossy().to_string())
 }
 
+/// Normalize a `textDocument/documentSymbol` result envelope. The LSP result is
+/// exactly one array variant or `null`; a bare object is a malformed envelope
+/// and is rejected instead of being silently wrapped into a one-element array.
+fn normalize_document_symbol_result(result: &Value) -> Result<Vec<Value>> {
+    match result.as_array() {
+        Some(syms) => Ok(syms.clone()),
+        None if result.is_null() => Ok(Vec::new()),
+        None => Err(anyhow!(
+            "documentSymbol result must be DocumentSymbol[] | SymbolInformation[] | null, got: {result}"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod normalize_tests {
     #![expect(
@@ -1442,13 +1488,29 @@ mod normalize_tests {
     )]
     use super::{
         document_symbol_names, find_binary_near_exe, is_active_document_ready_event,
-        is_index_ready_event, is_truthy_env_value, normalize_lsp_payload,
-        normalize_uri_for_expectations,
+        is_index_ready_event, is_truthy_env_value, normalize_document_symbol_result,
+        normalize_lsp_payload, normalize_uri_for_expectations,
     };
     use crate::LspEvent;
     use serde_json::{Value, json};
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn document_symbol_result_accepts_arrays_and_null_only() {
+        let array = json!([{ "name": "greet", "kind": 12 }]);
+        assert_eq!(
+            normalize_document_symbol_result(&array).unwrap(),
+            vec![json!({ "name": "greet", "kind": 12 })]
+        );
+        assert!(normalize_document_symbol_result(&Value::Null).unwrap().is_empty());
+        let bare = json!({ "name": "greet", "kind": 12 });
+        let error = normalize_document_symbol_result(&bare)
+            .expect_err("a bare object is a malformed result envelope");
+        assert!(
+            error.to_string().contains("must be DocumentSymbol[] | SymbolInformation[] | null")
+        );
+    }
 
     #[test]
     fn document_symbol_names_collects_top_level_and_nested_names() -> anyhow::Result<()> {

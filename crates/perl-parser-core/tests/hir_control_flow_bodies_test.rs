@@ -228,9 +228,14 @@ fn loop_control_is_a_structured_statement() -> Result<(), Box<dyn Error>> {
     let stmt = body
         .stmt(*block.stmts.first().ok_or_else(|| "loop body is empty".to_string())?)
         .ok_or_else(|| "loop-control statement is missing".to_string())?;
-    assert!(
-        matches!(stmt, HirStmt::LoopControl { verb: ControlTransferKind::Last, target_label: Some(label) } if label == "OUTER")
-    );
+    assert!(matches!(
+        stmt,
+        HirStmt::LoopControl {
+            verb: ControlTransferKind::Last,
+            written_label: Some(label),
+            ..
+        } if label == "OUTER"
+    ));
     Ok(())
 }
 
@@ -263,7 +268,7 @@ fn postfix_condition_links_statement_and_condition() -> Result<(), Box<dyn Error
     let stmt = body
         .stmt(*root.stmts.first().ok_or_else(|| "root has no statements".to_string())?)
         .ok_or_else(|| "postfix statement is missing".to_string())?;
-    let HirStmt::PostfixCondition { statement, condition, verb } = stmt else {
+    let HirStmt::PostfixCondition { statement, condition, verb, .. } = stmt else {
         return Err(format!("expected postfix condition, got {stmt:?}").into());
     };
     assert!(matches!(body.stmt(*statement), Some(HirStmt::Expr(_))));

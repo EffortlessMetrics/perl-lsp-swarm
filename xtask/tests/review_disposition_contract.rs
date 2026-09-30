@@ -160,9 +160,18 @@ printf '%s\n' "$*" >> "$GH_STUB_LOG"
 
 case "$*" in
   *"query(\$threadId: ID!)"*)
-    if [[ -n "${GH_STUB_MARKER:-}" ]]; then
-      jq -cn --argjson resolved "$GH_STUB_RESOLVED" --arg marker "$GH_STUB_MARKER" \
-        '{data:{node:{isResolved:$resolved,comments:{nodes:[{body:("prior note\n<!-- disposition:v1 " + $marker + " -->")}]}}}}'
+    if [[ -n "${GH_STUB_MARKERS_JSON:-}" ]]; then
+      # Multi-marker seed: array of {version, marker} pairs, each emitted as
+      # its own comment so the disposition script sees v1 and v2 envelopes
+      # on the same thread fixture (#15282).
+      jq -cn --argjson resolved "$GH_STUB_RESOLVED" --argjson markers "$GH_STUB_MARKERS_JSON" '
+        $markers
+        | map({body: ("prior note\n<!-- disposition:" + .version + " " + .marker + " -->")})
+        as $nodes
+        | {data:{node:{isResolved:$resolved, comments:{nodes:$nodes}}}}'
+    elif [[ -n "${GH_STUB_MARKER:-}" ]]; then
+      jq -cn --argjson resolved "$GH_STUB_RESOLVED" --arg version "${GH_STUB_MARKER_VERSION:-v1}" --arg marker "$GH_STUB_MARKER" \
+        '{data:{node:{isResolved:$resolved,comments:{nodes:[{body:("prior note\n<!-- disposition:" + $version + " " + $marker + " -->")}]}}}}'
     else
       printf '{"data":{"node":{"isResolved":%s,"comments":{"nodes":[]}}}}\n' "$GH_STUB_RESOLVED"
     fi
@@ -447,6 +456,171 @@ fn receipt_schema_accepts_emitted_marker_shapes() -> Result<(), Box<dyn Error>> 
     let mut unknown = marker("fixed", "resolve", serde_json::json!({"commit": "abc1234"}));
     unknown["surprise"] = Value::Bool(true);
     assert!(!validator.is_valid(&unknown), "schema must stay closed to unknown fields");
+
+    Ok(())
+}
+
+/// `<!-- disposition:v[0-9]+ ... -->` markers that the script does not support
+/// (e.g. a future v2 envelope) must be detected as malformed and force a fail-
+/// closed path; previously the v1 literal in the filter silently dropped v2
+/// markers, which let the script post duplicate replies and resolve threads
+/// that already carried an authoritative v2 disposition (#15282).
+#[cfg(unix)]
+fn run_live_with_envelopes(
+    root: &Path,
+    class: &str,
+    extra: &[&str],
+    initially_resolved: bool,
+    envelopes: &[(&str, &str)],
+) -> Result<(Output, String), Box<dyn Error>> {
+    let temp = tempfile::tempdir()?;
+    let stub_bin = write_gh_stub(temp.path())?;
+    let log = temp.path().join("gh.log");
+
+    let mut path = OsString::from(stub_bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").ok_or("PATH is unavailable")?);
+
+    let markers_json = serde_json::Value::Array(
+        envelopes
+            .iter()
+            .map(|(version, marker)| serde_json::json!({"version": version, "marker": marker}))
+            .collect(),
+    )
+    .to_string();
+
+    let mut command = Command::new("bash");
+    command
+        .arg(disposition_script(root))
+        .args([
+            "--pr",
+            "42",
+            "--thread",
+            "PRRT_test",
+            "--class",
+            class,
+            "--reply",
+            "Disposition proof",
+            "--repo",
+            "owner/repo",
+            "--head",
+            "0123456789012345678901234567890123456789",
+            "--by",
+            "reviewer",
+        ])
+        .args(extra)
+        .env("PATH", path)
+        .env("GH_STUB_LOG", &log)
+        .env("GH_STUB_RESOLVED", if initially_resolved { "true" } else { "false" })
+        .env("GH_STUB_MARKERS_JSON", markers_json);
+
+    let output = command.output()?;
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    Ok((output, calls))
+}
+
+#[cfg(unix)]
+#[test]
+fn unsupported_marker_versions_fail_closed() -> Result<(), Box<dyn Error>> {
+    let root = project_root()?;
+
+    let v1_marker = serde_json::json!({
+        "v": 1,
+        "class": "fixed",
+        "thread_id": "PRRT_test",
+        "by": "reviewer",
+        "head": "0123456789012345678901234567890123456789",
+        "evidence": {"commit": "abc1234"},
+        "thread_transition": "resolve",
+    })
+    .to_string();
+    let v2_marker = serde_json::json!({
+        "v": 2,
+        "class": "fixed",
+        "thread_id": "PRRT_test",
+        "by": "reviewer",
+        "head": "0123456789012345678901234567890123456789",
+        "evidence": {"commit": "abc1234"},
+        "thread_transition": "resolve",
+    })
+    .to_string();
+
+    // A v2-only fixture must refuse mutation: the script has no envelope for
+    // v2 yet, so any v2 marker is unsupported.
+    let (v2_only, v2_only_calls) = run_live_with_envelopes(
+        &root,
+        "fixed",
+        &["--commit", "abc1234"],
+        false,
+        &[("v2", &v2_marker)],
+    )?;
+    assert!(
+        !v2_only.status.success(),
+        "a v2-only fixture must fail closed: {}",
+        output_text(&v2_only)
+    );
+    assert!(
+        output_text(&v2_only).contains("malformed disposition marker"),
+        "expected the v2 rejection error to mention malformed markers: {}",
+        output_text(&v2_only)
+    );
+    assert!(
+        !v2_only_calls.contains("addPullRequestReviewThreadReply"),
+        "v2-only fixture must not produce a duplicate reply"
+    );
+    assert!(
+        !v2_only_calls.contains("resolveReviewThread"),
+        "v2-only fixture must not resolve the thread"
+    );
+
+    // A mixed v1+v2 fixture must also fail closed: the v2 envelope is
+    // unsupported even if a sibling v1 marker would otherwise match.
+    let (mixed, mixed_calls) = run_live_with_envelopes(
+        &root,
+        "fixed",
+        &["--commit", "abc1234"],
+        false,
+        &[("v1", &v1_marker), ("v2", &v2_marker)],
+    )?;
+    assert!(
+        !mixed.status.success(),
+        "a mixed v1+v2 fixture must fail closed (the v2 marker is unsupported): {}",
+        output_text(&mixed)
+    );
+    assert!(
+        output_text(&mixed).contains("malformed disposition marker"),
+        "expected the mixed-fixture rejection to mention malformed markers: {}",
+        output_text(&mixed)
+    );
+    assert!(
+        !mixed_calls.contains("addPullRequestReviewThreadReply"),
+        "mixed v1+v2 must not produce a reply (the v2 marker must gate the mutation)"
+    );
+
+    // Regression: a v1-only fixture that matches the supplied class+evidence
+    // must still match the existing idempotent re-apply path; the broadened
+    // filter must not break existing v1 behavior.
+    let (v1_reapply, v1_reapply_calls) = run_live_with_envelopes(
+        &root,
+        "fixed",
+        &["--commit", "abc1234"],
+        false,
+        &[("v1", &v1_marker)],
+    )?;
+    assert!(
+        v1_reapply.status.success(),
+        "v1-only matching fixture must succeed: {}",
+        output_text(&v1_reapply)
+    );
+    assert!(
+        output_text(&v1_reapply).contains("matching disposition already exists"),
+        "v1 matching marker must still drive the idempotent reapply path: {}",
+        output_text(&v1_reapply)
+    );
+    assert!(
+        !v1_reapply_calls.contains("addPullRequestReviewThreadReply"),
+        "v1-only matching fixture must not produce a duplicate reply"
+    );
 
     Ok(())
 }

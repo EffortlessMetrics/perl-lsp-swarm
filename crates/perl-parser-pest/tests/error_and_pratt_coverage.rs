@@ -98,6 +98,86 @@ fn public_fallible_apis_return_typed_parse_error() -> Result<(), Box<dyn Error>>
 }
 
 // ---------------------------------------------------------------------------
+// The caller-source guarantee across the heredoc pre-pass (#8220).
+//
+// `parse()` removes heredoc bodies before normalization, so a Pest offset is
+// in the *stripped* coordinate system — two rewrites away from the caller's
+// text, not one. `NormalizationMap::behind_removals` prepends the scan's
+// removals as the map's first pass so one reverse fold still reaches the
+// caller's source. Without it these ranges would be short by exactly the
+// removed bytes and would name the wrong part of the caller's text while
+// still looking well-formed.
+// ---------------------------------------------------------------------------
+
+/// Require a rejection whose range starts on the caller's `???`.
+///
+/// Every fixture below is unparseable *and* unrecoverable — recovery returns
+/// `Rejected` only when it salvages no statement at all, which the unclosed
+/// `sub f {` guarantees — so each one reaches the mapped-rejection path.
+fn assert_rejection_starts_at_question_marks(
+    source: &str,
+    untranslated_hint: &str,
+) -> Result<(), Box<dyn Error>> {
+    let mut parser = PureRustPerlParser::new();
+    let rejection = expect_rejected(&mut parser, source)?;
+    rejection.range().check_over_source(source)?;
+
+    let expected = source.find("???").ok_or("fixture must contain `???`")?;
+    let start = rejection.range().start();
+    if start < expected {
+        return Err(format!(
+            "range must be a caller-source offset: expected the `???` at {expected}, got {start}. \
+             {untranslated_hint}"
+        )
+        .into());
+    }
+    match source.as_bytes().get(start) {
+        Some(b'?') => Ok(()),
+        other => Err(format!(
+            "caller-source byte {start} should be a `?`, got {:?}",
+            other.map(|b| *b as char)
+        )
+        .into()),
+    }
+}
+
+#[test]
+fn a_rejection_after_a_stripped_heredoc_body_indexes_the_callers_source()
+-> Result<(), Box<dyn Error>> {
+    // The 18-byte body and terminator are removed before Pest sees the text,
+    // so Pest reports the `???` at stripped offset 23. Untranslated that lands
+    // inside `body line one` in the caller's source — well-formed, in range,
+    // and wrong.
+    assert_rejection_starts_at_question_marks(
+        "sub f {\nmy $x = <<EOF;\nbody line one\nEOF\n???\n",
+        "Offset 23 is the untranslated stripped coordinate, which names `body line one`.",
+    )
+}
+
+#[test]
+fn a_rejection_after_two_stripped_heredoc_bodies_accumulates_every_removal()
+-> Result<(), Box<dyn Error>> {
+    // Two separate removals. Applying only one still lands short, so this row
+    // pins that the removals accumulate rather than that one happens to work.
+    assert_rejection_starts_at_question_marks(
+        "sub f {\nmy $a = <<A;\nfirst body\nA\nmy $b = <<B;\nsecond body\nB\n???\n",
+        "Applying only the first removal lands inside the second heredoc's body.",
+    )
+}
+
+#[test]
+fn a_rejection_after_a_removal_and_a_normalization_rewrite_composes_both_passes()
+-> Result<(), Box<dyn Error>> {
+    // `$$name` is rewritten to `${$name}` *after* the body is stripped, so the
+    // offset must unwind through the normalization pass and then through the
+    // removal pass. Dropping either one moves the answer.
+    assert_rejection_starts_at_question_marks(
+        "sub f {\nmy $x = <<EOF;\nbody line one\nbody two\nEOF\n$$name ???\n",
+        "Skipping the removal pass lands in the body; skipping normalization shifts by two.",
+    )
+}
+
+// ---------------------------------------------------------------------------
 // `Rejected` from an actual `parse()` call.
 // ---------------------------------------------------------------------------
 

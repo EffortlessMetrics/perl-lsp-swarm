@@ -8,7 +8,7 @@
 //! ## Launch Configuration
 //!
 //! ```no_run
-//! use perl_dap_config::LaunchConfiguration;
+//! use perl_dap::config::LaunchConfiguration;
 //! use std::path::PathBuf;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,7 +29,7 @@
 //! ## Attach Configuration
 //!
 //! ```
-//! use perl_dap_config::AttachConfiguration;
+//! use perl_dap::config::AttachConfiguration;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = AttachConfiguration {
@@ -125,7 +125,7 @@ impl LaunchConfiguration {
     /// # Examples
     ///
     /// ```
-    /// use perl_dap_config::LaunchConfiguration;
+    /// use perl_dap::config::LaunchConfiguration;
     /// use std::path::PathBuf;
     ///
     /// # fn main() -> anyhow::Result<()> {
@@ -138,8 +138,13 @@ impl LaunchConfiguration {
     ///     include_paths: vec![PathBuf::from("lib")],
     /// };
     ///
-    /// config.resolve_paths(&PathBuf::from("/workspace"))?;
+    /// // The workspace root must itself be absolute for resolution to
+    /// // produce absolute paths (std semantics on every platform), so use a
+    /// // real absolute root rather than a drive-less literal like "/workspace".
+    /// let workspace_root = std::env::current_dir()?;
+    /// config.resolve_paths(&workspace_root)?;
     /// assert!(config.program.is_absolute());
+    /// assert!(config.include_paths.iter().all(|p| p.is_absolute()));
     /// # Ok(())
     /// # }
     /// ```
@@ -180,7 +185,7 @@ impl LaunchConfiguration {
     /// # Examples
     ///
     /// ```no_run
-    /// use perl_dap_config::LaunchConfiguration;
+    /// use perl_dap::config::LaunchConfiguration;
     /// use std::path::PathBuf;
     ///
     /// # fn main() -> anyhow::Result<()> {
@@ -267,7 +272,7 @@ impl AttachConfiguration {
     /// # Examples
     ///
     /// ```
-    /// use perl_dap_config::AttachConfiguration;
+    /// use perl_dap::config::AttachConfiguration;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let config = AttachConfiguration {
@@ -322,7 +327,7 @@ impl AttachConfiguration {
 /// # Examples
 ///
 /// ```
-/// use perl_dap_config::create_launch_json_snippet;
+/// use perl_dap::config::create_launch_json_snippet;
 ///
 /// let snippet = create_launch_json_snippet();
 /// assert!(snippet.contains("\"type\""));
@@ -358,7 +363,7 @@ pub fn create_launch_json_snippet() -> String {
 /// # Examples
 ///
 /// ```
-/// use perl_dap_config::create_attach_json_snippet;
+/// use perl_dap::config::create_attach_json_snippet;
 ///
 /// let snippet = create_attach_json_snippet();
 /// assert!(snippet.contains("\"type\""));

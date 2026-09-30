@@ -457,7 +457,12 @@ fn test_document_links_windows_path_with_space() -> Result<(), Box<dyn std::erro
 
     // Simulate a file living in a folder with a space; we don't need the file to exist.
     let uri = "file:///C:/Temp/Perl%20LSP%20Demo/main.pl";
-    let text = r#"require "lib\\Thing.pm";"#;
+    // A quoted non-.pm require is the file-link form: it resolves by joining
+    // the Windows-style relative path against the document URI. Quoted .pm
+    // requires are module links by contract (they resolve through module
+    // lookup / MetaCPAN, not path join), so they cannot prove URI-space
+    // preservation here.
+    let text = r#"require "lib\Thing.pl";"#;
 
     // Open doc
     send_notification(
@@ -503,7 +508,7 @@ fn test_document_links_windows_path_with_space() -> Result<(), Box<dyn std::erro
 
     // Percent-encoded space must be preserved; path join must be forward-slash normalized
     assert!(
-        target.ends_with("C:/Temp/Perl%20LSP%20Demo/lib/Thing.pm"),
+        target.ends_with("C:/Temp/Perl%20LSP%20Demo/lib/Thing.pl"),
         "unexpected target: {target}"
     );
     Ok(())

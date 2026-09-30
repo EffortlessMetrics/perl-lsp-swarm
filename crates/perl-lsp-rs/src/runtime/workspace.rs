@@ -33,10 +33,6 @@ use perl_lsp_rs_core::config::{
 use perl_module::file_path_to_module_name;
 use perl_module::plan_module_rename_edits;
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{
-    DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
-};
-#[cfg(feature = "workspace")]
 use perl_parser_core::source_file::is_perl_source_path;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::{
@@ -45,6 +41,10 @@ use perl_semantic_facts::{
 use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
+#[cfg(feature = "workspace")]
+use perl_workspace::workspace_index::{
+    DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
+};
 use std::collections::{BTreeSet, HashMap, HashSet};
 #[cfg(feature = "workspace")]
 use std::io::Read;
@@ -282,12 +282,37 @@ impl Drop for IndexingGuard {
 /// thread (#14186).
 ///
 /// # SAFETY
-/// Same invariant as `LspServer`'s unsafe `Send`/`Sync` impls: the
-/// `*const Node` pointers inside `DocumentState` are only ever dereferenced
-/// under the wrapping mutex. This handle is consumed exclusively through
-/// [`LspServer::documents_open_in`], which reads key membership and never
-/// touches document contents, so moving a clone into the indexing thread
-/// cannot create aliasing on the raw pointers.
+/// The `Sync` obligation: this handle's only operation, [`Self::is_open`],
+/// reaches `DocumentState` solely through
+/// [`LspServer::documents_open_in`], which checks key membership via
+/// `HashMap::contains_key` and never reads or exposes a map value -- so it
+/// never dereferences the `*const Node` pointers reachable through a
+/// `DocumentState`'s `parsed: Option<Arc<ParsedSnapshot>>`. Sharing
+/// `&OpenDocumentsHandle` across threads therefore only ever lets each
+/// thread perform this read-only membership check, never a value read, so
+/// it creates no path to concurrent pointer dereference *through this
+/// type*. The wrapping mutex does **not** generally prevent those pointers
+/// from being aliased across threads -- `navigation.rs` clones a
+/// `DocumentState` under the documents lock, drops the guard, and then reads
+/// `ParsedSnapshot::parent_map` off-lock (the #3396 pattern, at
+/// `navigation.rs:1219-1220`); `completion.rs` clones and analyses off-lock
+/// the same way, though it reads `parsed.ast()` rather than `parent_map`.
+/// Either way that aliasing is out of scope for this type, because
+/// `OpenDocumentsHandle` never touches the pointers at all.
+///
+/// The `Send` obligation covers this handle's own destructor too: dropping
+/// the last live `Arc<Mutex<HashMap<String, DocumentState>>>` reference
+/// (shared with `LspServer`'s own field) tears down every `DocumentState`,
+/// including its `Arc<ParsedSnapshot>` and, if that is also the last
+/// reference, `ParsedSnapshot`'s `parent_map: Arc<ParentMap>`
+/// (`FxHashMap<*const Node, *const Node>`, whose raw-pointer entries own no
+/// memory and have a no-op `Drop`) and its `Arc<perl_parser::ast::Node>`
+/// tree (`Node`'s `Drop` is an explicit iterative, stack-based destructor
+/// with no thread-local or otherwise thread-affine state). If that final
+/// drop runs on the indexing thread -- possible during shutdown ordering,
+/// since this handle's clone can outlive `LspServer`'s own field -- it is
+/// sound to run there because nothing in this destructor chain is
+/// thread-affine.
 #[cfg(feature = "workspace")]
 #[derive(Clone)]
 struct OpenDocumentsHandle {
@@ -304,10 +329,24 @@ impl OpenDocumentsHandle {
 
 #[cfg(feature = "workspace")]
 #[allow(unsafe_code)]
+// SAFETY: see the type's `# SAFETY` section. The read side is discharged by
+// `is_open`/`documents_open_in` never dereferencing a map value. The drop
+// side is discharged because, if this is the last surviving `Arc` when it
+// is dropped on the indexing thread, the resulting destructor chain
+// (`ParentMap`'s raw-pointer entries, `perl_parser::ast::Node`'s explicit
+// iterative destructor) holds no thread-local or thread-affine state, so
+// running it there is sound.
 unsafe impl Send for OpenDocumentsHandle {}
 
 #[cfg(feature = "workspace")]
 #[allow(unsafe_code)]
+// SAFETY: see the type's `# SAFETY` section. `&OpenDocumentsHandle` exposes
+// only `is_open`, which never dereferences a map value, so sharing this
+// handle across threads gives every thread a read-only key-membership check
+// and no path to concurrent pointer access *through this type*. This does
+// not rely on the mutex serialising raw-pointer aliasing more broadly --
+// it does not (see the off-lock `parent_map` read at `navigation.rs:1220`)
+// -- because this type never reaches the pointers at all.
 unsafe impl Sync for OpenDocumentsHandle {}
 
 #[cfg(feature = "workspace")]
@@ -540,6 +579,12 @@ impl LspServer {
             return;
         };
         let mut folders = self.workspace_folders.lock();
+        let previous_include_paths: HashMap<String, Vec<String>> = folders
+            .iter()
+            .map(|folder| {
+                (folder.uri.clone(), folder.effective_workspace_config.include_paths.clone())
+            })
+            .collect();
         let init_options_perl = self.initialization_options_perl_settings.lock();
         let metadata_roots = configuration_response::apply_workspace_configuration_results(
             &mut folders,
@@ -549,9 +594,34 @@ impl LspServer {
             i64::from(id.as_i32()),
             init_options_perl.as_ref(),
         );
+        let include_paths_changed = folders.iter().any(|folder| {
+            previous_include_paths.get(&folder.uri)
+                != Some(&folder.effective_workspace_config.include_paths)
+        });
         drop(init_options_perl);
         drop(folders);
         self.refresh_project_metadata_facts(&metadata_roots);
+
+        // A null didChangeConfiguration only invalidates the scoped pull; it
+        // intentionally leaves each folder's current config intact. Once the
+        // response changes include paths, refresh all open documents: every
+        // folder's paths can contribute fallback module roots to another.
+        if include_paths_changed {
+            self.invalidate_workspace_identity();
+            if self.client_supports_pull_diags.load(Ordering::Relaxed) {
+                // Pull diagnostics do not use the push publication path. Ask
+                // after every accepted change; a leading-edge debounce can
+                // lose a second change while the client still has old reports.
+                if let Err(error) = self.request_diagnostic_refresh() {
+                    tracing::warn!(%error, "Failed to refresh pull diagnostics after include paths changed");
+                }
+            } else {
+                let open_uris: Vec<String> = self.documents.lock().keys().cloned().collect();
+                for open_uri in open_uris {
+                    self.publish_diagnostics_debounced(&open_uri);
+                }
+            }
+        }
     }
 
     /// Handle workspace/symbol request (v2 implementation with lifecycle-aware dispatch)
@@ -1516,6 +1586,61 @@ pub(crate) fn extract_perl_settings(settings: &Value) -> Option<&Value> {
     if settings.is_object() { Some(settings) } else { None }
 }
 
+/// Deep-merge a tier-3 patch into the accumulated client overlay: objects
+/// merge recursively so fields absent from a later notification retain
+/// earlier accepted values; anything else (scalars, arrays, type changes)
+/// replaces, matching patch application order (#15715).
+fn merge_client_settings_patch(base: &mut Value, patch: &Value) {
+    match (base, patch) {
+        (Value::Object(base_map), Value::Object(patch_map)) => {
+            for (key, patch_value) in patch_map {
+                match base_map.get_mut(key) {
+                    Some(base_value) => merge_client_settings_patch(base_value, patch_value),
+                    None => {
+                        base_map.insert(key.clone(), patch_value.clone());
+                    }
+                }
+            }
+        }
+        (base_slot, patch_value) => {
+            *base_slot = patch_value.clone();
+        }
+    }
+}
+
+/// Record one tier-3 notification patch in the replay cache, accumulating
+/// across notifications so a later patch cannot erase earlier accepted
+/// fields (#15715).
+fn record_client_settings(cache: &Arc<Mutex<Option<Value>>>, perl: &Value) {
+    let mut guard = cache.lock();
+    match guard.as_mut() {
+        Some(existing) => merge_client_settings_patch(existing, perl),
+        None => *guard = Some(perl.clone()),
+    }
+}
+
+/// Snapshot the critic-relevant `ServerConfig` fields for before/after
+/// comparison. Shared by `handle_did_change_configuration` and
+/// `load_and_apply_project_config` so both stay in lockstep with the
+/// parser's folding of the legacy `perlcritic.*` and native `critic.*`
+/// keys into the same fields (#15715).
+pub(super) type CriticConfigSnapshot =
+    (bool, u8, Option<String>, Option<String>, String, Vec<String>, Vec<String>);
+
+pub(super) fn critic_config_snapshot(
+    config: &perl_lsp_rs_core::config::ServerConfig,
+) -> CriticConfigSnapshot {
+    (
+        config.perlcritic_enabled,
+        config.perlcritic_severity,
+        config.perlcritic_profile.clone(),
+        config.perlcritic_theme.clone(),
+        config.native_critic_profile.clone(),
+        config.native_critic_include.clone(),
+        config.native_critic_exclude.clone(),
+    )
+}
+
 impl LspServer {
     /// Surface invalid enum values from editor-provided settings without changing
     /// the fail-safe configuration update behavior.
@@ -1565,7 +1690,12 @@ impl LspServer {
     /// Updates both ServerConfig and WorkspaceConfig when the client
     /// notifies of configuration changes.
     pub(super) fn handle_did_change_configuration(&self, params: Option<Value>) {
-        self.invalidate_workspace_identity();
+        // A null payload is only a request to re-pull scoped settings. It has
+        // not changed accepted configuration, so in-flight diagnostics remain
+        // current until the response installs a changed include-path layer.
+        if !params.as_ref().and_then(|params| params.get("settings")).is_some_and(Value::is_null) {
+            self.invalidate_workspace_identity();
+        }
         if let Some(params) = params
             && let Some(settings) = params.get("settings")
         {
@@ -1589,15 +1719,7 @@ impl LspServer {
                 #[cfg(not(target_arch = "wasm32"))]
                 let critic_snapshot_before = {
                     let cfg = self.config.lock();
-                    (
-                        cfg.perlcritic_enabled,
-                        cfg.perlcritic_severity,
-                        cfg.perlcritic_profile.clone(),
-                        cfg.perlcritic_theme.clone(),
-                        cfg.native_critic_profile.clone(),
-                        cfg.native_critic_include.clone(),
-                        cfg.native_critic_exclude.clone(),
-                    )
+                    critic_config_snapshot(&cfg)
                 };
 
                 // Update server-owned LSP configuration.
@@ -1607,29 +1729,47 @@ impl LspServer {
                     tracing::debug!("Updated server config from perl settings");
                 }
 
+                // Accumulate tier-3 (client) perl settings so a later
+                // `load_and_apply_project_config` triggered by
+                // `workspace/didChangeWorkspaceFolders` can replay them on
+                // top of the merged TOML after resetting project-owned
+                // fields (issue #15715). Without this, server-global fields
+                // touched only by `didChangeConfiguration` would be erased
+                // every time the merged TOML layer is rebuilt. Each
+                // notification is a patch, so the cache merges: fields
+                // absent from a later payload retain earlier accepted
+                // values instead of being forgotten.
+                record_client_settings(&self.last_client_settings, perl);
+
+                // Update the post-tier-1 baseline with the same tier-3
+                // payload so the next `load_and_apply_project_config` reset
+                // preserves tier-3 contributions to fields that no remaining
+                // folder's TOML touches. The baseline started as
+                // `defaults + tier-1` (captured in `handle_initialize`); we
+                // advance it in lockstep with tier-3 so it represents
+                // `defaults + tier-1 + tier-3` and never includes any tier-2
+                // contribution from a (now removed) folder (#15715).
+                //
+                // Single-guard mutation: the scrutinee guard of
+                // `lock().clone()` lives through the whole `if let`, so
+                // re-locking the same non-reentrant mutex in the body hangs
+                // the mutation scheduler on every notification (#15715).
+                if let Some(baseline) = self.server_config_baseline.lock().as_mut() {
+                    baseline.update_from_value(perl);
+                }
+
                 #[cfg(not(target_arch = "wasm32"))]
                 let critic_config_changed = {
                     let cfg = self.config.lock();
-                    critic_snapshot_before
-                        != (
-                            cfg.perlcritic_enabled,
-                            cfg.perlcritic_severity,
-                            cfg.perlcritic_profile.clone(),
-                            cfg.perlcritic_theme.clone(),
-                            cfg.native_critic_profile.clone(),
-                            cfg.native_critic_include.clone(),
-                            cfg.native_critic_exclude.clone(),
-                        )
+                    critic_snapshot_before != critic_config_snapshot(&cfg)
                 };
 
                 // Reset the shared CriticAnalyzer when any critic-related setting
                 // changed so the next diagnostic cycle rebuilds it with the new config.
                 #[cfg(not(target_arch = "wasm32"))]
                 if critic_config_changed {
-                    *self.critic_analyzer.lock() = None;
                     self.session_warning_dedup
                         .clear_family(super::session_warning_dedup::SessionWarningFamily::Critic);
-                    self.pull_diagnostics_orchestrator.reset();
                 }
 
                 // Update workspace config (include paths, @INC)
@@ -1661,32 +1801,66 @@ impl LspServer {
                     limits.update_from_value(perl);
                 }
 
-                // Apply global client settings to each folder's effective config immediately.
-                // The async workspace/configuration pull that follows will refine per-folder
-                // settings once the client responds, but we update now so the window between
-                // didChangeConfiguration arrival and the pull response doesn't leave folders
-                // with stale settings.
-                let metadata_roots: BTreeSet<PathBuf> = self
-                    .workspace_folders
-                    .lock()
-                    .iter()
-                    .filter_map(|folder| {
-                        folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri))
-                    })
-                    .collect();
-                {
-                    let mut folders = self.workspace_folders.lock();
-                    let init_options_perl = self.initialization_options_perl_settings.lock();
-                    for folder in folders.iter_mut() {
-                        let mut effective_config =
-                            perl_lsp_rs_core::config::WorkspaceConfig::default();
-                        if let Some(init_opts) = init_options_perl.as_ref() {
+                // Only a workspace patch may rebuild folder config here. A session-only
+                // Critic/AI push still triggers a scoped pull below, but must leave the
+                // current folder include paths intact until its response arrives.
+                if perl.get("workspace").is_some() {
+                    // Apply global client settings to each folder's effective config immediately.
+                    // The async workspace/configuration pull that follows will refine per-folder
+                    // settings once the client responds, but we update now so the window between
+                    // didChangeConfiguration arrival and the pull response doesn't leave folders
+                    // with stale settings.
+                    let metadata_roots: BTreeSet<PathBuf> = self
+                        .workspace_folders
+                        .lock()
+                        .iter()
+                        .filter_map(|folder| {
+                            folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri))
+                        })
+                        .collect();
+                    {
+                        let mut folders = self.workspace_folders.lock();
+                        let init_options_perl = self.initialization_options_perl_settings.lock();
+                        for folder in folders.iter_mut() {
+                            let mut effective_config =
+                                perl_lsp_rs_core::config::WorkspaceConfig::default();
+                            if let Some(init_opts) = init_options_perl.as_ref() {
+                                let rejected = effective_config.update_from_value_with_context(
+                                    init_opts,
+                                    WorkspaceConfigUpdateContext {
+                                        workspace_root: folder.path.as_deref(),
+                                        external_include_paths: ExternalIncludePathAuthority::Untrusted(
+                                            UnauthorizedExternalIncludePathSource::InitializationOptions,
+                                        ),
+                                    },
+                                );
+                                for entry in rejected {
+                                    tracing::warn!(
+                                        target: "perl_lsp::config",
+                                        folder_uri = %folder.uri,
+                                        entry = %entry.entry,
+                                        reason = %entry.render(),
+                                        "rejected initializationOptions includePaths entry"
+                                    );
+                                }
+                            }
+                            if let Some(project_config) = &folder.project_config {
+                                // Re-applying an already-loaded, already-warned-about
+                                // project_config; discard the rejection list rather than
+                                // re-warning on every reconfiguration.
+                                if let Some(folder_path) = folder.path.as_deref() {
+                                    let _ = project_config.apply_to_workspace_config(
+                                        &mut effective_config,
+                                        folder_path,
+                                    );
+                                }
+                            }
                             let rejected = effective_config.update_from_value_with_context(
-                                init_opts,
+                                perl,
                                 WorkspaceConfigUpdateContext {
                                     workspace_root: folder.path.as_deref(),
                                     external_include_paths: ExternalIncludePathAuthority::Untrusted(
-                                        UnauthorizedExternalIncludePathSource::InitializationOptions,
+                                        UnauthorizedExternalIncludePathSource::DidChangeConfiguration,
                                     ),
                                 },
                             );
@@ -1696,45 +1870,18 @@ impl LspServer {
                                     folder_uri = %folder.uri,
                                     entry = %entry.entry,
                                     reason = %entry.render(),
-                                    "rejected initializationOptions includePaths entry"
+                                    "rejected client includePaths entry"
                                 );
                             }
+                            folder.replace_effective_workspace_config(effective_config);
                         }
-                        if let Some(project_config) = &folder.project_config {
-                            // Re-applying an already-loaded, already-warned-about
-                            // project_config; discard the rejection list rather than
-                            // re-warning on every reconfiguration.
-                            if let Some(folder_path) = folder.path.as_deref() {
-                                let _ = project_config
-                                    .apply_to_workspace_config(&mut effective_config, folder_path);
-                            }
-                        }
-                        let rejected = effective_config.update_from_value_with_context(
-                            perl,
-                            WorkspaceConfigUpdateContext {
-                                workspace_root: folder.path.as_deref(),
-                                external_include_paths: ExternalIncludePathAuthority::Untrusted(
-                                    UnauthorizedExternalIncludePathSource::DidChangeConfiguration,
-                                ),
-                            },
-                        );
-                        for entry in rejected {
-                            tracing::warn!(
-                                target: "perl_lsp::config",
-                                folder_uri = %folder.uri,
-                                entry = %entry.entry,
-                                reason = %entry.render(),
-                                "rejected client includePaths entry"
-                            );
-                        }
-                        folder.replace_effective_workspace_config(effective_config);
                     }
-                }
 
-                // Configuration settings and metadata facts have separate
-                // owners. Refresh after releasing the folder lock so the
-                // current open-buffer snapshot can be captured safely (#15088).
-                self.refresh_project_metadata_facts(&metadata_roots);
+                    // Configuration settings and metadata facts have separate
+                    // owners. Refresh after releasing the folder lock so the
+                    // current open-buffer snapshot can be captured safely (#15088).
+                    self.refresh_project_metadata_facts(&metadata_roots);
+                }
 
                 // A configuration notification starts a new user-visible
                 // configuration session; do not let an old auth failure
@@ -2465,11 +2612,26 @@ impl LspServer {
                 return Ok(());
             }
 
-            #[cfg(feature = "workspace")]
             let _indexing_transition = self.indexing_transition_lock.lock();
 
+            // Publish the unavailable phase under the same identity authority
+            // used by diagnostic sinks, then release it before folder/index
+            // work. Readers cannot observe a stable topology during the
+            // membership/configuration transition.
+            {
+                let _identity_guard = self.workspace_identity_lock.lock();
+                self.workspace_topology_stable.store(false, std::sync::atomic::Ordering::SeqCst);
+                self.workspace_topology_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+
+            // Membership and the configuration loaded for that membership are
+            // one publication unit.  Readers may continue, but the sink must
+            // reject subjects until both authorities are installed.
             if !change.added.is_empty() {
                 let mut workspace_folders = self.workspace_folders.lock();
+                // Invalidate subjects while the topology guard is held so an
+                // added root cannot race a reader with the old generation.
                 for uri in &change.added {
                     tracing::debug!(uri, "Added workspace folder");
                     let mut folder_state =
@@ -2485,26 +2647,29 @@ impl LspServer {
             }
 
             if !change.removed.is_empty() {
-                let mut workspace_folders = self.workspace_folders.lock();
                 let removed_uris: std::collections::HashSet<String> =
                     change.removed.iter().cloned().collect();
+
+                // Apply the topology transition while holding only the
+                // workspace-folder authority.  Eviction acquires `documents`
+                // (and subordinate caches), so calling it while this guard is
+                // live would invert the established publication order
+                // (`documents` -> `workspace_folders`) and can deadlock a
+                // concurrent diagnostic commit.  Capture the exact removed
+                // identities, release the topology guard, then retire their
+                // document/index state in a second phase.
+                self.apply_workspace_folder_removal(&removed_uris);
 
                 for uri in &change.removed {
                     tracing::debug!(uri, "Removed workspace folder");
                     self.evict_workspace_folder_state(uri);
                 }
-
-                // Retain only folders that are not in the removed list
-                workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
             }
 
             // Workspace folder membership changed, so any in-flight reverse
             // request now has stale per-folder scoping. Drop pending entries
             // before issuing a fresh `workspace/configuration` pull.
             self.pending_workspace_configuration_requests.lock().clear();
-
-            // Load config for all folders after changes
-            self.load_and_apply_project_config();
 
             // Update workspace index with new folder list
             #[cfg(feature = "workspace")]
@@ -2517,28 +2682,54 @@ impl LspServer {
                 }
             }
 
-            #[cfg(feature = "workspace")]
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            if let Some(gate) =
+                self.workspace_transition_test_gate.lock().ok().and_then(|mut gate| gate.take())
+            {
+                let _ = gate.started.send(());
+                if gate.release.recv_timeout(Duration::from_secs(10)).is_err() {
+                    return Err(crate::protocol::internal_error(
+                        "workspace transition test gate was not released",
+                    ));
+                }
+            }
+
+            // Load config only after the index has accepted the same folder
+            // membership, so new topology cannot observe the old policy.
+            let config_complete = self.load_and_apply_project_config();
+            if config_complete {
+                let _identity_guard = self.workspace_identity_lock.lock();
+                // Invalidate pre-transition and in-transition aggregate snapshots
+                // before any reader can observe the new authority as stable.
+                self.workspace_identity_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.workspace_topology_stable.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+
             drop(_indexing_transition);
+
+            // The old reverse request was discarded with the old topology.
+            // Pull the new folder set only after its local config is published.
+            if config_complete {
+                self.request_workspace_configuration_for_folders();
+            }
+
+            // Pull-capable clients will receive the refresh request below. A
+            // push-only client has no refresh protocol, so retry diagnostics
+            // for documents that survived the topology transition after the
+            // new folder/configuration authorities are installed. The publish
+            // path still performs its sink currentness check; this is only a
+            // recomputation trigger for candidates rejected during the move.
+            if !self.client_supports_pull_diags.load(std::sync::atomic::Ordering::Relaxed) {
+                let open_uris = self.documents.lock().keys().cloned().collect::<Vec<_>>();
+                for uri in open_uris {
+                    self.publish_diagnostics(&uri);
+                }
+            }
 
             // Trigger client refresh after workspace folder changes
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after workspace folder changes");
-            }
-
-            self.invalidate_workspace_identity();
-
-            // Legacy push clients never observe `workspace/diagnostic/refresh`
-            // (the action above is pull-only), so their already-open documents
-            // would keep stale PL900 rows after a folder reload installs a new
-            // `[perl].version` until the next edit or reopen. Schedule push
-            // republish for every open document; the sink boundary re-validates
-            // currency and the debouncer coalesces the burst (#13195 review).
-            let open_uris: Vec<String> = {
-                let documents = self.documents.lock();
-                documents.keys().cloned().collect()
-            };
-            for open_uri in open_uris {
-                self.publish_diagnostics_debounced(&open_uri);
             }
 
             // Rebuild workspace index after folder changes
@@ -2547,6 +2738,23 @@ impl LspServer {
         }
 
         Ok(())
+    }
+
+    /// Apply the topology half of a workspace-folder removal.
+    ///
+    /// This helper deliberately touches only the workspace-folder authority.
+    /// Document and cache retirement belongs to the subsequent phase after the
+    /// guard returned here has been dropped; keeping that separation prevents
+    /// a `workspace_folders -> documents` lock inversion with diagnostic
+    /// publication.
+    fn apply_workspace_folder_removal(&self, removed_uris: &std::collections::HashSet<String>) {
+        let mut workspace_folders = self.workspace_folders.lock();
+        workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
+        // Advance the topology identity while the membership mutation is
+        // still protected.  Any diagnostic or virtual-content reader that
+        // captured the previous generation must now fail its final
+        // currentness check, even before document eviction completes.
+        self.workspace_topology_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Start a background workspace indexing scan
@@ -2974,8 +3182,30 @@ impl LspServer {
                     }
                     #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
                     crate::runtime::readiness::notify_indexing_commit_gate(&indexing_commit_gate);
-                    let current_folders = current_workspace_folders.lock();
-                    if !path_is_in_current_workspace(&path, &current_folders) {
+                    // Scope the folder-membership recheck to its own guard
+                    // (#16651): this mutex must NOT be held across
+                    // `index_file` below. `index_file` blocks on the workspace
+                    // index's semantic-map write locks (`fact_shards.write()`
+                    // et al.) inside its commit, and a diagnostics publication
+                    // that took those same maps as a combined read
+                    // (`with_semantic_queries_for_uri`) resolves modules
+                    // through `workspace_folders.lock()` from inside its
+                    // callback — holding the folders lock here across the
+                    // commit made that pair a permanent ABBA deadlock: the
+                    // indexer waited on the semantic maps while the
+                    // diagnostics publisher waited on this lock, freezing
+                    // indexing mid-scan and wedging every subsequent request
+                    // (completion included) behind them. The membership check
+                    // is a point-in-time admission decision; it never needed
+                    // the commit to be atomic with folder state, and
+                    // open-buffer authority (#8041, #14186) is protected by
+                    // the transition critical section and the `is_open`
+                    // recheck below, not by this guard.
+                    let path_in_current_workspace = {
+                        let current_folders = current_workspace_folders.lock();
+                        path_is_in_current_workspace(&path, &current_folders)
+                    };
+                    if !path_in_current_workspace {
                         tracing::debug!(
                             path = %path.display(),
                             "Skipping file from workspace folder removed during indexing"
@@ -3303,7 +3533,7 @@ impl LspServer {
 
 #[cfg(feature = "workspace")]
 fn collect_delete_target_module_names(
-    index: &perl_parser::workspace_index::WorkspaceIndex,
+    index: &perl_workspace::workspace_index::WorkspaceIndex,
     uri: &str,
 ) -> std::collections::BTreeSet<String> {
     let mut module_names = std::collections::BTreeSet::new();
@@ -3328,11 +3558,11 @@ fn collect_delete_target_module_names(
 
 #[cfg(feature = "workspace")]
 fn collect_cross_file_delete_dependents(
-    index: &perl_parser::workspace_index::WorkspaceIndex,
+    index: &perl_workspace::workspace_index::WorkspaceIndex,
     uri: &str,
     deleting_uris: &std::collections::HashSet<String>,
 ) -> std::collections::BTreeSet<String> {
-    let normalized_uri = perl_parser::workspace_index::uri_key(uri);
+    let normalized_uri = perl_workspace::workspace_index::uri_key(uri);
     let module_names = collect_delete_target_module_names(index, uri);
     let mut dependents = std::collections::BTreeSet::new();
     for module_name in module_names {
@@ -3348,17 +3578,17 @@ fn collect_cross_file_delete_dependents(
 
 #[cfg(feature = "workspace")]
 fn collect_open_document_delete_dependents(
-    index: &perl_parser::workspace_index::WorkspaceIndex,
+    index: &perl_workspace::workspace_index::WorkspaceIndex,
     uri: &str,
     deleting_uris: &std::collections::HashSet<String>,
     open_documents: &[(String, String)],
 ) -> std::collections::BTreeSet<String> {
-    let normalized_uri = perl_parser::workspace_index::uri_key(uri);
+    let normalized_uri = perl_workspace::workspace_index::uri_key(uri);
     let module_names = collect_delete_target_module_names(index, uri);
     let mut dependents = std::collections::BTreeSet::new();
 
     for (doc_uri, text) in open_documents {
-        let normalized_doc_uri = perl_parser::workspace_index::uri_key(doc_uri);
+        let normalized_doc_uri = perl_workspace::workspace_index::uri_key(doc_uri);
         if normalized_doc_uri == normalized_uri || deleting_uris.contains(&normalized_doc_uri) {
             continue;
         }
@@ -3375,11 +3605,11 @@ fn collect_open_document_delete_dependents(
 
 #[cfg(feature = "workspace")]
 fn collect_symbol_reference_delete_dependents(
-    index: &perl_parser::workspace_index::WorkspaceIndex,
+    index: &perl_workspace::workspace_index::WorkspaceIndex,
     uri: &str,
     deleting_uris: &std::collections::HashSet<String>,
 ) -> std::collections::BTreeSet<String> {
-    let normalized_uri = perl_parser::workspace_index::uri_key(uri);
+    let normalized_uri = perl_workspace::workspace_index::uri_key(uri);
     let mut dependents = std::collections::BTreeSet::new();
 
     for symbol in index.file_symbols(uri) {
@@ -3395,7 +3625,7 @@ fn collect_symbol_reference_delete_dependents(
 
         for symbol_name in names {
             for reference in index.find_references(&symbol_name) {
-                let reference_uri = perl_parser::workspace_index::uri_key(&reference.uri);
+                let reference_uri = perl_workspace::workspace_index::uri_key(&reference.uri);
                 if reference_uri != normalized_uri && !deleting_uris.contains(&reference_uri) {
                     dependents.insert(reference_uri);
                 }
@@ -3489,7 +3719,7 @@ mod tests {
     use parking_lot::Mutex;
     use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
     #[cfg(feature = "workspace")]
-    use perl_parser::workspace_index::{
+    use perl_workspace::workspace_index::{
         DegradationReason, IndexCoordinator, IndexPerformanceCaps, IndexResourceLimits, IndexState,
     };
     use serde_json::{Value, json};
@@ -3993,6 +4223,312 @@ mod tests {
     }
 
     #[test]
+    fn null_invalidation_preserves_two_roots_until_scoped_pull_and_refreshes_fallback_consumers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let verify =
+            |condition: bool, message: &'static str| -> Result<(), Box<dyn std::error::Error>> {
+                if condition { Ok(()) } else { Err(message.into()) }
+            };
+        let (server, output) = server_with_output_capture();
+        let temp = tempfile::tempdir()?;
+        let a_path = temp.path().join("a");
+        let b_path = temp.path().join("b");
+        let outside_path = temp.path().join("outside");
+        std::fs::create_dir_all(&a_path)?;
+        std::fs::create_dir_all(&b_path)?;
+        std::fs::create_dir_all(&outside_path)?;
+        std::fs::create_dir_all(a_path.join("new-lib"))?;
+        std::fs::write(
+            a_path.join("new-lib").join("FolderScopedOnlyA.pm"),
+            "package FolderScopedOnlyA;\n1;\n",
+        )?;
+        let a_uri =
+            url::Url::from_directory_path(&a_path).map_err(|_| "invalid A URI")?.to_string();
+        let b_uri =
+            url::Url::from_directory_path(&b_path).map_err(|_| "invalid B URI")?.to_string();
+        let a_doc = url::Url::from_file_path(a_path.join("main.pl"))
+            .map_err(|_| "invalid A document URI")?
+            .to_string();
+        let b_doc = url::Url::from_file_path(b_path.join("main.pl"))
+            .map_err(|_| "invalid B document URI")?
+            .to_string();
+        let outside_doc = url::Url::from_file_path(outside_path.join("main.pl"))
+            .map_err(|_| "invalid outside document URI")?
+            .to_string();
+        let is_doc = |message: &Value, uri: &str| {
+            message.pointer("/params/uri").and_then(Value::as_str).is_some_and(|actual| {
+                actual == uri
+                    || (cfg!(windows)
+                        && actual.get(..8) == Some("file:///")
+                        && uri.get(..8) == Some("file:///")
+                        && actual.get(9..10) == Some(":")
+                        && uri.get(9..10) == Some(":")
+                        && actual
+                            .get(8..9)
+                            .zip(uri.get(8..9))
+                            .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+                        && actual.get(9..) == uri.get(9..))
+            })
+        };
+        {
+            let mut folders = server.workspace_folders.lock();
+            for (uri, path, include_path) in
+                [(a_uri.clone(), a_path.clone(), "lib-a"), (b_uri.clone(), b_path, "lib-b")]
+            {
+                let mut folder = super::WorkspaceFolderState::new(uri).with_path(path);
+                folder.effective_workspace_config.include_paths = vec![include_path.to_string()];
+                folders.push(folder);
+            }
+        }
+        server.test_apply_did_open(&a_doc, "use FolderScopedOnlyA;\n", 1)?;
+        server.test_apply_did_open(&b_doc, "use FolderScopedOnlyA;\n", 1)?;
+        server.test_apply_did_open(&outside_doc, "use FolderScopedOnlyA;\n", 1)?;
+        server.publish_diagnostics(&a_doc);
+        server.publish_diagnostics(&b_doc);
+        server.publish_diagnostics(&outside_doc);
+        server.client_capabilities.lock().workspace_configuration_support = true;
+        server.initialized.store(true, Ordering::Release);
+
+        // Diagnostics compute off-lock. Observe all initial missing-module
+        // publications and a short quiet interval before measuring the pull.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut last_len = 0;
+        let mut stable_since = std::time::Instant::now();
+        loop {
+            let observed = output.messages()?;
+            if observed.len() != last_len {
+                last_len = observed.len();
+                stable_since = std::time::Instant::now();
+            }
+            let all_missing = [&a_doc, &b_doc, &outside_doc].iter().all(|doc| {
+                observed.iter().any(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("textDocument/publishDiagnostics")
+                        && is_doc(message, doc)
+                        && message
+                            .pointer("/params/diagnostics")
+                            .and_then(Value::as_array)
+                            .is_some_and(|diagnostics| {
+                                diagnostics.iter().any(|diagnostic| {
+                                    diagnostic.get("code") == Some(&json!("PL701"))
+                                })
+                            })
+                })
+            });
+            if all_missing && stable_since.elapsed() >= std::time::Duration::from_millis(50) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(
+                    format!("initial PL701 diagnostics did not settle: {observed:?}").into()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let before_invalidation = server.workspace_identity_generation.load(Ordering::SeqCst);
+        server.test_handle_did_change_configuration(Some(json!({ "settings": null })));
+        verify(
+            server.workspace_identity_generation.load(Ordering::SeqCst) == before_invalidation,
+            "null invalidation must not reject unchanged in-flight diagnostics",
+        )?;
+        verify(
+            server.config_for_doc(&a_doc).ok_or("A config missing")?.include_paths
+                == vec!["lib-a".to_string()],
+            "null invalidation must preserve A's include paths",
+        )?;
+        verify(
+            server.config_for_doc(&b_doc).ok_or("B config missing")?.include_paths
+                == vec!["lib-b".to_string()],
+            "null invalidation must preserve B's include paths",
+        )?;
+        // The outbound writer runs on another thread. A synchronous snapshot
+        // after didChangeConfiguration can precede its queued request under
+        // parallel test load, even though the request was accepted.
+        let request_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let (invalidated, request) = loop {
+            let observed = output.messages()?;
+            if let Some(request) = observed.iter().rev().find(|message| {
+                message.get("method").and_then(Value::as_str) == Some("workspace/configuration")
+            }) {
+                break (observed.clone(), request.clone());
+            }
+            if std::time::Instant::now() >= request_deadline {
+                return Err(format!("scoped configuration request missing: {observed:?}").into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let id = request.get("id").ok_or("configuration request id missing")?;
+        verify(
+            request.pointer("/params/items/1/scopeUri") == Some(&json!(a_uri)),
+            "A's scoped pull item is missing",
+        )?;
+        verify(
+            request.pointer("/params/items/2/scopeUri") == Some(&json!(b_uri)),
+            "B's scoped pull item is missing",
+        )?;
+
+        server.handle_client_response(Some(json!({
+            "id": id,
+            "result": [
+                {},
+                { "workspace": { "includePaths": ["new-lib"] } },
+                { "workspace": { "includePaths": ["lib-b"] } }
+            ]
+        })));
+        verify(
+            server.config_for_doc(&a_doc).ok_or("A config missing")?.include_paths
+                == vec!["new-lib".to_string()],
+            "A's scoped pull did not update its include paths",
+        )?;
+        verify(
+            server.config_for_doc(&b_doc).ok_or("B config missing")?.include_paths
+                == vec!["lib-b".to_string()],
+            "A's scoped pull changed B's include paths",
+        )?;
+        verify(
+            server.workspace_identity_generation.load(Ordering::SeqCst) > before_invalidation,
+            "changed scoped include paths must invalidate diagnostic identity",
+        )?;
+        for doc in [&b_doc, &outside_doc] {
+            verify(
+                server.include_paths_for_doc(doc).contains(&a_path.join("new-lib")),
+                "other folders and folderless documents must see A's fallback include path",
+            )?;
+        }
+        let refresh_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let refreshed = loop {
+            let observed = output.messages()?;
+            if [&a_doc, &b_doc, &outside_doc].iter().all(|doc| {
+                observed.iter().skip(invalidated.len()).any(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("textDocument/publishDiagnostics")
+                        && is_doc(message, doc)
+                })
+            }) {
+                break observed;
+            }
+            if std::time::Instant::now() >= refresh_deadline {
+                return Err(
+                    format!("changed A diagnostics were not published: {observed:?}").into()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let new_diagnostics: Vec<&Value> = refreshed
+            .iter()
+            .skip(invalidated.len())
+            .filter(|message| {
+                message.get("method").and_then(Value::as_str)
+                    == Some("textDocument/publishDiagnostics")
+            })
+            .collect();
+        verify(
+            new_diagnostics.iter().filter(|message| is_doc(message, &a_doc)).all(|message| {
+                message.pointer("/params/diagnostics").and_then(Value::as_array).is_some_and(
+                    |diagnostics| {
+                        diagnostics
+                            .iter()
+                            .all(|diagnostic| diagnostic.get("code") != Some(&json!("PL701")))
+                    },
+                )
+            }),
+            "A's new include path must resolve its own module",
+        )?;
+        // Push diagnostics use a narrower per-document @INC than the shared
+        // include_paths_for_doc fallback; republishing B and a folderless
+        // document does not make their missing-module warnings disappear.
+        for doc in [&b_doc, &outside_doc] {
+            verify(
+                new_diagnostics.iter().filter(|message| is_doc(message, doc)).any(|message| {
+                    message.pointer("/params/diagnostics").and_then(Value::as_array).is_some_and(
+                        |diagnostics| {
+                            diagnostics
+                                .iter()
+                                .any(|diagnostic| diagnostic.get("code") == Some(&json!("PL701")))
+                        },
+                    )
+                }),
+                "fallback consumer must be republished with its diagnostic policy",
+            )?;
+        }
+
+        // One VS Code event can change Critic and includePaths together. The
+        // session-only push must not rebuild either folder before its pull.
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": { "perl": { "critic": { "severity": 4 } } }
+        })));
+        verify(
+            server.config_for_doc(&a_doc).ok_or("A config missing")?.include_paths
+                == vec!["new-lib".to_string()],
+            "Critic-only push rebuilt A's include paths",
+        )?;
+        verify(
+            server.config_for_doc(&b_doc).ok_or("B config missing")?.include_paths
+                == vec!["lib-b".to_string()],
+            "Critic-only push rebuilt B's include paths",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn pull_diagnostics_refresh_after_each_accepted_include_path_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let temp = tempfile::tempdir()?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|_| "invalid workspace URI")?
+            .to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(super::WorkspaceFolderState::new(uri).with_path(temp.path().to_path_buf()));
+        {
+            let mut capabilities = server.client_capabilities.lock();
+            capabilities.workspace_configuration_support = true;
+            capabilities.diagnostic_refresh_support = true;
+        }
+        server.client_supports_pull_diags.store(true, Ordering::Release);
+        server.initialized.store(true, Ordering::Release);
+
+        for include_path in ["first-lib", "second-lib"] {
+            server.request_workspace_configuration_for_folders();
+            let request_id = server
+                .pending_workspace_configuration_requests
+                .lock()
+                .keys()
+                .next()
+                .copied()
+                .ok_or("scoped request missing")?;
+            server.handle_client_response(Some(json!({
+                "id": request_id.as_i32(),
+                "result": [{}, { "workspace": { "includePaths": [include_path] } }]
+            })));
+        }
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let observed = output.messages()?;
+            let refresh_count = observed
+                .iter()
+                .filter(|message| {
+                    message.get("method").and_then(Value::as_str)
+                        == Some("workspace/diagnostic/refresh")
+                })
+                .count();
+            if refresh_count == 2 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "expected one pull diagnostic refresh per accepted change, saw {refresh_count}: {observed:?}"
+                ).into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_module_name_appears_exact_match() {
         assert!(module_name_appears_in_text("use MyBase;", "MyBase"));
     }
@@ -4209,6 +4745,8 @@ mod tests {
     fn did_change_workspace_folders_clears_pending_workspace_configuration_requests()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
+        let generation_before =
+            server.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
         let request_id =
             crate::runtime::types::ServerRequestId::new(7).ok_or("valid request id")?;
         server.pending_workspace_configuration_requests.lock().insert(
@@ -4231,6 +4769,314 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(server.pending_workspace_configuration_requests.lock().is_empty());
+        assert_eq!(
+            server.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst),
+            generation_before + 1,
+            "added workspace folders must invalidate in-flight subjects"
+        );
+        assert!(
+            server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst),
+            "a completed folder/configuration transition publishes stable authority"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn added_folder_repulls_scoped_configuration_and_ignores_old_response()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, output) = server_with_output_capture();
+        let temp = tempfile::tempdir()?;
+        let a_path = temp.path().join("a");
+        let b_path = temp.path().join("b");
+        std::fs::create_dir_all(&a_path)?;
+        std::fs::create_dir_all(&b_path)?;
+        let a_uri =
+            url::Url::from_directory_path(&a_path).map_err(|_| "invalid A URI")?.to_string();
+        let b_uri =
+            url::Url::from_directory_path(&b_path).map_err(|_| "invalid B URI")?.to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(super::WorkspaceFolderState::new(a_uri.clone()).with_path(a_path));
+        server.client_capabilities.lock().workspace_configuration_support = true;
+        server.initialized.store(true, Ordering::Release);
+        let wait_for_pulls = |count: usize| -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let observed = output.messages()?;
+                let pulls = observed
+                    .iter()
+                    .filter(|message| {
+                        message.get("method").and_then(Value::as_str)
+                            == Some("workspace/configuration")
+                    })
+                    .count();
+                if pulls >= count {
+                    return Ok(observed);
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!("expected {count} scoped pulls, saw {observed:?}").into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        server.request_workspace_configuration_for_folders();
+        let first = wait_for_pulls(1)?;
+        let old_id = first
+            .iter()
+            .find(|message| {
+                message.get("method").and_then(Value::as_str) == Some("workspace/configuration")
+            })
+            .and_then(|message| message.get("id"))
+            .ok_or("initial scoped request missing")?
+            .clone();
+
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [{ "uri": b_uri, "name": "b" }], "removed": [] }
+        })))?;
+        let after = wait_for_pulls(2)?;
+        let new_request = after
+            .iter()
+            .rev()
+            .find(|message| {
+                message.get("method").and_then(Value::as_str) == Some("workspace/configuration")
+            })
+            .ok_or("topology change did not repull scoped configuration")?;
+        let new_id = new_request.get("id").ok_or("new scoped request id missing")?;
+        if new_id == &old_id
+            || new_request.pointer("/params/items/1/scopeUri") != Some(&json!(a_uri))
+            || new_request.pointer("/params/items/2/scopeUri") != Some(&json!(b_uri))
+        {
+            return Err(
+                format!("new scoped request did not cover both roots: {new_request}").into()
+            );
+        }
+
+        server.handle_client_response(Some(json!({
+            "id": old_id,
+            "result": [{}, { "workspace": { "includePaths": ["stale-a"] } }]
+        })));
+        if server
+            .config_for_doc(&a_uri)
+            .ok_or("A config missing")?
+            .include_paths
+            .contains(&"stale-a".to_string())
+        {
+            return Err("stale pre-transition response changed A".into());
+        }
+        server.handle_client_response(Some(json!({
+            "id": new_id,
+            "result": [
+                {},
+                {},
+                { "workspace": { "includePaths": ["new-b"] } }
+            ]
+        })));
+        if server.config_for_doc(&b_uri).ok_or("B config missing")?.include_paths
+            != vec!["new-b".to_string()]
+        {
+            return Err("new folder did not receive its scoped include paths".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_folder_configuration_failure_stays_unstable_until_recovery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl\n")?;
+        let uri = url::Url::from_file_path(temp.path()).map_err(|_| "temp path URI")?.to_string();
+        let server = LspServer::new();
+
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [{ "uri": uri, "name": "broken" }], "removed": [] }
+        })))?;
+        assert!(!server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst));
+
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl]\n")?;
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [], "removed": [{ "uri": uri }] }
+        })))?;
+        let uri = url::Url::from_file_path(temp.path()).map_err(|_| "temp path URI")?.to_string();
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [{ "uri": uri, "name": "recovered" }], "removed": [] }
+        })))?;
+        assert!(server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst));
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_folder_change_blocks_pull_reuse_until_config_is_published() -> anyhow::Result<()> {
+        let old_dir = tempfile::tempdir()?;
+        let new_dir = tempfile::tempdir()?;
+        let old_root = url::Url::from_directory_path(old_dir.path())
+            .map_err(|_| anyhow::anyhow!("invalid old workspace root"))?
+            .to_string();
+        let new_root = url::Url::from_directory_path(new_dir.path())
+            .map_err(|_| anyhow::anyhow!("invalid new workspace root"))?
+            .to_string();
+        let document_path = old_dir.path().join("main.pl");
+        let document_uri = url::Url::from_file_path(&document_path)
+            .map_err(|_| anyhow::anyhow!("invalid document URI"))?
+            .to_string();
+
+        let server = Arc::new(LspServer::new());
+        // Diagnostics only ever run inside an initialized session, so give the
+        // fixture the coordinate authority initialize would have published
+        // (same premise as the diagnostics fixtures). Publishing directly
+        // rather than calling handle_initialize keeps the workspace-folder and
+        // project-config premises of this test untouched.
+        server.publish_position_encoding_session_context();
+        server.workspace_folders.lock().push(
+            super::WorkspaceFolderState::new(old_root.clone())
+                .with_path(old_dir.path().to_path_buf()),
+        );
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": document_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "my $value = 1;\n"
+            }
+        })))?;
+
+        let initial = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": document_uri }
+            })))?
+            .ok_or_else(|| anyhow::anyhow!("initial pull diagnostic returned no report"))?;
+        anyhow::ensure!(initial["kind"] == "full", "initial pull must be a full report: {initial}");
+        let previous_result_id = initial["resultId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("initial pull must provide a reusable result id"))?
+            .to_owned();
+
+        // Observe a real diagnostic snapshot triggered by transition recovery.
+        // Stable membership must never be paired with the old aggregate identity.
+        let old_workspace_generation = server.workspace_identity_generation.load(Ordering::SeqCst);
+        let old_topology = server.workspace_topology_generation.load(Ordering::SeqCst);
+        let exposed_old_identity = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&exposed_old_identity);
+        let stable = Arc::clone(&server.workspace_topology_stable);
+        let topology = Arc::clone(&server.workspace_topology_generation);
+        let identity = Arc::clone(&server.workspace_identity_generation);
+        let publication_lock = Arc::clone(&server.workspace_identity_lock);
+        *server.diagnostic_after_snapshot_hook.lock() = Some(Box::new(move || {
+            let _publication = publication_lock.lock();
+            if stable.load(Ordering::SeqCst)
+                && topology.load(Ordering::SeqCst) != old_topology
+                && identity.load(Ordering::SeqCst) == old_workspace_generation
+            {
+                observed.store(true, Ordering::SeqCst);
+            }
+        }));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_workspace_topology_transition(started_tx, release_rx);
+        let notification_server = Arc::clone(&server);
+        let notification = std::thread::spawn(move || {
+            notification_server.handle_did_change_workspace_folders(Some(json!({
+                "event": {
+                    "added": [{ "uri": new_root, "name": "new" }],
+                    "removed": []
+                }
+            })))
+        });
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+
+        let during_result = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": document_uri },
+                "previousResultId": previous_result_id
+            })))
+            .map_err(|error| anyhow::anyhow!("transition pull diagnostic failed: {error}"))
+            .and_then(|report| {
+                report
+                    .ok_or_else(|| anyhow::anyhow!("transition pull diagnostic returned no report"))
+            });
+
+        release_tx.send(())?;
+        notification
+            .join()
+            .map_err(|_| anyhow::anyhow!("workspace notification thread panicked"))??;
+        anyhow::ensure!(
+            !exposed_old_identity.load(Ordering::SeqCst),
+            "recovery diagnostics observed stable topology before aggregate identity advanced"
+        );
+        let during = during_result?;
+        anyhow::ensure!(
+            during["kind"] == "full" && during.get("resultId").is_none(),
+            "unstable transition must return an uncached full report: {during}"
+        );
+        anyhow::ensure!(
+            server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst),
+            "successful config publication must restore stable authority"
+        );
+
+        let fresh = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": document_uri }
+            })))?
+            .ok_or_else(|| anyhow::anyhow!("post-transition pull diagnostic returned no report"))?;
+        anyhow::ensure!(
+            fresh["kind"] == "full" && fresh["resultId"].as_str().is_some(),
+            "stable transition must produce a reusable full report: {fresh}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_folder_notifications_serialize_while_config_is_loading() -> anyhow::Result<()> {
+        let server = Arc::new(LspServer::new());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_workspace_topology_transition(started_tx, release_rx);
+
+        let first_server = Arc::clone(&server);
+        let first = std::thread::spawn(move || {
+            first_server.handle_did_change_workspace_folders(Some(json!({
+                "event": {
+                    "added": [{ "uri": "file:///serialized-first", "name": "first" }],
+                    "removed": []
+                }
+            })))
+        });
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+
+        let (second_attempt_tx, second_attempt_rx) = std::sync::mpsc::channel();
+        let (second_done_tx, second_done_rx) = std::sync::mpsc::channel();
+        let second_server = Arc::clone(&server);
+        let second = std::thread::spawn(move || {
+            let _ = second_attempt_tx.send(());
+            let result = second_server.handle_did_change_workspace_folders(Some(json!({
+                "event": {
+                    "added": [{ "uri": "file:///serialized-second", "name": "second" }],
+                    "removed": []
+                }
+            })));
+            let _ = second_done_tx.send(());
+            result
+        });
+        second_attempt_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        anyhow::ensure!(
+            second_done_rx.recv_timeout(std::time::Duration::from_millis(100)).is_err(),
+            "a second folder writer completed while the first still held the transition gate"
+        );
+
+        release_tx.send(())?;
+        first.join().map_err(|_| anyhow::anyhow!("first workspace notification panicked"))??;
+        second.join().map_err(|_| anyhow::anyhow!("second workspace notification panicked"))??;
+
+        let folders = server.workspace_folders.lock();
+        anyhow::ensure!(
+            folders.iter().any(|folder| folder.uri == "file:///serialized-first")
+                && folders.iter().any(|folder| folder.uri == "file:///serialized-second"),
+            "serialized writers must preserve both workspace memberships"
+        );
+        anyhow::ensure!(
+            server.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst),
+            "the final serialized transition must publish stable authority"
+        );
         Ok(())
     }
 
@@ -4571,6 +5417,47 @@ mod tests {
                 .all(|folder| { folder.uri != removed_folder_uri.to_string() })
         );
 
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_removal_releases_topology_before_document_eviction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::{Arc, Barrier, mpsc};
+
+        let server = Arc::new(LspServer::new());
+        let folder_uri = "file:///removed".to_string();
+        server
+            .workspace_folders
+            .lock()
+            .push(crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri.clone()));
+        let removed = std::collections::HashSet::from([folder_uri.clone()]);
+        let ready = Arc::new(Barrier::new(2));
+        let (phase_a_tx, phase_a_rx) = mpsc::channel();
+        let worker_server = Arc::clone(&server);
+        let worker_ready = Arc::clone(&ready);
+        let worker = std::thread::spawn(move || {
+            worker_ready.wait();
+            worker_server.apply_workspace_folder_removal(&removed);
+            phase_a_tx.send(()).expect("phase-A signal");
+            worker_server.evict_workspace_folder_state(&folder_uri);
+        });
+
+        // Hold `documents` across the topology phase.  The worker must still
+        // complete phase A and release `workspace_folders`; otherwise this
+        // assertion would observe the lock inversion directly.
+        let documents_guard = server.documents.lock();
+        ready.wait();
+        let phase_a = phase_a_rx.recv_timeout(std::time::Duration::from_secs(2));
+        let topology_released = server.workspace_folders.try_lock().is_some();
+        drop(documents_guard);
+        worker.join().map_err(|_| "workspace eviction worker panicked")?;
+        phase_a.map_err(|error| format!("phase-A completion timed out: {error}"))?;
+        assert!(
+            topology_released,
+            "workspace topology guard must be released before document eviction"
+        );
         Ok(())
     }
 
@@ -6235,5 +7122,46 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn merge_client_settings_patch_deep_merges_objects_and_replaces_scalars() {
+        // #15715: each tier-3 notification is a patch. Objects merge
+        // recursively so fields absent from a later payload retain earlier
+        // accepted values; scalars, arrays, and type changes replace.
+        let mut base = json!({
+            "critic": { "severity": 4, "theme": "core" },
+            "other": 1,
+            "list": [1],
+        });
+        let patch = json!({
+            "critic": { "severity": 2 },
+            "list": [2, 3],
+        });
+        super::merge_client_settings_patch(&mut base, &patch);
+        assert_eq!(
+            base,
+            json!({
+                "critic": { "severity": 2, "theme": "core" },
+                "other": 1,
+                "list": [2, 3],
+            }),
+            "absent object fields must be retained, present scalars and arrays replaced: {base:?}",
+        );
+    }
+
+    #[test]
+    fn record_client_settings_accumulates_across_notifications() {
+        // #15715: a later patch that omits an earlier field must not erase
+        // it from the replay cache.
+        let cache = Arc::new(Mutex::new(None));
+        super::record_client_settings(&cache, &json!({ "critic": { "severity": 4 } }));
+        super::record_client_settings(&cache, &json!({ "diagnostics": { "limit": 10 } }));
+        let cached = cache.lock().clone().expect("cache must hold accumulated settings");
+        assert_eq!(
+            cached,
+            json!({ "critic": { "severity": 4 }, "diagnostics": { "limit": 10 } }),
+            "second patch must accumulate, not overwrite: {cached:?}",
+        );
     }
 }

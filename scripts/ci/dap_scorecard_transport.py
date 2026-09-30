@@ -122,10 +122,18 @@ class DapProcess:
         binary: Path,
         timeout_seconds: float,
         invocations: InvocationCounter | None = None,
+        trusted_root: Path | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
+        command = [str(binary), "--stdio", "--log-level", "error"]
+        if trusted_root is not None:
+            # Pass the original path through, never the resolved one: the
+            # startup contract rejects symlink roots via symlink_metadata
+            # before canonicalization, and resolving here would hide that
+            # seam from the scorecard instead of testing it.
+            command.extend(["--trusted-root", str(trusted_root)])
         self.process = subprocess.Popen(
-            [str(binary), "--stdio", "--log-level", "error"],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

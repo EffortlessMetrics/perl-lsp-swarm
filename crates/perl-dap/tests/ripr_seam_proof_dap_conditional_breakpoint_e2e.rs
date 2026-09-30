@@ -103,7 +103,7 @@ fn conditional_breakpoint_entry_is_refused_and_never_installs_on_live_session() 
         let Ok(msg) = session.rx.recv_timeout(remaining) else {
             break;
         };
-        if let DapMessage::Event { event, .. } = &msg {
+        if let (DapMessage::Event { event, .. }, _) = &msg {
             if event == "terminated" {
                 saw_terminated = true;
                 break;

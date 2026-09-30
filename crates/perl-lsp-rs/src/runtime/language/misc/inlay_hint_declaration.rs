@@ -11,8 +11,8 @@
 //! This is the bounded #14675 interim. It does not attach canonical call/signature
 //! entity identity (#8299) and does not authenticate the resolve envelope (#14672).
 
-use perl_parser::declaration::current_package_at;
 use perl_parser_core::ast::{Node, NodeKind};
+use perl_semantic_analyzer::analysis::declaration::current_package_at;
 
 /// Select the Perl-effective named subroutine for `callable_name` at `call_site_offset`.
 ///

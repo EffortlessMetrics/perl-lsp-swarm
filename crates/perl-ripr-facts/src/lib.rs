@@ -18,7 +18,10 @@
 //! - [`run_ripr_facts`] is the thin CLI wrapper the `perl-lsp` / `perllsp`
 //!   `ripr-facts` subcommand calls: it forwards CLI-shaped args to the batch
 //!   API, then validates the output path, writes the packet to disk, and maps
-//!   the outcome to a process exit code.
+//!   the outcome to a process exit code. The write **replaces** the
+//!   destination through a staged sibling and a rename, so a failed generation
+//!   preserves the previous valid packet and no consumer ever reads a
+//!   truncated one (#16022; see `README.md` "Output safety").
 //! - [`run_cli`] is the standalone `perl-ripr-facts` binary entry point. It
 //!   accepts RIPR's managed-producer command shape, including `--diff`.
 //!

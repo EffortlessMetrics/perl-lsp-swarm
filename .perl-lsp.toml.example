@@ -90,7 +90,6 @@
 
 # Formatter engine:
 #   native            = Rust-native formatter
-#   compat            = native formatter with compatibility-oriented defaults
 #   external-perltidy = shell out to perltidy compatibility adapter
 #   off               = disable formatting
 #

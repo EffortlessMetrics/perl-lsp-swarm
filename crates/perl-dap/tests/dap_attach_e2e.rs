@@ -5,8 +5,10 @@
 
 mod common;
 
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::transport::framing::frame;
+use perl_tdd_support::must_with;
 use serde_json::{Value, json};
 use std::error::Error;
 use std::io::{Read, Write};
@@ -28,7 +30,7 @@ fn smoke_timeout() -> Duration {
 }
 
 fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
@@ -112,6 +114,7 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
 
     let timeout = smoke_timeout();
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -234,6 +237,7 @@ fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
 
     let timeout = smoke_timeout();
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
@@ -266,7 +270,7 @@ fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
     loop {
         match rx.try_recv() {
             Err(TryRecvError::Empty) => break,
-            Ok(DapMessage::Event { ref event, .. }) if event == "stopped" => {
+            Ok((DapMessage::Event { ref event, .. }, _)) if event == "stopped" => {
                 failure = Some("attach emitted a stop before the peer did".into());
                 break;
             }
@@ -290,9 +294,9 @@ fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
             }
             match rx.recv_timeout(remaining) {
                 Ok(message) => match message {
-                    DapMessage::Event { ref event, .. } if event == "stopped" => {
+                    (DapMessage::Event { ref event, .. }, _) if event == "stopped" => {
                         peer_stop_seen = true;
-                        match event_body(&message) {
+                        match event_body(&message.0) {
                             Some(stopped_body) => {
                                 if stopped_body.get("reason").and_then(Value::as_str)
                                     != Some(peer_reason)
@@ -311,7 +315,7 @@ fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
                             None => failure = Some("stopped event missing body".into()),
                         }
                     }
-                    DapMessage::Event { ref event, .. } if event == "terminated" => {
+                    (DapMessage::Event { ref event, .. }, _) if event == "terminated" => {
                         failure = Some("terminated arrived before peer stopped event".into());
                     }
                     _ => {}
@@ -340,11 +344,11 @@ fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
                 }
                 match rx.recv_timeout(remaining) {
                     Ok(message) => match message {
-                        DapMessage::Event { ref event, .. } if event == "stopped" => {
+                        (DapMessage::Event { ref event, .. }, _) if event == "stopped" => {
                             failure =
                                 Some(format!("stopped event arrived after peer stop: {message:?}"));
                         }
-                        DapMessage::Event { ref event, .. } if event == "terminated" => {
+                        (DapMessage::Event { ref event, .. }, _) if event == "terminated" => {
                             terminated_seen = true;
                         }
                         _ => {}
@@ -421,7 +425,7 @@ fn dap_attach_e2e_tcp_stop_on_entry_is_rejected_before_connect() -> TestResult {
     }
 
     while let Ok(message) = rx.try_recv() {
-        if let DapMessage::Event { event, .. } = message {
+        if let (DapMessage::Event { event, .. }, _) = message {
             return Err(
                 format!("refused attach must not publish postinitialize event `{event}`").into()
             );
@@ -447,6 +451,7 @@ fn dap_attach_e2e_tcp_attach_timeout_returns_actionable_message() -> TestResult 
     drop(listener);
 
     let mut adapter = DebugAdapter::new();
+    crate::install_unbounded_test_authority(&adapter);
     response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
 
     let message = response_failure_message(
@@ -494,6 +499,7 @@ fn dap_attach_validation_errors_reach_the_request_response() -> TestResult {
 
     for (arguments, expected_guidance) in cases {
         let mut adapter = DebugAdapter::new();
+        crate::install_unbounded_test_authority(&adapter);
         response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
         let message = response_failure_message(
             adapter.handle_request(2, "attach", Some(arguments)),
@@ -506,4 +512,26 @@ fn dap_attach_validation_errors_reach_the_request_response() -> TestResult {
     }
 
     Ok(())
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// These tests exercise debugging workflows, not the launch-authority
+/// contract. Without an installed authority every launch is refused, so each
+/// adapter opts into unbounded mode with a visible test acknowledgement.
+fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = must_with(
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test: unbounded session",
+            )),
+        }),
+        "test authority resolution",
+    );
+    adapter.set_launch_authority(authority);
 }

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from release_archive_members import ArchiveMemberError, selected_member_digest
+from release_subject_projection import terminal_subject_paths
 
 SCHEMA = "perl_lsp.release_terminal_manifest.v1"
 IDENTITY_SCHEMA = "perl_lsp.release_build_identity.v1"
@@ -483,11 +484,11 @@ def build_manifest(candidate: Path, source_sha: str, tag: str) -> dict[str, Any]
     if sorted(targets) != evidence_targets:
         raise ManifestError("archive targets differ from exact build-evidence targets")
 
-    subjects = [row["path"] for row in archives]
-    subjects.extend(row["path"] for row in evidence_subjects)
-    subjects.extend(["dist/SHA256SUMS", "dist/sbom-spdx.json", "dist/release-terminal-manifest.json"])
-    if (candidate / "release_notes.md").is_file():
-        subjects.append("release_notes.md")
+    subjects = terminal_subject_paths(
+        [row["path"] for row in archives],
+        [row["path"] for row in evidence_subjects],
+        (candidate / "release_notes.md").is_file(),
+    )
     # Resolve once so symlinks inside the candidate cannot escape the prefix
     # stripped by relative_to, and so a relative candidate argument still
     # yields canonical POSIX member paths.

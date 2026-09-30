@@ -205,8 +205,10 @@ mod tests {
         // version 5.10 enables the say feature via its bundle
         let features =
             perl_pragma::features_enabled_by_version(perl_pragma::PerlVersion::new(5, 10));
-        let mut state = perl_pragma::PragmaState::default();
-        state.features = features.into_iter().collect();
+        let state = perl_pragma::PragmaState {
+            features: features.into_iter().collect(),
+            ..perl_pragma::PragmaState::default()
+        };
         let mut set = create_builtins();
         filter_pragma_gated(&mut set, &state);
         assert!(set.contains("say"), "say must be present when use 5.010 implies the say feature");

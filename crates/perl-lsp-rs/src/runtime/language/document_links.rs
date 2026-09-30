@@ -2,6 +2,7 @@
 //!
 //! Keeps document-link feature logic isolated from other language handlers.
 
+use super::super::document_access::UserAnswerTextLookup;
 use super::super::{INVALID_PARAMS, INVALID_REQUEST, JsonRpcError, LspServer, Value, json};
 use crate::documentation_targets::PerlDocumentationTarget;
 use crate::protocol::req_uri;
@@ -13,13 +14,23 @@ fn is_windows_drive_path(path: &str) -> bool {
     bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
 }
 
+fn append_literal_file_segments(mut base: url::Url, path: &str) -> Option<String> {
+    // PathSegmentsMut encodes `%` as well as URI delimiters in each filename
+    // component. Url::parse would treat an already-looking escape as encoded.
+    base.path_segments_mut().ok()?.pop_if_empty().extend(path.split('/'));
+    Some(base.to_string())
+}
+
 fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
-    if file_path.starts_with("//") {
-        return url::Url::parse(&format!("file:{file_path}")).ok().map(|url| url.to_string());
+    if let Some(unc_path) = file_path.strip_prefix("//") {
+        let (host, path) = unc_path.split_once('/').unwrap_or((unc_path, ""));
+        let base = url::Url::parse(&format!("file://{host}/")).ok()?;
+        return append_literal_file_segments(base, path);
     }
 
     if is_windows_drive_path(file_path) {
-        return url::Url::parse(&format!("file:///{file_path}")).ok().map(|url| url.to_string());
+        let base = url::Url::parse(&format!("file:///{}/", &file_path[..2])).ok()?;
+        return append_literal_file_segments(base, &file_path[3..]);
     }
 
     if Path::new(file_path).is_absolute()
@@ -29,10 +40,8 @@ fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
     }
 
     let base_url = url::Url::parse(base_uri).ok()?;
-    if let Ok(target_url) = base_url.join(file_path) {
-        return Some(target_url.to_string());
-    }
-
+    // A quoted require path is a literal filename. URL joining interprets
+    // `#`, `?`, and `%` as URI syntax rather than characters in that name.
     if let Ok(base_path) = base_url.to_file_path()
         && let Some(parent) = base_path.parent()
     {
@@ -42,7 +51,8 @@ fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
         }
     }
 
-    None
+    // Preserve URL-relative resolution for non-file document schemes.
+    base_url.join(file_path).ok().map(|url| url.to_string())
 }
 
 fn normalize_document_link_file_path(file_path: &str) -> Cow<'_, str> {
@@ -95,24 +105,33 @@ impl LspServer {
                 message: "Missing textDocument.uri".into(),
                 data: None,
             })?;
-            // Snapshot document text under lock, then release before acquiring
-            // workspace_folders via workspace_roots() to prevent ABBA deadlock.
-            // Path A (here): documents -> workspace_folders
-            // Path B (workspace.rs): workspace_folders -> documents
-            let doc_text = {
-                let documents = self.documents_guard();
-                let doc = self.get_document(&documents, uri).ok_or_else(|| JsonRpcError {
-                    code: INVALID_REQUEST,
-                    message: format!("Document not open: {}", uri),
-                    data: None,
-                })?;
-                doc.text_arc.to_string()
+            // Snapshot usable user-answer text under lock, then release before
+            // workspace_roots() / compute_links. Predecessor text stays stored
+            // as evidence; it must not be copied into a current-answer result.
+            let lookup = self.lookup_user_answer_text(uri);
+            let snapshot = match lookup {
+                UserAnswerTextLookup::NotOpen => {
+                    return Err(JsonRpcError {
+                        code: INVALID_REQUEST,
+                        message: format!("Document not open: {}", uri),
+                        data: None,
+                    });
+                }
+                UserAnswerTextLookup::Unavailable => {
+                    return Ok(Some(json!([])));
+                }
+                UserAnswerTextLookup::Current(snapshot) => snapshot,
             };
             // documents lock released here
 
             let roots = self.workspace_roots();
-            let links = crate::document_links::compute_links(uri, &doc_text, &roots);
-            Ok(Some(json!(links)))
+            let links = crate::document_links::compute_links(uri, &snapshot.text, &roots);
+            Ok(Some(self.publish_user_answer_value(
+                uri,
+                snapshot.generation,
+                json!(links),
+                json!([]),
+            )))
         } else {
             Ok(Some(json!([])))
         }
@@ -266,12 +285,15 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
+                let Some(text) = doc.text_for_user_answers() else {
+                    return Ok(Some(json!([])));
+                };
                 let uri_parsed = url::Url::parse(uri).map_err(|_| JsonRpcError {
                     code: -32602,
                     message: "Invalid URI".to_string(),
                     data: None,
                 })?;
-                match crate::lsp_document_link::collect_document_links(&doc.text, &uri_parsed) {
+                match crate::lsp_document_link::collect_document_links(text, &uri_parsed) {
                     Ok(links) => Ok(Some(serde_json::to_value(links).map_err(|e| {
                         crate::protocol::internal_error(&format!(
                             "Failed to serialize document links: {}",
@@ -291,9 +313,11 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::LspServer;
     use super::{
         is_valid_pod_section_fragment, normalize_document_link_file_path, resolve_file_link_target,
     };
+    use serde_json::{Value, json};
 
     #[test]
     fn normalize_document_link_file_path_collapses_windows_separators() {
@@ -327,11 +351,119 @@ mod tests {
     }
 
     #[test]
+    fn resolve_file_link_target_keeps_non_file_uri_joining() {
+        let resolved =
+            resolve_file_link_target("https://example.test/project/file.pl", "lib/Thing.pl");
+        assert_eq!(resolved, Some("https://example.test/project/lib/Thing.pl".to_string()));
+    }
+
+    #[test]
     fn pod_section_fragments_reject_path_like_targets() {
         assert!(is_valid_pod_section_fragment("method_name"));
         assert!(is_valid_pod_section_fragment("method name"));
         assert!(!is_valid_pod_section_fragment(""));
         assert!(!is_valid_pod_section_fragment("Other/section"));
         assert!(!is_valid_pod_section_fragment("Other::section"));
+    }
+
+    fn document_link_modules(value: &Value) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let links = value.as_array().ok_or("documentLink must return an array")?;
+        Ok(links
+            .iter()
+            .filter_map(|link| link.pointer("/data/module").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect())
+    }
+
+    fn ranged_violation(uri: &str, version: i32) -> Value {
+        json!({
+            "textDocument": { "uri": uri, "version": version },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "text": "x"
+            }]
+        })
+    }
+
+    #[test]
+    fn document_links_fail_closed_across_full_sync_violation_and_recover()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/desync_document_links.pl";
+        let predecessor = "use PredLinkMod;\n";
+        let recovered = "use RecoveredLinkMod;\n";
+
+        server.test_apply_did_open(uri, predecessor, 1)?;
+        let live = server
+            .handle_document_links(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("live documentLink must return a result")?;
+        let live_modules = document_link_modules(&live)?;
+        assert!(
+            live_modules.iter().any(|module| module == "PredLinkMod"),
+            "live documentLink must return the current predecessor module: {live}"
+        );
+
+        server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+        let desync = server
+            .handle_document_links(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("desync documentLink must return a result")?;
+        let desync_modules = document_link_modules(&desync)?;
+        assert!(
+            desync_modules.is_empty(),
+            "predecessor documentLink ranges must not publish as current: {desync}"
+        );
+
+        server.test_apply_did_change(uri, recovered, 3)?;
+        let restored = server
+            .handle_document_links(Some(json!({ "textDocument": { "uri": uri } })))?
+            .ok_or("recovered documentLink must return a result")?;
+        let restored_modules = document_link_modules(&restored)?;
+        assert!(
+            restored_modules.iter().any(|module| module == "RecoveredLinkMod"),
+            "accepted full replacement must restore current documentLink: {restored}"
+        );
+        assert!(
+            !restored_modules.iter().any(|module| module == "PredLinkMod"),
+            "recovered documentLink must not keep predecessor module: {restored}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn document_links_do_not_publish_in_flight_predecessor_after_violation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/inflight_document_links.pl";
+        let predecessor = "use PredLinkMod;\n";
+
+        server.test_apply_did_open(uri, predecessor, 1)?;
+        let snapshot = server
+            .snapshot_user_answer_text(uri)
+            .ok_or("open document must have a usable user-answer snapshot")?;
+        let computed = crate::document_links::compute_links(uri, &snapshot.text, &[]);
+        assert!(
+            computed
+                .iter()
+                .any(|link| link.pointer("/data/module").and_then(Value::as_str)
+                    == Some("PredLinkMod")),
+            "in-flight compute must see the predecessor module: {computed:?}"
+        );
+
+        server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+        assert!(
+            !server.user_answer_text_is_current(uri, snapshot.generation),
+            "ranged violation must invalidate the captured user-answer generation"
+        );
+        let published =
+            server.publish_user_answer_value(uri, snapshot.generation, json!(computed), json!([]));
+        let published_modules = document_link_modules(&published)?;
+        assert!(
+            published_modules.is_empty(),
+            "in-flight predecessor links must not publish after invalidation: {published}"
+        );
+        Ok(())
     }
 }

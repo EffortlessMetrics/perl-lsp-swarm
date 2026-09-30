@@ -31,7 +31,7 @@
 
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_parser_core::ast::{Node, NodeKind};
-use perl_pragma::{PerlVersion, PragmaQueryCursor, PragmaTracker, parse_perl_version};
+use perl_pragma::{PerlVersion, PragmaQueryCursor, PragmaState, parse_perl_version};
 
 use super::super::internal_types::Diagnostic;
 use super::super::walker::walk_node;
@@ -138,6 +138,9 @@ const POSTDEREF_UNCONDITIONAL_VERSION: PerlVersion = PerlVersion::new(5, 24);
 /// reads the exact source gap between the receiver end and the keys start.
 /// The same source also supplies the exact expression end for the star-form
 /// spellings, whose `Unary` nodes span only the receiver.
+///
+/// This entry point derives the pragma timeline from `node` itself. See
+/// `check_strict_warnings` for why the map-taking form is not public.
 pub fn check_version_compat(node: &Node, source: &str, diagnostics: &mut Vec<Diagnostic>) {
     check_version_compat_with_project_version(node, source, diagnostics, None);
 }
@@ -147,9 +150,36 @@ pub fn check_version_compat(node: &Node, source: &str, diagnostics: &mut Vec<Dia
 /// A source `use VERSION` declaration remains authoritative. When the source
 /// declares no version, `project_version` supplies the PL900 target only if its
 /// complete configured spelling is valid; malformed values fail closed.
+///
+/// Like [`check_version_compat`], derives its own pragma timeline; the
+/// shared-timeline form below is crate-internal.
 pub fn check_version_compat_with_project_version(
     node: &Node,
     source: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+    project_version: Option<&str>,
+) {
+    check_version_compat_with_pragma_map(
+        node,
+        source,
+        &perl_pragma::PragmaTracker::build(node),
+        diagnostics,
+        project_version,
+    );
+}
+
+/// Crate-internal variant taking a caller-supplied pragma timeline (#7286).
+///
+/// Deliberately not public, for the reason given on
+/// `check_strict_warnings_with_pragma_map`: an independently supplied timeline
+/// cannot be proven to belong to `node`, so only `DiagnosticsProvider` — which
+/// reaches this after `DocumentDiagnosticAnalysis::matches` has bound the
+/// analysis to this exact tree and source — may supply one. The public entry
+/// points above keep main's signatures and derive their own.
+pub(crate) fn check_version_compat_with_pragma_map(
+    node: &Node,
+    source: &str,
+    pragma_map: &[(std::ops::Range<usize>, PragmaState)],
     diagnostics: &mut Vec<Diagnostic>,
     project_version: Option<&str>,
 ) {
@@ -231,13 +261,12 @@ pub fn check_version_compat_with_project_version(
         }
     };
 
-    let pragma_map = PragmaTracker::build(node);
     let mut pragma_cursor = PragmaQueryCursor::new();
 
     // Second pass: walk AST for version-gated constructs.
     let diagnostics_before_walk = diagnostics.len();
     walk_node(node, &mut |n| {
-        let pragma_state = pragma_cursor.state_for_offset(&pragma_map, n.location.start);
+        let pragma_state = pragma_cursor.state_for_offset(pragma_map, n.location.start);
         let postfix_deref = postfix_deref_spelling(n, source);
 
         match &n.kind {
@@ -1136,9 +1165,10 @@ fn make_diagnostic_with_details(
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must, must_some_with};
+
     use super::*;
     use perl_parser::Parser;
-    use perl_tdd_support::must;
 
     fn version_compat_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
@@ -1194,17 +1224,17 @@ mod tests {
     fn project_fallback_suggestion_explains_missing_source_version() {
         let project_diags =
             version_compat_diags_with_project_version("sub f ($x) { return $x; }\n", Some("v5.20"));
-        let project_diagnostic = project_diags
-            .iter()
-            .find(|diagnostic| {
+        let project_diagnostic = must_some_with(
+            project_diags.iter().find(|diagnostic| {
                 diagnostic.code.as_deref() == Some("PL900")
                     && diagnostic.message.contains("subroutine signatures")
-            })
-            .expect("project fallback must emit a signatures diagnostic");
-        let project_suggestion = project_diagnostic
-            .suggestion
-            .as_deref()
-            .expect("project fallback diagnostic must have a suggestion");
+            }),
+            "project fallback must emit a signatures diagnostic",
+        );
+        let project_suggestion = must_some_with(
+            project_diagnostic.suggestion.as_deref(),
+            "project fallback diagnostic must have a suggestion",
+        );
         assert!(project_suggestion.contains("This file declares no `use VERSION`"));
         assert!(project_suggestion.contains("PL900 target v5.20"));
         assert!(project_suggestion.contains("add an explicit `use VERSION`"));
@@ -1214,17 +1244,17 @@ mod tests {
             "use v5.20;\nsub f ($x) { return $x; }\n",
             Some("v5.40"),
         );
-        let source_diagnostic = source_diags
-            .iter()
-            .find(|diagnostic| {
+        let source_diagnostic = must_some_with(
+            source_diags.iter().find(|diagnostic| {
                 diagnostic.code.as_deref() == Some("PL900")
                     && diagnostic.message.contains("subroutine signatures")
-            })
-            .expect("source version must emit a signatures diagnostic");
-        let source_suggestion = source_diagnostic
-            .suggestion
-            .as_deref()
-            .expect("source diagnostic must have a suggestion");
+            }),
+            "source version must emit a signatures diagnostic",
+        );
+        let source_suggestion = must_some_with(
+            source_diagnostic.suggestion.as_deref(),
+            "source diagnostic must have a suggestion",
+        );
         assert!(!source_suggestion.contains("This file declares no `use VERSION`"));
     }
 
@@ -2339,7 +2369,7 @@ mod tests {
                 "`{spelling}` on v5.20 should emit exactly one PL900: {diags:#?}"
             );
             let d = &diags[0];
-            let expr_start = source.find(spelling).expect("spelling present in source");
+            let expr_start = must_some_with(source.find(spelling), "spelling present in source");
             let expr_end = expr_start + spelling.len();
             assert_eq!(
                 d.severity,
@@ -2451,7 +2481,7 @@ mod tests {
             1,
             "only the occurrence inside the `no feature` scope warns: {diags:#?}"
         );
-        let disabled_start = source.find("$r->@*").expect("in-scope spelling present");
+        let disabled_start = must_some_with(source.find("$r->@*"), "in-scope spelling present");
         assert_eq!(
             diags[0].range,
             (disabled_start, disabled_start + "$r->@*".len()),
@@ -2483,7 +2513,7 @@ mod tests {
                 1,
                 "trivia variant `{spelling}` should emit exactly one PL900: {diags:#?}"
             );
-            let expr_start = source.find(spelling).expect("spelling present in source");
+            let expr_start = must_some_with(source.find(spelling), "spelling present in source");
             assert_eq!(
                 diags[0].range,
                 (expr_start, expr_start + spelling.len()),
@@ -2538,7 +2568,7 @@ mod tests {
                       $r->@*;\n}\nmy @b = $r->@[0, 1];\n";
         let diags = postfix_pl900s(source);
         assert_eq!(diags.len(), 1, "only the out-of-scope occurrence warns: {diags:#?}");
-        let expr_start = source.find("$r->@[0, 1]").expect("outer spelling present");
+        let expr_start = must_some_with(source.find("$r->@[0, 1]"), "outer spelling present");
         assert_eq!(
             diags[0].range,
             (expr_start, expr_start + "$r->@[0, 1]".len()),

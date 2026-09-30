@@ -4,6 +4,7 @@
     clippy::print_stderr,
     reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
 )]
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::{Value, json};
 use std::fs::write;
@@ -30,7 +31,7 @@ fn smoke_timeout() -> Duration {
 }
 
 fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
@@ -94,6 +95,10 @@ print "$x\n";
     let mut adapter = DebugAdapter::new();
     let (tx, rx) = sync_channel(64);
     adapter.set_event_sender(tx);
+    // The smoke path exercises end-to-end debugging, not the launch-authority
+    // contract; without an installed authority the launch below is refused
+    // before it reaches the interpreter (#8656).
+    common::install_unbounded_test_authority(&adapter);
 
     let init_body = response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
     let capabilities = init_body.ok_or("initialize response missing capability body")?;

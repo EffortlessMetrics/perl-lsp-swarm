@@ -544,7 +544,7 @@ fn write_payloads(kind: &NodeKind, out: &mut impl SexpSink) -> Result<(), Render
             Ok(())
         }
         NodeKind::Glob { pattern } => write_named(out, "pattern", pattern),
-        NodeKind::Typeglob { name } => write_named(out, "name", name),
+        NodeKind::Typeglob { name, .. } => write_named(out, "name", name),
         NodeKind::If { keyword, .. } | NodeKind::While { keyword, .. } => {
             if let Some(keyword) = keyword {
                 write_named(out, "keyword", keyword)?;
@@ -684,6 +684,7 @@ fn write_payloads(kind: &NodeKind, out: &mut impl SexpSink) -> Result<(), Render
         | NodeKind::OptionalParameter { .. }
         | NodeKind::SlurpyParameter { .. }
         | NodeKind::Return { .. }
+        | NodeKind::TargetlessGoto { .. }
         | NodeKind::MissingExpression
         | NodeKind::MissingStatement
         | NodeKind::MissingIdentifier

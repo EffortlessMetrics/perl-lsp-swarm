@@ -92,7 +92,7 @@ pr-fast: _check-tools-basic
     if [ -n "${CI_SCOPE_BASE:-}" ]; then
         args+=(--base "$CI_SCOPE_BASE")
     fi
-    cargo xtask gates "${args[@]}"
+    {{cargo_safe}} xtask gates "${args[@]}"
 
 # Compile-only gate: catches integration-test/benchmark bit-rot and also
 # validates feature-gated code paths without incurring full test runtime.
@@ -164,6 +164,8 @@ merge-gate: _check-tools-basic pr-fast
     just _timed "lsp-bdd" "just ci-lsp-bdd" && \
     just _timed "security-audit" "just security-audit" && \
     just _timed "ci-policy" "just ci-policy" && \
+    just _timed "ci-agent-ledgers-validate" "just ci-agent-ledgers-validate" && \
+    just _timed "ci-unsafe-prod" "just ci-unsafe-prod" && \
     just _timed "ci-v2-bundle-sync" "just ci-v2-bundle-sync" && \
     just _timed "ci-v2-parity" "just ci-v2-parity" && \
     just _timed "ci-lsp-def" "just ci-lsp-def" && \
@@ -417,7 +419,8 @@ quick-ref:
     @echo "  One-off lint check            just check                       ~30 sec"
     @echo "  Reformat all code             cargo xtask fmt                  ~20 sec"
     @echo "  Run tests only                cargo test --workspace --lib     ~1 min"
-    @echo "  Nightly / mutation / fuzz     just ci-full                     ~15-30 min"
+    @echo "  Nightly / mutation / fuzz     just nightly                     ~15-30 min"
+    @echo "  Mutation / fuzz subsets       just mutation-subset / just fuzz-bounded"
     @echo ""
     @echo "  TIP: install the pre-push hook so pr-fast runs automatically:"
     @echo "       bash scripts/install-githooks.sh"
@@ -425,11 +428,11 @@ quick-ref:
 
 # Lint all crates — treated as errors, same as CI (alias for cargo clippy)
 check:
-    cargo clippy --workspace -- -D warnings
+    {{cargo_safe}} clippy --workspace -- -D warnings
 
 # Auto-fix clippy warnings where possible
 fix:
-    cargo clippy --workspace --fix --allow-dirty
+    {{cargo_safe}} clippy --workspace --fix --allow-dirty
 
 # Canonical local merge gate via Nix (use before merge, not as the push hook)
 ci-local:
@@ -1010,7 +1013,7 @@ gates tier='merge-gate' *args='':
 # Validate release-history surfaces (tags ↔ ledger ↔ notes ↔ changelog).
 ci-release-history:
     bash scripts/check_release_history.sh
-    @python3 -m unittest scripts.tests.test_release_channel_actuals         scripts.test_release_build_identity         scripts.test_release_package_evidence         scripts.test_release_tag_authority         scripts.test_release_topology_json -v
+    @python3 -m unittest scripts.tests.test_release_channel_actuals         scripts.test_release_build_identity         scripts.test_release_package_evidence         scripts.test_release_tag_authority         scripts.test_release_topology_json         scripts.tests.test_domain6_fragment -v
 
 # Validate installer Linux libc target selection without downloading artifacts.
 ci-install-target-selection:
@@ -1066,7 +1069,29 @@ ci-format:
     cargo xtask fmt --check
     @echo "✅ Format check passed"
 
-# Clippy lint (catches common issues, allow missing_docs during systematic resolution)
+# Agent-ledger contract validator (#15380) — exercises `cargo xtask agent ledgers validate`
+# against the committed docs/agents/ledgers/*.jsonl files. The validator exists and is unit-
+# tested (xtask/src/tasks/agent_ledgers.rs), but only the test module was wired into CI; the
+# CLI was never invoked against committed files. Adding the recipe + merge-gate call closes
+# the gap so a future ledger shape drift fails closed instead of being silently absorbed.
+ci-agent-ledgers-validate:
+    @echo "📒 Validating agent ledger contracts..."
+    cargo xtask agent ledgers validate --format json
+    @echo "✅ Agent ledger contracts valid"
+
+
+# Production-unsafe SAFETY ratchet (#16215) — runs `check-unsafe-prod`, which
+# fails when any production unsafe block lacks a preceding `// SAFETY:`
+# comment or the ci/unsafe_prod_baseline.txt count is exceeded. The checker
+# existed and was unit-tested, but nothing in CI invoked it, so drift was
+# silently absorbed; this recipe plus the merge-gate `_timed` call close that
+# gap, mirroring `ci-agent-ledgers-validate`.
+ci-unsafe-prod:
+    @echo "Checking production unsafe blocks carry SAFETY reasoning..."
+    bash ci/check_unsafe_prod.sh
+    @echo "Production unsafe SAFETY reasoning present"
+
+
 ci-clippy:
     @echo "🔍 Running clippy (all targets)..."
     cargo clippy --workspace --all-targets -- -D warnings -A missing_docs
@@ -1429,11 +1454,11 @@ ci-test-parser-dap-full:
 
 # Build all workspace crates
 build:
-    cargo build --workspace
+    {{cargo_safe}} build --workspace
 
 # Run all tests
 test:
-    cargo test --workspace
+    {{cargo_safe}} test --workspace
 
 # Format code
 fmt:
@@ -1455,6 +1480,9 @@ ci-policy:
     just ci-check-todos
     @python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
     @python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
+    @python3 scripts/ci/test_validate_cargo_feature_roles.py
+    @python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
+    @python3 scripts/ci/test_public_api_filter.py
     @cargo xtask check-from-raw
     @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
@@ -2351,6 +2379,51 @@ _api-ratchet-crates:
     fi
     printf '%s\n' "$crates"
 
+# Private helper: the one surface filter shared by public-api-check and
+# public-api-update (#15634). cargo-public-api renders an item that carries an
+# attribute with that attribute in front of the visibility keyword
+# (`#[repr(u8)] pub enum ...`), so the old `^pub ` filter silently dropped
+# every attribute-bearing public item — from live diffs and from the
+# committed baselines alike. `#[repr]` and `#[non_exhaustive]` are part of
+# the public contract, so the guarded surface must record them: keep plain
+# `pub ` items plus items fronted by any run of bracketed attributes.
+# Non-item lines stay out.
+#
+# The final awk stage (scripts/ci/public_api_filter.awk, covered by
+# scripts/ci/test_public_api_filter.py) resolves method-signature `Self`
+# to the owning type path (`pub fn krate::Type::clone(&self) -> Self`
+# folds to `... -> krate::Type`). Nightly rustdoc-JSON started rendering
+# `Self` this way in September 2026 (1.100.0-nightly 2026-09-20; August
+# renderings spell the full path), which reddened every API-scope PR with
+# thousands of phantom lines (#16324, sequel to the io-path drift in
+# #16007). The owner path derives from the line itself, so a real rename
+# still diffs; a `Self`-looking substring inside a longer identifier (e.g.
+# `Selfish`) keeps its spelling via the boundary check.
+#
+# Usage: just _public-api-filter <raw-file> <filtered-file>
+[private]
+_public-api-filter raw out:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # grep exits 1 on no matches; an empty result is classified as
+    # INSTRUMENT-FAIL by the caller, so tolerate the exit code here.
+    # The leading context is a closed whitelist of ASCII delimiters, not an
+    # exclusion of identifier characters. `[^A-Za-z0-9_:]` looked equivalent
+    # and was not: a Rust identifier may contain any XID_Continue character,
+    # so `alloc` preceded by a Unicode letter presented that letter as a
+    # separator and the fold rewrote a user-owned path. Enumerating what may
+    # precede a path cannot acquire that hole as Unicode identifiers appear,
+    # and needs no locale to decide what an identifier character is. A
+    # delimiter missing from this set costs a visible phantom diff, never a
+    # silently hidden rename -- the failure direction a both-sides fold has
+    # to choose (#16119).
+    grep -E '^(pub |(#\[[^]]*\][[:space:]]*)+pub )' "{{raw}}" \
+        | sed -E \
+            -e 's#(^|[ <([&,=?])core::io::(write::|error::)?#\1std::io::#g' \
+            -e 's#(^|[ <([&,=?])alloc::io::(buf_read::|read::)?#\1std::io::#g' \
+        | awk -f scripts/ci/public_api_filter.awk \
+        > "{{out}}" || true
+
 # Check public API surface of the ratcheted crates against committed baselines
 public-api-check:
     #!/usr/bin/env bash
@@ -2379,15 +2452,51 @@ public-api-check:
             FAILED=1
             continue
         fi
-        # grep exits 1 on no matches; under set -e that would abort before
-        # the named INSTRUMENT-FAIL classification below — tolerate it here.
-        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-current.txt" || true
+        # The shared filter owns which generated lines are guarded (#15634);
+        # an empty result is classified as INSTRUMENT-FAIL below.
+        just _public-api-filter "/tmp/${crate}-raw.txt" "/tmp/${crate}-current.txt"
         if [ ! -s "/tmp/${crate}-current.txt" ]; then
             echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty (nightly toolchain missing?) — an empty surface is never a diff"
             FAILED=1
             continue
         fi
-        if ! diff -u "$BASELINE" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
+        # Both sides go through the identical transformation (#16117). The
+        # filter's io-path rewrite (#16043/#16058) previously ran on the
+        # generated surface only, so a baseline captured under a nightly that
+        # rendered `core::io::*`/`alloc::io::*` disagreed with every folded
+        # line -- 102 of them across three baselines -- on pull requests that
+        # changed no Rust at all. Normalizing the stored side too makes the
+        # comparison invariant to which toolchain captured it, which is the
+        # class #16043 set out to absorb. It is a no-op on a baseline already
+        # written by `public-api-update`, which shares this filter.
+        just _public-api-filter "$BASELINE" "/tmp/${crate}-baseline.txt"
+        if [ ! -s "/tmp/${crate}-baseline.txt" ]; then
+            echo "INSTRUMENT-FAIL ${crate}: committed baseline $BASELINE normalized to nothing -- a filter that empties a non-empty baseline is never a diff"
+            FAILED=1
+            continue
+        fi
+        # Emptiness is not the only way normalizing the stored side can cost
+        # detection. The filter's first stage is a `grep` for guarded public
+        # items, so any committed line that is not one -- a conflict marker a
+        # bad merge left behind, a stray comment, a body truncated by a full
+        # disk -- is now silently dropped from the comparison instead of
+        # showing up as a `-` in the diff. Before #16117 the baseline was
+        # compared raw and that corruption reddened the gate; routing it
+        # through the filter is what made it invisible, so this is the guard
+        # that keeps the change from being a weakening.
+        #
+        # The committed baselines are written by `public-api-update`, which
+        # shares this filter, so canonical form is already what is on disk:
+        # verified a no-op on all twelve, 0 differing lines. A baseline that
+        # fails this is corrupt or hand-edited, and either way the diff below
+        # would be answering the wrong question.
+        if ! cmp -s "$BASELINE" "/tmp/${crate}-baseline.txt"; then
+            echo "INSTRUMENT-FAIL ${crate}: committed baseline $BASELINE is not in canonical filtered form -- lines the filter drops would be invisible to this diff (run 'just public-api-update')"
+            diff -u "$BASELINE" "/tmp/${crate}-baseline.txt" | head -20 || true
+            FAILED=1
+            continue
+        fi
+        if ! diff -u "/tmp/${crate}-baseline.txt" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
             echo "FAIL Public API changed in ${crate}:"
             cat "/tmp/${crate}-diff.txt"
             FAILED=1
@@ -2414,9 +2523,9 @@ public-api-update:
             cat "/tmp/${crate}-err.txt" >&2
             exit 1
         fi
-        # grep exits 1 on no matches; under set -e that would abort before
-        # the named INSTRUMENT-FAIL classification below — tolerate it here.
-        grep "^pub " "/tmp/${crate}-raw.txt" > "/tmp/${crate}-new-baseline.txt" || true
+        # The shared filter owns which generated lines are guarded (#15634);
+        # an empty result is rejected by the INSTRUMENT-FAIL check below.
+        just _public-api-filter "/tmp/${crate}-raw.txt" "/tmp/${crate}-new-baseline.txt"
         if [ ! -s "/tmp/${crate}-new-baseline.txt" ]; then
             echo "INSTRUMENT-FAIL ${crate}: generated API surface is empty; refusing to overwrite the baseline" >&2
             exit 1

@@ -745,26 +745,167 @@ fn invalid_transliteration_modifiers_diagnose_inside_the_operator() -> TestResul
 }
 
 #[test]
-fn match_family_modifiers_are_currently_unvalidated() -> TestResult {
-    // Current-behaviour control, not an endorsement. `s///` and `tr///` reject
-    // an unknown modifier letter; `m//`, bare `/.../`, and `qr//` accept any
-    // ASCII letter and keep it in the payload. `z` and `q` are not Perl match
-    // modifiers, so this asymmetry is a real gap, tracked by #14980.
-    //
-    // Pinning it here means the gap is visible in the proof surface rather than
-    // hidden behind an absent test, and whoever closes #14980 gets a failure
-    // here telling them to update this expectation.
-    for (source, expected) in [
-        (
-            r#"print if /needle/z;"#,
-            OperatorFact::new(Family::Regex, "/needle/z", "z", "/needle/", "", false, false),
-        ),
-        (
-            r#"my $re = qr/needle/q;"#,
-            OperatorFact::new(Family::Regex, "qr/needle/q", "q", "/needle/", "", false, false),
-        ),
+fn invalid_match_modifiers_diagnose_inside_the_operator() -> TestResult {
+    // `s///` and `tr///` already reject unknown modifier letters with a
+    // blocking diagnostic whose location is bound to the operator. This test
+    // extends that contract to `m//`, bare `/.../`, and `qr//` (#14980).
+    // The fixture deliberately places the operator away from offset 0 so a
+    // mutation that always reports `location: 0` cannot pass by coincidence.
+    assert_invalid_modifier_is_diagnosed_within_operator(
+        r#"print if /needle/z;"#,
+        "/needle/z",
+        "Invalid match modifier 'z'",
+    )?;
+    assert_invalid_modifier_is_diagnosed_within_operator(
+        r#"my $re = qr/needle/q;"#,
+        "qr/needle/q",
+        "Invalid match modifier 'q'",
+    )?;
+    assert_invalid_modifier_is_diagnosed_within_operator(
+        r#"$line =~ m{needle}e;"#,
+        "m{needle}e",
+        "Invalid match modifier 'e'",
+    )?;
+    assert_invalid_modifier_is_diagnosed_within_operator(
+        r#"print if /needle/r;"#,
+        "/needle/r",
+        "Invalid match modifier 'r'",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn match_modifier_validation_rejects_substitution_only_modifiers() -> TestResult {
+    // `e` and `r` are valid for `s///` but not for `m//`, `/.../`, or `qr//`.
+    // A validator that copies the substitution set verbatim over-accepts these
+    // (#14980). The negative control proves the rejection keys on the letter,
+    // not on the operator being present.
+    for (source, operator, letter) in [
+        (r#"print if /needle/e;"#, "/needle/e", 'e'),
+        (r#"my $re = qr/needle/r;"#, "qr/needle/r", 'r'),
+        (r#"$line =~ m{needle}e;"#, "m{needle}e", 'e'),
+        (r#"print while /needle/r;"#, "/needle/r", 'r'),
     ] {
-        assert_operators(source, &[expected])?;
+        assert_invalid_modifier_is_diagnosed_within_operator(
+            source,
+            operator,
+            &format!("Invalid match modifier '{letter}'"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn qr_rejects_match_loop_modifiers_g_and_c() -> TestResult {
+    // `qr//` compiles a pattern without running a match loop, so Perl
+    // rejects the match-loop letters `g` and `c` there ("Unknown regexp
+    // modifier") even though `m//` and the bare `/.../` form accept them —
+    // including inside a mixed tail after a doubled form (`aag`). A
+    // validator that shares the full `m//` set across the family silently
+    // accepts source `perl` refuses to compile (#14980).
+    for (source, letter) in [
+        (r#"my $re = qr/needle/g;"#, 'g'),
+        (r#"my $re = qr/needle/c;"#, 'c'),
+        (r#"my $re = qr/needle/aag;"#, 'g'),
+    ] {
+        assert_invalid_modifier_is_diagnosed_within_operator(
+            source,
+            source.trim_start_matches(r#"my $re = "#).trim_end_matches(';'),
+            &format!("Invalid match modifier '{letter}'"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn match_and_qr_legal_modifier_set_is_accepted() -> TestResult {
+    // The legal modifiers for `m//` and the bare `/.../` form are
+    // `m s i x p o d u a l n g c` plus the doubled `xx` and `aa` forms;
+    // `qr//` takes the same set minus the match-loop letters `g` and `c`.
+    // Each case must round-trip through the parser without a diagnostic.
+    // A mutation that drops a letter, swaps the doubled form for the
+    // single, or accepts an `e` here fails at least one case.
+    for (source, expected_modifiers) in [
+        (r#"print if /needle/m;"#, "m"),
+        (r#"print if /needle/s;"#, "s"),
+        (r#"print if /needle/i;"#, "i"),
+        (r#"print if /needle/p;"#, "p"),
+        (r#"print if /needle/o;"#, "o"),
+        (r#"print if /needle/d;"#, "d"),
+        (r#"print if /needle/u;"#, "u"),
+        (r#"print if /needle/a;"#, "a"),
+        (r#"print if /needle/l;"#, "l"),
+        (r#"print if /needle/n;"#, "n"),
+        (r#"print if /needle/g;"#, "g"),
+        (r#"print if /needle/c;"#, "c"),
+        // Doubled forms: `xx` reads as extended mode and `aa` as
+        // ASCII-safe. They must round-trip as the doubled letter, not
+        // be collapsed into the single-letter form.
+        (r#"print if /needle/xx;"#, "xx"),
+        (r#"my $re = qr/needle/aa;"#, "aa"),
+        // Combination: `gimsx` is the ordinary author-friendly set.
+        (r#"print while /needle/gimsx;"#, "gimsx"),
+        // `qr//` keeps the non-loop combination letters: every letter
+        // here must stay valid without `g`/`c`.
+        (r#"my $re = qr/needle/msixpon;"#, "msixpon"),
+    ] {
+        assert_operators(
+            source,
+            &[OperatorFact::new(
+                Family::Regex,
+                source
+                    .trim_start_matches(r#"print if "#)
+                    .trim_start_matches(r#"print while "#)
+                    .trim_start_matches(r#"my $re = "#)
+                    .trim_end_matches(';'),
+                expected_modifiers,
+                match source {
+                    s if s.contains("qr") => "/needle/",
+                    s if s.contains("{") => "{needle}",
+                    _ => "/needle/",
+                },
+                "",
+                false,
+                false,
+            )],
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn match_modifier_doubled_form_followed_by_single_is_accepted() -> TestResult {
+    // `xx` and `aa` are doubled forms; after them, the ordinary single
+    // modifiers must continue to be accepted. A validator that greedily
+    // consumed the entire modifier tail after the doubled pair would
+    // either reject these or keep only the doubled letter. The `qr//`
+    // cases stay within the non-loop set (`g` is invalid there).
+    for (source, expected_modifiers) in [
+        (r#"print if /needle/xxg;"#, "xxg"),
+        (r#"print if /needle/xxig;"#, "xxig"),
+        (r#"my $re = qr/needle/aan;"#, "aan"),
+        (r#"print while /needle/aaimsx;"#, "aaimsx"),
+    ] {
+        assert_operators(
+            source,
+            &[OperatorFact::new(
+                Family::Regex,
+                source
+                    .trim_start_matches(r#"print if "#)
+                    .trim_start_matches(r#"print while "#)
+                    .trim_start_matches(r#"my $re = "#)
+                    .trim_end_matches(';'),
+                expected_modifiers,
+                match source {
+                    s if s.contains("qr") => "/needle/",
+                    s if s.contains("{") => "{needle}",
+                    _ => "/needle/",
+                },
+                "",
+                false,
+                false,
+            )],
+        )?;
     }
     Ok(())
 }
@@ -778,6 +919,8 @@ fn valid_modifiers_are_not_diagnosed_as_invalid() -> TestResult {
         r#"print "x"; s/foo/bar/gimsxor;"#,
         r#"print "x"; tr/a-z/A-Z/cdsr;"#,
         r#"print "x"; y/abc/xyz/cd;"#,
+        r#"print if /needle/gimsxpodualngcxxaa;"#,
+        r#"my $re = qr/needle/xxaa;"#,
     ] {
         let mut parser = Parser::new(source);
         let _ast =

@@ -16,7 +16,7 @@
 //! # Example
 //!
 //! ```rust
-//! use perl_dap_variables::{PerlValue, RenderedVariable, PerlVariableRenderer, VariableRenderer};
+//! use perl_dap::variables::{PerlValue, PerlVariableRenderer, VariableRenderer};
 //!
 //! let renderer = PerlVariableRenderer::new();
 //! let value = PerlValue::Scalar("hello".to_string());

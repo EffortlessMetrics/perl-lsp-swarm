@@ -343,6 +343,13 @@ const MODULES: &[ModuleRow] = &[
         "#7386"
     ),
     module_row!(
+        "v0_18_text_sync_envelope",
+        PerlApplication,
+        "perl-lsp-rs DocumentStore + adapter",
+        "retain the selected v0.18 full-document UTF-16 envelope above runtime until the atomic-incremental cutover",
+        "#8129"
+    ),
+    module_row!(
         "window",
         ApplicationPolicy,
         "PerlLspAdapter over generic client",
@@ -428,6 +435,9 @@ const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("perl-pod", MoveToPerlAdapter, "#6957"),
     dependency!("perl-position-tracking", MoveToPerlAdapter, "#8617"),
     dependency!("perl-pragma", MoveToPerlAdapter, "#6957"),
+    // #14751: canonical regex diagnostics engine consumed by the core
+    // diagnostics provider; same adapter-bound analysis shape as perl-lexer.
+    dependency!("perl-regex", MoveToPerlAdapter, "#6957"),
     dependency!("perl-ripr-facts", MoveToPerlAdapter, "#6957"),
     dependency!("perl-semantic-analyzer", MoveToPerlAdapter, "#6957"),
     dependency!("perl-semantic-facts", MoveToPerlAdapter, "#6957"),

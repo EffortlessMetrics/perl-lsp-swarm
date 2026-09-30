@@ -33,7 +33,7 @@ impl LspServer {
     pub(crate) fn request_latency_index_state(&self) -> &'static str {
         #[cfg(feature = "workspace")]
         {
-            use perl_parser::workspace_index::IndexState;
+            use perl_workspace::workspace_index::IndexState;
 
             match self.coordinator().map(|coordinator| coordinator.state()) {
                 Some(IndexState::Building { .. }) => "building",
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn request_latency_index_state_reports_degraded_bucket()
     -> Result<(), Box<dyn std::error::Error>> {
-        use perl_parser::workspace_index::DegradationReason;
+        use perl_workspace::workspace_index::DegradationReason;
 
         let server = LspServer::new();
         let Some(coordinator) = server.coordinator() else {

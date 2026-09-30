@@ -18,9 +18,11 @@ type TestResult = Result<(), Box<dyn Error>>;
 /// and the assertion costs nothing at runtime.
 ///
 /// This lives in an integration test rather than a `compile_fail` doctest on
-/// purpose: the repository's gates run `cargo test --locked --tests`, which
-/// builds this target, and never run `cargo test --doc`. A boundary that is
-/// only guarded by a doctest is not actually guarded here.
+/// purpose. When it was written, no gate ran `cargo test --doc` at all, so a
+/// boundary guarded only by a doctest was not guarded (#13774). That route
+/// now exists and selects this crate, but the assertion stays here: it is
+/// built by `cargo test --locked --tests` regardless of whether `perl-corpus`
+/// remains on the doctest route's package list.
 macro_rules! assert_does_not_implement {
     ($type:ty: $bound:path) => {
         const _: fn() = || {

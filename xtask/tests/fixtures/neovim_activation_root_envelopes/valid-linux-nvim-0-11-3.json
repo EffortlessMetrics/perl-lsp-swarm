@@ -1,0 +1,408 @@
+{
+  "claim_boundary": "Native Neovim filetype detection, canonical-config activation, and workspace-root selection only. Provider depth, document lifecycle, and process supervision are owned by later Neovim stages.",
+  "config": {
+    "filetypes": [
+      "perl"
+    ],
+    "path": "scripts/ux/neovim/perllsp.lua",
+    "root_marker_groups": [
+      [
+        ".perl-lsp.toml",
+        "Makefile.PL",
+        "Build.PL",
+        "cpanfile",
+        "dist.ini"
+      ],
+      ".git"
+    ],
+    "sha256": "2ba6d3dc4faedfbce75a397b70b4d4bf88237950dacd86fcd6060c3c2c83e018"
+  },
+  "envelope_version": 1,
+  "file_families": {
+    "adjacent.pod": {
+      "attached": false,
+      "config_eligible": false,
+      "content_dependent": false,
+      "disposition": "intentionally_adjacent_or_mixed",
+      "fixture": "Doc.pod",
+      "language_id": "",
+      "native_filetype": "pod",
+      "opened_filetype": "pod",
+      "override_applied": false,
+      "reason": "POD has its own native filetype and is documentation rather than a Perl compilation unit."
+    },
+    "adjacent.xs": {
+      "attached": false,
+      "config_eligible": false,
+      "content_dependent": false,
+      "disposition": "intentionally_adjacent_or_mixed",
+      "fixture": "Native.xs",
+      "language_id": "",
+      "native_filetype": "xs",
+      "opened_filetype": "xs",
+      "override_applied": false,
+      "reason": "XS has its own native filetype and is C with a Perl-facing preamble."
+    },
+    "metadata.cpanfile": {
+      "attached": false,
+      "config_eligible": false,
+      "content_dependent": false,
+      "disposition": "native_nonperl_override_possible",
+      "fixture": "cpanfile",
+      "language_id": "",
+      "native_filetype": "",
+      "opened_filetype": "",
+      "override_applied": false,
+      "reason": "cpanfile is Perl-syntax project metadata with no native Neovim filetype. Users may map it to perl; the canonical config does not."
+    },
+    "shebang.bin_tool": {
+      "attached": true,
+      "config_eligible": true,
+      "content_dependent": true,
+      "disposition": "native_perl_and_attached",
+      "fixture": "bin/tool",
+      "language_id": "perl",
+      "native_filetype": "perl",
+      "opened_filetype": "perl",
+      "override_applied": false
+    },
+    "shebang.cgi": {
+      "attached": true,
+      "config_eligible": true,
+      "content_dependent": true,
+      "disposition": "native_perl_and_attached",
+      "fixture": "handler.cgi",
+      "language_id": "perl",
+      "native_filetype": "perl",
+      "opened_filetype": "perl",
+      "override_applied": false
+    },
+    "shebang.fcgi": {
+      "attached": true,
+      "config_eligible": true,
+      "content_dependent": true,
+      "disposition": "native_perl_and_attached",
+      "fixture": "handler.fcgi",
+      "language_id": "perl",
+      "native_filetype": "perl",
+      "opened_filetype": "perl",
+      "override_applied": false
+    },
+    "shebang.script_tool": {
+      "attached": true,
+      "config_eligible": true,
+      "content_dependent": true,
+      "disposition": "native_perl_and_attached",
+      "fixture": "script/tool",
+      "language_id": "perl",
+      "native_filetype": "perl",
+      "opened_filetype": "perl",
+      "override_applied": false
+    },
+    "source.PL": {
+      "attached": true,
+      "config_eligible": true,
+      "content_dependent": false,
+      "disposition": "native_perl_and_attached",
+      "fixture": "legacy.PL",
+      "language_id": "perl",
+      "native_filetype": "perl",
+      "opened_filetype": "perl",
+      "override_applied": false
+    },
+    "source.pl": {
+      "attached": true,
+      "config_eligible": true,
+      "content_dependent": false,
+      "disposition": "native_perl_and_attached",
+      "fixture": "sample.pl",
+      "language_id": "perl",
+      "native_filetype": "perl",
+      "opened_filetype": "perl",
+      "override_applied": false
+    },
+    "source.pm": {
+      "attached": true,
+      "config_eligible": true,
+      "content_dependent": false,
+      "disposition": "native_perl_and_attached",
+      "fixture": "Sample.pm",
+      "language_id": "perl",
+      "native_filetype": "perl",
+      "opened_filetype": "perl",
+      "override_applied": false
+    },
+    "source.psgi": {
+      "attached": true,
+      "config_eligible": true,
+      "content_dependent": false,
+      "disposition": "native_perl_and_attached",
+      "fixture": "app.psgi",
+      "language_id": "perl",
+      "native_filetype": "perl",
+      "opened_filetype": "perl",
+      "override_applied": false
+    },
+    "source.t": {
+      "attached": true,
+      "config_eligible": true,
+      "content_dependent": false,
+      "disposition": "native_perl_and_attached",
+      "fixture": "basic.t",
+      "language_id": "perl",
+      "native_filetype": "perl",
+      "opened_filetype": "perl",
+      "override_applied": false
+    },
+    "suffix_only.cgi": {
+      "attached": false,
+      "config_eligible": false,
+      "content_dependent": true,
+      "disposition": "native_nonperl_override_possible",
+      "fixture": "plain.cgi",
+      "language_id": "",
+      "native_filetype": "",
+      "opened_filetype": "",
+      "override_applied": false,
+      "reason": "Neovim classifies .cgi from the interpreter line; without one the suffix alone does not select perl. Attaching perllsp here is a user or project override, not built-in behaviour."
+    },
+    "template.ep": {
+      "attached": false,
+      "config_eligible": false,
+      "content_dependent": false,
+      "disposition": "intentionally_adjacent_or_mixed",
+      "fixture": "view.ep",
+      "language_id": "",
+      "native_filetype": "mason",
+      "opened_filetype": "mason",
+      "override_applied": false,
+      "reason": "Embedded Perl templates keep a template filetype; the Perl regions are not a standalone compilation unit."
+    },
+    "template.mason": {
+      "attached": false,
+      "config_eligible": false,
+      "content_dependent": false,
+      "disposition": "intentionally_adjacent_or_mixed",
+      "fixture": "view.mason",
+      "language_id": "",
+      "native_filetype": "mason",
+      "opened_filetype": "mason",
+      "override_applied": false,
+      "reason": "Mason components keep a template filetype; the Perl regions are not a standalone compilation unit."
+    },
+    "template.tt": {
+      "attached": false,
+      "config_eligible": false,
+      "content_dependent": false,
+      "disposition": "intentionally_adjacent_or_mixed",
+      "fixture": "template.tt",
+      "language_id": "",
+      "native_filetype": "",
+      "opened_filetype": "",
+      "override_applied": false,
+      "reason": "Template Toolkit source is a mixed-language document; forcing perl would misclassify the whole file."
+    },
+    "template.tt2": {
+      "attached": false,
+      "config_eligible": false,
+      "content_dependent": false,
+      "disposition": "intentionally_adjacent_or_mixed",
+      "fixture": "template.tt2",
+      "language_id": "",
+      "native_filetype": "",
+      "opened_filetype": "",
+      "override_applied": false,
+      "reason": "Template Toolkit source is a mixed-language document; forcing perl would misclassify the whole file."
+    }
+  },
+  "host": {
+    "arch": "x86_64",
+    "family": "neovim",
+    "os": "Linux",
+    "version": "0.11.3+gb2684d9f66"
+  },
+  "limitations": [
+    "Filetype dispositions describe this Neovim build only; #7716 owns the version matrix.",
+    "Adjacent and template families are recorded as activation policy, not as evidence about Perl regions inside mixed-language documents.",
+    "Client shutdown below is fixture cleanup; graceful-exit and OS-child settlement are owned by the later process-supervision stage.",
+    "docs/EDITORS and integrations/neovim keep their own copies of the marker list for reader and upstream-submission purposes; #7722 and #7736 own reconciling those."
+  ],
+  "roots": {
+    "boundary.no_marker_single_file": {
+      "actual_role": "none",
+      "expected_role": "observation_only",
+      "marker": "none",
+      "root_match": false,
+      "semantic": {
+        "content_method": "workspace/symbol",
+        "definition_method": "textDocument/definition",
+        "expected_marker": "",
+        "expected_target_role": "observation_only",
+        "observed_marker": "",
+        "observed_target_role": "observation_only",
+        "outcome": "not_applicable",
+        "reason": "single-file support policy is owned by #7743; this row records that perllsp attached=true without claiming a root-isolation result",
+        "rejected_symbols": []
+      }
+    },
+    "conflict.competing_markers_at_depth": {
+      "actual_role": "fixture:roots/depth-conflict/nested/deep",
+      "expected_role": "fixture:roots/depth-conflict/nested/deep",
+      "marker": "cpanfile",
+      "root_match": true,
+      "semantic": {
+        "content_method": "workspace/symbol",
+        "definition_method": "textDocument/definition",
+        "expected_marker": "deepdepth",
+        "expected_target_role": "fixture:roots/depth-conflict/nested/deep/lib/RootProbe.pm",
+        "observed_marker": "deepdepth",
+        "observed_target_role": "fixture:roots/depth-conflict/nested/deep/lib/RootProbe.pm",
+        "outcome": "proven",
+        "rejected_symbols": [
+          "probe_shallowdepth"
+        ]
+      }
+    },
+    "conflict.nearest_perl_marker_beats_farther": {
+      "actual_role": "fixture:roots/nearest-perl/sub",
+      "expected_role": "fixture:roots/nearest-perl/sub",
+      "marker": "Makefile.PL",
+      "root_match": true,
+      "semantic": {
+        "content_method": "workspace/symbol",
+        "definition_method": "textDocument/definition",
+        "expected_marker": "nearestperl",
+        "expected_target_role": "fixture:roots/nearest-perl/sub/lib/RootProbe.pm",
+        "observed_marker": "nearestperl",
+        "observed_target_role": "fixture:roots/nearest-perl/sub/lib/RootProbe.pm",
+        "outcome": "proven",
+        "rejected_symbols": [
+          "probe_outerperl"
+        ]
+      }
+    },
+    "conflict.perl_marker_beats_git": {
+      "actual_role": "fixture:roots/perl-beats-git/app",
+      "expected_role": "fixture:roots/perl-beats-git/app",
+      "marker": "cpanfile",
+      "root_match": true,
+      "semantic": {
+        "content_method": "workspace/symbol",
+        "definition_method": "textDocument/definition",
+        "expected_marker": "appperl",
+        "expected_target_role": "fixture:roots/perl-beats-git/app/lib/RootProbe.pm",
+        "observed_marker": "appperl",
+        "observed_target_role": "fixture:roots/perl-beats-git/app/lib/RootProbe.pm",
+        "outcome": "proven",
+        "rejected_symbols": [
+          "probe_gitrootperl"
+        ]
+      }
+    },
+    "fallback.git_file_linked_worktree": {
+      "actual_role": "fixture:roots/worktree-linked",
+      "expected_role": "fixture:roots/worktree-linked",
+      "marker": ".git",
+      "root_match": true,
+      "semantic": {
+        "content_method": "workspace/symbol",
+        "definition_method": "textDocument/definition",
+        "expected_marker": "worktreelinked",
+        "expected_target_role": "fixture:roots/worktree-linked/lib/RootProbe.pm",
+        "observed_marker": "worktreelinked",
+        "observed_target_role": "fixture:roots/worktree-linked/lib/RootProbe.pm",
+        "outcome": "proven",
+        "rejected_symbols": [
+          "probe_worktreesource"
+        ]
+      }
+    },
+    "fallback.git_only": {
+      "actual_role": "fixture:roots/git-only",
+      "expected_role": "fixture:roots/git-only",
+      "marker": ".git",
+      "root_match": true,
+      "semantic": {
+        "content_method": "workspace/symbol",
+        "definition_method": "textDocument/definition",
+        "expected_marker": "gitonly",
+        "expected_target_role": "fixture:roots/git-only/lib/RootProbe.pm",
+        "observed_marker": "gitonly",
+        "observed_target_role": "fixture:roots/git-only/lib/RootProbe.pm",
+        "outcome": "proven",
+        "rejected_symbols": []
+      }
+    },
+    "isolation.sibling_same_relative_path": {
+      "actual_role": "fixture:roots/siblings/alpha",
+      "expected_role": "fixture:roots/siblings/alpha",
+      "marker": "cpanfile",
+      "root_match": true,
+      "semantic": {
+        "content_method": "workspace/symbol",
+        "definition_method": "textDocument/definition",
+        "expected_marker": "siblingalpha",
+        "expected_target_role": "fixture:roots/siblings/alpha/lib/RootProbe.pm",
+        "observed_marker": "siblingalpha",
+        "observed_target_role": "fixture:roots/siblings/alpha/lib/RootProbe.pm",
+        "outcome": "proven",
+        "rejected_symbols": [
+          "probe_siblingbeta"
+        ]
+      }
+    },
+    "marker.build_pl": {
+      "actual_role": "fixture:roots/marker-build",
+      "expected_role": "fixture:roots/marker-build",
+      "marker": "Build.PL",
+      "root_match": true,
+      "semantic": {
+        "content_method": "workspace/symbol",
+        "definition_method": "textDocument/definition",
+        "expected_marker": "markerbuild",
+        "expected_target_role": "fixture:roots/marker-build/lib/RootProbe.pm",
+        "observed_marker": "markerbuild",
+        "observed_target_role": "fixture:roots/marker-build/lib/RootProbe.pm",
+        "outcome": "proven",
+        "rejected_symbols": []
+      }
+    },
+    "marker.dist_ini": {
+      "actual_role": "fixture:roots/marker-dist",
+      "expected_role": "fixture:roots/marker-dist",
+      "marker": "dist.ini",
+      "root_match": true,
+      "semantic": {
+        "content_method": "workspace/symbol",
+        "definition_method": "textDocument/definition",
+        "expected_marker": "markerdist",
+        "expected_target_role": "fixture:roots/marker-dist/lib/RootProbe.pm",
+        "observed_marker": "markerdist",
+        "observed_target_role": "fixture:roots/marker-dist/lib/RootProbe.pm",
+        "outcome": "proven",
+        "rejected_symbols": []
+      }
+    },
+    "marker.perl_lsp_toml": {
+      "actual_role": "fixture:roots/marker-dot",
+      "expected_role": "fixture:roots/marker-dot",
+      "marker": ".perl-lsp.toml",
+      "root_match": true,
+      "semantic": {
+        "content_method": "workspace/symbol",
+        "definition_method": "textDocument/definition",
+        "expected_marker": "markerdot",
+        "expected_target_role": "fixture:roots/marker-dot/lib/RootProbe.pm",
+        "observed_marker": "markerdot",
+        "observed_target_role": "fixture:roots/marker-dot/lib/RootProbe.pm",
+        "outcome": "proven",
+        "rejected_symbols": []
+      }
+    }
+  },
+  "schema_version": "neovim_activation_root_envelope.v1",
+  "server": {
+    "role": "candidate_build",
+    "sha256": "1ab8218fd46d03e35c2df85016505e8ba5ccc6c7bfd0dadee1f86432ec02c63c"
+  }
+}

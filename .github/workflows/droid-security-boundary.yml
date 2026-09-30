@@ -4,14 +4,22 @@ on:
   pull_request:
     branches: [main, master]
     paths:
+      - '.ci/policies/action-pin-provenance.toml'
+      - '.github/workflows/droid.yml'
+      - '.github/workflows/droid-review.yml'
       - '.github/workflows/droid-security-scan.yml'
       - '.github/workflows/droid-security-boundary.yml'
+      - 'docs/agent-context/droid-smoke-tests.md'
       - 'scripts/ci/test_droid_security_boundary.py'
   push:
     branches: [main, master]
     paths:
+      - '.ci/policies/action-pin-provenance.toml'
+      - '.github/workflows/droid.yml'
+      - '.github/workflows/droid-review.yml'
       - '.github/workflows/droid-security-scan.yml'
       - '.github/workflows/droid-security-boundary.yml'
+      - 'docs/agent-context/droid-smoke-tests.md'
       - 'scripts/ci/test_droid_security_boundary.py'
   workflow_dispatch: {}
 

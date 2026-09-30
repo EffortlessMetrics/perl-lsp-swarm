@@ -503,15 +503,12 @@ fn real_observer_controls_detached_lock_and_identity_absence() -> Result<()> {
         );
     } else {
         ensure!(
-            identity_plan.classification == RecoveryClassification::IdentityConflict,
+            identity_plan.classification == RecoveryClassification::DirtyOrIndexUnknown,
             "missing administrative commondir had an unexpected Windows classification: {identity_plan:?}"
         );
         ensure!(
-            identity_plan
-                .reasons
-                .iter()
-                .any(|reason| reason.starts_with("CANDIDATE_git-dir_IDENTITY_UNAVAILABLE:")),
-            "missing administrative commondir lacked its exact candidate identity refusal reason: {identity_plan:?}"
+            identity_plan.reasons.iter().any(|reason| reason == "ADMIN_COMMONDIR_UNKNOWN"),
+            "missing administrative commondir lacked its exact refusal reason: {identity_plan:?}"
         );
     }
     #[cfg(not(windows))]

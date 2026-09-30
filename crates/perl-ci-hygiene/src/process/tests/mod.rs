@@ -1,12 +1,15 @@
-use super::{
-    admissible_search_paths, command_exists, command_exists_in_path, command_with_output,
-    configure_child, windows_command_candidates,
-};
+use super::{admissible_search_paths, command_exists_in_path, windows_command_candidates};
+// Used only by the #[cfg(unix)] child_cwd_launch_coherence module below.
+#[cfg_attr(windows, allow(unused_imports))]
+use super::{command_exists, command_with_output, configure_child};
 use std::env;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{self, Write};
+use std::io;
+// Write is used only by the #[cfg(unix)] child_cwd_launch_coherence module below.
+#[cfg_attr(windows, allow(unused_imports))]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 

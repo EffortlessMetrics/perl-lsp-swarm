@@ -900,7 +900,7 @@ impl SymbolExtractor {
                 // Cross-construct sub resolver (#3108): `*foo = sub { ... }` creates a
                 // callable named `foo`.  Synthesize a Subroutine symbol so workspace-index
                 // cross-file lookup can find it even without an explicit `sub foo {}`.
-                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind
+                if let NodeKind::Typeglob { name: glob_name, .. } = &lhs.kind
                     && matches!(rhs.kind, NodeKind::Subroutine { .. })
                 {
                     let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
@@ -1263,6 +1263,10 @@ impl SymbolExtractor {
                 }
                 _ => self.visit_node(target),
             },
+            // Honest targetless goto: no target to record a reference
+            // against, and no child to recurse into. The control transfer
+            // is observed by the unreachable-code lint via a separate path.
+            NodeKind::TargetlessGoto { .. } => {}
 
             // Regex related nodes — interpolate variables from patterns
             NodeKind::Regex { pattern, .. } => {

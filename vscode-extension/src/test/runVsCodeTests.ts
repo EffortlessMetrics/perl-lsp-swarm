@@ -2,10 +2,18 @@ import { spawn } from 'child_process';
 
 export interface UntrustedHostTestOptions {
   vscodeExecutablePath: string;
-  extensionDevelopmentPath: string;
+  /** One or more development extension roots; each becomes its own CLI flag. */
+  extensionDevelopmentPath: string | string[];
   extensionTestsPath: string;
   extensionTestsEnv: NodeJS.ProcessEnv;
   launchArgs: string[];
+}
+
+function developmentPathArgs(extensionDevelopmentPath: string | string[]): string[] {
+  const paths = Array.isArray(extensionDevelopmentPath)
+    ? extensionDevelopmentPath
+    : [extensionDevelopmentPath];
+  return paths.map((extensionPath) => `--extensionDevelopmentPath=${extensionPath}`);
 }
 
 /**
@@ -22,7 +30,7 @@ export function runWithoutForcedWorkspaceTrust(options: UntrustedHostTestOptions
     '--skip-welcome',
     '--skip-release-notes',
     `--extensionTestsPath=${options.extensionTestsPath}`,
-    `--extensionDevelopmentPath=${options.extensionDevelopmentPath}`,
+    ...developmentPathArgs(options.extensionDevelopmentPath),
   ];
   return new Promise((resolve, reject) => {
     const child = spawn(options.vscodeExecutablePath, args, {

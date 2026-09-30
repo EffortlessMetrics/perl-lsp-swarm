@@ -6,7 +6,7 @@ impl<'a> Parser<'a> {
     /// e.g. `map { my $y = uc $_; $y } @list`.
     fn parse_builtin_block(&mut self) -> ParseResult<Node> {
         self.with_recursion_guard(|s| {
-            let start_token = s.tokens.next()?; // consume {
+            let start_token = s.advance_token()?; // consume {
             let start = start_token.start();
 
             let mut statements = Vec::new();
@@ -24,7 +24,7 @@ impl<'a> Parser<'a> {
             let end = s.previous_position();
 
             // Always return a block node for builtin functions
-            Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
+            s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
         })
     }
 
@@ -43,7 +43,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_hash_or_block_contents(&mut self, _expect_block: bool) -> ParseResult<Node> {
-        let start_token = self.tokens.next()?; // consume {
+        let start_token = self.advance_token()?; // consume {
         let start = start_token.start();
 
         // Peek ahead to determine if it's a hash or block
@@ -51,38 +51,51 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::RightBrace) {
             // Use the closing brace token's own end position to avoid returning a
             // stale `previous_position()` that predates the `{` (reversed span bug).
-            // `self.tokens.next()` does NOT update `last_end_position`, so we must
+            // `self.advance_token()` does NOT update `last_end_position`, so we must
             // read the token's `.end` field directly.  See #3357.
-            let close_brace = self.tokens.next()?; // consume }
+            let close_brace = self.advance_token()?; // consume }
             let end = close_brace.end();
 
             // For empty braces, default to hash (correct for most functions)
             // Functions like sort/map/grep have special handling that creates blocks
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::HashLiteral { pairs: Vec::new() },
                 SourceLocation { start, end },
-            ));
+            );
         }
 
         // For non-empty braces, we need to check if it contains hash-like content
         // Save position to potentially backtrack
         let _saved_pos = self.current_position();
 
-        // Track error count before parsing the first expression so we can detect
-        // whether inner recovery occurred (e.g. an unclosed `[` inside the hash/block).
-        // This is used in the "block" fallback path to prevent premature bail (#1352).
-        let errors_before = self.errors.len();
+        // Track observed recovery before parsing the first expression so we can
+        // detect whether inner recovery occurred (e.g. an unclosed `[` inside the
+        // hash/block). This is used in the "block" fallback path to prevent
+        // premature bail (#1352).
+        //
+        // This reads the operation's observation counter, not the retained
+        // diagnostic vector: retention is bounded by the configured
+        // `max_errors`, so a spent diagnostic budget would otherwise make this
+        // delta zero and silently change which branch is taken — the same
+        // source parsing to a different AST because of a diagnostic limit
+        // (#8786).
+        let errors_before = self.operation.diagnostics_observed();
 
         // Try to parse as expression (which might be hash contents)
         let first_expr = match self.parse_expression() {
             Ok(expr) => expr,
             Err(e) => {
-                // Propagate recursion/nesting limits immediately - don't try alternative parse
+                // Propagate recursion/nesting limits immediately - don't try alternative parse.
+                // `QualifiedLoopControlLabel` joins them: a qualified label is a
+                // hard error in real Perl, so brace reinterpretation must not
+                // swallow it into a recovered block (#16296).
                 if matches!(
                     e,
                     ParseError::RecursionLimit
                         | ParseError::RecursionDepthExhausted { .. }
+                        | ParseError::CoreBudgetExhausted { .. }
                         | ParseError::NestingTooDeep { .. }
+                        | ParseError::QualifiedLoopControlLabel { .. }
                 ) {
                     return Err(e);
                 }
@@ -102,14 +115,14 @@ impl<'a> Parser<'a> {
                     // (the diagnostic itself is recorded by expect_closing_delimiter
                     // above). We intentionally do NOT enter the block-statement loop —
                     // that would swallow trailing `sub`/`my` declarations (#1352).
-                    let marker = Node::new(
+                    let marker = self.charge_node(
                         NodeKind::MissingExpression,
                         SourceLocation { start, end },
-                    );
-                    return Ok(Node::new(
+                    )?;
+                    return self.charge_node(
                         NodeKind::Block { statements: vec![marker] },
                         SourceLocation { start, end },
-                    ));
+                    );
                 }
                 // If we can't parse an expression, parse as block statements
                 let mut statements = Vec::new();
@@ -120,10 +133,10 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::RightBrace)?;
                 let end = self.previous_position();
 
-                return Ok(Node::new(
+                return self.charge_node(
                     NodeKind::Block { statements },
                     SourceLocation { start, end },
-                ));
+                );
             }
         };
 
@@ -132,7 +145,7 @@ impl<'a> Parser<'a> {
             // Capture close brace token directly so the span includes `}`.
             // Using `previous_position()` here would give the end of the last
             // *inner* token (before `}`), making the node span exclude the brace.
-            let close_brace = self.tokens.next()?; // consume }
+            let close_brace = self.advance_token()?; // consume }
             let end = close_brace.end();
 
             // Decompose first_expr to consume its kind by move, avoiding clones
@@ -153,25 +166,25 @@ impl<'a> Parser<'a> {
                         }
                     }
 
-                    return Ok(Node::new(
+                    return self.charge_node(
                         NodeKind::HashLiteral { pairs },
                         SourceLocation { start, end },
-                    ));
+                    );
                 }
 
                 // Already a HashLiteral — return it directly
                 // This happens when parse_comma creates a HashLiteral from key => value pairs
                 kind @ NodeKind::HashLiteral { .. } => {
-                    return Ok(Node::new(kind, first_loc));
+                    return self.charge_node(kind, first_loc);
                 }
 
                 // Otherwise it's a block with a single expression
                 other_kind => {
-                    let expr_node = Node::new(other_kind, first_loc);
-                    return Ok(Node::new(
+                    let expr_node = self.charge_node(other_kind, first_loc)?;
+                    return self.charge_node(
                         NodeKind::Block { statements: vec![expr_node] },
                         SourceLocation { start, end },
-                    ));
+                    );
                 }
             }
         }
@@ -190,7 +203,7 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 // key => value pattern
-                self.tokens.next()?; // consume =>
+                self.advance_token()?; // consume =>
                 let value = self.parse_expression()?;
                 pairs.push((first_expr, value));
             } else if self.peek_kind() == Some(TokenKind::Comma) {
@@ -203,13 +216,13 @@ impl<'a> Parser<'a> {
                     pairs.push((first_expr, second));
                 } else {
                     // Trailing comma - treat as single element hash with undef value
-                    let undef = Node::new(
+                    // Position resolved before charging so the charge call does not
+                    // borrow the parser twice.
+                    let position = self.current_position();
+                    let undef = self.charge_node(
                         NodeKind::Identifier { name: "undef".to_string() },
-                        SourceLocation {
-                            start: self.current_position(),
-                            end: self.current_position(),
-                        },
-                    );
+                        SourceLocation { start: position, end: position },
+                    )?;
                     pairs.push((first_expr, undef));
                 }
             }
@@ -231,7 +244,7 @@ impl<'a> Parser<'a> {
 
                 // Check for => or comma after key
                 if self.peek_kind() == Some(TokenKind::FatArrow) {
-                    self.tokens.next()?; // consume =>
+                    self.advance_token()?; // consume =>
                     let value = self.parse_expression()?;
                     pairs.push((key, value));
                 } else if self.peek_kind() == Some(TokenKind::Comma) {
@@ -240,13 +253,13 @@ impl<'a> Parser<'a> {
 
                     if self.peek_kind() == Some(TokenKind::RightBrace) {
                         // Odd number of elements - last one becomes undef value
-                        let undef = Node::new(
+                        // Position resolved before charging so the charge call does not
+                        // borrow the parser twice.
+                        let position = self.current_position();
+                        let undef = self.charge_node(
                             NodeKind::Identifier { name: "undef".to_string() },
-                            SourceLocation {
-                                start: self.current_position(),
-                                end: self.current_position(),
-                            },
-                        );
+                            SourceLocation { start: position, end: position },
+                        )?;
                         pairs.push((key, undef));
                         break;
                     }
@@ -255,13 +268,13 @@ impl<'a> Parser<'a> {
                     pairs.push((key, value));
                 } else if self.peek_kind() == Some(TokenKind::RightBrace) {
                     // Key without value at end - add undef
-                    let undef = Node::new(
+                    // Position resolved before charging so the charge call does not
+                    // borrow the parser twice.
+                    let position = self.current_position();
+                    let undef = self.charge_node(
                         NodeKind::Identifier { name: "undef".to_string() },
-                        SourceLocation {
-                            start: self.current_position(),
-                            end: self.current_position(),
-                        },
-                    );
+                        SourceLocation { start: position, end: position },
+                    )?;
                     pairs.push((key, undef));
                     break;
                 } else {
@@ -274,18 +287,18 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
-            Ok(Node::new(NodeKind::HashLiteral { pairs }, SourceLocation { start, end }))
+            self.charge_node(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
         } else {
             // Not a hash - parse as block
             if self.peek_kind() == Some(TokenKind::RightBrace) {
                 // Single expression block
-                self.tokens.next()?; // consume }
+                self.advance_token()?; // consume }
                 let end = self.previous_position();
 
-                return Ok(Node::new(
+                return self.charge_node(
                     NodeKind::Block { statements: vec![first_expr] },
                     SourceLocation { start, end },
-                ));
+                );
             }
 
             // Fix #1352: Detect unclosed-delimiter situations at the expression boundary
@@ -304,7 +317,7 @@ impl<'a> Parser<'a> {
             // In both cases, use expect_closing_delimiter to record the missing `}` error
             // and return immediately, leaving `;` and subsequent tokens for the statement
             // parser to handle so they appear as top-level AST nodes.
-            let had_inner_errors = self.errors.len() > errors_before;
+            let had_inner_errors = self.operation.diagnostics_observed() > errors_before;
             let unclosed_hash =
                 matches!(first_expr.kind, NodeKind::HashLiteral { .. });
             let unclosed_after_inner_error =
@@ -313,10 +326,10 @@ impl<'a> Parser<'a> {
             if unclosed_hash || unclosed_after_inner_error {
                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
                 let end = self.previous_position();
-                return Ok(Node::new(
+                return self.charge_node(
                     NodeKind::Block { statements: vec![first_expr] },
                     SourceLocation { start, end },
-                ));
+                );
             }
 
             // Multiple statement block
@@ -324,7 +337,7 @@ impl<'a> Parser<'a> {
 
             // Might need a semicolon
             if self.peek_kind() == Some(TokenKind::Semicolon) {
-                self.tokens.next()?;
+                self.advance_token()?;
             }
 
             while self.peek_kind() != Some(TokenKind::RightBrace) && !self.tokens.is_eof() {
@@ -334,7 +347,7 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
-            Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
+            self.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
         }
     }
 

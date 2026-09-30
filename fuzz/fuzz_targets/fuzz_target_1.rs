@@ -1,7 +1,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use perl_parser::{format_with_trivia, Parser, SymbolExtractor, TriviaPreservingParser};
+use perl_parser::{format_with_trivia, Parser, TriviaPreservingParser};
+use perl_semantic_analyzer::symbol::SymbolExtractor;
 
 const MAX_INPUT_BYTES: usize = 1000;
 const MAX_IDENTIFIER_CHARS: usize = 24;

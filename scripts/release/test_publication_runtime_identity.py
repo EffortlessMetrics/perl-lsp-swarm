@@ -224,6 +224,13 @@ class RuntimeIdentityQueryTests(unittest.TestCase):
     """Cover the one process-executing boundary, `_query_packet`."""
 
     def test_relative_executable_is_hashed_and_executed_as_one_file(self) -> None:
+        if os.name == "nt":
+            # Honest platform envelope (#15401, #15395 pattern): the stub is a
+            # POSIX shebang script, and Windows CreateProcess cannot execute it
+            # directly (WinError 193). The hash-what-you-execute contract is
+            # still exercised on the POSIX shard; skipping here names the
+            # boundary instead of failing on stub executability.
+            self.skipTest("POSIX shebang stubs are not directly executable on Windows")
         emit = 'import json, sys\nsys.stdout.write(json.dumps({{"marker": "{0}"}}))\n'
         with tempfile.TemporaryDirectory() as root:
             staged = Path(root) / "staged"
@@ -252,6 +259,9 @@ class RuntimeIdentityQueryTests(unittest.TestCase):
         self.assertEqual(digest, staged_digest, "digest does not belong to the executed file")
 
     def test_unbounded_writer_is_rejected_without_buffering_it_all(self) -> None:
+        if os.name == "nt":
+            # Same POSIX shebang stub boundary as the relative-executable case.
+            self.skipTest("POSIX shebang stubs are not directly executable on Windows")
         with tempfile.TemporaryDirectory() as root:
             target = _write_executable(
                 Path(root) / "perllsp",
@@ -272,6 +282,9 @@ class RuntimeIdentityQueryTests(unittest.TestCase):
         A post-hoc size check cannot bound memory against a writer that never exits,
         so assert the reader itself stops near the limit rather than at EOF.
         """
+        if os.name == "nt":
+            # Same POSIX shebang stub boundary as the relative-executable case.
+            self.skipTest("POSIX shebang stubs are not directly executable on Windows")
         limit = 4096
         with tempfile.TemporaryDirectory() as root:
             target = _write_executable(

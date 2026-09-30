@@ -1,4 +1,4 @@
-use perl_parser::workspace_index::{LspWorkspaceSymbol, WorkspaceIndex};
+use perl_workspace::workspace_index::{LspWorkspaceSymbol, WorkspaceIndex};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -96,7 +96,7 @@ fn test_lsp_workspace_symbol_no_internal_fields() -> Result<(), Box<dyn std::err
 
 #[test]
 fn test_symbol_kind_uses_lsp_constants() {
-    use perl_parser::workspace_index::{SymbolKind, VarKind};
+    use perl_workspace::workspace_index::{SymbolKind, VarKind};
 
     // Test that to_lsp_kind returns proper LSP-compliant values
     assert_eq!(SymbolKind::Package.to_lsp_kind(), 2); // Module

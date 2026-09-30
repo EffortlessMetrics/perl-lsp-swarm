@@ -386,12 +386,38 @@ fn classify_artifact_entry(entry: &str, workspace_root: &Path) -> ArtifactEntryO
 /// process CWD.
 fn lexical_normalize_artifact_path(entry: &str, workspace_root: &Path) -> String {
     let candidate = Path::new(entry);
+    // A POSIX-rooted fact (`/home/dev/...`) is absolute in the Unix
+    // ecosystem that produced MySetup.pm. Windows `Path` would classify it
+    // as relative and splice the current drive onto the join, and its
+    // rendering round-trips through backslashes — both manufacturing host
+    // text the fact never stated. Normalize the fact string lexically over
+    // `/` so it survives verbatim on every host (#15773).
+    if candidate.is_absolute() || entry.starts_with('/') {
+        return normalize_posix_path_str(entry);
+    }
     let resolved = if candidate.is_absolute() {
         lexical_normalize(candidate)
     } else {
         lexical_normalize(&workspace_root.join(candidate))
     };
     resolved.to_string_lossy().into_owned()
+}
+
+/// Lexically normalize a POSIX-rooted path string: drop empty and `.`
+/// segments, resolve `..` against the preceding segment, and re-render with
+/// a single leading `/`. Pure string work — no host path semantics.
+fn normalize_posix_path_str(entry: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in entry.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    format!("/{}", parts.join("/"))
 }
 
 /// Normalize `.` and `..` components lexically. No symlink, drive, or

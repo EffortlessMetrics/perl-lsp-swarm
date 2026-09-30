@@ -51,6 +51,11 @@
 //! | `if ($x) { … }`          | `Opaque { "If" }`     | `HirExpr::Branch`    |
 //! | `while ($x) { … }`       | `Opaque { "While" }`  | `HirExpr::Loop`      |
 //! | `return $x`               | `Opaque { "Return" }` | `HirExpr::Return`    |
+//! | `try { … } catch ($e) { … }` | `Opaque { "Try" }` | `HirExpr::Try`      |
+//!
+//! `lower_body` handles no block-bearing construct at all — it has no
+//! nested-block lowering path — so every row in this section is that same
+//! structural gap rather than four independent omissions.
 //!
 //! **§ D — Shared expression shapes and semantic divergence**
 //!
@@ -399,6 +404,45 @@ fn gap_return_at_stmt_level_is_opaque_in_lower_body_but_structured_in_bb2()
         matches!(bb2_expr, HirExpr::Return { value: Some(_) }),
         "BodyBuilder2 must emit HirExpr::Return {{ value: Some(_) }} for `return $x`, \
          got {bb2_expr:?}"
+    );
+    Ok(())
+}
+
+/// `try { … } catch ($e) { … }` — `NodeKind::Try` is a bare statement node.
+/// `lower_body` has no arm for it and falls through to `Opaque { "Try" }`.
+/// BodyBuilder2 emits `HirExpr::Try` with real region blocks (#15567).
+///
+/// This gap is the same shape as `If`/`While`/`Return` above: `lower_body` is
+/// the test-only mirror and handles no block-bearing construct, because it has
+/// no nested-block lowering path at all.
+///
+/// The BodyBuilder2 side is the load-bearing half. Before #15567, `Try` reached
+/// BodyBuilder2's *call-shaped* arm and produced
+/// `Call { args: [Opaque{Block}, …] }`, silently discarding every statement
+/// inside the try, catch, and finally regions. Asserting `HirExpr::Try` here
+/// keeps that regression from returning through the production lowerer.
+#[test]
+fn gap_try_at_stmt_level_is_opaque_in_lower_body_but_structured_in_bb2()
+-> Result<(), Box<dyn Error>> {
+    let source = "try { $x = 1; } catch ($e) { $x = 2; }";
+
+    let body = via_lower_body(source);
+    let lb_expr = first_expr_in_body(&body)?;
+    assert!(
+        matches!(lb_expr, HirExpr::Opaque { .. }),
+        "lower_body must emit HirExpr::Opaque for `try {{ … }} catch ($e) {{ … }}`, \
+         got {lb_expr:?}\n\
+         (If this fails, lower_body now handles Try — update §C gap table above)"
+    );
+
+    let file = via_lower_ast(source);
+    let bb2_body =
+        file.root_body().ok_or_else(|| "lower_ast must produce a root body".to_string())?;
+    let bb2_expr = first_expr_in_body(bb2_body)?;
+    assert!(
+        matches!(bb2_expr, HirExpr::Try { .. }),
+        "BodyBuilder2 must emit HirExpr::Try for `try {{ … }} catch ($e) {{ … }}`, \
+         got {bb2_expr:?} (a `Call` here is the #15567 region-dropping regression)"
     );
     Ok(())
 }

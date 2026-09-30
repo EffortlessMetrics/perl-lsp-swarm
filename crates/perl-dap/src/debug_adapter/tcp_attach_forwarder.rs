@@ -27,7 +27,7 @@
 #[cfg(test)]
 use super::DapMessage;
 use super::process::emit_terminated_event_guarded;
-use super::sync_utils::{EventSender, GuardedDispatchResult, lock_or_recover};
+use super::sync_utils::{EventDrainLatch, EventSender, GuardedDispatchResult, lock_or_recover};
 use super::{DebugAdapter, TerminationState};
 use crate::tcp_attach::DapEvent;
 use serde_json::json;
@@ -51,12 +51,18 @@ pub(super) const TCP_ATTACH_EVENT_CAPACITY: usize = 128;
 /// `session_generation` is the generation captured when the attach succeeded;
 /// events arriving after that generation has been replaced are stale and are
 /// dropped before publication.
+///
+/// `event_drain` joins every publication to the drain latch contract: each
+/// accepted event retains one reservation for the transport consumer, and
+/// every refused, dropped, or stale outcome completes it, so responses
+/// cannot overtake forwarded events on the wire.
 pub(super) fn spawn_tcp_attach_event_forwarder(
     rx: Receiver<DapEvent>,
     event_sender: Option<EventSender>,
     seq_counter: Arc<Mutex<i64>>,
     termination_state: Arc<Mutex<TerminationState>>,
     session_generation: u64,
+    event_drain: EventDrainLatch,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         while let Ok(event) = rx.recv() {
@@ -96,6 +102,7 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
                             Some(session_generation),
                             Some(json!({"reason": reason})),
                             &stale,
+                            Some(&event_drain),
                         );
                     }
                 }
@@ -118,10 +125,16 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
                         // enter the shared outbound queue. The guarded dispatch
                         // re-validates the generation before every commit
                         // attempt, so the replacement retires the stale event
-                        // instead (#9521 review).
-                        if sender.send_event_generation_guarded(&seq_counter, name, body, &stale)
-                            == GuardedDispatchResult::Stale
-                        {
+                        // instead (#9521 review). The accepted event joins
+                        // the drain latch like every other emission, so a
+                        // response cannot overtake it.
+                        event_drain.enqueue(1);
+                        let published =
+                            sender.send_event_generation_guarded(&seq_counter, name, body, &stale);
+                        if published != GuardedDispatchResult::Sent {
+                            event_drain.complete(1);
+                        }
+                        if published == GuardedDispatchResult::Stale {
                             break;
                         }
                     }
@@ -134,6 +147,7 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug_adapter::DapMessageWithEpoch;
     use crate::debug_adapter::process::reserve_terminated_event;
     use std::sync::mpsc::sync_channel;
     use std::time::Duration;
@@ -141,10 +155,10 @@ mod tests {
     /// A `TerminationState` at generation 1, matching the generation captured
     /// by the forwarder under test.
     fn termination_state_at_generation_one() -> Arc<Mutex<TerminationState>> {
-        Arc::new(Mutex::new(TerminationState { generation: 1, emitted: false }))
+        Arc::new(Mutex::new(TerminationState { generation: 1, ..Default::default() }))
     }
 
-    fn current_queue() -> (SyncSender<DapMessage>, Receiver<DapMessage>) {
+    fn current_queue() -> (SyncSender<DapMessageWithEpoch>, Receiver<DapMessageWithEpoch>) {
         sync_channel(64)
     }
 
@@ -162,6 +176,7 @@ mod tests {
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
+            EventDrainLatch::default(),
         );
 
         tx.send(DapEvent::Output { category: "stdout".into(), output: "one".into() })
@@ -172,7 +187,7 @@ mod tests {
 
         let mut names = Vec::new();
         for _ in 0..2 {
-            let msg = out_rx
+            let (msg, _epoch) = out_rx
                 .recv_timeout(Duration::from_secs(2))
                 .map_err(|e| format!("forwarded event missing: {e}"))?;
             if let DapMessage::Event { event, .. } = msg {
@@ -200,6 +215,7 @@ mod tests {
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
+            EventDrainLatch::default(),
         );
 
         // Deliver one live-generation event, and wait until it is observed on
@@ -210,7 +226,7 @@ mod tests {
         let live = out_rx
             .recv_timeout(Duration::from_secs(2))
             .map_err(|e| format!("live event must be forwarded: {e}"))?;
-        assert!(matches!(&live, DapMessage::Event { event, .. } if event == "output"));
+        assert!(matches!(&live, (DapMessage::Event { event, .. }, _) if event == "output"));
 
         // Replace the session: generation 1 is now dead.
         lock_or_recover(&state, "test.termination_state").generation = 2;
@@ -243,6 +259,7 @@ mod tests {
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
+            EventDrainLatch::default(),
         );
 
         for reason in ["first", "second", "third"] {
@@ -253,7 +270,7 @@ mod tests {
         handle.join().map_err(|_| "forwarder panicked".to_string())?;
 
         let mut terminated = 0;
-        while let Ok(msg) = out_rx.try_recv() {
+        while let Ok((msg, _epoch)) = out_rx.try_recv() {
             if let DapMessage::Event { event, .. } = msg
                 && event == "terminated"
             {
@@ -280,6 +297,42 @@ mod tests {
 
     /// Race falsifier (#9521 review): a state event blocked on a FULL outbound
     /// queue must not commit into a replacement session's stream. The old
+    /// block until the forwarder has provably parked inside the generation-
+    /// guarded dispatch on a full outbound queue (#15749).
+    ///
+    /// The guarded dispatch holds the seq lock across its bounded commit
+    /// attempt, so a sustained (>= 50 ms) continuous hold identifies the
+    /// parked send rather than the microsecond-long seq assignment of a
+    /// dispatch that commits immediately. This replaces a fixed 100 ms sleep
+    /// that raced scheduler load on hosted Windows and retired both events
+    /// when the park window was missed.
+    fn wait_for_sustained_seq_hold(seq: &Mutex<i64>) -> Result<(), String> {
+        const SUSTAINED_HOLD_POLLS: u32 = 50;
+        const PARK_DEADLINE: Duration = Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + PARK_DEADLINE;
+        let mut sustained = 0u32;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err("forwarder never parked on the full outbound queue".to_string());
+            }
+            match seq.try_lock() {
+                Ok(_) => {
+                    sustained = 0;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    sustained += 1;
+                    if sustained >= SUSTAINED_HOLD_POLLS {
+                        return Ok(());
+                    }
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err("forwarder panicked while holding the seq lock".to_string());
+                }
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// forwarder checked the generation only before a potentially blocking
     /// dispatch, so a replacement could advance the generation while the stale
     /// event was parked, and draining the queue would then publish it. The
@@ -290,15 +343,17 @@ mod tests {
         let (tx, rx) = sync_channel::<DapEvent>(8);
         // Outbound capacity 1: the first stopped event fills the queue, so the
         // second one must wait for room inside the guarded dispatch.
-        let (out_tx, out_rx) = sync_channel::<DapMessage>(1);
+        let (out_tx, out_rx) = sync_channel::<DapMessageWithEpoch>(1);
         let state = termination_state_at_generation_one();
+        let seq = Arc::new(Mutex::new(0));
 
         let handle = spawn_tcp_attach_event_forwarder(
             rx,
             Some(EventSender::new(out_tx)),
-            Arc::new(Mutex::new(0)),
+            Arc::clone(&seq),
             Arc::clone(&state),
             1,
+            EventDrainLatch::default(),
         );
 
         // Fill the outbound queue with a first stopped event (the forwarder
@@ -307,9 +362,13 @@ mod tests {
             .map_err(|e| format!("send first stopped: {e}"))?;
         tx.send(DapEvent::Stopped { reason: "stale".into(), thread_id: 2 })
             .map_err(|e| format!("send stale stopped: {e}"))?;
-        // Deterministic park window: let the forwarder commit the first event and
-        // start waiting on the second before the generation moves.
-        thread::sleep(Duration::from_millis(100));
+        // Deterministic park detection (#15749): the guarded dispatch holds
+        // the seq lock across its bounded commit attempt, so a sustained
+        // hold can only be the forwarder parked on the full queue. A fixed
+        // sleep raced scheduler load: when the park window was missed, the
+        // generation advanced before the live event was committed and the
+        // guard retired BOTH events, publishing nothing.
+        wait_for_sustained_seq_hold(&seq)?;
         lock_or_recover(&state, "test.termination_state").generation = 2;
 
         // The parked stale event must be retired without a drain: the
@@ -320,10 +379,10 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .map_err(|e| format!("the live-generation event must publish: {e}"))?;
         let stopped_reason = match published {
-            DapMessage::Event { event, body, .. } if event == "stopped" => {
+            (DapMessage::Event { event, body, .. }, _) if event == "stopped" => {
                 body.and_then(|b| b.get("reason").and_then(|r| r.as_str()).map(String::from))
             }
-            other => return Err(format!("expected the live stopped event, got {other:?}")),
+            (other, _) => return Err(format!("expected the live stopped event, got {other:?}")),
         };
         assert_eq!(
             stopped_reason.as_deref(),
@@ -344,27 +403,30 @@ mod tests {
     #[test]
     fn blocked_terminated_event_is_retired_when_generation_advances() -> Result<(), String> {
         let (tx, rx) = sync_channel::<DapEvent>(8);
-        let (out_tx, out_rx) = sync_channel::<DapMessage>(1);
+        let (out_tx, out_rx) = sync_channel::<DapMessageWithEpoch>(1);
         let state = termination_state_at_generation_one();
+        let seq = Arc::new(Mutex::new(0));
 
         let handle = spawn_tcp_attach_event_forwarder(
             rx,
             Some(EventSender::new(out_tx)),
-            Arc::new(Mutex::new(0)),
+            Arc::clone(&seq),
             Arc::clone(&state),
             1,
+            EventDrainLatch::default(),
         );
 
         // Fill the outbound queue with a live-generation stopped event (the
         // forwarder commits it), then send terminated, which parks in the
-        // guarded terminal send. The park window makes the staging
-        // deterministic: the first event is provably committed, the terminal
-        // is provably still waiting, and only then does the generation move.
+        // guarded terminal send. The staging is deterministic: the first
+        // event is provably committed, the terminal is provably still
+        // waiting, and only then does the generation move.
         tx.send(DapEvent::Stopped { reason: "live".into(), thread_id: 1 })
             .map_err(|e| format!("send stopped: {e}"))?;
         tx.send(DapEvent::Terminated { reason: "stale-terminal".into() })
             .map_err(|e| format!("send terminated: {e}"))?;
-        thread::sleep(Duration::from_millis(100));
+        // Deterministic park detection, as in the stopped twin (#15749).
+        wait_for_sustained_seq_hold(&seq)?;
         lock_or_recover(&state, "test.termination_state").generation = 2;
 
         // Retire the producer side so the forwarder's recv loop can end once
@@ -375,8 +437,8 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .map_err(|e| format!("the live-generation event must publish: {e}"))?;
         match published {
-            DapMessage::Event { event, .. } if event == "stopped" => {}
-            other => return Err(format!("expected the live stopped event, got {other:?}")),
+            (DapMessage::Event { event, .. }, _) if event == "stopped" => {}
+            (other, _) => return Err(format!("expected the live stopped event, got {other:?}")),
         }
         assert!(
             out_rx.try_recv().is_err(),

@@ -145,6 +145,7 @@ pub fn keyword_completion_rank_penalty(candidate: &Dancer2CompletionCandidate) -
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::providers::dancer2::activation::RuntimeDancer2Module;
     use crate::providers::dancer2::activation::file_activations;

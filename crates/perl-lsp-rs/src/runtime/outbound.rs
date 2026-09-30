@@ -30,7 +30,10 @@ use crate::runtime::types::ServerRequestId;
 use crate::transport::frame;
 use serde_json::{Value, json};
 use std::io::{self, Write};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 
@@ -137,12 +140,30 @@ pub(crate) struct OutboundSender {
 struct WriterCompletion {
     outcome: parking_lot::Mutex<Option<WriterTerminalOutcome>>,
     ready: parking_lot::Condvar,
+    failed: AtomicBool,
+    failure_notify: tokio::sync::Notify,
 }
 
 impl WriterCompletion {
     fn publish(&self, outcome: WriterTerminalOutcome) {
+        if outcome.is_io_failure() {
+            self.failed.store(true, Ordering::Release);
+            self.failure_notify.notify_waiters();
+        }
         *self.outcome.lock() = Some(outcome);
         self.ready.notify_all();
+    }
+
+    fn signal_failure(&self) {
+        self.failed.store(true, Ordering::Release);
+        self.failure_notify.notify_waiters();
+    }
+
+    async fn failure_notified(&self) {
+        let notified = self.failure_notify.notified();
+        if !self.failed.load(Ordering::Acquire) {
+            notified.await;
+        }
     }
 
     fn wait(&self, timeout: Duration) -> Option<WriterTerminalOutcome> {
@@ -196,13 +217,45 @@ impl OutboundSender {
     /// A timeout is deliberately unsettled: callers must not report successful
     /// output settlement when the sink is still blocked.
     pub(crate) fn close_and_wait(&self, timeout: Duration) -> Option<WriterTerminalOutcome> {
-        self.gate.lock().take();
+        self.close_admission();
         self.completion.wait(timeout)
+    }
+
+    /// Stop producers before the scheduler begins its cooperative drain.
+    ///
+    /// This is intentionally separate from [`Self::close_and_wait`]: a
+    /// transport failure must first make response admission terminal, while
+    /// already accepted output still gets the normal writer settlement path.
+    pub(crate) fn close_admission(&self) {
+        self.gate.lock().take();
     }
 
     /// Send a JSON-RPC response.
     pub fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
-        self.try_send(OutboundMessage::Response(response))
+        // Keep admission closure in the same critical section as the failed
+        // required-response send. Otherwise another producer can observe the
+        // still-open gate between `try_send` and `gate.take()`.
+        let mut gate = self.gate.lock();
+        let result = gate
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))
+            .and_then(|tx| {
+                tx.try_send(OutboundMessage::Response(response)).map_err(map_try_send_error)
+            });
+        if result.is_err() {
+            gate.take();
+            drop(gate);
+            self.completion.signal_failure();
+        }
+        result
+    }
+
+    pub(crate) async fn response_failure_notified(&self) {
+        self.completion.failure_notified().await;
+    }
+
+    pub(crate) fn response_delivery_failed(&self) -> bool {
+        self.completion.failed.load(Ordering::Acquire)
     }
 
     /// Send a JSON-RPC notification.
@@ -922,6 +975,31 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    #[test]
+    fn writer_failure_wakes_response_failure_waiter() -> Result<(), Box<dyn Error>> {
+        let attempted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (sender, handle) = spawn_writer(Box::new(WriteFailsSink {
+            write_kind: io::ErrorKind::ConnectionAborted,
+            attempted_bytes: Arc::clone(&attempted),
+        }));
+        sender.send_notification("window/logMessage", json!({"failure": true}))?;
+
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), sender.response_failure_notified())
+                .await
+                .map_err(|_| "writer failure did not wake live ingress")
+        })?;
+        let outcome = sender
+            .close_and_wait(Duration::from_secs(1))
+            .ok_or("writer failure outcome was not published")?;
+        handle.join().map_err(|_| "writer thread panicked")?;
+        if !outcome.is_io_failure() || attempted.load(Ordering::SeqCst) == 0 {
+            return Err("writer failure wake lacked a causal I/O outcome".into());
+        }
+        Ok(())
+    }
+
     /// #8402: a forced `flush` failure must be recorded as the distinct
     /// `FlushFailed` outcome — never misclassified as a write failure — with
     /// the written-but-unconfirmed batch represented conservatively.
@@ -1115,6 +1193,66 @@ pub(crate) mod tests {
             "full channel must not masquerade as BrokenPipe"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn required_response_full_queue_is_sticky_transport_failure() -> Result<(), Box<dyn Error>> {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(1);
+        let sender = OutboundSender::from_tx(tx);
+        sender.send_response(JsonRpcResponse::success(
+            Some(JsonRpcId::Integer(1)),
+            json!({"queued": true}),
+        ))?;
+
+        let error = sender
+            .send_response(JsonRpcResponse::success(Some(JsonRpcId::Integer(2)), json!({})))
+            .err()
+            .ok_or("required response must be rejected when the queue is full")?;
+        if error.kind() != io::ErrorKind::WouldBlock {
+            return Err(format!("expected WouldBlock, got {error}").into());
+        }
+        let closed_response = sender
+            .send_response(JsonRpcResponse::success(Some(JsonRpcId::Integer(3)), json!({})))
+            .err()
+            .ok_or("required response admission should close after queue failure")?;
+        if closed_response.kind() != io::ErrorKind::BrokenPipe {
+            return Err(format!("expected BrokenPipe after closure, got {closed_response}").into());
+        }
+
+        // The failure is sticky, so a waiter created after the failed send is
+        // still woken. This is the ingress escape from a full response queue.
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_millis(100), sender.response_failure_notified())
+                .await
+                .map_err(|_| "response failure notification was lost")
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn notification_full_queue_is_nonterminal() -> Result<(), Box<dyn Error>> {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(1);
+        let sender = OutboundSender::from_tx(tx);
+        sender.send_notification("window/logMessage", json!({"queued": true}))?;
+        let error = sender
+            .send_notification("window/logMessage", json!({"overflow": true}))
+            .err()
+            .ok_or("notification should be rejected when the queue is full")?;
+        if error.kind() != io::ErrorKind::WouldBlock {
+            return Err(format!("expected WouldBlock, got {error}").into());
+        }
+
+        let runtime = tokio::runtime::Runtime::new()?;
+        let timed_out = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_millis(25), sender.response_failure_notified())
+                .await
+                .is_err()
+        });
+        if !timed_out {
+            return Err("notification backpressure must not terminate response transport".into());
+        }
         Ok(())
     }
 

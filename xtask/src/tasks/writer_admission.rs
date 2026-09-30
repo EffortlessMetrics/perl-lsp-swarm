@@ -84,6 +84,13 @@ pub struct AdmissionConfig {
     pub floor_gb: f64,
     pub floor_pct: f64,
     pub large_staged_threshold: u32,
+    /// Additional branch names that count as the canonical base for the
+    /// root-checkout health check. The default is empty: a real branch
+    /// named, say, `master` is no longer silently treated as the canonical
+    /// base. Operators who genuinely use a non-`main` canonical branch
+    /// (e.g., a `master` upstream) must add it here explicitly
+    /// (#15083).
+    pub canonical_base_alternatives: Vec<String>,
 }
 
 // ---- Snapshot (fixture schema / live-gathered signal bundle) ---------------
@@ -409,7 +416,7 @@ pub fn run_checks(
         check_canonical_base(snapshot),
         check_shadow_ref(snapshot),
         check_symbolic_head(snapshot),
-        check_branch_worktree_mapping(snapshot),
+        check_branch_worktree_mapping(snapshot, config),
         check_dirty_unpushed(snapshot, config),
         check_disk_capacity(snapshot, config),
         check_remote_branch_identity(snapshot),
@@ -537,7 +544,10 @@ fn canonical_main_name(base: &str) -> &str {
     base.rsplit('/').next().unwrap_or(base)
 }
 
-fn check_branch_worktree_mapping(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
+fn check_branch_worktree_mapping(
+    snapshot: &WriterAdmissionSnapshot,
+    config: &AdmissionConfig,
+) -> CheckResult {
     let name = "branch-worktree-mapping".to_string();
     let info = &snapshot.worktree_mapping;
     if let Some(err) = &info.error {
@@ -552,11 +562,20 @@ fn check_branch_worktree_mapping(snapshot: &WriterAdmissionSnapshot) -> CheckRes
     // checkout in place — it must stay on the canonical base (or detached
     // at it), never drift onto a feature branch (#3957's "root checkout on
     // a feature branch" negative case).
+    //
+    // The canonical base name comes from the requested base (e.g.
+    // `origin/main` → `main`). Operators who genuinely run on a non-`main`
+    // canonical branch (e.g., a `master` upstream) enumerate those names
+    // explicitly via `config.canonical_base_alternatives`. A real branch
+    // named `master` is no longer silently accepted as canonical: the
+    // default list is empty (#15083).
     if snapshot.is_root_checkout {
         if let Some(sym) = &snapshot.head.symbolic_ref {
             let current_branch = sym.strip_prefix("refs/heads/").unwrap_or(sym);
             let canonical = canonical_main_name(&snapshot.requested_base);
-            if current_branch != canonical && current_branch != "master" {
+            if current_branch != canonical
+                && !config.canonical_base_alternatives.iter().any(|alt| alt == current_branch)
+            {
                 return CheckResult {
                     name,
                     status: CheckStatus::Block,
@@ -1391,6 +1410,7 @@ mod tests {
             floor_gb: 200.0,
             floor_pct: 5.0,
             large_staged_threshold: 1000,
+            canonical_base_alternatives: Vec::new(),
         }
     }
 
@@ -1452,6 +1472,54 @@ mod tests {
                 .any(|c| c.name == "branch-worktree-mapping" && c.status == CheckStatus::Block),
             "expected branch-worktree-mapping check present and blocking: {checks:?}"
         );
+    }
+
+    #[test]
+    fn root_checkout_on_real_master_branch_blocks_by_default() -> Result<()> {
+        // #15083: a real branch named `master` (distinct from the canonical
+        // `main`) must not be silently accepted as canonical. The previous
+        // hardcoded comparison against the literal `"master"` made a
+        // legitimate feature branch collide with the sentinel. With the
+        // default empty `canonical_base_alternatives`, the verdict must be
+        // `Block`.
+        let mut snapshot = base_snapshot();
+        snapshot.is_root_checkout = true;
+        snapshot.head.symbolic_ref = Some("refs/heads/master".to_string());
+        let checks = run_checks(&snapshot, &default_config());
+        if aggregate_verdict(&checks) != AdmissionVerdict::Block {
+            color_eyre::eyre::bail!("expected aggregate Block, got {checks:?}");
+        }
+        if !checks
+            .iter()
+            .any(|c| c.name == "branch-worktree-mapping" && c.status == CheckStatus::Block)
+        {
+            color_eyre::eyre::bail!(
+                "expected branch-worktree-mapping check present and blocking: {checks:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn root_checkout_on_master_passes_when_explicitly_listed_as_alternative() -> Result<()> {
+        // #15083: operators who genuinely run on a non-`main` canonical
+        // branch (e.g., a `master` upstream) enumerate those names
+        // explicitly via `canonical_base_alternatives`. The branch must
+        // then be treated as canonical, not blocked.
+        let mut snapshot = base_snapshot();
+        snapshot.is_root_checkout = true;
+        snapshot.head.symbolic_ref = Some("refs/heads/master".to_string());
+        let mut config = default_config();
+        config.canonical_base_alternatives = vec!["master".to_string()];
+        let checks = run_checks(&snapshot, &config);
+        let branch_check =
+            checks.iter().find(|c| c.name == "branch-worktree-mapping").ok_or_else(|| {
+                color_eyre::eyre::eyre!("branch-worktree-mapping check missing from {checks:?}")
+            })?;
+        if branch_check.status != CheckStatus::Pass {
+            color_eyre::eyre::bail!("expected branch check Pass, got {checks:?}");
+        }
+        Ok(())
     }
 
     #[test]

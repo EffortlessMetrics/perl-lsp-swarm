@@ -92,12 +92,16 @@ where
         LaunchAction::DoctorCriticCompatibility { json } => {
             doctor::run_doctor_critic_compatibility(json)
         }
+        LaunchAction::DoctorDevEnvironment { json } => doctor::run_doctor_dev_environment(json),
         LaunchAction::Completion { ref shell } => {
             if let Some(script) = shell_completion(shell) {
                 print!("{}", render_shell_completion(script, &command_name));
                 0
             } else {
-                eprintln!("Unknown shell: {shell}. Supported: bash, zsh, fish, powershell");
+                // Single-sourced from the launcher's InvalidShell wording, so
+                // this fallback can never drift from the parse-time gate's
+                // supported list again (#16603).
+                eprintln!("{}", LaunchParseError::InvalidShell { raw_shell: shell.clone() });
                 1
             }
         }
@@ -379,7 +383,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
         // not explicitly requested. This ensures warnings and errors are
         // captured to stderr for troubleshooting, instead of silently
         // discarded (#5013).
-        init_logging("warn,perl_lsp=info");
+        init_logging("warn");
     }
     startup_timer.checkpoint("logging_init");
 
@@ -549,6 +553,23 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                         return;
                                     }
                                 };
+                                let peer_shutdown = match std_stream.try_clone() {
+                                    Ok(shutdown) => shutdown,
+                                    Err(error) => {
+                                        tracing::error!(%error, "failed to clone socket shutdown handle");
+                                        return;
+                                    }
+                                };
+                                // Resolve every fallible socket clone before
+                                // constructing the server or starting readers,
+                                // so clone failure cannot leave a live worker.
+                                let failure_shutdown = match peer_shutdown.try_clone() {
+                                    Ok(shutdown) => shutdown,
+                                    Err(error) => {
+                                        tracing::error!(%error, "failed to clone failure shutdown handle");
+                                        return;
+                                    }
+                                };
                                 let reader = std_stream;
                                 let profile = feature_profile;
 
@@ -579,7 +600,16 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                     );
                                 }
 
-                                server.serve_async(rx).await;
+                                let failure_server = Arc::clone(&server);
+                                let failure_task = tokio::spawn(async move {
+                                    failure_server.response_delivery_failure_notified().await;
+                                    let _ = failure_shutdown.shutdown(std::net::Shutdown::Both);
+                                });
+                                Arc::clone(&server).serve_async(rx).await;
+                                if server.response_delivery_failed() {
+                                    let _ = peer_shutdown.shutdown(std::net::Shutdown::Both);
+                                }
+                                failure_task.abort();
                             });
                         }
                         Err(e) => {
@@ -732,6 +762,35 @@ mod tests {
 
         assert_eq!(exit_code, 1);
         Ok(())
+    }
+
+    #[test]
+    fn run_cli_completion_accepts_pwsh_alias() {
+        assert_eq!(run_cli(["perllsp", "--completion", "pwsh"]), 0);
+    }
+
+    #[test]
+    fn run_cli_rejects_unknown_shell_before_completion_dispatch() {
+        // Unknown shells must fail in parse_args (InvalidShell) before any
+        // completion dispatch; the completion arm's fallback only guards a
+        // shell name that slips past both lists.
+        assert_eq!(run_cli(["perllsp", "--completion", "nushell"]), 1);
+    }
+
+    #[test]
+    fn unknown_shell_fallback_names_every_supported_shell_including_pwsh() {
+        // #16603: the fallback text is single-sourced from the launcher's
+        // InvalidShell wording, so dropping pwsh from the supported list — the
+        // regression this text fix closed — now fails here instead of passing
+        // silently.
+        let message = perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidShell {
+            raw_shell: "nushell".to_string(),
+        }
+        .to_string();
+        assert!(message.contains("nushell"), "the message names the rejected shell: {message}");
+        for shell in ["bash", "zsh", "fish", "powershell", "pwsh"] {
+            assert!(message.contains(shell), "supported list must name {shell}: {message}");
+        }
     }
 
     #[test]

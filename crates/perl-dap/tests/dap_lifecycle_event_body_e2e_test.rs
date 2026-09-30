@@ -16,7 +16,7 @@
 //!
 //! All tests are protocol-level: no `perl` process is spawned.
 
-use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
 use perl_tdd_support::must_some;
 use serde_json::{Value, json};
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
@@ -24,19 +24,23 @@ use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessage>) {
+fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
     let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
     (adapter, rx)
 }
 
-fn wait_for_event(rx: &Receiver<DapMessage>, name: &str, timeout_ms: u64) -> Option<Value> {
+fn wait_for_event(
+    rx: &Receiver<DapMessageWithEpoch>,
+    name: &str,
+    timeout_ms: u64,
+) -> Option<Value> {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         match rx.recv_timeout(remaining) {
-            Ok(DapMessage::Event { event, body, .. }) if event == name => {
+            Ok((DapMessage::Event { event, body, .. }, _)) if event == name => {
                 return Some(body.unwrap_or(Value::Null));
             }
             Ok(_) => continue,

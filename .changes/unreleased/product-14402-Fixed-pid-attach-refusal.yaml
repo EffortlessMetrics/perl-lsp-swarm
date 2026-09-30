@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Refuse unsupported process ID debugger attach before inspecting the target or changing the active session, and remove PID attach suggestions from the editor.
+time: 2026-09-13T16:50:47Z
+custom:
+  PR: "14402"
+  Slug: pid-attach-refusal
+  Breaking: "no"

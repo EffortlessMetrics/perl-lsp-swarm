@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import ast
 import hashlib
 import io
 import json
@@ -14,7 +15,9 @@ from copy import deepcopy
 from tempfile import TemporaryDirectory
 import unittest
 from pathlib import Path
-from shutil import copytree, which
+
+from bash_binary import bash_binary
+from shutil import copytree
 from unittest.mock import patch
 
 
@@ -24,6 +27,13 @@ SPEC = importlib.util.spec_from_file_location("release_topology", MODULE_PATH)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+
+def release_selection_fixture(workflow):
+    marker = "      - name: Create GitHub Release from terminal candidate"
+    start = workflow.index(marker)
+    end = workflow.index("\n      - name:", start + len(marker))
+    return "\n  publish-release:\n    steps:\n" + workflow[start:end] + "\n"
 
 
 class ReleaseTopologyTests(unittest.TestCase):
@@ -38,13 +48,15 @@ class ReleaseTopologyTests(unittest.TestCase):
               os: ubuntu-22.04
         steps:
         """
-        if schema_version == 2:
+        if schema_version in (2, 3):
             actual = (MODULE_PATH.parents[1] / ".github/workflows/release.yml").read_text(
                 encoding="utf-8"
             )
             candidate_start = actual.index("  candidate:\n")
             candidate_end = actual.index("\n  publisher-eligibility:", candidate_start)
             workflow = "jobs:\n  build:\n" + workflow.rstrip() + "\n" + actual[candidate_start:candidate_end]
+            if schema_version == 3:
+                workflow += release_selection_fixture(actual)
         downstream = {"targets": [{"triple": "x86_64-unknown-linux-gnu"}]}
         downloader = """
         return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
@@ -101,6 +113,9 @@ class ReleaseTopologyTests(unittest.TestCase):
                     encoding="utf-8"
                 ),
             }
+            if schema_version == 3:
+                for name in ("release_subject_projection.py", "release_terminal_manifest.py"):
+                    files[f"scripts/{name}"] = (MODULE_PATH.parent / name).read_text(encoding="utf-8")
             for relative, contents in files.items():
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,12 +158,14 @@ class ReleaseTopologyTests(unittest.TestCase):
                 "secondary_channels": {"docker": "required", "homebrew": "deferred"},
                 "sources": {},
             }
-            if schema_version == 2:
+            if schema_version in (2, 3):
                 manifest["checksum_assets"] = [{
                     "asset_name": "SHA256SUMS", "algorithm": "sha256",
                     "channel": "github_release",
                     "archive_targets": ["x86_64-unknown-linux-gnu"],
                 }]
+            if schema_version == 3:
+                manifest["subject_projection"] = MODULE.topology_subject_projection()
             for relative in MODULE.source_paths(crates, schema_version=schema_version):
                 path = root / relative
                 manifest["sources"][relative] = {
@@ -162,6 +179,240 @@ class ReleaseTopologyTests(unittest.TestCase):
                 MODULE, "ensure_committed_topology_inputs"
             ):
                 yield root, manifest, frozen_sha
+
+    def test_mapped_rc_v4_preserves_frozen_product_and_exact_mapping(self):
+        from release_vsix_mapping import mapped_vsix_identity
+        with self.valid_manifest_fixture(schema_version=3) as (root, frozen, frozen_sha):
+            schema4 = MODULE.schema_relative_path(4)
+            (root / schema4).write_bytes((MODULE_PATH.parents[1] / schema4).read_bytes())
+            package_path = root / "vscode-extension/package.json"
+            package = json.loads(package_path.read_text())
+            package["publisher"] = "fixture-publisher"
+            package_path.write_text(json.dumps(package), encoding="utf-8")
+            frozen["sources"]["vscode-extension/package.json"]["sha256"] = MODULE.sha256(package_path)
+            helper = "scripts/release_vsix_mapping.py"
+            (root / helper).write_bytes((MODULE_PATH.parents[1] / helper).read_bytes())
+            frozen_root = root.parent / "mapped-frozen"
+            copytree(root, frozen_root)
+            authority = root.parent / "mapped-authority.json"
+            authority.write_text(json.dumps(frozen), encoding="utf-8")
+            frozen_digest = MODULE.sha256(authority)
+            release, prepared_sha = "0.18.0-rc.7", "b" * 40
+            for relative in ("Cargo.toml", "Cargo.lock", "fixture/Cargo.toml"):
+                path = root / relative
+                path.write_text(path.read_text().replace("0.18.0", release), encoding="utf-8")
+            package["version"] = "0.19.7"
+            package_path.write_text(json.dumps(package), encoding="utf-8")
+            mapping = {
+                "extension": {"id": "fixture-publisher.perl-lsp-rs", "version": "0.19.7", "sourceSha": prepared_sha},
+                "candidate": {"id": "synthetic-rc-seven", "release": release, "sourceSha": prepared_sha},
+                "preRelease": True,
+            }
+            metadata = deepcopy(MODULE.cargo_metadata(root))
+            metadata["packages"][0]["version"] = release
+            def head(path):
+                return frozen_sha if Path(path).resolve() == frozen_root.resolve() else prepared_sha
+            args = (root, release, frozen_sha, prepared_sha, frozen, frozen_digest, authority, frozen_root)
+            with patch.object(MODULE, "cargo_metadata", return_value=metadata), patch.object(MODULE, "git_head", side_effect=head):
+                result = MODULE.build_manifest(*args, schema_version=4, vsix_mapping=mapping)
+                MODULE.validate_manifest(result, root, frozen_sha, prepared_sha, frozen, frozen_digest, authority, frozen_root, vsix_mapping=mapping)
+                self.assertEqual(result, MODULE.build_manifest(*args, schema_version=4, vsix_mapping=mapping))
+                wrong_candidate = deepcopy(result); wrong_candidate["vsix"]["candidate_id"] = "another-candidate"
+                with self.assertRaisesRegex(MODULE.TopologyError, "exact explicit VSIX mapping"):
+                    MODULE.validate_manifest(wrong_candidate, root, frozen_sha, prepared_sha, frozen, frozen_digest, authority, frozen_root, vsix_mapping=mapping)
+                self.assertEqual(result["vsix"]["asset_name"], "perl-lsp-rs-0.19.7-0.18.0-rc.7.vsix")
+                for mutate in (
+                    lambda x: x["candidate"].update(release="0.18.0-rc.8"),
+                    lambda x: x["extension"].update(version="0.19.8"),
+                    lambda x: x["candidate"].update(sourceSha="c" * 40),
+                    lambda x: x.update(preRelease=False),
+                    lambda x: x.pop("preRelease"),
+                ):
+                    wrong = deepcopy(mapping); mutate(wrong)
+                    with self.assertRaises(MODULE.TopologyError):
+                        MODULE.build_manifest(*args, schema_version=4, vsix_mapping=wrong)
+                for mutate in (
+                    lambda x: x["binary_targets"][0].update(required_members=["perllsp"]),
+                    lambda x: x["published_crates"][0].update(name="another-product"),
+                    lambda x: x.update(primary_channels=["github_release"]),
+                    lambda x: x["subject_projection"].update(extra="changed-claim"),
+                ):
+                    wrong = deepcopy(result); mutate(wrong)
+                    with self.assertRaises(MODULE.TopologyError):
+                        MODULE.validate_prepared_projection(frozen, wrong, frozen_digest, authority, frozen_root, root)
+                helper_bytes = (root / helper).read_bytes()
+                (root / helper).write_bytes(helper_bytes + b"\n")
+                changed = deepcopy(result)
+                changed["sources"][helper]["sha256"] = MODULE.sha256(root / helper)
+                with self.assertRaisesRegex(MODULE.TopologyError, "changed the mapping helper"):
+                    MODULE.validate_prepared_projection(frozen, changed, frozen_digest, authority, frozen_root, root)
+                (root / helper).write_bytes(helper_bytes)
+                MODULE.validate_prepared_projection(frozen, result, frozen_digest, authority, frozen_root, root)
+                (root / schema4).write_text((root / schema4).read_text() + "\n", encoding="utf-8")
+                result["sources"][schema4]["sha256"] = MODULE.sha256(root / schema4)
+                with self.assertRaisesRegex(MODULE.TopologyError, "changed a topology schema"):
+                    MODULE.validate_prepared_projection(frozen, result, frozen_digest, authority, frozen_root, root)
+
+    def test_mapping_utf8_and_duplicate_fields_fail_structurally(self):
+        import subprocess
+        import sys
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            mapping = root / "mapping.json"
+            for raw in (b"\xff", b'{"preRelease":true,"preRelease":true}'):
+                mapping.write_bytes(raw)
+                run = subprocess.run([sys.executable, str(MODULE_PATH), "--schema-version", "4",
+                    "--release", "0.18.0-rc.7", "--frozen-product-sha", "a" * 40,
+                    "--vsix-mapping", str(mapping), "--output", str(root / "out.json")],
+                    capture_output=True, text=True, check=False)
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("NOT_PROVEN", run.stderr)
+                self.assertNotIn("Traceback", run.stderr)
+
+    def test_legacy_v1_v2_are_not_implicitly_upgraded_to_mapped_v4(self):
+        for version in (1, 2):
+            with self.valid_manifest_fixture(schema_version=version) as (root, frozen, _):
+                prepared = deepcopy(frozen); prepared["schema"] = 4
+                # Reach the semantic transition check without an incidental v4
+                # missing-field failure; full v4 generation is covered above.
+                with patch.object(MODULE, "schema_validate"), patch.object(MODULE, "load_frozen_authority", return_value=(frozen, "a" * 64)):
+                    with self.assertRaisesRegex(MODULE.TopologyError, "explicit frozen v3"):
+                        MODULE.validate_prepared_projection(frozen, prepared, "a" * 64, root / "authority", root, root)
+
+    def test_v3_generation_binds_subject_projection(self):
+        with self.valid_manifest_fixture(schema_version=3) as (root, manifest, frozen_sha):
+            generated = MODULE.build_manifest(root, "0.18.0", frozen_sha, schema_version=3)
+            self.assertEqual(generated, manifest)
+            MODULE.validate_manifest(generated, root, frozen_sha)
+
+    def test_v3_projection_rejects_omitted_extra_and_contradictory_subjects(self):
+        with self.valid_manifest_fixture(schema_version=3) as (root, manifest, frozen_sha):
+            frozen_root = root.parent / "frozen"
+            copytree(root, frozen_root)
+            frozen_path = root.parent / "frozen.json"
+            frozen_path.write_text(json.dumps(manifest), encoding="utf-8")
+            frozen_digest = MODULE.sha256(frozen_path)
+            mutations = (
+                lambda value: value.pop("sbom"),
+                lambda value: value["named_artifacts"]["fixed_artifacts"].pop(),
+                lambda value: value["named_artifacts"]["fixed_artifacts"].append({"path": "attestation-subjects.sha256", "class": "sbom"}),
+                lambda value: value["named_artifacts"]["dynamic_classes"].pop(),
+                lambda value: value["named_artifacts"]["conditional_paths"][0].update(condition="always"),
+                lambda value: value["external_records"].update(subjects_from="dist/SHA256SUMS"),
+                lambda value: value["external_records"].update(execution="verified"),
+                lambda value: value["sbom"].update(channel="docker"),
+            )
+            for index, mutate in enumerate(mutations):
+                with self.subTest(index=index):
+                    changed = deepcopy(manifest)
+                    mutate(changed["subject_projection"])
+                    with self.assertRaises(MODULE.TopologyError):
+                        MODULE.validate_manifest(changed, root, frozen_sha)
+                    self.assertNotEqual(MODULE.immutable_projection(manifest), MODULE.immutable_projection(changed))
+                    changed["prepared_swarm_sha"] = "b" * 40
+                    with self.assertRaises(MODULE.TopologyError):
+                        MODULE.validate_prepared_projection(
+                            manifest, changed, frozen_digest, frozen_path, frozen_root, root
+                        )
+
+    def test_v3_rejects_changed_producers_despite_refreshed_source_hashes(self):
+        cases = (
+            ("scripts/release_subject_projection.py", '"dist/sbom-spdx.json"', '"dist/other.json"'),
+            ("scripts/release_subject_projection.py", 'if release_notes:', 'if True:'),
+            ("scripts/release_terminal_manifest.py", '[row["path"] for row in evidence_subjects]', '[]'),
+            ("scripts/release_terminal_manifest.py", '"release_notes.md").is_file()', '"missing-notes.md").is_file()'),
+            ("scripts/release_terminal_manifest.py", 'raise SystemExit(main())', 'raise SystemExit(0)'),
+            ("scripts/release_terminal_manifest.py", 'output, inventory = write_outputs(args.candidate, args.source_sha, args.tag)', 'output, inventory = (args.candidate, args.candidate)'),
+            ("scripts/release_terminal_manifest.py", 'if __name__ == "__main__":', 'write_outputs = check_outputs\n\nif __name__ == "__main__":'),
+            (".github/workflows/release.yml", 'cargo sbom --output-format spdx_json_2_3 > candidate/dist/sbom-spdx.json', 'echo skipped'),
+            (".github/workflows/release.yml", 'python3 scripts/release_terminal_manifest.py', 'echo scripts/release_terminal_manifest.py'),
+            (".github/workflows/release.yml", 'subject-checksums: candidate/attestation-subjects.sha256', 'subject-checksums: candidate/dist/SHA256SUMS'),
+            (".github/workflows/release.yml", 'files: candidate/dist/*', 'files: candidate/dist/*.tar.gz'),
+            (".github/workflows/release.yml", 'files: candidate/dist/*', 'files: other/*'),
+            (".github/workflows/release.yml", 'files: candidate/dist/*', 'name: missing-files'),
+            (".github/workflows/release.yml", 'softprops/action-gh-release@', 'unrelated/action@'),
+        )
+        for relative, original, replacement in cases:
+            with self.subTest(relative=relative, replacement=replacement):
+                with self.valid_manifest_fixture(schema_version=3) as (root, manifest, frozen_sha):
+                    path = root / relative
+                    before = path.read_text(encoding="utf-8")
+                    self.assertIn(original, before)
+                    changed = before.replace(original, replacement)
+                    if relative.endswith(".yml"):
+                        changed += "\n# " + original + "\n"
+                    path.write_text(changed, encoding="utf-8")
+                    manifest["sources"][relative]["sha256"] = MODULE.sha256(path)
+                    with self.assertRaisesRegex(MODULE.TopologyError, "subject producer"):
+                        MODULE.validate_manifest(manifest, root, frozen_sha)
+
+    def test_v3_publisher_selection_must_be_inside_jobs_not_scalar_text(self):
+        with self.valid_manifest_fixture(schema_version=3) as (root, manifest, frozen_sha):
+            MODULE.validate_manifest(manifest, root, frozen_sha)
+            relative = ".github/workflows/release.yml"
+            path = root / relative
+            before = path.read_text(encoding="utf-8")
+            actual = (MODULE_PATH.parents[1] / relative).read_text(encoding="utf-8")
+            selection = release_selection_fixture(actual)
+            self.assertIn(selection, before)
+            changes = (
+                "name: |\n" + selection.lstrip("\n") + before.replace(selection, ""),
+                before.replace(selection, selection.replace(
+                    "    steps:\n", "    steps:\n      - run: echo placeholder\n    name: |\n"
+                )),
+            )
+            for index, changed in enumerate(changes):
+                with self.subTest(index=index):
+                    path.write_text(changed, encoding="utf-8")
+                    manifest["sources"][relative]["sha256"] = MODULE.sha256(path)
+                    with self.assertRaisesRegex(MODULE.TopologyError, "subject producer"):
+                        MODULE.validate_manifest(manifest, root, frozen_sha)
+
+    def test_v3_ast_admission_accepts_harmless_source_formatting(self):
+        with self.valid_manifest_fixture(schema_version=3) as (root, manifest, frozen_sha):
+            for name in ("release_subject_projection.py", "release_terminal_manifest.py"):
+                relative = f"scripts/{name}"
+                path = root / relative
+                path.write_text("\n# harmless formatting\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+                manifest["sources"][relative]["sha256"] = MODULE.sha256(path)
+            MODULE.validate_manifest(manifest, root, frozen_sha)
+
+    def test_v3_normalized_ast_ignores_only_empty_type_parameters(self):
+        function = ast.parse("def subject(): return b'bytes'").body[0]
+        baseline = MODULE.normalized_producer_ast(function)
+        self.assertEqual(json.loads(json.dumps(baseline)), baseline)
+        if "type_params" not in function._fields:
+            function._fields = (*function._fields, "type_params")
+        function.type_params = []
+        self.assertEqual(MODULE.normalized_producer_ast(function), baseline)
+        function.type_params = [ast.Name(id="Parameter", ctx=ast.Load())]
+        self.assertNotEqual(MODULE.normalized_producer_ast(function), baseline)
+
+    def test_v3_does_not_change_default_or_v2_source_inventory(self):
+        for version in (1, 2):
+            with self.subTest(version=version), self.valid_manifest_fixture(schema_version=version) as (root, manifest, frozen_sha):
+                generated = MODULE.build_manifest(root, "0.18.0", frozen_sha, schema_version=version)
+                self.assertEqual(generated, manifest)
+                self.assertNotIn("subject_projection", generated)
+                self.assertNotIn("scripts/release_subject_projection.py", generated["sources"])
+                self.assertNotIn("scripts/release_terminal_manifest.py", generated["sources"])
+
+    def test_v3_requires_explicit_raw_json_consumer_admission(self):
+        from release_topology_json import load_topology_json
+        for token in ("3", "3.0", "3e0"):
+            with self.subTest(token=token):
+                raw = '{"schema":' + token + '}'
+                with self.assertRaises(ValueError):
+                    load_topology_json(raw)
+                self.assertEqual(load_topology_json(raw, supported_versions=(1, 2, 3))["schema"], 3)
+
+    def test_v4_requires_explicit_raw_json_consumer_admission(self):
+        from release_topology_json import load_topology_json
+        for token in ("4", "4.0", "4e0"):
+            raw = '{"schema":' + token + '}'
+            with self.assertRaises(ValueError):
+                load_topology_json(raw)
+            self.assertEqual(load_topology_json(raw, supported_versions=(1, 2, 3, 4))["schema"], 4)
 
     def test_target_derivation_preserves_runner_and_archive_identity(self):
         workflow = """
@@ -212,7 +463,7 @@ class ReleaseTopologyTests(unittest.TestCase):
             ('"schema":2.0000000000000001', False),
             ('"schema":1.99999999999999999', False),
             ('"schema":true', False), ('"schema":"2"', False),
-            ('"schema":3', False), ('"schema":1,"schema":2', False),
+            ('"schema":3', True), ('"schema":5', False), ('"schema":1,"schema":2', False),
             ('"schema":1,"sche\\u006da":2', False),
             ('"decoy":{"schema":3},"sche\\u006da":2e0', True),
             ('"schema":2,"unrelated":1e9999999999999999999999999', True),
@@ -366,12 +617,20 @@ class ReleaseTopologyTests(unittest.TestCase):
         targets = MODULE.derive_targets(workflow, "0.18.0")
         self.assertTrue(any(target["archive_name"].endswith(".zip") for target in targets))
         self.assertTrue(any(target["archive_name"].endswith(".tar.gz") for target in targets))
-        bash = which("bash")
+        bash = bash_binary()
         self.assertIsNotNone(bash, "Linux Bash (or WSL Bash) is required for the producer oracle")
         platform = subprocess.run([bash, "--noprofile", "--norc", "-c", "uname -s"],
                                   capture_output=True, text=True, timeout=30)
         self.assertEqual(platform.returncode, 0, platform.stderr)
-        self.assertEqual(platform.stdout.strip(), "Linux", "The production checksum oracle requires Linux; Git Bash uses a different sha256sum default")
+        if platform.stdout.strip() != "Linux":
+            # Honest platform envelope (#15401, #15395 pattern): the production
+            # checksum oracle requires Linux — Git Bash's sha256sum behaves
+            # differently — so the producer half of this oracle is Linux-only.
+            # The workflow-shape assertions above already ran everywhere.
+            self.skipTest(
+                "production checksum producer requires Linux; "
+                f"bash here reports {platform.stdout.strip()!r}"
+            )
 
         def execute(script, duplicate=False):
             with TemporaryDirectory() as temporary:
@@ -511,7 +770,12 @@ class ReleaseTopologyTests(unittest.TestCase):
                 )
 
     def test_prepared_projection_accepts_version_identity_only(self):
-        with self.valid_manifest_fixture() as (root, frozen, frozen_sha):
+        for schema_version in (1, 3):
+            with self.subTest(schema_version=schema_version):
+                self.check_prepared_projection_accepts_version_identity_only(schema_version)
+
+    def check_prepared_projection_accepts_version_identity_only(self, schema_version):
+        with self.valid_manifest_fixture(schema_version=schema_version) as (root, frozen, frozen_sha):
             frozen_root = root.parent / f"{root.name}-frozen"
             copytree(root, frozen_root)
             frozen_topology_path = root.parent / f"{root.name}-frozen-topology.json"
@@ -578,6 +842,7 @@ class ReleaseTopologyTests(unittest.TestCase):
                     frozen_digest,
                     frozen_topology_path,
                     frozen_root,
+                    schema_version=schema_version,
                 )
                 MODULE.validate_manifest(
                     prepared,
@@ -1000,6 +1265,9 @@ class ReleaseTopologyTests(unittest.TestCase):
     def test_cli_v2_real_frozen_and_prepared_checkouts_are_deterministic(self):
         self.cli_real_frozen_and_prepared_checkouts_are_deterministic(schema_version=2)
 
+    def test_cli_v3_real_frozen_and_prepared_checkouts_are_deterministic(self):
+        self.cli_real_frozen_and_prepared_checkouts_are_deterministic(schema_version=3)
+
     def cli_real_frozen_and_prepared_checkouts_are_deterministic(self, schema_version):
         schema_relative = MODULE.schema_relative_path(schema_version)
         with TemporaryDirectory() as temporary:
@@ -1044,6 +1312,9 @@ class ReleaseTopologyTests(unittest.TestCase):
                 ),
             }
             actual_workflow = (MODULE_PATH.parents[1] / ".github/workflows/release.yml").read_text(encoding="utf-8")
+            if schema_version == 3:
+                for name in ("release_subject_projection.py", "release_terminal_manifest.py"):
+                    files[f"scripts/{name}"] = (MODULE_PATH.parent / name).read_text(encoding="utf-8")
             candidate_start = actual_workflow.index("  candidate:\n")
             candidate_end = actual_workflow.index("\n  publisher-eligibility:", candidate_start)
             files[".github/workflows/release.yml"] = (
@@ -1051,11 +1322,13 @@ class ReleaseTopologyTests(unittest.TestCase):
                 + "".join("    " + line + "\n" for line in files[".github/workflows/release.yml"].splitlines())
                 + actual_workflow[candidate_start:candidate_end]
             )
+            if schema_version == 3:
+                files[".github/workflows/release.yml"] += release_selection_fixture(actual_workflow)
             for relative, contents in files.items():
                 path = frozen_root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(contents, encoding="utf-8")
-            for version in (1, 2):
+            for version in (1, 2, 3):
                 relative = MODULE.schema_relative_path(version)
                 schema_path = frozen_root / relative
                 schema_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1172,7 +1445,7 @@ class ReleaseTopologyTests(unittest.TestCase):
                 with patch.object(
                     MODULE, "cargo_metadata", side_effect=controlled_metadata
                 ), patch.object(
-                    sys, "argv", [sys.executable, *([] if schema_version == 1 else ["--schema-version", "2"]), *arguments]
+                    sys, "argv", [sys.executable, *([] if schema_version == 1 else ["--schema-version", str(schema_version)]), *arguments]
                 ), redirect_stdout(stdout), redirect_stderr(stderr):
                     try:
                         returncode = MODULE.main()
@@ -1203,7 +1476,7 @@ class ReleaseTopologyTests(unittest.TestCase):
             ])
             self.assertEqual(explicit[0], 0, explicit[2])
             self.assertEqual(explicit_output.read_bytes(), frozen_output.read_bytes())
-            for bad_version in ("0", "3", "true", "1.5"):
+            for bad_version in ("0", "4", "true", "1.5"):
                 unsupported = run_cli([
                     "--root", str(frozen_root), "--release", "0.18.0",
                     "--frozen-product-sha", frozen_sha, "--schema-version", bad_version,
@@ -1261,8 +1534,8 @@ class ReleaseTopologyTests(unittest.TestCase):
             self.assertEqual(outputs[0], outputs[1])
             prepared_value = json.loads(outputs[0])
             self.assertEqual(prepared_value["schema"], schema_version)
-            self.assertEqual("checksum_assets" in prepared_value, schema_version == 2)
-            if schema_version == 2:
+            self.assertEqual("checksum_assets" in prepared_value, schema_version in (2, 3))
+            if schema_version in (2, 3):
                 self.assertEqual(prepared_value["checksum_assets"], json.loads(frozen_output.read_bytes())["checksum_assets"])
 
             # The check command never guesses a newer contract or upgrades old
@@ -1270,7 +1543,7 @@ class ReleaseTopologyTests(unittest.TestCase):
             mismatch = run_cli([
                 "--root", str(frozen_root), "--release", "0.18.0",
                 "--frozen-product-sha", frozen_sha, "--check",
-                "--schema-version", str(3 - schema_version),
+                "--schema-version", str(1 if schema_version == 3 else 3 - schema_version),
                 "--output", str(frozen_output),
             ])
             self.assertNotEqual(mismatch[0], 0)
@@ -1279,7 +1552,7 @@ class ReleaseTopologyTests(unittest.TestCase):
                 "--root", str(prepared_root), "--release", "0.18.1",
                 "--frozen-product-sha", frozen_sha, "--prepared-swarm-sha", prepared_sha,
                 "--frozen-root", str(frozen_root), "--frozen-topology", str(prepared_authority),
-                "--frozen-topology-sha256", digest, "--schema-version", str(3 - schema_version),
+                "--frozen-topology-sha256", digest, "--schema-version", str(1 if schema_version == 3 else 3 - schema_version),
                 "--output", str(prepared_root / "crossed.json"),
             ])
             self.assertNotEqual(crossed[0], 0)
@@ -1820,6 +2093,163 @@ class ReleaseTopologyTests(unittest.TestCase):
         self.assertEqual(
             MODULE.derive_downloader_targets(commented_return, workflow_targets), set()
         )
+
+    def test_downloader_target_derivation_rejects_regex_literal_pseudo_returns(self):
+        """TypeScript regex literals must not satisfy a Windows target return.
+
+        ``/return 'x86_64-pc-windows-msvc'/g`` is lexically a regex literal, not
+        code; the downloader's mask must treat it as a non-code region.  This is
+        the regression fixed alongside the existing comment/string coverage.
+        """
+        workflow_targets = {"x86_64-pc-windows-msvc"}
+        regex_in_assignment = """
+        const pseudo = /return 'x86_64-pc-windows-msvc'/g;
+        """
+        regex_after_newline = """
+        /return 'x86_64-pc-windows-msvc'/;
+        """
+        regex_with_flags = """
+        const re = /return 'x86_64-pc-windows-msvc'/gim;
+        """
+        regex_inside_block = """
+        const arr = [
+            /return 'x86_64-pc-windows-msvc'/,
+        ];
+        """
+        # The same shape, but inside a string literal, must also be rejected.
+        string_with_regex_text = """
+        const doc = "/return 'x86_64-pc-windows-msvc'/";
+        """
+        # And division on the same source must NOT be confused with a regex
+        # literal — this is the lexer-disambiguation surface.
+        division_safe = """
+        const a = numerator;
+        const b = a / denominator;
+        return 'x86_64-pc-windows-msvc';
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_in_assignment, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_after_newline, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_with_flags, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_inside_block, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(string_with_regex_text, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(division_safe, workflow_targets),
+            {"x86_64-pc-windows-msvc"},
+        )
+
+    def test_downloader_target_derivation_rejects_commented_darwin_ternary(self):
+        """A commented macOS target ternary must not satisfy darwin targets.
+
+        The downloader constructs both darwin targets in one ternary
+        expression.  Commenting out that ternary (line or block comment)
+        must remove the targets from the admitted set.
+        """
+        workflow_targets = {"aarch64-apple-darwin", "x86_64-apple-darwin"}
+        live = """
+        return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+        """
+        commented_line = """
+        // return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+        """
+        commented_block = """
+        /* return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'; */
+        """
+        regex_pseudo = """
+        const re = /return arch === 'arm64' \\? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'/;
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(live, workflow_targets),
+            workflow_targets,
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_line, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(commented_block, workflow_targets),
+            set(),
+        )
+        self.assertEqual(
+            MODULE.derive_downloader_targets(regex_pseudo, workflow_targets),
+            set(),
+        )
+
+    def test_downloader_target_derivation_rejects_comment_linux_construction(self):
+        """Commented Linux target construction must not satisfy Linux targets.
+
+        ``derive_downloader_targets`` admits every ``*-unknown-linux-{gnu,musl}``
+        workflow target when the downloader constructs the Linux triple with
+        ``return `${archPrefix}-unknown-linux-${libc}``` *and* sets ``archPrefix``
+        *and* recognises both ``gnu`` and ``musl`` libc branches.  Each of those
+        signals must be present in executable code; a commented-out form of any
+        one of them must not be admitted.
+        """
+        workflow_targets = {
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+        }
+        full = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        value === 'musl';
+        """
+        self.assertEqual(
+            MODULE.derive_downloader_targets(full, workflow_targets),
+            workflow_targets,
+        )
+        commented_template = """
+        // return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        value === 'musl';
+        """
+        commented_arch = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        // archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        value === 'musl';
+        """
+        commented_gnu = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        // value === 'gnu';
+        value === 'musl';
+        """
+        commented_musl = """
+        return `${archPrefix}-unknown-linux-${libc}`;
+        archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+        value === 'gnu';
+        // value === 'musl';
+        """
+        for name, source in (
+            ("commented template", commented_template),
+            ("commented arch", commented_arch),
+            ("commented gnu", commented_gnu),
+            ("commented musl", commented_musl),
+        ):
+            with self.subTest(case=name):
+                self.assertEqual(
+                    MODULE.derive_downloader_targets(source, workflow_targets),
+                    set(),
+                )
 
     def test_manifest_mutations_fail_closed(self):
         with self.valid_manifest_fixture() as (root, manifest, frozen_sha):

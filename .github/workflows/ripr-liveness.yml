@@ -1,0 +1,231 @@
+# ripr liveness — report a ripr run that has scheduled no jobs.
+#
+# `ripr.yml` serialises per pull request (`concurrency: ripr-<pr>` with
+# `cancel-in-progress: false`, deliberately, so a newer head queues behind an
+# active analysis rather than cancelling it). A queued run schedules no jobs at
+# all, and GitHub posts a check run only for a scheduled job, so the required
+# context `ripr+ New Gap Gate` is not red and not pending on that head: it is
+# absent. Branch protection renders that the same way it renders a check that
+# is still running.
+#
+# Measured 2026-09-20: run 35487554523 (PR #16083) sat `pending` with zero jobs
+# for 47 minutes while 74 other check runs reported on that head.
+#
+# This workflow posts an advisory `ripr+ liveness` check so the silence is
+# visible. It deliberately does NOT post under the required context's own name:
+# writing that name from here could change whether a pull request is mergeable,
+# and a check run this workflow left behind could outlive the real one. The
+# classifier can never emit a `success` conclusion.
+
+name: ripr liveness
+
+on:
+  schedule:
+    # Every 15 minutes. The floor below is 10, so a run that crosses it is
+    # reported within one further interval.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      floor_minutes:
+        description: 'Minutes with no scheduled job before a run is reported'
+        required: false
+        default: '10'
+        type: string
+
+concurrency:
+  group: ripr-liveness
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: ripr liveness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      # Posting the advisory check run. Never under a required context's name.
+      checks: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Snapshot ripr runs
+        id: snapshot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FLOOR_MINUTES: ${{ inputs.floor_minutes || '10' }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/ripr/liveness
+
+          # One page is ample: ripr runs are serialised per PR and the floor is
+          # minutes, so anything older than this page has long since resolved.
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ripr.yml/runs?per_page=100" \
+            --jq '[.workflow_runs[] | {id, status, event, created_at, head_sha, head_branch,
+                   head_repository: .head_repository.full_name,
+                   pull_requests: [.pull_requests[]?.number]}]' \
+            > target/ripr/liveness/runs.json
+
+          # Only a run that has scheduled nothing needs its job count read, so
+          # the per-run call is bounded to the candidates.
+          python3 - <<'PY'
+          import json, os, subprocess, datetime, importlib.util, pathlib
+
+          # The count coercion is the one piece of this step that decides a
+          # posted check run, so it lives in the tested module rather than here.
+          spec = importlib.util.spec_from_file_location(
+              "ripr_liveness", pathlib.Path("scripts/ci/ripr_liveness.py"))
+          liveness = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(liveness)
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          runs = json.load(open("target/ripr/liveness/runs.json"))
+          for run in runs:
+              if run.get("status") in liveness.UNSTARTED_STATUSES:
+                  out = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/actions/runs/{run['id']}/jobs",
+                       "--jq", ".total_count"],
+                      capture_output=True, text=True, check=False,
+                  )
+                  run["job_count"] = liveness.job_count_from_api(out.returncode, out.stdout)
+              else:
+                  run["job_count"] = 1
+
+              # A completed run can neither be a candidate nor hold a group,
+              # so it needs no identity and no call spent on one.
+              if run.get("status") == "completed":
+                  continue
+
+              # The API withholds `pull_requests` for a fork pull request, and
+              # `ripr.yml` groups on the number. Resolve it from the head
+              # commit rather than inferring identity from head repository and
+              # branch: one fork branch can carry two open pull requests at
+              # once, one onto `main` and one onto `master`, and those are two
+              # numbers and so two concurrency groups (#16109 review).
+              #
+              # What the endpoint answers and what the snapshot needs are not
+              # the same question -- it reports every pull request containing
+              # the commit, not the one that triggered this run -- so reading
+              # its payload into an identity is a decision, and it lives in
+              # the tested module rather than here.
+              if not run.get("pull_requests"):
+                  out = subprocess.run(
+                      ["gh", "api", f"repos/{repo}/commits/{run['head_sha']}/pulls",
+                       "--jq", "[.[] | {number, base: .base.ref}]"],
+                      capture_output=True, text=True, check=False,
+                  )
+                  liveness.apply_resolved_identity(
+                      run, liveness.resolved_pulls_from_api(out.returncode, out.stdout)
+                  )
+
+          snapshot = {
+              "as_of": datetime.datetime.now(datetime.timezone.utc)
+                  .replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+              "floor_minutes": int(os.environ["FLOOR_MINUTES"]),
+              "runs": runs,
+          }
+          json.dump(snapshot, open("target/ripr/liveness/snapshot.json", "w"), indent=2)
+          PY
+
+      - name: Classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ripr_liveness.py \
+            --snapshot target/ripr/liveness/snapshot.json \
+            --out target/ripr/liveness/report.md \
+            --json target/ripr/liveness/report.json \
+            --print
+          cat target/ripr/liveness/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post advisory check runs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          report = json.load(open("target/ripr/liveness/report.json"))
+          findings = report.get("findings", [])
+          if not findings:
+              print("no ripr run is waiting past the floor")
+              sys.exit(0)
+
+          REQUIRED_CONTEXT = "ripr+ New Gap Gate"
+
+          def already_posted(head_sha, external_id):
+              """Whether this exact finding is already on this head.
+
+              The cron fires every 15 minutes and a stall lasts as long as it
+              lasts, so without this a two-hour stall leaves eight identical
+              check runs on one pull request.
+
+              `filter=all` and `--paginate` are both load-bearing, and the
+              first is the one that bites at two entries rather than at a
+              hundred. The endpoint's `filter` defaults to `latest`, which
+              returns only the most recent check run *per name* -- and every
+              post here carries the single name `ripr+ liveness`, so the
+              default answers "is this the newest liveness id" when the
+              question is "has this id been posted at all". A run that flips
+              between `infra-no-proof` and `serialised_behind_predecessor` as
+              its predecessor starts and finishes alternates between two ids,
+              and under the default each flip looks unposted and re-posts,
+              forever. `--paginate` then matters past 100 distinct check
+              names, which this repository's heads do reach -- 74 names, but
+              83 rows on one head measured. `--paginate` with `--jq` emits
+              one id per line across all pages rather than one JSON document.
+              """
+              out = subprocess.run(
+                  ["gh", "api", "--paginate",
+                   f"repos/{repo}/commits/{head_sha}/check-runs?filter=all&per_page=100",
+                   "--jq", ".check_runs[].external_id"],
+                  capture_output=True, text=True, check=False,
+              )
+              if out.returncode != 0:
+                  return False  # unreadable: post rather than stay silent
+              return external_id in out.stdout.split()
+
+          for finding in findings:
+              conclusion = finding["conclusion"]
+              name = finding["check_name"]
+              # The classifier can never say success and never offers the
+              # required context's name; refuse both here anyway rather than
+              # trust an upstream change not to.
+              if conclusion == "success":
+                  raise SystemExit("refusing to post a success conclusion from the liveness reporter")
+              if name == REQUIRED_CONTEXT:
+                  raise SystemExit(f"refusing to post under the required context {name!r}")
+              head_sha = finding["head_sha"]
+              external_id = f"ripr-liveness:{finding['run_id']}:{finding['classification']}"
+              if already_posted(head_sha, external_id):
+                  print(f"{head_sha} {finding['classification']}: already reported")
+                  continue
+              payload = {
+                  "name": name,
+                  "head_sha": head_sha,
+                  "external_id": external_id,
+                  "status": "completed",
+                  "conclusion": conclusion,
+                  "output": {
+                      "title": finding["check_title"],
+                      "summary": finding["check_summary"],
+                  },
+              }
+              result = subprocess.run(
+                  ["gh", "api", "--method", "POST", f"repos/{repo}/check-runs",
+                   "--input", "-"],
+                  input=json.dumps(payload), capture_output=True, text=True, check=False,
+              )
+              status = "posted" if result.returncode == 0 else f"failed: {result.stderr.strip()}"
+              print(f"{head_sha} {finding['classification']}: {status}")
+          PY

@@ -406,7 +406,7 @@ mod for_each_child_mut {
             Node::new(NodeKind::UnknownRest, loc()),
             Node::new(NodeKind::Readline { filehandle: None }, loc()),
             Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc()),
-            Node::new(NodeKind::Typeglob { name: "main::foo".to_string() }, loc()),
+            Node::new(NodeKind::Typeglob { name: "main::foo".to_string(), body: None }, loc()),
         ];
         for mut n in leaf_nodes {
             let name = n.kind.kind_name();

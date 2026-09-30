@@ -63,6 +63,14 @@ fn lwp_user_agent_constructor_assignment_enables_instance_catalog() {
     assert!(has_label(&item_labels, "requests_redirectable"));
     assert!(!has_label(&item_labels, "get"), "typed API methods should respect the method prefix");
 
+    let commented_labels = labels(&completions_at_end(
+        "use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new(\n    # don't set a proxy\n    timeout => 10,\n);\n$ua->re",
+    ));
+    assert!(
+        has_label(&commented_labels, "request"),
+        "an apostrophe in a constructor-argument comment must not eat the constructor evidence"
+    );
+
     let put_labels =
         labels(&completions_at_end("use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new;\n$ua->put"));
     assert!(has_label(&put_labels, "put"));
@@ -198,5 +206,168 @@ fn constructor_inference_respects_lexical_shadowing_and_scope_exit() {
     assert!(
         !has_label(&inner_does_not_leak_labels, "post"),
         "a block-local constructor must not type an out-of-scope receiver"
+    );
+}
+
+#[test]
+fn undef_write_clears_constructor_evidence() {
+    let cleared = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nundef $http;\n$http->po";
+    let cleared_labels = labels(&completions_at_end(cleared));
+    assert!(
+        !has_label(&cleared_labels, "post"),
+        "`undef $http` must clear inferred constructor evidence: {cleared_labels:?}"
+    );
+
+    let paren_cleared = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nundef($http);\n$http->po";
+    let paren_cleared_labels = labels(&completions_at_end(paren_cleared));
+    assert!(
+        !has_label(&paren_cleared_labels, "post"),
+        "`undef($http)` must also clear inferred constructor evidence: {paren_cleared_labels:?}"
+    );
+
+    let reassigned = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nundef $http;\n$http = HTTP::Tiny->new;\n$http->po";
+    let reassigned_labels = labels(&completions_at_end(reassigned));
+    assert!(
+        has_label(&reassigned_labels, "post"),
+        "a constructor assignment after `undef` re-establishes the receiver type"
+    );
+
+    // Valid Perl whitespace, including newlines, between `undef` and the
+    // receiver must still clear the evidence (FC3 MULTILINE_UNDEF_OPERAND).
+    let multiline = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nundef\n    $http;\n$http->po";
+    let multiline_labels = labels(&completions_at_end(multiline));
+    assert!(
+        !has_label(&multiline_labels, "post"),
+        "`undef \\n $http` must clear inferred constructor evidence: {multiline_labels:?}"
+    );
+}
+
+#[test]
+fn constructor_argument_semicolons_do_not_truncate_evidence() {
+    let source = "use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new(agent => 'foo;bar');\n$ua->re";
+    let item_labels = labels(&completions_at_end(source));
+
+    assert!(
+        has_label(&item_labels, "request"),
+        "a quoted semicolon inside constructor arguments must not truncate the assignment: {item_labels:?}"
+    );
+    assert!(
+        has_label(&item_labels, "requests_redirectable"),
+        "constructor evidence must survive quoted semicolons: {item_labels:?}"
+    );
+}
+
+#[test]
+fn regex_literal_after_comment_is_still_detected() {
+    let source = "use HTTP::Tiny;\nmy $http; # prior comment\nmy $pattern = qr{$http = HTTP::Tiny->new()};\n$http->po";
+    let item_labels = labels(&completions_at_end(source));
+
+    assert!(
+        !has_label(&item_labels, "post"),
+        "constructor text inside a regex must stay quiet even after an earlier line comment: {item_labels:?}"
+    );
+}
+
+#[test]
+fn substitution_replacement_text_is_not_constructor_evidence() {
+    let source = "use HTTP::Tiny;\nmy $http;\nmy $x = s;foo;$http = HTTP::Tiny->new;;\n$http->po";
+    let item_labels = labels(&completions_at_end(source));
+
+    assert!(
+        !has_label(&item_labels, "post"),
+        "s/// replacement text must not become constructor assignment evidence: {item_labels:?}"
+    );
+}
+
+#[test]
+fn redeclared_our_bindings_share_constructor_evidence() {
+    let source = "use HTTP::Tiny;\nour $http = HTTP::Tiny->new;\n{\n    our $http;\n    $http = Other::Client->new;\n}\n$http->po";
+    let item_labels = labels(&completions_at_end(source));
+
+    assert!(
+        !has_label(&item_labels, "post"),
+        "a redeclared `our` binding aliases the same package variable, so the child write must replace stale constructor evidence: {item_labels:?}"
+    );
+}
+
+#[test]
+fn other_package_our_redeclaration_does_not_clear_shared_evidence() {
+    let source = "use HTTP::Tiny;\nour $http = HTTP::Tiny->new;\n{\n    package Other;\n    our $http;\n    $http = Other::Client->new;\n}\n$http->po";
+    let item_labels = labels(&completions_at_end(source));
+
+    assert!(
+        has_label(&item_labels, "post"),
+        "a different package's `our $http` is a distinct variable and must not clear the outer HTTP evidence: {item_labels:?}"
+    );
+}
+
+#[test]
+fn quote_like_hash_arguments_keep_constructor_evidence() {
+    let source = "use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new(agent => q#foo#);\n$ua->re";
+    let item_labels = labels(&completions_at_end(source));
+
+    assert!(
+        has_label(&item_labels, "request"),
+        "a quote-like `#` delimiter must not swallow the constructor evidence: {item_labels:?}"
+    );
+    assert!(
+        has_label(&item_labels, "requests_redirectable"),
+        "constructor evidence must survive quote-like `#` delimiters: {item_labels:?}"
+    );
+}
+
+#[test]
+fn undef_named_method_or_sub_call_does_not_clear_evidence() {
+    let method_call =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$cleaner->undef($http);\n$http->po";
+    let method_labels = labels(&completions_at_end(method_call));
+    assert!(
+        has_label(&method_labels, "post"),
+        "`$cleaner->undef($http)` does not change $http; evidence must survive: {method_labels:?}"
+    );
+
+    let sub_call = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n&undef($http);\n$http->po";
+    let sub_labels = labels(&completions_at_end(sub_call));
+    assert!(
+        has_label(&sub_labels, "post"),
+        "`&undef($http)` is a subroutine call, not the builtin; evidence must survive: {sub_labels:?}"
+    );
+
+    // Separator whitespace between the call operator and `undef` must not
+    // reclassify the call as the builtin clearing operator (FC2
+    // UNDEF_CALL_SEPARATOR_WS).
+    let spaced_method =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$cleaner -> undef($http);\n$http->po";
+    let spaced_method_labels = labels(&completions_at_end(spaced_method));
+    assert!(
+        has_label(&spaced_method_labels, "post"),
+        "`$cleaner -> undef($http)` is a method call; evidence must survive: {spaced_method_labels:?}"
+    );
+
+    let spaced_sub = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n& undef($http);\n$http->po";
+    let spaced_sub_labels = labels(&completions_at_end(spaced_sub));
+    assert!(
+        has_label(&spaced_sub_labels, "post"),
+        "`& undef($http)` is a subroutine call; evidence must survive: {spaced_sub_labels:?}"
+    );
+
+    // `&&` is never the subroutine sigil: `$ok && undef $http` executes the
+    // builtin and must clear the stale constructor evidence.
+    let and_clears =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$done && undef $http;\n$http->po";
+    let and_labels = labels(&completions_at_end(and_clears));
+    assert!(
+        !has_label(&and_labels, "post"),
+        "`$done && undef $http` executes the builtin; evidence must clear: {and_labels:?}"
+    );
+
+    // A single infix `&` after an operand is the bitwise-and operator, not
+    // the sigil; the builtin still executes and must clear.
+    let infix_clears =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$done & undef $http;\n$http->po";
+    let infix_labels = labels(&completions_at_end(infix_clears));
+    assert!(
+        !has_label(&infix_labels, "post"),
+        "`$done & undef $http` is the bitwise-and operator; evidence must clear: {infix_labels:?}"
     );
 }

@@ -482,10 +482,6 @@ mod tests {
         }
     }
 
-    fn range() -> Range {
-        range_on_line(0)
-    }
-
     fn raw_finding_on_line(rule_id: &str, line: u32) -> CriticFinding {
         CriticFinding {
             rule_id: rule_id.to_string(),

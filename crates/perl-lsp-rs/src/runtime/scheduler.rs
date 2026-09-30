@@ -160,7 +160,8 @@ pub(crate) struct ReadFreshness {
     pub uri: String,
     /// Generation counter as observed at ingress. `None` when the
     /// document was not yet open at ingress (e.g. a hover arriving before
-    /// the matching `didOpen`); in that case freshness is not enforced.
+    /// the matching `didOpen`); delivery still checks that the URI remains
+    /// closed, so a disk-snapshot response cannot race over a live buffer.
     pub document_generation: Option<u32>,
     /// Generation counter identity captured at ingress. A close/reopen can
     /// reuse the numeric generation, so the allocation identity is part of
@@ -317,10 +318,6 @@ pub(crate) struct Scheduler {
     workers: Vec<tokio::task::JoinHandle<()>>,
     /// Monotonic sequence assigned to mutations/lifecycle requests at ingress.
     mutation_seq_next: Arc<AtomicU64>,
-    /// Highest mutation sequence that has completed processing.
-    mutation_seq_done: Arc<AtomicU64>,
-    /// Wakes read workers waiting for earlier mutations to finish.
-    mutation_notify: Arc<Notify>,
     /// Server reference retained at the scheduler level so ingress paths
     /// (`send_read`) can snapshot document generation without waiting for a
     /// worker. Workers receive their own `Arc` clones via the spawn closures.
@@ -363,6 +360,18 @@ struct QueuedRead {
     /// generation observed at ingress so the dispatcher can detect that
     /// the document moved on before this read had a chance to run.
     freshness: Option<ReadFreshness>,
+}
+
+/// Re-capture freshness after prior mutations when ingress could not see the
+/// document yet. This preserves request ordering for `didOpen` followed by a
+/// position request while keeping later opens subject to final delivery checks.
+fn refresh_after_mutation_barrier(queued: &QueuedRead) -> bool {
+    queued.wait_for_seq > 0
+        && (queued.request.method == "textDocument/completion"
+            || queued
+                .freshness
+                .as_ref()
+                .is_some_and(|freshness| freshness.document_generation.is_none()))
 }
 
 impl PartialEq for QueuedRead {
@@ -430,6 +439,22 @@ struct PendingRequestGuard {
     id: Option<JsonRpcId>,
 }
 
+struct AdmissionGuard {
+    server: Arc<LspServer>,
+    id: Option<JsonRpcId>,
+    armed: bool,
+}
+
+impl Drop for AdmissionGuard {
+    fn drop(&mut self) {
+        if self.armed
+            && let Some(id) = self.id.as_ref()
+        {
+            self.server.clear_request_pending(id);
+        }
+    }
+}
+
 impl Drop for PendingRequestGuard {
     fn drop(&mut self) {
         if let Some(id) = self.id.as_ref() {
@@ -494,15 +519,7 @@ impl Scheduler {
         // mutation worker below only ever text-applies -- it never parses.
         server.install_default_parse_worker();
 
-        Self {
-            mutation_tx,
-            read_tx,
-            workers,
-            mutation_seq_next,
-            mutation_seq_done,
-            mutation_notify,
-            server,
-        }
+        Self { mutation_tx, read_tx, workers, mutation_seq_next, server }
     }
 
     /// Send a mutation or lifecycle request to the exclusive worker.
@@ -513,18 +530,20 @@ impl Scheduler {
         if let Some(id) = pending_id.as_ref() {
             self.server.mark_request_pending(id);
         }
+        // Reserve queue capacity before allocating the mutation sequence. If
+        // ingress is cancelled by a transport failure while waiting, no gap
+        // is introduced into the read barrier.
+        let mut admission = AdmissionGuard {
+            server: Arc::clone(&self.server),
+            id: pending_id.clone(),
+            armed: true,
+        };
+        let permit = self.mutation_tx.reserve().await.map_err(|_| ())?;
         let seq = self.mutation_seq_next.fetch_add(1, Ordering::SeqCst) + 1;
         let enqueued = std::time::Instant::now();
-        let result = self.mutation_tx.send(QueuedMutation { request, seq, enqueued }).await;
-        if result.is_err()
-            && let Some(id) = pending_id.as_ref()
-        {
-            self.server.clear_request_pending(id);
-        }
-        result.map_err(|_| {
-            self.mutation_seq_done.store(seq, Ordering::SeqCst);
-            self.mutation_notify.notify_waiters();
-        })
+        permit.send(QueuedMutation { request, seq, enqueued });
+        admission.armed = false;
+        Ok(())
     }
 
     /// Send a read-only request to the priority read pool.
@@ -538,22 +557,28 @@ impl Scheduler {
         if let Some(id) = pending_id.as_ref() {
             self.server.mark_request_pending(id);
         }
+        let mut admission = AdmissionGuard {
+            server: Arc::clone(&self.server),
+            id: pending_id.clone(),
+            armed: true,
+        };
         let wait_for_seq = self.mutation_seq_next.load(Ordering::SeqCst);
         let priority = request_priority(&request.method);
         let dedup_key = extract_dedup_key(&request.method, request.params.as_ref(), priority);
         let freshness =
             extract_freshness(&self.server, &request.method, request.params.as_ref(), priority);
         let arrival_seq = READ_ARRIVAL_SEQ.fetch_add(1, Ordering::Relaxed);
-        let result = self
-            .read_tx
-            .send(QueuedRead { request, wait_for_seq, priority, arrival_seq, dedup_key, freshness })
-            .await;
-        if result.is_err()
-            && let Some(id) = pending_id.as_ref()
-        {
-            self.server.clear_request_pending(id);
-        }
-        result.map_err(|_| ())
+        let permit = self.read_tx.reserve().await.map_err(|_| ())?;
+        permit.send(QueuedRead {
+            request,
+            wait_for_seq,
+            priority,
+            arrival_seq,
+            dedup_key,
+            freshness,
+        });
+        admission.armed = false;
+        Ok(())
     }
 
     /// Shut down all workers by dropping senders and awaiting completion.
@@ -911,6 +936,24 @@ impl Scheduler {
         };
 
         let Some(captured) = freshness.document_generation else {
+            // A disk-snapshot request entered before `didOpen`. Recheck while
+            // holding the document-store lock and enqueue under that same lock
+            // so an open mutation cannot slip between the guard and delivery.
+            let normalized_uri = server.normalize_uri_key(&freshness.uri);
+            let documents = server.documents.lock();
+            if documents.contains_key(&normalized_uri) {
+                // The hover handler can observe the newly opened document and
+                // deliberately publish null instead of its disk result. Keep
+                // that safe fallback successful for clients whose didOpen
+                // notification was still being applied at request ingress.
+                // Any non-null result may contain disk-derived data and must
+                // still be rejected.
+                if response.result.as_ref().is_some_and(serde_json::Value::is_null) {
+                    Self::send_response(&server.outbound, response);
+                    return None;
+                }
+                return Some(StaleReason::DocumentInstanceChanged);
+            }
             Self::send_response(&server.outbound, response);
             return None;
         };
@@ -975,8 +1018,7 @@ impl Scheduler {
         mutation_seq_done: &Arc<AtomicU64>,
         mutation_notify: &Arc<Notify>,
     ) {
-        let refresh_after_barrier =
-            queued.request.method == "textDocument/completion" && queued.wait_for_seq > 0;
+        let refresh_after_barrier = refresh_after_mutation_barrier(&queued);
 
         // Stale check 1: position dedupe — newer same-position request supersedes.
         if let Some(ref key) = queued.dedup_key
@@ -1482,6 +1524,69 @@ mod tests {
         assert_eq!(mutation_seq_done.load(Ordering::SeqCst), 7);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_full_mutation_admission_keeps_sequence_and_pending_clean()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = Arc::new(crate::LspServer::new());
+        let (mutation_tx, mut mutation_rx) = tokio::sync::mpsc::channel(1);
+        mutation_tx
+            .send(QueuedMutation {
+                request: JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: None,
+                    method: "textDocument/didChange".to_string(),
+                    params: None,
+                },
+                seq: 1,
+                enqueued: std::time::Instant::now(),
+            })
+            .await
+            .map_err(|_| "test queue fill failed")?;
+        let (read_tx, _read_rx) = tokio::sync::mpsc::channel(1);
+        let mutation_seq_next = Arc::new(AtomicU64::new(1));
+        let scheduler = Scheduler {
+            mutation_tx,
+            read_tx,
+            workers: Vec::new(),
+            mutation_seq_next: Arc::clone(&mutation_seq_next),
+            server: Arc::clone(&server),
+        };
+        let id = JsonRpcId::Integer(14168);
+        let request = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(id.clone()),
+            method: "textDocument/didChange".to_string(),
+            params: None,
+        };
+        let pending = tokio::spawn(async move { scheduler.send_mutation(request).await });
+        let mut observed_pending = false;
+        for _ in 0..1000 {
+            if server.pending_request_ids.lock().contains(&id) {
+                observed_pending = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        if !observed_pending {
+            pending.abort();
+            let _ = pending.await;
+            return Err("full admission test never observed its pending request".into());
+        }
+        pending.abort();
+        let _ = pending.await;
+        if server.pending_request_ids.lock().contains(&id) {
+            return Err("cancelled full admission leaked its pending request".into());
+        }
+        if mutation_seq_next.load(Ordering::SeqCst) != 1 {
+            return Err("cancelled full admission advanced mutation sequence".into());
+        }
+        let queued = mutation_rx.try_recv().map_err(|_| "queued mutation disappeared")?;
+        if queued.seq != 1 {
+            return Err(format!("queued mutation sequence changed to {}", queued.seq).into());
+        }
+        Ok(())
+    }
+
     // =====================================================================
     // Generation-aware freshness tests (PR 4 of 0.15.1 Neovim latency lane)
     // =====================================================================
@@ -1762,6 +1867,34 @@ mod tests {
     }
 
     #[test]
+    fn unopened_hover_refreshes_freshness_after_prior_did_open() -> Result<(), JsonRpcError> {
+        let server = crate::LspServer::new();
+        let uri = "file:///hover-did-open-barrier.pl";
+        let params = position_params_at(uri, 0, 4);
+        let priority = request_priority("textDocument/hover");
+        let queued = QueuedRead {
+            request: JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(81)),
+                method: "textDocument/hover".to_string(),
+                params: Some(params.clone()),
+            },
+            wait_for_seq: 1,
+            priority,
+            arrival_seq: 1,
+            dedup_key: extract_dedup_key("textDocument/hover", Some(&params), priority),
+            freshness: extract_freshness(&server, "textDocument/hover", Some(&params), priority),
+        };
+
+        assert!(refresh_after_mutation_barrier(&queued));
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+        let refreshed =
+            must_some(Scheduler::refresh_read_freshness(&server, queued.freshness.as_ref()));
+        assert_eq!(refreshed.document_generation, Some(1));
+        Ok(())
+    }
+
+    #[test]
     fn extract_freshness_none_for_other_priority() {
         let server = crate::LspServer::new();
         let params = position_params("file:///x.pl");
@@ -2018,6 +2151,54 @@ mod tests {
         assert!(
             !output.contains("\"id\":78"),
             "post-handler stale completion result must not be delivered; output={output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn disk_snapshot_response_is_rejected_after_did_open() -> Result<(), JsonRpcError> {
+        let (server, output) = server_with_captured_output();
+        let uri = "file:///closed-hover-open-race.pl";
+        let freshness = make_freshness(uri, None, None);
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+
+        assert_eq!(
+            Scheduler::send_response_if_fresh(
+                &server,
+                Some(&freshness),
+                JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: JsonRpcId::from_value(&serde_json::json!(79)),
+                    result: Some(serde_json::json!({ "contents": "disk" })),
+                    error: None,
+                },
+            ),
+            Some(StaleReason::DocumentInstanceChanged)
+        );
+        let output = String::from_utf8_lossy(&output.lock().clone()).to_string();
+        assert!(!output.contains("\"id\":79"), "stale disk response was sent: {output}");
+        Ok(())
+    }
+
+    #[test]
+    fn null_hover_after_did_open_remains_a_successful_fallback() -> Result<(), JsonRpcError> {
+        let (server, _output) = server_with_captured_output();
+        let uri = "file:///closed-hover-open-race.pl";
+        let freshness = make_freshness(uri, None, None);
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+
+        assert_eq!(
+            Scheduler::send_response_if_fresh(
+                &server,
+                Some(&freshness),
+                JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: JsonRpcId::from_value(&serde_json::json!(80)),
+                    result: Some(serde_json::Value::Null),
+                    error: None,
+                },
+            ),
+            None
         );
         Ok(())
     }

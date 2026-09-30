@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-15",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/15505"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves CP00-PROOF-LEVEL-CONTRADICTION does not arm when the issue names a proof-level term only as part of a hyphenated compound identifier (source-release) and the PR uses that same term as a standalone word in a context where it is not donating a proof level."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990019,
+    "title": "fix(migration): cap keyed-scope overlap rejector at the same key and scope (#9001401)",
+    "body": "## Claim Boundary\n\nProvably true: ... two eras claiming any release in common at the same key and scope are rejected; ...\n\nNot claimed:\n\n- that the v0.17 to v0.18 inventory is complete (#7837).\n\nCloses #9001401."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001401,
+      "title": "fix(migration): reject overlapping migration input identities at the same key and scope",
+      "body": "## Acceptance\n\n- [ ] No second source-release identity is introduced into `MigrationRuntimeInput`.\n\n## Claim Boundary\n\nProvably true: ... two eras claiming any release in common at the same key and scope are rejected; ..."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001401,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

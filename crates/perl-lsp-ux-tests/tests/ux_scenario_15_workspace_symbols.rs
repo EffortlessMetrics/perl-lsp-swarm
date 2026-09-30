@@ -1,5 +1,7 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::print_stderr,
+    reason = "Scenario 15 reports a local non-execution reason when the required perllsp binary is unavailable."
+)]
 
 //! Scenario 15 — workspace symbol search across multiple workspace folders.
 //!
@@ -49,10 +51,10 @@ fn normalized_folder_uris(harness: &UxHarness, symbols: &[Value]) -> BTreeSet<St
 }
 
 #[test]
-fn scenario_15_workspace_symbol_multi_root_disambiguation() {
+fn scenario_15_workspace_symbol_multi_root_disambiguation() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_15: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -63,7 +65,7 @@ fn scenario_15_workspace_symbol_multi_root_disambiguation() {
             .with_file("svc-a/lib/Runner.pm", RUNNER_A)
             .with_file("svc-b/lib/Runner.pm", RUNNER_B),
     )
-    .expect("Failed to create UX harness");
+    .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
     assert!(
         harness.wait_for_index_ready(Duration::from_secs(20)),
@@ -76,7 +78,7 @@ fn scenario_15_workspace_symbol_multi_root_disambiguation() {
     while Instant::now() < deadline {
         latest_symbols = harness
             .workspace_symbols("run")
-            .expect("workspace/symbol must not return an error in multi-root mode");
+            .map_err(|error| format!("workspace/symbol failed in multi-root mode: {error}"))?;
 
         let run_symbols = matching_run_symbols(&latest_symbols);
         let folder_uris = normalized_folder_uris(&harness, &run_symbols);
@@ -120,4 +122,5 @@ fn scenario_15_workspace_symbol_multi_root_disambiguation() {
     );
 
     harness.assert_no_crash();
+    Ok(())
 }

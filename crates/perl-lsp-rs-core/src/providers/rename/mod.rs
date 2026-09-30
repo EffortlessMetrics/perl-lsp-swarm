@@ -490,7 +490,7 @@ mod tests {
     use super::*;
     use perl_parser_core::Parser;
     use perl_semantic_analyzer::symbol::SymbolKind;
-    use perl_tdd_support::{must, must_some};
+    use perl_test_must::{must, must_err, must_some};
 
     #[test]
     fn test_rename_variable() {
@@ -537,22 +537,20 @@ mod tests {
         assert!(validate_name("while", SymbolKind::scalar(), &provider.symbol_table).is_ok());
         // Subroutines must not use keyword names: `sub if { }` is a Perl syntax error.
         assert!(validate_name("if", SymbolKind::Subroutine, &provider.symbol_table).is_err());
-        let err =
-            validate_name("while", SymbolKind::Subroutine, &provider.symbol_table).unwrap_err();
+        let err = must_err(validate_name("while", SymbolKind::Subroutine, &provider.symbol_table));
         assert!(
             err.contains("reserved") || err.contains("keyword"),
             "error should mention 'reserved' or 'keyword', got: {err}"
         );
         // Callable kinds get the subroutine-specific message (is_callable arm).
-        let sub_err =
-            validate_name("if", SymbolKind::Subroutine, &provider.symbol_table).unwrap_err();
+        let sub_err = must_err(validate_name("if", SymbolKind::Subroutine, &provider.symbol_table));
         assert!(
             sub_err.contains("subroutine names cannot be keywords"),
             "callable rename to keyword should use the subroutine message, got: {sub_err}"
         );
         // Namespace kinds (Package) reject keyword names via the generic arm — neither
         // variable nor callable, so this exercises the `else` branch of the keyword guard.
-        let pkg_err = validate_name("if", SymbolKind::Package, &provider.symbol_table).unwrap_err();
+        let pkg_err = must_err(validate_name("if", SymbolKind::Package, &provider.symbol_table));
         assert!(
             pkg_err.contains("reserved keyword"),
             "package rename to keyword should be rejected via the generic arm, got: {pkg_err}"
@@ -826,9 +824,9 @@ mod tests {
     fn rename_array_renames_element_access_only() {
         let code = "my @arr = (1, 2, 3); print $arr[0];";
         let mut parser = Parser::new(code);
-        let ast = parser.parse().unwrap();
+        let ast = must(parser.parse());
         let provider = RenameProvider::new(&ast, code.to_string());
-        let pos = code.find("arr").unwrap();
+        let pos = must_some(code.find("arr"));
         let result = provider.scoped_rename(pos, "data", &RenameOptions::default());
         assert!(result.is_valid, "rename should be valid: {:?}", result.error);
         assert!(
@@ -842,14 +840,14 @@ mod tests {
     fn rename_array_with_bare_scalar_skips_bare() {
         let code = "my @arr = (); my $arr = 'x'; print $arr; print $arr[0];";
         let mut parser = Parser::new(code);
-        let ast = parser.parse().unwrap();
+        let ast = must(parser.parse());
         let provider = RenameProvider::new(&ast, code.to_string());
-        let pos = code.find("arr").unwrap();
+        let pos = must_some(code.find("arr"));
         let result = provider.scoped_rename(pos, "data", &RenameOptions::default());
         assert!(result.is_valid, "rename should be valid");
         // bare $arr must NOT be renamed; $arr[0] SHOULD be renamed
-        let bare_pos = code.rfind("print $arr;").unwrap() + 7;
-        let element_pos = code.rfind("$arr[0]").unwrap() + 1;
+        let bare_pos = must_some(code.rfind("print $arr;")) + 7;
+        let element_pos = must_some(code.rfind("$arr[0]")) + 1;
         let edit_starts: Vec<usize> = result.edits.iter().map(|e| e.location.start).collect();
         assert!(!edit_starts.contains(&bare_pos), "bare $arr must NOT be renamed");
         assert!(edit_starts.contains(&element_pos), "$arr[0] MUST be renamed");

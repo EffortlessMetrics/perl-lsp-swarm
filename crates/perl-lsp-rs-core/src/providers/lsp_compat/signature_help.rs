@@ -323,13 +323,17 @@ impl SignatureHelpProvider {
             if let Some(proto) = prototype {
                 label.push_str(proto);
 
-                // Sophisticated prototype parsing
-                for (i, ch) in proto.chars().enumerate() {
+                // Attribute bodies retain source trivia and separators. Count
+                // emitted parameters without changing the original label text.
+                for ch in proto.chars() {
                     match ch {
-                        '$' => params.push(ParameterInfo {
-                            label: format!("$arg{}", i + 1),
-                            documentation: Some(format!("Scalar parameter {}", i + 1)),
-                        }),
+                        '$' => {
+                            let number = params.len() + 1;
+                            params.push(ParameterInfo {
+                                label: format!("$arg{number}"),
+                                documentation: Some(format!("Scalar parameter {number}")),
+                            });
+                        }
                         '@' => params.push(ParameterInfo {
                             label: "@args".to_string(),
                             documentation: Some("Array (slurps remaining arguments)".to_string()),
@@ -486,6 +490,56 @@ mod tests {
     use super::*;
     use perl_parser_core::Parser;
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn prototype_parameter_numbers_ignore_preserved_source_whitespace() -> Result<(), String> {
+        for prototype in ["$$", " $ $ ", "\t$\t$\r\n"] {
+            let source = format!("sub foo :prototype({prototype}) {{}}");
+            let ast = Parser::new(&source).parse().map_err(|error| error.to_string())?;
+            let provider = SignatureHelpProvider::new(&ast);
+            let signatures = provider.get_signatures("foo");
+            let signature = signatures.first().ok_or("missing prototype signature")?;
+            assert_eq!(signature.label, format!("sub foo{prototype}($arg1, $arg2)"));
+            assert_eq!(signature.parameters.len(), 2);
+            assert_eq!(signature.parameters[0].label, "$arg1");
+            assert_eq!(
+                signature.parameters[0].documentation.as_deref(),
+                Some("Scalar parameter 1")
+            );
+            assert_eq!(signature.parameters[1].label, "$arg2");
+            assert_eq!(
+                signature.parameters[1].documentation.as_deref(),
+                Some("Scalar parameter 2")
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prototype_separator_does_not_consume_a_parameter_number() -> Result<(), String> {
+        for prototype in ["$$;$$", " $ $ ; $ $ "] {
+            let source = format!("sub foo :prototype({prototype}) {{}}");
+            let ast = Parser::new(&source).parse().map_err(|error| error.to_string())?;
+            let provider = SignatureHelpProvider::new(&ast);
+            let signatures = provider.get_signatures("foo");
+            let signature = signatures.first().ok_or("missing prototype signature")?;
+            assert_eq!(signature.label, format!("sub foo{prototype}($arg1, $arg2, $arg3, $arg4)"));
+            assert_eq!(signature.parameters.len(), 4);
+            assert_eq!(signature.parameters[0].label, "$arg1");
+            assert_eq!(signature.parameters[1].label, "$arg2");
+            assert_eq!(signature.parameters[2].label, "$arg3");
+            assert_eq!(signature.parameters[3].label, "$arg4");
+            assert_eq!(
+                signature.parameters[0].documentation.as_deref(),
+                Some("Scalar parameter 1")
+            );
+            assert_eq!(
+                signature.parameters[3].documentation.as_deref(),
+                Some("Scalar parameter 4")
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_builtin_signature_help() {
