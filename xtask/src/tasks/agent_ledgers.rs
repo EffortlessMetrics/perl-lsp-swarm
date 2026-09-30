@@ -1763,6 +1763,7 @@ mod tests {
     #[test]
     fn test_pr_triage_accepts_the_generator_row_type() -> Result<()> {
         let generated = crate::tasks::pr_ledger::LedgerRow {
+            schema_version: crate::tasks::pr_ledger::ROW_SCHEMA_VERSION,
             pr: "1234".to_string(),
             title: "fix: thing (#1234)".to_string(),
             surface_guess: "xtask".to_string(),
@@ -1776,10 +1777,10 @@ mod tests {
             head_ref: "feat/1234-thing".to_string(),
             author: "EffortlessSteven".to_string(),
         };
-        // The validator requires the `schema_version` envelope (#15990). The
-        // generator-side field is owned by the #15557 row-authority ruling, so
-        // this mirror test injects the envelope at the serialization boundary.
-        let line = serde_json::to_string(&generated)?.replacen("{", "{\"schema_version\":1,", 1);
+        // The producer itself stamps the envelope (`LedgerRow::schema_version`,
+        // `ROW_SCHEMA_VERSION`), so this test validates the validator against the
+        // generator's real serialized bytes, not doctored output.
+        let line = serde_json::to_string(&generated)?;
         let errs = line_errors(&line);
         ensure!(errs.is_empty(), "pr_ledger::LedgerRow rejected by pr-triage.v1: {errs:?}");
         Ok(())

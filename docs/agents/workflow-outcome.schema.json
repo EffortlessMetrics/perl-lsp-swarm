@@ -25,7 +25,7 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "minimum": 0,
+      "const": 1,
       "description": "Row envelope; the validator pins this to 1."
     },
     "date": {
