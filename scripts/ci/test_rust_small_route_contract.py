@@ -226,10 +226,17 @@ class RustStandardProofScriptTests(unittest.TestCase):
             "GITHUB_WORKSPACE": str(self.directory / "workspace with spaces"),
             "PROOF_TEST_LOG": str(self.log),
         }
+        for variable in subprocess.check_output(
+            ["git", "rev-parse", "--local-env-vars"], text=True
+        ).splitlines():
+            self.environment.pop(variable, None)
 
-    def run_script(self, **environment: str) -> subprocess.CompletedProcess[str]:
+    def run_script(
+        self, *, cwd: Path | None = None, **environment: str
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["bash", str(ROOT / ".ci/rust-standard-proof.sh")],
+            cwd=cwd,
             env={**self.environment, **environment},
             capture_output=True,
             text=True,
@@ -271,6 +278,65 @@ class RustStandardProofScriptTests(unittest.TestCase):
         result = self.run_script(GIT_CONFIG_GLOBAL=str(self.directory / "absent/config"))
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.log.exists())
+
+    def test_inherited_git_hook_environment_cannot_redirect_proof(self) -> None:
+        workspace = Path(self.environment["GITHUB_WORKSPACE"])
+        foreign = self.directory / "foreign"
+        for repository in (workspace, foreign):
+            subprocess.run(
+                ["git", "init", "--quiet", str(repository)],
+                env=self.environment,
+                check=True,
+            )
+        observed = self.directory / "observed-repository"
+        (self.directory / "cargo").write_text(
+            '#!/usr/bin/env bash\n'
+            'set -euo pipefail\n'
+            'if [ "$1" = run ]; then\n'
+            '  git rev-parse --show-toplevel > "$PROOF_TEST_REPOSITORY"\n'
+            'fi\n',
+            encoding="utf-8",
+        )
+        result = self.run_script(
+            cwd=workspace,
+            PROOF_TEST_REPOSITORY=str(observed),
+            GIT_DIR=str(foreign / ".git"),
+            GIT_WORK_TREE=str(foreign),
+            GIT_COMMON_DIR=str(foreign / ".git"),
+            GIT_INDEX_FILE=str(foreign / ".git/index"),
+            GIT_OBJECT_DIRECTORY=str(foreign / ".git/objects"),
+            GIT_ALTERNATE_OBJECT_DIRECTORIES=str(foreign / ".git/objects"),
+            GIT_PREFIX="foreign/",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(observed.read_text().strip()), workspace)
+
+    def test_inherited_git_config_cannot_disable_diff_hygiene(self) -> None:
+        workspace = Path(self.environment["GITHUB_WORKSPACE"])
+        subprocess.run(
+            ["git", "init", "--quiet", str(workspace)], env=self.environment, check=True
+        )
+        tracked = workspace / "tracked.txt"
+        tracked.write_text("clean\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(workspace), "add", "tracked.txt"],
+            env=self.environment,
+            check=True,
+        )
+        tracked.write_text("trailing whitespace \n", encoding="utf-8")
+        (self.directory / "cargo").write_text(
+            '#!/usr/bin/env bash\n'
+            'if [ "$1" = run ]; then git diff --check; fi\n',
+            encoding="utf-8",
+        )
+        result = self.run_script(
+            cwd=workspace,
+            GIT_CONFIG_COUNT="1",
+            GIT_CONFIG_KEY_0="core.whitespace",
+            GIT_CONFIG_VALUE_0="-trailing-space",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("trailing whitespace", result.stdout)
 
 
 class RustSmallRouteContractTests(unittest.TestCase):
