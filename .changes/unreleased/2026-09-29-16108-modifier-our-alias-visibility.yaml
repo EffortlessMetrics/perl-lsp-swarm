@@ -1,0 +1,9 @@
+project: perl-semantic-analyzer
+component: Scope analysis
+kind: Fixed
+body: An `our` alias declared in a statement-modifier statement (for example `our $x = 1 if $x;`) is now visible to the modifier condition instead of being falsely reported as undeclared, while condition-side `our` declarations still take effect only at their own source position, placeholders stay uninitialized until the guarded assignment runs, and existing bindings and same-scope redeclaration diagnostics are preserved.
+time: 2026-09-29T19:45:00Z
+custom:
+  PR: "16108"
+  Slug: modifier-our-alias-visibility
+  Breaking: "no"
