@@ -1731,7 +1731,10 @@ enum Commands {
         #[arg(long = "repository")]
         repositories: Vec<String>,
 
-        /// Branch to observe for each repository. Defaults to `main`.
+        /// Branch to observe. Explicit `--repository` targets default to
+        /// `main`; without an explicit repository, each configured subject
+        /// uses its contributor-topology branch (the development default or
+        /// the publication branch), which may differ per subject.
         #[arg(long)]
         branch: Option<String>,
 
