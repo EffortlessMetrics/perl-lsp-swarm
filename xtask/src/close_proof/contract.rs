@@ -10,6 +10,21 @@ use super::model::{
 };
 use super::{CloseProofError, canonical_json, is_digest_hex, is_repository_id, is_stable_token};
 
+/// Producer identity close-proof packets record when they reference a receipt
+/// emitted by `cargo xtask landing-proof` (`tasks::pr_close_proof`). Consumers
+/// pin this name together with the pinned envelope, never the name alone
+/// (#15386).
+pub(crate) const LANDING_PROOF_PRODUCER: &str = "xtask-landing-proof";
+
+/// Alternate producer identity recorded by committed corpus packets for the
+/// same landing-proof receipt family.
+pub(crate) const PR_CLOSE_PROOF_PRODUCER: &str = "xtask-pr-close-proof";
+
+/// Envelope schema identity pinned for [`LANDING_PROOF_PRODUCER`] evidence;
+/// mirrors the producer-side `LANDING_PROOF_SCHEMA_V1` (`landing_proof.v1`).
+/// Public so the producer's own ratchet test can pin the equality (#15386).
+pub const LANDING_PROOF_ENVELOPE_V1: &str = "landing_proof.v1";
+
 /// Versioned issue contract (`issue_contract.v1`).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -333,6 +348,30 @@ pub(crate) fn validate_evidence_ref(evidence: &EvidenceRef) -> Result<(), CloseP
         return Err(CloseProofError::Schema {
             field: "evidence.reference".to_string(),
             message: "evidence reference must not be empty".to_string(),
+        });
+    }
+    // Fail-closed envelope discipline (#15386): a producer name string alone
+    // never admits evidence. The referenced artifact must declare the envelope
+    // schema identity it speaks, and known producer families pin the exact
+    // value.
+    let schema_version = evidence
+        .schema_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .ok_or_else(|| CloseProofError::Schema {
+            field: "evidence.schema_version".to_string(),
+            message: "evidence.schema_version is required: every evidence ref must declare the envelope schema identity of the artifact it references".to_string(),
+        })?;
+    if matches!(evidence.producer.trim(), LANDING_PROOF_PRODUCER | PR_CLOSE_PROOF_PRODUCER)
+        && schema_version != LANDING_PROOF_ENVELOPE_V1
+    {
+        return Err(CloseProofError::Schema {
+            field: "evidence.schema_version".to_string(),
+            message: format!(
+                "evidence from producer `{}` must declare schema_version `{LANDING_PROOF_ENVELOPE_V1}`, found `{schema_version}`",
+                evidence.producer.trim()
+            ),
         });
     }
     Ok(())
