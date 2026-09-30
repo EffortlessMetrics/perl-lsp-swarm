@@ -1191,7 +1191,7 @@ pub fn collect_semantic_tokens_controlled(
             TokenType::Comment(_) => "comment",
 
             // POD documentation blocks
-            TokenType::Pod | TokenType::DataMarker(_) | TokenType::DataBody(_) => "comment",
+            TokenType::Pod => "comment",
             _ => continue,
         };
 
@@ -3932,12 +3932,27 @@ print "ok" foreach @ys;
             let source = format!("my $x = 1;\n{marker}\nmy $x = 1;");
             let tokens = collect_and_decode_res(&source)?;
 
-            let comments: Vec<_> =
-                tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
-            assert_eq!(comments, vec![(1, 0, marker.len() as u32), (2, 0, 10)]);
-            assert!(
-                !tokens.iter().any(|t| (t.3 == var_kind || t.3 == num_kind) && t.0 > 0),
-                "Payload should have no code tokens"
+            let vars: Vec<_> = tokens
+                .iter()
+                .filter(|t| t.3 == var_kind && t.0 == 0)
+                .map(|t| (t.0, t.1, t.2))
+                .collect();
+            let nums: Vec<_> = tokens
+                .iter()
+                .filter(|t| t.3 == num_kind && t.0 == 0)
+                .map(|t| (t.0, t.1, t.2))
+                .collect();
+
+            assert_eq!(vars, vec![(0, 3, 2)], "Preceding code variable must survive");
+            assert_eq!(nums, vec![(0, 8, 1)], "Preceding code number must survive");
+
+            let post_marker_tokens: Vec<_> =
+                tokens.iter().filter(|t| t.0 > 0).map(|t| (t.0, t.1, t.2, t.3)).collect();
+
+            assert_eq!(
+                post_marker_tokens,
+                vec![(1, 0, marker.len() as u32, comment_kind), (2, 0, 10, comment_kind)],
+                "Entire post-marker decoded token sequence must equal only expected comments"
             );
         }
         Ok(())
