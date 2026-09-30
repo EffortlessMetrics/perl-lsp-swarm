@@ -15,6 +15,8 @@ Covered discriminating cases (from issue #15351's test list):
 - Missing same-repository non-zero issue references fail rather than warn.
 - Placeholder ``(#0000)`` label-add failure is non-success.
 - Receipt outputs bind pr number, head SHA, and title digest on success.
+- Exemption branches (dependabot, ``skip-title-check``, release stamp) run the
+  same freshness re-read before success; a moved subject fails closed.
 """
 
 from __future__ import annotations
@@ -297,6 +299,63 @@ def base_scenarios() -> list[dict]:
                 "reread": {**pr_payload(), "head": {"sha": OTHER_SHA}},
             },
         },
+        {
+            # Exemption branches call confirmUnchanged too: the helper must be
+            # initialized before every possible call site (no TDZ ReferenceError).
+            "name": "dependabot_exempt_passes_without_issue_reference",
+            "event": "pull_request_target",
+            "actor": "dependabot[bot]",
+            "payload": {
+                "pull_request": pr_payload(title="Bump foo from 1.0 to 1.1")
+            },
+            "table": {"pr": pr_payload(title="Bump foo from 1.0 to 1.1")},
+        },
+        {
+            "name": "skip_title_check_label_exempt_passes",
+            "event": "pull_request_target",
+            "payload": {
+                "pull_request": {
+                    **pr_payload(title="chore: maintainer exception"),
+                    "labels": [{"name": "skip-title-check"}],
+                }
+            },
+            "table": {
+                "pr": {
+                    **pr_payload(title="chore: maintainer exception"),
+                    "labels": [{"name": "skip-title-check"}],
+                }
+            },
+        },
+        {
+            "name": "release_stamp_title_exempt_passes",
+            "event": "pull_request_target",
+            "payload": {"pull_request": pr_payload(title="v1.2.3")},
+            "table": {"pr": pr_payload(title="v1.2.3")},
+        },
+        {
+            # Exempt success is still freshness-bound: a moved subject fails closed.
+            "name": "dependabot_exempt_title_changed_during_validation_fails",
+            "event": "pull_request_target",
+            "actor": "dependabot[bot]",
+            "payload": {
+                "pull_request": pr_payload(title="Bump foo from 1.0 to 1.1")
+            },
+            "table": {
+                "pr": pr_payload(title="Bump foo from 1.0 to 1.1"),
+                "reread": {
+                    **pr_payload(title="Bump foo from 1.0 to 1.2")
+                },
+            },
+        },
+        {
+            "name": "release_stamp_exempt_head_moved_during_validation_fails",
+            "event": "pull_request_target",
+            "payload": {"pull_request": pr_payload(title="v1.2.3")},
+            "table": {
+                "pr": pr_payload(title="v1.2.3"),
+                "reread": {**pr_payload(title="v1.2.3"), "head": {"sha": OTHER_SHA}},
+            },
+        },
     ]
 
 
@@ -349,6 +408,26 @@ def test_inline_script_behavior() -> None:
     expect_fail("label_removal_failure_fails", "needs-issue-link obligation")
     expect_fail("title_edited_during_validation_fails", "title changed during validation")
     expect_fail("head_moved_during_validation_fails", "head moved during validation")
+
+    # Exemption branches execute the same freshness check before succeeding.
+    expect_pass("dependabot_exempt_passes_without_issue_reference")
+    expect_pass("skip_title_check_label_exempt_passes")
+    expect_pass("release_stamp_title_exempt_passes")
+    dependabot_ok = results["dependabot_exempt_passes_without_issue_reference"]
+    assert dependabot_ok["outputs"]["disposition"] == "dependabot-exempt"
+    assert dependabot_ok["outputs"]["pr_number"] == "1200"
+    skip_ok = results["skip_title_check_label_exempt_passes"]
+    assert skip_ok["outputs"]["disposition"] == "skip-title-check-exempt"
+    release_ok = results["release_stamp_title_exempt_passes"]
+    assert release_ok["outputs"]["disposition"] == "release-stamp-exempt"
+    expect_fail(
+        "dependabot_exempt_title_changed_during_validation_fails",
+        "title changed during validation",
+    )
+    expect_fail(
+        "release_stamp_exempt_head_moved_during_validation_fails",
+        "head moved during validation",
+    )
 
     # No scenario may consult branch discovery; the dispatch that would find
     # zero PRs can never emit success.

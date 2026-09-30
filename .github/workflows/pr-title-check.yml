@@ -127,6 +127,39 @@ jobs:
               core.setOutput('disposition', disposition);
             };
 
+            // Re-read the exact PR immediately before reporting success and
+            // require number, state, head SHA, and title to be unchanged. A
+            // subject that moved during validation is NOT_PROVEN, not success.
+            // Defined before every possible call site: the exemption branches
+            // below invoke it before reporting their exempt success.
+            const confirmUnchanged = async () => {
+              let reread;
+              try {
+                ({ data: reread } = await github.rest.pulls.get({ ...repoParams, pull_number: subject.number }));
+              } catch (e) {
+                core.setFailed(`Could not re-read PR #${subject.number} before reporting success: ${e.message}`);
+                return false;
+              }
+              if (!reread || reread.number !== subject.number || reread.state !== 'open') {
+                core.setFailed(`PR #${subject.number} changed identity or state during validation; failing closed.`);
+                return false;
+              }
+              const rereadHeadSha = String((reread.head && reread.head.sha) || '').toLowerCase();
+              if (rereadHeadSha !== liveHeadSha) {
+                core.setFailed(
+                  `PR #${subject.number} head moved during validation (${liveHeadSha} -> ${rereadHeadSha || '<missing>'}); the result would be stale. Failing closed.`
+                );
+                return false;
+              }
+              if (reread.title !== title) {
+                core.setFailed(
+                  `PR #${subject.number} title changed during validation ("${title}" -> "${reread.title}"); the receipt would not describe the live title. Failing closed.`
+                );
+                return false;
+              }
+              return true;
+            };
+
             const actor = context.actor;
             const login = pr.user && pr.user.login ? pr.user.login : '';
 
@@ -197,37 +230,6 @@ jobs:
                 });
                 core.info('Posted new bot comment.');
               }
-            };
-
-            // Re-read the exact PR immediately before reporting success and
-            // require number, state, head SHA, and title to be unchanged. A
-            // subject that moved during validation is NOT_PROVEN, not success.
-            const confirmUnchanged = async () => {
-              let reread;
-              try {
-                ({ data: reread } = await github.rest.pulls.get({ ...repoParams, pull_number: subject.number }));
-              } catch (e) {
-                core.setFailed(`Could not re-read PR #${subject.number} before reporting success: ${e.message}`);
-                return false;
-              }
-              if (!reread || reread.number !== subject.number || reread.state !== 'open') {
-                core.setFailed(`PR #${subject.number} changed identity or state during validation; failing closed.`);
-                return false;
-              }
-              const rereadHeadSha = String((reread.head && reread.head.sha) || '').toLowerCase();
-              if (rereadHeadSha !== liveHeadSha) {
-                core.setFailed(
-                  `PR #${subject.number} head moved during validation (${liveHeadSha} -> ${rereadHeadSha || '<missing>'}); the result would be stale. Failing closed.`
-                );
-                return false;
-              }
-              if (reread.title !== title) {
-                core.setFailed(
-                  `PR #${subject.number} title changed during validation ("${title}" -> "${reread.title}"); the receipt would not describe the live title. Failing closed.`
-                );
-                return false;
-              }
-              return true;
             };
 
             const issueMatches = [...title.matchAll(/\B#(\d+)\b/g)];
