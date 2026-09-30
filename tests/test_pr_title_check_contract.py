@@ -69,7 +69,10 @@ async function runScenario(sc) {
     if (table.issueMissing) {
       throw Object.assign(new Error('Not Found'), { status: 404 });
     }
-    return { data: { number: params.issue_number } };
+    const data = { number: params.issue_number };
+    // The Issues API also returns pull requests; the table can model that.
+    if (table.issueIsPr) { data.pull_request = { url: 'stub' }; }
+    return { data };
   };
   const addLabelsHandler = (table) => (params) => {
     calls.push('addLabels:' + JSON.stringify(params));
@@ -252,6 +255,17 @@ def base_scenarios() -> list[dict]:
             },
         },
         {
+            # A reference that resolves to another PR is not an issue link;
+            # the Issues API returns PRs too, so it must be rejected.
+            "name": "reference_to_another_pull_request_fails",
+            "event": "pull_request_target",
+            "payload": {"pull_request": pr_payload(title="fix: thing (#16017)")},
+            "table": {
+                "pr": pr_payload(title="fix: thing (#16017)"),
+                "issueIsPr": True,
+            },
+        },
+        {
             "name": "placeholder_label_add_failure_fails",
             "event": "pull_request_target",
             "payload": {"pull_request": pr_payload(title="fix: thing (#0000)")},
@@ -366,6 +380,14 @@ def test_workflow_dispatch_inputs_are_required() -> None:
     assert inputs["expected_head_sha"]["required"] is True
 
 
+def test_receipt_outputs_have_a_reachable_step_id() -> None:
+    # The receipt outputs are only consumable by downstream admission when the
+    # emitting step carries an id (steps.<id>.outputs.*).
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    step = workflow["jobs"]["validate-title"]["steps"][0]
+    assert step.get("id"), "validate-title script step has no id; outputs are unreachable"
+
+
 def test_script_never_uses_branch_discovery_for_authority() -> None:
     script = _extract_script(yaml.safe_load(WORKFLOW.read_text(encoding="utf-8")))
     assert "pulls.list" not in script
@@ -399,6 +421,10 @@ def test_inline_script_behavior() -> None:
     expect_fail("closed_pr_fails", "only an open PR can be title-validated")
     expect_fail("missing_issue_reference_fails", "must reference an issue")
     expect_fail("nonexistent_nonzero_reference_fails", "#999999999 does not resolve")
+    expect_fail(
+        "reference_to_another_pull_request_fails",
+        "is a pull request, not an issue",
+    )
     expect_fail(
         "placeholder_label_add_failure_fails",
         "needs-issue-link obligation",

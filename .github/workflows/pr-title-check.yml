@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Check PR title
+        id: validate
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           PR_NUMBER_INPUT: ${{ inputs.pr_number }}
@@ -315,11 +316,21 @@ jobs:
             for (const match of nonZeroMatches) {
               const issueNumber = parseInt(match[1], 10);
               try {
-                await github.rest.issues.get({
+                const issueResp = await github.rest.issues.get({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: issueNumber,
                 });
+                // The Issues API also returns pull requests; a reference that
+                // resolves to a PR is not an issue link and must not satisfy
+                // the backstop (#15351).
+                if (issueResp.data && issueResp.data.pull_request) {
+                  core.setFailed(
+                    `Referenced #${issueNumber} is a pull request, not an issue. ` +
+                    'Fix the title to reference a real issue (or use the `(#0000)` placeholder if the number is genuinely unknown).'
+                  );
+                  return;
+                }
                 core.info(`Referenced issue #${issueNumber} exists.`);
               } catch (e) {
                 core.setFailed(
