@@ -111,15 +111,13 @@ fn scenario_55_dbi_receiver_inline_completion_quality_stdio() -> Result<()> {
     if readiness.is_empty() {
         return Err(anyhow::anyhow!(
             "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
-        )
-        .into());
+        ));
     }
     let readiness = harness.wait_for_diagnostics(DBI_STATEMENT_PATH, Duration::from_secs(30));
     if readiness.is_empty() {
         return Err(anyhow::anyhow!(
             "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
-        )
-        .into());
+        ));
     }
 
     let (handle_insert_texts, handle_outcome) = wait_for_expected_inserts(

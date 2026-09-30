@@ -534,6 +534,31 @@ impl UxHarness {
         character: u32,
         context: Value,
     ) -> Result<Vec<Value>> {
+        self.inline_completion_with_context_and_timeout(
+            relative_path,
+            line,
+            character,
+            context,
+            self.config.timeout,
+        )
+    }
+
+    /// Request inline completion with an explicit LSP context and a
+    /// per-request timeout.
+    ///
+    /// Deadline-polling callers pass the remaining wall-clock budget so one
+    /// blocking request cannot outrun the caller's own deadline (mirrors
+    /// [`UxHarness::completion_with_timeout`]; the default
+    /// `ScenarioConfig::timeout` is 30 s and is independent of any local
+    /// polling deadline).
+    pub fn inline_completion_with_context_and_timeout(
+        &self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+        context: Value,
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
             "textDocument/inlineCompletion",
@@ -542,7 +567,7 @@ impl UxHarness {
                 "position": { "line": line, "character": character },
                 "context": context
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp.get("error").is_some() {
             return Err(anyhow!("inline completion returned error: {}", resp["error"]));
@@ -556,12 +581,16 @@ impl UxHarness {
     /// Poll `textDocument/inlineCompletion` until the supplied quality
     /// predicate is true or `timeout` elapses.
     ///
-    /// The deadline is an outer bound on how long the poll may block; an
-    /// already-arrived observation in the next read satisfies the predicate
-    /// immediately. On deadline the helper returns the most recently
-    /// observed `insertText` values alongside a
-    /// [`QualityPollOutcome::Deadline`] so the caller can distinguish a
-    /// budget exhaustion from a real mismatch in its assertion message.
+    /// The deadline is an outer bound on the whole poll, not just the
+    /// gaps between requests: every request is bounded by the remaining
+    /// budget, the inter-poll sleep is capped at that budget, and a match
+    /// that only arrives once the budget is gone is reported as
+    /// [`QualityPollOutcome::Deadline`], not [`QualityPollOutcome::Matched`].
+    /// On deadline the helper returns the most recently observed
+    /// `insertText` values alongside the outcome so the caller can
+    /// distinguish a budget exhaustion from a real mismatch in its
+    /// assertion message. The poll always runs at least one request even
+    /// when the budget is already spent.
     ///
     /// Typical use:
     ///
@@ -590,24 +619,55 @@ impl UxHarness {
         // predicate that observed the pre-poll state match before any
         // `inlineCompletion` request landed, hiding the budget exhaustion the
         // outcome type exists to expose.
-        let mut last_inserts: Vec<String>;
+        let mut last_inserts: Vec<String> = Vec::new();
         loop {
-            let items =
-                self.inline_completion_with_trigger_kind(relative_path, line, character, 1)?;
+            // Each request is bounded by the remaining poll budget so one
+            // blocking request cannot outrun the deadline it is meant to
+            // enforce.
+            let remaining = deadline.checked_duration_since(Instant::now()).unwrap_or_default();
+            let items = match self.inline_completion_with_context_and_timeout(
+                relative_path,
+                line,
+                character,
+                json!({ "triggerKind": 1 }),
+                remaining,
+            ) {
+                Ok(items) => items,
+                // A request that errored because the poll budget ran out
+                // under it is a deadline exhaustion, not a harness fault;
+                // any earlier error is a real fault worth propagating.
+                Err(err) => {
+                    if Instant::now() >= deadline {
+                        return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
+                    }
+                    return Err(err);
+                }
+            };
             last_inserts = items
                 .iter()
                 .filter_map(|item| {
                     item.get("insertText").and_then(Value::as_str).map(str::to_string)
                 })
                 .collect();
-            if predicate(&last_inserts) {
-                return Ok((last_inserts, QualityPollOutcome::Matched));
-            }
+            // A match that arrives only after the budget is gone is still a
+            // budget exhaustion: report the deadline so the receipt
+            // classifier routes it to `BudgetExceeded`.
             if Instant::now() >= deadline {
                 return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
             }
+            if predicate(&last_inserts) {
+                return Ok((last_inserts, QualityPollOutcome::Matched));
+            }
             // ux-timing: product-retry
-            std::thread::sleep(Duration::from_millis(100));
+            //
+            // Cap the inter-poll sleep to the remaining budget so the poll
+            // cannot sleep past its own deadline and start another request
+            // with none left.
+            let remaining = deadline.checked_duration_since(Instant::now()).unwrap_or_default();
+            if remaining.is_zero() {
+                return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
+            }
+            std::thread::sleep(Duration::from_millis(100).min(remaining));
         }
     }
 
