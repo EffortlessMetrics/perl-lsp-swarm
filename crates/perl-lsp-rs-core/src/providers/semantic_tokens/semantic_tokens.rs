@@ -3883,7 +3883,6 @@ print "ok" foreach @ys;
         Ok(())
     }
 
-
     fn collect_and_decode(source: &str) -> Vec<(u32, u32, u32, u32)> {
         let ast = perl_parser_core::engine::parser::Parser::new(source).parse().unwrap();
         let to_pos16 = |pos: usize| pos16(source, pos);
@@ -3903,6 +3902,8 @@ print "ok" foreach @ys;
                 }
                 result.push((line, col, len, kind));
             }
+        } else {
+            panic!("Expected Complete outcome but got {outcome:?}");
         }
         result
     }
@@ -3917,26 +3918,36 @@ print "ok" foreach @ys;
         let tokens = collect_and_decode(data_source);
 
         // Assert exact comment spans (line, col, len)
-        let comments: Vec<_> = tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
+        let comments: Vec<_> =
+            tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
         assert_eq!(comments, vec![(1, 0, 8), (2, 0, 9), (3, 0, 9)]); // __DATA__, Some data, More data
 
         // Preceding code remains
-        let vars: Vec<_> = tokens.iter().filter(|t| t.3 == var_kind).map(|t| (t.0, t.1, t.2)).collect();
+        let vars: Vec<_> =
+            tokens.iter().filter(|t| t.3 == var_kind).map(|t| (t.0, t.1, t.2)).collect();
         assert_eq!(vars, vec![(0, 3, 2)]); // $x
 
         let end_source = "my $y = 2;\n__END__\nSome payload\n";
         let tokens = collect_and_decode(end_source);
-        let comments: Vec<_> = tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
+        let comments: Vec<_> =
+            tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
         assert_eq!(comments, vec![(1, 0, 7), (2, 0, 12)]); // __END__, Some payload
 
-        let nums: Vec<_> = tokens.iter().filter(|t| t.3 == num_kind).map(|t| (t.0, t.1, t.2)).collect();
+        let nums: Vec<_> =
+            tokens.iter().filter(|t| t.3 == num_kind).map(|t| (t.0, t.1, t.2)).collect();
         assert_eq!(nums, vec![(0, 8, 1)]); // 2
 
-        let payload_source = "__DATA__\nmy $payload = 42;\n";
-        let tokens = collect_and_decode(payload_source);
-        let comments: Vec<_> = tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
-        assert_eq!(comments, vec![(0, 0, 8), (1, 0, 17)]); // marker, entire code-shaped payload line
-        assert!(!tokens.iter().any(|t| t.3 == var_kind || t.3 == num_kind), "Payload should have no code tokens");
+        for marker in ["__DATA__", "__END__"] {
+            let payload_source = format!("{marker}\nmy $payload = 42;\n");
+            let tokens = collect_and_decode(&payload_source);
+            let comments: Vec<_> =
+                tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
+            assert_eq!(comments, vec![(0, 0, marker.len() as u32), (1, 0, 17)]); // marker, entire code-shaped payload line
+            assert!(
+                !tokens.iter().any(|t| t.3 == var_kind || t.3 == num_kind),
+                "Payload should have no code tokens"
+            );
+        }
     }
 
     #[test]
@@ -3946,9 +3957,9 @@ print "ok" foreach @ys;
 
         let sources = [
             ("my $str = \"__DATA__\";\nmy $x = 1;", 1), // variable and number are on line 1
-            ("=pod\n__DATA__\n=cut\nmy $x = 1;", 3), // line 3
+            ("=pod\n__DATA__\n=cut\nmy $x = 1;", 3),    // line 3
             ("print <<~EOF;\n__DATA__\nEOF\nmy $x = 1;", 3), // line 3
-            ("my $str = \"__END__\";\nmy $x = 1;", 1), // END variants
+            ("my $str = \"__END__\";\nmy $x = 1;", 1),  // END variants
             ("=pod\n__END__\n=cut\nmy $x = 1;", 3),
             ("print <<~EOF;\n__END__\nEOF\nmy $x = 1;", 3),
         ];
@@ -3956,11 +3967,29 @@ print "ok" foreach @ys;
         for (source, expected_line) in sources {
             let tokens = collect_and_decode(source);
 
-            let vars: Vec<_> = tokens.iter().filter(|t| t.3 == var_kind && t.0 == expected_line).map(|t| (t.0, t.1, t.2)).collect();
-            assert_eq!(vars, vec![(expected_line, 3, 2)], "Missing variable on correct line in {}", source);
+            let vars: Vec<_> = tokens
+                .iter()
+                .filter(|t| t.3 == var_kind && t.0 == expected_line)
+                .map(|t| (t.0, t.1, t.2))
+                .collect();
+            assert_eq!(
+                vars,
+                vec![(expected_line, 3, 2)],
+                "Missing variable on correct line in {}",
+                source
+            );
 
-            let nums: Vec<_> = tokens.iter().filter(|t| t.3 == num_kind && t.0 == expected_line).map(|t| (t.0, t.1, t.2)).collect();
-            assert_eq!(nums, vec![(expected_line, 8, 1)], "Missing number on correct line in {}", source);
+            let nums: Vec<_> = tokens
+                .iter()
+                .filter(|t| t.3 == num_kind && t.0 == expected_line)
+                .map(|t| (t.0, t.1, t.2))
+                .collect();
+            assert_eq!(
+                nums,
+                vec![(expected_line, 8, 1)],
+                "Missing number on correct line in {}",
+                source
+            );
         }
     }
 
@@ -3968,23 +3997,20 @@ print "ok" foreach @ys;
     fn data_marker_edge_cases() {
         let comment_kind = *legend().map.get("comment").unwrap();
         let sources = [
-            "my $x = 1;\n__DATA__\nLine 1\n\nLine 3\n__DATA__\n", // multiline with blank line and second marker
-            "my $x = 1;\r\n__DATA__\r\nLine 1\r\n",               // CRLF
-            "my $x = 1;\n__DATA__\nLine 1\nLine 2",               // final unterminated line
-            "my $x = 1;\n__DATA__\nLine with 😊\n",               // astral Unicode UTF16 geometry
+            (
+                "my $x = 1;\n__DATA__\nLine 1\n\nLine 3\n__DATA__\n",
+                vec![(1, 0, 8), (2, 0, 6), (4, 0, 6), (5, 0, 8)],
+            ), // multiline with blank line and second marker
+            ("my $x = 1;\r\n__DATA__\r\nLine 1\r\n", vec![(1, 0, 8), (2, 0, 6)]), // CRLF excludes line terminators
+            ("my $x = 1;\n__DATA__\nLine 1\nLine 2", vec![(1, 0, 8), (2, 0, 6), (3, 0, 6)]), // final unterminated line
+            ("my $x = 1;\n__DATA__\nLine with 😊\n", vec![(1, 0, 8), (2, 0, 12)]), // astral Unicode UTF16 geometry
         ];
 
-        let expected_comments = vec![
-            vec![(1, 0, 8), (2, 0, 6), (4, 0, 6), (5, 0, 8)], // __DATA__, Line 1, Line 3, __DATA__
-            vec![(1, 0, 8), (2, 0, 6)], // __DATA__, Line 1 (CRLF ignores )
-            vec![(1, 0, 8), (2, 0, 6), (3, 0, 6)], // __DATA__, Line 1, Line 2
-            vec![(1, 0, 8), (2, 0, 12)], // __DATA__, Line with 😊 (UTF16 length is 12)
-        ];
-
-        for (i, (source, expected)) in sources.iter().zip(expected_comments.iter()).enumerate() {
+        for (i, (source, expected)) in sources.into_iter().enumerate() {
             let tokens = collect_and_decode(source);
-            let comments: Vec<_> = tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
-            assert_eq!(&comments, expected, "Mismatch in edge case {i}");
+            let comments: Vec<_> =
+                tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
+            assert_eq!(&comments, &expected, "Mismatch in edge case {i}");
         }
     }
 }
