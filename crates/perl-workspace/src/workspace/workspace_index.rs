@@ -1712,6 +1712,17 @@ impl WorkspaceIndex {
         best_match.cloned()
     }
 
+    /// Resolve the workspace root that owns `document_uri`.
+    ///
+    /// Document-scoped consumers (completion, hover) use this to scope an
+    /// index query to the current document's own root, so a same-named package
+    /// declared in a different root cannot enter the answer. Returns `None`
+    /// when the document is outside every registered workspace folder, which
+    /// callers must read as "no root to scope to" rather than "no members".
+    pub fn folder_uri_for_document(&self, document_uri: &str) -> Option<String> {
+        self.determine_folder_uri(document_uri)
+    }
+
     fn find_definition_in_files(
         files: &HashMap<String, FileIndex>,
         symbol_name: &str,
@@ -4897,11 +4908,35 @@ impl WorkspaceIndex {
     /// let _members = index.get_package_members("My::Package");
     /// ```
     pub fn get_package_members(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
+        self.get_package_members_in_folder(package_name, None)
+    }
+
+    /// Workspace-root-scoped form of [`Self::get_package_members`].
+    ///
+    /// Two workspace roots may declare the same package name. A consumer that
+    /// answers for one current document must pass that document's owning root
+    /// (see [`Self::folder_uri_for_document`]) so a same-named package in
+    /// another root cannot enter the answer.
+    ///
+    /// `None` preserves the unscoped result for callers with no current-document
+    /// context. A symbol whose own folder is unknown is never dropped: unknown
+    /// provenance is not proof of a foreign root.
+    pub fn get_package_members_in_folder(
+        &self,
+        package_name: &str,
+        workspace_folder_uri: Option<&str>,
+    ) -> Vec<WorkspaceSymbol> {
         let files = self.files.read();
         let mut members = Vec::new();
 
         for (_uri_key, file_index) in files.iter() {
             for symbol in &file_index.symbols {
+                if !symbol_belongs_to_requested_folder(
+                    symbol.workspace_folder_uri.as_ref(),
+                    workspace_folder_uri,
+                ) {
+                    continue;
+                }
                 // Check if symbol belongs to this package
                 if let Some(ref container) = symbol.container_name
                     && container == package_name
@@ -4931,10 +4966,28 @@ impl WorkspaceIndex {
     /// responses, so completion can traverse indexed generated members without
     /// treating them as source-defined methods.
     pub fn get_generated_package_members(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
+        self.get_generated_package_members_in_folder(package_name, None)
+    }
+
+    /// Workspace-root-scoped form of [`Self::get_generated_package_members`].
+    ///
+    /// Generated members carry the same cross-root collision risk as explicit
+    /// ones, so they take the same folder scope. See
+    /// [`Self::get_package_members_in_folder`] for the scoping contract.
+    pub fn get_generated_package_members_in_folder(
+        &self,
+        package_name: &str,
+        workspace_folder_uri: Option<&str>,
+    ) -> Vec<WorkspaceSymbol> {
         let shards = self.fact_shards.read();
         let mut members = Vec::new();
 
         for shard in shards.values() {
+            let shard_folder = self.determine_folder_uri(&shard.source_uri);
+            if !symbol_belongs_to_requested_folder(shard_folder.as_ref(), workspace_folder_uri) {
+                continue;
+            }
+
             for entity in &shard.entities {
                 if entity.kind != EntityKind::GeneratedMember
                     || !is_framework_generated_member_entity(entity)
@@ -6950,6 +7003,25 @@ fn split_qualified_symbol_name(canonical_name: &str) -> Option<(&str, &str)> {
 
 fn is_framework_generated_member_entity(entity: &EntityFact) -> bool {
     entity.provenance == Provenance::FrameworkSynthesis && entity.confidence == Confidence::Medium
+}
+
+/// Whether a symbol whose folder provenance is `symbol_folder` answers a query
+/// scoped to `requested_folder`.
+///
+/// The rule is deliberately narrow: only a symbol *positively attributed* to a
+/// different root is dropped. A request with no folder (`None`) and a symbol
+/// with no known folder are both kept, because neither is evidence that the
+/// symbol belongs to some other workspace root. That keeps single-file and
+/// partially-registered workspaces answering exactly as they did before.
+fn symbol_belongs_to_requested_folder(
+    symbol_folder: Option<&String>,
+    requested_folder: Option<&str>,
+) -> bool {
+    match (requested_folder, symbol_folder) {
+        (None, _) => true,
+        (Some(_), None) => true,
+        (Some(requested), Some(symbol_folder)) => symbol_folder == requested,
+    }
 }
 
 fn sort_workspace_symbols(symbols: &mut [WorkspaceSymbol]) {

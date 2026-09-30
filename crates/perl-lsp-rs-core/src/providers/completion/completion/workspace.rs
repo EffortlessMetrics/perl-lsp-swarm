@@ -1822,6 +1822,10 @@ fn is_valid_perl_package_name(s: &str) -> bool {
 /// detail label and a sort tier that puts them below all exact-receiver
 /// completions. [`ReceiverEvidence::Dynamic`] (positively-detected dynamic
 /// `bless` forms) is *not* fallback-eligible and stays fail-closed.
+///
+/// `document_uri` is the current document's URI. Its owning workspace root
+/// scopes every member query below, so a same-named package declared in another
+/// root cannot answer a receiver proven in this document's root (#16949).
 pub fn add_workspace_method_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
@@ -1830,10 +1834,14 @@ pub fn add_workspace_method_completions(
     type_engine: Option<&TypeInferenceEngine>,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
     used_modules: &HashSet<String>,
+    document_uri: Option<&str>,
 ) {
     let Some(index) = workspace_index else {
         return;
     };
+
+    let workspace_folder_uri = document_uri.and_then(|uri| index.folder_uri_for_document(uri));
+    let workspace_folder_uri = workspace_folder_uri.as_deref();
 
     // Exact current-document method facts must run even when the persisted
     // workspace index is still empty (#16809). Unknown-receiver fallback stays
@@ -1851,7 +1859,14 @@ pub fn add_workspace_method_completions(
     // the enum variant's internals.
     let union_packages = evidence.candidate_packages();
     if !union_packages.is_empty() {
-        add_union_receiver_method_completions(completions, context, source, index, union_packages);
+        add_union_receiver_method_completions(
+            completions,
+            context,
+            source,
+            index,
+            union_packages,
+            workspace_folder_uri,
+        );
         return;
     }
 
@@ -1870,7 +1885,8 @@ pub fn add_workspace_method_completions(
 
     // Collect all methods from the receiver package AND its ancestor chain
     // (parents + roles). Child methods take priority.
-    let members = collect_all_package_members_with_source(index, &package_name, source);
+    let members =
+        collect_all_package_members_with_source(index, &package_name, source, workspace_folder_uri);
     drop_generic_local_methods_rebound_from_composition(completions, &package_name, &members);
 
     let method_symbols = {
@@ -1957,6 +1973,7 @@ fn add_union_receiver_method_completions(
     source: &str,
     index: &WorkspaceIndex,
     packages: &[String],
+    workspace_folder_uri: Option<&str>,
 ) {
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
     // Snapshot existing labels before any push to avoid borrow conflicts.
@@ -1968,7 +1985,7 @@ fn add_union_receiver_method_completions(
     let per_package_methods: Vec<HashSet<String>> = packages
         .iter()
         .map(|pkg| {
-            collect_all_package_members(index, pkg)
+            collect_all_package_members_with_source(index, pkg, "", workspace_folder_uri)
                 .into_iter()
                 .filter(|s| matches!(s.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method))
                 .filter(|s| method_prefix.is_empty() || s.name.starts_with(method_prefix))
@@ -1992,7 +2009,8 @@ fn add_union_receiver_method_completions(
     // Emit one completion per method, iterating packages in declaration order
     // so the first arm's definition wins for the detail label.
     for package_name in packages {
-        let members = collect_all_package_members_with_source(index, package_name, source);
+        let members =
+            collect_all_package_members_with_source(index, package_name, source, workspace_folder_uri);
         for symbol in &members {
             if !matches!(symbol.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method) {
                 continue;
@@ -2662,7 +2680,7 @@ pub(super) fn collect_all_package_members(
     index: &WorkspaceIndex,
     package_name: &str,
 ) -> Vec<WorkspaceSymbol> {
-    collect_all_package_members_with_source(index, package_name, "")
+    collect_all_package_members_with_source(index, package_name, "", None)
 }
 
 /// Collect package members and use the current open document as a model source
@@ -2674,10 +2692,18 @@ pub(super) fn collect_all_package_members(
 /// index members for packages declared in the open buffer (#16809). This adapter
 /// retires when [`WorkspaceSemanticQueries`] can consume a source-only shard
 /// for the accepted document generation.
+/// for persisted members and inherited packages.
+///
+/// `workspace_folder_uri` is the workspace root that owns the current document
+/// (see `WorkspaceIndex::folder_uri_for_document`). Two roots can declare the
+/// same package name, so an unscoped traversal would answer a proven receiver in
+/// root A with members declared in root B (#16949). `None` keeps the historical
+/// unscoped traversal for callers that have no current-document context.
 fn collect_all_package_members_with_source(
     index: &WorkspaceIndex,
     package_name: &str,
     source: &str,
+    workspace_folder_uri: Option<&str>,
 ) -> Vec<WorkspaceSymbol> {
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut result: Vec<WorkspaceSymbol> = Vec::new();
@@ -2704,6 +2730,7 @@ fn collect_all_package_members_with_source(
         visited: &mut HashSet<String>,
         seen_names: &mut HashSet<String>,
         result: &mut Vec<WorkspaceSymbol>,
+        workspace_folder_uri: Option<&str>,
         depth: usize,
     ) {
         const MAX_DEPTH: usize = 50;
@@ -2721,13 +2748,17 @@ fn collect_all_package_members_with_source(
             // Current-buffer source wins for explicit methods; still consume
             // persisted generated members (Moo `has` readers, etc.) so
             // indexing the same package does not drop workspace facts.
-            push_index_method_symbols(index.get_generated_package_members(pkg), seen_names, result);
+            push_index_method_symbols(
+                index.get_generated_package_members_in_folder(pkg, workspace_folder_uri),
+                seen_names,
+                result,
+            );
         } else {
             push_index_method_symbols(
                 index
-                    .get_package_members(pkg)
+                    .get_package_members_in_folder(pkg, workspace_folder_uri)
                     .into_iter()
-                    .chain(index.get_generated_package_members(pkg)),
+                    .chain(index.get_generated_package_members_in_folder(pkg, workspace_folder_uri)),
                 seen_names,
                 result,
             );
@@ -2745,13 +2776,24 @@ fn collect_all_package_members_with_source(
                 visited,
                 seen_names,
                 result,
+                workspace_folder_uri,
                 depth + 1,
             );
         }
 
         // Traverse roles after @ISA (role composition is distinct from MRO)
         for role in &facts.roles {
-            visit_mro(role, index, load_model, model_cache, visited, seen_names, result, depth + 1);
+            visit_mro(
+                role,
+                index,
+                load_model,
+                model_cache,
+                visited,
+                seen_names,
+                result,
+                workspace_folder_uri,
+                depth + 1,
+            );
         }
     }
 
@@ -2763,6 +2805,7 @@ fn collect_all_package_members_with_source(
         &mut visited,
         &mut seen_names,
         &mut result,
+        workspace_folder_uri,
         0,
     );
 
@@ -3235,6 +3278,162 @@ mod union_receiver_method_completion_tests {
         assert!(
             partial_sort.as_deref().is_some_and(|s| s.starts_with("3u_")),
             "foo_only should have sort tier 3u_, got {partial_sort:?}"
+        );
+    }
+}
+
+/// Cross-workspace-root package-member scope for completion (#16949).
+///
+/// Two workspace roots may declare the same package name. A completion request
+/// answers for one current document, so members declared in a *different* root
+/// must not enter that answer. These tests pin the scoping contract at the index
+/// query, at the collector the issue names, and at a real completion emitter.
+#[cfg(test)]
+mod workspace_root_scope_tests {
+    use super::*;
+    use perl_tdd_support::must;
+    use perl_workspace::workspace::workspace_index::WorkspaceIndex;
+    use std::sync::Arc;
+    use url::Url;
+
+    const ROOT_A: &str = "file:///root-a";
+    const ROOT_B: &str = "file:///root-b";
+
+    /// Root A and root B both declare `package Animal`. Root A owns
+    /// `own_root_only`; root B owns `other_root_only`.
+    fn two_root_animal_index() -> Arc<WorkspaceIndex> {
+        let index = Arc::new(WorkspaceIndex::new());
+        // Folders must be registered before indexing so symbols carry folder
+        // provenance.
+        index.set_workspace_folders(vec![ROOT_A.to_string(), ROOT_B.to_string()]);
+
+        let root_a = must(Url::parse("file:///root-a/lib/Animal.pm"));
+        must(index.index_file(
+            root_a,
+            "package Animal;\nsub own_root_only { }\n1;\n".to_string(),
+        ));
+
+        let root_b = must(Url::parse("file:///root-b/lib/Animal.pm"));
+        must(index.index_file(
+            root_b,
+            "package Animal;\nsub other_root_only { }\n1;\n".to_string(),
+        ));
+
+        index
+    }
+
+    fn member_names(members: &[WorkspaceSymbol]) -> Vec<&str> {
+        members.iter().map(|member| member.name.as_str()).collect()
+    }
+
+    /// A source that *uses* `Animal` without declaring it, so the collector takes
+    /// its index arm rather than preferring current-document declarations.
+    fn using_source() -> &'static str {
+        "my $animal = Animal->new;\n$animal->\n"
+    }
+
+    /// Root provenance must be recorded, or every test below would pass for the
+    /// wrong reason (nothing would look like a foreign root).
+    #[test]
+    fn both_roots_record_distinct_folder_provenance() {
+        let index = two_root_animal_index();
+        let unscoped = index.get_package_members("Animal");
+        let folders: Vec<Option<&str>> = unscoped
+            .iter()
+            .map(|member| member.workspace_folder_uri.as_deref())
+            .collect();
+        assert_eq!(
+            folders,
+            vec![Some(ROOT_A), Some(ROOT_B)],
+            "each root's member must record its own folder, else the scope tests are vacuous"
+        );
+    }
+
+    /// The index query keeps a same-named package's members inside their root.
+    #[test]
+    fn folder_scoped_query_omits_foreign_root_members() {
+        let index = two_root_animal_index();
+        let names = member_names(&index.get_package_members_in_folder("Animal", Some(ROOT_A)));
+        assert!(names.contains(&"own_root_only"), "root A member must survive; got {names:?}");
+        assert!(
+            !names.contains(&"other_root_only"),
+            "root B member must not answer a root A query; got {names:?}"
+        );
+    }
+
+    /// Discriminating test for #16949 at the seam the issue names: the collector
+    /// used by `$self->` / ordinary object method completion.
+    #[test]
+    fn scoped_collector_omits_other_roots_package_members() {
+        let index = two_root_animal_index();
+        let scoped = collect_all_package_members_with_source(
+            index.as_ref(),
+            "Animal",
+            using_source(),
+            Some(ROOT_A),
+        );
+        let names = member_names(&scoped);
+        assert!(names.contains(&"own_root_only"), "own-root method must be offered; got {names:?}");
+        assert!(
+            !names.contains(&"other_root_only"),
+            "a same-named package in another root leaked into completion; got {names:?}"
+        );
+    }
+
+    /// Control: callers with no current-document context keep the unscoped
+    /// answer. This is what `collect_all_package_members` still does for
+    /// non-document-scoped consumers, and it must not regress.
+    #[test]
+    fn unscoped_collector_still_answers_both_roots() {
+        let index = two_root_animal_index();
+        let unscoped = collect_all_package_members_with_source(
+            index.as_ref(),
+            "Animal",
+            using_source(),
+            None,
+        );
+        let names = member_names(&unscoped);
+        assert!(names.contains(&"own_root_only"), "own-root method must remain; got {names:?}");
+        assert!(
+            names.contains(&"other_root_only"),
+            "unscoped callers must keep seeing both roots; got {names:?}"
+        );
+    }
+
+    /// The scope must reach a real completion emitter, not just the query.
+    #[test]
+    fn union_receiver_emission_omits_other_roots_package_members() {
+        let index = two_root_animal_index();
+        let source = "$animal->";
+        let position = source.len();
+        let context = CompletionContext {
+            position,
+            trigger_character: Some('>'),
+            in_string: false,
+            in_regex: false,
+            in_comment: false,
+            in_use_statement: false,
+            current_package: "main".to_string(),
+            prefix: source.to_string(),
+            prefix_start: 0,
+            cursor_scope_id: 0,
+        };
+        let mut completions: Vec<CompletionItem> = Vec::new();
+
+        add_union_receiver_method_completions(
+            &mut completions,
+            &context,
+            source,
+            index.as_ref(),
+            &["Animal".to_string()],
+            Some(ROOT_A),
+        );
+
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+        assert!(labels.contains(&"own_root_only"), "own-root method must be offered; got {labels:?}");
+        assert!(
+            !labels.contains(&"other_root_only"),
+            "emitted completion leaked a foreign root's member; got {labels:?}"
         );
     }
 }
