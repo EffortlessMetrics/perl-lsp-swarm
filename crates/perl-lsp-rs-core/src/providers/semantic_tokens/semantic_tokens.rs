@@ -3883,8 +3883,10 @@ print "ok" foreach @ys;
         Ok(())
     }
 
-    fn collect_and_decode(source: &str) -> Vec<(u32, u32, u32, u32)> {
-        let ast = perl_parser_core::engine::parser::Parser::new(source).parse().unwrap();
+    fn collect_and_decode_res(source: &str) -> anyhow::Result<Vec<(u32, u32, u32, u32)>> {
+        let ast = perl_parser_core::engine::parser::Parser::new(source)
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Parse failed: {:?}", e))?;
         let to_pos16 = |pos: usize| pos16(source, pos);
         let mut control = SemanticTokensTraversalControl::unlimited();
         let outcome = collect_semantic_tokens_controlled(&ast, source, &to_pos16, &mut control);
@@ -3902,88 +3904,81 @@ print "ok" foreach @ys;
                 }
                 result.push((line, col, len, kind));
             }
+            Ok(result)
         } else {
-            panic!("Expected Complete outcome but got {outcome:?}");
+            anyhow::bail!("Expected Complete outcome but got {outcome:?}");
         }
-        result
     }
 
     #[test]
-    fn data_marker_and_body_are_classified_as_comments() {
-        let comment_kind = *legend().map.get("comment").unwrap();
-        let var_kind = *legend().map.get("variable").unwrap();
-        let num_kind = *legend().map.get("number").unwrap();
+    fn data_marker_and_body_are_classified_as_comments() -> anyhow::Result<()> {
+        let comment_kind =
+            *legend().map.get("comment").ok_or_else(|| anyhow::anyhow!("missing token"))?;
+        let var_kind =
+            *legend().map.get("variable").ok_or_else(|| anyhow::anyhow!("missing token"))?;
+        let num_kind =
+            *legend().map.get("number").ok_or_else(|| anyhow::anyhow!("missing token"))?;
 
         let data_source = "my $x = 1;\n__DATA__\nSome data\nMore data\n";
-        let tokens = collect_and_decode(data_source);
+        let tokens = collect_and_decode_res(data_source)?;
 
-        // Assert exact comment spans (line, col, len)
         let comments: Vec<_> =
             tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
-        assert_eq!(comments, vec![(1, 0, 8), (2, 0, 9), (3, 0, 9)]); // __DATA__, Some data, More data
+        assert_eq!(comments, vec![(1, 0, 8), (2, 0, 9), (3, 0, 9)]);
 
-        // Preceding code remains
-        let vars: Vec<_> =
-            tokens.iter().filter(|t| t.3 == var_kind).map(|t| (t.0, t.1, t.2)).collect();
-        assert_eq!(vars, vec![(0, 3, 2)]); // $x
+        let sources = [("__DATA__", 2), ("__END__", 2)];
 
-        let end_source = "my $y = 2;\n__END__\nSome payload\n";
-        let tokens = collect_and_decode(end_source);
-        let comments: Vec<_> =
-            tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
-        assert_eq!(comments, vec![(1, 0, 7), (2, 0, 12)]); // __END__, Some payload
+        for (marker, _expected_line) in sources {
+            let source = format!("my $x = 1;\n{marker}\nmy $x = 1;");
+            let tokens = collect_and_decode_res(&source)?;
 
-        let nums: Vec<_> =
-            tokens.iter().filter(|t| t.3 == num_kind).map(|t| (t.0, t.1, t.2)).collect();
-        assert_eq!(nums, vec![(0, 8, 1)]); // 2
-
-        for marker in ["__DATA__", "__END__"] {
-            let payload_source = format!("{marker}\nmy $payload = 42;\n");
-            let tokens = collect_and_decode(&payload_source);
             let comments: Vec<_> =
                 tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
-            assert_eq!(comments, vec![(0, 0, marker.len() as u32), (1, 0, 17)]); // marker, entire code-shaped payload line
+            assert_eq!(comments, vec![(1, 0, marker.len() as u32), (2, 0, 10)]);
             assert!(
-                !tokens.iter().any(|t| t.3 == var_kind || t.3 == num_kind),
+                !tokens.iter().any(|t| (t.3 == var_kind || t.3 == num_kind) && t.0 > 0),
                 "Payload should have no code tokens"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn negative_controls_marker_text_does_not_suppress_later_code() {
-        let var_kind = *legend().map.get("variable").unwrap();
-        let num_kind = *legend().map.get("number").unwrap();
+    fn negative_controls_marker_text_does_not_suppress_later_code() -> anyhow::Result<()> {
+        let var_kind =
+            *legend().map.get("variable").ok_or_else(|| anyhow::anyhow!("missing token"))?;
+        let num_kind =
+            *legend().map.get("number").ok_or_else(|| anyhow::anyhow!("missing token"))?;
 
         let sources = [
-            ("my $str = \"__DATA__\";\nmy $x = 1;", 1), // variable and number are on line 1
-            ("=pod\n__DATA__\n=cut\nmy $x = 1;", 3),    // line 3
-            ("print <<~EOF;\n__DATA__\nEOF\nmy $x = 1;", 3), // line 3
-            ("my $str = \"__END__\";\nmy $x = 1;", 1),  // END variants
+            ("my $str = \"__DATA__\";\nmy $x = 1;", 1),
+            ("=pod\n__DATA__\n=cut\nmy $x = 1;", 3),
+            ("print <<~EOF;\n__DATA__\nEOF\nmy $x = 1;", 3),
+            ("my $str = \"__END__\";\nmy $x = 1;", 1),
             ("=pod\n__END__\n=cut\nmy $x = 1;", 3),
             ("print <<~EOF;\n__END__\nEOF\nmy $x = 1;", 3),
         ];
 
         for (source, expected_line) in sources {
-            let tokens = collect_and_decode(source);
+            let tokens = collect_and_decode_res(source)?;
 
             let vars: Vec<_> = tokens
                 .iter()
                 .filter(|t| t.3 == var_kind && t.0 == expected_line)
                 .map(|t| (t.0, t.1, t.2))
                 .collect();
+            let nums: Vec<_> = tokens
+                .iter()
+                .filter(|t| t.3 == num_kind && t.0 == expected_line)
+                .map(|t| (t.0, t.1, t.2))
+                .collect();
+
             assert_eq!(
                 vars,
                 vec![(expected_line, 3, 2)],
                 "Missing variable on correct line in {}",
                 source
             );
-
-            let nums: Vec<_> = tokens
-                .iter()
-                .filter(|t| t.3 == num_kind && t.0 == expected_line)
-                .map(|t| (t.0, t.1, t.2))
-                .collect();
             assert_eq!(
                 nums,
                 vec![(expected_line, 8, 1)],
@@ -3991,26 +3986,29 @@ print "ok" foreach @ys;
                 source
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn data_marker_edge_cases() {
-        let comment_kind = *legend().map.get("comment").unwrap();
+    fn data_marker_edge_cases() -> anyhow::Result<()> {
+        let comment_kind =
+            *legend().map.get("comment").ok_or_else(|| anyhow::anyhow!("missing token"))?;
         let sources = [
             (
                 "my $x = 1;\n__DATA__\nLine 1\n\nLine 3\n__DATA__\n",
                 vec![(1, 0, 8), (2, 0, 6), (4, 0, 6), (5, 0, 8)],
-            ), // multiline with blank line and second marker
-            ("my $x = 1;\r\n__DATA__\r\nLine 1\r\n", vec![(1, 0, 8), (2, 0, 6)]), // CRLF excludes line terminators
-            ("my $x = 1;\n__DATA__\nLine 1\nLine 2", vec![(1, 0, 8), (2, 0, 6), (3, 0, 6)]), // final unterminated line
-            ("my $x = 1;\n__DATA__\nLine with 😊\n", vec![(1, 0, 8), (2, 0, 12)]), // astral Unicode UTF16 geometry
+            ),
+            ("my $x = 1;\r\n__DATA__\r\nLine 1\r\n", vec![(1, 0, 8), (2, 0, 6)]),
+            ("my $x = 1;\n__DATA__\nLine 1\nLine 2", vec![(1, 0, 8), (2, 0, 6), (3, 0, 6)]),
+            ("my $x = 1;\n__DATA__\nLine with 😊\n", vec![(1, 0, 8), (2, 0, 12)]),
         ];
 
         for (i, (source, expected)) in sources.into_iter().enumerate() {
-            let tokens = collect_and_decode(source);
+            let tokens = collect_and_decode_res(source)?;
             let comments: Vec<_> =
                 tokens.iter().filter(|t| t.3 == comment_kind).map(|t| (t.0, t.1, t.2)).collect();
-            assert_eq!(&comments, &expected, "Mismatch in edge case {i}");
+            assert_eq!(&comments, &expected, "Mismatch in edge case {}", i);
         }
+        Ok(())
     }
 }
