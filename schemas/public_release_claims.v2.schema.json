@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/public_release_claims.v2.schema.json",
+  "title": "public_release_claims.v2",
+  "description": "The sole current route-aware public release claim contract (#10333). Typed install-route rows with independent product-unit, platform/environment, target/execution-class, integrity/provenance, channel-currentness, fresh-process PATH, transition, and publication-stage dimensions. Claims bind one exact route ID. v1 remains historical/compatibility input only (#6355); npm stays absent under #8301. The semantic authority is the typed Rust model in xtask; this schema is its projection.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release", "track", "subject_sha", "topology_digest", "install_routes", "claims"],
+  "properties": {
+    "schema_version": {"const": "public_release_claims.v2"},
+    "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "track": {"const": "public-beta"},
+    "subject_sha": {"$ref": "#/$defs/sha40"},
+    "topology_digest": {"$ref": "#/$defs/sha256_digest"},
+    "install_routes": {"type": "array", "items": {"$ref": "#/$defs/install_route"}},
+    "claims": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/claim"}}
+  },
+  "$defs": {
+    "sha40": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "product_unit": {
+      "enum": ["core_server", "debug_preview", "archive_pair", "editor_package", "advanced_server_only"]
+    },
+    "evidence_stage": {
+      "enum": ["declared", "candidate_built", "candidate_installed", "publicly_published", "publicly_verified"]
+    },
+    "platform": {
+      "enum": ["native_windows", "wsl_linux", "macos", "linux_gnu", "linux_musl", "admitted_remote_host"]
+    },
+    "execution_class": {"enum": ["native", "emulated"]},
+    "executable": {"enum": ["perllsp", "perllsp-dap"]},
+    "source_kind": {
+      "enum": [
+        "github_release",
+        "manual_archive",
+        "source_build",
+        "homebrew_tap",
+        "scoop",
+        "chocolatey",
+        "winget",
+        "marketplace",
+        "open_vsx",
+        "cargo_binstall",
+        "cargo_install",
+        "github_setup_action",
+        "docker_image"
+      ]
+    },
+    "install_command_kind": {
+      "enum": [
+        "manual_download",
+        "shell_curl_piped",
+        "powershell_iex_piped",
+        "marketplace_install",
+        "open_vsx_install",
+        "brew_install",
+        "scoop_install",
+        "choco_install",
+        "winget_install",
+        "cargo_binstall",
+        "cargo_install",
+        "docker_pull"
+      ]
+    },
+    "route_status": {"enum": ["proven", "bounded", "blocked", "not_proven", "failed"]},
+    "claim_status": {"enum": ["proven", "bounded", "blocked", "not_proven"]},
+    "transition_cell": {"enum": ["proven", "not_proven", "failed", "not_applicable"]},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity"],
+      "properties": {
+        "kind": {"$ref": "#/$defs/source_kind"},
+        "identity": {"type": "string", "minLength": 1}
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_sha", "artifact_digest", "publication_ref"],
+      "properties": {
+        "subject_sha": {"$ref": "#/$defs/sha40"},
+        "artifact_digest": {"$ref": "#/$defs/sha256_digest"},
+        "publication_ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checksum_verified", "checksum_ref"],
+      "properties": {
+        "checksum_verified": {"type": "boolean"},
+        "checksum_ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["independent", "provenance_ref"],
+      "properties": {
+        "independent": {"type": "boolean"},
+        "provenance_ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "channel_currentness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "ref"],
+      "properties": {
+        "state": {"enum": ["current", "stale", "pending", "not_applicable"]},
+        "ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "fresh_process_path": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "ref"],
+      "properties": {
+        "state": {"enum": ["verified_fresh_process", "current_process_only", "manual_path_step", "not_applicable"]},
+        "ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clean_install", "upgrade", "interruption_rollback", "removal"],
+      "properties": {
+        "clean_install": {"$ref": "#/$defs/transition_cell"},
+        "upgrade": {"$ref": "#/$defs/transition_cell"},
+        "interruption_rollback": {"$ref": "#/$defs/transition_cell"},
+        "removal": {"$ref": "#/$defs/transition_cell"}
+      }
+    },
+    "manual_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step"],
+      "properties": {
+        "step": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "evidence_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "subject_sha", "stage"],
+      "properties": {
+        "ref": {"type": "string", "minLength": 1},
+        "subject_sha": {"$ref": "#/$defs/sha40"},
+        "target_triple": {"type": "string", "minLength": 1},
+        "stage": {"$ref": "#/$defs/evidence_stage"}
+      }
+    },
+    "install_route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "platform",
+        "target_triple",
+        "execution_class",
+        "product_units",
+        "source",
+        "evidence_stage",
+        "status",
+        "evidence_refs"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^route\\.[a-z0-9]+(?:[._-][a-z0-9]+)*$"},
+        "platform": {"$ref": "#/$defs/platform"},
+        "target_triple": {"type": "string", "minLength": 1},
+        "execution_class": {"$ref": "#/$defs/execution_class"},
+        "product_units": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/product_unit"}
+        },
+        "executables": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/executable"}
+        },
+        "source": {"$ref": "#/$defs/source"},
+        "publication": {"$ref": "#/$defs/publication"},
+        "integrity": {"$ref": "#/$defs/integrity"},
+        "provenance": {"$ref": "#/$defs/provenance"},
+        "channel_currentness": {"$ref": "#/$defs/channel_currentness"},
+        "fresh_process_path": {"$ref": "#/$defs/fresh_process_path"},
+        "transition": {"$ref": "#/$defs/transition"},
+        "manual_actions": {"type": "array", "items": {"$ref": "#/$defs/manual_action"}},
+        "evidence_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/evidence_ref"}
+        },
+        "evidence_stage": {"$ref": "#/$defs/evidence_stage"},
+        "status": {"$ref": "#/$defs/route_status"},
+        "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "install_command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "raw"],
+      "properties": {
+        "kind": {"$ref": "#/$defs/install_command_kind"},
+        "raw": {"type": "string", "minLength": 1}
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "surfaces",
+        "audience",
+        "text_or_command",
+        "authority",
+        "evidence_refs",
+        "status",
+        "public_context",
+        "limitation"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)+$"},
+        "surfaces": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "audience": {"const": "user"},
+        "text_or_command": {"type": "string", "minLength": 1},
+        "authority": {
+          "enum": ["release_topology", "installed_transition", "experience_contract", "api_audit", "release_integrity"]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "status": {"$ref": "#/$defs/claim_status"},
+        "public_context": {"enum": ["swarm", "publication", "both"]},
+        "limitation": {"type": ["string", "null"]},
+        "install_route_id": {"type": "string", "pattern": "^route\\.[a-z0-9]+(?:[._-][a-z0-9]+)*$"},
+        "install_command": {"$ref": "#/$defs/install_command"}
+      }
+    }
+  }
+}
