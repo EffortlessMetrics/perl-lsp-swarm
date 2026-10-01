@@ -290,6 +290,48 @@ pub struct UxHarness {
     document_versions: Mutex<HashMap<String, i32>>,
 }
 
+/// Outcome of a deadline-bounded quality poll over inline completion.
+///
+/// A quality poll either satisfied the supplied predicate before the
+/// budget expired ([`Self::Matched`]) or exhausted the budget with the
+/// predicate still false ([`Self::Deadline`]). Distinguishing the two
+/// lets the assertion message — and the receipt classifier that reads
+/// the log downstream — tell a load-induced budget exhaustion apart
+/// from a fast-but-wrong completion server response, without changing
+/// the assertion itself (#16103).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QualityPollOutcome {
+    /// The predicate matched before the deadline elapsed.
+    Matched,
+    /// The deadline expired while the predicate was still false.
+    Deadline {
+        /// The bound the caller supplied.
+        timeout: Duration,
+    },
+}
+
+impl QualityPollOutcome {
+    /// Render the outcome as a human-readable sentence for assertion
+    /// messages.
+    ///
+    /// The `Deadline` wording deliberately contains the literal
+    /// substring `deadline expired after`, the marker that
+    /// `xtask`'s `ux_regression_receipt` classifier keys on
+    /// (`xtask/src/tasks/ux_regression_receipt.rs`) to route a
+    /// budget-exhausted poll to `BudgetExceeded` rather than the
+    /// generic `assertion failed → ProviderRegression` arm.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Matched => "poll satisfied before the deadline".to_string(),
+            Self::Deadline { timeout } => format!(
+                "deadline expired after {}ms with the stream still live",
+                timeout.as_millis()
+            ),
+        }
+    }
+}
+
 impl UxHarness {
     /// Spawn a fresh LSP server and set up a clean workspace.
     pub fn new(config: ScenarioConfig) -> Result<Self> {
@@ -492,6 +534,31 @@ impl UxHarness {
         character: u32,
         context: Value,
     ) -> Result<Vec<Value>> {
+        self.inline_completion_with_context_and_timeout(
+            relative_path,
+            line,
+            character,
+            context,
+            self.config.timeout,
+        )
+    }
+
+    /// Request inline completion with an explicit LSP context and a
+    /// per-request timeout.
+    ///
+    /// Deadline-polling callers pass the remaining wall-clock budget so one
+    /// blocking request cannot outrun the caller's own deadline (mirrors
+    /// [`UxHarness::completion_with_timeout`]; the default
+    /// `ScenarioConfig::timeout` is 30 s and is independent of any local
+    /// polling deadline).
+    pub fn inline_completion_with_context_and_timeout(
+        &self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+        context: Value,
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
             "textDocument/inlineCompletion",
@@ -500,7 +567,7 @@ impl UxHarness {
                 "position": { "line": line, "character": character },
                 "context": context
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp.get("error").is_some() {
             return Err(anyhow!("inline completion returned error: {}", resp["error"]));
@@ -508,6 +575,98 @@ impl UxHarness {
         match resp["result"]["items"].as_array() {
             Some(items) => Ok(items.clone()),
             None => Ok(Vec::new()),
+        }
+    }
+
+    /// Poll `textDocument/inlineCompletion` until the supplied quality
+    /// predicate is true or `timeout` elapses.
+    ///
+    /// The deadline is an outer bound on the whole poll, not just the
+    /// gaps between requests: every request is bounded by the remaining
+    /// budget, the inter-poll sleep is capped at that budget, and a match
+    /// that only arrives once the budget is gone is reported as
+    /// [`QualityPollOutcome::Deadline`], not [`QualityPollOutcome::Matched`].
+    /// On deadline the helper returns the most recently observed
+    /// `insertText` values alongside the outcome so the caller can
+    /// distinguish a budget exhaustion from a real mismatch in its
+    /// assertion message. The poll always runs at least one request even
+    /// when the budget is already spent.
+    ///
+    /// Typical use:
+    ///
+    /// ```ignore
+    /// let (texts, outcome) =
+    ///     harness.poll_inline_completion_until_quality(
+    ///         path, line, character, Duration::from_secs(30),
+    ///         |inserts| missing_expected(inserts, expected).is_empty(),
+    ///     )?;
+    /// assert!(outcome == QualityPollOutcome::Matched,
+    ///     "expected inserts did not arrive; {}", outcome.describe());
+    /// ```
+    pub fn poll_inline_completion_until_quality<F>(
+        &self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+        timeout: Duration,
+        mut predicate: F,
+    ) -> Result<(Vec<String>, QualityPollOutcome)>
+    where
+        F: FnMut(&[String]) -> bool,
+    {
+        let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
+        // The poll must run at least once: an empty initial value would let a
+        // predicate that observed the pre-poll state match before any
+        // `inlineCompletion` request landed, hiding the budget exhaustion the
+        // outcome type exists to expose.
+        let mut last_inserts: Vec<String> = Vec::new();
+        loop {
+            // Each request is bounded by the remaining poll budget so one
+            // blocking request cannot outrun the deadline it is meant to
+            // enforce.
+            let remaining = deadline.checked_duration_since(Instant::now()).unwrap_or_default();
+            let items = match self.inline_completion_with_context_and_timeout(
+                relative_path,
+                line,
+                character,
+                json!({ "triggerKind": 1 }),
+                remaining,
+            ) {
+                Ok(items) => items,
+                // A request that errored because the poll budget ran out
+                // under it is a deadline exhaustion, not a harness fault;
+                // any earlier error is a real fault worth propagating.
+                Err(err) => {
+                    if Instant::now() >= deadline {
+                        return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
+                    }
+                    return Err(err);
+                }
+            };
+            last_inserts = items
+                .iter()
+                .filter_map(|item| {
+                    item.get("insertText").and_then(Value::as_str).map(str::to_string)
+                })
+                .collect();
+            // A match that arrives only after the budget is gone is still a
+            // budget exhaustion: report the deadline so the receipt
+            // classifier routes it to `BudgetExceeded`.
+            if Instant::now() >= deadline {
+                return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
+            }
+            if predicate(&last_inserts) {
+                return Ok((last_inserts, QualityPollOutcome::Matched));
+            }
+            // Cap the inter-poll sleep to the remaining budget so the poll
+            // cannot sleep past its own deadline and start another request
+            // with none left.
+            let remaining = deadline.checked_duration_since(Instant::now()).unwrap_or_default();
+            if remaining.is_zero() {
+                return Ok((last_inserts, QualityPollOutcome::Deadline { timeout }));
+            }
+            // ux-timing: product-retry
+            std::thread::sleep(Duration::from_millis(100).min(remaining));
         }
     }
 
@@ -1879,5 +2038,63 @@ mod strict_binary_guard_subprocess_tests {
         );
 
         Ok(())
+    }
+}
+
+// ─────────────── Deadline-classified quality poll (#16103) ──────
+
+#[cfg(test)]
+mod quality_poll_outcome_tests {
+    use super::{Duration, QualityPollOutcome};
+
+    /// The `Matched` arm is the boring outcome and renders a stable sentence.
+    /// Pinning the wording keeps human and CLI readers in sync with the
+    /// receipt classifier, which keys on the literal `deadline expired after`
+    /// substring in the `Deadline` arm only.
+    #[test]
+    fn matched_describes_itself_without_deadline_marker() {
+        let described = QualityPollOutcome::Matched.describe();
+        assert_eq!(described, "poll satisfied before the deadline");
+        assert!(
+            !described.contains("deadline expired"),
+            "matched arm must not contain the deadline marker; got {described}"
+        );
+    }
+
+    /// `Deadline { timeout }` must emit the literal substring
+    /// `deadline expired after` plus the timeout in milliseconds, in the
+    /// exact wording the receipt classifier keys on. Without this marker a
+    /// load-induced budget exhaustion is reported as a generic
+    /// `assertion failed` and routed to `fix_provider` instead of
+    /// `triage_timeout` (see `xtask/src/tasks/ux_regression_receipt.rs:39`,
+    /// the `DEADLINE_MARKER` constant, and the `infer_failure_class` arm
+    /// below it at line 422).
+    #[test]
+    fn deadline_describes_timeout_in_milliseconds_and_includes_marker() {
+        let described =
+            QualityPollOutcome::Deadline { timeout: Duration::from_secs(30) }.describe();
+        assert!(
+            described.contains("deadline expired after"),
+            "missing the receipt-classifier marker; got: {described}"
+        );
+        assert!(described.contains("30000"), "missing the timeout-in-ms token; got: {described}");
+        assert!(
+            described.contains("with the stream still live"),
+            "missing the 'stream still live' clause; got: {described}"
+        );
+    }
+
+    /// The marker text must remain stable across the integer-ms conversion.
+    /// `as_millis()` rounds down for sub-millisecond durations; pin the
+    /// floor-zero behavior so a future `Duration::from_micros(…)` change
+    /// does not silently drop the marker.
+    #[test]
+    fn deadline_marker_survives_sub_second_rounding() {
+        let described =
+            QualityPollOutcome::Deadline { timeout: Duration::from_micros(999) }.describe();
+        assert!(
+            described.contains("deadline expired after 0ms"),
+            "sub-ms timeouts must still emit the marker; got: {described}"
+        );
     }
 }
