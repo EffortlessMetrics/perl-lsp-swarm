@@ -24,7 +24,7 @@ class AdmissionTests(unittest.TestCase):
 
     def run_safe(self, args, call=None):
         with patch.dict(os.environ, self.env, clear=True), \
-             patch.object(safe, "resource_plan", return_value=(self.slot, self.paths)), \
+             patch.object(safe, "resource_plan", return_value=(self.root, self.slot, self.paths)), \
              patch.object(safe.subprocess, "call", side_effect=call or (lambda *a, **kw: 0)):
             return safe.main(args)
 
@@ -206,7 +206,44 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(first, safe.resource_plan(env))
             with self.assertRaises(safe.Denied):
                 safe.resource_plan(dict(env, CARGO_TARGET_DIR=str(self.root / "arbitrary")))
-        self.assertFalse(first[0].exists())
+        self.assertFalse(first[1].exists())
+
+    def test_real_git_nested_main_and_linked_worktree_identity(self):
+        import contextlib
+        import io
+        import json
+        repo = self.root / "repo"
+        linked = self.root / "linked"
+        env = os.environ.copy()
+        env.update(GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1")
+        def git(*args, cwd=self.root):
+            subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
+        git("init", "-b", "main", str(repo))
+        git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+            "commit", "--allow-empty", "-m", "fixture", cwd=repo)
+        git("worktree", "add", "-b", "linked", str(linked), cwd=repo)
+        env.update(self.env, DEVPLANE=str(self.root / "cache"),
+                   CARGO_HOME=str(self.root / "cargo"), TMPDIR=str(self.root / "tmp"))
+        for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+            env.pop(key, None)
+        descriptors = []
+        previous = Path.cwd()
+        try:
+            for worktree in (repo, linked):
+                nested = worktree / "nested" / "directory"
+                nested.mkdir(parents=True)
+                os.chdir(nested)
+                output = io.StringIO()
+                with patch.dict(os.environ, env, clear=True), patch.object(safe.subprocess, "call", return_value=0), contextlib.redirect_stderr(output):
+                    self.assertEqual(safe.main(["check"]), 0)
+                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+                self.assertEqual(Path(descriptor["worktree"]), worktree.resolve())
+                self.assertNotEqual(Path(descriptor["worktree"]), nested)
+                descriptors.append(descriptor)
+        finally:
+            os.chdir(previous)
+        for name in ("target", "build"):
+            self.assertEqual(descriptors[0]["resources"][name], descriptors[1]["resources"][name])
 
     def test_nonfinite_policy_refused(self):
         for key in ("MIN_FREE_GB", "MAX_USED_PCT"):

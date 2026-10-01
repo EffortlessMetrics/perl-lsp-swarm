@@ -103,6 +103,9 @@ def check_capacity(paths, env):
 
 
 def resource_plan(env):
+    worktree = native_path(subprocess.check_output(
+        ["git", "rev-parse", "--show-toplevel"], text=True
+    ).strip())
     common = subprocess.check_output(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True
     ).strip()
@@ -121,7 +124,7 @@ def resource_plan(env):
     # Windows programs commonly use TEMP/TMP rather than TMPDIR: unify all three.
     for path in (slot, *paths.values()):
         native_path(str(path))
-    return slot, paths
+    return worktree, slot, paths
 
 
 def main(args=None):
@@ -129,7 +132,7 @@ def main(args=None):
     try:
         validate_args(args)
         env = os.environ.copy()
-        slot, paths = resource_plan(env)
+        worktree, slot, paths = resource_plan(env)
         admission = check_capacity([slot, *paths.values()], env)  # before any mkdir/Cargo invocation
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):
             raise Denied("compiler wrappers have unverified storage; use a separately admitted route")
@@ -153,7 +156,7 @@ def main(args=None):
                        CARGO_HOME=str(paths["cargo_home"]), CARGO_INCREMENTAL="0",
                        CARGO_BUILD_JOBS=str(jobs), TMPDIR=str(paths["temp"]),
                        TEMP=str(paths["temp"]), TMP=str(paths["temp"]))
-            descriptor = {"worktree": str(Path.cwd()), "resources": {k: str(v) for k, v in paths.items()},
+            descriptor = {"worktree": str(worktree), "resources": {k: str(v) for k, v in paths.items()},
                           "lease": str(lock), "pid": os.getpid(), "admission": admission, "disposition": "retained with reason: reusable bounded slot"}
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
             command = ["cargo", "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
