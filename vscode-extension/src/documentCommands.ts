@@ -39,6 +39,18 @@ type ExecFileFailure = Error & {
 };
 
 /**
+ * Failures that name the environment rather than the document: perl never
+ * spawned (ENOENT), or was killed by the wall-clock budget (timeout). Node
+ * reports a timeout as a kill (`killed: true`); some platforms surface
+ * ETIMEDOUT. Their diagnosis is never derived from the child's output.
+ */
+function isSpawnEnvironmentFailure(error: Error): boolean {
+  const failure: ExecFileFailure = error;
+  const code = typeof failure.code === 'string' ? failure.code : undefined;
+  return code === 'ENOENT' || code === 'ETIMEDOUT' || failure.killed === true;
+}
+
+/**
  * Separate "perl never ran" from "perl ran and rejected the file" (#16574).
  *
  * On ENOENT the child never spawns, so stdout and stderr are both empty and the
@@ -47,17 +59,13 @@ type ExecFileFailure = Error & {
  */
 function classifyCheckSyntaxFailure(error: Error, output: string): string {
   const failure: ExecFileFailure = error;
-  const code = typeof failure.code === 'string' ? failure.code : undefined;
-
-  if (code === 'ENOENT') {
-    return (
-      'Perl was not found on PATH. Install Perl (strawberryperl.com, Homebrew, or your ' +
-      'package manager) — the language server works without it, but syntax checking does not.'
-    );
-  }
-
-  // Node reports a timeout as a kill (`killed: true`); some platforms surface ETIMEDOUT.
-  if (code === 'ETIMEDOUT' || failure.killed === true) {
+  if (isSpawnEnvironmentFailure(error)) {
+    if (failure.code === 'ENOENT') {
+      return (
+        'Perl was not found on PATH. Install Perl (strawberryperl.com, Homebrew, or your ' +
+        'package manager) — the language server works without it, but syntax checking does not.'
+      );
+    }
     return `Perl syntax check exceeded the ${CHECK_SYNTAX_TIMEOUT_MS / 1000}s timeout.`;
   }
 
@@ -103,7 +111,14 @@ export async function runCheckSyntaxCommand(
       if (error) {
         const failure = classifyCheckSyntaxFailure(error, output);
         // Never write a bare `[check-syntax] ` line when the child produced no text (#16574).
-        const channelDetail = output.length > 0 ? output : failure;
+        // A genuine syntax verdict keeps perl's own text as the detail, but an
+        // environment failure keeps its diagnosis even when perl produced
+        // partial output before being killed — otherwise the channel hides the
+        // real cause behind a truncated fragment.
+        const channelDetail =
+          output.length > 0 && !isSpawnEnvironmentFailure(error)
+            ? output
+            : [failure, output].filter((part) => part.length > 0).join('\n');
         vscode.window.showErrorMessage(failure, 'Show Output').then((selection) => {
           if (selection === 'Show Output') {
             dependencies.outputChannel.appendLine(`[check-syntax] ${channelDetail}`);
