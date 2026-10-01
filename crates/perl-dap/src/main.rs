@@ -133,8 +133,9 @@ fn run_external_peer_bridge_stdio(peer_addr: &str) -> anyhow::Result<()> {
     // `ToSocketAddrs` rejects that raw input, so an accepted spec would still
     // fail with a raw socket error (#16556).
     let dial_addr = format!("{peer_host}:{peer_port}");
-    let backend = ExternalDebuggerPeerBackend::connect(dial_addr.as_str(), EXTERNAL_PEER_TIMEOUT)
-        .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
+    let backend =
+        ExternalDebuggerPeerBackend::connect(dial_addr.as_str(), EXTERNAL_PEER_TIMEOUT)
+            .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
     let bridge = DapPeerBridge::new(Box::new(backend));
     run_external_peer_session_stdio(bridge, EXTERNAL_PEER_POLL)?;
     Ok(())
@@ -819,10 +820,7 @@ mod tests {
             must_with(dial_addr.to_socket_addrs(), "the normalized spec must resolve").collect();
         assert_eq!(
             resolved,
-            vec![SocketAddr::V4(SocketAddrV4::new(
-                std::net::Ipv4Addr::LOCALHOST,
-                5000
-            ))]
+            vec![SocketAddr::V4(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 5000))]
         );
     }
 }

@@ -1,9 +1,0 @@
-project: product
-component: Developer experience
-kind: Fixed
-body: "`perl-dap` one-shot emit flags (`--ptkdb-bootstrap-rc`, `--debug-session-plan`) now fail with a nonzero exit naming the unreadable program instead of silently emitting a degenerate artifact (`source_facts: {}`) with exit 0 (#16553). `--external-peer` validates the `HOST:PORT` spec at startup with a format-naming error instead of surfacing the transport's raw \"invalid socket address\", and `--external-peer-listen HOST:<unparseable>` now fails startup instead of silently binding an ephemeral port that moves the rendezvous contract (#16556)."
-time: 2026-09-27T00:00:00Z
-custom:
-  PR: "16675"
-  Slug: dap-arg-validation-16553-16556
-  Breaking: "no"

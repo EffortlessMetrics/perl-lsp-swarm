@@ -1,15 +1,16 @@
-//! Discriminating proof for the external-peer / one-shot-emit CLI argument
-//! validation (#16553, #16556).
+//! Discriminating proof for the external-peer CLI argument validation (#16556).
 //!
-//! These tests spawn the packaged `perl-dap` binary. They fail if a one-shot
-//! emit flag silently exits 0 on an unreadable program, if a malformed
+//! These tests spawn the packaged `perl-dap` binary. They fail if a malformed
 //! `--external-peer` spec surfaces as the transport's raw "invalid socket
-//! address" jargon, or if an explicit-but-unparseable
-//! `--external-peer-listen` port silently binds an ephemeral port instead of
-//! failing startup with a format-naming error.
+//! address" jargon instead of a format-naming startup error, or if an
+//! explicit-but-unparseable `--external-peer-listen` port silently binds an
+//! ephemeral port instead of failing startup.
+//!
+//! The one-shot emit flags' unreadable-program behavior is owned by
+//! `dap_one_shot_unreadable_program_16553.rs` (#16553, landed by #16702) and is
+//! deliberately not duplicated here.
 
 use anyhow::{Context, Result, anyhow};
-use serde_json::Value;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -74,83 +75,6 @@ fn run_cli(args: &[&str]) -> Result<(ExitStatus, String, String)> {
 fn assert_nonzero(status: &ExitStatus, stdout: &str, stderr: &str, why: &str) -> Result<()> {
     if status.success() {
         return Err(anyhow!("{why}: must exit nonzero. stdout={stdout:?} stderr={stderr:?}"));
-    }
-    Ok(())
-}
-
-#[test]
-fn ptkdb_bootstrap_rc_nonexistent_program_fails_nonzero_with_no_artifact() -> Result<()> {
-    let missing = "./no-such-dir/no-such-16553.pl";
-    let (status, stdout, stderr) =
-        run_cli(&["--ptkdb-bootstrap-rc", missing, "--log-level", "error"])?;
-    assert_nonzero(
-        &status,
-        &stdout,
-        &stderr,
-        "an unreadable --ptkdb-bootstrap-rc program must fail the one-shot emit",
-    )?;
-    if !stdout.trim().is_empty() {
-        return Err(anyhow!(
-            "no bootstrap artifact may be emitted for an unreadable program: {stdout:?}"
-        ));
-    }
-    for expected in ["--ptkdb-bootstrap-rc", "could not be read", "no-such-16553.pl"] {
-        if !stderr.contains(expected) {
-            return Err(anyhow!(
-                "stderr must name the flag, the failure, and the path ({expected}); stderr={stderr:?}"
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn debug_session_plan_nonexistent_program_fails_nonzero_with_no_artifact() -> Result<()> {
-    let missing = "./no-such-dir/no-such-16553.pl";
-    let (status, stdout, stderr) =
-        run_cli(&["--debug-session-plan", missing, "--log-level", "error"])?;
-    assert_nonzero(
-        &status,
-        &stdout,
-        &stderr,
-        "an unreadable --debug-session-plan program must fail the one-shot emit",
-    )?;
-    if !stdout.trim().is_empty() {
-        return Err(anyhow!(
-            "no session plan may be emitted for an unreadable program: {stdout:?}"
-        ));
-    }
-    for expected in ["--debug-session-plan", "could not be read", "no-such-16553.pl"] {
-        if !stderr.contains(expected) {
-            return Err(anyhow!(
-                "stderr must name the flag, the failure, and the path ({expected}); stderr={stderr:?}"
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn debug_session_plan_readable_program_still_emits_source_facts_and_exits_zero() -> Result<()> {
-    let dir = tempfile::tempdir().context("test fixture tempdir")?;
-    let program = dir.path().join("prog.pl");
-    std::fs::write(&program, "sub run {\n    my $x = 1;\n    return $x;\n}\n")
-        .context("write fixture program")?;
-    let program_str = program.to_string_lossy().into_owned();
-    let (status, stdout, stderr) =
-        run_cli(&["--debug-session-plan", &program_str, "--log-level", "error"])?;
-    if !status.success() {
-        return Err(anyhow!(
-            "a readable program must emit the plan and exit zero. stdout={stdout:?} stderr={stderr:?}"
-        ));
-    }
-    let plan: Value =
-        serde_json::from_str(&stdout).map_err(|e| anyhow!("stdout must be a JSON plan: {e}"))?;
-    let facts = plan.get("source_facts").ok_or_else(|| {
-        anyhow!("plan must carry source_facts for a readable program: {stdout:?} stderr={stderr:?}")
-    })?;
-    if facts.as_object().is_none_or(|entries| entries.is_empty()) {
-        return Err(anyhow!("source_facts must be populated for a readable program, got {facts}"));
     }
     Ok(())
 }
