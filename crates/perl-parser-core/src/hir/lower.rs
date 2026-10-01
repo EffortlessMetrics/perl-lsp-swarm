@@ -93,6 +93,9 @@ struct Lowerer {
     class_body_items: BTreeMap<(usize, usize), HirId>,
     /// Transient lowering join from a class body frame to its declaration.
     class_scope_items: BTreeMap<HirScopeId, HirId>,
+    /// End of the root span, i.e. the input boundary used by the
+    /// delimiter-completeness signal in the `Method` arm.
+    input_end: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +135,7 @@ impl Lowerer {
             class_field_decls: BTreeSet::new(),
             class_body_items: BTreeMap::new(),
             class_scope_items: BTreeMap::new(),
+            input_end: file_range.end,
         }
     }
 
@@ -350,7 +354,11 @@ impl Lowerer {
                                 .has_feature("class")
                             && item.anchor.name_range.is_some()
                     }) {
-                        Ok((*class_item, self.current_scope()))
+                        if self.body_block_is_delimiter_incomplete(body) {
+                            Err(NativeMethodInvocantBoundary::RecoveredSyntax)
+                        } else {
+                            Ok((*class_item, self.current_scope()))
+                        }
                     } else {
                         Err(NativeMethodInvocantBoundary::RecoveredSyntax)
                     }
@@ -1562,6 +1570,25 @@ impl Lowerer {
             }
             false
         })
+    }
+
+    /// Delimiter-completeness signal for an exact-native method candidate.
+    ///
+    /// Only sound for a body that is already a *direct member* of a block-form
+    /// class: there the class body's own `}` must follow the method body, so a
+    /// body span reaching the input boundary was never closed. The same span
+    /// shape on a package-level `method` is an ordinary closed body ending the
+    /// file, so this check must not run outside the class-membership arm.
+    ///
+    /// `parse_block` records "Unclosed block" and still returns an ordinary
+    /// `Block` node, so delimiter recovery reaches this lowerer without any
+    /// `Error` wrapper and with [`RecoveryConfidence::Parsed`] items. This
+    /// signal refuses both an unclosed method body and a closed method whose
+    /// class closer is missing, and it is deliberately independent of body
+    /// *expression* recovery (see [`has_recovery_node`]), which an incomplete
+    /// `$self->` chain must not trigger.
+    fn body_block_is_delimiter_incomplete(&self, body: &Node) -> bool {
+        body.location.end >= self.input_end
     }
 
     fn visit_identifier_with_bareword_context(

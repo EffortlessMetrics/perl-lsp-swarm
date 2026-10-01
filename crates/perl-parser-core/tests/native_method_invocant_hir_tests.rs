@@ -502,6 +502,43 @@ fn recovered_class_wrapper_cannot_publish_exact_binding() -> TestResult {
 }
 
 #[test]
+fn unclosed_method_body_delimiter_cannot_publish_exact_binding() -> TestResult {
+    // The parser's real delimiter recovery: `parse_block` records "Unclosed
+    // block" and still returns an ordinary `Block`, so no Error wrapper ever
+    // reaches the lowerer. A method body that reaches the input end was never
+    // closed and must not mint an exact invocant.
+    let source = "use feature 'class'; class Animal { method speak { $self->sound;";
+    let file = lower(source);
+    same(
+        file.native_method_invocant_at(nth_offset(source, "$self", 0)? + 1),
+        NativeMethodInvocantLookup::Partial(NativeMethodInvocantBoundary::RecoveredSyntax),
+        "unclosed method body delimiter",
+    )?;
+    require(
+        file.scope_graph.bindings.iter().all(|item| item.storage != StorageClass::MethodInvocant),
+        "unclosed method body has no implicit binding",
+    )
+}
+
+#[test]
+fn unclosed_class_body_delimiter_cannot_publish_exact_binding() -> TestResult {
+    // The method body itself closed, but its `}` is the last input byte: the
+    // class body's own closer is missing, so the declaration is still inside
+    // recovered delimiters.
+    let source = "use feature 'class'; class Animal { method speak { $self->sound; }";
+    let file = lower(source);
+    same(
+        file.native_method_invocant_at(nth_offset(source, "$self", 0)? + 1),
+        NativeMethodInvocantLookup::Partial(NativeMethodInvocantBoundary::RecoveredSyntax),
+        "unclosed class body delimiter",
+    )?;
+    require(
+        file.scope_graph.bindings.iter().all(|item| item.storage != StorageClass::MethodInvocant),
+        "unclosed class body has no implicit binding",
+    )
+}
+
+#[test]
 fn incomplete_arrow_does_not_invalidate_local_class_and_method_anchors() -> TestResult {
     let source = "use feature 'class'; class Animal { method speak { $self-> } }";
     let file = lower(source);
