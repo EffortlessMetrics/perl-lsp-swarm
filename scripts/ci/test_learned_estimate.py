@@ -131,6 +131,36 @@ class LearnedEstimateTests(unittest.TestCase):
         self.assertFalse(invalid["learned"])
         self.assertIn("error", invalid)
 
+    def test_main_refuses_a_history_that_is_not_v1_before_reading_lanes(self) -> None:
+        """The standalone reader validates the same envelope as pr_plan.py: a
+        v2 payload (or a bool/float forged past `== 1`) must not have its lane
+        records read as v1."""
+        for forged_version in (2, True, 1.0):
+            with self.subTest(forged_version=forged_version):
+                with tempfile.TemporaryDirectory() as tmp:
+                    history = Path(tmp) / "history.json"
+                    history.write_text(
+                        json.dumps(
+                            {
+                                "schema_version": forged_version,
+                                "lanes": {
+                                    "rust_small": {
+                                        "learned": True,
+                                        "p50": 868.0,
+                                        "static_floor": 999.0,
+                                        "samples": 9,
+                                    }
+                                },
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    emitted = _run_main(history)
+
+                self.assertFalse(emitted["learned"])
+                self.assertIsNone(emitted["estimate"])
+                self.assertIn("unsupported history schema_version", emitted["reason"])
+
 
 class StdoutSchemaVersionTests(unittest.TestCase):
     """`learned_estimate.py` stdout is a versioned wire object (#15286).

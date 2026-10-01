@@ -476,8 +476,11 @@ def validate_history_payload(
 
     if not isinstance(data, dict):
         return ["payload is not a JSON object"]
-    if data.get("schema_version") != SCHEMA_VERSION:
-        violations.append(f"schema_version must be {SCHEMA_VERSION}, got {data.get('schema_version')!r}")
+    # bool is an int subclass and 1.0 == 1: bare equality would admit a JSON
+    # `true` or `1.0` version as v1, so require an exact integer first.
+    schema_version = data.get("schema_version")
+    if type(schema_version) is not int or schema_version != SCHEMA_VERSION:
+        violations.append(f"schema_version must be {SCHEMA_VERSION}, got {schema_version!r}")
     if not isinstance(data.get("generated_at"), str) or not data.get("generated_at"):
         violations.append("generated_at must be a non-empty string")
     min_samples = data.get("min_samples_for_learned")

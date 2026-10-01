@@ -42,6 +42,27 @@ from typing import Any
 
 GIT_DIFF_TIMEOUT_SECONDS = 30
 
+# Envelope version this consumer understands for `.ci/metrics/ci-lane-history.json`.
+# Kept equal to the producer's `SCHEMA_VERSION` in aggregate_lane_history.py, which
+# also requires it in its own validate_history_payload(). A payload that does not
+# carry exactly this version is not readable as v1 by this consumer.
+HISTORY_SCHEMA_VERSION = 1
+
+# How the history read was resolved. Recorded in the plan receipt so a rejected
+# payload is distinguishable from a genuinely empty or sparse one.
+#   absent             - no history file; static base_lem floors are authoritative
+#   accepted           - a v1 envelope; learned estimates may be applied
+#   unreadable         - present but not decodable as JSON
+#   unsupported_schema - decodable, but the envelope version is not v1
+#   malformed          - decodable, but not a v1 history object
+HISTORY_DISPOSITIONS = (
+    "absent",
+    "accepted",
+    "unreadable",
+    "unsupported_schema",
+    "malformed",
+)
+
 
 def read_toml(path: Path) -> dict[str, Any]:
     with path.open("rb") as f:
@@ -510,14 +531,35 @@ def lane_lem(lane: dict[str, Any], multipliers: dict[str, float]) -> float:
     return 0.0
 
 
-def load_learned_history(path: Path) -> dict[str, Any]:
-    """Read .ci/metrics/ci-lane-history.json if present; tolerant on errors."""
+def load_learned_history(path: Path) -> tuple[dict[str, Any], str]:
+    """Read .ci/metrics/ci-lane-history.json and validate its envelope.
+
+    Returns (payload, disposition). Only a v1 envelope yields a usable payload;
+    every other outcome degrades to an empty payload so the planner keeps its
+    static base_lem floors, exactly as it did for an absent or corrupt file.
+
+    The envelope is checked before any field is read. A future producer that
+    renames or reshapes `lanes` must not be silently misread as v1 and reported
+    as "history present, no lane had enough samples" - that is indistinguishable
+    from real sparsity and hides the drift. The disposition is what makes the
+    two cases separable.
+    """
     if not path.exists():
-        return {}
+        return {}, "absent"
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {}
+        return {}, "unreadable"
+    if not isinstance(payload, dict):
+        return {}, "malformed"
+    schema_version = payload.get("schema_version")
+    # bool is an int subclass and 1.0 == 1, so bare equality would admit a
+    # JSON `true` or `1.0` version as v1; require an exact integer first.
+    if type(schema_version) is not int or schema_version != HISTORY_SCHEMA_VERSION:
+        return {}, "unsupported_schema"
+    if not isinstance(payload.get("lanes"), dict):
+        return {}, "malformed"
+    return payload, "accepted"
 
 
 def apply_learned_estimates(
@@ -869,7 +911,7 @@ def main() -> int:
     # Apply learned LEM estimates from .ci/metrics/ci-lane-history.json when
     # the file is present and the lane has enough samples. Falls back to the
     # static base_lem when history is absent or sparse.
-    history = load_learned_history(args.history)
+    history, history_disposition = load_learned_history(args.history)
     learned_delta, learned_count = apply_learned_estimates(selected_lanes, history)
 
     estimated_lem = sum(lane_lem(lane, multipliers) for lane in selected_lanes)
@@ -880,6 +922,19 @@ def main() -> int:
     label_set = {l.lower() for l in labels}
     has_ack = "ci-budget-ack" in label_set or "full-ci" in label_set
     has_override = "ci-budget-override" in label_set or "full-ci" in label_set
+
+    # A history file that exists but cannot be read as v1 is a real signal, not
+    # a quiet absence. Say so in the summary so an unenveloped or future-schema
+    # payload is never mistaken for "no lane has enough samples yet". Deriving
+    # this from the clean outcomes means a future rejection reason warns by
+    # default instead of having to be added to a second list.
+    if history_disposition not in ("accepted", "absent"):
+        warnings.append(
+            f"Lane history `{args.history}` was not applied "
+            f"(`{history_disposition}`); using static `base_lem` floors. "
+            "Re-run `scripts/ci/aggregate_lane_history.py` or check the "
+            "producer's `schema_version`."
+        )
 
     over_ceiling_failure = False
     if band == "elevated":
@@ -958,7 +1013,8 @@ def main() -> int:
             "failed": over_ceiling_failure,
         },
         "learned": {
-            "history_present": bool(history),
+            "history_present": args.history.exists(),
+            "history_disposition": history_disposition,
             "lanes_using_learned": learned_count,
             "delta_lem_vs_static": learned_delta,
         },

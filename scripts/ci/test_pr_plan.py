@@ -207,6 +207,321 @@ class PrPlanTests(unittest.TestCase):
         self.assertEqual("static_floor", lanes[1]["learned_source"])
         self.assertEqual(5, lanes[2]["base_lem"])
 
+    def _write_history(self, root: Path, text: str, name: str = "ci-lane-history.json") -> Path:
+        path = root / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_load_learned_history_accepts_a_v1_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "lanes": {
+                            "rust_small": {"learned": True, "p50": 20.0},
+                        },
+                    }
+                ),
+            )
+            payload, disposition = pr_plan.load_learned_history(path)
+
+        self.assertEqual("accepted", disposition)
+        self.assertEqual(1, payload["schema_version"])
+        self.assertIn("rust_small", payload["lanes"])
+
+    def test_load_learned_history_rejects_a_future_schema_even_when_lanes_survive(
+        self,
+    ) -> None:
+        """The control that matters: the check is on the envelope version, not
+        on whether a `lanes` key happens to still be present. A v2 producer that
+        reshapes the per-record shape must not be consumed as v1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "lanes": {
+                            "rust_small": {
+                                "learned": True,
+                                "p50": 1.0,
+                                "static_floor": 999.0,
+                            }
+                        },
+                    }
+                ),
+            )
+            lanes = [{"id": "rust_small", "base_lem": 10}]
+            payload, disposition = pr_plan.load_learned_history(path)
+            delta, learned_count = pr_plan.apply_learned_estimates(lanes, payload)
+
+        self.assertEqual("unsupported_schema", disposition)
+        self.assertEqual({}, payload)
+        self.assertEqual(0, learned_count)
+        self.assertEqual(0.0, delta)
+        self.assertEqual(10, lanes[0]["base_lem"], "static floor must survive")
+
+    def test_load_learned_history_rejects_non_integer_schema_versions(self) -> None:
+        """Python's bool is an int subclass and 1.0 == 1, so a JSON `true` or
+        `1.0` envelope version would slip past bare equality and let its lane
+        numbers rewrite the budget. Only an exact integer satisfies v1."""
+        for forged_version in (True, 1.0):
+            with self.subTest(forged_version=forged_version):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = self._write_history(
+                        Path(tmp),
+                        json.dumps(
+                            {
+                                "schema_version": forged_version,
+                                "lanes": {
+                                    "rust_small": {
+                                        "learned": True,
+                                        "p50": 868.0,
+                                        "static_floor": 999.0,
+                                    }
+                                },
+                            }
+                        ),
+                    )
+                    lanes = [{"id": "rust_small", "base_lem": 10}]
+                    payload, disposition = pr_plan.load_learned_history(path)
+                    delta, learned_count = pr_plan.apply_learned_estimates(
+                        lanes, payload
+                    )
+
+                self.assertEqual("unsupported_schema", disposition)
+                self.assertEqual({}, payload)
+                self.assertEqual(0, learned_count)
+                self.assertEqual(0.0, delta)
+                self.assertEqual(10, lanes[0]["base_lem"], "static floor must survive")
+
+    def test_load_learned_history_rejects_a_renamed_lane_container(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "lane_stats": {"rust_small": {"learned": True, "p50": 20.0}},
+                    }
+                ),
+            )
+            payload, disposition = pr_plan.load_learned_history(path)
+
+        self.assertEqual("malformed", disposition)
+        self.assertEqual({}, payload)
+
+    def test_load_learned_history_rejects_a_payload_with_no_envelope(self) -> None:
+        """An unenveloped payload is not v1. Accepting it would re-open exactly
+        the drift this check exists to catch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(
+                Path(tmp),
+                json.dumps({"lanes": {"rust_small": {"learned": True, "p50": 20.0}}}),
+            )
+            payload, disposition = pr_plan.load_learned_history(path)
+
+        self.assertEqual("unsupported_schema", disposition)
+        self.assertEqual({}, payload)
+
+    def test_load_learned_history_rejects_non_object_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_history(Path(tmp), json.dumps([{"lanes": {}}]))
+            payload, disposition = pr_plan.load_learned_history(path)
+
+        self.assertEqual("malformed", disposition)
+        self.assertEqual({}, payload)
+
+    def _run_plan_with_history(self, root: Path, history_text: str | None) -> dict:
+        """Drive main() end to end against one history payload.
+
+        Returns the plan receipt and the rendered summary so both the receipt
+        disposition and the human-visible warning can be asserted together.
+        """
+        budget = root / "ci-budget.toml"
+        budget.write_text(
+            """
+[budget]
+default_limit_lem = 35
+elevated_limit_lem = 75
+hard_limit_lem = 125
+linux_minute_rate_usd = 0.008
+""",
+            encoding="utf-8",
+        )
+        lanes = root / "ci-lanes.toml"
+        lanes.write_text(
+            """
+[lane.rust_small]
+default_pr = true
+base_lem = 10
+blocking = true
+""",
+            encoding="utf-8",
+        )
+        risk_packs = root / "ci-risk-packs.toml"
+        risk_packs.write_text("", encoding="utf-8")
+        trust_lanes = root / "trust-lanes.toml"
+        trust_lanes.write_text("", encoding="utf-8")
+        output = root / "ci-plan.json"
+        summary = root / "summary.md"
+
+        argv = [
+            "pr_plan.py",
+            "--base", "origin/main",
+            "--head", "HEAD",
+            "--labels-json", "[]",
+            "--budget", str(budget),
+            "--lanes", str(lanes),
+            "--risk-packs", str(risk_packs),
+            "--trust-lanes", str(trust_lanes),
+            "--json-out", str(output),
+            "--summary", str(summary),
+        ]
+        if history_text is None:
+            # Name the absent path explicitly. Omitting --history falls back to
+            # main()'s default, `.ci/metrics/ci-lane-history.json`, which is
+            # relative to the *repository root*: the real file is checked in, so
+            # a cwd-dependent read resolves to `accepted` on the CI runner and
+            # to `absent` when the suite is run from scripts/ci.
+            argv += ["--history", str(root / "no-such-history.json")]
+        else:
+            history = self._write_history(root, history_text)
+            argv += ["--history", str(history)]
+
+        old_argv = sys.argv
+        old_discover = pr_plan.discover_changed_files
+        try:
+            pr_plan.discover_changed_files = lambda _base, _head: {
+                "status": "known",
+                "files": ["scripts/ci/pr_plan.py"],
+                "digest": "test-digest-history",
+            }
+            sys.argv = argv
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(0, pr_plan.main())
+        finally:
+            sys.argv = old_argv
+            pr_plan.discover_changed_files = old_discover
+
+        return {
+            "plan": json.loads(output.read_text(encoding="utf-8")),
+            "summary": summary.read_text(encoding="utf-8"),
+        }
+
+    def test_accepted_v1_history_applies_estimates_without_a_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_plan_with_history(
+                Path(tmp),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "lanes": {
+                            "rust_small": {
+                                "learned": True,
+                                "p50": 20.0,
+                                "static_floor": 2.0,
+                            }
+                        },
+                    }
+                ),
+            )
+
+        learned = result["plan"]["learned"]
+        self.assertEqual("accepted", learned["history_disposition"])
+        self.assertTrue(learned["history_present"])
+        self.assertEqual(1, learned["lanes_using_learned"])
+        self.assertEqual(23.0, result["plan"]["budget"]["estimated_lem"])
+        self.assertNotIn("Lane history", result["summary"])
+
+    def test_rejected_history_is_named_in_the_summary_and_falls_back(self) -> None:
+        """The control: the same lane, the same learned record, and only the
+        envelope version differs. A rejection must be visible in the summary a
+        reviewer reads, and must not move the estimate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_plan_with_history(
+                Path(tmp),
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "lanes": {
+                            "rust_small": {
+                                "learned": True,
+                                "p50": 20.0,
+                                "static_floor": 999.0,
+                            }
+                        },
+                    }
+                ),
+            )
+
+        learned = result["plan"]["learned"]
+        self.assertEqual("unsupported_schema", learned["history_disposition"])
+        self.assertTrue(learned["history_present"], "the file does exist")
+        self.assertEqual(0, learned["lanes_using_learned"])
+        self.assertEqual(10.0, result["plan"]["budget"]["estimated_lem"], "static floor")
+        self.assertIn("Lane history", result["summary"])
+        self.assertIn("unsupported_schema", result["summary"])
+
+    def test_absent_history_is_not_warned_about(self) -> None:
+        """No file is a normal state, not a defect: the warning must not fire."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_plan_with_history(Path(tmp), None)
+
+        self.assertEqual("absent", result["plan"]["learned"]["history_disposition"])
+        self.assertFalse(result["plan"]["learned"]["history_present"])
+        self.assertNotIn("Lane history", result["summary"])
+
+    def test_load_learned_history_separates_corrupt_from_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            corrupt = self._write_history(root, "{not json")
+
+            payload, disposition = pr_plan.load_learned_history(corrupt)
+            self.assertEqual("unreadable", disposition)
+            self.assertEqual({}, payload)
+
+            missing_payload, missing_disposition = pr_plan.load_learned_history(
+                root / "does-not-exist.json"
+            )
+            self.assertEqual("absent", missing_disposition)
+            self.assertEqual({}, missing_payload)
+
+    def test_every_disposition_the_loader_can_return_is_declared(self) -> None:
+        """The receipt advertises a closed token vocabulary. Drive the loader
+        through every reachable outcome and hold each one to that vocabulary,
+        so a future branch cannot emit an undeclared disposition."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases: list[tuple[str, Path]] = [
+                ("absent", root / "never-written.json"),
+                ("unreadable", self._write_history(root, "{not json", "corrupt.json")),
+                ("malformed", self._write_history(root, "[]", "list.json")),
+                (
+                    "unsupported_schema",
+                    self._write_history(
+                        root,
+                        json.dumps({"schema_version": 7, "lanes": {}}),
+                        "v7.json",
+                    ),
+                ),
+                (
+                    "accepted",
+                    self._write_history(
+                        root,
+                        json.dumps({"schema_version": 1, "lanes": {}}),
+                        "v1.json",
+                    ),
+                ),
+            ]
+            declared = set(pr_plan.HISTORY_DISPOSITIONS)
+            for expected, path in cases:
+                _, disposition = pr_plan.load_learned_history(path)
+                self.assertEqual(expected, disposition, f"{path.name}")
+                self.assertIn(disposition, declared, f"{path.name} emitted undeclared")
+
     def test_main_writes_plan_summary_and_trust_lane_for_pr_plan_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
