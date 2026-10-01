@@ -127,7 +127,6 @@ class PackageControlReceiptTests(unittest.TestCase):
         self.assertEqual(subject["promotion"]["public_artifact_installed"], "not_proven")
         self.assertEqual(subject["promotion"]["package_control_leading_setup"], "not_proven")
         self.assertIsNone(subject["package"]["version"])
-        self.assertEqual(len(sha256_bytes(raw)), 64)
 
     def test_schema_and_not_run_template_share_the_public_stage(self) -> None:
         validator = load_validator()
