@@ -4,6 +4,6 @@ kind: Fixed
 body: "Method completion again offers inherited and workspace-indexed methods when the edited buffer declares the receiver package. The same-file completion change composed open-buffer methods with persisted members but dropped the persisted `use parent`/role chain and persisted explicit members for open packages, so `$self->` in a partially-edited module lost `inherited_method` and workspace-only methods; open-buffer facts now keep precedence while persisted members and inheritance edges compose back in."
 time: 2026-10-01T00:00:00Z
 custom:
-  PR: "TBD"
+  PR: "17045"
   Slug: main-red-inherited-method-completion
   Breaking: "no"
