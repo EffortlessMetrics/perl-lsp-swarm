@@ -785,16 +785,29 @@ test_real_repository_dry_run_writes_nothing() {
 
 # A missing checkout can still exist at a path this OS cannot resolve. Use real
 # Git administrative records: the old unconditional prune erased such records
-# before the script could report them. Both fixtures are disposable.
+# before the script could report them. Both fixtures are disposable. The
+# optional second argument shortens gc.worktreePruneExpire; only the negative
+# control passes it (see test_unreachable_real_registration_survives_both_modes).
 new_unreachable_real_worktree() {
-  local root="$1"
+  local root="$1" prune_expire="${2:-}"
   mkdir -p "$root" || return 1
   git init -q -b main "${root}/repo" || return 1
   git init -q --bare "${root}/origin.git" || return 1
   git -C "${root}/repo" config user.email cleanup-test@example.invalid || return 1
   git -C "${root}/repo" config user.name "cleanup test" || return 1
-  # Make the old script's bare `worktree prune` effective in a fresh fixture.
-  git -C "${root}/repo" config gc.worktreePruneExpire now || return 1
+  # The real-mode sweep fetches, and that fetch can trigger Git auto-maintenance
+  # whose worktree prune honors gc.worktreePruneExpire (fetch.autoGc=false does
+  # not suppress it). Pin maintenance off so the verdict depends on the script
+  # under test, not on the host's inherited gc or maintenance configuration.
+  git -C "${root}/repo" config maintenance.auto false || return 1
+  if [[ -n "$prune_expire" ]]; then
+    # Only the negative control shortens the prune expiry: its bare
+    # `git worktree prune` must remove a fresh registration to mirror the
+    # pre-fix primitive. In the retention fixture this config would let the
+    # sweep's own fetch-driven auto-maintenance erase the registration before
+    # the sweep lists it (observed on Git for Windows).
+    git -C "${root}/repo" config gc.worktreePruneExpire "$prune_expire" || return 1
+  fi
   printf 'preserved\n' > "${root}/repo/file.txt" || return 1
   git -C "${root}/repo" add file.txt || return 1
   git -C "${root}/repo" commit -qm init || return 1
@@ -823,7 +836,7 @@ test_unreachable_real_registration_survives_both_modes() {
   local root="${TMPDIR_BASE}/unreachable-real" old="${TMPDIR_BASE}/prune-control"
   local output before after admin_before source_before
   if ! new_unreachable_real_worktree "$root" ||
-     ! new_unreachable_real_worktree "$old"; then
+     ! new_unreachable_real_worktree "$old" now; then
     fail "disposable unreachable-worktree fixtures initialize"
     return 0
   fi
