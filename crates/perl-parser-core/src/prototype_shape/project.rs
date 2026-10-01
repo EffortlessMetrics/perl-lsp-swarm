@@ -115,7 +115,9 @@ pub fn project_prototype_shape(raw: &str) -> PrototypeShape {
         }
     }
 
-    if slot_follows_unbackslashed_slurpy(&slots) {
+    if slot_follows_unbackslashed_slurpy(&slots)
+        || boundary_follows_unbackslashed_slurpy(&slots, optional_boundary)
+    {
         note_recovery(&mut recovery, PrototypeRecovery::SlotAfterSlurpy);
     }
 
@@ -257,6 +259,21 @@ fn slot_follows_unbackslashed_slurpy(slots: &[PrototypeSlot]) -> bool {
     slots.iter().enumerate().any(|(index, slot)| {
         matches!(slot.kind, PrototypeSlotKind::ArraySlurpy | PrototypeSlotKind::HashSlurpy)
             && index.saturating_add(1) < slots.len()
+    })
+}
+
+/// Perl's `illegalproto` fires on any non-space after unbackslashed `@`/`%`,
+/// including a trailing `;` that never becomes a slot (`@;`, `$@;`, `%;`).
+fn boundary_follows_unbackslashed_slurpy(
+    slots: &[PrototypeSlot],
+    optional_boundary: Option<PrototypeBoundary>,
+) -> bool {
+    let Some(boundary) = optional_boundary else {
+        return false;
+    };
+    slots.iter().any(|slot| {
+        matches!(slot.kind, PrototypeSlotKind::ArraySlurpy | PrototypeSlotKind::HashSlurpy)
+            && boundary.start >= slot.end
     })
 }
 

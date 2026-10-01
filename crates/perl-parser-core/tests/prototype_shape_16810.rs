@@ -7,7 +7,7 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{CompileConfidence, CompileProvenance, HirFile, lower_ast};
 use perl_parser_core::prototype_shape::{
-    PrototypeDefault, PrototypeRecovery, PrototypeSlotKind, PrototypeSyntaxClass,
+    PrototypeDefault, PrototypeRecovery, PrototypeReferent, PrototypeSlotKind, PrototypeSyntaxClass,
 };
 use perl_tdd_support::must_some_with;
 
@@ -84,7 +84,20 @@ fn required_forms_from_the_issue_matrix_stay_ordered() {
         fact(&file, "scalar_or_ref").shape.slots()[0].kind(),
         PrototypeSlotKind::ScalarOrReference
     ));
-    assert_eq!(fact(&file, "refs").shape.slots().len(), 3);
+    let refs_slots = fact(&file, "refs").shape.slots();
+    assert_eq!(refs_slots.len(), 3);
+    assert!(matches!(
+        refs_slots[0].kind(),
+        PrototypeSlotKind::ReferenceTo(PrototypeReferent::Scalar)
+    ));
+    assert!(matches!(
+        refs_slots[1].kind(),
+        PrototypeSlotKind::ReferenceTo(PrototypeReferent::Array)
+    ));
+    assert!(matches!(
+        refs_slots[2].kind(),
+        PrototypeSlotKind::ReferenceTo(PrototypeReferent::Hash)
+    ));
 }
 
 #[test]
@@ -142,13 +155,22 @@ fn last_prototype_attribute_wins() {
 
 #[test]
 fn slot_after_unbackslashed_slurpy_is_recovered_on_the_fact() {
-    let file =
-        lower_source("sub after_array (@$) { }\nsub after_hash (%$) { }\nsub refs (\\@$) { }");
+    let file = lower_source(
+        "sub after_array (@$) { }\nsub after_hash (%$) { }\nsub trailing_semi (@;) { }\nsub refs (\\@$) { }",
+    );
     let after_array = fact(&file, "after_array");
     let after_hash = fact(&file, "after_hash");
+    let trailing_semi = fact(&file, "trailing_semi");
     let refs = fact(&file, "refs");
     assert!(!after_array.shape.is_exact());
     assert!(!after_hash.shape.is_exact());
+    assert!(!trailing_semi.shape.is_exact());
+    assert!(matches!(
+        trailing_semi.shape.completeness(),
+        perl_parser_core::prototype_shape::PrototypeCompleteness::Recovered {
+            reason: PrototypeRecovery::SlotAfterSlurpy
+        }
+    ));
     assert!(matches!(
         after_array.shape.completeness(),
         perl_parser_core::prototype_shape::PrototypeCompleteness::Recovered {
@@ -241,7 +263,7 @@ fn semicolon_signature_form_does_not_become_a_prototype_shape() {
 }
 
 #[test]
-fn recovered_shape_does_not_use_raw_string_equality_as_semantics() {
+fn semantic_digest_distinguishes_optional_boundary() {
     let file = lower_source("sub a ($$) { }\nsub b ($;$) { }");
     let a = fact(&file, "a");
     let b = fact(&file, "b");

@@ -150,9 +150,15 @@ fn slot_after_unbackslashed_slurpy_cannot_be_exact() {
     let after_array = project("@$");
     let after_hash = project("%$");
     let after_optional = project("@;$");
+    let trailing_semi = project("@;");
+    let slurpy_then_semi = project("$@;");
+    let hash_then_semi = project("%;");
     assert!(!after_array.is_exact());
     assert!(!after_hash.is_exact());
     assert!(!after_optional.is_exact());
+    assert!(!trailing_semi.is_exact());
+    assert!(!slurpy_then_semi.is_exact());
+    assert!(!hash_then_semi.is_exact());
     assert!(matches!(
         after_array.completeness(),
         PrototypeCompleteness::Recovered { reason: PrototypeRecovery::SlotAfterSlurpy }
@@ -161,7 +167,12 @@ fn slot_after_unbackslashed_slurpy_cannot_be_exact() {
         after_hash.completeness(),
         PrototypeCompleteness::Recovered { reason: PrototypeRecovery::SlotAfterSlurpy }
     ));
+    assert!(matches!(
+        trailing_semi.completeness(),
+        PrototypeCompleteness::Recovered { reason: PrototypeRecovery::SlotAfterSlurpy }
+    ));
     assert_eq!(kinds(&after_array), ["array-slurpy", "scalar"]);
+    assert_eq!(kinds(&trailing_semi), ["array-slurpy"]);
 }
 
 #[test]
@@ -176,7 +187,7 @@ fn slurpy_as_last_slot_stays_exact() {
     assert!(project("@").is_exact());
     assert!(project("$@").is_exact());
     assert!(project("$;@").is_exact());
-    assert!(project("@;").is_exact());
+    assert!(project(";@").is_exact());
 }
 
 #[test]
@@ -308,7 +319,7 @@ fn attribute_body_strips_the_prototype_wrapper_only() {
 }
 
 #[test]
-fn digest_is_independent_of_hash_iteration() {
+fn digest_is_stable_for_identical_input() {
     let a = project(r"\[$@]");
     let b = project(r"\[$@]");
     assert_eq!(a.semantic_digest(), b.semantic_digest());

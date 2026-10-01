@@ -126,8 +126,8 @@ pub enum PrototypeRecovery {
     DanglingBackslash,
     /// `]` or other closer outside a group.
     UnexpectedCloser,
-    /// A slot follows an unbackslashed `@` or `%`. Those slurps remaining
-    /// arguments, so later slots are not an exact prototype (`perlsub`).
+    /// A slot or `;` follows an unbackslashed `@` or `%`. Those slurps remaining
+    /// arguments, so later material is not an exact prototype (`perlsub`).
     SlotAfterSlurpy,
     /// Form that is not projected as exact (reserved for oracle-disputed cases).
     UnsupportedForm,

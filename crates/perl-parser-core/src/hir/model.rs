@@ -219,7 +219,8 @@ pub struct PrototypeFact {
     /// Canonical parsed shape for this prototype. Raw `content` remains a
     /// compatibility projection and is not a second semantic parser.
     pub shape: PrototypeShape,
-    /// Precise source range for the prototype node.
+    /// Precise source range for the prototype node. Attribute-sourced facts
+    /// use `declaration_range` because `:prototype(...)` has no dedicated AST node.
     pub range: SourceLocation,
     /// Full declaration source range.
     pub declaration_range: SourceLocation,
