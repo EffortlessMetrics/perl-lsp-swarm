@@ -1,7 +1,7 @@
 project: product
 component: Language intelligence
 kind: Fixed
-body: "A line-initial `=cut` in a file with no POD block open is now treated as the POD opener perlpodspec says it is: it opens a block that runs to the next line-initial `=cut`, or to EOF. Previously only an enumerated command list (=pod, =head, ...) opened POD, so a stray `=cut` was lexed as the `=` operator and `perllsp --check` reported FAIL on files `perl -c` accepts. The symbol-table prepass applies the same rule, and digit- or underscore-led `=` stays an operator so assignment continuations like `my $x` newline `=1;` keep parsing as code."
+body: "A line-initial `=cut` in a file with no POD block open is now treated as the POD opener perlpodspec says it is: it opens a block that runs to the next line-initial `=cut` command, or to EOF. Previously only an enumerated command list (=pod, =head, ...) opened POD, so a stray `=cut` was lexed as the `=` operator and `perllsp --check` reported FAIL on files `perl -c` accepts. The symbol-table prepass applies the same rule, word extensions such as `=cutlery` are distinct commands that keep POD open (matching the perl tokenizer), and digit- or underscore-led `=` stays an operator so assignment continuations like `my $x` newline `=1;` keep parsing as code."
 time: 2026-09-28T22:43:00Z
 custom:
   PR: "16740"

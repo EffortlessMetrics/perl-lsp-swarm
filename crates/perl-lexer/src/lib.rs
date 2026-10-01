@@ -874,9 +874,18 @@ impl<'a> PerlLexer<'a> {
                         // Scan forward for =cut at the start of a line
                         let mut found_cut = false;
                         while i < bytes.len() {
-                            // Look for =cut at the start of a line
+                            // Look for =cut at the start of a line. The command
+                            // name runs to the first non-word byte, so only a
+                            // word character after "=cut" makes it a different
+                            // command: perl 5.42 keeps POD open across
+                            // `=cutlery`, `=cut123`, and `=cut_foo`, while
+                            // `=cut.foo` and `=cut,` close it — matching the
+                            // `pod_command` word-run parse in symbol_table.
                             if (i == 0 || matches!(bytes[i - 1], b'\n' | b'\r'))
                                 && bytes[i..].starts_with(b"=cut")
+                                && !bytes.get(i + 4).is_some_and(|byte| {
+                                    byte.is_ascii_alphanumeric() || *byte == b'_'
+                                })
                             {
                                 i += 4; // Skip "=cut"
                                 // Skip rest of the =cut line

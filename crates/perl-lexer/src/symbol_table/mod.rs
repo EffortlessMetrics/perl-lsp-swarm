@@ -265,9 +265,20 @@ fn line_bounds(bytes: &[u8], start: usize) -> (usize, usize) {
     (end, next)
 }
 
+/// Return the POD command name on this line: the ASCII word run (letters,
+/// digits, underscore) immediately following `=`.
+///
+/// Command names are word runs, so `=head1` is one command distinct from
+/// `=head`, and `=cut_foo`/`=cutlery`/`=cut123` are not `=cut`. This matches
+/// the perl 5.42 tokenizer oracle: `=cut.foo` and `=cut,` close a POD block
+/// while `=cut123` and `=cut_foo` keep it open, and it matches the `=cut`
+/// boundary check in `lib.rs`.
 fn pod_command(line: &str) -> Option<&str> {
     let rest = line.strip_prefix('=')?;
-    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let end = rest
+        .bytes()
+        .position(|byte| !(byte.is_ascii_alphanumeric() || byte == b'_'))
+        .unwrap_or(rest.len());
     rest.get(..end)
 }
 
@@ -342,7 +353,12 @@ fn scan_pass(input: &str, hints: &Declarations) -> Declarations {
             continue;
         }
 
-        if state.quote == QuoteState::Code && starts_pod(line) {
+        // Quote-like bodies (`q{...}`, regexes, ...) may span lines and contain
+        // POD-shaped text like `=cut`; only a genuine line-initial directive
+        // outside such a body opens POD. `state.quote` stays `Code` while a
+        // multiline quote-like body is open, so `quote_like` must be checked
+        // separately.
+        if state.quote == QuoteState::Code && state.quote_like.is_none() && starts_pod(line) {
             state.in_pod = true;
             line_start = next_line_start;
             continue;
@@ -1213,6 +1229,47 @@ mod tests {
         let table = LocalSymbolTable::scan_subs(source);
 
         assert!(table.is_known_sub("real"));
+    }
+
+    #[test]
+    fn cut_command_extensions_keep_prepass_pod_open() {
+        // perl 5.42 oracle: `=cutlery` is a command distinct from `=cut`, so
+        // it does not close a stray-opener POD block; only a genuine `=cut`
+        // resumes code — matching the lexer's word-boundary closer.
+        let source = "print 'a';\n=cut\n=cutlery\nsub phantom { }\n=cut\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(!table.is_known_sub("phantom"), "=cutlery keeps the prepass in POD");
+        assert!(table.is_known_sub("real"), "=cut after =cutlery closes POD");
+    }
+
+    #[test]
+    fn word_run_extensions_of_cut_are_distinct_commands_in_prepass() {
+        // The command name is a word run (letters, digits, underscore): perl
+        // 5.42 keeps POD open across `=cut123` and `=cut_foo`, while the
+        // first non-word byte ends the command, so `=cut.foo` closes.
+        let source = "print 'a';\n=cut123\nsub phantom { }\n=cut_foo\nsub phantom_two { }\n=cut.foo\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(
+            !table.is_known_sub("phantom") && !table.is_known_sub("phantom_two"),
+            "word extensions of =cut keep the prepass in POD"
+        );
+        assert!(table.is_known_sub("real"), "=cut.foo ends the cut command and closes POD");
+    }
+
+    #[test]
+    fn pod_shaped_line_inside_multiline_quote_like_does_not_open_pod() {
+        // A multiline q{} body may contain a column-zero `=cut`; quote-like
+        // state is tracked separately from string state (quote stays Code),
+        // so the prepass must not enter POD inside the body.
+        let source = "my $doc = q{\n=cut\n};\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(
+            table.is_known_sub("real"),
+            "a POD-shaped line inside a quote-like body must not open POD"
+        );
     }
 
     #[test]

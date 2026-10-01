@@ -276,3 +276,83 @@ fn underscore_led_equals_at_line_start_stays_code() -> R {
     assert!(texts.contains(&"_foo"), "The bareword must survive: {texts:?}");
     Ok(())
 }
+
+#[test]
+fn equals_as_final_byte_stays_operator() -> R {
+    // opens_pod boundary: a line-initial `=` with no following byte cannot
+    // open POD — the opener predicate reads the byte after `=` and finds
+    // none — so the operator must survive at EOF.
+    let code = "my $x\n=";
+    let toks = significant(code);
+    let texts: Vec<&str> = toks.iter().map(|t| t.text.as_ref()).collect();
+    assert!(texts.contains(&"my"), "Code before the '=' must lex: {texts:?}");
+    assert!(texts.contains(&"="), "A trailing line-initial '=' must lex as an operator: {texts:?}");
+    Ok(())
+}
+
+// ===========================================================================
+// 12. `=cut` closes only at a POD-command-name boundary
+// ===========================================================================
+
+#[test]
+fn cutlery_extension_does_not_close_pod() -> R {
+    // The command name extends over word characters, so `=cutlery` is a
+    // distinct command (perl 5.42 oracle: `=pod\n=cutlery\n)\n=cut\n` is
+    // syntax OK). A stray `=cut` opener therefore stays open across it, and
+    // only a genuine `=cut` resumes code.
+    let code = "print \"a\";\n=cut\n=cutlery\npod text here\n=cut\nprint \"b\";\n";
+    let toks = significant(code);
+    let texts: Vec<&str> = toks.iter().map(|t| t.text.as_ref()).collect();
+    let print_count = texts.iter().filter(|&&t| t == "print").count();
+    assert_eq!(print_count, 2, "POD stays open across =cutlery: {texts:?}");
+    assert!(
+        !texts.iter().any(|t| t.starts_with('=')),
+        "No directive may surface as a token: {texts:?}"
+    );
+    assert!(!texts.contains(&"here"), "POD text between the pair stays hidden: {texts:?}");
+    Ok(())
+}
+
+#[test]
+fn word_extensions_of_cut_keep_pod_open_until_word_boundary_cut() -> R {
+    // Digits and underscores extend the command name too: perl 5.42 keeps
+    // POD open across `=cut123` and `=cut_foo`, while the first non-word
+    // byte ends the command — `=cut.foo` closes the block.
+    let code = "print \"a\";\n=cut\n=cut123\n=cut_foo\nsub phantom { }\n=cut.foo\nprint \"b\";\n";
+    let toks = significant(code);
+    let texts: Vec<&str> = toks.iter().map(|t| t.text.as_ref()).collect();
+    let print_count = texts.iter().filter(|&&t| t == "print").count();
+    assert_eq!(print_count, 2, "POD runs to =cut.foo, so the second print is code: {texts:?}");
+    assert!(!texts.contains(&"phantom"), "POD text between the extensions stays hidden: {texts:?}");
+    Ok(())
+}
+
+#[test]
+fn non_word_byte_after_cut_closes_pod() -> R {
+    // The first non-word byte after `cut` ends the command, so `=cut.foo`
+    // and `=cut,` are genuine closers (perl 5.42 oracle: `=pod\n=cut.foo\n)\n=cut\n`
+    // reports a syntax error at the `)` line).
+    let code = "print \"a\";\n=pod\npod text here\n=cut.foo\nprint \"b\";\n=head1 X\n=cut,\nprint \"c\";\n";
+    let toks = significant(code);
+    let texts: Vec<&str> = toks.iter().map(|t| t.text.as_ref()).collect();
+    let print_count = texts.iter().filter(|&&t| t == "print").count();
+    assert_eq!(print_count, 3, "Both =cut.foo and =cut, close the block: {texts:?}");
+    Ok(())
+}
+
+#[test]
+fn crlf_line_ended_cut_pair_opens_and_closes_pod() -> R {
+    // CRLF sources take the same path: the opener line ends with `\r\n`
+    // (exercising the line_end_byte == b'\r' consumption) and the next
+    // line-initial `=cut` still closes the block.
+    let code = "print \"a\";\r\n=cut\r\npod text here\r\n=cut\r\nprint \"b\";\r\n";
+    let toks = significant(code);
+    let texts: Vec<&str> = toks.iter().map(|t| t.text.as_ref()).collect();
+    let print_count = texts.iter().filter(|&&t| t == "print").count();
+    assert_eq!(print_count, 2, "CRLF =cut pair leaves both prints as code: {texts:?}");
+    assert!(
+        !texts.iter().any(|t| t.starts_with('=')),
+        "No CRLF directive may surface as a token: {texts:?}"
+    );
+    Ok(())
+}
