@@ -54,6 +54,16 @@ evidence and detached/unpushed commits must be preserved. Read-only reconciliati
 produces exact-path proposals, never inferred deletion authority. The legacy
 `target-gc.sh --apply` is retired because it does not share this lease protocol.
 
+When OpenClaw allocates the work, reuse its existing native task ID and node ID
+or worker identity. Attach or reference the current worktree, both resolved Cargo
+target/build paths from the emitted descriptor, and each resource's disposition
+and evidence-retention reason in the existing native terminal status. Success or
+cancellation does not authorize cleanup. Do not introduce a competing task registry
+or status manager: `cargo-active` is only a local exclusion primitive, not an
+ownership database. The bridge owner owns the concrete adapter; its native
+interface remains to be established. This contract does not invent API fields or
+claim that an adapter is already installed.
+
 Cargo's global cache GC cleans dependency downloads, **not** target/build outputs.
 Cargo 1.95 full/profile/doc clean does not acquire the build lock, and a separate
 build directory can also be erased by clean. Do not use Cargo clean as a safety

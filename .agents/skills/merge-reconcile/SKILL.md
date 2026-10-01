@@ -254,6 +254,15 @@ proof. Keep the common Cargo slot assigned through any external artifact consume
 `cargo-admitted run/test` holds it through its child, but independent later execution
 requires a separately admitted owner-held lifetime.
 
+For OpenClaw-allocated work, carry the existing native task ID and node ID or
+worker identity. Attach or reference the current worktree and both resolved Cargo
+target/build paths, with each resource's disposition and evidence-retention reason,
+in the existing native terminal status. Task success or cancellation is not cleanup
+authority. Reuse native ownership/status rather than adding a task registry or
+status manager; `cargo-active` is only local exclusion. The bridge owner owns the
+concrete adapter once its native interface is established; this repository contract
+does not define API fields or implement bridge dispatch/status recovery.
+
 Reconcile with a read-only proposal joining Git's registered worktrees and the
 root's known external resource paths. Record path, owner certainty, unique-state
 checks, estimated allocation, and proposed action. Missing paths are metadata
