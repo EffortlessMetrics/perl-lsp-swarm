@@ -9,7 +9,8 @@ mod workspace_validation;
 
 pub use file_validation::{validate_file_content, validate_file_path};
 pub use lsp_validation::{
-    validate_buffer_line_lengths, validate_document_uri, validate_request_admission,
+    is_text_sync_method, text_sync_params_ceiling, validate_buffer_line_lengths,
+    validate_document_uri, validate_request_admission,
 };
 pub use sanitize::sanitize_string;
 pub use workspace_validation::validate_workspace_root;
@@ -271,5 +272,33 @@ mod tests {
     fn test_file_size_limit_sourced_from_lsp_limits() {
         let expected_limit = crate::runtime::limits::max_file_size_bytes();
         assert_eq!(expected_limit, 1_024 * 1_024);
+    }
+
+    /// The exported text-sync ceiling must stay the exact number the admission
+    /// gate enforces for text-sync methods (#16659): the runtime names this
+    /// figure to users when a sync is rejected against it.
+    #[test]
+    fn test_text_sync_params_ceiling_matches_admission_gate() {
+        use crate::runtime::input_validation::text_sync_params_ceiling;
+        let file_limit = crate::runtime::limits::max_file_size_bytes();
+        let expected = 1_000_000usize.max(file_limit.saturating_mul(2).saturating_add(4_096));
+        assert_eq!(text_sync_params_ceiling(), expected);
+        // The default configuration derives the ceiling from the file limit.
+        assert_eq!(text_sync_params_ceiling(), 2_101_248);
+    }
+
+    /// The method classifier the desync marking relies on must track the
+    /// gate's own text-sync set exactly.
+    #[test]
+    fn test_is_text_sync_method_tracks_admission_set() {
+        use crate::runtime::input_validation::is_text_sync_method;
+        for method in ["textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"] {
+            assert!(is_text_sync_method(method), "{method} must be a text-sync method");
+        }
+        for method in
+            ["textDocument/formatting", "textDocument/hover", "initialize", "textDocument/didClo"]
+        {
+            assert!(!is_text_sync_method(method), "{method} must not be a text-sync method");
+        }
     }
 }

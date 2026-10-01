@@ -46,7 +46,9 @@ EXPECTED_JOB_IF = {
         "needs.preflight-latest-check.outputs.is_latest == 'true'"
     ),
     "public-api-pr": (
-        "github.event_name == 'pull_request' && "
+        "(github.event_name == 'pull_request' || "
+        "(github.event_name == 'push' && "
+        "(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))) && "
         "needs.draft-pr-check.outputs.run_ci == 'true' && "
         "needs.preflight-latest-check.outputs.is_latest == 'true'"
     ),
@@ -59,7 +61,7 @@ EXPECTED_JOB_IF = {
 EXPECTED_STEP_IF = {
     "platform-overrides": None,
     "repository-contract": None,
-    "public-api-pr": "needs.draft-pr-check.outputs.api_scope == 'true'",
+    "public-api-pr": "env.RUN_API_RATCHET == 'true'",
     "semver-pr": "needs.draft-pr-check.outputs.api_scope == 'true'",
 }
 
@@ -194,6 +196,26 @@ class CacheWriterAuthorityTests(unittest.TestCase):
                 )
                 self.assertEqual(EXPECTED_JOB_IF[job_name], scalar_field(job, "if", 4))
                 self.assertEqual(EXPECTED_STEP_IF[job_name], fields.get("if"))
+
+    def test_public_api_pr_cache_writer_rejects_pr_only_api_scope_gate(self) -> None:
+        """#16815: a job-if-only push add with api_scope-gated cache steps is stale."""
+        job = indented_block(self.lines, "public-api-pr", 2)
+        job_if = scalar_field(job, "if", 4)
+        stale_job_if = (
+            "github.event_name == 'pull_request' && "
+            "needs.draft-pr-check.outputs.run_ci == 'true' && "
+            "needs.preflight-latest-check.outputs.is_latest == 'true'"
+        )
+        self.assertNotEqual(stale_job_if, job_if)
+        self.assertIn("github.event_name == 'push'", job_if)
+        _, fields = cache_step(
+            job, ("key", EXPECTED_CACHES["public-api-pr"]["key"])
+        )
+        self.assertEqual("env.RUN_API_RATCHET == 'true'", fields.get("if"))
+        self.assertNotEqual(
+            "needs.draft-pr-check.outputs.api_scope == 'true'",
+            fields.get("if"),
+        )
 
     def test_ref_only_guard_is_bound_to_current_trigger_authority(self) -> None:
         trigger = indented_block(self.lines, "on", 0)
