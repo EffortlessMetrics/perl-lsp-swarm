@@ -28,6 +28,7 @@ import {
 import {
   acquireLaunchManagedCandidateReference,
   mayReleaseManagedCandidateReferences,
+  readInstalledManagedCandidateManifest,
   releaseManagedCandidateSessionReferences,
 } from './managedCandidateRuntime';
 import { runLanguageServerHealthCheck } from './languageServerHealth';
@@ -82,11 +83,12 @@ import { registerMcpSupport } from './mcpSupport';
 import { registerServerCommandGroup } from './serverCommandGroup';
 import { languageServerRuntimeHealth } from './languageServerRuntimeHealth';
 import {
+  SHOW_BINARY_IDENTITY_COMMAND,
   showBinaryIdentityStatus,
   type BinaryIdentityCommandHost,
+  type BinaryIdentityCommandInput,
   type BinaryIdentityRequestClient,
 } from './binaryIdentityCommand';
-import type { SelectedBinaryRole } from './binaryIdentityStatus';
 import { registerCriticCommandGroup } from './criticCommandGroup';
 import { registerTestCommandGroup } from './testCommandGroup';
 import { registerOnboardingCommandGroup } from './onboardingCommandGroup';
@@ -250,10 +252,15 @@ let serverDemand: ServerDemandCoordinator | undefined;
  */
 let extensionActivation: ExtensionActivationOwner | null = null;
 
+/**
+ * Builds the registered binary-identity command. The input is resolved per
+ * invocation, not once at activation: a reinstall between commands binds a
+ * different managed candidate, so the installed candidate and target must be
+ * re-read when the user asks for identity status.
+ */
 export function createBinaryIdentityCommand(
   getClient: () => BinaryIdentityRequestClient | undefined,
-  extensionVersion: string,
-  selectedRole: SelectedBinaryRole,
+  resolveInput: () => BinaryIdentityCommandInput,
   host: BinaryIdentityCommandHost,
   reportError: (message: string) => void = () => undefined,
 ): () => Promise<unknown> {
@@ -264,16 +271,34 @@ export function createBinaryIdentityCommand(
     }
 
     try {
-      return await showBinaryIdentityStatus(activeClient, host, {
-        extensionVersion,
-        selectedRole,
-      });
+      return await showBinaryIdentityStatus(activeClient, host, resolveInput());
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       reportError(message);
       return { status: 'error' as const, message };
     }
   };
+}
+
+/**
+ * The installed managed candidate's recorded identity, read from the resolved
+ * install dir's `candidate.json` manifest (#10083). This is the candidate and
+ * target that actually run, not the host-preferred one, so a fallback install
+ * (e.g. Windows ARM64 emulation) is compared against what was really
+ * installed. `undefined` for a user-supplied or pre-policy install, which
+ * carries no manifest; the identity request then omits the candidate and
+ * target expectations instead of fabricating them.
+ */
+function installedManagedIdentity(): { candidate: string; target: string } | undefined {
+  const serverPath = currentServerPath;
+  if (serverPath === null) {
+    return undefined;
+  }
+  const manifest = readInstalledManagedCandidateManifest(path.dirname(serverPath));
+  if (manifest === null) {
+    return undefined;
+  }
+  return { candidate: manifest.candidate_id, target: manifest.subject.target };
 }
 
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
@@ -984,6 +1009,43 @@ async function runExtensionActivation(
     },
   });
 
+  // The identity presentation's refresh action re-invokes the registered
+  // identity command. The in-flight guard breaks a stale→refresh→stale loop:
+  // the re-invocation's own presentation is shown, but it never re-enters
+  // refresh recursively.
+  let identityRefreshInFlight = false;
+  const refreshBinaryIdentity = async (): Promise<void> => {
+    if (identityRefreshInFlight) {
+      return;
+    }
+    identityRefreshInFlight = true;
+    try {
+      await vscode.commands.executeCommand(SHOW_BINARY_IDENTITY_COMMAND);
+    } finally {
+      identityRefreshInFlight = false;
+    }
+  };
+
+  // The inspect action surfaces the resolved server path read-only. It never
+  // replaces a configured user-supplied binary.
+  const showConfiguredServerBinary = async (): Promise<void> => {
+    const configuredPath = currentServerPath;
+    if (configuredPath === null) {
+      await vscode.window.showInformationMessage(
+        'No Perl LSP server binary is resolved yet. Start the server or run the health check first.',
+      );
+      return;
+    }
+    outputChannel.info(`[binary-identity] configured server binary: ${configuredPath}`);
+    const selection = await vscode.window.showInformationMessage(
+      `Configured Perl LSP server binary:\n${configuredPath}`,
+      'Show Output',
+    );
+    if (selection === 'Show Output') {
+      outputChannel.show();
+    }
+  };
+
   // Register server-facing commands through an explicit dependency context.
   // Lifecycle transitions remain owned by the authoritative composition.
   const serverCommandDisposables = registerServerCommandGroup({
@@ -1019,8 +1081,20 @@ async function runExtensionActivation(
     restartServer: () => restartServerFromExplicitRecovery(context),
     showBinaryIdentity: createBinaryIdentityCommand(
       () => client ?? languageClientLifecycle?.client,
-      (context.extension.packageJSON.version as string) ?? 'unknown',
-      'managed',
+      () => {
+        const installed = installedManagedIdentity();
+        return {
+          extensionVersion: (context.extension.packageJSON.version as string) ?? 'unknown',
+          // #9096 owns persistent selected-source truth; until it lands this
+          // host can only speak for the managed role it resolves by default.
+          selectedRole: 'managed',
+          // Absent properties stay absent: the request builder distinguishes
+          // an unset expectation from an empty one.
+          ...(installed === undefined
+            ? {}
+            : { extensionCandidate: installed.candidate, expectedTarget: installed.target }),
+        };
+      },
       {
         show: async (presentation) => {
           await vscode.window.showInformationMessage(
@@ -1028,9 +1102,14 @@ async function runExtensionActivation(
           );
           return undefined;
         },
-        refreshIdentity: async () => undefined,
-        repairManagedPair: async () => undefined,
-        inspectConfiguredBinary: async () => undefined,
+        refreshIdentity: refreshBinaryIdentity,
+        // Adapts the governed replacement authority: the same fail-closed
+        // installer and restore-previous-binary path the `perl-lsp.reinstall`
+        // command runs. No new install mechanism is introduced here.
+        repairManagedPair: async () => {
+          await reinstallServerBinary(context);
+        },
+        inspectConfiguredBinary: showConfiguredServerBinary,
         copySupportPacket: async (packet) => {
           await vscode.env.clipboard.writeText(packet);
         },
