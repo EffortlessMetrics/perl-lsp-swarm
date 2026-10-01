@@ -304,6 +304,69 @@ fn typed_document_result_still_refuses_a_block_whose_body_is_unsupported() {
 }
 
 #[test]
+fn typed_document_result_refuses_a_hand_written_block_the_renderer_never_emitted() {
+    // Class falsifier for the #16708 review: boundary *shape* alone cannot
+    // claim rendered form. `push_simple_block_body_docs` indents every body
+    // line at least one `indent_unit` past its block's header, so an
+    // unindented body under an admitted boundary is hand-written input, not
+    // formatter output. This is the exact subject the `perl-lsp-rs`
+    // formatting-policy receipt tests pin as `Refused/UnsupportedSyntax` with
+    // its unsupported-syntax warning. The safety evidence stays unproven:
+    // no pipeline pass established parse or literal evidence for this input.
+    let formatter = NativeFormatter::new();
+    for source in [
+        // The receipt-policy subject: supported header, supported unindented
+        // body statement, bare tail.
+        "sub f {\nreturn 1;\n}\n",
+        "while ($ok) {\nreturn 1;\n}\n",
+        // `BracePlacement::NextLine` opener with the same unindented body.
+        "if ($ok)\n{\nreturn 1;\n}\n",
+        // Renderer-consistent body, but the tail sits at a foreign indent.
+        "sub f {\n    return 1;\n  }\n",
+    ] {
+        let typed = formatter.format_document_typed(
+            source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+
+        assert_eq!(
+            typed.outcome.disposition,
+            FormatDisposition::Refused,
+            "hand-written {source:?} must not classify as already formatted"
+        );
+        assert_eq!(typed.outcome.reason, FormatReasonCode::UnsupportedSyntax);
+        assert!(!typed.result.changed);
+        assert!(typed.result.diagnostics.is_empty(), "refusal is by admission, not by diagnostic");
+        assert_eq!(typed.outcome.safety.parse_before, FormatEvidenceState::NotRun);
+        assert_eq!(typed.outcome.safety.parse_after, FormatEvidenceState::NotRun);
+        assert_eq!(typed.outcome.safety.literal_preservation, FormatEvidenceState::Refused);
+    }
+}
+
+#[test]
+fn typed_document_result_admits_renderer_layout_bytes_without_a_rendering_pass() {
+    // The document-level evidence admits exactly the layout the renderer
+    // emits — checked directly against those bytes, not only through a first
+    // rendering pass: same block as the refused hand-written subject above,
+    // with the body at the renderer's own indent.
+    let formatter = NativeFormatter::new();
+    let source = "sub f {\n    return 1;\n}\n";
+
+    let typed = formatter.format_document_typed(
+        source,
+        &FormatConfig::default(),
+        &FormatContext::default(),
+    );
+
+    assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+    assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+    assert!(!typed.result.changed);
+    assert!(typed.result.edits.is_empty());
+    assert!(typed.result.diagnostics.is_empty());
+}
+
+#[test]
 fn typed_range_result_records_the_exact_requested_range() {
     let formatter = NativeFormatter::new();
     let source = "my$x=1;\nmy$y=2;\n";

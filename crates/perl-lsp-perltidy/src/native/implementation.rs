@@ -376,6 +376,14 @@ pub(super) fn format_simple_line(line: &str, config: &FormatConfig) -> Option<St
 /// body on the same line, so it ends at neither brace nor paren. Malformed
 /// boundaries are unaffected, because `classify` consults this only after a
 /// clean parse with no diagnostics.
+///
+/// A boundary shape is *necessary but not sufficient* for rendered form: a
+/// hand-written block reuses exactly the header and tail shapes the renderers
+/// emit, so line shape alone cannot claim it. The document-level evidence —
+/// every `}`-prefixed tail closing the block opened at the same indent, and
+/// every body line sitting one [`indent_unit`] deeper than its block — is
+/// established by the target walk in `outcome::target_has_only_supported_lines`,
+/// which consumes [`rendered_boundary_role`] for the admitted lines.
 pub(super) fn is_rendered_block_boundary_line(line: &str, config: &FormatConfig) -> bool {
     use perl_parser_core::TokenKind;
 
@@ -455,6 +463,37 @@ pub(super) fn is_rendered_block_boundary_line(line: &str, config: &FormatConfig)
                 || rendered_foreach_header_is_supported(&tokens, config)
         }
         _ => false,
+    }
+}
+
+/// Which sides of a block one admitted rendered boundary line sits on.
+///
+/// Shape facts only — this says nothing about rendered form (see
+/// [`is_rendered_block_boundary_line`]). The outcome admission walk uses the
+/// two flags to check the layout the renderers emit: a `closes_block` tail
+/// must match the indent of the block it closes, and an `opens_block` line
+/// opens a block whose body must sit one [`indent_unit`] deeper. Both flags
+/// are derived from the same comment-stripped body the admission arms
+/// validated, so a leading `}` or a trailing `{` here is exactly the token
+/// those arms already recognized.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RenderedBoundaryRole {
+    /// The line starts with the closing brace of the block opened before it
+    /// (`}`, `} else {`, `} elsif (...) {`, `} continue`, ...).
+    pub closes_block: bool,
+    /// The line carries the opening brace of a block whose body follows it
+    /// (a lone `{`, or any same-line-brace header or clause tail).
+    pub opens_block: bool,
+}
+
+/// Classify the boundary role of a line that
+/// [`is_rendered_block_boundary_line`] already admitted.
+pub(super) fn rendered_boundary_role(line: &str) -> RenderedBoundaryRole {
+    let (body, _trailing_comment) = split_trailing_comment(line);
+    let body = body.trim();
+    RenderedBoundaryRole {
+        closes_block: body.starts_with('}'),
+        opens_block: body == "{" || body.ends_with('{'),
     }
 }
 
@@ -1958,7 +1997,10 @@ fn simple_binary_operator_text(token: &perl_parser_core::Token) -> Option<&str> 
     .then_some(token.text.as_ref())
 }
 
-fn indent_unit(config: &FormatConfig) -> String {
+/// One body-nesting level as the renderers emit it: `push_simple_block_body_docs`
+/// indents every body line at `indent + indent_unit`, so this is also the
+/// document-level unit the outcome admission's rendered-form walk checks for.
+pub(super) fn indent_unit(config: &FormatConfig) -> String {
     if config.use_tabs { "\t".to_string() } else { " ".repeat(config.indent_width as usize) }
 }
 
