@@ -395,13 +395,13 @@ fn native_formatter_edits_before_empty_heredoc_without_touching_terminator()
 fn native_formatter_formats_real_demo_module_outside_qw_line() {
     let formatter = NativeFormatter::new();
     let fixture = include_str!("../../../demo_workspace/lib/Utils.pm");
-    let source = fixture.replace("my $sum_val = sum(@$data);", "my$sum_val=sum(@$data);");
+    let source = fixture.replace("my ($data) = @_;", "my($data)=@_;");
     assert_ne!(source, fixture, "fixture must contain the selected declaration");
 
     let result = formatter.format_document(&source, &FormatConfig::default());
 
     assert!(result.changed, "ordinary code after qw should still format: {result:?}");
-    assert!(result.formatted.contains("my $sum_val = sum(@$data);"));
+    assert!(result.formatted.contains("my ($data) = @_;"));
     assert!(result.formatted.contains("use List::Util qw(max min sum);"));
     assert!(
         formatter.format_document(&result.formatted, &FormatConfig::default()).edits.is_empty()
