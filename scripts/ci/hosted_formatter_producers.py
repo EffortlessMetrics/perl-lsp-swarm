@@ -36,14 +36,9 @@ PR_FAST_TIER = "pr_fast"
 PR_SMOKE_JOB = "pr-smoke"
 RUST_SMALL_WORKFLOW = ".github/workflows/em-ci-routed-rust.yml"
 CI_WORKFLOW = ".github/workflows/ci.yml"
-RUST_SMALL_LANE_JOBS = frozenset(
-    {
-        "rust-small-cx53",
-        "rust-small-cx43",
-        "rust-small-github",
-        "rust-small-fallback",
-    }
-)
+RUST_SMALL_LANE_JOBS = frozenset({"rust-small-proof"})
+GOVERNED_PROOF_SCRIPT_RE = re.compile(r"(?<![A-Za-z0-9_./-])\.ci/rust-standard-proof\.sh(?:[\s'\"]|$)")
+GOVERNED_WORKFLOW_RE = re.compile(r"uses:\s*EffortlessMetrics/em-ci-workflows/\.github/workflows/rust\.yml@[0-9a-f]{40}(?:\s|$)")
 PARITY_REASON_NEEDLES = (
     "advisory receipt-producing dedicated formatter",
     "perl lsp rust small result",
@@ -238,6 +233,7 @@ def job_hosts_formatter_producer(job_body: str) -> bool:
         or XTASK_FMT_RE.search(active)
         or rust_checks_runs_fmt(job_body)
         or workspace_rustfmt_check(job_body)
+        or GOVERNED_PROOF_SCRIPT_RE.search(active)
     )
 
 
@@ -245,7 +241,7 @@ def undeclared_hosted_formatter_sites(workflows: dict[str, str]) -> list[str]:
     """Return undeclared workspace-formatter executions across hosted workflows.
 
     Declared producers of the workspace rustfmt fact:
-    - required Rust Small lanes (`cargo fmt --all -- --check`, #9127)
+    - required governed Rust Small proof (`.ci/rust-standard-proof.sh`, #17018)
     - dedicated `rust-formatting` (`rustfmt_check.py` receipts)
     - advisory PR Smoke `pr-fast` overlap (#9166)
     """
@@ -262,7 +258,9 @@ def undeclared_hosted_formatter_sites(workflows: dict[str, str]) -> list[str]:
             if (
                 path == RUST_SMALL_WORKFLOW
                 and job_id in RUST_SMALL_LANE_JOBS
-                and has_cargo_fmt
+                and GOVERNED_PROOF_SCRIPT_RE.search(active)
+                and GOVERNED_WORKFLOW_RE.search(active)
+                and not has_cargo_fmt
                 and not has_receipt_producer
                 and not has_xtask_fmt
             ):

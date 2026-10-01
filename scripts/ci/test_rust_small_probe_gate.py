@@ -15,17 +15,8 @@ STRUCTURAL_STEP = "Prove rustfmt prevention contract"
 CONTRACT_TEST = "scripts/ci/test_rust_small_probe_gate.py"
 EXPECTED_EXPRESSION = """
 (github.event_name != 'pull_request' || github.event.pull_request.draft != true) &&
-needs.route-rust-small.result == 'success' &&
-(
-  (needs.route-rust-small.outputs.target == 'cx53' &&
-    (needs.rust-small-cx53.result == 'success' ||
-     needs.rust-small-fallback.result == 'success')) ||
-  (needs.route-rust-small.outputs.target == 'cx43' &&
-    (needs.rust-small-cx43.result == 'success' ||
-     needs.rust-small-fallback.result == 'success')) ||
-  (needs.route-rust-small.outputs.target == 'github' &&
-   needs.rust-small-github.result == 'success')
-)
+needs.rust-small-proof.result == 'success' &&
+steps.evidence.outputs.proof_validated == 'true'
 """
 
 
@@ -80,27 +71,8 @@ def replace_probe_expression(workflow: str, expression: str) -> str:
     return workflow[:expression_start] + expression + workflow[expression_end:]
 
 
-def should_probe(
-    *,
-    event_name: str,
-    draft: bool,
-    route_result: str,
-    target: str,
-    cx53: str = "skipped",
-    cx43: str = "skipped",
-    github: str = "skipped",
-    fallback: str = "skipped",
-) -> bool:
-    event_applies = event_name != "pull_request" or not draft
-    if not event_applies or route_result != "success":
-        return False
-    if target == "cx53":
-        return cx53 == "success" or fallback == "success"
-    if target == "cx43":
-        return cx43 == "success" or fallback == "success"
-    if target == "github":
-        return github == "success"
-    return False
+def should_probe(*, event_name: str, draft: bool, proof_result: str, evidence: str) -> bool:
+    return (event_name != "pull_request" or not draft) and proof_result == "success" and evidence == "true"
 
 
 def validate_probe_gate(workflow: str) -> None:
@@ -111,9 +83,10 @@ def validate_probe_gate(workflow: str) -> None:
         )
 
     _, structural = step_block(workflow, STRUCTURAL_STEP)
+    _, evidence = step_block(workflow, "Validate subject-bound governed proof")
     _, probe = step_block(workflow, PROBE_STEP)
     _, evaluate = step_block(workflow, EVALUATE_STEP)
-    if not structural < probe < evaluate:
+    if not structural < evidence < probe < evaluate:
         raise AssertionError(
             "probe applicability must be evaluated after structural contracts and before final route evaluation"
         )
@@ -133,63 +106,27 @@ class RustSmallProbeGateTests(unittest.TestCase):
         validate_probe_gate(self.workflow)
 
     def test_truth_table_preserves_success_and_rejects_absent_proof(self) -> None:
-        positive = (
-            dict(event_name="pull_request", draft=False, route_result="success", target="cx53", cx53="success"),
-            dict(event_name="merge_group", draft=False, route_result="success", target="cx43", cx43="success"),
-            dict(event_name="workflow_dispatch", draft=False, route_result="success", target="github", github="success"),
-            dict(event_name="pull_request", draft=False, route_result="success", target="cx53", cx53="failure", fallback="success"),
-            dict(event_name="pull_request", draft=False, route_result="success", target="cx43", cx43="failure", fallback="success"),
-        )
-        negative = (
-            dict(event_name="pull_request", draft=True, route_result="skipped", target="github", github="skipped"),
-            dict(event_name="pull_request", draft=False, route_result="failure", target="github", github="success"),
-            dict(event_name="pull_request", draft=False, route_result="success", target="github", github="cancelled"),
-            dict(event_name="pull_request", draft=False, route_result="success", target="cx53", cx53="cancelled"),
-            dict(event_name="pull_request", draft=False, route_result="success", target="cx53", cx53="failure"),
-            dict(event_name="pull_request", draft=False, route_result="success", target="cx43", cx43="cancelled"),
-            dict(event_name="pull_request", draft=False, route_result="success", target="none"),
-        )
-        for case in positive:
-            with self.subTest(case=case):
-                self.assertTrue(should_probe(**case))
-        for case in negative:
-            with self.subTest(case=case):
-                self.assertFalse(should_probe(**case))
+        import itertools
+        for event, draft, result, evidence in itertools.product(("pull_request", "merge_group", "workflow_dispatch", "push"), (True, False), ("success", "failure", "cancelled", "skipped", ""), ("true", "false", "")):
+            with self.subTest(event=event, draft=draft, result=result, evidence=evidence):
+                expected = not (event == "pull_request" and draft) and result == "success" and evidence == "true"
+                self.assertEqual(should_probe(event_name=event, draft=draft, proof_result=result, evidence=evidence), expected)
 
     def test_gate_rejects_realistic_regressions(self) -> None:
         expression = probe_expression(self.workflow)
         mutations = {
             "draft-only gate": "          github.event_name != 'pull_request' || github.event.pull_request.draft != true\n",
-            "router failure admitted": expression.replace(
-                "needs.route-rust-small.result == 'success'",
-                "needs.route-rust-small.result != 'cancelled'",
-            ),
-            "cancelled github admitted": expression.replace(
-                "needs.rust-small-github.result == 'success'",
-                "needs.rust-small-github.result == 'cancelled'",
-            ),
-            "cx43 success literal changed": expression.replace(
-                "needs.rust-small-cx43.result == 'success'",
-                "needs.rust-small-cx43.result == 'success '",
-            ),
-            "cx53 fallback dropped": expression.replace(
-                "needs.route-rust-small.outputs.target == 'cx53' && (needs.rust-small-cx53.result == 'success' || needs.rust-small-fallback.result == 'success')",
-                "needs.route-rust-small.outputs.target == 'cx53' && needs.rust-small-cx53.result == 'success'",
-            ),
-            "github route dropped": expression.replace(
-                " ||\n            (needs.route-rust-small.outputs.target == 'github' && needs.rust-small-github.result == 'success')",
-                "",
-            ),
+            "call failure admitted": expression.replace("needs.rust-small-proof.result == 'success'", "needs.rust-small-proof.result != 'cancelled'"),
+            "cancelled call admitted": expression.replace("needs.rust-small-proof.result == 'success'", "needs.rust-small-proof.result == 'cancelled'"),
+            "missing evidence admitted": expression.replace("steps.evidence.outputs.proof_validated == 'true'", "steps.evidence.outputs.proof_validated != 'false'"),
+            "evidence check removed": expression.replace(" &&\n          steps.evidence.outputs.proof_validated == 'true'", ""),
+            "literal whitespace drift": expression.replace("== 'success'", "== 'success '"),
         }
         for name, mutated_expression in mutations.items():
             with self.subTest(name=name):
-                if mutated_expression == expression:
-                    self.fail(
-                        f"mutation {name!r} did not apply; update the mutation anchor"
-                    )
-                broken = replace_probe_expression(self.workflow, mutated_expression)
+                self.assertNotEqual(mutated_expression, expression)
                 with self.assertRaises(AssertionError):
-                    validate_probe_gate(broken)
+                    validate_probe_gate(replace_probe_expression(self.workflow, mutated_expression))
 
     def test_normalization_preserves_quoted_whitespace(self) -> None:
         self.assertEqual(

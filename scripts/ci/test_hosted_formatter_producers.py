@@ -127,6 +127,16 @@ class HostedFormatterProducerTests(unittest.TestCase):
             workflows=texts,
         )
 
+    def test_governed_script_call_is_visible_to_producer_inventory(self) -> None:
+        body = producers.job_bodies(self.workflows[RUST_SMALL_KEY])["rust-small-proof"]
+        self.assertTrue(producers.job_hosts_formatter_producer(body))
+        duplicate = {".github/workflows/duplicate.yml": "jobs:\n" + body}
+        self.assertEqual(producers.undeclared_hosted_formatter_sites(duplicate), [".github/workflows/duplicate.yml:rust-small-proof"])
+
+    def test_governed_script_invoked_outside_owned_call_is_undeclared(self) -> None:
+        workflows = {".github/workflows/duplicate.yml": "jobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bash .ci/rust-standard-proof.sh\n"}
+        self.assertEqual(producers.undeclared_hosted_formatter_sites(workflows), [".github/workflows/duplicate.yml:extra"])
+
     def test_current_tree_has_one_declared_hosted_formatter_inventory(self) -> None:
         producers.validate_hosted_formatter_inventory(
             ci_workflow=self.ci,

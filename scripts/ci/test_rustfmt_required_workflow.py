@@ -43,12 +43,7 @@ SUBJECT_EXPRESSION = (
     "github.event_name == 'pull_request' && github.event.pull_request.head.sha || "
     "github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha"
 )
-RUST_SMALL_LANE_JOBS = (
-    "rust-small-cx53",
-    "rust-small-cx43",
-    "rust-small-github",
-    "rust-small-fallback",
-)
+RUST_SMALL_LANE_JOBS = ("rust-small-proof",)
 RUST_SMALL_RESULT_JOB = "rust-small-result"
 FMT_COMMAND = "cargo fmt --all -- --check"
 CONTRACT_TEST_FILES = (
@@ -660,14 +655,17 @@ def load_rust_small_workflow_text() -> str:
     return RUST_SMALL_WORKFLOW_PATH.read_text(encoding="utf-8")
 
 
-def validate_rust_small_fmt_contract(workflow_text: str) -> None:
+def validate_rust_small_fmt_contract(workflow_text: str, proof_text: str | None = None) -> None:
     jobs = job_bodies(workflow_text)
     missing = [job_id for job_id in RUST_SMALL_LANE_JOBS if job_id not in jobs]
     if missing:
         raise AssertionError(f"required Rust Small lane jobs missing: {missing}")
 
+    proof_text = (ROOT / ".ci/rust-standard-proof.sh").read_text(encoding="utf-8") if proof_text is None else proof_text
     for job_id in RUST_SMALL_LANE_JOBS:
-        body = jobs[job_id]
+        if "script: .ci/rust-standard-proof.sh" not in jobs[job_id]:
+            raise AssertionError(f"{job_id} must reach the canonical formatter script")
+        body = proof_text
         active_lines = active_code_lines(body)
         if not any(line.strip().strip("'\"") == FMT_COMMAND for line in active_lines):
             raise AssertionError(
@@ -737,40 +735,41 @@ def _named_step_body(job_text: str, step_name: str) -> str:
 class RustSmallRequiredFmtTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow_text = load_rust_small_workflow_text()
+        self.proof_text = (ROOT / ".ci/rust-standard-proof.sh").read_text(encoding="utf-8")
 
     def test_checked_in_rust_small_fmt_contract_holds(self) -> None:
         validate_rust_small_fmt_contract(self.workflow_text)
 
     def test_echo_decoy_fmt_command_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(
+        broken = self.proof_text.replace(
             FMT_COMMAND, f'echo "{FMT_COMMAND}"', 1
         )
         with self.assertRaisesRegex(AssertionError, "silent revert of #12320"):
-            validate_rust_small_fmt_contract(broken)
+            validate_rust_small_fmt_contract(self.workflow_text, broken)
 
     def test_fmt_command_with_or_true_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(FMT_COMMAND, f"{FMT_COMMAND} || true", 1)
+        broken = self.proof_text.replace(FMT_COMMAND, f"{FMT_COMMAND} || true", 1)
         with self.assertRaisesRegex(AssertionError, "silent revert of #12320"):
-            validate_rust_small_fmt_contract(broken)
+            validate_rust_small_fmt_contract(self.workflow_text, broken)
 
     def test_commenting_out_one_lane_fmt_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(FMT_COMMAND, f"# {FMT_COMMAND}", 1)
+        broken = self.proof_text.replace(FMT_COMMAND, f"# {FMT_COMMAND}", 1)
         with self.assertRaisesRegex(AssertionError, "silent revert of #12320"):
-            validate_rust_small_fmt_contract(broken)
+            validate_rust_small_fmt_contract(self.workflow_text, broken)
 
     def test_dropping_all_flag_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(FMT_COMMAND, "cargo fmt -- --check", 1)
+        broken = self.proof_text.replace(FMT_COMMAND, "cargo fmt -- --check", 1)
         with self.assertRaisesRegex(AssertionError, "dropping --all|silent revert"):
-            validate_rust_small_fmt_contract(broken)
+            validate_rust_small_fmt_contract(self.workflow_text, broken)
 
     def test_changed_file_narrowing_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(
+        broken = self.proof_text.replace(
             FMT_COMMAND,
             "cargo fmt --all -- --check --files $(git diff --name-only origin/main)",
             1,
         )
         with self.assertRaisesRegex(AssertionError, "changed-file narrowing|--files|silent revert"):
-            validate_rust_small_fmt_contract(broken)
+            validate_rust_small_fmt_contract(self.workflow_text, broken)
 
     def test_echo_decoy_unittest_invocation_fails_closed(self) -> None:
         broken = self.workflow_text.replace(
