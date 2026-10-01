@@ -649,6 +649,22 @@ broad_glob_reason = "Editor extension is a first-class shipped artifact; TypeScr
 created = "2026-05-07"
 review_after = "2026-12-07"
 
+[[allow]]
+id = "non-rust-demo-workspace-perl-lsp-config"
+path = "demo_workspace/.perl-lsp.toml"
+kind = "config"
+language = "toml"
+surface = "editor"
+classification = "config"
+owner = "editor/vscode"
+reason = "Declarative LSP client config pinning `include_paths = [\"lib\"]` for the tracked demo root (#16592); it is byte-identical to the packaged copy under vscode-extension/assets/demo-project, which the broad `non-rust-vscode-extension` glob already covers."
+covered_by = [
+  "cd vscode-extension && npm test -- --runTestsByPath src/test/packageManifest.test.ts",
+  "cargo xtask non-rust inventory --check",
+]
+created = "2026-10-01"
+review_after = "2026-10-31"
+
 # =============================================================================
 # Build / release tooling
 # =============================================================================
