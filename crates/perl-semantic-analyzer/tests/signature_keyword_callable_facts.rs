@@ -663,6 +663,49 @@ fun add { 1 }, 2
 }
 
 #[test]
+fn extra_two_statement_arguments_after_comment_split_are_not_a_declaration() {
+    let code = r#"
+package App;
+use Function::Parameters;
+fun # force the two-statement split
+add { 1 }, 2
+"#;
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "add").is_none());
+}
+
+#[test]
+fn admitted_activation_sites_are_exact() {
+    let cases = [
+        (
+            "package App;\nuse Function::Parameters;\nfun add ($x) { $x }\n",
+            SignatureKeywordFamily::FunctionParameters,
+        ),
+        (
+            "package App;\nuse Function::Parameters 2.002006;\nfun add ($x) { $x }\n",
+            SignatureKeywordFamily::FunctionParameters,
+        ),
+        (
+            "package App;\nuse Method::Signatures;\nfunc add ($x) { $x }\n",
+            SignatureKeywordFamily::MethodSignatures,
+        ),
+    ];
+    for (code, family) in cases {
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extracted = extract_signature_keyword_units(
+            &ast,
+            code,
+            FileId(1),
+            SourceGeneration::known("gen-1"),
+        );
+        assert_eq!(extracted.sites.len(), 1, "{code}");
+        assert_eq!(extracted.sites[0].family, family, "{code}");
+        assert!(extracted.sites[0].is_exact(), "an admitted activation must report exact: {code}");
+    }
+}
+
+#[test]
 fn comment_semicolon_between_fun_and_name_is_still_a_declaration() {
     let code = "package App;\nuse Function::Parameters;\nfun # note; still docs\nadd { 1 }\n";
     let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");

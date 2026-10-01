@@ -436,10 +436,7 @@ fn try_extract_two_statement_optional_signature(
     if !is_declaration_name(name) {
         return false;
     }
-    if args.len() != 1 {
-        return false;
-    }
-    let Some(first_arg) = args.first() else {
+    let [first_arg] = args.as_slice() else {
         return false;
     };
     if !matches!(first_arg.kind, NodeKind::Block { .. }) {

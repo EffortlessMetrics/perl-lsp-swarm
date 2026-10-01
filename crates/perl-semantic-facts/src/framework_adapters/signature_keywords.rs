@@ -1251,6 +1251,26 @@ mod tests {
             .is_empty(),
             "Method::Signatures `func` must not mint under Function::Parameters"
         );
+
+        let method_signatures = detect_method_signatures(&input(
+            SignatureKeywordFamily::MethodSignatures,
+            vec![matched(SignatureKeywordFamily::MethodSignatures, "20170211", "gen-1")],
+            "gen-1",
+        ));
+        let mut foreign_fun = sample_fun_declaration("gen-1");
+        foreign_fun.family = SignatureKeywordFamily::MethodSignatures;
+        foreign_fun.keyword = SignatureKeyword::Fun;
+        assert!(method_signatures.is_detected());
+        assert!(
+            signature_keyword_callable_facts(
+                &method_signatures,
+                SignatureKeywordFamily::MethodSignatures,
+                Some("App"),
+                &[foreign_fun],
+            )
+            .is_empty(),
+            "Function::Parameters `fun` must not mint under Method::Signatures"
+        );
     }
 
     #[test]
