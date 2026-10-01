@@ -120,6 +120,11 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # (workspace_index.rs), and the seeded content is initial state, so the call
 # was converted to the canonical name with identical behavior. Baseline
 # therefore stays 710.
+# Held at 710 by #16934 after #16850 (squash 57801e84c) and #16859
+# (squash 14306e192) added 16 fixture-only aliases: 13 initial seeds move
+# to index_initial_file(_str), and the three synthetic 2/1/3 generation
+# commits move to index_live_file with typed outcomes. The two new caller
+# identities below are owned fixture paths; no production caller is admitted.
 compatibility_baseline = 710
 
 # Structural recurrence control (#11305): files under these prefixes must
@@ -138,6 +143,7 @@ compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/workspace.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion_shadow.rs",
@@ -186,6 +192,7 @@ caller_paths = [
   "crates/perl-workspace/src/bin/workspace_memory_profile.rs",
   "crates/perl-workspace/src/workspace/workspace_index.rs",
   "crates/perl-workspace/src/workspace_index_utf16_test.rs",
+  "crates/perl-workspace/tests/canonical_import_fact_adapter.rs",
   "crates/perl-workspace/tests/common/mod.rs",
   "crates/perl-workspace/tests/comprehensive_unit_tests.rs",
   "crates/perl-workspace/tests/cross_file_reference_query_tests.rs",
