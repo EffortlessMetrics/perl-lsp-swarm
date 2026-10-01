@@ -19,7 +19,7 @@ name: Content-Anchored Baselines
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, codex/proof-17057-kwalitee-20261001]
   workflow_dispatch: {}
 
 permissions:
