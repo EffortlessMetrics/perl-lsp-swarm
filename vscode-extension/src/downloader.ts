@@ -502,8 +502,10 @@ function describeManagedReleaseRefusal(
       // A tag channel with no configured tag is half-finished pin configuration
       // (#16533). The actionable remedy is the versionTag setting; the generic
       // policy wrapper and the generic banner's manual-binary fallback both
-      // point somewhere that cannot fix it.
-      if (channel === 'tag' && refusal.detail.startsWith('The tag channel requires')) {
+      // point somewhere that cannot fix it. The typed `configuredTag` field,
+      // not the selector's detail prose, identifies this case so the selector
+      // can reword its message without silently dropping the remedy.
+      if (channel === 'tag' && (refusal.configuredTag ?? '').trim() === '') {
         return (
           'perl-lsp.channel is "tag" but perl-lsp.versionTag is empty; ' +
           'set versionTag (for example v0.12.1) to pin a release.'
