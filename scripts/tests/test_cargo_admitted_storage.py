@@ -55,6 +55,100 @@ class AdmissionTests(unittest.TestCase):
             self.assertFalse(self.slot.exists())
             self.assertFalse(any(path.exists() for path in self.paths.values()))
 
+    def test_explicit_byte_budget_accepts_large_nearly_full_volume_without_double_count(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        env = {"CARGO_STORAGE_POLICY": "byte-budget", "CARGO_EXPECTED_GROWTH_GB": "20",
+               "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:aggregate-upper-bound"}
+        # Five destinations on one 4-TiB volume, 80 GiB free (~98% used).
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4016*gib, 80*gib)):
+            report = safe.check_capacity([self.slot, *self.paths.values()], env)
+            self.assertEqual(report["policy"], "byte-budget")
+            self.assertEqual(report["reserve_bytes"], 40*gib)
+            self.assertEqual(report["expected_total_growth_bytes"], 20*gib)
+            self.assertEqual(report["evidence_reference"], env["CARGO_STORAGE_BUDGET_EVIDENCE"])
+            self.assertEqual(len(report["destinations"]), 5)
+            self.assertTrue(all(row["required_free_bytes"] == 60*gib for row in report["destinations"]))
+            self.assertTrue(all(row["headroom_bytes"] == 20*gib for row in report["destinations"]))
+            # No opt-in: the inherited percentage policy still refuses.
+            with self.assertRaises(safe.Denied):
+                safe.check_capacity([self.slot], {})
+
+    def test_byte_budget_exact_boundary_and_overflow(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        env = {"CARGO_STORAGE_POLICY": "byte-budget", "CARGO_EXPECTED_GROWTH_GB": "20",
+               "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:boundary"}
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4036*gib, 60*gib)):
+            report = safe.check_capacity([self.slot], env)
+            self.assertEqual(report["destinations"][0]["headroom_bytes"], 0)
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4036*gib+1, 60*gib-1)):
+            with self.assertRaises(safe.Denied):
+                safe.check_capacity([self.slot], env)
+        # Each byte operand is finite; their sum overflows.
+        self.env = dict(env, MIN_FREE_GB="1e299", CARGO_EXPECTED_GROWTH_GB="1e299")
+        self.assertEqual(self.run_safe(["build"]), 75)
+        self.assertFalse(self.slot.exists())
+
+    def test_byte_budget_is_in_emitted_resource_descriptor(self):
+        import contextlib
+        import io
+        import json
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        self.env = {"CARGO_STORAGE_POLICY": "byte-budget", "CARGO_EXPECTED_GROWTH_GB": "20",
+                    "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:evidence-reference-only"}
+        output = io.StringIO()
+        with patch.object(safe.shutil, "disk_usage", return_value=Usage(4096*gib, 4016*gib, 80*gib)), contextlib.redirect_stderr(output):
+            self.assertEqual(self.run_safe(["check"]), 0)
+        descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+        self.assertEqual(descriptor["admission"]["policy"], "byte-budget")
+        self.assertEqual(descriptor["admission"]["evidence_reference"], self.env["CARGO_STORAGE_BUDGET_EVIDENCE"])
+        self.assertTrue(all(row["headroom_bytes"] == 20*gib for row in descriptor["admission"]["destinations"]))
+
+    def test_byte_budget_checks_every_destination_before_allocation(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        gib = 1024 ** 3
+        self.env = {"CARGO_STORAGE_POLICY": "byte-budget", "CARGO_EXPECTED_GROWTH_GB": "20",
+                    "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:all-destination-upper-bound"}
+        volumes = [self.root / str(i) for i in range(5)]
+        for path in volumes:
+            path.mkdir()
+        self.slot = volumes[0] / "slot"
+        self.paths = {key: volumes[i + 1] / "new" for i, key in enumerate(self.paths)}
+        for denied in volumes:
+            seen = []
+            def disk(path):
+                seen.append(path)
+                free = 60*gib - 1 if path == denied else 60*gib
+                return Usage(4096*gib, 4096*gib-free, free)
+            with patch.object(safe.shutil, "disk_usage", side_effect=disk):
+                self.assertEqual(self.run_safe(["build"]), 75)
+            self.assertIn(denied, seen)
+            self.assertFalse(self.slot.exists())
+            self.assertFalse(any(path.exists() for path in self.paths.values()))
+
+    def test_byte_budget_invalid_or_missing_inputs_refuse_before_allocation(self):
+        valid = {"CARGO_STORAGE_POLICY": "byte-budget", "CARGO_EXPECTED_GROWTH_GB": "20",
+                 "CARGO_STORAGE_BUDGET_EVIDENCE": "fixture:bounded-growth"}
+        cases = [{"CARGO_EXPECTED_GROWTH_GB": value} for value in ("", "NaN", "inf", "-inf", "0", "-1", "no")]
+        cases += [{"CARGO_STORAGE_BUDGET_EVIDENCE": value} for value in ("", "  ")]
+        cases += [{"MIN_FREE_GB": value} for value in ("39.99", "NaN", "inf", "0")]
+        cases += [{"CARGO_STORAGE_POLICY": "unknown"}]
+        for change in cases:
+            self.env = dict(valid, **change)
+            self.assertEqual(self.run_safe(["build"]), 75, change)
+            self.assertFalse(self.slot.exists())
+        for missing in ("CARGO_EXPECTED_GROWTH_GB", "CARGO_STORAGE_BUDGET_EVIDENCE"):
+            self.env = dict(valid)
+            del self.env[missing]
+            self.assertEqual(self.run_safe(["build"]), 75)
+            self.assertFalse(self.slot.exists())
+
     def test_cancellation_retains_exclusive_resource_lease(self):
         def cancel(*args, **kw):
             raise KeyboardInterrupt()

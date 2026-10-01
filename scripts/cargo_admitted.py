@@ -57,20 +57,49 @@ def validate_args(args):
 
 
 def check_capacity(paths, env):
+    policy = env.get("CARGO_STORAGE_POLICY", "percent")
+    if policy not in ("percent", "byte-budget"):
+        raise Denied("unknown CARGO_STORAGE_POLICY")
     try:
-        floor = float(env.get("MIN_FREE_GB", "40")) * 1024 ** 3
-        ceiling = float(env.get("MAX_USED_PCT", "85"))
-        if not math.isfinite(floor) or not math.isfinite(ceiling) or floor <= 0 or not 0 < ceiling <= 100:
+        reserve_gib = float(env.get("MIN_FREE_GB", "40"))
+        floor = reserve_gib * 1024 ** 3
+        if not math.isfinite(floor) or floor <= 0:
             raise ValueError()
+        report = {"policy": policy, "reserve_bytes": floor}
+        if policy == "byte-budget":
+            growth = float(env.get("CARGO_EXPECTED_GROWTH_GB", "")) * 1024 ** 3
+            evidence = env.get("CARGO_STORAGE_BUDGET_EVIDENCE", "").strip()
+            if reserve_gib < 40 or not math.isfinite(growth) or growth <= 0 or not evidence:
+                raise ValueError()
+            required = floor + growth
+            if not math.isfinite(required):
+                raise ValueError()
+            report.update(expected_total_growth_bytes=growth, evidence_reference=evidence)
+        else:
+            ceiling = float(env.get("MAX_USED_PCT", "85"))
+            if not math.isfinite(ceiling) or not 0 < ceiling <= 100:
+                raise ValueError()
+            required = floor
+            report["max_used_pct"] = ceiling
     except ValueError:
-        raise Denied("invalid capacity thresholds")
+        raise Denied("invalid capacity policy inputs; byte-budget requires reserve >=40 GiB, positive finite total growth and an evidence reference")
+    observations = []
     for path in paths:
         ancestor = path
         while not ancestor.exists():
             ancestor = ancestor.parent
         usage = shutil.disk_usage(ancestor)
-        if usage.free < floor or (usage.total - usage.free) * 100 / usage.total >= ceiling:
+        # The same TOTAL growth bound is checked independently at every
+        # destination. Never sum it for paths sharing a volume. Applying the
+        # entire bound on different volumes is intentionally conservative.
+        if usage.free < required or (policy == "percent" and
+                (usage.total - usage.free) * 100 / usage.total >= ceiling):
             raise Denied("insufficient disk headroom at " + str(path))
+        observations.append({"path": str(path), "observed_ancestor": str(ancestor),
+                             "free_bytes": usage.free, "required_free_bytes": required,
+                             "headroom_bytes": usage.free - required})
+    report["destinations"] = observations
+    return report
 
 
 def resource_plan(env):
@@ -101,7 +130,7 @@ def main(args=None):
         validate_args(args)
         env = os.environ.copy()
         slot, paths = resource_plan(env)
-        check_capacity([slot, *paths.values()], env)  # before any mkdir/Cargo invocation
+        admission = check_capacity([slot, *paths.values()], env)  # before any mkdir/Cargo invocation
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):
             raise Denied("compiler wrappers have unverified storage; use a separately admitted route")
         jobs = int(env.get("CARGO_BUILD_JOBS", "2"))
@@ -125,7 +154,7 @@ def main(args=None):
                        CARGO_BUILD_JOBS=str(jobs), TMPDIR=str(paths["temp"]),
                        TEMP=str(paths["temp"]), TMP=str(paths["temp"]))
             descriptor = {"worktree": str(Path.cwd()), "resources": {k: str(v) for k, v in paths.items()},
-                          "lease": str(lock), "pid": os.getpid(), "disposition": "retained with reason: reusable bounded slot"}
+                          "lease": str(lock), "pid": os.getpid(), "admission": admission, "disposition": "retained with reason: reusable bounded slot"}
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
             command = ["cargo", "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
                        "--config", 'build.rustc-wrapper=""',

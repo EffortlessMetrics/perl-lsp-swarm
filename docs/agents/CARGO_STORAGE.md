@@ -25,9 +25,38 @@ explicitly admitted by the root, not silently retried as raw Cargo.
 
 Before allocating any directory, admission checks the nearest existing ancestor
 of the slot, both target/build resources, Cargo home and temporary storage. The
-existing defaults remain 40 GiB minimum free AND less than 85% used. Hosts failing
-either condition stay refused; do not lower thresholds to make a build pass.
-`MIN_FREE_GB`/`MAX_USED_PCT` are explicit host policy, requiring an approved budget.
+default `CARGO_STORAGE_POLICY=percent` preserves 40 GiB minimum free AND less
+than 85% used. The 85% figure is an inherited legacy heuristic, not a measured
+requirement for this workload. The 40 GiB reserve is a preserved safety floor,
+not a proven universal reserve. `MIN_FREE_GB`/`MAX_USED_PCT` remain explicit host
+policy in the unchanged percentage mode; do not tune them simply to pass a build.
+
+For a host with an evidenced byte budget, the root may explicitly select
+`CARGO_STORAGE_POLICY=byte-budget`. This requires both:
+
+- `CARGO_EXPECTED_GROWTH_GB`: a finite positive conservative upper bound on the
+  **total additional storage** across target, build, dependency downloads and
+  temporary files for the admitted work, in GiB; and
+- `CARGO_STORAGE_BUDGET_EVIDENCE`: a nonempty reference to the measurement or
+  approved basis for that bound, not secret contents. The wrapper records the
+  reference but does not read it or independently validate the estimate.
+
+This mode checks `free >= reserve + total expected growth` at every effective
+destination's nearest existing ancestor. Reserve defaults to 40 GiB and cannot
+be lowered below 40 GiB in this mode. A shared volume can be checked repeatedly,
+but the growth bound is never added once per output path. The entire total bound
+is conservatively required on each distinct destination volume. Valid explicit
+byte-budget mode replaces the percentage check; it does not modify `cargo-safe`,
+release/security gates, or choose a policy automatically from host capacity.
+Missing or invalid inputs refuse before allocation. The resource descriptor
+reports policy, reserve, budget, evidence reference, observed free bytes and
+remaining headroom for each destination.
+
+This is admission, not a disk reservation. Root/native task ownership must hold
+one heavy-build lane and account for concurrent consumers; no new task manager
+is introduced. No real-build growth measurement accompanies this option, so the
+current host is not admitted merely because it has enough bytes for the reserve.
+
 All TEMP/TMP/TMPDIR values are unified for the child, including command-local
 overrides of Cargo `[env]` forced values. Configured compiler wrappers are disabled
 with command-local empty values. Arbitrary build scripts and
