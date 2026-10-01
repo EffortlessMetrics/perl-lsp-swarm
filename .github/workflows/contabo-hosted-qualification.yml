@@ -1,0 +1,62 @@
+name: Governed hosted Small qualification
+
+on:
+  push:
+    branches: [qualify/contabo-hosted-ec6b]
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    uses: EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@92c170b052d046c3c98acf8a1a4aab4510dda42d  # main (2026-10-01)
+    with:
+      profile: standard
+      script: .ci/rust-standard-proof.sh
+      fetch_depth: 1
+      force_hosted: true
+
+  qualification:
+    name: Verify forced-hosted consumer qualification
+    needs: proof
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CONSUMER_SHA: ec6b8e80c4b7b61b601758181593c3829b4391da
+      EM_CI_CALL_RESULT: ${{ needs.proof.result }}
+      EM_CI_EVIDENCE: ${{ needs.proof.outputs.evidence }}
+      EXPECTED_REPOSITORY: ${{ github.repository }}
+      EXPECTED_SHA: ${{ github.sha }}
+      EXPECTED_RUN_ID: ${{ github.run_id }}
+      EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Bind unchanged consumer and successful hosted proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$CONSUMER_SHA"
+          test "$(git diff --name-only "$CONSUMER_SHA" HEAD)" = ".github/workflows/contabo-hosted-qualification.yml"
+          python3 scripts/ci/rust_small_evidence.py
+          mkdir -p target/hosted-qualification
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          evidence = json.loads(os.environ["EM_CI_EVIDENCE"])
+          assert evidence["route"] == "hosted", "forced hosted qualification did not run hosted"
+          assert evidence["infrastructure_failure"] == ""
+          receipt = {"schema": "contabo-consumer-hosted-qualification.v1", "consumer_sha": os.environ["CONSUMER_SHA"], "qualification_sha": os.environ["EXPECTED_SHA"], "evidence": evidence, "consumer_delta": ".github/workflows/contabo-hosted-qualification.yml only"}
+          Path("target/hosted-qualification/receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          print(json.dumps(receipt))
+          PY
+      - name: Retain subject-bound hosted receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: contabo-consumer-hosted-qualification
+          path: target/hosted-qualification/receipt.json
+          if-no-files-found: error
+          retention-days: 7
