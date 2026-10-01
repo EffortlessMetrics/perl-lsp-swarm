@@ -45,6 +45,8 @@
 //! perl-lsp-rs-core and owns any cross-crate projection requiring generation
 //! handles.
 
+#[cfg(test)]
+use super::scope_distance::MAX_SCOPE_PARENT_HOPS;
 use super::scope_distance::walk_ancestors;
 use perl_semantic_analyzer::symbol::{ScopeId, Symbol, SymbolKind, SymbolTable};
 use std::collections::HashMap;
@@ -168,16 +170,10 @@ fn scope_chain_contains(
     if !symbol_table.scopes.contains_key(&cursor_scope) {
         return false;
     }
-    let mut found = false;
-    walk_ancestors(symbol_table, cursor_scope, |id| {
-        if id == target {
-            found = true;
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    });
-    found
+    walk_ancestors(symbol_table, cursor_scope, |id, _hops| {
+        if id == target { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+    })
+    .is_break()
 }
 
 /// Resolve exact identity among admitted bindings sharing one resolved slot.
@@ -480,10 +476,9 @@ mod tests {
         assert!(std::ptr::eq(selected[1], &first_scope_sym));
     }
 
-    #[test]
-    fn lexical_visible_through_deep_finite_ancestor_chain() {
+    fn linear_parent_chain(max_id: usize) -> SymbolTable {
         let mut table = SymbolTable::new();
-        for id in 0usize..=40 {
+        for id in 0usize..=max_id {
             table.scopes.insert(
                 id,
                 Scope {
@@ -495,10 +490,47 @@ mod tests {
                 },
             );
         }
+        table
+    }
+
+    #[test]
+    fn scope_chain_contains_true_iff_id_equals_target() {
+        let table = table();
+        // First visit: cursor scope is the target.
+        assert!(scope_chain_contains(&table, 2, 2));
+        // Later visit: an ancestor id equals the target.
+        assert!(scope_chain_contains(&table, 2, 1));
+        assert!(scope_chain_contains(&table, 2, 0));
+        // Walk never observes equality for a sibling or descendant.
+        assert!(!scope_chain_contains(&table, 2, 3));
+        assert!(!scope_chain_contains(&table, 1, 2));
+    }
+
+    #[test]
+    fn lexical_visible_through_deep_finite_ancestor_chain() {
+        let table = linear_parent_chain(40);
         let s = symbol("deep", SymbolKind::scalar(), "my", 0, 1);
         assert_eq!(
             admit(&table, 40, 500, &s),
             Admission::Visible(VisibilityReason::LexicalActiveAtCursor)
+        );
+    }
+
+    #[test]
+    fn lexical_at_hop_guard_boundary_is_visible_past_it_is_not() {
+        let at_bound = linear_parent_chain(MAX_SCOPE_PARENT_HOPS as usize);
+        let root = symbol("root", SymbolKind::scalar(), "my", 0, 1);
+        assert_eq!(
+            admit(&at_bound, MAX_SCOPE_PARENT_HOPS as usize, 500, &root),
+            Admission::Visible(VisibilityReason::LexicalActiveAtCursor),
+            "exactly {MAX_SCOPE_PARENT_HOPS} parent hops must still admit an ancestor"
+        );
+
+        let past = linear_parent_chain(MAX_SCOPE_PARENT_HOPS as usize + 1);
+        assert_eq!(
+            admit(&past, MAX_SCOPE_PARENT_HOPS as usize + 1, 500, &root),
+            Admission::NotVisible(VisibilityReason::ScopeNotVisibleFromCursor),
+            "one hop past the guard must fail closed even though the root is an ancestor"
         );
     }
 }

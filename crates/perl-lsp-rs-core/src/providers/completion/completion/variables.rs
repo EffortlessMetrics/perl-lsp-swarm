@@ -247,3 +247,81 @@ pub fn add_all_variables(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_parser_core::SourceLocation;
+    use perl_semantic_analyzer::symbol::{Scope, ScopeKind};
+
+    fn table() -> SymbolTable {
+        let mut table = SymbolTable::new();
+        for (id, parent, kind, start, end) in [
+            (0usize, None, ScopeKind::Global, 0usize, 100usize),
+            (1, Some(0), ScopeKind::Subroutine, 10, 90),
+            (2, Some(1), ScopeKind::Block, 20, 50),
+            (3, Some(1), ScopeKind::Block, 55, 80),
+        ] {
+            table.scopes.insert(
+                id,
+                Scope {
+                    id,
+                    parent,
+                    kind,
+                    location: SourceLocation { start, end },
+                    symbols: std::collections::HashSet::new(),
+                },
+            );
+        }
+        table
+    }
+
+    fn symbol(
+        name: &str,
+        kind: SymbolKind,
+        declaration: &str,
+        scope_id: ScopeId,
+        start: usize,
+    ) -> Symbol {
+        Symbol {
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            kind,
+            location: SourceLocation { start, end: start + 4 },
+            scope_id,
+            declaration: Some(declaration.to_string()),
+            documentation: None,
+            attributes: vec![],
+        }
+    }
+
+    #[test]
+    fn admitted_symbols_empty_iterator_is_empty() {
+        let table = table();
+        let selected = admitted_symbols(&table, 2, 30, std::iter::empty());
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn admitted_symbols_filter_drops_after_cursor_and_sibling_scope() {
+        let table = table();
+        let visible = symbol("ok", SymbolKind::scalar(), "my", 2, 21);
+        let future = symbol("later", SymbolKind::scalar(), "my", 2, 40);
+        let sibling = symbol("only_a", SymbolKind::scalar(), "my", 3, 56);
+        let selected = admitted_symbols(&table, 2, 30, [&visible, &future, &sibling]);
+        assert_eq!(selected.len(), 1);
+        assert!(std::ptr::eq(selected[0], &visible));
+    }
+
+    #[test]
+    fn admitted_symbols_identity_keeps_innermost_and_distinct_kinds() {
+        let table = table();
+        let outer = symbol("value", SymbolKind::scalar(), "my", 1, 11);
+        let inner = symbol("value", SymbolKind::scalar(), "my", 2, 21);
+        let array = symbol("value", SymbolKind::array(), "my", 2, 22);
+        let selected = admitted_symbols(&table, 2, 30, [&outer, &inner, &array]);
+        assert_eq!(selected.len(), 2);
+        assert!(std::ptr::eq(selected[0], &inner), "innermost scalar must survive");
+        assert!(std::ptr::eq(selected[1], &array), "distinct kind must not shadow");
+    }
+}
