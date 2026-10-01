@@ -936,15 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn marking_native_build_hints_live_against_current_sources_fails_without_a_route() {
-        // #16857 wired the routes: `refresh_workspace_metadata` now refreshes
-        // native build hints from disk, and the #13640 captured-read
-        // invalidation route composes them through
-        // `apply_native_build_hint_reads` so an open `Makefile.PL` / `Build.PL`
-        // buffer stays authoritative. A Live marking that omits the
-        // captured-reads composer (`refresh_writer`) therefore fails on the
-        // invalidation seam: the disk-backed writer remains unreachable from
-        // `refresh_workspace_metadata_from_reads` by design (#16857).
+    fn marking_native_build_hints_live_without_bound_refresh_writer_fails() {
         let field = must_some_with(
             CONFIGURATION_AUTHORITY.iter().find(|field| field.id == "workspace.native_build_hints"),
             "native_build_hints catalog row",
@@ -955,6 +947,8 @@ mod tests {
             writer_source: CONFIG_MOD,
             init_route: Some("refresh_workspace_metadata"),
             init_route_source: Some(WORKSPACE_FOLDER),
+            // Deliberately omit the captured-read writer: falling back to the disk
+            // writer must not establish invalidation reachability.
             refresh_writer: None,
             invalidation_route: Some("refresh_workspace_metadata_from_reads"),
             invalidation_route_source: Some(WORKSPACE_FOLDER),
