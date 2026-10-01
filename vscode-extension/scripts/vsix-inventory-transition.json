@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16723,
-  "reason": "Current main after #16497 and #16677 packages 29 unchanged members: package.json shrank 42 bytes after the DAP default change and out/extension.js grew 99 bytes after bounded download cleanup. The exact Windows VSIX archive produced with Node 26.5.0 and npm 11.18.0 measures 1,879,959 bytes versus the accepted 1,879,902 bytes; readme.md remains 26,678 bytes. Accept this measured net 57-byte transition while retaining the growth gate and independent installed smoke.",
-  "base_baseline_file_sha256": "7bf66646d8f58c1cec3aceba617b8dbb84f74c0b830d74f602d9b76713d66c69",
-  "candidate_baseline_file_sha256": "e43553142ff285227c0de61b076a3a5bc3c6a13dd037cbf9496012d5ff7130a1",
-  "base_inventory_sha256": "45546f0e01d868f33536e00ad41e635bd8a740edf498e784274e73d1a622a221",
-  "candidate_inventory_sha256": "55f4af7b401b0bb1691c53350a5618e665432eb360aa548d0e7a1c0e858536c3"
+  "owner_issue": 16595,
+  "reason": "Folder-scoped includePaths configuration fix increases the combined bundled extension entrypoint by 639 bytes.",
+  "base_baseline_file_sha256": "02be3f2c70c23fe13159d7f0c3e1e84ac7f53ab291c51a28b21c22cb0d5a5791",
+  "candidate_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
+  "base_inventory_sha256": "91c883030a238ffa984d0fe649ff56cb0f1669efb096f1beaaa3eabaa976c9cf",
+  "candidate_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e"
 }

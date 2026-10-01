@@ -40,7 +40,7 @@ Provides clickable links in Perl source code for module imports and file require
 The provider requires workspace root URLs for proper module path resolution:
 
 ```rust
-use perl_parser::document_links::compute_links;
+use perl_lsp_navigation::compute_links;
 use url::Url;
 
 let workspace_roots = vec![
@@ -103,7 +103,7 @@ use base;
 ### Example Usage
 
 ```rust
-use perl_parser::document_links::compute_links;
+use perl_lsp_navigation::compute_links;
 use url::Url;
 
 let source = r#"
@@ -133,7 +133,7 @@ let links = compute_links(uri, source, &roots);
 
 ### Test Coverage
 
-**Test File**: `crates/perl-lsp/tests/lsp_document_links_test.rs`
+**Test File**: `crates/perl-lsp-rs/tests/lsp_document_links_test.rs`
 
 **Coverage**:
 - Basic URL handling (Windows/Unix paths)
@@ -149,7 +149,7 @@ let links = compute_links(uri, source, &roots);
 
 ## Code Lens Provider
 
-**Module**: `crates/perl-parser/src/code_lens_provider.rs`
+**Module**: `crates/perl-lsp-code-lens/src/lib.rs`
 **LSP Method**: `textDocument/codeLens`, `codeLens/resolve`
 **LSP Specification**: [LSP 3.17 Code Lens](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_codeLens)
 
@@ -167,10 +167,12 @@ Displays inline actionable information above code elements such as reference cou
 
 ### Configuration
 
-No external configuration required. Integrates with workspace index for reference counting:
+No external configuration required. Integrates with workspace index for reference counting.
+
+Standalone consumers should import the implementation crate directly, while `perl-lsp` keeps a compatibility re-export at `perl_lsp::features::code_lens_provider`:
 
 ```rust
-use perl_parser::code_lens_provider::{CodeLensProvider, resolve_code_lens};
+use perl_lsp_code_lens::{CodeLensProvider, resolve_code_lens};
 
 let provider = CodeLensProvider::new(source.to_string());
 ```
@@ -253,7 +255,8 @@ Detects shebang line and returns "Run Script" lens if present.
 ### Example Usage
 
 ```rust
-use perl_parser::{Parser, code_lens_provider::{CodeLensProvider, resolve_code_lens}};
+use perl_lsp_code_lens::{CodeLensProvider, resolve_code_lens};
+use perl_parser::Parser;
 
 let source = r#"#!/usr/bin/perl
 package MyApp;
@@ -301,7 +304,7 @@ for lens in &mut lenses {
 
 ### Test Coverage
 
-**Test File**: `crates/perl-lsp/tests/lsp_code_lens_reference_test.rs`
+**Test File**: `crates/perl-lsp-rs/tests/lsp_code_lens_reference_test.rs`
 
 **Coverage**:
 - Code lens extraction for subroutines (test and non-test)
@@ -716,7 +719,7 @@ let highlights = provider.find_highlights(&ast, source, 4);
 
 ### Test Coverage
 
-**Test File**: `crates/perl-lsp/tests/lsp_document_highlight_test.rs`
+**Test File**: `crates/perl-lsp-rs/tests/lsp_document_highlight_test.rs`
 
 **Coverage**:
 - Scalar variable highlighting with write/read detection
@@ -1000,7 +1003,7 @@ ranges.extend(heredoc_ranges);
 
 ### Test Coverage
 
-**Test File**: `crates/perl-lsp/tests/lsp_folding_ranges_test.rs`
+**Test File**: `crates/perl-lsp-rs/tests/lsp_folding_ranges_test.rs`
 
 **Coverage**:
 - Subroutine folding
@@ -1178,7 +1181,7 @@ assert_eq!(locations.len(), 1);
 
 ### Test Coverage
 
-**Test File**: `crates/perl-lsp/tests/lsp_type_definition_tests.rs`
+**Test File**: `crates/perl-lsp-rs/tests/lsp_type_definition_tests.rs`
 
 **Coverage**:
 - Basic package definition finding
@@ -1237,14 +1240,14 @@ Creates a new implementation provider with optional workspace indexing.
 **Examples**:
 
 ```rust
-use perl_parser::implementation_provider::ImplementationProvider;
+use perl_lsp_navigation::ImplementationProvider;
 
 // Without workspace indexing (single-file analysis)
 let provider = ImplementationProvider::new(None);
 
 // With workspace indexing (cross-file inheritance)
 use std::sync::Arc;
-use perl_parser::workspace_index::WorkspaceIndex;
+use perl_workspace::workspace_index::WorkspaceIndex;
 let workspace_index = Arc::new(WorkspaceIndex::new());
 let provider = ImplementationProvider::new(Some(workspace_index));
 ```
@@ -1398,7 +1401,7 @@ assert_eq!(implementations.len(), 2);
 
 ### Test Coverage
 
-**Test File**: `crates/perl-lsp/tests/lsp_implementation_tests.rs`
+**Test File**: `crates/perl-lsp-rs/tests/lsp_implementation_tests.rs`
 
 **Coverage**:
 - Finding subclasses via `use parent`
@@ -1582,10 +1585,10 @@ Several providers acknowledge ongoing AST migration:
 
 ## See Also
 
-- [LSP Implementation Guide](LSP_IMPLEMENTATION_GUIDE.md) - Server architecture and request handling
-- [Workspace Navigation Guide](WORKSPACE_NAVIGATION_GUIDE.md) - Cross-file navigation features
-- [API Documentation Standards](API_DOCUMENTATION_STANDARDS.md) - Documentation requirements for providers
-- [Position Tracking Guide](POSITION_TRACKING_GUIDE.md) - UTF-16/UTF-8 position conversion details
+- [LSP Implementation Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/LSP_IMPLEMENTATION_GUIDE.md) - Server architecture and request handling
+- [Workspace Navigation Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/WORKSPACE_NAVIGATION_GUIDE.md) - Cross-file navigation features
+- [API Documentation Standards](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/API_DOCUMENTATION_STANDARDS.md) - Documentation requirements for providers
+- [Position Tracking Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/POSITION_TRACKING_GUIDE.md) - UTF-16/UTF-8 position conversion details
 
 ## Related Issues
 
