@@ -1877,12 +1877,14 @@ impl<'a> Parser<'a> {
     ///
     /// The returned string is the exact source between the parentheses so
     /// formatting whitespace is retained (#16810). Token kinds still drive
-    /// consumption; spelling is not reconstructed from token text.
+    /// consumption. If the inner slice is missing or not UTF-8, the consumed
+    /// token texts are used instead of degrading to an exact empty prototype.
     fn parse_prototype(&mut self) -> ParseResult<String> {
         let open = self.expect(TokenKind::LeftParen)?;
         let open_paren_pos = open.start();
         let inner_start = open.end();
         let mut inner_end = inner_start;
+        let mut token_fallback = String::new();
 
         while !self.tokens.is_eof() {
             let token = self.consume_token()?;
@@ -1890,15 +1892,15 @@ impl<'a> Parser<'a> {
                 inner_end = token.start();
                 break;
             }
+            token_fallback.push_str(token.text.as_ref());
             inner_end = token.end();
         }
 
-        let prototype = self
-            .src_bytes
-            .get(inner_start..inner_end)
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .unwrap_or_default()
-            .to_string();
+        // Prefer the exact source slice so formatting whitespace is retained.
+        // A failed slice must not become `""` (an exact nullary shape); fall
+        // back to the consumed token texts instead.
+        let prototype =
+            prototype_inner_text(self.src_bytes, inner_start, inner_end, &token_fallback);
 
         // Validate every character in the collected prototype string.
         // Perl allows: $ @ % & * \ ; + _ bracketed ref groups, and ASCII
@@ -2182,6 +2184,49 @@ fn shift_node_locations(node: &mut Node, offset: usize) -> bool {
 /// bracketed ref groups, and ASCII whitespace.
 fn is_valid_prototype_char(c: char) -> bool {
     crate::prototype_shape::is_prototype_char(c)
+}
+
+/// Inner prototype spelling between `(` and `)`.
+///
+/// A successful empty slice is the empty prototype. A failed slice (out of
+/// range or invalid UTF-8) uses `token_fallback` so lowering cannot mint an
+/// exact nullary shape from a missing source range.
+fn prototype_inner_text(
+    src_bytes: &[u8],
+    inner_start: usize,
+    inner_end: usize,
+    token_fallback: &str,
+) -> String {
+    src_bytes
+        .get(inner_start..inner_end)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| token_fallback.to_string())
+}
+
+#[cfg(test)]
+mod prototype_inner_text_tests {
+    use super::prototype_inner_text;
+
+    #[test]
+    fn valid_slice_keeps_source_spelling() {
+        assert_eq!(prototype_inner_text(b"$ $", 0, 3, "$$"), "$ $");
+    }
+
+    #[test]
+    fn empty_in_range_slice_is_the_empty_prototype() {
+        assert_eq!(prototype_inner_text(b"sub f () {}", 7, 7, "ignored"), "");
+    }
+
+    #[test]
+    fn invalid_utf8_uses_token_fallback() {
+        assert_eq!(prototype_inner_text(&[0xff, b'$'], 0, 2, "$"), "$");
+    }
+
+    #[test]
+    fn out_of_range_uses_token_fallback() {
+        assert_eq!(prototype_inner_text(b"$", 0, 8, "$"), "$");
+    }
 }
 
 /// Return `true` if `name` is a simple bareword identifier suitable for the

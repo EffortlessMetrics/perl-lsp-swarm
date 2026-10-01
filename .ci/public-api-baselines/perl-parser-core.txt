@@ -2721,6 +2721,7 @@ pub perl_parser_core::hir::PrototypeFact::package_context: core::option::Option<
 pub perl_parser_core::hir::PrototypeFact::provenance: perl_parser_core::hir::CompileProvenance
 pub perl_parser_core::hir::PrototypeFact::range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::hir::PrototypeFact::scope_id: core::option::Option<perl_parser_core::hir::HirScopeId>
+pub perl_parser_core::hir::PrototypeFact::shape: perl_parser_core::prototype_shape::PrototypeShape
 pub perl_parser_core::hir::PrototypeFact::sub_name: alloc::string::String
 pub fn perl_parser_core::hir::PrototypeFact::clone(&self) -> perl_parser_core::hir::PrototypeFact
 pub fn perl_parser_core::hir::PrototypeFact::eq(&self, other: &perl_parser_core::hir::PrototypeFact) -> bool
@@ -3648,6 +3649,104 @@ pub use perl_parser_core::position::WireRange
 pub use perl_parser_core::position::apply_edit_utf8
 pub use perl_parser_core::position::offset_to_utf16_line_col
 pub use perl_parser_core::position::utf16_line_col_to_offset
+pub mod perl_parser_core::prototype_shape
+pub enum perl_parser_core::prototype_shape::PrototypeCompleteness
+pub perl_parser_core::prototype_shape::PrototypeCompleteness::Exact
+pub perl_parser_core::prototype_shape::PrototypeCompleteness::Recovered
+pub perl_parser_core::prototype_shape::PrototypeCompleteness::Recovered::reason: perl_parser_core::prototype_shape::PrototypeRecovery
+pub fn perl_parser_core::prototype_shape::PrototypeCompleteness::tag(&self) -> &'static str
+pub fn perl_parser_core::prototype_shape::PrototypeCompleteness::clone(&self) -> perl_parser_core::prototype_shape::PrototypeCompleteness
+pub fn perl_parser_core::prototype_shape::PrototypeCompleteness::eq(&self, other: &perl_parser_core::prototype_shape::PrototypeCompleteness) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeCompleteness::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::prototype_shape::PrototypeDefault
+pub perl_parser_core::prototype_shape::PrototypeDefault::None
+pub perl_parser_core::prototype_shape::PrototypeDefault::TopicVariable
+pub const fn perl_parser_core::prototype_shape::PrototypeDefault::tag(self) -> &'static str
+pub fn perl_parser_core::prototype_shape::PrototypeDefault::clone(&self) -> perl_parser_core::prototype_shape::PrototypeDefault
+pub fn perl_parser_core::prototype_shape::PrototypeDefault::eq(&self, other: &perl_parser_core::prototype_shape::PrototypeDefault) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeDefault::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::prototype_shape::PrototypeRecovery
+pub perl_parser_core::prototype_shape::PrototypeRecovery::DanglingBackslash
+pub perl_parser_core::prototype_shape::PrototypeRecovery::DuplicateOptionalBoundary
+pub perl_parser_core::prototype_shape::PrototypeRecovery::EmptyGroup
+pub perl_parser_core::prototype_shape::PrototypeRecovery::InvalidCharacter
+pub perl_parser_core::prototype_shape::PrototypeRecovery::InvalidTopicDefaultPosition
+pub perl_parser_core::prototype_shape::PrototypeRecovery::SlotAfterSlurpy
+pub perl_parser_core::prototype_shape::PrototypeRecovery::UnclosedGroup
+pub perl_parser_core::prototype_shape::PrototypeRecovery::UnexpectedCloser
+pub perl_parser_core::prototype_shape::PrototypeRecovery::UnsupportedForm
+pub const fn perl_parser_core::prototype_shape::PrototypeRecovery::tag(self) -> &'static str
+pub fn perl_parser_core::prototype_shape::PrototypeRecovery::clone(&self) -> perl_parser_core::prototype_shape::PrototypeRecovery
+pub fn perl_parser_core::prototype_shape::PrototypeRecovery::eq(&self, other: &perl_parser_core::prototype_shape::PrototypeRecovery) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeRecovery::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::prototype_shape::PrototypeReferent
+pub perl_parser_core::prototype_shape::PrototypeReferent::Array
+pub perl_parser_core::prototype_shape::PrototypeReferent::Code
+pub perl_parser_core::prototype_shape::PrototypeReferent::Glob
+pub perl_parser_core::prototype_shape::PrototypeReferent::Hash
+pub perl_parser_core::prototype_shape::PrototypeReferent::Scalar
+pub const fn perl_parser_core::prototype_shape::PrototypeReferent::tag(self) -> &'static str
+pub fn perl_parser_core::prototype_shape::PrototypeReferent::clone(&self) -> perl_parser_core::prototype_shape::PrototypeReferent
+pub fn perl_parser_core::prototype_shape::PrototypeReferent::eq(&self, other: &perl_parser_core::prototype_shape::PrototypeReferent) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeReferent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::prototype_shape::PrototypeSlotKind
+pub perl_parser_core::prototype_shape::PrototypeSlotKind::ArraySlurpy
+pub perl_parser_core::prototype_shape::PrototypeSlotKind::Code
+pub perl_parser_core::prototype_shape::PrototypeSlotKind::Glob
+pub perl_parser_core::prototype_shape::PrototypeSlotKind::GroupedReference(alloc::vec::Vec<perl_parser_core::prototype_shape::PrototypeReferent>)
+pub perl_parser_core::prototype_shape::PrototypeSlotKind::HashSlurpy
+pub perl_parser_core::prototype_shape::PrototypeSlotKind::ReferenceTo(perl_parser_core::prototype_shape::PrototypeReferent)
+pub perl_parser_core::prototype_shape::PrototypeSlotKind::Scalar
+pub perl_parser_core::prototype_shape::PrototypeSlotKind::ScalarOrReference
+pub perl_parser_core::prototype_shape::PrototypeSlotKind::TopicDefaultScalar
+pub fn perl_parser_core::prototype_shape::PrototypeSlotKind::tag(&self) -> alloc::string::String
+pub fn perl_parser_core::prototype_shape::PrototypeSlotKind::clone(&self) -> perl_parser_core::prototype_shape::PrototypeSlotKind
+pub fn perl_parser_core::prototype_shape::PrototypeSlotKind::eq(&self, other: &perl_parser_core::prototype_shape::PrototypeSlotKind) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeSlotKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser_core::prototype_shape::PrototypeSyntaxClass
+pub perl_parser_core::prototype_shape::PrototypeSyntaxClass::BlockTaking
+pub perl_parser_core::prototype_shape::PrototypeSyntaxClass::Nullary
+pub perl_parser_core::prototype_shape::PrototypeSyntaxClass::Ordinary
+pub const fn perl_parser_core::prototype_shape::PrototypeSyntaxClass::tag(self) -> &'static str
+pub fn perl_parser_core::prototype_shape::PrototypeSyntaxClass::clone(&self) -> perl_parser_core::prototype_shape::PrototypeSyntaxClass
+pub fn perl_parser_core::prototype_shape::PrototypeSyntaxClass::eq(&self, other: &perl_parser_core::prototype_shape::PrototypeSyntaxClass) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeSyntaxClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::prototype_shape::PrototypeBoundary
+pub fn perl_parser_core::prototype_shape::PrototypeBoundary::end(self) -> usize
+pub fn perl_parser_core::prototype_shape::PrototypeBoundary::start(self) -> usize
+pub fn perl_parser_core::prototype_shape::PrototypeBoundary::clone(&self) -> perl_parser_core::prototype_shape::PrototypeBoundary
+pub fn perl_parser_core::prototype_shape::PrototypeBoundary::eq(&self, other: &perl_parser_core::prototype_shape::PrototypeBoundary) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeBoundary::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::prototype_shape::PrototypeSemanticDigest(_)
+pub fn perl_parser_core::prototype_shape::PrototypeSemanticDigest::as_str(&self) -> &str
+pub fn perl_parser_core::prototype_shape::PrototypeSemanticDigest::clone(&self) -> perl_parser_core::prototype_shape::PrototypeSemanticDigest
+pub fn perl_parser_core::prototype_shape::PrototypeSemanticDigest::eq(&self, other: &perl_parser_core::prototype_shape::PrototypeSemanticDigest) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeSemanticDigest::as_ref(&self) -> &str
+pub fn perl_parser_core::prototype_shape::PrototypeSemanticDigest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::prototype_shape::PrototypeShape
+pub fn perl_parser_core::prototype_shape::PrototypeShape::completeness(&self) -> &perl_parser_core::prototype_shape::PrototypeCompleteness
+pub fn perl_parser_core::prototype_shape::PrototypeShape::first_optional_index(&self) -> core::option::Option<usize>
+pub fn perl_parser_core::prototype_shape::PrototypeShape::is_exact(&self) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeShape::optional_boundary(&self) -> core::option::Option<perl_parser_core::prototype_shape::PrototypeBoundary>
+pub fn perl_parser_core::prototype_shape::PrototypeShape::project(raw: impl core::convert::Into<alloc::string::String>) -> perl_parser_core::prototype_shape::PrototypeShape
+pub fn perl_parser_core::prototype_shape::PrototypeShape::raw(&self) -> &str
+pub fn perl_parser_core::prototype_shape::PrototypeShape::semantic_digest(&self) -> &perl_parser_core::prototype_shape::PrototypeSemanticDigest
+pub fn perl_parser_core::prototype_shape::PrototypeShape::slots(&self) -> &[perl_parser_core::prototype_shape::PrototypeSlot]
+pub fn perl_parser_core::prototype_shape::PrototypeShape::syntax_class(&self) -> perl_parser_core::prototype_shape::PrototypeSyntaxClass
+pub fn perl_parser_core::prototype_shape::PrototypeShape::clone(&self) -> perl_parser_core::prototype_shape::PrototypeShape
+pub fn perl_parser_core::prototype_shape::PrototypeShape::eq(&self, other: &perl_parser_core::prototype_shape::PrototypeShape) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeShape::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::prototype_shape::PrototypeSlot
+pub fn perl_parser_core::prototype_shape::PrototypeSlot::byte_range(&self) -> (usize, usize)
+pub fn perl_parser_core::prototype_shape::PrototypeSlot::default(&self) -> perl_parser_core::prototype_shape::PrototypeDefault
+pub fn perl_parser_core::prototype_shape::PrototypeSlot::is_optional(&self) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeSlot::kind(&self) -> &perl_parser_core::prototype_shape::PrototypeSlotKind
+pub fn perl_parser_core::prototype_shape::PrototypeSlot::raw(&self) -> &str
+pub fn perl_parser_core::prototype_shape::PrototypeSlot::clone(&self) -> perl_parser_core::prototype_shape::PrototypeSlot
+pub fn perl_parser_core::prototype_shape::PrototypeSlot::eq(&self, other: &perl_parser_core::prototype_shape::PrototypeSlot) -> bool
+pub fn perl_parser_core::prototype_shape::PrototypeSlot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::prototype_shape::project_prototype_shape(raw: &str) -> perl_parser_core::prototype_shape::PrototypeShape
+pub fn perl_parser_core::prototype_shape::raw_from_attribute(attr: &str) -> core::option::Option<&str>
 pub mod perl_parser_core::qualified_name
 pub enum perl_parser_core::qualified_name::QualifiedNameError
 pub perl_parser_core::qualified_name::QualifiedNameError::EmptyName
