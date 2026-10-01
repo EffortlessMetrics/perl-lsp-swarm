@@ -3,6 +3,7 @@
 use perl_parser_core::hir::{
     BodyOwnerKind, HirExpr, HirExprId, HirFile, HirKind, NativeMethodInvocantBoundary,
     NativeMethodInvocantLookup, NativeMethodOwner, StorageClass, VariableKind, lower_ast,
+    lower_ast_with_parse_diagnostics,
 };
 use perl_parser_core::{Node, NodeKind, Parser};
 
@@ -26,7 +27,8 @@ fn require(condition: bool, context: &str) -> TestResult {
 
 fn lower(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
-    lower_ast(&parser.parse_with_recovery().ast)
+    let output = parser.parse_with_recovery();
+    lower_ast_with_parse_diagnostics(&output.ast, &output.diagnostics)
 }
 
 fn nth_offset(source: &str, needle: &str, nth: usize) -> Result<usize, String> {
@@ -425,7 +427,8 @@ fn method_attributes_and_overlapping_keyword_provider_are_ambiguous() -> TestRes
 fn recovered_method_wrapper_cannot_publish_exact_binding() -> TestResult {
     let source = "use feature 'class'; class Animal { method speak { $self->sound; } }";
     let mut parser = Parser::new(source);
-    let mut ast = parser.parse_with_recovery().ast;
+    let output = parser.parse_with_recovery();
+    let mut ast = output.ast;
     let NodeKind::Program { statements } = &mut ast.kind else {
         return Err("missing program".to_string());
     };
@@ -454,7 +457,7 @@ fn recovered_method_wrapper_cannot_publish_exact_binding() -> TestResult {
         },
         range,
     );
-    let file = lower_ast(&ast);
+    let file = lower_ast_with_parse_diagnostics(&ast, &output.diagnostics);
     same(
         file.native_method_invocant_at(nth_offset(source, "$self", 0)? + 1),
         NativeMethodInvocantLookup::Partial(NativeMethodInvocantBoundary::RecoveredSyntax),
@@ -470,7 +473,8 @@ fn recovered_method_wrapper_cannot_publish_exact_binding() -> TestResult {
 fn recovered_class_wrapper_cannot_publish_exact_binding() -> TestResult {
     let source = "use feature 'class'; class Animal { method speak { $self->sound; } }";
     let mut parser = Parser::new(source);
-    let mut ast = parser.parse_with_recovery().ast;
+    let output = parser.parse_with_recovery();
+    let mut ast = output.ast;
     let NodeKind::Program { statements } = &mut ast.kind else {
         return Err("missing program".to_string());
     };
@@ -489,7 +493,7 @@ fn recovered_class_wrapper_cannot_publish_exact_binding() -> TestResult {
         },
         range,
     );
-    let file = lower_ast(&ast);
+    let file = lower_ast_with_parse_diagnostics(&ast, &output.diagnostics);
     same(
         file.native_method_invocant_at(nth_offset(source, "$self", 0)? + 1),
         NativeMethodInvocantLookup::Partial(NativeMethodInvocantBoundary::RecoveredSyntax),
@@ -535,6 +539,47 @@ fn unclosed_class_body_delimiter_cannot_publish_exact_binding() -> TestResult {
     require(
         file.scope_graph.bindings.iter().all(|item| item.storage != StorageClass::MethodInvocant),
         "unclosed class body has no implicit binding",
+    )
+}
+
+#[test]
+fn unclosed_class_delimiter_refuses_also_the_complete_method_before_it() -> TestResult {
+    // A closed method followed by another method, with the class body never
+    // closed. The parser records "Unclosed block" for the class brace, so the
+    // whole file is delimiter-recovered: the earlier complete method must not
+    // mint an exact owner either, even though its own body span ends well
+    // before the input boundary.
+    let source = "use feature 'class'; class Animal { method speak { $self->sound; } method bark { $self->yelp; }";
+    let file = lower(source);
+    for (method, nth) in [("speak", 0), ("bark", 1)] {
+        same(
+            file.native_method_invocant_at(nth_offset(source, "$self", nth)? + 1),
+            NativeMethodInvocantLookup::Partial(NativeMethodInvocantBoundary::RecoveredSyntax),
+            &format!("{method} on a delimiter-recovered file"),
+        )?;
+    }
+    require(
+        file.scope_graph.bindings.iter().all(|item| item.storage != StorageClass::MethodInvocant),
+        "delimiter-recovered file has no implicit binding",
+    )
+}
+
+#[test]
+fn lower_ast_without_parse_authority_never_publishes_exact() -> TestResult {
+    // Even a perfectly clean source never admits an exact owner through the
+    // entry that carries no parse diagnostics: cleanliness is unverifiable
+    // there, and unverifiable must mean refused.
+    let source = "use feature 'class'; class Animal { method speak { $self->sound; } }";
+    let mut parser = Parser::new(source);
+    let file = lower_ast(&parser.parse_with_recovery().ast);
+    same(
+        file.native_method_invocant_at(nth_offset(source, "$self", 0)? + 1),
+        NativeMethodInvocantLookup::Partial(NativeMethodInvocantBoundary::ParseAuthorityUnsupplied),
+        "authority unsupplied",
+    )?;
+    require(
+        file.scope_graph.bindings.iter().all(|item| item.storage != StorageClass::MethodInvocant),
+        "authority-unsupplied lowering mints no implicit binding",
     )
 }
 

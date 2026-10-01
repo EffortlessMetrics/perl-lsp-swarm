@@ -3303,7 +3303,15 @@ pub enum NativeMethodInvocantBoundary {
     AmbiguousClassProfile,
     /// Method attributes have no accepted core-native invocant contract.
     MethodAttributes,
-    /// Parser recovery affects the method or its class declaration.
+    /// This lowering ran without the parse operation's diagnostics, so a
+    /// blocking parse condition cannot be ruled out. Only
+    /// [`lower_ast_with_parse_diagnostics`](crate::hir::lower_ast_with_parse_diagnostics)
+    /// admits exact owners.
+    ParseAuthorityUnsupplied,
+    /// Parser recovery affects the method or its class declaration: an
+    /// `Error`-wrapped partial reached the lowerer, or the supplied parse
+    /// diagnostics record a blocking condition (unclosed block, unexpected
+    /// token, invalid signature parameter, ...).
     RecoveredSyntax,
     /// The reference crossed a named nested subroutine pad.
     NamedSubroutine,

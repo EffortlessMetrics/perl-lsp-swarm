@@ -5,6 +5,7 @@ use perl_pragma::{CompileTimePragmaEnvironment, PragmaSnapshot};
 use perl_semantic_facts::AnchorId;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::syntax::error::{ParseError, count_blocking_non_recovered};
 use crate::syntax::regex_analysis::RegexAnalysisFamily;
 
 use super::body::{
@@ -42,9 +43,50 @@ use super::model::{
 /// method, use, require, variable-declaration, and expression-shell items. It
 /// records local scope, stash, and compile-environment side graphs. A second
 /// pass lowers body arenas and attaches them to [`HirFile::bodies`].
+///
+/// This entry does not carry the parse operation's diagnostics, so it cannot
+/// verify that the source parsed cleanly. Native method invocants are
+/// therefore never minted as [`NativeMethodOwner::Exact`] here; use
+/// [`lower_ast_with_parse_diagnostics`] with the real
+/// `ParseOutput::diagnostics` to admit exact owners for clean parses.
 pub fn lower_ast(ast: &Node) -> HirFile {
+    lower_ast_with_authority(ast, ParseDiagnosticAuthority::Unsupplied)
+}
+
+/// Lower a parser AST into HIR with the parse operation's diagnostics as
+/// authority for exact native method ownership.
+///
+/// Pass the real `ParseOutput::diagnostics` slice. When the parse recorded at
+/// least one blocking diagnostic that is not the structured-recovery marker
+/// (`ParseError::Recovered`, which covers benign body-expression repairs such
+/// as a truncated `$self->` chain), the source is not a clean parse and no
+/// method in the file is admitted an exact native invocant — every such
+/// candidate carries [`NativeMethodInvocantBoundary::RecoveredSyntax`].
+pub fn lower_ast_with_parse_diagnostics(ast: &Node, diagnostics: &[ParseError]) -> HirFile {
+    lower_ast_with_authority(
+        ast,
+        if count_blocking_non_recovered(diagnostics) > 0 {
+            ParseDiagnosticAuthority::Blocking
+        } else {
+            ParseDiagnosticAuthority::Clean
+        },
+    )
+}
+
+/// How much parse-operation authority this lowering carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseDiagnosticAuthority {
+    /// The entry received no diagnostics, so parse cleanliness is unverifiable.
+    Unsupplied,
+    /// Diagnostics were supplied and contain no blocking non-recovered entry.
+    Clean,
+    /// Diagnostics were supplied and contain a blocking non-recovered entry.
+    Blocking,
+}
+
+fn lower_ast_with_authority(ast: &Node, parse_authority: ParseDiagnosticAuthority) -> HirFile {
     let pragma_environment = CompileTimePragmaEnvironment::build(ast);
-    let mut lowerer = Lowerer::new(ast.location, pragma_environment);
+    let mut lowerer = Lowerer::new(ast.location, pragma_environment, parse_authority);
     lowerer.visit(ast, RecoveryConfidence::Parsed);
     lowerer.record_pragma_state_facts();
     let mut file = lowerer.finish();
@@ -93,9 +135,9 @@ struct Lowerer {
     class_body_items: BTreeMap<(usize, usize), HirId>,
     /// Transient lowering join from a class body frame to its declaration.
     class_scope_items: BTreeMap<HirScopeId, HirId>,
-    /// End of the root span, i.e. the input boundary used by the
-    /// delimiter-completeness signal in the `Method` arm.
-    input_end: usize,
+    /// Parse-operation authority carried by the lowering entry; gates exact
+    /// native method ownership in the `Method` arm.
+    parse_authority: ParseDiagnosticAuthority,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +150,11 @@ enum BarewordContext {
 }
 
 impl Lowerer {
-    fn new(file_range: SourceLocation, pragma_environment: CompileTimePragmaEnvironment) -> Self {
+    fn new(
+        file_range: SourceLocation,
+        pragma_environment: CompileTimePragmaEnvironment,
+        parse_authority: ParseDiagnosticAuthority,
+    ) -> Self {
         let mut scope_graph = ScopeGraph::default();
         let file_scope = HirScopeId::from_index(0);
         scope_graph.scopes.push(ScopeFrame {
@@ -135,7 +181,7 @@ impl Lowerer {
             class_field_decls: BTreeSet::new(),
             class_body_items: BTreeMap::new(),
             class_scope_items: BTreeMap::new(),
-            input_end: file_range.end,
+            parse_authority,
         }
     }
 
@@ -334,6 +380,15 @@ impl Lowerer {
                     || !matches!(&body.kind, NodeKind::Block { .. })
                 {
                     Err(NativeMethodInvocantBoundary::RecoveredSyntax)
+                } else if self.parse_authority == ParseDiagnosticAuthority::Unsupplied {
+                    Err(NativeMethodInvocantBoundary::ParseAuthorityUnsupplied)
+                } else if self.parse_authority == ParseDiagnosticAuthority::Blocking {
+                    // The parse operation recorded a blocking diagnostic that
+                    // is not the structured-recovery marker (unclosed block,
+                    // unexpected token, invalid signature parameter, ...).
+                    // Real Perl rejects this file, so no method in it carries
+                    // an exact native owner, however complete its own span.
+                    Err(NativeMethodInvocantBoundary::RecoveredSyntax)
                 } else if !attributes.is_empty() {
                     Err(NativeMethodInvocantBoundary::MethodAttributes)
                 } else if self.has_ambiguous_class_import(node.location.start) {
@@ -354,11 +409,7 @@ impl Lowerer {
                                 .has_feature("class")
                             && item.anchor.name_range.is_some()
                     }) {
-                        if self.body_block_is_delimiter_incomplete(body) {
-                            Err(NativeMethodInvocantBoundary::RecoveredSyntax)
-                        } else {
-                            Ok((*class_item, self.current_scope()))
-                        }
+                        Ok((*class_item, self.current_scope()))
                     } else {
                         Err(NativeMethodInvocantBoundary::RecoveredSyntax)
                     }
@@ -1570,25 +1621,6 @@ impl Lowerer {
             }
             false
         })
-    }
-
-    /// Delimiter-completeness signal for an exact-native method candidate.
-    ///
-    /// Only sound for a body that is already a *direct member* of a block-form
-    /// class: there the class body's own `}` must follow the method body, so a
-    /// body span reaching the input boundary was never closed. The same span
-    /// shape on a package-level `method` is an ordinary closed body ending the
-    /// file, so this check must not run outside the class-membership arm.
-    ///
-    /// `parse_block` records "Unclosed block" and still returns an ordinary
-    /// `Block` node, so delimiter recovery reaches this lowerer without any
-    /// `Error` wrapper and with [`RecoveryConfidence::Parsed`] items. This
-    /// signal refuses both an unclosed method body and a closed method whose
-    /// class closer is missing, and it is deliberately independent of body
-    /// *expression* recovery (see [`has_recovery_node`]), which an incomplete
-    /// `$self->` chain must not trigger.
-    fn body_block_is_delimiter_incomplete(&self, body: &Node) -> bool {
-        body.location.end >= self.input_end
     }
 
     fn visit_identifier_with_bareword_context(
