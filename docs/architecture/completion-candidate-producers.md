@@ -10,8 +10,8 @@ Controlling issue #10949. The one live application route is #10229, pure merge/r
 
 The dispositions below were audited against this exact source. A change to any file listed here invalidates the audit and `check` fails until the rows are re-checked.
 
-- Digest: `sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f`
-- Files (42):
+- Digest: `sha256:10bb9897a42f444267b20e446eae7523c78c549255f8a3da766f2036fc54903d`
+- Files (43):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins/catalog.rs`
@@ -32,6 +32,7 @@ The dispositions below were audited against this exact source. A change to any f
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/regex_patterns.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/request/context.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/request/dispatch.rs`
+  - `crates/perl-lsp-rs-core/src/providers/completion/completion/request/interpolation.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/request/mod.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/request/test_frameworks.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/scope_distance.rs`
@@ -61,7 +62,7 @@ A producer is a function that carries candidates: it takes a `&mut Vec<Candidate
 
 | Population | Count |
 | --- | --- |
-| producers | 59 |
+| producers | 60 |
 | candidate classes | 18 |
 | construction-only files | 0 |
 | delegated modules | 2 |
@@ -74,6 +75,7 @@ A producer is a function that carries candidates: it takes a `&mut Vec<Candidate
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `perl_lsp_rs_core::providers::completion::completion::functions::add_function_completions` | local_symbol | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11002 |
 | `perl_lsp_rs_core::providers::completion::completion::packages::add_local_package_completions` | local_symbol | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11002 |
+| `perl_lsp_rs_core::providers::completion::completion::request::interpolation::complete_slot` | local_symbol | returned | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11002 |
 | `perl_lsp_rs_core::providers::completion::completion::variables::add_all_variables` | local_symbol | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11002 |
 | `perl_lsp_rs_core::providers::completion::completion::variables::add_special_variables` | local_symbol | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11021 |
 | `perl_lsp_rs_core::providers::completion::completion::variables::add_variable_completions` | local_symbol | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11002 |
@@ -166,7 +168,7 @@ flowchart LR
   pool(["shared candidate pool"])
   final["sort_and_cap_completions"]
   wire(["LSP CompletionList"])
-  nlocal_symbol_handle_completion_handle_completion_cancellable["local_symbol ×5"]
+  nlocal_symbol_handle_completion_handle_completion_cancellable["local_symbol ×6"]
   nhandle_completion --> nlocal_symbol_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nlocal_symbol_handle_completion_handle_completion_cancellable
   nlocal_symbol_handle_completion_handle_completion_cancellable --> pool
