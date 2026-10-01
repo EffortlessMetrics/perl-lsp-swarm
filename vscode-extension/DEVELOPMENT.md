@@ -143,7 +143,7 @@ fixture). Then check the editor service:
 1. In the Extensions view, inspect whether the official
    [TypeScript 7](https://marketplace.visualstudio.com/items?itemName=TypeScriptTeam.native-preview)
    extension is installed, enabled, and compatible with your VS Code build.
-   VS Code 1.125 is the published minimum for *our* extension, but that does
+   VS Code 1.125 is the published minimum for _our_ extension, but that does
    not establish that its built-in editor service is TypeScript 7 or that the
    latest TypeScript 7 extension supports 1.125. If you want native TS7
    IntelliSense and the extension supports your editor, run **TypeScript:
