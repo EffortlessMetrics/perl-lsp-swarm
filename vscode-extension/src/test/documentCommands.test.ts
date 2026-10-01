@@ -146,6 +146,11 @@ describe('document command implementations', () => {
       message: 'Could not check syntax: stdout maxBuffer length exceeded',
     },
     {
+      name: 'a timeout the Perl process survived with a nonzero exit',
+      error: Object.assign(new Error('Command failed'), { code: 5, killed: true }),
+      message: 'Could not check syntax: perl -c timed out after 10 seconds.',
+    },
+    {
       name: 'an empty nonzero Perl exit',
       error: Object.assign(new Error('Command failed'), { code: 255 }),
       message: 'Syntax check failed: perl -c exited with code 255 without output.',
@@ -197,6 +202,36 @@ describe('document command implementations', () => {
       '[check-syntax] Could not check syntax: perl -c timed out after 10 seconds.',
     );
     expect(outputChannel.appendLine).toHaveBeenNthCalledWith(2, 'BEGIN warning before timeout');
+    expect(outputChannel.show).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps child output that happens to appear inside the canned failure message', async () => {
+    setActiveEditor(makeEditor());
+    const outputChannel = makeOutputChannel();
+    const execFile: ExecFileLike = jest.fn((_file, _args, _options, callback) => {
+      callback(
+        Object.assign(new Error('Command failed'), { code: null, killed: true }),
+        '',
+        'perl -c',
+      );
+    });
+    (vscode.window.showErrorMessage as jest.Mock).mockResolvedValueOnce('Show Output');
+
+    await runCheckSyntaxCommand({
+      outputChannel,
+      serverNotRunningMessage: () => 'server unavailable',
+      execFile,
+    });
+
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+      'Could not check syntax: perl -c timed out after 10 seconds.',
+      'Show Output',
+    );
+    expect(outputChannel.appendLine).toHaveBeenNthCalledWith(
+      1,
+      '[check-syntax] Could not check syntax: perl -c timed out after 10 seconds.',
+    );
+    expect(outputChannel.appendLine).toHaveBeenNthCalledWith(2, 'perl -c');
     expect(outputChannel.show).toHaveBeenCalledTimes(1);
   });
 
