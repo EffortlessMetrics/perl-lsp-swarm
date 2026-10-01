@@ -2387,7 +2387,7 @@ fn split_file_completion_excludes_indexed_predecessor_of_open_document()
 
     let current = "package Child;\nsub run {\nmy $self = shift;\n$self->";
     let mut parser = Parser::new(current);
-    let ast = must(parser.parse());
+    let ast = parser.parse()?;
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let items = provider.get_completions_with_path(
         current,
@@ -2395,9 +2395,15 @@ fn split_file_completion_excludes_indexed_predecessor_of_open_document()
         Some("file:///workspace/Child.pm"),
     );
     let labels: Vec<_> = items.iter().map(|item| item.label.as_ref()).collect();
-    assert!(labels.contains(&"from_split"), "split-file method missing: {labels:?}");
-    assert!(!labels.contains(&"removed"), "predecessor method resurfaced: {labels:?}");
-    assert!(!labels.contains(&"inherited"), "predecessor ISA resurfaced: {labels:?}");
+    if !(labels.contains(&"from_split")) {
+        return Err(format!("split-file method missing: {labels:?}").into());
+    }
+    if labels.contains(&"removed") {
+        return Err(format!("predecessor method resurfaced: {labels:?}").into());
+    }
+    if labels.contains(&"inherited") {
+        return Err(format!("predecessor ISA resurfaced: {labels:?}").into());
+    }
     Ok(())
 }
 
@@ -2415,14 +2421,20 @@ fn method_completion_filesystem_path_excludes_indexed_predecessor()
 
     let current = "package Child; sub run { my $self = shift; $self->";
     let mut parser = Parser::new(current);
-    let ast = must(parser.parse());
+    let ast = parser.parse()?;
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let current_path = path.to_string_lossy();
     let items = provider.get_completions_with_path(current, current.len(), Some(&current_path));
     let labels: Vec<_> = items.iter().map(|item| item.label.as_ref()).collect();
-    assert!(labels.contains(&"run"), "current method missing: {labels:?}");
-    assert!(labels.contains(&"from_split"), "split-file method missing: {labels:?}");
-    assert!(!labels.contains(&"removed"), "predecessor method resurfaced: {labels:?}");
+    if !(labels.contains(&"run")) {
+        return Err(format!("current method missing: {labels:?}").into());
+    }
+    if !(labels.contains(&"from_split")) {
+        return Err(format!("split-file method missing: {labels:?}").into());
+    }
+    if labels.contains(&"removed") {
+        return Err(format!("predecessor method resurfaced: {labels:?}").into());
+    }
     Ok(())
 }
 
@@ -2445,7 +2457,7 @@ fn split_file_completion_scopes_inherited_methods_and_generated_members_to_root(
     )?;
     let current = "package Child;\nsub run {\nmy $self = shift;\n$self->";
     let mut parser = Parser::new(current);
-    let ast = must(parser.parse());
+    let ast = parser.parse()?;
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let items = provider.get_completions_with_path(
         current,
@@ -2453,10 +2465,18 @@ fn split_file_completion_scopes_inherited_methods_and_generated_members_to_root(
         Some("file:///root-a/Current.pl"),
     );
     let labels: Vec<_> = items.iter().map(|item| item.label.as_ref()).collect();
-    assert!(labels.contains(&"own"), "same-root method missing: {labels:?}");
-    assert!(labels.contains(&"same_root"), "same-root accessor missing: {labels:?}");
-    assert!(!labels.contains(&"foreign_method"), "cross-root method leaked: {labels:?}");
-    assert!(!labels.contains(&"foreign_accessor"), "cross-root accessor leaked: {labels:?}");
+    if !(labels.contains(&"own")) {
+        return Err(format!("same-root method missing: {labels:?}").into());
+    }
+    if !(labels.contains(&"same_root")) {
+        return Err(format!("same-root accessor missing: {labels:?}").into());
+    }
+    if labels.contains(&"foreign_method") {
+        return Err(format!("cross-root method leaked: {labels:?}").into());
+    }
+    if labels.contains(&"foreign_accessor") {
+        return Err(format!("cross-root accessor leaked: {labels:?}").into());
+    }
     Ok(())
 }
 

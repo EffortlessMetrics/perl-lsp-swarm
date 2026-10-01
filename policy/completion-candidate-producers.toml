@@ -35,7 +35,7 @@
 #   it, so no request outcome preserves the signal. Until that changes a
 #   `Complete` completion outcome is not earned by any request, because an
 #   empty result is indistinguishable from a producer that gave up. The gap is
-#   propagation, not capability — which is what #10230 consumes.
+#   propagation, not capability â€” which is what #10230 consumes.
 #
 # On the Dancer2 row
 #   `add_dancer2_keyword_completions` is reached by `handle_completion_cancellable`
@@ -90,11 +90,17 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
-source_digest = "sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f"
+# Re-audit 2026-10-01 (#16962 / #16972): split-file source composition and
+# current-file/root admission changed workspace behavior. Producer identities,
+# candidate channels, entry reach, finalizer route, and the 42-file scan set
+# remain unchanged. Index/scope argument grouping preserves traversal semantics;
+# new tests propagate failures without panic. Native cloud reconciliation must
+# verify this exact source binding and generated projection before acceptance.
+source_digest = "sha256:7645ab8d59c64c07986102856586116c70e7d10649edf5f99c411f3faba2330d"
 
 [[delegations]]
 module = "dancer2"
-reason = "Only `dancer2/completion.rs` produces candidates and it is scanned. The rest of the module carries canonical framework facts, activation, diagnostics, hover, symbols and signature help — none of which returns or appends a completion candidate."
+reason = "Only `dancer2/completion.rs` produces candidates and it is scanned. The rest of the module carries canonical framework facts, activation, diagnostics, hover, symbols and signature help â€” none of which returns or appends a completion candidate."
 
 [[delegations]]
 module = "testing"

@@ -2744,15 +2744,15 @@ fn collect_all_package_members_with_source(
     // in MRO order, then roles. This ensures child definitions shadow parents.
     fn visit_mro(
         pkg: &str,
-        index: &WorkspaceIndex,
+        indexed_source: (&WorkspaceIndex, &IndexedSourceScope),
         load_model: &impl Fn(&str, &mut HashMap<String, SourcePackageFacts>) -> SourcePackageFacts,
         model_cache: &mut HashMap<String, SourcePackageFacts>,
         visited: &mut HashSet<String>,
         seen_names: &mut HashSet<String>,
         result: &mut Vec<WorkspaceSymbol>,
-        scope: &IndexedSourceScope,
         depth: usize,
     ) {
+        let (index, scope) = indexed_source;
         const MAX_DEPTH: usize = 50;
         if depth >= MAX_DEPTH || !visited.insert(pkg.to_string()) {
             return;
@@ -2801,13 +2801,12 @@ fn collect_all_package_members_with_source(
         for parent in &facts.parents {
             visit_mro(
                 parent,
-                index,
+                indexed_source,
                 load_model,
                 model_cache,
                 visited,
                 seen_names,
                 result,
-                scope,
                 depth + 1,
             );
         }
@@ -2816,13 +2815,12 @@ fn collect_all_package_members_with_source(
         for role in &facts.roles {
             visit_mro(
                 role,
-                index,
+                indexed_source,
                 load_model,
                 model_cache,
                 visited,
                 seen_names,
                 result,
-                scope,
                 depth + 1,
             );
         }
@@ -2830,13 +2828,12 @@ fn collect_all_package_members_with_source(
 
     visit_mro(
         package_name,
-        index,
+        (index, &scope),
         &load_model,
         &mut model_cache,
         &mut visited,
         &mut seen_names,
         &mut result,
-        &scope,
         0,
     );
 
@@ -3206,12 +3203,12 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_keeps_split_file_methods_and_current_collision_precedence() {
+    fn collect_all_keeps_split_file_methods_and_current_collision_precedence() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        must(index.index_initial_file(
-            must(Url::parse("file:///workspace/Indexed.pm")),
+        index.index_initial_file(
+            Url::parse("file:///workspace/Indexed.pm")?,
             "package User;\nsub indexed_only { 1 }\nsub own_method { 'index' }\n".to_string(),
-        ));
+        )?;
         let current = "package User;\nsub own_method { 'current' }\nsub consume { 1 }\n";
         let members = collect_all_package_members_with_source(
             &index,
@@ -3220,30 +3217,40 @@ sub own_method { 1 }
             Some("file:///workspace/Current.pl"),
         );
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"indexed_only"), "split-file method missing: {names:?}");
-        assert!(names.contains(&"consume"), "current method missing: {names:?}");
+        if !(names.contains(&"indexed_only")) {
+            return Err(format!("split-file method missing: {names:?}").into());
+        }
+        if !(names.contains(&"consume")) {
+            return Err(format!("current method missing: {names:?}").into());
+        }
         let own = members.iter().find(|member| member.name == "own_method");
-        assert_eq!(own.map(|member| member.uri.as_str()), Some(""));
+        {
+            let actual = own.map(|member| member.uri.as_str());
+            let expected = Some("");
+            if actual != expected {
+                return Err(format!("expected equality: actual={actual:?}; expected={expected:?}").into());
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_excludes_lexical_subs_from_split_file() {
+    fn collect_all_excludes_lexical_subs_from_split_file() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        must(index.index_initial_file(
-            must(Url::parse("file:///workspace/Split.pm")),
+        index.index_initial_file(
+            Url::parse("file:///workspace/Split.pm")?,
             "package User;\nmy sub hidden { 1 }\nstate sub state_hidden { 1 }\nsub public { 1 }\n"
                 .to_string(),
-        ));
+        )?;
         let indexed = index.get_package_members("User");
         for name in ["hidden", "state_hidden"] {
-            assert!(
-                indexed.iter().any(|symbol| {
+            if !(indexed.iter().any(|symbol| {
                     symbol.name == name
                         && symbol.kind == perl_symbol::SymbolKind::Subroutine
                         && symbol.is_lexical
-                }),
-                "fixture must index {name} as a lexical sub to challenge the collector: {indexed:?}"
-            );
+                })) {
+                return Err(format!("fixture must index {name} as a lexical sub to challenge the collector: {indexed:?}").into());
+            }
         }
         let members = collect_all_package_members_with_source(
             &index,
@@ -3252,22 +3259,29 @@ sub own_method { 1 }
             Some("file:///workspace/Current.pl"),
         );
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"public"), "public split-file method missing: {names:?}");
-        assert!(!names.contains(&"hidden"), "lexical sub leaked as method: {names:?}");
-        assert!(!names.contains(&"state_hidden"), "state sub leaked as method: {names:?}");
+        if !(names.contains(&"public")) {
+            return Err(format!("public split-file method missing: {names:?}").into());
+        }
+        if names.contains(&"hidden") {
+            return Err(format!("lexical sub leaked as method: {names:?}").into());
+        }
+        if names.contains(&"state_hidden") {
+            return Err(format!("state sub leaked as method: {names:?}").into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_keeps_split_file_isa_when_current_buffer_omits_it() {
+    fn collect_all_keeps_split_file_isa_when_current_buffer_omits_it() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        must(index.index_initial_file(
-            must(Url::parse("file:///workspace/Parent.pm")),
+        index.index_initial_file(
+            Url::parse("file:///workspace/Parent.pm")?,
             "package Parent;\nsub inherited { 1 }\n".to_string(),
-        ));
-        must(index.index_initial_file(
-            must(Url::parse("file:///workspace/IndexedChild.pm")),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///workspace/IndexedChild.pm")?,
             "package Child;\nuse parent 'Parent';\n".to_string(),
-        ));
+        )?;
         let current = "package Child;\nsub run { 1 }\n";
         let members = collect_all_package_members_with_source(
             &index,
@@ -3275,23 +3289,23 @@ sub own_method { 1 }
             current,
             Some("file:///workspace/Current.pl"),
         );
-        assert!(
-            members.iter().any(|member| member.name == "inherited"),
-            "split-file ISA edge must retain Parent::inherited"
-        );
+        if !(members.iter().any(|member| member.name == "inherited")) {
+            return Err("split-file ISA edge must retain Parent::inherited".into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_does_not_resurrect_deleted_current_file_method_or_isa() {
+    fn collect_all_does_not_resurrect_deleted_current_file_method_or_isa() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        must(index.index_initial_file(
-            must(Url::parse("file:///workspace/Parent.pm")),
+        index.index_initial_file(
+            Url::parse("file:///workspace/Parent.pm")?,
             "package Parent;\nsub inherited { 1 }\n".to_string(),
-        ));
-        must(index.index_initial_file(
-            must(Url::parse("file:///workspace/Child.pm")),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///workspace/Child.pm")?,
             "package Child;\nuse parent 'Parent';\nsub removed { 1 }\n".to_string(),
-        ));
+        )?;
         // The open Child.pm buffer has removed both declarations; the index
         // still contains its predecessor generation.
         let current = "package Child;\nsub live { 1 }\n";
@@ -3302,17 +3316,24 @@ sub own_method { 1 }
             Some("file:///workspace/Child.pm"),
         );
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"live"), "current method missing: {names:?}");
-        assert!(!names.contains(&"removed"), "stale method resurfaced: {names:?}");
-        assert!(!names.contains(&"inherited"), "stale ISA resurfaced: {names:?}");
+        if !(names.contains(&"live")) {
+            return Err(format!("current method missing: {names:?}").into());
+        }
+        if names.contains(&"removed") {
+            return Err(format!("stale method resurfaced: {names:?}").into());
+        }
+        if names.contains(&"inherited") {
+            return Err(format!("stale ISA resurfaced: {names:?}").into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_excludes_indexed_predecessor_for_filesystem_path() {
+    fn collect_all_excludes_indexed_predecessor_for_filesystem_path() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let path = std::env::temp_dir().join("perl-lsp-completion-open-child.pm");
-        let uri = must(Url::from_file_path(&path));
-        must(index.index_initial_file(uri, "package Child; sub removed { 1 }".to_string()));
+        let uri = Url::from_file_path(&path).map_err(|()| std::io::Error::other("absolute test path has no file URI"))?;
+        index.index_initial_file(uri, "package Child; sub removed { 1 }".to_string())?;
         let current_path = path.to_string_lossy();
         let members = collect_all_package_members_with_source(
             &index,
@@ -3321,17 +3342,22 @@ sub own_method { 1 }
             Some(&current_path),
         );
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"live"), "current method missing: {names:?}");
-        assert!(!names.contains(&"removed"), "stale method resurfaced: {names:?}");
+        if !(names.contains(&"live")) {
+            return Err(format!("current method missing: {names:?}").into());
+        }
+        if names.contains(&"removed") {
+            return Err(format!("stale method resurfaced: {names:?}").into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_rebuilds_current_generated_members_without_stale_accessors() {
+    fn collect_all_rebuilds_current_generated_members_without_stale_accessors() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        must(index.index_initial_file(
-            must(Url::parse("file:///workspace/User.pm")),
+        index.index_initial_file(
+            Url::parse("file:///workspace/User.pm")?,
             "package User;\nuse Moo;\nhas 'removed' => (is => 'ro');\n".to_string(),
-        ));
+        )?;
         let current = "package User;\nuse Moo;\nhas 'live' => (is => 'ro');\n";
         let members = collect_all_package_members_with_source(
             &index,
@@ -3340,17 +3366,22 @@ sub own_method { 1 }
             Some("file:///workspace/User.pm"),
         );
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"live"), "current accessor missing: {names:?}");
-        assert!(!names.contains(&"removed"), "stale accessor resurfaced: {names:?}");
+        if !(names.contains(&"live")) {
+            return Err(format!("current accessor missing: {names:?}").into());
+        }
+        if names.contains(&"removed") {
+            return Err(format!("stale accessor resurfaced: {names:?}").into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_keeps_generated_members_from_reopened_current_package() {
+    fn collect_all_keeps_generated_members_from_reopened_current_package() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        must(index.index_initial_file(
-            must(Url::parse("file:///workspace/User.pm")),
+        index.index_initial_file(
+            Url::parse("file:///workspace/User.pm")?,
             "package User;\nuse Moo;\nhas 'removed' => (is => 'ro');\n".to_string(),
-        ));
+        )?;
         let current = "package User;\nuse Moo;\nhas 'first' => (is => 'ro');\npackage Other;\npackage User;\nuse Moo;\nhas 'second' => (is => 'ro');\n";
         let members = collect_all_package_members_with_source(
             &index,
@@ -3359,22 +3390,29 @@ sub own_method { 1 }
             Some("file:///workspace/User.pm"),
         );
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"first"), "first segment accessor missing: {names:?}");
-        assert!(names.contains(&"second"), "second segment accessor missing: {names:?}");
-        assert!(!names.contains(&"removed"), "stale accessor resurfaced: {names:?}");
+        if !(names.contains(&"first")) {
+            return Err(format!("first segment accessor missing: {names:?}").into());
+        }
+        if !(names.contains(&"second")) {
+            return Err(format!("second segment accessor missing: {names:?}").into());
+        }
+        if names.contains(&"removed") {
+            return Err(format!("stale accessor resurfaced: {names:?}").into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_reopened_package_replaces_prior_explicit_parents() {
+    fn collect_all_reopened_package_replaces_prior_explicit_parents() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        must(index.index_initial_file(
-            must(Url::parse("file:///workspace/Old.pm")),
+        index.index_initial_file(
+            Url::parse("file:///workspace/Old.pm")?,
             "package Old; sub old_only { 1 }".to_string(),
-        ));
-        must(index.index_initial_file(
-            must(Url::parse("file:///workspace/New.pm")),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///workspace/New.pm")?,
             "package New; sub new_only { 1 }".to_string(),
-        ));
+        )?;
         let current =
             "package User; use parent 'Old'; package Other; package User; our @ISA = ('New');";
         let members = collect_all_package_members_with_source(
@@ -3384,12 +3422,17 @@ sub own_method { 1 }
             Some("file:///workspace/User.pm"),
         );
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"new_only"), "later parent missing: {names:?}");
-        assert!(!names.contains(&"old_only"), "replaced parent leaked: {names:?}");
+        if !(names.contains(&"new_only")) {
+            return Err(format!("later parent missing: {names:?}").into());
+        }
+        if names.contains(&"old_only") {
+            return Err(format!("replaced parent leaked: {names:?}").into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_reopened_package_keeps_prior_role_on_silent_segment() {
+    fn collect_all_reopened_package_keeps_prior_role_on_silent_segment() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let current = "package Printable; use Moo::Role; sub stringify { 1 } package User; use Moo; with 'Printable'; package Other; sub unrelated { 1 } package User; sub run { 1 }";
         let user = collect_all_package_members_with_source(
@@ -3399,35 +3442,39 @@ sub own_method { 1 }
             Some("file:///workspace/Current.pm"),
         );
         let names: Vec<_> = user.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"stringify"), "prior role lost on silent reopen: {names:?}");
-        assert!(names.contains(&"run"), "later segment method missing: {names:?}");
+        if !(names.contains(&"stringify")) {
+            return Err(format!("prior role lost on silent reopen: {names:?}").into());
+        }
+        if !(names.contains(&"run")) {
+            return Err(format!("later segment method missing: {names:?}").into());
+        }
         let other = collect_all_package_members_with_source(
             &index,
             "Other",
             current,
             Some("file:///workspace/Current.pm"),
         );
-        assert!(
-            !other.iter().any(|member| member.name == "stringify"),
-            "role leaked to unrelated package: {other:?}"
-        );
+        if other.iter().any(|member| member.name == "stringify") {
+            return Err(format!("role leaked to unrelated package: {other:?}").into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_excludes_same_package_from_other_workspace_root() {
+    fn collect_all_excludes_same_package_from_other_workspace_root() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec![
             "file:///root-a".to_string(),
             "file:///root-b".to_string(),
         ]);
-        must(index.index_initial_file(
-            must(Url::parse("file:///root-a/Split.pm")),
+        index.index_initial_file(
+            Url::parse("file:///root-a/Split.pm")?,
             "package User;\nsub same_root_only { 1 }\n".to_string(),
-        ));
-        must(index.index_initial_file(
-            must(Url::parse("file:///root-b/Other.pm")),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///root-b/Other.pm")?,
             "package User;\nsub other_root_only { 1 }\n".to_string(),
-        ));
+        )?;
         let current = "package User;\nsub local { 1 }\n";
         let members = collect_all_package_members_with_source(
             &index,
@@ -3436,33 +3483,38 @@ sub own_method { 1 }
             Some("file:///root-a/Current.pl"),
         );
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"local"), "current method missing: {names:?}");
-        assert!(names.contains(&"same_root_only"), "same-root method missing: {names:?}");
-        assert!(!names.contains(&"other_root_only"), "cross-root member leaked: {names:?}");
+        if !(names.contains(&"local")) {
+            return Err(format!("current method missing: {names:?}").into());
+        }
+        if !(names.contains(&"same_root_only")) {
+            return Err(format!("same-root method missing: {names:?}").into());
+        }
+        if names.contains(&"other_root_only") {
+            return Err(format!("cross-root member leaked: {names:?}").into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_scopes_indexed_ancestor_members_to_current_root() {
+    fn collect_all_scopes_indexed_ancestor_members_to_current_root() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec![
             "file:///root-a".to_string(),
             "file:///root-b".to_string(),
         ]);
-        must(index.index_initial_file(
-            must(Url::parse("file:///root-a/ChildEdge.pm")),
+        index.index_initial_file(
+            Url::parse("file:///root-a/ChildEdge.pm")?,
             "package Child;\nuse parent 'Parent';\n".to_string(),
-        ));
-        must(
-            index.index_initial_file(
-                must(Url::parse("file:///root-a/Parent.pm")),
+        )?;
+        index.index_initial_file(
+                Url::parse("file:///root-a/Parent.pm")?,
                 "package Parent;\nuse Moo;\nhas 'same_root' => (is => 'ro');\nsub own { 1 }\n"
                     .to_string(),
-            ),
-        );
-        must(index.index_initial_file(
-            must(Url::parse("file:///root-b/Parent.pm")),
+            )?;
+        index.index_initial_file(
+            Url::parse("file:///root-b/Parent.pm")?,
             "package Parent;\nuse Moo;\nhas 'foreign_accessor' => (is => 'ro');\nsub foreign_method { 1 }\n".to_string(),
-        ));
+        )?;
         let members = collect_all_package_members_with_source(
             &index,
             "Child",
@@ -3470,60 +3522,69 @@ sub own_method { 1 }
             Some("file:///root-a/Current.pl"),
         );
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"own"), "same-root ancestor method missing: {names:?}");
-        assert!(names.contains(&"same_root"), "same-root ancestor accessor missing: {names:?}");
-        assert!(!names.contains(&"foreign_method"), "cross-root method leaked: {names:?}");
-        assert!(!names.contains(&"foreign_accessor"), "cross-root accessor leaked: {names:?}");
+        if !(names.contains(&"own")) {
+            return Err(format!("same-root ancestor method missing: {names:?}").into());
+        }
+        if !(names.contains(&"same_root")) {
+            return Err(format!("same-root ancestor accessor missing: {names:?}").into());
+        }
+        if names.contains(&"foreign_method") {
+            return Err(format!("cross-root method leaked: {names:?}").into());
+        }
+        if names.contains(&"foreign_accessor") {
+            return Err(format!("cross-root accessor leaked: {names:?}").into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_accepts_localhost_alias_for_current_root() {
+    fn collect_all_accepts_localhost_alias_for_current_root() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec!["file:///root-a".to_string()]);
-        must(index.index_initial_file(
-            must(Url::parse("file:///root-a/Split.pm")),
+        index.index_initial_file(
+            Url::parse("file:///root-a/Split.pm")?,
             "package User;\nsub from_split { 1 }\n".to_string(),
-        ));
+        )?;
         let members = collect_all_package_members_with_source(
             &index,
             "User",
             "package User;\nsub run { 1 }\n",
             Some("file://localhost/root-a/Current.pl"),
         );
-        assert!(
-            members.iter().any(|member| member.name == "from_split"),
-            "localhost alias lost same-root split-file member"
-        );
+        if !(members.iter().any(|member| member.name == "from_split")) {
+            return Err("localhost alias lost same-root split-file member".into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_accepts_localhost_alias_for_configured_root() {
+    fn collect_all_accepts_localhost_alias_for_configured_root() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec!["file://localhost/root-a".to_string()]);
-        must(index.index_initial_file(
-            must(Url::parse("file:///root-a/Split.pm")),
+        index.index_initial_file(
+            Url::parse("file:///root-a/Split.pm")?,
             "package User;\nsub from_split { 1 }\n".to_string(),
-        ));
+        )?;
         let members = collect_all_package_members_with_source(
             &index,
             "User",
             "package User;\nsub run { 1 }\n",
             Some("file:///root-a/Current.pl"),
         );
-        assert!(
-            members.iter().any(|member| member.name == "from_split"),
-            "configured localhost root alias lost same-root member"
-        );
+        if !(members.iter().any(|member| member.name == "from_split")) {
+            return Err("configured localhost root alias lost same-root member".into());
+        }
+        Ok(())
     }
 
     #[test]
-    fn collect_all_outside_configured_roots_uses_current_buffer_only() {
+    fn collect_all_outside_configured_roots_uses_current_buffer_only() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec!["file:///root-a".to_string()]);
-        must(index.index_initial_file(
-            must(Url::parse("file:///root-a/User.pm")),
+        index.index_initial_file(
+            Url::parse("file:///root-a/User.pm")?,
             "package User;\nsub indexed_only { 1 }\n".to_string(),
-        ));
+        )?;
         let members = collect_all_package_members_with_source(
             &index,
             "User",
@@ -3531,8 +3592,13 @@ sub own_method { 1 }
             Some("file:///outside/Current.pl"),
         );
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
-        assert!(names.contains(&"local"), "current-buffer method missing: {names:?}");
-        assert!(!names.contains(&"indexed_only"), "root A leaked outside roots: {names:?}");
+        if !(names.contains(&"local")) {
+            return Err(format!("current-buffer method missing: {names:?}").into());
+        }
+        if names.contains(&"indexed_only") {
+            return Err(format!("root A leaked outside roots: {names:?}").into());
+        }
+        Ok(())
     }
 }
 

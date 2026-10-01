@@ -1481,7 +1481,9 @@ fn test_method_completion_uses_requesting_workspace_root() -> TestResult {
         }),
         request_timeout(),
     )?;
-    assert!(initialized.get("capabilities").is_some(), "initialize failed: {initialized}");
+    if !(initialized.get("capabilities").is_some()) {
+        return Err(format!("initialize failed: {initialized}").into());
+    }
     harness.notify("initialized", json!({}));
     std::thread::sleep(indexing_timeout());
     harness.open(
@@ -1503,12 +1505,19 @@ fn test_method_completion_uses_requesting_workspace_root() -> TestResult {
     )?;
     let indexed_uris: Vec<_> = indexed
         .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|symbol| symbol["location"]["uri"].as_str())
-        .collect();
-    assert!(indexed_uris.contains(&module_a.as_str()), "root A was not indexed: {indexed_uris:?}");
-    assert!(indexed_uris.contains(&module_b.as_str()), "root B was not indexed: {indexed_uris:?}");
+        .ok_or_else(|| format!("workspace symbols did not return an array: {indexed}"))?
+        .iter()
+        .map(|symbol| {
+            symbol.get("location").and_then(|location| location.get("uri")).and_then(|uri| uri.as_str())
+                .ok_or_else(|| format!("workspace symbol lacks a string location URI: {symbol}"))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if !(indexed_uris.contains(&module_a.as_str())) {
+        return Err(format!("root A was not indexed: {indexed_uris:?}").into());
+    }
+    if !(indexed_uris.contains(&module_b.as_str())) {
+        return Err(format!("root B was not indexed: {indexed_uris:?}").into());
+    }
 
     let requests: [(&str, u32, u32, &[&str], &[&str]); 2] = [
         (
@@ -1535,16 +1544,23 @@ fn test_method_completion_uses_requesting_workspace_root() -> TestResult {
             }),
             request_timeout(),
         )?;
-        let items = response["items"]
-            .as_array()
+        let items = response.get("items")
+            .and_then(|items| items.as_array())
             .or_else(|| response.as_array())
             .ok_or_else(|| format!("completion did not return items for {uri}: {response}"))?;
-        let labels: Vec<_> = items.iter().filter_map(|item| item["label"].as_str()).collect();
+        let labels: Vec<_> = items.iter().map(|item| {
+            item.get("label").and_then(|label| label.as_str())
+                .ok_or_else(|| format!("completion item lacks a string label: {item}"))
+        }).collect::<std::result::Result<Vec<_>, _>>()?;
         for &name in expected {
-            assert!(labels.contains(&name), "{uri}: expected {name}, got {labels:?}");
+            if !(labels.contains(&name)) {
+                return Err(format!("{uri}: expected {name}, got {labels:?}").into());
+            }
         }
         for &name in excluded {
-            assert!(!labels.contains(&name), "{uri}: sibling {name} leaked: {labels:?}");
+            if labels.contains(&name) {
+                return Err(format!("{uri}: sibling {name} leaked: {labels:?}").into());
+            }
         }
     }
     Ok(())
