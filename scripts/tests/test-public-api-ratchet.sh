@@ -445,7 +445,7 @@ for mode in arc_alias arc_changed arc_user_owned; do
     assert_contains "Arc alias comparison reaches the real ratchet" "OK perl-uri" "${output}"
   else
     assert_exit_nonzero "${mode} remains a real API difference" "${code}"
-    assert_contains "${mode} is a surface mismatch, not an instrument error" "FAIL perl-uri" "${output}"
+    assert_contains "${mode} is a surface mismatch, not an instrument error" "FAIL Public API changed in perl-uri" "${output}"
     assert_not_contains "${mode} executes the comparison" "INSTRUMENT-FAIL" "${output}"
   fi
   assert_same_file "${mode} comparison never refreshes the baseline" \
