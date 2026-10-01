@@ -1275,13 +1275,81 @@ function childReceipt(overrides = {}, environmentOverrides = {}) {
   };
 }
 
-function validateChild(receipt, { present = true } = {}) {
+/**
+ * @param {any} receipt
+ * @param {{
+ *   present?: boolean,
+ *   accessibilityExpectation?: ReturnType<
+ *     typeof import('./run-local-vsix-smoke').buildAccessibilityExpectation
+ *   > | null,
+ * }} [options]
+ */
+function validateChild(receipt, { present = true, accessibilityExpectation = null } = {}) {
   return validateChildSmokeReceipt({
     ...CHILD_SUBJECT,
     receiptFile: '/fixture/first_hour_vscode_receipt.json',
     exists: () => present,
     readFile: () => JSON.stringify(receipt),
+    accessibilityExpectation,
   });
+}
+
+/**
+ * A stand-in for the compiled inventory expectation. The real validator is
+ * proven in the extension unit suite; here the plumbing (presence, digest
+ * binding, VSIX binding, structural-error propagation) is what is challenged.
+ */
+function fakeAccessibilityExpectation(overrides = {}) {
+  return {
+    inventory: {
+      schema_version: 'vscode_accessibility_inventory.v1',
+      surfaces: [{ surface_id: 'workspace_status' }, { surface_id: 'pod_preview' }],
+    },
+    digest: 'a'.repeat(64),
+    expectedVsixSha256: CHILD_SUBJECT.expectedVsixSha256,
+    validate: (receipt, inventory) => {
+      const ids = inventory.surfaces.map((surface) => surface.surface_id);
+      const rowIds = (receipt.surfaces ?? []).map((row) => row.surface_id);
+      return ids
+        .filter((id) => !rowIds.includes(id))
+        .map((id) => `receipt is missing a row for inventory surface: ${id}`);
+    },
+    ...overrides,
+  };
+}
+
+function boundAccessibilitySection(overrides = {}) {
+  return {
+    schema_version: 'vscode_accessibility.v1',
+    candidate: {
+      vsix_version: '0.18.0',
+      vsix_sha256: CHILD_SUBJECT.expectedVsixSha256,
+      vscode_version: '1.130.2',
+      platform: 'linux',
+      inventory_digest: 'a'.repeat(64),
+    },
+    surfaces: [
+      {
+        surface_id: 'workspace_status',
+        keyboard: 'pass',
+        semantic_labels: 'pass',
+        screen_reader: 'not_proven',
+        high_contrast: 'not_proven',
+        zoom_reflow: 'not_proven',
+      },
+      {
+        surface_id: 'pod_preview',
+        keyboard: 'pass',
+        semantic_labels: 'pass',
+        screen_reader: 'not_proven',
+        high_contrast: 'not_proven',
+        zoom_reflow: 'not_proven',
+      },
+    ],
+    limitations: ['bounded manual screen-reader run still owed'],
+    verdict: 'bounded',
+    ...overrides,
+  };
 }
 
 void test('a child receipt bound to this run admits behavioral proof', () => {
@@ -1377,6 +1445,92 @@ void test('a malformed child receipt is rejected rather than parsed optimistical
   });
   assert.equal(result.ok, false);
   assert.match(result.violations.join('; '), /was not valid JSON/);
+});
+
+void test('a bound accessibility receipt admits behavioral proof', () => {
+  const result = validateChild(childReceipt({ accessibility: boundAccessibilitySection() }), {
+    accessibilityExpectation: fakeAccessibilityExpectation(),
+  });
+  assert.equal(result.ok, true);
+});
+
+void test('a completed receipt without the accessibility section is rejected', () => {
+  const result = validateChild(childReceipt(), {
+    accessibilityExpectation: fakeAccessibilityExpectation(),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /does not record the installed accessibility receipt/);
+});
+
+void test('an accessibility receipt naming another inventory contract is rejected', () => {
+  const result = validateChild(
+    childReceipt({
+      accessibility: boundAccessibilitySection({
+        candidate: {
+          vsix_version: '0.18.0',
+          vsix_sha256: CHILD_SUBJECT.expectedVsixSha256,
+          vscode_version: '1.130.2',
+          platform: 'linux',
+          inventory_digest: 'c'.repeat(64),
+        },
+      }),
+    }),
+    { accessibilityExpectation: fakeAccessibilityExpectation() },
+  );
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join('; '),
+    /accessibility receipt inventory digest does not bind this run/,
+  );
+});
+
+void test('an accessibility receipt describing another VSIX is rejected', () => {
+  const result = validateChild(
+    childReceipt({
+      accessibility: boundAccessibilitySection({
+        candidate: {
+          vsix_version: '0.18.0',
+          vsix_sha256: 'd'.repeat(64),
+          vscode_version: '1.130.2',
+          platform: 'linux',
+          inventory_digest: 'a'.repeat(64),
+        },
+      }),
+    }),
+    { accessibilityExpectation: fakeAccessibilityExpectation() },
+  );
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join('; '),
+    /accessibility receipt VSIX digest is not this run's package/,
+  );
+});
+
+void test('structural accessibility receipt errors are propagated as violations', () => {
+  const result = validateChild(
+    childReceipt({
+      accessibility: boundAccessibilitySection({
+        surfaces: [boundAccessibilitySection().surfaces[0]],
+      }),
+    }),
+    { accessibilityExpectation: fakeAccessibilityExpectation() },
+  );
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join('; '),
+    /accessibility receipt: receipt is missing a row for inventory surface: pod_preview/,
+  );
+});
+
+void test('an accessibility receipt with the wrong schema is rejected', () => {
+  const result = validateChild(
+    childReceipt({
+      accessibility: boundAccessibilitySection({ schema_version: 'vscode_accessibility.v2' }),
+    }),
+    { accessibilityExpectation: fakeAccessibilityExpectation() },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /accessibility receipt schema is not/);
 });
 
 void test('an unavailable host-resolution receipt is not a product smoke failure', () => {

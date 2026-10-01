@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type * as podPreviewModule from '../podPreview';
 import type * as vscodeApi from 'vscode';
-import { podToHtml } from '../podPreview';
+import { buildWebviewHtml, podToHtml } from '../podPreview';
 
 const EXT_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -300,6 +300,96 @@ describe('podToHtml', () => {
     expect(html).not.toContain('<ul>');
     expect(html).not.toContain('<ol>');
     expect(html).toContain('<h1>NAME</h1>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Webview accessibility contract (#7807 / #7865): the preview is the
+// extension's one custom webview, so the exact shipped document is asserted
+// for semantic structure, keyboard usability, theme-variable styling, and
+// reflow. Source-level evidence only — installed rows stay separate.
+// ---------------------------------------------------------------------------
+describe('pod preview webview accessibility (#7807/#7865)', () => {
+  const sampleBody = podToHtml(
+    [
+      '=head1 NAME',
+      '',
+      'Demo — B<bold>, C<code>, and L<a link|https://example.com/>.',
+      '',
+      '=over 4',
+      '',
+      '=item * One',
+      '',
+      '=item * Two',
+      '',
+      '=back',
+      '',
+      '=pod',
+      '',
+      '    my $x = 1;',
+      '',
+      '=cut',
+      '',
+    ].join('\n'),
+  );
+  const html = buildWebviewHtml('demo.pl', sampleBody);
+
+  test('keeps the #6030 security boundary intact', () => {
+    expect(html).toContain('Content-Security-Policy" content="default-src \'none\'');
+    expect(html).not.toContain('<script');
+  });
+
+  test('exposes semantic document structure', () => {
+    expect(html).toContain('<html lang="en">');
+    expect(html).toContain('<title>demo.pl</title>');
+    // A main landmark: screen readers can jump straight to the POD content.
+    expect(html).toContain('<main>');
+    expect(html).toContain('</main>');
+    // Semantic block structure survives conversion.
+    for (const fragment of ['<h1>', '<p>', '<ul>', '<li>', '<pre><code>', '<a href=']) {
+      expect(html).toContain(fragment);
+    }
+  });
+
+  test('renders workspace POD without letting it inject ARIA or markup', () => {
+    const hostile = podToHtml(
+      '=pod\n\n<meta role="button" aria-label="Approve all" onclick="x()">\n\n=cut\n',
+    );
+    const hostileDocument = buildWebviewHtml('hostile.pl', hostile);
+    // Everything arrives as inert text, never as attributes or elements.
+    expect(hostileDocument).toContain('&lt;meta role=');
+    expect(hostileDocument).not.toContain('<meta role=');
+    expect(hostileDocument).not.toContain('aria-label="Approve all"');
+    expect(hostileDocument).not.toContain('onclick="x()"');
+  });
+
+  test('links stay real anchors so keyboard activation is native', () => {
+    expect(html).toMatch(/<a href="https:\/\/example\.com\/">/);
+    expect(html).not.toContain('tabindex=');
+    // A visible focus indicator backed by the theme's own focus color.
+    expect(html).toMatch(/a:focus-visible\s*{\s*outline: 1px solid var\(--vscode-focusBorder/);
+  });
+
+  test('colors come from VS Code theme variables, not hard-coded values', () => {
+    // Color-bearing declarations only: geometry (border-radius) and the
+    // deliberate `background: transparent` on nested code are not theme work.
+    const colorDeclarations =
+      html.match(/(?:color|background|border(?:-bottom)?):\s*[^;]+;/g) ?? [];
+    expect(colorDeclarations.length).toBeGreaterThan(0);
+    for (const declaration of colorDeclarations) {
+      if (/:\s*transparent\s*;/.test(declaration)) {
+        continue;
+      }
+      expect(declaration).toContain('var(--vscode-');
+    }
+  });
+
+  test('prose reflows under zoom instead of clipping', () => {
+    // The body constrains reading width with max-width, never a fixed width,
+    // and only code blocks scroll horizontally.
+    expect(html).toMatch(/body\s*{[^}]*max-width:\s*860px/s);
+    expect(html).not.toMatch(/body\s*{[^}]*[^-\w]width:\s*\d/s);
+    expect(html).toMatch(/pre\s*{[^}]*overflow-x:\s*auto/s);
   });
 });
 
