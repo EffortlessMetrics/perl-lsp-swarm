@@ -250,10 +250,12 @@ pub enum LaunchAuthorityError {
         canonical: PathBuf,
     },
     /// The directory object identity could not be read at startup.
-    #[error("trusted root {path:?} has no readable directory identity")]
+    #[error("trusted root {path:?} has no readable directory identity: {detail}")]
     TrustedRootIdentityUnavailable {
         /// The offending raw path.
         path: PathBuf,
+        /// The underlying filesystem error, retained for on-host diagnosis.
+        detail: String,
     },
     /// The explicit unbounded acknowledgement is malformed.
     #[error("invalid unbounded acknowledgement: {0}")]
@@ -378,9 +380,13 @@ impl LaunchAuthority {
                 });
             }
             seen_canonical.push((raw.clone(), canonical.clone()));
-            let filesystem_identity = FilesystemIdentity::from_path(&canonical).map_err(|_| {
-                LaunchAuthorityError::TrustedRootIdentityUnavailable { path: raw.clone() }
-            })?;
+            let filesystem_identity =
+                FilesystemIdentity::from_path(&canonical).map_err(|error| {
+                    LaunchAuthorityError::TrustedRootIdentityUnavailable {
+                        path: raw.clone(),
+                        detail: error.to_string(),
+                    }
+                })?;
             roots.push(TrustedRoot {
                 identity: short_identity(&canonical.to_string_lossy()),
                 canonical,
@@ -665,6 +671,21 @@ mod tests {
             LaunchAuthorityError::TrustedRootNotADirectory { path: file.clone() }
         );
         let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn identity_unavailable_error_reports_underlying_detail() {
+        // The filesystem's own error text must survive into the surfaced
+        // error so an on-host operator can diagnose the admission refusal.
+        let error = LaunchAuthorityError::TrustedRootIdentityUnavailable {
+            path: tempfile_name("unreadable"),
+            detail: "access is denied (os error 5)".to_string(),
+        };
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("has no readable directory identity: access is denied (os error 5)"),
+            "error must retain the underlying detail: {rendered}"
+        );
     }
 
     #[test]
