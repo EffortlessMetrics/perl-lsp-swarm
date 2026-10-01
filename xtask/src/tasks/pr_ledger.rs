@@ -112,11 +112,19 @@ pub struct GenerateConfig {
 // Row type
 // ---------------------------------------------------------------------------
 
+/// The `pr-triage.v1` row envelope pinned by the `agent_ledgers` validator
+/// (`EXPECTED_SCHEMA_VERSION`). Bumped only with a deliberate wire-format
+/// migration of the reconciliation worklist.
+pub const ROW_SCHEMA_VERSION: u32 = 1;
+
 /// A single PR row in the reconciliation ledger.
 ///
 /// Fields align with the ORCHESTRATION_ROLES.md output schema for builder/closer agents.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LedgerRow {
+    /// Row envelope required by the `pr-triage.v1` validator; see
+    /// [`ROW_SCHEMA_VERSION`].
+    pub schema_version: u32,
     /// PR number as string (the `pr-triage.v1` contract type).
     pub pr: String,
     /// PR title.
@@ -547,6 +555,7 @@ fn shape_row(pr: RestPull, _repo: &str) -> LedgerRow {
     let surface_guess = infer_surface(&pr.title, &label_names);
 
     LedgerRow {
+        schema_version: ROW_SCHEMA_VERSION,
         pr: pr.number.to_string(),
         title: pr.title,
         surface_guess,

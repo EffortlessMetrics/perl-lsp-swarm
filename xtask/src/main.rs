@@ -38,34 +38,35 @@ use tasks::{
     activation, active_goal_manifest, agent_capability_policy, agent_flow,
     agent_implementation_packet, agent_lease, agent_receipt, agent_review_packet,
     aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
-    check, check_agent_context, check_lint_policy, check_tautology, check_test_wiring,
-    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_cache_inventory, ci_contract,
-    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
-    ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
-    compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
-    compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
-    critic_rule_proof, dead_code, dead_code_api_ledger, debt_report, dependency_hygiene, dev,
-    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
-    emacs_train_context, emacs_train_packet, emacs_train_specs, features, finalize_check,
-    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
-    github, github_preflight, github_review, goals, hardening, hook_checks, htmx_catalog_drift,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_controllers, issue_plan, kwalitee_namespace_inventory, layer_check, lsp_318_claims,
-    lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate, metrics,
-    module_train, module_train_live, native_critic, native_format, native_neovim_train,
-    native_product_surface, native_tooling, oneliner_capability_matrix, oracle_fixture_manifest,
-    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
-    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
-    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix,
-    readiness_rehearsal, receipts, release, release_artifact_check, release_candidate_artifacts,
-    release_evidence, release_notes, release_trust_invariants, release_turnkey, repo_hygiene,
-    repository_topology, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
-    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
-    session_receipt, shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
+    check, check_agent_context, check_configuration_authority, check_lint_policy, check_tautology,
+    check_test_wiring, check_toolchain, check_version_sync, ci, ci_audit_workflows,
+    ci_cache_inventory, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
+    ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
+    code_action_generation_ledger, command_evidence, compare, compat_inventory,
+    compiler_lexical_cutline, compiler_performance_receipt, compiler_upstream_status,
+    completion_candidates, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof, dead_code,
+    dead_code_api_ledger, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
+    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_packet,
+    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
+    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
+    goals, hardening, hook_checks, htmx_catalog_drift, ignored_tests, incremental_proof,
+    inject_sha_assets, inline_completion_quality, inline_completion_smoke, install_surface_check,
+    integration_proof, intent_diff_gate, issue_controllers, issue_plan,
+    kwalitee_namespace_inventory, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
+    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
+    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
+    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
+    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
+    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
+    queue_health, queue_snapshot, quickorm_api_matrix, readiness_rehearsal, receipts, release,
+    release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
+    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, standalone_diagnostics, standalone_vectors,
     supported_editor_inline_smoke, swarm_agent_roster, swarm_summary, sync_release_docs,
     targeted_checks, test, test_lsp, train_edge_contract, unwired_scan, update_homebrew,
     update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
@@ -158,6 +159,9 @@ enum Commands {
     /// parity corpus against current source (#9188).
     CheckCodeActionGenerationLedger,
 
+    /// Validate derived workspace-folder writer/invalidation evidence (#16827).
+    CheckConfigurationAuthority,
+
     /// Validate the `perl_parser::dead_code` API disposition ledger against
     /// current module source, the public-API baseline, its compatibility
     /// corpus, the consumer inventory and the generated projection (#9777).
@@ -170,12 +174,10 @@ enum Commands {
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
 
-    /// Generate, validate, and list the versioned activation inventory
-    /// (`activation_inventory.v1`, #9204): a deterministic classified catalog
-    /// of product, preview, compatibility-shim, test-api, lab, oracle,
-    /// benchmark, and gate surfaces derived from existing authorities plus a
-    /// narrow, typed, owner/expiry-bound override ledger. Does not implement
-    /// activation checking (#9205).
+    /// Generate, validate, list, and fail-closed check the versioned
+    /// activation inventory (`activation_inventory.v1`, #9204/#9205): a
+    /// classified catalog plus class-specific connection checking.
+    /// Cargo dependency membership is topology evidence only.
     Activation {
         /// Operation to run against the activation inventory.
         #[command(subcommand)]
@@ -2012,6 +2014,10 @@ enum Commands {
         #[arg(long)]
         no_wait_release: bool,
 
+        /// Durable `release_turnkey_transaction.v1` record path.
+        #[arg(long)]
+        transaction: Option<PathBuf>,
+
         /// Workflow wait timeout in seconds.
         #[arg(long)]
         workflow_timeout: Option<u64>,
@@ -2488,7 +2494,8 @@ enum Commands {
     /// Enforce crate layer-dependency constraints.
     LayerCheck,
 
-    /// Scan for built-but-not-wired crates.
+    /// Scan Cargo topology (tests present, not a direct dep of perl-lsp-rs).
+    /// Not product activation; see `activation check`.
     UnwiredScan {
         #[command(flatten)]
         args: UnwiredScanArgs,
@@ -5528,6 +5535,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
+        Commands::CheckConfigurationAuthority => check_configuration_authority::run(),
         Commands::CheckDeadCodeApiLedger { write } => dead_code_api_ledger::run(write),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::Activation { command } => activation::run(command),
@@ -6385,6 +6393,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             no_auto_merge,
             no_wait_pr_merge,
             no_wait_release,
+            transaction,
             workflow_timeout,
         } => release_turnkey::run(release_turnkey::ReleaseTurnkeyConfig {
             version,
@@ -6398,6 +6407,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             no_auto_merge,
             no_wait_pr_merge,
             no_wait_release,
+            transaction: transaction.map(|path| path.display().to_string()),
             workflow_timeout,
         }),
         Commands::PrepCratesIoLaunch { mode } => {

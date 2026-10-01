@@ -23,6 +23,7 @@ pub mod change_set;
 pub mod changelog;
 pub mod check;
 pub mod check_agent_context;
+pub mod check_configuration_authority;
 pub mod check_lint_policy;
 pub mod check_naming_consistency;
 pub mod check_tautology;
