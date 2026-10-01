@@ -119,6 +119,12 @@ if [[ "${1:-}" == "-C" ]]; then
       fi
       exit 0
       ;;
+    remote)
+      if [[ "${2:-}" == "get-url" && "${3:-}" == "origin" ]]; then
+        printf 'https://github.com/example/perl-lsp-swarm.git\n'
+        exit 0
+      fi
+      ;;
     merge-base)
       if [[ "${2:-}" == "--is-ancestor" ]]; then
         if grep -qxF "${3:-}" "${MOCK_STATE}/merged-heads" 2>/dev/null; then
@@ -576,7 +582,7 @@ test_dry_run_performs_no_mutating_git_commands() {
 
 # Negative control for the assertion above: it must fail on a mutating run, or it
 # would also pass against a script that simply never sweeps.
-test_real_run_still_fetches_and_prunes() {
+test_real_run_fetches_without_global_prune() {
   local case_dir output
   case_dir="$(new_case mutating-control)"
   write_worktree_list "$case_dir" "feature/landed"
@@ -585,7 +591,8 @@ test_real_run_still_fetches_and_prunes() {
   output="$(run_cleanup_real "$case_dir")"
 
   assert_git_log_contains "real run refreshes remote refs" "$case_dir" "fetch"
-  assert_git_log_contains "real run prunes administrative metadata" "$case_dir" "worktree prune"
+  assert_not_contains "real run preserves unrelated administrative metadata" \
+    "$(cat "${case_dir}/git.log")" "worktree prune"
   assert_contains "real run reports fresh remote refs" "$output" "Remote refs: fresh"
   assert_contains "real run reports removals as performed" "$output" "Removed:"
 }
@@ -639,6 +646,21 @@ test_foreign_os_registration_is_preserved_for_review() {
   assert_contains "cross-OS row is counted, not dropped" "$output" "Total:   2"
   assert_contains "review rows are counted distinguishably" "$output" "Review:  1"
   assert_no_mutating_git_commands "cross-OS inspection mutates nothing" "$case_dir"
+}
+
+test_real_run_keeps_foreign_os_registration() {
+  local case_dir output
+  case_dir="$(new_case foreign-path-real)"
+  write_unreachable_worktree_list "$case_dir" 'F:\code\Opencode\Rust\wt-mainred'
+
+  output="$(run_cleanup_real "$case_dir")"
+
+  assert_contains "real run retains a foreign registration for review" "$output" "foreign-path"
+  assert_contains "real run keeps the foreign registration in its count" "$output" "Total:   2"
+  assert_not_contains "real run does not globally prune" \
+    "$(cat "${case_dir}/git.log")" "worktree prune"
+  assert_not_contains "real run does not remove the foreign worktree" \
+    "$(cat "${case_dir}/git.log")" "worktree remove"
 }
 
 test_unreachable_native_path_is_preserved_for_review() {
@@ -796,9 +818,10 @@ test_json_escapes_special_characters
 test_squash_merged_branch_without_remote_is_removed
 test_fetch_failure_keeps_ambiguous_remote_branch
 test_dry_run_performs_no_mutating_git_commands
-test_real_run_still_fetches_and_prunes
+test_real_run_fetches_without_global_prune
 test_dry_run_reports_stale_refs_without_refreshing_them
 test_foreign_os_registration_is_preserved_for_review
+test_real_run_keeps_foreign_os_registration
 test_unreachable_native_path_is_preserved_for_review
 test_dry_run_message_claims_only_what_it_proves
 test_successful_sweeps_exit_zero

@@ -635,7 +635,7 @@ impl<'a> Parser<'a> {
                                     }
                                     self.consume_token()?; // consume comma or fat arrow
                                     if is_bare_func {
-                                        if !self.should_continue_bare_call_after_block() {
+                                        if !self.should_continue_bare_call_after_separator() {
                                             break;
                                         }
                                     } else if self.is_implicit_arg_terminator() {
@@ -981,8 +981,10 @@ impl<'a> Parser<'a> {
                             // Also applies to optional-arg builtins (defined, length, ord, etc.)
                             // that implicitly use $_ when no explicit argument is given, so that
                             // `defined && ...`, `length > 0`, `ord >= 32` parse correctly.
-                            let next_is_binary_operator =
-                                self.peek_kind().is_some_and(Self::is_binary_operator);
+                            let next_is_binary_operator = self
+                                .peek_kind()
+                                .is_some_and(Self::is_binary_operator)
+                                && !self.peek_is_autoquoted_word_operator();
                             let optional_arg_has_explicit_sub_arg =
                                 Self::is_optional_arg_builtin(bare_name)
                                     && self.is_explicit_sub_sigil_argument_start();
@@ -1000,15 +1002,11 @@ impl<'a> Parser<'a> {
                             // tokenized as Identifiers. A builtin followed by one of these
                             // should be treated as having no arguments, so that
                             // `ref eq 'CODE'` parses as `ref() eq 'CODE'` (not `ref(eq)`).
-                            // `cmp` is also a string comparison operator tokenized as Identifier.
-                            let is_str_op_terminated = self.peek_kind()
-                                == Some(TokenKind::Identifier)
-                                && self.tokens.peek().ok().is_some_and(|t| {
-                                    matches!(
-                                        t.text.as_ref(),
-                                        "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "cmp"
-                                    )
-                                });
+                            // Before `=>` they are autoquoted arguments instead
+                            // (`has eq => 1`, #16691). `cmp` is `StringCompare` and
+                            // is admitted by `is_autoquoted_bareword_kind`.
+                            let is_str_op_terminated = self.peek_is_identifier_string_comparison()
+                                && !self.is_keyword_before_fat_arrow();
 
                             let mut scalar_filehandle = false;
                             if self.is_implicit_arg_terminator()
@@ -1081,16 +1079,8 @@ impl<'a> Parser<'a> {
                                             && txt.starts_with(|c: char| {
                                                 c.is_ascii_lowercase() || c == '_'
                                             })
-                                            && !matches!(
-                                                txt,
-                                                "eq" | "ne"
-                                                    | "lt"
-                                                    | "le"
-                                                    | "gt"
-                                                    | "ge"
-                                                    | "cmp"
-                                                    | "x"
-                                            )
+                                            && !Self::is_identifier_string_comparison(txt)
+                                            && txt != "x"
                                             && !Self::is_block_list_func(txt)
                                     })
                                 {
@@ -1250,6 +1240,14 @@ impl<'a> Parser<'a> {
                                     && self.peek_kind() != Some(TokenKind::LeftParen)
                                 {
                                     args.push(self.parse_shift()?);
+                                    // Named-unary arity: `foo(ref cmp => 1)` is
+                                    // `foo(ref('cmp'), 1)`. Autoquote the bareword
+                                    // argument and leave `=>` as the enclosing comma.
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        self.auto_quote_bareword_before_fat_comma(arg)?;
+                                    }
                                 } else {
                                     scalar_filehandle =
                                         self.is_expression_scalar_filehandle_pattern(name);
@@ -1500,13 +1498,15 @@ impl<'a> Parser<'a> {
             Some(TokenKind::Question) => true,
             Some(kind)
                 if (Self::is_stmt_modifier_kind(kind) && kind != TokenKind::When)
-                    || kind.is_low_precedence_word_operator() =>
+                    || kind.is_word_operator()
+                    || self.peek_is_identifier_string_comparison() =>
             {
                 // `when` is a statement modifier (`is_stmt_modifier_kind`) but
                 // not a list-operator terminator here; given/when recovery
-                // stays on the modifier path. Other modifiers and word
-                // operators still end the call unless they are autoquoted
-                // before `=>` (`has if => 1`, `has or => 1`, #16639).
+                // stays on the modifier path. Other modifiers, word operators,
+                // and Identifier comparison words still end the call unless
+                // they are autoquoted before `=>` (`has if => 1`, `has or => 1`,
+                // #16639; `has eq => 1`, `has cmp => 1`, #16691).
                 !self.is_keyword_before_fat_arrow()
             }
             Some(TokenKind::DataMarker) => true,
