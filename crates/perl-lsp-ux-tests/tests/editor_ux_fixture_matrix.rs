@@ -344,16 +344,15 @@ fn semantic_inline_completion_receipt_inventory_is_current() -> Result<()> {
         receipt_backed_count >= 5,
         "semantic inline inventory should keep at least five receipt-backed workflows, got {receipt_backed_count}"
     );
-    // #16560: the previous floor of 2 was calibrated against drifted flags —
-    // seven semantic-inline scenarios declared `run_receipt: false` while
-    // calling the recorder wrapper. With the flags corrected, exactly one
-    // workflow in this list genuinely proves without a receipt, so the floor
-    // drops to the real count. The bound still guards the intent (receipt-free
-    // proof stays visible in the rollup) without pinning a number the data
-    // never supported.
+    // #16560 calibration: at base, seven semantic-inline scenarios declared
+    // `run_receipt: false` while calling the recorder wrapper. With the flags
+    // derived from source, 11 of these 15 workflows are receipt-backed and 4
+    // remain genuinely receipt-free (dbi_receiver, lexical_return,
+    // loop_binding, guard_condition), so the pre-existing floor of 2 still
+    // holds and is kept unchanged.
     assert!(
-        direct_stdio_count >= 1,
-        "semantic inline inventory should keep a receipt-free proof workflow visible, got {direct_stdio_count}"
+        direct_stdio_count >= 2,
+        "semantic inline inventory should keep direct stdio proof workflows visible, got {direct_stdio_count}"
     );
 
     Ok(())
@@ -373,8 +372,8 @@ fn semantic_inline_completion_receipt_inventory_is_current() -> Result<()> {
 ///
 /// Limitation: this reads source, not runtime artifacts, so a wrapper call
 /// placed behind a `#[cfg(feature = ...)]` gate would still count. No such
-/// case exists today; scenarios 06 and 18 are the only feature-gated ones and
-/// neither declares `run_receipt`.
+/// case exists today: `ux_scenario_06_large_file` is the only feature-gated
+/// scenario and it calls no recorder wrapper.
 #[test]
 fn run_receipt_flag_matches_scenario_instrumentation() -> Result<()> {
     let matrix = load_fixture_matrix()?;
