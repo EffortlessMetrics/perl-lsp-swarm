@@ -3203,7 +3203,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_keeps_split_file_methods_and_current_collision_precedence() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_keeps_split_file_methods_and_current_collision_precedence()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.index_initial_file(
             Url::parse("file:///workspace/Indexed.pm")?,
@@ -3228,14 +3229,17 @@ sub own_method { 1 }
             let actual = own.map(|member| member.uri.as_str());
             let expected = Some("");
             if actual != expected {
-                return Err(format!("expected equality: actual={actual:?}; expected={expected:?}").into());
+                return Err(
+                    format!("expected equality: actual={actual:?}; expected={expected:?}").into()
+                );
             }
         }
         Ok(())
     }
 
     #[test]
-    fn collect_all_excludes_lexical_subs_from_split_file() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_excludes_lexical_subs_from_split_file()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.index_initial_file(
             Url::parse("file:///workspace/Split.pm")?,
@@ -3245,10 +3249,10 @@ sub own_method { 1 }
         let indexed = index.get_package_members("User");
         for name in ["hidden", "state_hidden"] {
             if !(indexed.iter().any(|symbol| {
-                    symbol.name == name
-                        && symbol.kind == perl_symbol::SymbolKind::Subroutine
-                        && symbol.is_lexical
-                })) {
+                symbol.name == name
+                    && symbol.kind == perl_symbol::SymbolKind::Subroutine
+                    && symbol.is_lexical
+            })) {
                 return Err(format!("fixture must index {name} as a lexical sub to challenge the collector: {indexed:?}").into());
             }
         }
@@ -3272,7 +3276,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_keeps_split_file_isa_when_current_buffer_omits_it() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_keeps_split_file_isa_when_current_buffer_omits_it()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.index_initial_file(
             Url::parse("file:///workspace/Parent.pm")?,
@@ -3296,7 +3301,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_does_not_resurrect_deleted_current_file_method_or_isa() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_does_not_resurrect_deleted_current_file_method_or_isa()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.index_initial_file(
             Url::parse("file:///workspace/Parent.pm")?,
@@ -3329,10 +3335,12 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_excludes_indexed_predecessor_for_filesystem_path() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_excludes_indexed_predecessor_for_filesystem_path()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let path = std::env::temp_dir().join("perl-lsp-completion-open-child.pm");
-        let uri = Url::from_file_path(&path).map_err(|()| std::io::Error::other("absolute test path has no file URI"))?;
+        let uri = Url::from_file_path(&path)
+            .map_err(|()| std::io::Error::other("absolute test path has no file URI"))?;
         index.index_initial_file(uri, "package Child; sub removed { 1 }".to_string())?;
         let current_path = path.to_string_lossy();
         let members = collect_all_package_members_with_source(
@@ -3352,7 +3360,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_rebuilds_current_generated_members_without_stale_accessors() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_rebuilds_current_generated_members_without_stale_accessors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.index_initial_file(
             Url::parse("file:///workspace/User.pm")?,
@@ -3376,7 +3385,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_keeps_generated_members_from_reopened_current_package() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_keeps_generated_members_from_reopened_current_package()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.index_initial_file(
             Url::parse("file:///workspace/User.pm")?,
@@ -3403,7 +3413,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_reopened_package_replaces_prior_explicit_parents() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_reopened_package_replaces_prior_explicit_parents()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.index_initial_file(
             Url::parse("file:///workspace/Old.pm")?,
@@ -3432,7 +3443,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_reopened_package_keeps_prior_role_on_silent_segment() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_reopened_package_keeps_prior_role_on_silent_segment()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let current = "package Printable; use Moo::Role; sub stringify { 1 } package User; use Moo; with 'Printable'; package Other; sub unrelated { 1 } package User; sub run { 1 }";
         let user = collect_all_package_members_with_source(
@@ -3461,7 +3473,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_excludes_same_package_from_other_workspace_root() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_excludes_same_package_from_other_workspace_root()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec![
             "file:///root-a".to_string(),
@@ -3496,7 +3509,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_scopes_indexed_ancestor_members_to_current_root() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_scopes_indexed_ancestor_members_to_current_root()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec![
             "file:///root-a".to_string(),
@@ -3507,10 +3521,10 @@ sub own_method { 1 }
             "package Child;\nuse parent 'Parent';\n".to_string(),
         )?;
         index.index_initial_file(
-                Url::parse("file:///root-a/Parent.pm")?,
-                "package Parent;\nuse Moo;\nhas 'same_root' => (is => 'ro');\nsub own { 1 }\n"
-                    .to_string(),
-            )?;
+            Url::parse("file:///root-a/Parent.pm")?,
+            "package Parent;\nuse Moo;\nhas 'same_root' => (is => 'ro');\nsub own { 1 }\n"
+                .to_string(),
+        )?;
         index.index_initial_file(
             Url::parse("file:///root-b/Parent.pm")?,
             "package Parent;\nuse Moo;\nhas 'foreign_accessor' => (is => 'ro');\nsub foreign_method { 1 }\n".to_string(),
@@ -3538,7 +3552,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_accepts_localhost_alias_for_current_root() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_accepts_localhost_alias_for_current_root()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec!["file:///root-a".to_string()]);
         index.index_initial_file(
@@ -3558,7 +3573,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_accepts_localhost_alias_for_configured_root() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_accepts_localhost_alias_for_configured_root()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec!["file://localhost/root-a".to_string()]);
         index.index_initial_file(
@@ -3578,7 +3594,8 @@ sub own_method { 1 }
     }
 
     #[test]
-    fn collect_all_outside_configured_roots_uses_current_buffer_only() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn collect_all_outside_configured_roots_uses_current_buffer_only()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec!["file:///root-a".to_string()]);
         index.index_initial_file(

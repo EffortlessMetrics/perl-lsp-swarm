@@ -1508,7 +1508,10 @@ fn test_method_completion_uses_requesting_workspace_root() -> TestResult {
         .ok_or_else(|| format!("workspace symbols did not return an array: {indexed}"))?
         .iter()
         .map(|symbol| {
-            symbol.get("location").and_then(|location| location.get("uri")).and_then(|uri| uri.as_str())
+            symbol
+                .get("location")
+                .and_then(|location| location.get("uri"))
+                .and_then(|uri| uri.as_str())
                 .ok_or_else(|| format!("workspace symbol lacks a string location URI: {symbol}"))
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1544,14 +1547,19 @@ fn test_method_completion_uses_requesting_workspace_root() -> TestResult {
             }),
             request_timeout(),
         )?;
-        let items = response.get("items")
+        let items = response
+            .get("items")
             .and_then(|items| items.as_array())
             .or_else(|| response.as_array())
             .ok_or_else(|| format!("completion did not return items for {uri}: {response}"))?;
-        let labels: Vec<_> = items.iter().map(|item| {
-            item.get("label").and_then(|label| label.as_str())
-                .ok_or_else(|| format!("completion item lacks a string label: {item}"))
-        }).collect::<std::result::Result<Vec<_>, _>>()?;
+        let labels: Vec<_> = items
+            .iter()
+            .map(|item| {
+                item.get("label")
+                    .and_then(|label| label.as_str())
+                    .ok_or_else(|| format!("completion item lacks a string label: {item}"))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         for &name in expected {
             if !(labels.contains(&name)) {
                 return Err(format!("{uri}: expected {name}, got {labels:?}").into());

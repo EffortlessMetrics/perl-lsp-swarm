@@ -35,7 +35,7 @@
 #   it, so no request outcome preserves the signal. Until that changes a
 #   `Complete` completion outcome is not earned by any request, because an
 #   empty result is indistinguishable from a producer that gave up. The gap is
-#   propagation, not capability â€” which is what #10230 consumes.
+#   propagation, not capability — which is what #10230 consumes.
 #
 # On the Dancer2 row
 #   `add_dancer2_keyword_completions` is reached by `handle_completion_cancellable`
@@ -96,11 +96,11 @@ outcome_owner = "#10230"
 # remain unchanged. Index/scope argument grouping preserves traversal semantics;
 # new tests propagate failures without panic. Native cloud reconciliation must
 # verify this exact source binding and generated projection before acceptance.
-source_digest = "sha256:7645ab8d59c64c07986102856586116c70e7d10649edf5f99c411f3faba2330d"
+source_digest = "sha256:987ff18129ce42eef51a34e3d6bab79184fc279c4d39ab7f6c63a4c38c3d54e1"
 
 [[delegations]]
 module = "dancer2"
-reason = "Only `dancer2/completion.rs` produces candidates and it is scanned. The rest of the module carries canonical framework facts, activation, diagnostics, hover, symbols and signature help â€” none of which returns or appends a completion candidate."
+reason = "Only `dancer2/completion.rs` produces candidates and it is scanned. The rest of the module carries canonical framework facts, activation, diagnostics, hover, symbols and signature help — none of which returns or appends a completion candidate."
 
 [[delegations]]
 module = "testing"

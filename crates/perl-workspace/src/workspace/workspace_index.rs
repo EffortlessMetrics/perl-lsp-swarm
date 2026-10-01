@@ -11431,7 +11431,8 @@ helper_one();
     }
 
     #[test]
-    fn package_declarations_exclude_same_named_callables_and_keep_classes() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn package_declarations_exclude_same_named_callables_and_keep_classes()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         for (uri, source) in [
             ("file:///lib/Sub.pm", "package Other; sub Shared { 1 }"),
@@ -11449,16 +11450,21 @@ helper_one();
         let uris: Vec<_> = locations.iter().map(|location| location.uri.as_str()).collect();
         {
             let actual = uris;
-            let expected = ["file:///lib/Class.pm", "file:///lib/Package.pm", "file:///lib/Package2.pm"];
+            let expected =
+                ["file:///lib/Class.pm", "file:///lib/Package.pm", "file:///lib/Package2.pm"];
             if actual != expected {
-                return Err(format!("expected equality: actual={actual:?}; expected={expected:?}").into());
+                return Err(
+                    format!("expected equality: actual={actual:?}; expected={expected:?}").into()
+                );
             }
         }
         {
             let actual = index.find_definitions("Shared").len();
             let expected = 4;
             if actual != expected {
-                return Err(format!("expected equality: actual={actual:?}; expected={expected:?}").into());
+                return Err(
+                    format!("expected equality: actual={actual:?}; expected={expected:?}").into()
+                );
             }
         }
         Ok(())
@@ -11761,7 +11767,8 @@ sub other_sub {
     }
 
     #[test]
-    fn test_determine_folder_uri_accepts_localhost_root_alias() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_determine_folder_uri_accepts_localhost_root_alias()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index.set_workspace_folders(vec!["file://localhost/project".to_string()]);
 
@@ -11769,7 +11776,9 @@ sub other_sub {
             let actual = index.workspace_folder_for_uri("file:///project/lib/Module.pm");
             let expected = Some("file://localhost/project".to_string());
             if actual != expected {
-                return Err("canonical document URI should retain the registered root identity".into());
+                return Err(
+                    "canonical document URI should retain the registered root identity".into()
+                );
             }
         }
         Ok(())

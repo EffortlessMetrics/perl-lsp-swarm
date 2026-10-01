@@ -10,7 +10,7 @@ Controlling issue #10949. The one live application route is #10229, pure merge/r
 
 The dispositions below were audited against this exact source. A change to any file listed here invalidates the audit and `check` fails until the rows are re-checked.
 
-- Digest: `sha256:7645ab8d59c64c07986102856586116c70e7d10649edf5f99c411f3faba2330d`
+- Digest: `sha256:987ff18129ce42eef51a34e3d6bab79184fc279c4d39ab7f6c63a4c38c3d54e1`
 - Files (42):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`
@@ -57,7 +57,7 @@ The dispositions below were audited against this exact source. A change to any f
 
 ## Denominator
 
-A producer is a function that carries candidates: it takes a `&mut Vec<Candidate>` append channel, returns a type containing `Vec<Candidate>`, or returns a named struct or enum carrier holding one â€” where a candidate is a `CompletionItem` or a `CompletionCandidate`. The `Seam` column says which. A file that constructs candidates without exposing such a function must carry a `construction_only` row naming the producer that owns its output, and a `providers::` module the surface reaches into but does not scan in full must carry a `delegations` row.
+A producer is a function that carries candidates: it takes a `&mut Vec<Candidate>` append channel, returns a type containing `Vec<Candidate>`, or returns a named struct or enum carrier holding one — where a candidate is a `CompletionItem` or a `CompletionCandidate`. The `Seam` column says which. A file that constructs candidates without exposing such a function must carry a `construction_only` row naming the producer that owns its output, and a `providers::` module the surface reaches into but does not scan in full must carry a `delegations` row.
 
 | Population | Count |
 | --- | --- |
@@ -101,10 +101,10 @@ A producer is a function that carries candidates: it takes a `&mut Vec<Candidate
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_hash_key_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #9478 |
 | `perl_lsp_rs_core::providers::htmx::complete_attribute_names` | key_or_constant | returned | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #15014 |
 | `perl_lsp_rs_core::providers::htmx::complete_header_names` | key_or_constant | returned | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | complete_or_empty | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
-| `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions` | file_path | append Ã—2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #10234 |
-| `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions_with_cancellation` | file_path | append Ã—2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #10234 |
+| `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions` | file_path | append ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #10234 |
+| `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions_with_cancellation` | file_path | append ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #10234 |
 | `perl_lsp_rs_core::providers::completion::completion::file_path::complete_file_paths` | file_path | returned | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10234 |
-| `perl_lsp_rs_core::providers::file_completion::complete_file_paths` | file_path | returned Ã—2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10234 |
+| `perl_lsp_rs_core::providers::file_completion::complete_file_paths` | file_path | returned ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10234 |
 | `perl_lsp_rs_core::providers::completion::completion::regex_patterns::add_regex_completions` | regex_context | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::regex_patterns::add_regex_flag_completions` | regex_context | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::request::test_frameworks::reconcile` | test_framework | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
@@ -152,7 +152,7 @@ None.
 
 | Module | Why it carries no unscanned producer |
 | --- | --- |
-| `providers::dancer2` | Only `dancer2/completion.rs` produces candidates and it is scanned. The rest of the module carries canonical framework facts, activation, diagnostics, hover, symbols and signature help â€” none of which returns or appends a completion candidate. |
+| `providers::dancer2` | Only `dancer2/completion.rs` produces candidates and it is scanned. The rest of the module carries canonical framework facts, activation, diagnostics, hover, symbols and signature help — none of which returns or appends a completion candidate. |
 | `providers::testing` | `request/test_frameworks.rs` consumes the reviewed Test2 export resolver for import semantics. The resolver answers questions about imports; it builds no completion candidates, so the candidates stay owned by the scanned producer. |
 
 ## Route
@@ -166,86 +166,86 @@ flowchart LR
   pool(["shared candidate pool"])
   final["sort_and_cap_completions"]
   wire(["LSP CompletionList"])
-  nlocal_symbol_handle_completion_handle_completion_cancellable["local_symbol Ã—5"]
+  nlocal_symbol_handle_completion_handle_completion_cancellable["local_symbol ×5"]
   nhandle_completion --> nlocal_symbol_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nlocal_symbol_handle_completion_handle_completion_cancellable
   nlocal_symbol_handle_completion_handle_completion_cancellable --> pool
-  nimport_projection_handle_completion_handle_completion_cancellable["import_projection Ã—2"]
+  nimport_projection_handle_completion_handle_completion_cancellable["import_projection ×2"]
   nhandle_completion --> nimport_projection_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nimport_projection_handle_completion_handle_completion_cancellable
   nimport_projection_handle_completion_handle_completion_cancellable --> pool
-  nworkspace_symbol_handle_completion_handle_completion_cancellable["workspace_symbol Ã—2"]
+  nworkspace_symbol_handle_completion_handle_completion_cancellable["workspace_symbol ×2"]
   nhandle_completion --> nworkspace_symbol_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nworkspace_symbol_handle_completion_handle_completion_cancellable
   nworkspace_symbol_handle_completion_handle_completion_cancellable --> pool
-  nmethod_handle_completion_handle_completion_cancellable["method Ã—7"]
+  nmethod_handle_completion_handle_completion_cancellable["method ×7"]
   nhandle_completion --> nmethod_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nmethod_handle_completion_handle_completion_cancellable
   nmethod_handle_completion_handle_completion_cancellable --> pool
-  nmodule_handle_completion_handle_completion_cancellable["module Ã—3"]
+  nmodule_handle_completion_handle_completion_cancellable["module ×3"]
   nhandle_completion --> nmodule_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nmodule_handle_completion_handle_completion_cancellable
   nmodule_handle_completion_handle_completion_cancellable --> pool
-  ndeclared_dependency_handle_completion_handle_completion_cancellable["declared_dependency Ã—1"]
+  ndeclared_dependency_handle_completion_handle_completion_cancellable["declared_dependency ×1"]
   nhandle_completion --> ndeclared_dependency_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> ndeclared_dependency_handle_completion_handle_completion_cancellable
   ndeclared_dependency_handle_completion_handle_completion_cancellable --> pool
-  nbuiltin_handle_completion_handle_completion_cancellable["builtin Ã—1"]
+  nbuiltin_handle_completion_handle_completion_cancellable["builtin ×1"]
   nhandle_completion --> nbuiltin_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nbuiltin_handle_completion_handle_completion_cancellable
   nbuiltin_handle_completion_handle_completion_cancellable --> pool
-  nkeyword_handle_completion_handle_completion_cancellable["keyword Ã—1"]
+  nkeyword_handle_completion_handle_completion_cancellable["keyword ×1"]
   nhandle_completion --> nkeyword_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nkeyword_handle_completion_handle_completion_cancellable
   nkeyword_handle_completion_handle_completion_cancellable --> pool
-  nsnippet_handle_completion_handle_completion_cancellable["snippet Ã—1"]
+  nsnippet_handle_completion_handle_completion_cancellable["snippet ×1"]
   nhandle_completion --> nsnippet_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nsnippet_handle_completion_handle_completion_cancellable
   nsnippet_handle_completion_handle_completion_cancellable --> pool
-  nkey_or_constant_handle_completion_handle_completion_cancellable["key_or_constant Ã—4"]
+  nkey_or_constant_handle_completion_handle_completion_cancellable["key_or_constant ×4"]
   nhandle_completion --> nkey_or_constant_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nkey_or_constant_handle_completion_handle_completion_cancellable
   nkey_or_constant_handle_completion_handle_completion_cancellable --> pool
-  nfile_path_handle_completion_handle_completion_cancellable["file_path Ã—2"]
+  nfile_path_handle_completion_handle_completion_cancellable["file_path ×2"]
   nhandle_completion --> nfile_path_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nfile_path_handle_completion_handle_completion_cancellable
   nfile_path_handle_completion_handle_completion_cancellable --> pool
-  nregex_context_handle_completion_handle_completion_cancellable["regex_context Ã—2"]
+  nregex_context_handle_completion_handle_completion_cancellable["regex_context ×2"]
   nhandle_completion --> nregex_context_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nregex_context_handle_completion_handle_completion_cancellable
   nregex_context_handle_completion_handle_completion_cancellable --> pool
-  ntest_framework_handle_completion_handle_completion_cancellable["test_framework Ã—2"]
+  ntest_framework_handle_completion_handle_completion_cancellable["test_framework ×2"]
   nhandle_completion --> ntest_framework_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> ntest_framework_handle_completion_handle_completion_cancellable
   ntest_framework_handle_completion_handle_completion_cancellable --> pool
-  nxs_api_handle_completion_handle_completion_cancellable["xs_api Ã—2"]
+  nxs_api_handle_completion_handle_completion_cancellable["xs_api ×2"]
   nhandle_completion --> nxs_api_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nxs_api_handle_completion_handle_completion_cancellable
   nxs_api_handle_completion_handle_completion_cancellable --> pool
-  nframework_generated_handle_completion_cancellable["framework_generated Ã—1"]
+  nframework_generated_handle_completion_cancellable["framework_generated ×1"]
   nhandle_completion_cancellable --> nframework_generated_handle_completion_cancellable
   nframework_generated_handle_completion_cancellable --> pool
-  nlexical_fallback_handle_completion_handle_completion_cancellable["lexical_fallback Ã—1"]
+  nlexical_fallback_handle_completion_handle_completion_cancellable["lexical_fallback ×1"]
   nhandle_completion --> nlexical_fallback_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nlexical_fallback_handle_completion_handle_completion_cancellable
   nlexical_fallback_handle_completion_handle_completion_cancellable --> pool
-  nrouter_handle_completion["router Ã—1"]
+  nrouter_handle_completion["router ×1"]
   nhandle_completion --> nrouter_handle_completion
   nrouter_handle_completion --> pool
-  nrouter_handle_completion_handle_completion_cancellable["router Ã—9"]
+  nrouter_handle_completion_handle_completion_cancellable["router ×9"]
   nhandle_completion --> nrouter_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nrouter_handle_completion_handle_completion_cancellable
   nrouter_handle_completion_handle_completion_cancellable --> pool
-  nrouter_handle_completion_cancellable["router Ã—1"]
+  nrouter_handle_completion_cancellable["router ×1"]
   nhandle_completion_cancellable --> nrouter_handle_completion_cancellable
   nrouter_handle_completion_cancellable --> pool
   pool --> final
   final --> wire
   subgraph unreached ["reached by no entry point"]
-    nunreached_module["module Ã—1"]
-    nunreached_key_or_constant["key_or_constant Ã—1"]
-    nunreached_file_path["file_path Ã—2"]
-    nunreached_router["router Ã—1"]
+    nunreached_module["module ×1"]
+    nunreached_key_or_constant["key_or_constant ×1"]
+    nunreached_file_path["file_path ×2"]
+    nunreached_router["router ×1"]
   end
 ```
 
@@ -254,5 +254,5 @@ flowchart LR
 - `reached_by` with `direct_call` evidence is reconciled against the entry-point call site. `provider_seam` evidence is declared: the producer is reached through the provider call, and this task does not prove that edge.
 - `legacy_unreported` completeness means the producer says nothing about whether it finished. While any reached row is `legacy_unreported`, a `Complete` completion outcome is not earned.
 - Discovery is syntactic. Its three planes bound one another at function, file and module granularity, but a producer evading all three would not appear. The module header records the exact ceilings, including the post-finalizer control's source-order modelling.
-- The post-finalizer control covers the straight-line entry body only. Closures, `async` blocks and nested `fn`s are skipped â€” descending into one armed the finalizer at an uncalled closure's definition and refused correct source â€” so an append inside a deferred body that *is* invoked is a miss, not a false alarm. Read "0 post-finalizer appends" as that bounded claim. #15470 owns the invocation-sensitive model.
+- The post-finalizer control covers the straight-line entry body only. Closures, `async` blocks and nested `fn`s are skipped — descending into one armed the finalizer at an uncalled closure's definition and refused correct source — so an append inside a deferred body that *is* invoked is a miss, not a false alarm. Read "0 post-finalizer appends" as that bounded claim. #15470 owns the invocation-sensitive model.
 - Inline completion and `completionItem/resolve` are outside this denominator. Neither contributes to a `textDocument/completion` candidate pool.
