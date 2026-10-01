@@ -118,6 +118,7 @@ jobs:
         id: smoke
         env:
           PERL_LSP_E2E: '1'
+          PERL_LSP_DIAGNOSTIC_MODE: normal
           PERL_LSP_FIRST_HOUR_SERVER_PATH: ${{ runner.temp }}/perl-lsp-current-source-target/release/perllsp
           PERL_LSP_DAP_PATH: ${{ runner.temp }}/perl-lsp-current-source-target/release/perl-dap
           PERL_LSP_PACKAGE_BASE_MODE: ${{ github.event_name == 'pull_request' && 'pull_request' || 'accepted' }}
