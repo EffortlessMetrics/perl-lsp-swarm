@@ -453,8 +453,10 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
         Ok(()) => {}
         Err(WaitEnd::Deadline { .. }) => {
             bail!(
-                "active-document readiness timeout after {}ms with stream live; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
-                opened_at.elapsed().as_millis()
+                "active-document readiness timeout after {}ms with stream live; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}; buffered_notifications={:?}; diagnostics_events={}",
+                opened_at.elapsed().as_millis(),
+                harness.peek_notifications(),
+                harness.diagnostics_event_count("lib/Latency/Symbols.pm")
             );
         }
         Err(end) => {
