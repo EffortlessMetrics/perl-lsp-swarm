@@ -489,8 +489,13 @@ pub(crate) fn project_human(receipt: &RehearsalReceipt) -> String {
         .map(|(name, version)| format!("{name}={version}"))
         .collect();
     out.push_str(&format!("- toolchains: {}\n", tools.join(", ")));
-    out.push_str("- published_channels: (none)\n");
-    out.push_str("- release_cut: false\n");
+    if receipt.published_channels.is_empty() {
+        out.push_str("- published_channels: (none)\n");
+    } else {
+        let channels = receipt.published_channels.join(", ");
+        out.push_str(&format!("- published_channels: {channels}\n"));
+    }
+    out.push_str(&format!("- release_cut: {}\n", receipt.release_cut));
     out.push_str(&format!(
         "- cleanup: {} / {}\n",
         receipt.cleanup.disposition.as_str(),
