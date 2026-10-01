@@ -961,25 +961,33 @@ pub fn compile_hosted_fanin(
                 });
             }
             Some(rows) => {
+                // Every receipt claiming an admitted subject must carry this
+                // fan-in's identity. Checking only `rows[0]` would make the
+                // collision diagnostic depend on filesystem enumeration
+                // order; a stale attempt must be named as such regardless of
+                // which duplicate the walk happens to visit first.
+                for row in rows {
+                    if row.repository_sha != expected.repository_sha {
+                        collisions.push(format!(
+                            "subject `{subject}` SHA {} is not the expected fan-in SHA {}",
+                            row.repository_sha, expected.repository_sha
+                        ));
+                    }
+                    if row.run_id != expected.run_id {
+                        collisions.push(format!(
+                            "subject `{subject}` run {} is not the expected fan-in run {}",
+                            row.run_id, expected.run_id
+                        ));
+                    }
+                    if row.run_attempt != expected.run_attempt {
+                        collisions.push(format!(
+                            "subject `{subject}` attempt {} is not the expected fan-in attempt {}",
+                            row.run_attempt, expected.run_attempt
+                        ));
+                    }
+                }
+
                 let row = &rows[0];
-                if row.repository_sha != expected.repository_sha {
-                    collisions.push(format!(
-                        "subject `{subject}` SHA {} is not the expected fan-in SHA {}",
-                        row.repository_sha, expected.repository_sha
-                    ));
-                }
-                if row.run_id != expected.run_id {
-                    collisions.push(format!(
-                        "subject `{subject}` run {} is not the expected fan-in run {}",
-                        row.run_id, expected.run_id
-                    ));
-                }
-                if row.run_attempt != expected.run_attempt {
-                    collisions.push(format!(
-                        "subject `{subject}` attempt {} is not the expected fan-in attempt {}",
-                        row.run_attempt, expected.run_attempt
-                    ));
-                }
 
                 let mut detail = None;
                 let mut outcome = row.row_status.as_str().to_string();
