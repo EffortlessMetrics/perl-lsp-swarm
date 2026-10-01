@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16737,
-  "reason": "Accept exact 319-byte packaged README growth from pinned oxfmt on the combined current-main VSIX without weakening the size ratchet",
-  "base_baseline_file_sha256": "85401e8cbacd7b7a4355537fd3e1fd735c5fd289fe6dec141337de1fca074560",
-  "candidate_baseline_file_sha256": "088bb2b2356366d7a7198011981b90cf8b2c234f21868c5d172c2c62b22e35a7",
-  "base_inventory_sha256": "1beb2e2cc4e7878c0983141be19cab5da3bb9b1bed545aa0344a18c0f81bcfe3",
-  "candidate_inventory_sha256": "5adabe41b29aaf96be03e6bddab064d61335136b4f612e0ce3a0e6910778c2ac"
+  "owner_issue": 16577,
+  "reason": "Accept the 1341-byte out/extension.js growth from typed extract action selection and refusal handling in refactoringCommands.ts without weakening the size ratchet",
+  "base_baseline_file_sha256": "088bb2b2356366d7a7198011981b90cf8b2c234f21868c5d172c2c62b22e35a7",
+  "candidate_baseline_file_sha256": "6f7ea78666ccb6c0ed9ab5d1fa39de752ce8229963d08fd3cfa6ee9b650e751d",
+  "base_inventory_sha256": "5adabe41b29aaf96be03e6bddab064d61335136b4f612e0ce3a0e6910778c2ac",
+  "candidate_inventory_sha256": "db3b3caa9c18f428161194011d88e1bc93e7367d37f8118bf0433840eaf01207"
 }
