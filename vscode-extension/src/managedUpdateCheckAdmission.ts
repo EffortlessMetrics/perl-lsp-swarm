@@ -5,7 +5,8 @@
  * this check run?" with a chain of independent early `return`s — one per
  * pinned tag, zero interval, elapsed timestamp, user-configured `serverPath`,
  * and a bundled-vs-managed binary test — each with no shared reason. Three
- * consequences followed from that shape, all reproducible on `main`:
+ * consequences followed from that shape when #16803 was filed against
+ * `main@01739fd`:
  *
  * - The manual `Check for Updates` command reset the *unscoped* legacy
  *   timestamp before delegating, while the check itself read the *scoped*
@@ -16,10 +17,18 @@
  * - `channel = 'tag'`, an unknown channel, and `versionTag` under a non-tag
  *   channel all returned without a disposition at all.
  *
- * This module replaces the branch chain with a single pure decision over facts
- * the caller has already established. It is deliberately pure and
- * `vscode`-free: the decision depends on no editor API, no clock, and no
- * filesystem, so every branch below is reachable from a plain unit test.
+ * #16530 and #16536 repaired the first two on the base this module builds on —
+ * a `force` flag now bypasses cadence instead of resetting a timestamp, and
+ * prompt suppression has its own key — so those two no longer reproduce there.
+ * What still reproduces on that base is the shape itself plus the issue's
+ * remaining findings: the suppression row is still unscoped, an unknown channel
+ * still surfaces as a `throw` after transport, an unproven host still falls
+ * back to the legacy cadence row, and no guard produces a typed disposition.
+ * This module replaces the branch chain — point fixes included — with a single
+ * pure decision over facts the caller has already established. It is
+ * deliberately pure and `vscode`-free: the decision depends on no editor API,
+ * no clock, and no filesystem, so every branch below is reachable from a plain
+ * unit test.
  *
  * Explicit non-ownership:
  * - which host target may be used (#10073/#9096) — consumed, not recomputed;
@@ -32,12 +41,18 @@
  * user disabled, so the intent is absent rather than modeled and unreachable.
  */
 
-/** Why a check was attempted, and therefore which suppressions it may bypass. */
+/**
+ * Why a check was attempted, and therefore which suppressions it may bypass.
+ *
+ * There is deliberately no `scheduled_background` member for a timer-driven
+ * check: the only background entrypoint today is the one fired during
+ * `activate()`. Until a timer-driven entrypoint exists, an intent nothing
+ * produces is worse than a documented absence — the same standard applied to
+ * `repair_or_reinstall` below.
+ */
 export type ManagedUpdateCheckIntent =
   /** Fired once during `activate()` after startup completes. */
   | 'activation_background'
-  /** Fired by any later timer-driven check. */
-  | 'scheduled_background'
   /** The user explicitly ran `Check for Updates`. */
   | 'manual_force';
 

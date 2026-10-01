@@ -156,7 +156,15 @@ export function managedUpdatePromptSuppressionStateKey(key: string): string | nu
   return `${UPDATE_PROMPT_SUPPRESSION_STATE_KEY}.${key}`;
 }
 
-/** The unscoped prompt-suppression key; never read as a seed. */
+/**
+ * The unscoped prompt-suppression key written before #16803 scoped it
+ * (#16536 introduced it, replacing `updateCheckInterval = 0`).
+ *
+ * Read-only since scoping: admission may still read it once as a migration
+ * seed, so an upgrade does not resurrect a prompt the user already dismissed,
+ * but nothing is ever written back to it, so it cannot remain a competing
+ * current authority — the same contract as the legacy cadence key above.
+ */
 export const UPDATE_PROMPT_SUPPRESSION_STATE_KEY = 'perl-lsp.updatePromptSuppressed';
 
 /**

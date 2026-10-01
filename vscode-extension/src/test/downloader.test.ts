@@ -31,7 +31,6 @@ import {
   hostManagedCompatibilityKeys,
   readGitHubToken,
   resolveGitHubAuthDisposition,
-  UPDATE_PROMPT_SUPPRESSED_KEY,
   __resetManagedInstallSingleflightForTesting,
 } from '../downloader';
 import {
@@ -39,6 +38,7 @@ import {
   managedNamespaceDir,
   managedUpdateCheckStateKey,
   managedUpdatePromptSuppressionStateKey,
+  UPDATE_PROMPT_SUPPRESSION_STATE_KEY,
 } from '../managedStorageIdentity';
 import { buildManagedCandidateManifest } from '../managedCacheProtocol';
 import type { ManagedCandidateManifest, ManagedCandidateSubject } from '../managedCacheProtocol';
@@ -2865,7 +2865,7 @@ describe('checkForUpdateSilent', () => {
     expect(ctx.globalState._store.get(scopedPromptKey)).toBe(true);
     // The unscoped row is a read-only migration seed and is never written, so
     // it cannot remain a competing current authority.
-    expect(ctx.globalState._store.get(UPDATE_PROMPT_SUPPRESSED_KEY)).toBeUndefined();
+    expect(ctx.globalState._store.get(UPDATE_PROMPT_SUPPRESSION_STATE_KEY)).toBeUndefined();
     // The configuration surface is never written by the prompt.
     const configMock = vscode.workspace.getConfiguration.mock.results.at(-1)!.value;
     expect(configMock.update).not.toHaveBeenCalled();
@@ -2907,7 +2907,7 @@ describe('checkForUpdateSilent', () => {
   });
 
   test('a suppressed prompt still lets interval checks run — but shows no prompt (#16536)', async () => {
-    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSION_STATE_KEY, true);
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     const getLatestSpy = jest
@@ -2926,7 +2926,7 @@ describe('checkForUpdateSilent', () => {
   });
 
   test('a suppressed prompt does not disable autoUpdate (#16536)', async () => {
-    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSION_STATE_KEY, true);
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: true });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
@@ -3209,7 +3209,7 @@ describe('checkForUpdateSilent', () => {
   test('forced check offers the update prompt even when prompts were suppressed', async () => {
     // The manual command is explicit intent: "Don't ask again" governs
     // automatic prompts, not a check the user just requested.
-    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSED_KEY, true);
+    ctx.globalState._store.set(UPDATE_PROMPT_SUPPRESSION_STATE_KEY, true);
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24, autoUpdate: false });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({

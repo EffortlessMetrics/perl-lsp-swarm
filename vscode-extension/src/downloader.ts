@@ -40,6 +40,7 @@ import {
   probeBinaryIdentity,
   LEGACY_UPDATE_CHECK_STATE_KEY,
   managedUpdatePromptSuppressionStateKey,
+  UPDATE_PROMPT_SUPPRESSION_STATE_KEY,
   type ManagedEmulation,
 } from './managedStorageIdentity';
 import {
@@ -740,23 +741,6 @@ export const MANAGED_INSTALL_TARGET_FILE = 'target.json';
  * namespace rather than being folded into a neighbour's.
  */
 export const UNSUPPORTED_COMPATIBILITY_KEY = 'unsupported-host-target';
-
-/**
- * Unscoped `globalState` key recording that the user chose "Don't ask again"
- * on the update prompt (#16536).
- *
- * Suppression is scoped to the PROMPT only. It used to write
- * `updateCheckInterval: 0` globally, which also silenced interval checks and
- * silently disabled a later `perl-lsp.autoUpdate=true`. Users who want checks
- * fully off still have that setting; this key only stops the notification.
- *
- * This unscoped row is now a read-only migration seed. It is not scoped to a
- * compatibility target, so a dismissal on one host would otherwise silence the
- * prompt on a different target sharing the same global state object — the
- * exact defect #9847 fixed for the cadence timestamp. Current writes go to
- * {@link managedUpdatePromptSuppressionStateKey}; see #16803.
- */
-export const UPDATE_PROMPT_SUPPRESSED_KEY = 'perl-lsp.updatePromptSuppressed';
 
 /**
  * Cancellation thrown by the bounded transports and the download progress
@@ -2142,9 +2126,9 @@ export class BinaryDownloader {
     // scoped key is ever written, so the legacy row cannot stay authoritative.
     const promptSuppressed =
       scopedPromptKey === null
-        ? this.context.globalState.get<boolean>(UPDATE_PROMPT_SUPPRESSED_KEY, false)
+        ? this.context.globalState.get<boolean>(UPDATE_PROMPT_SUPPRESSION_STATE_KEY, false)
         : this.context.globalState.get<boolean>(scopedPromptKey, false) ||
-          this.context.globalState.get<boolean>(UPDATE_PROMPT_SUPPRESSED_KEY, false);
+          this.context.globalState.get<boolean>(UPDATE_PROMPT_SUPPRESSION_STATE_KEY, false);
 
     const binaryPath = this.getLocalBinaryPath();
     const storagePath = this.context.globalStorageUri.fsPath;
