@@ -74,7 +74,8 @@
               "producer": "xtask-pr-close-proof",
               "subject": "0000000000000000000000000000000000015f97",
               "content_digest": "00000000000000000000000000000000000000000000000000000000000dbbed",
-              "reference": "superseded tracking sheet archived in the superseding plan"
+              "reference": "superseded tracking sheet archived in the superseding plan",
+              "schema_version": "landing_proof.v1"
             }
           },
           "scaffold.plan.published": {

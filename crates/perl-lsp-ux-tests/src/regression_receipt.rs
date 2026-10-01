@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -54,6 +55,23 @@ pub struct UxRegressionReceiptConfig {
     pub receipt: Option<PathBuf>,
     pub sha: Option<String>,
     pub exit_status_file: Option<PathBuf>,
+}
+
+/// Data for the command that presents the receipt to its user.
+pub enum UxRegressionReceiptOutput {
+    Written(PathBuf),
+    Payload(String),
+}
+
+impl fmt::Display for UxRegressionReceiptOutput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Written(path) => {
+                write!(formatter, "Wrote UX regression receipt: {}", path.display())
+            }
+            Self::Payload(payload) => formatter.write_str(payload),
+        }
+    }
 }
 
 /// Why one test failed, told apart by evidence inside that test's own output.
@@ -127,7 +145,7 @@ pub struct UxRegressionReceipt {
     platform: Option<String>,
 }
 
-pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
+pub fn run(config: UxRegressionReceiptConfig) -> Result<UxRegressionReceiptOutput> {
     validate_patterns()?;
     let raw = fs::read_to_string(&config.input)
         .with_context(|| format!("reading {}", config.input.display()))?;
@@ -151,12 +169,10 @@ pub fn run(config: UxRegressionReceiptConfig) -> Result<()> {
         }
         fs::write(&path, format!("{payload}\n"))
             .with_context(|| format!("writing {}", path.display()))?;
-        println!("Wrote UX regression receipt: {}", path.display());
+        Ok(UxRegressionReceiptOutput::Written(path))
     } else {
-        println!("{payload}");
+        Ok(UxRegressionReceiptOutput::Payload(payload))
     }
-
-    Ok(())
 }
 
 fn validate_patterns() -> Result<()> {
