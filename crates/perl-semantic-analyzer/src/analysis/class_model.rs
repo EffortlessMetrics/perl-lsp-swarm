@@ -277,30 +277,40 @@ pub struct ClassModel {
     pub exporter_metadata: Option<ExporterMetadata>,
 }
 
-/// Combine the per-segment class models of one source file into one model per
-/// package name.
+/// Combine the ancestry-and-method view of repeated package segments in one
+/// source file.
 ///
 /// Perl has one package per name. A file may declare the same package more than
 /// once, and each declaration produces its own [`ClassModel`], so keying a
 /// lookup straight off a per-segment list lets a later segment hide an earlier
-/// one's parents, roles, and methods. Callers that answer a whole-file question
-/// — hover, navigation, completion — must combine the segments first.
+/// one's parents, roles, and methods. Callers that answer the
+/// ancestry-and-method question — hover, navigation, completion — must combine
+/// the segments first.
 ///
-/// The merge is deliberately conservative and never guesses:
+/// Only the package-state dimensions a reopen can change through an explicit
+/// declaration are merged, and the merge is deliberately conservative:
 ///
 /// - `extends`, `use parent`, `use base`, and `@ISA` describe the package's
-///   current ancestry, so a later declaration supersedes an earlier one. Blindly
-///   unioning the lists would invent parents Perl no longer dispatches through.
-///   A segment that declares no ancestry carries no decision and leaves the prior
-///   value intact.
-/// - The same rule applies to `with`: a segment that consumes no role leaves the
-///   prior composition alone, and an explicit later `with` replaces it.
-/// - A reopen may redefine a method, so declaration order stays authoritative and
-///   the later definition wins.
+///   current ancestry, so a later explicit declaration supersedes an earlier
+///   one. Blindly unioning the lists would invent parents Perl no longer
+///   dispatches through. A segment that declares no ancestry carries no
+///   decision and leaves the prior value intact.
+/// - The same rule applies to `with`: a segment that consumes no role leaves
+///   the prior composition alone, and an explicit later `with` replaces it.
+/// - A reopen may redefine a method, so declaration order stays authoritative
+///   and the later definition wins.
 /// - An explicit `use mro` can reset an earlier one; a silent reopen cannot.
 ///
-/// This is the single owner of reopened-package merge rules. Consumers must not
-/// restate them locally.
+/// Every other per-segment fact a [`ClassModel`] records — `framework`,
+/// `attributes`, `fields`, `adjusts`, `exports`, `export_ok`, and
+/// `exporter_metadata` — is deliberately not merged: the first segment's value
+/// is retained and a later segment's value is dropped. The result is the
+/// merged ancestry-and-method view per package name, not a complete
+/// whole-file model; a caller that needs those other dimensions must not
+/// treat this result as complete.
+///
+/// This is the single owner of reopened-package merge rules. Consumers must
+/// not restate them locally.
 pub fn merge_reopened_class_models(models: &[ClassModel]) -> Vec<ClassModel> {
     let mut merged: Vec<ClassModel> = Vec::new();
     for model in models {
