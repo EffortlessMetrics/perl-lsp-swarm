@@ -126,7 +126,7 @@ fn measured_scorecard_consumer_refuses_missing_schema_version() -> Result<()> {
 }
 
 #[test]
-fn scenario_14_rows_split_terminal_dispositions_from_active_proof_debt() -> Result<()> {
+fn scenario_14_rows_fully_resolved_with_empty_active_projection() -> Result<()> {
     let root = crate::utils::project_root()?;
     let ledger = load_flake_ledger(&root)?;
     let scenario_14_entries: Vec<&UxFlakeEntry> = ledger
@@ -142,7 +142,12 @@ fn scenario_14_rows_split_terminal_dispositions_from_active_proof_debt() -> Resu
 
     let resolved: Vec<&&UxFlakeEntry> =
         scenario_14_entries.iter().filter(|entry| entry.state == "resolved").collect();
-    assert_eq!(resolved.len(), 10, "ten Scenario 14 rows must stay terminally resolved");
+    assert_eq!(
+        resolved.len(),
+        11,
+        "every Scenario 14 row must stay terminally resolved — including the FindBin row \
+         whose #10015 proof debt was discharged in #17042"
+    );
     for entry in resolved {
         assert!(
             matches!(
@@ -153,34 +158,30 @@ fn scenario_14_rows_split_terminal_dispositions_from_active_proof_debt() -> Resu
             entry.test,
             entry.disposition
         );
+        assert!(
+            entry.issue.is_none() && entry.owner.is_none(),
+            "resolved row {} must not retain active-row bookkeeping",
+            entry.test
+        );
     }
 
+    // The FindBin proof debt was discharged, not deleted: the row keeps its
+    // stabilized disposition and the #17042 evidence binding (re-verified by
+    // the quarantine registry contract on the perl-lsp-ux-tests side).
     let findbin = scenario_14_entries
         .iter()
         .find(|entry| entry.test.ends_with("scenario_14_findbin_relative"))
         .ok_or_else(|| eyre!("FindBin row missing from ledger"))?;
-    assert_eq!(findbin.state, "active");
-    assert_eq!(findbin.disposition.as_deref(), Some("not_proven"));
-    assert_eq!(findbin.issue, Some(10015));
-    assert!(findbin.owner.is_some(), "active FindBin row must name an owner");
+    assert_eq!(findbin.state, "resolved");
+    assert_eq!(findbin.disposition.as_deref(), Some("stabilized"));
 
+    // With zero active rows the scorecard projects zero blockers; the active
+    // rendering path itself stays exercised by the fixture-ledger tests below.
     let blockers = load_active_known_blockers(&root)?;
-    let blocker_names: std::collections::BTreeSet<&str> =
-        blockers.iter().filter_map(|entry| entry["test_name"].as_str()).collect();
     assert!(
-        blocker_names.contains("ux_scenario_14_inc_conformance::scenario_14_findbin_relative"),
-        "the unproven FindBin row must render as a current scorecard blocker"
+        blockers.is_empty(),
+        "a fully resolved ledger must project zero active scorecard blockers, got {blockers:?}"
     );
-    for entry in &scenario_14_entries {
-        if entry.test.ends_with("scenario_14_findbin_relative") {
-            continue;
-        }
-        assert!(
-            !blocker_names.contains(entry.test.as_str()),
-            "resolved row {} must not render as a current scorecard blocker",
-            entry.test
-        );
-    }
     Ok(())
 }
 
