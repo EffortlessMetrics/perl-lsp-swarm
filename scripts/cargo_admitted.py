@@ -29,6 +29,8 @@ def native_path(value):
     if os.name != "nt" and (re.match(r"^[a-zA-Z]:", value) or value.startswith("/mnt/")):
         raise Denied("foreign Windows storage is unsupported; use host-local storage")
     path = Path(value).expanduser()
+    if "{" in str(path) or "}" in str(path):
+        raise Denied("Cargo template braces are unsupported in resource paths")
     if not path.is_absolute():
         raise Denied("storage paths must be absolute")
     # Reject links/junctions at every existing level rather than silently adopting
@@ -45,13 +47,18 @@ def native_path(value):
 
 
 def validate_args(args):
-    allowed = {"build", "check", "test", "run", "bench", "doc", "clippy"}
+    allowed = {"build", "check", "test", "run", "bench", "doc"}
     if not args or args[0] not in allowed:
-        raise Denied("expected build/check/test/run/bench/doc/clippy; aliases, +toolchain, clean and external commands are unsupported")
+        raise Denied("expected build/check/test/run/bench/doc; aliases, +toolchain, clean and external commands are unsupported")
     for arg in args[1:]:
         if arg == "--":
             break  # arguments to the test/program, not Cargo configuration
-        if (arg.startswith(("--config", "--target-dir", "--manifest-path", "--jobs", "-j", "-Z", "-C", "--lockfile-path"))
+        # Cargo/Clap accepts clusters such as -vj8. Refuse all joined short
+        # tokens except pure verbosity, rather than duplicating its value grammar.
+        if (arg.startswith("-") and not arg.startswith("--") and len(arg) > 2
+                and not re.fullmatch(r"-v{2,}", arg)):
+            raise Denied("joined short options/values are unsupported; spell them separately: " + arg)
+        if (arg.startswith(("--config", "--target-dir", "--manifest-path", "--jobs", "-j", "-Z", "-C", "--lockfile-path", "--out-dir", "--artifact-dir", "--build-dir"))
                 or arg.startswith("+")):
             raise Denied("configuration/path/job override is unsupported: " + arg)
 
@@ -160,7 +167,8 @@ def main(args=None):
             descriptor = {"worktree": str(worktree), "resources": {k: str(v) for k, v in paths.items()},
                           "lease": str(lock), "pid": os.getpid(), "admission": admission, "disposition": "retained with reason: reusable bounded slot"}
             print("cargo-admitted resources: " + json.dumps(descriptor), file=sys.stderr, flush=True)
-            command = ["cargo", "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
+            command = ["cargo", "--config", "unstable.unstable-options=false",
+                       "--config", "build.build-dir=" + json.dumps(str(paths["build"])),
                        "--config", 'build.rustc-wrapper=""',
                        "--config", 'build.rustc-workspace-wrapper=""',
                        *args[:1], "--target-dir", str(paths["target"]), *args[1:]]

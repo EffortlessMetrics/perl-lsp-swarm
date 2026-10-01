@@ -30,9 +30,47 @@ class AdmissionTests(unittest.TestCase):
 
     def test_overrides_aliases_and_global_option_bypasses_refused_before_allocation(self):
         for args in [["+1.95", "build"], ["--config", "x", "build"], ["b"], ["nextest"],
-                     ["clean"], ["test", "--manifest-path=x"], ["build", "--target-dir=x"],
+                     ["clean"], ["clippy"], ["build", "--out-dir=x"], ["build", "--artifact-dir=x"],
+                     ["build", "--build-dir=x"], ["test", "--manifest-path=x"], ["build", "--target-dir=x"],
                      ["build", "--config=x"], ["build", "-j8"], ["check", "-Zfoo"]]:
             self.assertEqual(self.run_safe(args), 75, args)
+            self.assertFalse(self.slot.exists())
+
+    def test_joined_short_tokens_refuse_before_allocation(self):
+        for options in (["-vj8"], ["-qj8"], ["-vj", "8"], ["-v", "-j8"],
+                        ["-vZunstable-options"], ["-vZ", "unstable-options"],
+                        ["-vC/tmp"], ["-vC", "/tmp"], ["-pfoo"], ["-Ffoo"]):
+            self.assertEqual(self.run_safe(["build", *options]), 75, options)
+            self.assertFalse(self.slot.exists())
+
+    def test_separate_short_values_and_program_arguments_remain_supported(self):
+        seen = []
+        def cargo(command, env):
+            seen.append(command)
+            return 0
+        args = ["test", "-v", "-vv", "-vvv", "-p", "foo", "-F", "bar", "--", "-vj8", "--config=program-value"]
+        self.assertEqual(self.run_safe(args, cargo), 0)
+        self.assertEqual(seen[0][-len(args[1:]):], args[1:])
+
+    def test_template_resource_paths_refuse_before_allocation(self):
+        for component in ("cache-{workspace-path-hash}", "cache-}"):
+            destination = self.root / component
+            env = dict(self.env, DEVPLANE=str(destination), HOME=str(self.root), USERPROFILE=str(self.root))
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(safe.subprocess, "check_output", return_value=str(self.root / "repo")), \
+                 patch.object(safe.subprocess, "call") as cargo:
+                self.assertEqual(safe.main(["check"]), 75)
+                cargo.assert_not_called()
+            self.assertFalse(destination.exists())
+        for name in ("CARGO_HOME", "TMPDIR"):
+            destination = self.root / (name + "-{workspace-root}")
+            env = dict(self.env, DEVPLANE=str(self.slot), HOME=str(self.root), USERPROFILE=str(self.root), **{name: str(destination)})
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(safe.subprocess, "check_output", return_value=str(self.root / "repo")), \
+                 patch.object(safe.subprocess, "call") as cargo:
+                self.assertEqual(safe.main(["check"]), 75)
+                cargo.assert_not_called()
+            self.assertFalse(destination.exists())
             self.assertFalse(self.slot.exists())
 
     def test_low_disk_on_each_effective_resource_prevents_any_allocation(self):
@@ -158,6 +196,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(self.run_safe(["test"]), 75)
 
     def test_serialized_reuse_and_fixed_both_paths(self):
+        self.env["CARGO_UNSTABLE_UNSTABLE_OPTIONS"] = "true"
         seen = []
         def cargo(command, env):
             self.assertTrue((self.slot / "cargo-active").is_dir())
@@ -165,6 +204,7 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(env["TEMP"], env["TMPDIR"])
             self.assertEqual(env["TMP"], env["TMPDIR"])
             self.assertEqual(env["CARGO_INCREMENTAL"], "0")
+            self.assertIn("unstable.unstable-options=false", command)
             self.assertEqual(env["RUSTUP_AUTO_INSTALL"], "0")
             self.assertIn('env.RUSTUP_AUTO_INSTALL.value="0"', command)
             self.assertIn('env.RUSTUP_AUTO_INSTALL.force=true', command)

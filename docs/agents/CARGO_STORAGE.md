@@ -1,6 +1,6 @@
 # Cargo storage admission
 
-`scripts/cargo-admitted build|check|test|run|bench|doc|clippy ...` is the bounded
+`scripts/cargo-admitted build|check|test|run|bench|doc ...` is the bounded
 agent route for explicit staged rollout. The existing `scripts/cargo-safe` stays
 unchanged for caller compatibility; it does **not** provide the guarantees below.
 Root orchestration must explicitly choose `cargo-admitted` after host admission.
@@ -20,10 +20,22 @@ profile and feature artifacts, but the slot is serialized because final filename
 can collide. Do not create a new DEVPLANE or clone for each task. This bounds slot
 count, not bytes; the capacity gate remains necessary.
 
-The wrapper refuses aliases, external subcommands (including nextest), +toolchain,
-clean, manifest/config/path overrides and job overrides. Use native absolute paths
+The wrapper refuses aliases, external subcommands (including clippy and nextest), +toolchain,
+clean, manifest/config/path overrides (including output/artifact/build directory
+flags) and job overrides. Clippy requires a separately admitted route because Cargo
+can resolve it through an alias or external executable. Before `--`, joined single-dash tokens are refused except pure verbosity
+(`-vv`, `-vvv`, etc.); `-vj8`, `-pfoo` and `-Ffoo` are refused.
+Spell other permitted short options and values separately (`-p foo`, `-F foo`);
+job/configuration overrides remain refused. Arguments after `--` are passed to
+the test/program unchanged. The wrapper forces command-local
+`unstable.unstable-options=false`; inherited configuration or environment cannot
+enable unstable artifact-directory copying through that switch. Such configured
+output requests can fail rather than create extra output. The wrapper does not
+support unstable output options. Use native absolute paths
 for storage; Git Bash `/c/...` is translated on Windows. WSL must use its own
-Linux filesystem, not `/mnt/...` Windows storage. Linked/junction storage paths
+Linux filesystem, not `/mnt/...` Windows storage. Literal `{` or `}` in expanded
+resource paths are refused: Cargo path templates are unsupported because expansion
+would make effective output differ from the admitted descriptor. Linked/junction storage paths
 are refused. Compiler wrappers are not automatically enabled: their additional
 cache volumes need a separately admitted route. Unsupported commands must be
 explicitly admitted by the root, not silently retried as raw Cargo.
