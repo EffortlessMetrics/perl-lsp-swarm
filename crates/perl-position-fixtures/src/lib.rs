@@ -908,3 +908,599 @@ fn validate_text(case: &Case, source: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Focused discriminators co-located with the seams they pin.
+///
+/// The crate's cross-crate mutation-control suites (`tests/integrity.rs` and
+/// the `perl-position-tracking` parity test) exercise this validator through
+/// the public `load`/`validate` entry points from integration-test targets,
+/// which the static exposure analysis cannot trace into these definitions.
+/// These `#[cfg(test)]` tests reach the same behavior from inside the module
+/// with exact-value assertions so every seam carries a locally visible
+/// discriminator. They complement, and never replace, the checked-data
+/// suites: the corpus itself stays the authority under test.
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use std::path::PathBuf;
+
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// The checked-in authority parsed but not yet validated.
+    fn corpus() -> Manifest {
+        let contents = fs::read_to_string(repo_root().join(MANIFEST_PATH)).unwrap();
+        serde_json::from_str(&contents).unwrap()
+    }
+
+    /// The checked-in authority after its fail-closed validation.
+    fn checked() -> Manifest {
+        let manifest = corpus();
+        validate(&manifest).unwrap();
+        manifest
+    }
+
+    fn case<'a>(manifest: &'a Manifest, id: &str) -> &'a Case {
+        manifest.cases.iter().find(|case| case.id == id).unwrap()
+    }
+
+    fn case_mut<'a>(manifest: &'a mut Manifest, id: &str) -> &'a mut Case {
+        manifest.cases.iter_mut().find(|case| case.id == id).unwrap()
+    }
+
+    fn rejected(manifest: &Manifest, expected: &str) {
+        let failure = validate(manifest).expect_err("mutated manifest passed validate");
+        assert_eq!(failure, expected, "validate rejected with a different error");
+    }
+
+    fn rejected_text(case: &Case, source: &str, expected: &str) {
+        let failure = validate_text(case, source).expect_err("mutated case passed validate_text");
+        assert_eq!(failure, expected, "validate_text rejected with a different error");
+    }
+
+    // ── Declaration pinning ──────────────────────────────────────────────
+
+    #[test]
+    fn authority_constants_pin_the_versioned_contract_identities() {
+        assert_eq!(SCHEMA_VERSION, "position-fixtures/v1");
+        assert_eq!(POLICY_ID, "lf-source-lines/v1");
+        assert_eq!(
+            MANIFEST_PATH,
+            "crates/perl-position-fixtures/fixtures/position-fixtures.v1.json"
+        );
+        assert_eq!(PROJECTION_PATH, "docs/generated/position-fixtures.v1.md");
+    }
+
+    #[test]
+    fn case_literal_round_trips_every_declared_field() {
+        let case = Case {
+            id: "pinned".into(),
+            tags: vec!["basic".into()],
+            raw_identity: "literal-hex/v1".into(),
+            raw_hex: "616263".into(),
+            exhaustive: true,
+            byte_len: 3,
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into(),
+            decode: "valid_utf8".into(),
+            decode_error: None,
+            scalars: vec![97, 98, 99],
+            subject: Some("pinned".into()),
+            relation: None,
+            lines: vec![Line {
+                start: 0,
+                content_end: 3,
+                separator_end: 3,
+                separator: "none".into(),
+            }],
+            boundaries: vec![0, 1, 2, 3],
+            parser_points: vec![ParserPoint { byte: 0, row: 0, column: 0 }],
+            parser_queries: vec![ParserQuery {
+                row: 0,
+                column: 0,
+                disposition: "exact".into(),
+                byte: Some(0),
+            }],
+            wire: vec![WireFact {
+                encoding: "utf-8".into(),
+                direction: "incoming".into(),
+                line: 0,
+                column: 0,
+                disposition: "exact".into(),
+                byte: Some(0),
+            }],
+            refusals: vec![RefusalFact {
+                kind: "equal_range".into(),
+                start: Some(0),
+                end: Some(0),
+                disposition: "exact".into(),
+            }],
+            chunks: vec!["contiguous".into()],
+        };
+        assert_eq!(case.id, "pinned");
+        assert_eq!(case.tags, ["basic"]);
+        assert_eq!(case.raw_identity, "literal-hex/v1");
+        assert_eq!(case.raw_hex, "616263");
+        assert!(case.exhaustive);
+        assert_eq!(case.byte_len, 3);
+        assert_eq!(case.sha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(case.decode, "valid_utf8");
+        assert!(case.decode_error.is_none());
+        assert_eq!(case.scalars, [97, 98, 99]);
+        assert_eq!(case.subject.as_deref(), Some("pinned"));
+        assert!(case.relation.is_none());
+        assert_eq!(case.lines.len(), 1);
+        assert_eq!(
+            (case.lines[0].start, case.lines[0].content_end, case.lines[0].separator_end),
+            (0, 3, 3)
+        );
+        assert_eq!(case.lines[0].separator, "none");
+        assert_eq!(case.boundaries, [0, 1, 2, 3]);
+        assert_eq!(case.parser_points.len(), 1);
+        assert_eq!(
+            (case.parser_points[0].byte, case.parser_points[0].row, case.parser_points[0].column),
+            (0, 0, 0)
+        );
+        assert_eq!(case.parser_queries.len(), 1);
+        assert_eq!(case.parser_queries[0].byte, Some(0));
+        assert_eq!(case.parser_queries[0].disposition, "exact");
+        assert_eq!(case.wire.len(), 1);
+        assert_eq!(case.wire[0].encoding, "utf-8");
+        assert_eq!(case.wire[0].direction, "incoming");
+        assert_eq!(case.refusals.len(), 1);
+        assert_eq!(case.refusals[0].kind, "equal_range");
+        assert_eq!(case.refusals[0].start, Some(0));
+        assert_eq!(case.refusals[0].end, Some(0));
+        assert_eq!(case.chunks, ["contiguous"]);
+    }
+
+    #[test]
+    fn decode_error_relation_and_wire_literals_round_trip_their_fields() {
+        let error = DecodeError { kind: "truncated".into(), start: 0, end: 1 };
+        assert_eq!((error.kind.as_str(), error.start, error.end), ("truncated", 0, 1));
+        let relation = Relation {
+            target: "ascii_for_bom".into(),
+            kind: "strip_leading_bom".into(),
+            boundary_map: vec![BoundaryMap { source: 0, target: None }],
+            ranges: vec![RangeMap {
+                source_start: 0,
+                source_end: 3,
+                target_start: None,
+                target_end: None,
+                disposition: "elided".into(),
+            }],
+        };
+        assert_eq!(relation.target, "ascii_for_bom");
+        assert_eq!(relation.kind, "strip_leading_bom");
+        assert_eq!(relation.boundary_map[0].source, 0);
+        assert_eq!(relation.boundary_map[0].target, None);
+        assert_eq!(
+            (
+                relation.ranges[0].source_start,
+                relation.ranges[0].source_end,
+                relation.ranges[0].target_start,
+                relation.ranges[0].target_end,
+                relation.ranges[0].disposition.as_str(),
+            ),
+            (0, 3, None, None, "elided")
+        );
+        let wire = WireFact {
+            encoding: "utf-16".into(),
+            direction: "outgoing".into(),
+            line: 2,
+            column: 5,
+            disposition: "invalid_code_unit_boundary".into(),
+            byte: None,
+        };
+        assert_eq!(wire.encoding, "utf-16");
+        assert_eq!(wire.direction, "outgoing");
+        assert_eq!(wire.line, 2);
+        assert_eq!(wire.column, 5);
+        assert_eq!(wire.byte, None);
+    }
+
+    // ── raw_bytes ────────────────────────────────────────────────────────
+
+    #[test]
+    fn raw_bytes_decodes_even_ascii_hex_to_the_exact_byte_sequence() {
+        let mut case = case(&checked(), "lf").clone();
+        case.raw_hex = "616263".into();
+        assert_eq!(raw_bytes(&case).unwrap(), b"abc");
+        case.raw_hex = "610a62".into();
+        assert_eq!(raw_bytes(&case).unwrap(), b"a\nb");
+        case.raw_hex = String::new();
+        assert_eq!(raw_bytes(&case).unwrap(), b"");
+    }
+
+    #[test]
+    fn raw_bytes_rejects_odd_length_and_non_hex_input_with_the_typed_error() {
+        let case = case(&checked(), "lf").clone();
+        let mut odd = case.clone();
+        odd.raw_hex = "61626".into();
+        assert_eq!(raw_bytes(&odd).unwrap_err(), "lf: raw_hex is not even-length ASCII hex");
+        let mut non_hex = case;
+        non_hex.raw_hex = "zz".into();
+        assert_eq!(raw_bytes(&non_hex).unwrap_err(), "lf: raw_hex is not even-length ASCII hex");
+    }
+
+    // ── load and the checked authority ───────────────────────────────────
+
+    #[test]
+    fn load_returns_the_checked_authority_in_stable_id_order() {
+        let validated = load(&repo_root()).unwrap();
+        let ids: Vec<_> = validated.cases().iter().map(|case| case.id.as_str()).collect();
+        assert_eq!(ids.len(), 45);
+        assert_eq!(ids, REQUIRED_CASE_IDS);
+        assert_eq!(ids.first().copied(), Some("ascii"));
+        assert_eq!(ids.last().copied(), Some("vt"));
+    }
+
+    #[test]
+    fn select_filters_by_exact_id_and_tag_and_stays_empty_for_unknown_filters() {
+        let validated = load(&repo_root()).unwrap();
+        let by_id = validated.select("ascii");
+        assert_eq!(by_id.len(), 1);
+        assert_eq!(by_id[0].id, "ascii");
+        let small = validated.select("small");
+        assert_eq!(small.len(), 34);
+        assert!(small.iter().all(|case| case.tags.iter().any(|tag| tag == "small")));
+        let ingress = validated.select("ingress");
+        assert_eq!(ingress.len(), 9);
+        assert!(ingress.iter().all(|case| case.decode == "invalid_utf8_ingress"));
+        assert!(validated.select("no-such-id-or-tag").is_empty());
+    }
+
+    #[test]
+    fn load_names_the_missing_authority_path_in_its_error() {
+        let missing_root = repo_root().join("does-not-exist");
+        let error = load(&missing_root).map(|_| ()).unwrap_err();
+        let expected_path = missing_root.join(MANIFEST_PATH);
+        assert!(error.starts_with(&expected_path.display().to_string()));
+        assert!(error.contains("position-fixtures.v1.json"));
+    }
+
+    #[test]
+    fn load_fails_closed_on_authority_bytes_that_are_not_json() {
+        let temp = std::env::temp_dir()
+            .join(format!("perl-position-fixtures-load-{}", std::process::id()));
+        let fixture_dir = temp.join("crates/perl-position-fixtures/fixtures");
+        fs::create_dir_all(&fixture_dir).unwrap();
+        fs::write(fixture_dir.join("position-fixtures.v1.json"), "not json").unwrap();
+        let error = load(&temp).map(|_| ()).unwrap_err();
+        let _ = fs::remove_dir_all(&temp);
+        assert!(error.contains("expected ident"), "unexpected error: {error}");
+    }
+
+    // ── validate: fail-closed admission ──────────────────────────────────
+
+    #[test]
+    fn validate_accepts_the_checked_authority_wholesale() {
+        assert_eq!(validate(&corpus()), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_a_manifest_whose_schema_or_policy_identity_differs() {
+        let mut manifest = checked();
+        manifest.schema_version = "position-fixtures/v2".into();
+        rejected(&manifest, "manifest schema or policy identity mismatch");
+        let mut policy = checked();
+        policy.policy_id = "lf-source-lines/v2".into();
+        rejected(&policy, "manifest schema or policy identity mismatch");
+    }
+
+    #[test]
+    fn validate_rejects_a_manifest_whose_case_inventory_differs() {
+        let mut dropped = checked();
+        dropped.cases.pop();
+        rejected(&dropped, "required versioned case inventory differs");
+        let mut reordered = checked();
+        reordered.cases.swap(0, 1);
+        rejected(&reordered, "required versioned case inventory differs");
+    }
+
+    #[test]
+    fn validate_rejects_wrong_raw_identity_or_empty_tags() {
+        let mut identity = checked();
+        case_mut(&mut identity, "ascii").raw_identity = "derived-hex/v9".into();
+        rejected(&identity, "ascii: duplicate ID, raw identity, or tags");
+        let mut untagged = checked();
+        case_mut(&mut untagged, "ascii").tags.clear();
+        rejected(&untagged, "ascii: duplicate ID, raw identity, or tags");
+    }
+
+    #[test]
+    fn validate_rejects_the_wrong_exhaustive_coverage_class() {
+        let mut demoted = checked();
+        case_mut(&mut demoted, "astral").exhaustive = false;
+        rejected(&demoted, "astral: exhaustive coverage class differs");
+        let mut promoted = checked();
+        case_mut(&mut promoted, "large_line").exhaustive = true;
+        rejected(&promoted, "large_line: exhaustive coverage class differs");
+    }
+
+    #[test]
+    fn validate_rejects_bytes_that_do_not_match_the_declared_length_or_digest() {
+        let mut payload = checked();
+        case_mut(&mut payload, "lf").raw_hex = "610a63".into();
+        rejected(&payload, "lf: byte length/digest mismatch");
+        let mut length = checked();
+        case_mut(&mut length, "lf").byte_len = 2;
+        rejected(&length, "lf: byte length/digest mismatch");
+    }
+
+    #[test]
+    fn validate_rejects_invalid_ingress_cases_whose_typed_facts_differ() {
+        let mut extra = checked();
+        case_mut(&mut extra, "invalid_truncated_start").chunks.push("all_byte_cuts".into());
+        rejected(&extra, "invalid_truncated_start: invalid UTF-8 ingress facts differ");
+        let mut presented = checked();
+        case_mut(&mut presented, "invalid_truncated_start").subject = Some("e2".into());
+        rejected(&presented, "invalid_truncated_start: invalid UTF-8 ingress facts differ");
+        let mut class = checked();
+        case_mut(&mut class, "invalid_truncated_start").decode_error =
+            Some(DecodeError { kind: "invalid_leading".into(), start: 0, end: 1 });
+        rejected(&class, "invalid_truncated_start: decoder error class/span differs");
+    }
+
+    #[test]
+    fn validate_rejects_a_valid_source_declared_with_a_decoder_error() {
+        let mut manifest = checked();
+        case_mut(&mut manifest, "ascii").decode_error =
+            Some(DecodeError { kind: "truncated".into(), start: 0, end: 1 });
+        rejected(&manifest, "ascii: valid source has decoder error");
+    }
+
+    #[test]
+    fn validate_rejects_cases_whose_decode_and_source_domain_disagree() {
+        let mut manifest = checked();
+        case_mut(&mut manifest, "ascii").decode = "invalid_utf8_ingress".into();
+        rejected(&manifest, "ascii: decode/source-domain mismatch");
+    }
+
+    #[test]
+    fn validate_rejects_missing_or_unexpected_required_source_relations() {
+        let mut missing = checked();
+        case_mut(&mut missing, "bom_ascii").relation = None;
+        rejected(&missing, "bom_ascii: required source relation differs");
+        let mut unexpected = checked();
+        case_mut(&mut unexpected, "vt").relation = Some(Relation {
+            target: "vt".into(),
+            kind: "identity".into(),
+            boundary_map: vec![],
+            ranges: vec![],
+        });
+        rejected(&unexpected, "vt: required source relation differs");
+    }
+
+    #[test]
+    fn validate_rejects_relations_whose_boundary_or_range_facts_differ() {
+        let mut boundary = checked();
+        case_mut(&mut boundary, "bom_ascii").relation.as_mut().unwrap().boundary_map.pop();
+        rejected(&boundary, "bom_ascii: relation boundary map differs");
+        let mut range = checked();
+        case_mut(&mut range, "bom_ascii").relation.as_mut().unwrap().ranges.pop();
+        rejected(&range, "bom_ascii: relation range facts differ");
+    }
+
+    // ── validate_text: per-domain fact discriminators ────────────────────
+
+    #[test]
+    fn validate_text_accepts_every_checked_valid_case_against_its_decoded_source() {
+        let manifest = checked();
+        let valid = manifest.cases.iter().filter(|case| case.decode == "valid_utf8");
+        let mut count = 0;
+        for case in valid {
+            let bytes = raw_bytes(case).unwrap();
+            let source = std::str::from_utf8(&bytes).unwrap();
+            assert_eq!(validate_text(case, source), Ok(()), "case {}", case.id);
+            count += 1;
+        }
+        assert_eq!(count, 36);
+    }
+
+    #[test]
+    fn validate_text_accepts_the_lf_case_against_its_literal_source() {
+        let manifest = checked();
+        let lf = case(&manifest, "lf");
+        assert_eq!(lf.lines.len(), 2);
+        assert_eq!(validate_text(lf, "a\nb"), Ok(()));
+    }
+
+    #[test]
+    fn validate_text_rejects_a_mutated_scalar_sequence_or_boundary_set() {
+        let manifest = checked();
+        let mut scalars = case(&manifest, "lf").clone();
+        scalars.scalars.pop();
+        rejected_text(&scalars, "a\nb", "lf: scalar sequence differs");
+        let mut boundaries = case(&manifest, "lf").clone();
+        boundaries.boundaries.pop();
+        rejected_text(&boundaries, "a\nb", "lf: missing/invalid scalar boundary");
+    }
+
+    #[test]
+    fn validate_text_rejects_mutated_lf_line_records() {
+        let manifest = checked();
+        let mut shifted = case(&manifest, "lf").clone();
+        shifted.lines[0].content_end = 2;
+        rejected_text(&shifted, "a\nb", "lf: LF line records differ");
+        let mut truncated = case(&manifest, "lf").clone();
+        truncated.lines.pop();
+        rejected_text(&truncated, "a\nb", "lf: LF line records differ");
+    }
+
+    #[test]
+    fn validate_text_rejects_mutated_parser_points() {
+        let manifest = checked();
+        let mut dropped = case(&manifest, "lf").clone();
+        dropped.parser_points.pop();
+        rejected_text(&dropped, "a\nb", "lf: parser points differ or incomplete");
+        let mut moved = case(&manifest, "lf").clone();
+        moved.parser_points[1].column = 0;
+        rejected_text(&moved, "a\nb", "lf: parser points differ or incomplete");
+    }
+
+    #[test]
+    fn validate_text_rejects_mutated_or_duplicated_parser_point_queries() {
+        let manifest = checked();
+        let mut dropped = case(&manifest, "lf").clone();
+        dropped.parser_queries.pop();
+        rejected_text(&dropped, "a\nb", "lf: parser point queries differ or incomplete");
+        let mut duplicated = case(&manifest, "lf").clone();
+        let exact = duplicated.parser_queries[0].clone();
+        duplicated.parser_queries.push(exact);
+        rejected_text(&duplicated, "a\nb", "lf: parser point queries differ or incomplete");
+    }
+
+    #[test]
+    fn validate_text_rejects_mutated_or_duplicated_wire_facts() {
+        let manifest = checked();
+        let mut dropped = case(&manifest, "lf").clone();
+        dropped.wire.pop();
+        rejected_text(&dropped, "a\nb", "lf: wire facts differ, duplicate, or incomplete");
+        let mut duplicated = case(&manifest, "lf").clone();
+        let fact = duplicated.wire[0].clone();
+        duplicated.wire.push(fact);
+        rejected_text(&duplicated, "a\nb", "lf: wire facts differ, duplicate, or incomplete");
+    }
+
+    #[test]
+    fn validate_text_rejects_mutated_or_duplicated_refusal_facts() {
+        let manifest = checked();
+        let mut dropped = case(&manifest, "lf").clone();
+        dropped.refusals.pop();
+        rejected_text(
+            &dropped,
+            "a\nb",
+            "lf: range/source/harness refusal facts differ or incomplete",
+        );
+        let mut duplicated = case(&manifest, "lf").clone();
+        let fact = duplicated.refusals[0].clone();
+        duplicated.refusals.push(fact);
+        rejected_text(
+            &duplicated,
+            "a\nb",
+            "lf: range/source/harness refusal facts differ or incomplete",
+        );
+    }
+
+    #[test]
+    fn validate_text_rejects_incomplete_chunk_partition_expectations() {
+        let manifest = checked();
+        let mut chunks = case(&manifest, "lf").clone();
+        chunks.chunks = vec!["contiguous".into()];
+        rejected_text(&chunks, "a\nb", "lf: chunk partition expectations incomplete");
+    }
+
+    // ── explain and the generated projection ─────────────────────────────
+
+    #[test]
+    fn explain_returns_none_for_an_unknown_case_id() {
+        let validated = load(&repo_root()).unwrap();
+        assert!(validated.explain("no-such-case").is_none());
+    }
+
+    #[test]
+    fn explain_renders_the_exact_literal_facts_for_the_empty_case() {
+        let validated = load(&repo_root()).unwrap();
+        assert_eq!(
+            validated.explain("empty").unwrap(),
+            "empty [basic, small] 0 bytes SHA-256 \
+             e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
+             raw hex: \n\
+             decode: valid_utf8\n\
+             row 0: 0..0..0 none\n\
+             incoming utf-8 0:0 -> exact Some(0)\n\
+             outgoing utf-8 0:0 -> exact Some(0)\n\
+             incoming utf-16 0:0 -> exact Some(0)\n\
+             outgoing utf-16 0:0 -> exact Some(0)\n\
+             incoming utf-8 0:1 -> line_end_normalized Some(0)\n\
+             incoming utf-16 0:1 -> line_end_normalized Some(0)\n\
+             incoming utf-8 1:0 -> invalid_line None\n\
+             incoming utf-16 1:0 -> invalid_line None\n\
+             parser 0:0 -> exact Some(0)\n\
+             parser 1:0 -> invalid_row None\n\
+             refusal equal_range Some(0)..Some(0) -> exact\n\
+             refusal source_byte_out_of_bounds Some(1)..None -> invalid_source_byte\n\
+             refusal wrong_source None..None -> source_mismatch\n\
+             refusal wrong_signature None..None -> signature_mismatch\n\
+             refusal wrong_schema None..None -> schema_mismatch\n\
+             refusal overflow_resource None..None -> overflow_or_resource_boundary\n\
+             refusal instrument_failure None..None -> instrument_failure\n"
+        );
+    }
+
+    #[test]
+    fn explain_renders_the_exact_decode_error_line_for_truncated_ingress() {
+        let validated = load(&repo_root()).unwrap();
+        assert_eq!(
+            validated.explain("invalid_truncated_start").unwrap(),
+            "invalid_truncated_start [invalid_utf8, ingress] 1 bytes SHA-256 \
+             30a5bfa58e128af9e5a4955725d8ad26d4d574a537b58b7dc6d357acad578572\n\
+             raw hex: e2\n\
+             decode: invalid_utf8_ingress\n\
+             decode error: truncated 0..1\n"
+        );
+    }
+
+    #[test]
+    fn explain_renders_wire_parser_and_refusal_rows_for_the_astral_case() {
+        let validated = load(&repo_root()).unwrap();
+        let rendered = validated.explain("astral").unwrap();
+        assert!(rendered.starts_with(
+            "astral [unicode, crlf, small, decisive] 9 bytes SHA-256 \
+             587527b0f4f0a1573965d9e6c295f0ce1fd3250fc1e7d2bd81bb6db986782b40\n\
+             raw hex: 78f09f9880790d0a7a\n\
+             decode: valid_utf8\n"
+        ));
+        assert!(rendered.contains("row 0: 0..6..8 crlf\n"));
+        assert!(rendered.contains("incoming utf-8 0:0 -> exact Some(0)\n"));
+        assert!(rendered.contains("parser 0:7 -> exact Some(7)\n"));
+        assert!(rendered.contains(
+            "refusal separator_interior Some(7)..None -> \
+                                   invalid_newline_boundary\n"
+        ));
+        assert!(rendered.contains(
+            "refusal scalar_interior Some(2)..None -> \
+                                   invalid_code_unit_boundary\n"
+        ));
+    }
+
+    #[test]
+    fn markdown_regenerates_the_checked_projection_byte_for_byte() {
+        let validated = load(&repo_root()).unwrap();
+        let projection = fs::read_to_string(repo_root().join(PROJECTION_PATH)).unwrap();
+        assert_eq!(validated.markdown(), projection);
+        assert_eq!(render_markdown(&corpus()), projection);
+    }
+
+    #[test]
+    fn markdown_renders_relations_and_omits_absent_sections() {
+        let validated = load(&repo_root()).unwrap();
+        let rendered = validated.markdown();
+        let ascii_header = "## `ascii`\n\nTags: basic, small. Coverage: \
+             `all small-case boundaries`. Decode: `valid_utf8`. Bytes: 3. SHA-256: \
+             `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`.\n\n\
+             Hex: `616263`\n\n";
+        assert!(rendered.contains(ascii_header), "ascii section header changed");
+        assert!(rendered.contains(
+            "Relation: `identity` to `ascii`; boundaries: 0\u{2192}0, 1\u{2192}1, \
+             2\u{2192}2, 3\u{2192}3; ranges: 0..3 `exact`."
+        ));
+        let lf_section =
+            rendered.split("## `lfcr`").next().unwrap().split("## `lf`").nth(1).unwrap();
+        assert!(!lf_section.contains("Relation:"));
+        assert!(rendered.contains(
+            "Relation: `strip_leading_bom` to `ascii_for_bom`; boundaries: \
+             0\u{2192}elided, 1\u{2192}elided, 2\u{2192}elided, 3\u{2192}0, 4\u{2192}1, \
+             5\u{2192}2, 6\u{2192}3; ranges: 0..3 `elided`, 3..3 `exact`, 3..6 `exact`, \
+             0..4 `crosses_elided_prefix`."
+        ));
+        assert!(rendered.contains(
+            "Parser point controls (showing first 10 of 12; full facts in machine authority):"
+        ));
+        assert!(rendered.ends_with('\n'));
+        assert!(!rendered.ends_with("\n\n"));
+    }
+}
