@@ -584,6 +584,38 @@ fn lower_ast_without_parse_authority_never_publishes_exact() -> TestResult {
 }
 
 #[test]
+fn advisory_only_diagnostics_do_not_refuse_exact_native_owner() -> TestResult {
+    // The canonical regex-analysis entry projects pattern risks (here the
+    // nested-quantifier backtracking risk) as Advisory diagnostics, which do
+    // not block a clean parse: Perl compiles this source. An Advisory-only
+    // parse must therefore keep exact native invocant authority.
+    let source = "use feature 'class'; class Animal { method speak { $self->sound =~ /(a+)+/; } }";
+    let output = perl_parser_core::parse_source_with_regex_analysis(source);
+    require(!output.diagnostics.is_empty(), "fixture must actually carry the regex advisory")?;
+    require(
+        output.diagnostics.iter().all(|error| {
+            matches!(error, perl_parser_core::syntax::error::ParseError::Advisory { .. })
+        }),
+        "fixture must be advisory-only: got non-advisory diagnostics",
+    )?;
+    let file = lower_ast_with_parse_diagnostics(&output.ast, &output.diagnostics);
+    let lookup = file.native_method_invocant_at(nth_offset(source, "$self", 0)? + 1);
+    require(
+        matches!(lookup, NativeMethodInvocantLookup::Exact { .. }),
+        &format!("advisory-only parse keeps exact invocant authority: {lookup:?}"),
+    )?;
+    same(
+        file.scope_graph
+            .bindings
+            .iter()
+            .filter(|item| item.storage == StorageClass::MethodInvocant)
+            .count(),
+        1,
+        "advisory-only parse mints exactly one implicit binding",
+    )
+}
+
+#[test]
 fn incomplete_arrow_does_not_invalidate_local_class_and_method_anchors() -> TestResult {
     let source = "use feature 'class'; class Animal { method speak { $self-> } }";
     let file = lower(source);
