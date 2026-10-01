@@ -38,6 +38,7 @@ use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write;
 
 /// Profile checkpoint labels. These index canonical cells; they are not
 /// canonical cell IDs and must never be substituted for them.
@@ -296,7 +297,13 @@ fn content_digest(document: &str, partition: &[(&str, &[&str])]) -> Result<Strin
         [ProfileObserver::NewHuman, ProfileObserver::FreshAgent],
         partition,
     ))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(definition)))
+    let digest = Sha256::digest(definition);
+    let mut identity = String::with_capacity(71);
+    identity.push_str("sha256:");
+    for byte in digest.iter() {
+        write!(&mut identity, "{byte:02x}")?;
+    }
+    Ok(identity)
 }
 
 fn profile_digest() -> Result<String> {
