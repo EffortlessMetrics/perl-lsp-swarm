@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 16574,
-  "reason": "The #16574 check-syntax failure classification grows the combined bundled extension entrypoint by 1172 bytes; no files added or removed.",
+  "reason": "The #16574 check-syntax failure classification and its channel-diagnosis repair grow the combined bundled extension entrypoint by 1711 bytes; no files added or removed.",
   "base_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
-  "candidate_baseline_file_sha256": "950be3bdc8fb63ad654e0c423994fd46868c272fd02f998b2a768c7ddf48c937",
+  "candidate_baseline_file_sha256": "da7ed7a32db85c054c70763abf24f8ad368e8f24979650cbf8c889dada14f1a3",
   "base_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e",
-  "candidate_inventory_sha256": "9c0ffdac6ed38c9639b20bce7829a8c7abdea60c28023fa57726e2ff5ac057ba"
+  "candidate_inventory_sha256": "5fd7dcbf260d54a1eb8c9a2a71bf7c00e4a7c341910be7c788e61ed820e2b9fa"
 }
