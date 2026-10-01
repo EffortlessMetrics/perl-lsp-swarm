@@ -20,7 +20,7 @@ use perl_dap::ptkdb_bootstrap::render_ptkdbrc;
 use perl_dap::session_plan::DebugSessionPlanBuilder;
 use perl_dap::{DapConfig, DapMode, DapServer};
 use perl_lsp_rs_core::product_identity::{
-    BinaryIdentityPacketV1, IdentityOutputFormat, requested_identity_output,
+    BinaryIdentityPacketV1, IdentityOutputFormat, IdentityRequest, requested_identity,
 };
 use perl_lsp_rs_core::runtime::launcher::{init_logging, log_server_startup};
 
@@ -252,7 +252,11 @@ fn write_runtime_identity(format: IdentityOutputFormat) -> anyhow::Result<()> {
 with `--external-peer` / `--external-peer-listen` — fails before bind. Use \
 `perl-dap --stdio`, `perl-dap --stdio --external-peer HOST:PORT`, or \
 `perl-dap --stdio --external-peer-listen HOST[:PORT]`. Authenticated debugger-peer \
-TCP remains a backend transport, not an editor listener."
+TCP remains a backend transport, not an editor listener.\n\nIdentity one-shot (each \
+must be the only argument): `perl-dap --identity` prints the installed-binary \
+identity packet; `perl-dap --identity-json` prints the same packet as \
+perl_lsp.binary_identity.v1 JSON; `perl-dap --info --json` prints that packet \
+through the composed form."
 )]
 struct Args {
     #[command(flatten)]
@@ -312,7 +316,16 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
-    if let Some(format) = requested_identity_output(&raw_args) {
+    // The shared resolver owns this decision for both binaries: a mix is
+    // rejected with a message naming the flag rather than falling through to
+    // clap, which would deny `--identity` as unknown.
+    let identity = requested_identity(&raw_args);
+    // The rejecting binary owns the help pointer: `perl-dap --help`, not the
+    // server binary's help.
+    if let Some(message) = identity.rejection_message_for("perl-dap") {
+        anyhow::bail!("{message}");
+    }
+    if let IdentityRequest::Output(format) = identity {
         write_runtime_identity(format)?;
         return Ok(());
     }
@@ -417,7 +430,8 @@ mod tests {
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
-        BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, requested_identity_output,
+        BinaryIdentityPacketV1, BinaryRole, IdentityOutputFormat, IdentityRequest,
+        requested_identity,
     };
     use perl_test_must::{must_err_with, must_with};
     use std::path::Path;
@@ -467,6 +481,26 @@ mod tests {
     }
 
     #[test]
+    fn cli_help_documents_the_identity_one_shot_forms() {
+        // The mixed-identity rejection points at `perl-dap --help`, so the help
+        // must name every form the rejection can defend: the rejection fires on
+        // `--identity`, `--identity-json`, and the composed `--info --json`.
+        let help = Args::command().render_long_help().to_string();
+        assert!(
+            help.contains("perl-dap --identity"),
+            "help must name the identity packet form: {help}"
+        );
+        assert!(
+            help.contains("`perl-dap --identity-json`"),
+            "help must name the JSON identity form: {help}"
+        );
+        assert!(
+            help.contains("`perl-dap --info --json`"),
+            "help must name the composed identity form: {help}"
+        );
+    }
+
+    #[test]
     fn cli_rejects_removed_bridge_flag() {
         let result = Args::try_parse_from(["perl-dap", "--bridge"]);
         assert!(result.is_err());
@@ -476,12 +510,36 @@ mod tests {
     fn dap_identity_flags_select_the_shared_packet_without_starting_clap() {
         let json_args = vec!["perl-dap".to_owned(), "--info".to_owned(), "--json".to_owned()];
         let human_args = vec!["perl-dap".to_owned(), "--identity".to_owned()];
-        assert_eq!(requested_identity_output(&json_args), Some(IdentityOutputFormat::Json));
-        assert_eq!(requested_identity_output(&human_args), Some(IdentityOutputFormat::Human));
+        assert_eq!(
+            requested_identity(&json_args),
+            IdentityRequest::Output(IdentityOutputFormat::Json)
+        );
+        assert_eq!(
+            requested_identity(&human_args),
+            IdentityRequest::Output(IdentityOutputFormat::Human)
+        );
 
         let packet = BinaryIdentityPacketV1::embedded_dap("0.18.0");
         assert_eq!(packet.binary.role, BinaryRole::Dap);
         assert_eq!(packet.binary.executable, "perl-dap");
+    }
+
+    /// A DAP peer invocation must not be answered with the identity packet, so
+    /// it is rejected as a mix rather than claimed. `perl-dap` has no `--info`
+    /// option, so this shape is invalid for the binary either way.
+    #[test]
+    fn a_dap_peer_invocation_is_rejected_rather_than_claimed_as_identity() {
+        let peer = vec![
+            "perl-dap".to_owned(),
+            "--external-peer".to_owned(),
+            "127.0.0.1:5000".to_owned(),
+            "--info".to_owned(),
+            "--json".to_owned(),
+        ];
+        assert_eq!(
+            requested_identity(&peer),
+            IdentityRequest::MixedOperands { flag: "--info --json".to_owned() }
+        );
     }
 
     #[test]
@@ -512,6 +570,167 @@ mod tests {
             port: None,
         };
         assert_eq!(resolve_socket_port(&args), None);
+    }
+
+    fn clap_port_error(argv: &[&str]) -> String {
+        must_err_with(Args::try_parse_from(argv), format!("expected clap to reject {argv:?}"))
+            .to_string()
+    }
+
+    fn assert_no_parse_int_leak(rendered: &str, argv: &[&str]) {
+        assert!(
+            !rendered.contains("invalid digit found in string"),
+            "leaked ParseIntError for {argv:?}: {rendered}"
+        );
+        assert!(
+            !rendered.contains("number too large to fit in target type"),
+            "leaked ParseIntError for {argv:?}: {rendered}"
+        );
+        assert!(
+            !rendered.contains("cannot parse integer from empty string"),
+            "leaked ParseIntError for {argv:?}: {rendered}"
+        );
+        assert!(!rendered.contains("0..="), "leaked Rust range syntax for {argv:?}: {rendered}");
+    }
+
+    /// `perl-dap` parses `--port` through shared `TransportArgs`, not the
+    /// `perllsp` launcher prevalidate path. Invalid tokens must still name the
+    /// 0-65535 contract instead of clap's `u16` parse-source wording (#16562).
+    #[test]
+    fn dap_port_rejections_state_the_accepted_range_instead_of_parse_int_error() {
+        struct Case {
+            argv: &'static [&'static str],
+            reason: &'static str,
+        }
+
+        let cases = [
+            Case { argv: &["perl-dap", "--port", "65536"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port=65536"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port", "99999"], reason: "Expected a port in 0-65535." },
+            Case {
+                argv: &["perl-dap", "--port", "99999999999999999999999999"],
+                reason: "Expected a port in 0-65535.",
+            },
+            Case { argv: &["perl-dap", "--port", "-1"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port=-1"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port", "+65536"], reason: "Expected a port in 0-65535." },
+            Case {
+                argv: &["perl-dap", "--port", "abc"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port=abc"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "0x10"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "8080.0"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "1e2"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "80_80"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "+"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "-"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "-0"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port=-000"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case { argv: &["perl-dap", "--port="], reason: "Expected a whole number in 0-65535." },
+        ];
+
+        for case in cases {
+            let rendered = clap_port_error(case.argv);
+            assert!(
+                rendered.contains(case.reason),
+                "argv={:?} missing {reason:?} in {rendered}",
+                case.argv,
+                reason = case.reason
+            );
+            assert_no_parse_int_leak(&rendered, case.argv);
+            assert!(
+                !rendered.contains("perllsp"),
+                "DAP --port must not point at perllsp: {rendered}"
+            );
+            assert!(
+                rendered.contains("--help") || rendered.contains("perl-dap --help"),
+                "DAP --port rejection must keep a DAP help pointer: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn dap_accepted_ports_reach_transport_resolution_unchanged() {
+        let cases: &[(&[&str], u16)] = &[
+            (&["perl-dap", "--port", "0"], 0),
+            (&["perl-dap", "--port", "65535"], 65535),
+            (&["perl-dap", "--port=0"], 0),
+            (&["perl-dap", "--port=65535"], 65535),
+            (&["perl-dap", "--port", "+0"], 0),
+            (&["perl-dap", "--port", "+65535"], 65535),
+            (&["perl-dap", "--port", "0000"], 0),
+            (&["perl-dap", "--port", "08080"], 8080),
+            (&["perl-dap", "--port", "1"], 1),
+        ];
+
+        for (argv, port) in cases {
+            let parsed = must_with(
+                Args::try_parse_from(*argv),
+                format!("valid --port must parse for {argv:?}"),
+            );
+            assert_eq!(parsed.transport.port, Some(*port), "argv={argv:?}");
+            assert_eq!(
+                resolve_socket_port(&parsed.transport),
+                Some(*port),
+                "accepted port must still resolve so later editor-socket retirement can refuse it; argv={argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dap_missing_port_value_is_not_a_parse_int_error() {
+        for argv in [&["perl-dap", "--port"][..], &["perl-dap", "--port", "--stdio"][..]] {
+            let rendered = clap_port_error(argv);
+            assert_no_parse_int_leak(&rendered, argv);
+            assert!(
+                !rendered.contains("Expected a port in 0-65535."),
+                "a missing value must not be reclassified as an out-of-range port: {rendered}"
+            );
+            assert!(
+                !rendered.contains("Expected a whole number in 0-65535."),
+                "a following flag must not be swallowed as a port token: {rendered}"
+            );
+            assert!(
+                !rendered.contains("perllsp"),
+                "DAP missing --port must not point at perllsp: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn dap_cli_help_pointer_stays_on_perl_dap() {
+        assert_eq!(Args::command().get_name(), "perl-dap");
+        let help = Args::command().render_long_help().to_string();
+        assert!(help.contains("Usage: perl-dap"), "{help}");
+        assert!(!help.contains("perllsp --help"), "{help}");
     }
 
     #[test]

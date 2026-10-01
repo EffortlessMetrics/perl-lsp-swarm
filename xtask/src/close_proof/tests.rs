@@ -68,6 +68,7 @@ fn passing_packet(contract: &IssueContract) -> Result<ClosePacket, CloseProofErr
                     reference:
                         "cargo xtask landing-proof --commit aaaa1111 --canonical-main origin/main"
                             .to_string(),
+                    schema_version: Some(super::contract::LANDING_PROOF_ENVELOPE_V1.to_string()),
                 },
             },
         )]
@@ -520,6 +521,7 @@ fn disposition_vocabulary_separates_completion_from_not_proven() {
                 subject: "s".to_string(),
                 content_digest: content_digest_hex(b"x"),
                 reference: "r".to_string(),
+                schema_version: Some("p.v1".to_string()),
             },
         }
         .satisfies_completion()
@@ -590,4 +592,70 @@ fn control_outcome_reasons_must_be_exact() -> Result<(), CloseProofError> {
         Err(CloseProofError::Schema { field, .. }) if field.contains("reason")
     ));
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Evidence-ref envelope discipline (#15386)
+// ---------------------------------------------------------------------------
+
+fn landing_evidence_ref(schema_version: Option<String>) -> super::EvidenceRef {
+    super::EvidenceRef {
+        producer: "xtask-landing-proof".to_string(),
+        subject: "a".repeat(64),
+        content_digest: content_digest_hex(b"evidence-bytes"),
+        reference: "cargo xtask landing-proof --commit aaaa1111 --canonical-main origin/main"
+            .to_string(),
+        schema_version,
+    }
+}
+
+#[test]
+fn evidence_ref_refuses_missing_envelope_schema_version() {
+    let missing = landing_evidence_ref(None);
+    assert!(matches!(
+        super::contract::validate_evidence_ref(&missing),
+        Err(CloseProofError::Schema { field, .. }) if field == "evidence.schema_version"
+    ));
+}
+
+#[test]
+fn evidence_ref_refuses_wrong_envelope_version_for_known_producer() {
+    let tampered = landing_evidence_ref(Some("landing_proof.v2".to_string()));
+    assert!(matches!(
+        super::contract::validate_evidence_ref(&tampered),
+        Err(CloseProofError::Schema { field, .. }) if field == "evidence.schema_version"
+    ));
+}
+
+#[test]
+fn evidence_ref_accepts_pinned_envelope_for_known_producer() {
+    let pinned = landing_evidence_ref(Some(super::contract::LANDING_PROOF_ENVELOPE_V1.to_string()));
+    assert!(super::contract::validate_evidence_ref(&pinned).is_ok());
+}
+
+#[test]
+fn evidence_ref_requires_declared_version_from_unknown_producers() {
+    let mut undeclared =
+        landing_evidence_ref(Some(super::contract::LANDING_PROOF_ENVELOPE_V1.to_string()));
+    undeclared.producer = "domain-owner-evidence".to_string();
+    super::contract::validate_evidence_ref(&undeclared)
+        .expect("unknown producers may declare their own envelope vocabulary");
+    undeclared.schema_version = None;
+    assert!(matches!(
+        super::contract::validate_evidence_ref(&undeclared),
+        Err(CloseProofError::Schema { field, .. }) if field == "evidence.schema_version"
+    ));
+}
+
+#[test]
+fn evidence_ref_pins_corpus_producer_identity_too() {
+    let mut corpus_producer =
+        landing_evidence_ref(Some(super::contract::LANDING_PROOF_ENVELOPE_V1.to_string()));
+    corpus_producer.producer = super::contract::PR_CLOSE_PROOF_PRODUCER.to_string();
+    assert!(super::contract::validate_evidence_ref(&corpus_producer).is_ok());
+    corpus_producer.schema_version = Some("landing_proof.v2".to_string());
+    assert!(matches!(
+        super::contract::validate_evidence_ref(&corpus_producer),
+        Err(CloseProofError::Schema { field, .. }) if field == "evidence.schema_version"
+    ));
 }

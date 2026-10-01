@@ -186,6 +186,17 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     defect: CRITIC_SESSION_STATE_DEFECT,
   },
   {
+    // `folderlessDebugLaunchRefusal`/`buildDapExecutableArgs` in debugAdapter.ts
+    // read this key and forward each entry as a `--trusted-root` argv flag of
+    // the locally spawned perl-dap (#16554). Local-only: the value never
+    // reaches the language server; it only shapes the debug adapter spawn.
+    key: 'perl-lsp.debug.trustedRoots',
+    manifestScope: 'machine',
+    semanticScope: 'machine',
+    owner: 'extension',
+    transport: 'local-only',
+  },
+  {
     key: 'perl-lsp.disabledFeatures',
     manifestScope: 'window',
     semanticScope: 'client-session',
@@ -263,6 +274,8 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     manifestScope: 'resource',
     semanticScope: 'workspace-folder',
     owner: 'server',
+    // With no workspace folders there is no scoped pull; the extension keeps
+    // the standalone-file include path alive via didChangeConfiguration.
     transport: 'workspace/configuration',
   },
   {

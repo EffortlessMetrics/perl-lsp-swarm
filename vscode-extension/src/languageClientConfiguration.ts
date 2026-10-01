@@ -253,11 +253,16 @@ export function buildPerlCriticConfiguration(
 export function buildLanguageClientConfigurationPayload(
   documentUri?: vscode.Uri,
 ): Record<string, unknown> {
-  const config = vscode.workspace.getConfiguration('perl-lsp', documentUri);
   const perl: Record<string, unknown> = {};
-  const workspace = buildWorkspaceConfigurationPayload(config);
-  if (workspace) {
-    Object.assign(perl, workspace);
+  // No folder exists for a scoped pull in standalone-file mode. Keep its
+  // unscoped settings push, but never apply that value to a registered folder.
+  if (!vscode.workspace.workspaceFolders?.length) {
+    const workspace = buildWorkspaceConfigurationPayload(
+      vscode.workspace.getConfiguration('perl-lsp'),
+    );
+    if (workspace) {
+      Object.assign(perl, workspace);
+    }
   }
   const critic = buildCriticSettings(documentUri);
   if (critic) {
@@ -295,6 +300,31 @@ export async function syncLanguageClientConfiguration(
   }
 
   await activeClient.sendNotification('workspace/didChangeConfiguration', { settings });
+}
+
+/** Invalidate the server's scoped pull without replacing any folder's current layer. */
+export async function invalidateFolderConfiguration(
+  activeClient: Pick<LanguageClient, 'sendNotification'> | undefined,
+): Promise<void> {
+  if (activeClient) {
+    // `settings: {}` is parsed as an unwrapped Perl object by the server and
+    // transiently rebuilds every folder. Null skips that update but still pulls.
+    await activeClient.sendNotification('workspace/didChangeConfiguration', { settings: null });
+  }
+}
+
+/** Route a live change according to the available scoped pull transport. */
+export async function syncLiveLanguageClientConfiguration(
+  activeClient: Pick<LanguageClient, 'sendNotification'> | undefined,
+  event: ConfigurationChangeEventLike,
+): Promise<void> {
+  const includePathsChanged = event.affectsConfiguration('perl-lsp.includePaths');
+  const criticChanged = CRITIC_SETTINGS.some((setting) => event.affectsConfiguration(setting));
+  if (criticChanged || (includePathsChanged && !vscode.workspace.workspaceFolders?.length)) {
+    await syncLanguageClientConfiguration(activeClient);
+  } else if (includePathsChanged) {
+    await invalidateFolderConfiguration(activeClient);
+  }
 }
 
 /// Read the effective machine-scoped boolean for server sync.
