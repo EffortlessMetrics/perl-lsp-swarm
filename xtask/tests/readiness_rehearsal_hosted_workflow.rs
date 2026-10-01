@@ -191,6 +191,16 @@ fn artifact_names_bind_run_attempt_and_subject() -> Result<()> {
         content.contains("persist-credentials: false"),
         "checkouts must not persist credentials"
     );
+    const UPLOAD_PIN: &str =
+        "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1";
+    ensure!(
+        content.matches(UPLOAD_PIN).count() == 3,
+        "new/changed upload-artifact pins must use the verified v7.0.1 projection"
+    );
+    ensure!(
+        !content.contains("# v7.0.0"),
+        "hosted rehearsal must not carry legacy_debt v7.0.0 pin comments"
+    );
     Ok(())
 }
 

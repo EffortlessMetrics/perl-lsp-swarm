@@ -67,7 +67,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
       - name: Upload plan
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: readiness-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}-plan
           path: |
@@ -127,7 +127,7 @@ jobs:
 
       - name: Upload row receipt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: readiness-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.subject }}
           path: target/readiness/hosted/row/row.json
@@ -196,7 +196,7 @@ jobs:
 
       - name: Upload fan-in
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: readiness-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}-fanin
           path: |
