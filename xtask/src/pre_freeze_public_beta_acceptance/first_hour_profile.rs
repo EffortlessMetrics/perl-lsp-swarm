@@ -513,7 +513,10 @@ mod tests {
         let mut changed = partition.clone();
         changed.swap(0, 1);
         ensure!(digest != content_digest("public instructions\n", &changed)?);
-        changed[0] = (WINDOW_FIRST_15, &FIRST_5_CELLS);
+        let mut changed_cells = FIRST_5_CELLS;
+        changed_cells[0] = "different_canonical_cell";
+        let mut changed = partition.clone();
+        changed[0] = (WINDOW_FIRST_5, &changed_cells);
         ensure!(digest != content_digest("public instructions\n", &changed)?);
         Ok(())
     }

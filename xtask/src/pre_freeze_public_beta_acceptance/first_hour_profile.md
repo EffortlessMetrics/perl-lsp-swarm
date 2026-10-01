@@ -22,7 +22,8 @@ joined RC result.
   its exact recommendation and permanent `not_proven` ceiling. Window slices
   select cell obligations only; they never replace the full report.
 - CLI: `xtask/examples/pre_freeze_public_beta_acceptance.rs` with optional
-  `--profile-index`. Historical `first_ten_minutes.v1` separation preserved.
+  `--profile-index`. Historical `pre_freeze_public_beta_acceptance.v1`
+  separation preserved; `first_ten_minutes.v1` remains the #5902 study contract.
 - Wire packet unchanged. No parallel cell IDs, no new JSON producer schema,
   no parsed bindings or ledger protocol, no new status or denominator.
 - `profile_digest` is SHA-256 of compact UTF-8 JSON containing the index
