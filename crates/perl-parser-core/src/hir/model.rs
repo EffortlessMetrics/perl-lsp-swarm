@@ -212,7 +212,9 @@ impl HirFile {
     ///   inside that method's invocant.
     ///
     /// Plain blocks, `if`/`while` bodies, and the class body itself are walked
-    /// through. This is deliberately *not* a lexical name walk: a named nested
+    /// through; a compile-phase block (`BEGIN` and friends) is a hard
+    /// boundary, because its body never runs inside a method invocation. This
+    /// is deliberately *not* a lexical name walk: a named nested
     /// `sub` still resolves `$self` to the outer binding id through
     /// [`ScopeGraph`] lookup, and returning that id here would be a guess.
     /// #16969.
@@ -225,6 +227,13 @@ impl HirFile {
             let Some(frame) = self.scope_frame(id) else {
                 return Err(NativeInvocantLimitation::NotInMethod);
             };
+            // A compile-phase block (BEGIN, CHECK, UNITCHECK, INIT, END) never
+            // runs inside a method invocation: BEGIN/CHECK run at compile time
+            // and INIT/END outside any call, so its body has no invocant even
+            // when a `$self` reference lexically resolves to one (#16969).
+            if frame.kind == ScopeKind::PhaseBlock {
+                return Err(NativeInvocantLimitation::CompilePhaseBody);
+            }
             if !frame.kind.is_callable() {
                 current = frame.parent;
                 continue;
@@ -3389,10 +3398,20 @@ pub enum NativeMethodOwnerLimitation {
     /// `NodeKind::Method`.
     NotInBlockFormClass,
     /// The enclosing class body is not admitted by an effective `class`
-    /// feature at its declaration offset.
+    /// feature, either at the class declaration's offset or at the method's
+    /// own offset — an inner `no feature 'class'` between the two retracts
+    /// the admission for everything after it (#16969).
     ClassFeatureNotAdmitted,
-    /// A `use`/`no` declaration with non-static arguments precedes the class,
-    /// so its effective feature set is not statically known.
+    /// A competing class dialect (an import such as `Object::Pad` that owns
+    /// the same block-form `class`/`method` syntax) is in lexical scope before
+    /// the class, so the body belongs to that dialect rather than to the core
+    /// feature. #16969.
+    CompetingClassDialect,
+    /// Any `use`/`no` declaration with non-static arguments precedes the
+    /// class, so the effective feature set is not statically known. The check
+    /// is deliberately coarse — the boundary fact does not record *which*
+    /// pragma had dynamic arguments — and stays on the conservative side
+    /// (#16969).
     DynamicPragmaEnvironment,
     /// The class declaration carries no source name anchor.
     UnanchoredClassName,
@@ -3420,6 +3439,9 @@ pub enum NativeInvocantLimitation {
     /// The outer invocant binding may still be lexically visible here, but its
     /// identity is not this construct's current invocant.
     NamedSubroutineBoundary,
+    /// The scope is inside a compile-phase block (`BEGIN` and friends), whose
+    /// body never executes inside any method invocation. #16969.
+    CompilePhaseBody,
     /// The method has no exact native-class owner.
     OwnerUnavailable(NativeMethodOwnerLimitation),
 }

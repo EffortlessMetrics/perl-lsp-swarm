@@ -104,7 +104,23 @@ struct Lowerer {
     /// Keying by the frame rather than by name or `package_context` is what
     /// makes sibling classes incapable of sharing an owner. #16969.
     class_scope_owners: BTreeMap<u32, PendingClassDecl>,
+    /// Imports of modules that own the same `class`/`method` block syntax the
+    /// core feature owns, as `(import start offset, scope of the import)`.
+    ///
+    /// A block-form `class` written while such an import is in scope belongs
+    /// to that dialect, not to the core feature, so its methods must not gain
+    /// an exact core-native owner. #16969.
+    class_dialect_imports: Vec<(usize, HirScopeId)>,
 }
+
+/// Modules whose import puts block-form `class`/`method` syntax in scope that
+/// competes with the core `class` feature.
+///
+/// `Object::Pad` is the dialect whose declaration shape the parser cannot
+/// distinguish from a core block-form class. `Feature::Compat::Class` is
+/// deliberately absent: its contract is core parity, so an admitted owner
+/// there is the core owner. #16969.
+const COMPETING_CLASS_DIALECTS: &[&str] = &["Object::Pad"];
 
 /// Source-backed facts about one block-form `class` declaration.
 #[derive(Debug, Clone)]
@@ -181,6 +197,7 @@ impl Lowerer {
             class_field_decls: BTreeSet::new(),
             pending_class_decls: BTreeMap::new(),
             class_scope_owners: BTreeMap::new(),
+            class_dialect_imports: Vec::new(),
         }
     }
 
@@ -382,10 +399,11 @@ impl Lowerer {
                     node.location,
                     self.package_context.clone(),
                 );
-                // `push_item` mints `next_id` for this item, so the owner
-                // relation can name its own `method_item` before the payload
-                // that carries it is built.
-                let item_id = HirId::from_index(self.next_id);
+                // The owner relation must name its own `method_item` before
+                // the payload carrying it is built, so the id is derived from
+                // the same single expression `push_item` uses
+                // (`peek_next_item_id`) rather than predicted a second time.
+                let item_id = self.peek_next_item_id();
                 let class_context = self.native_class_context(method_scope, *name_span, confidence);
                 // Perl injects the invocant at the method declaration, before
                 // any explicit parameter, so a same-name signature parameter or
@@ -418,7 +436,13 @@ impl Lowerer {
                         })
                     }
                 };
-                let pushed = self.push_item(
+                // The owner relation names its own item before the payload
+                // carrying it exists; `peek_next_item_id` is the same single
+                // expression `push_item` mints from, so no id assertion is
+                // needed here. The equality is pinned permanently by the
+                // public-surface test `owner_method_item_is_the_pushed_method_item_id`,
+                // which runs in release too.
+                self.push_item(
                     node,
                     *name_span,
                     confidence,
@@ -430,14 +454,6 @@ impl Lowerer {
                     }),
                     self.package_context.clone(),
                     Some(method_scope),
-                );
-                // The owner relation above had to name its own item before the
-                // payload carrying it existed. `push_item` mints `next_id` for
-                // this item and `record_binding` does not consume one, so the
-                // prediction holds; assert it rather than leave it invisible.
-                debug_assert_eq!(
-                    pushed, item_id,
-                    "the predicted method item id must match the pushed one"
                 );
                 self.record_slot(
                     self.current_package_name(),
@@ -492,6 +508,12 @@ impl Lowerer {
                 );
                 self.record_use_compile_effects(module, args, node.location, Some(item_id));
                 self.record_use_stash_effects(module, args, node.location, item_id);
+                if COMPETING_CLASS_DIALECTS.contains(&module.as_str()) {
+                    // Recorded at the import's own scope, not globally: the
+                    // dialect owns the `class`/`method` syntax only for code
+                    // inside the import's lexical region (#16969).
+                    self.class_dialect_imports.push((node.location.start, self.current_scope()));
+                }
             }
             NodeKind::No { module, args, has_filter_risk: _ } => {
                 self.record_compile_directive(
@@ -1156,8 +1178,16 @@ impl Lowerer {
                 // statements of this class body. Only those are real field
                 // declarations; a `field $x;` nested inside a method or block
                 // is a call, even though it descends from the class (#13817).
+                // A body that failed to close is wrapped in the parser's
+                // standard recovery shape; the scan looks through that one
+                // wrapper exactly as it looks through a label below, so fields
+                // of a recovered class body stay direct statements (#16969).
+                let field_scan_root: &Node = match &body.kind {
+                    NodeKind::Error { partial: Some(partial), .. } => partial,
+                    _ => body,
+                };
                 let mut direct_field_decls = Vec::new();
-                body.for_each_child_with_field(|_, child| {
+                field_scan_root.for_each_child_with_field(|_, child| {
                     // A label does not change what statement this is, so look
                     // through `LABEL: field $x;`. Only this wrapper is
                     // unwrapped: blocks, methods and subs form scopes, and a
@@ -1657,10 +1687,17 @@ impl Lowerer {
     /// name match: an unnamed method anchor (the `ADJUST` phaser and other
     /// anonymous forms reach this arm as `NodeKind::Method` with no name span),
     /// a method that is not a direct member of a class frame (statement-form
-    /// class membership, or any package-level or dialect method the parser
-    /// still shapes this way), a recovered or unanchored class declaration, a
-    /// dynamic pragma environment, or a class feature that is not in effect
-    /// where the class is written.
+    /// class membership, or any package-level method the parser still shapes
+    /// this way), a recovered class or method, an imported competing class
+    /// dialect, an unanchored class name, a dynamic pragma environment, or a
+    /// class feature that is not in effect where the class or the method is
+    /// written.
+    ///
+    /// The checks run outside-in on purpose: the enclosing class's admission is
+    /// decided before the method's own recovery, so a class recovered inside an
+    /// unclosed outer construct reports `RecoveredClass` even though the method
+    /// inside it is recovered too — reporting the method would hide which
+    /// construct actually failed (#16969).
     ///
     /// Requiring the class frame to be the method pad's *direct* parent is what
     /// keeps statement-form membership and package context out: neither can
@@ -1674,9 +1711,6 @@ impl Lowerer {
         let Some(name_range) = name_span else {
             return Err(NativeMethodOwnerLimitation::UnnamedMethodAnchor);
         };
-        if method_confidence != RecoveryConfidence::Parsed {
-            return Err(NativeMethodOwnerLimitation::RecoveredMethod);
-        }
         let Some(class_frame) = self
             .frame(method_scope)
             .and_then(|frame| frame.parent)
@@ -1693,10 +1727,16 @@ impl Lowerer {
         if declaration.confidence != RecoveryConfidence::Parsed {
             return Err(NativeMethodOwnerLimitation::RecoveredClass);
         }
+        if method_confidence != RecoveryConfidence::Parsed {
+            return Err(NativeMethodOwnerLimitation::RecoveredMethod);
+        }
         let Some(class_name_range) = declaration.name_range else {
             return Err(NativeMethodOwnerLimitation::UnanchoredClassName);
         };
-        self.class_feature_admission(declaration.declared_at)?;
+        if self.competing_dialect_in_effect(class_frame, declaration.declared_at) {
+            return Err(NativeMethodOwnerLimitation::CompetingClassDialect);
+        }
+        self.class_feature_admission(declaration.declared_at, name_range.start)?;
         Ok(NativeClassContext {
             declaration: declaration.clone(),
             class_name_range,
@@ -1705,23 +1745,78 @@ impl Lowerer {
         })
     }
 
-    /// Whether the core `class` feature is in effect where a class is written.
+    /// Whether a module that owns the same `class`/`method` syntax is imported
+    /// in scope around a class written at `declared_at`.
+    ///
+    /// The import must precede the class in source order and its lexical scope
+    /// must enclose the class's own scope: a dialect import inside an
+    /// unrelated, already-closed block does not claim code outside it (#16969).
+    fn competing_dialect_in_effect(&self, class_frame: &ScopeFrame, declared_at: usize) -> bool {
+        let Some(enclosing) = class_frame.parent else {
+            return false;
+        };
+        self.class_dialect_imports.iter().any(|(offset, import_scope)| {
+            *offset < declared_at && self.scope_encloses(*import_scope, enclosing)
+        })
+    }
+
+    /// Whether `ancestor` is `descendant` or one of its lexical ancestors.
+    fn scope_encloses(&self, ancestor: HirScopeId, descendant: HirScopeId) -> bool {
+        let mut cursor = Some(descendant);
+        while let Some(id) = cursor {
+            if id == ancestor {
+                return true;
+            }
+            cursor = self.frame(id).and_then(|frame| frame.parent);
+        }
+        false
+    }
+
+    /// Whether the core `class` feature is in effect where the class is
+    /// written *and* where the method is written.
+    ///
+    /// Checking both offsets is what keeps an inner `no feature 'class'`
+    /// between the declaration and the method from inheriting the outer
+    /// admission (#16969): the class may have been admitted where it was
+    /// written, but the method after the retraction is not core-native.
     ///
     /// A dynamic pragma argument anywhere before the class leaves the effective
     /// feature set undecidable, so it is reported as its own limitation rather
-    /// than folded into "not admitted".
-    fn class_feature_admission(&self, offset: usize) -> Result<(), NativeMethodOwnerLimitation> {
+    /// than folded into "not admitted". The check is deliberately coarse: any
+    /// dynamic `use`/`no` argument boundary suppresses, whether or not it
+    /// targets `feature` itself, because the boundary fact does not record
+    /// which pragma produced it. Refining it is strictly a precision gain and
+    /// stays inside the conservative direction.
+    fn class_feature_admission(
+        &self,
+        declared_at: usize,
+        method_offset: usize,
+    ) -> Result<(), NativeMethodOwnerLimitation> {
         if self.compile_environment.dynamic_boundaries.iter().any(|boundary| {
             boundary.kind == CompileEnvironmentBoundaryKind::DynamicPragmaArgs
-                && boundary.range.start < offset
+                && boundary.range.start < declared_at
         }) {
             return Err(NativeMethodOwnerLimitation::DynamicPragmaEnvironment);
         }
-        if self.pragma_environment.snapshot_at(offset).state().has_feature("class") {
+        let admitted_at = |offset: usize| {
+            self.pragma_environment.snapshot_at(offset).state().has_feature("class")
+        };
+        if admitted_at(declared_at) && admitted_at(method_offset) {
             Ok(())
         } else {
             Err(NativeMethodOwnerLimitation::ClassFeatureNotAdmitted)
         }
+    }
+
+    /// The id [`Self::push_item`] will mint for the next item.
+    ///
+    /// Both places that must name an item before its payload exists derive the
+    /// id from this one expression — the same expression `push_item` itself
+    /// uses — so the prediction and the minted id cannot disagree by
+    /// construction: nothing between the peek and the push consumes an item id
+    /// (bindings are minted separately from the item counter). #16969.
+    fn peek_next_item_id(&self) -> HirId {
+        HirId::from_index(self.next_id)
     }
 
     fn push_item(
@@ -1733,7 +1828,7 @@ impl Lowerer {
         package_context: Option<String>,
         scope_context: Option<HirScopeId>,
     ) -> HirId {
-        let id = HirId::from_index(self.next_id);
+        let id = self.peek_next_item_id();
         self.next_id += 1;
         self.items.push(HirItem {
             id,
@@ -4150,6 +4245,13 @@ impl<'a> BodyBuilder2<'a> {
                 StorageClass::PackageOur
                 | StorageClass::LocalizedPackage
                 | StorageClass::PackageGlobal
+                // The implicit invocant keeps the coarse `Package` row this
+                // projection gave every pre-#16969 `$self` occurrence: this
+                // mapping is a lexical/package split, not receiver-fact
+                // production, and changing it here would silently move every
+                // invocant occurrence's kind. Reclassifying occurrences
+                // against the #16969 owner relation belongs to #16967's
+                // accepted-generation projection, which owns receiver facts.
                 | StorageClass::MethodInvocant
                 | StorageClass::Implicit,
             ) => VariableKind::Package,

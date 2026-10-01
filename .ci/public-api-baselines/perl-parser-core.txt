@@ -1896,6 +1896,7 @@ pub fn perl_parser_core::hir::ModuleResolutionStatus::eq(&self, other: &perl_par
 pub fn perl_parser_core::hir::ModuleResolutionStatus::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::ModuleResolutionStatus::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::NativeInvocantLimitation
+pub perl_parser_core::hir::NativeInvocantLimitation::CompilePhaseBody
 pub perl_parser_core::hir::NativeInvocantLimitation::NamedSubroutineBoundary
 pub perl_parser_core::hir::NativeInvocantLimitation::NotInMethod
 pub perl_parser_core::hir::NativeInvocantLimitation::OwnerUnavailable(perl_parser_core::hir::NativeMethodOwnerLimitation)
@@ -1905,6 +1906,7 @@ pub fn perl_parser_core::hir::NativeInvocantLimitation::fmt(&self, f: &mut core:
 pub fn perl_parser_core::hir::NativeInvocantLimitation::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 #[non_exhaustive] pub enum perl_parser_core::hir::NativeMethodOwnerLimitation
 pub perl_parser_core::hir::NativeMethodOwnerLimitation::ClassFeatureNotAdmitted
+pub perl_parser_core::hir::NativeMethodOwnerLimitation::CompetingClassDialect
 pub perl_parser_core::hir::NativeMethodOwnerLimitation::DynamicPragmaEnvironment
 pub perl_parser_core::hir::NativeMethodOwnerLimitation::NotInBlockFormClass
 pub perl_parser_core::hir::NativeMethodOwnerLimitation::RecoveredClass

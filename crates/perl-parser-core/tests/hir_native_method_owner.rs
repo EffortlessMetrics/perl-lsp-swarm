@@ -24,13 +24,20 @@
 //! 5. sibling classes with the same method name cannot share an owner;
 //! 6. an `ADJUST` phaser, a non-admitted or dynamic class feature environment,
 //!    and a package-level or statement-form method all yield a typed
-//!    unavailability, never an exact class guess.
+//!    unavailability, never an exact class guess;
+//! 7. recovered syntax cannot return an exact owner: a method (or its
+//!    enclosing class) truncated by parser recovery is a typed limitation,
+//!    and both recovery arms are exercised;
+//! 8. a competing class dialect in scope before the class refuses the owner,
+//!    while an import outside the class's scope or after it does not;
+//! 9. an inner `no feature 'class'` retracts admission for later methods, and
+//!    a compile-phase block inside a method is never inside an invocant.
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     Binding, BindingReference, HirBindingId, HirExpr, HirExprId, HirFile, HirId, HirKind,
     HirScopeId, MethodDecl, NativeClassOwner, NativeInvocantLimitation,
-    NativeMethodOwnerLimitation, ScopeFrame, ScopeKind, StorageClass, lower_ast,
+    NativeMethodOwnerLimitation, ScopeFrame, ScopeKind, StorageClass, VariableKind, lower_ast,
 };
 use perl_tdd_support::must_some;
 
@@ -550,6 +557,36 @@ fn sibling_classes_with_the_same_method_name_cannot_share_an_owner() {
     assert_eq!(file.exact_invocant_owner(b.method_scope), Ok(&b));
 }
 
+/// The owner's `method_item` is the id of the pushed `MethodDecl` item itself,
+/// and the invocant binding declares that same item — the owner relation, the
+/// item, and the binding agree on identity.
+///
+/// Lowering names the method item before the payload carrying it exists, so
+/// this equality is pinned here on the public surface — permanently, in every
+/// profile — instead of by a debug-only assertion in the lowerer.
+#[test]
+fn owner_method_item_is_the_pushed_method_item_id() {
+    for source in [CORE_CLASS, "use feature 'class';\nclass A { method speak { $self } }\n"] {
+        let file = lower(source);
+        for (item_id, decl) in all_method_items(&file) {
+            let owner = must_some(decl.class_owner.ok());
+            assert_eq!(
+                owner.method_item, item_id,
+                "the owner must name the very item that carries it ({source:?})"
+            );
+            let invocant = must_some(
+                file.scope_graph.bindings.iter().find(|binding| binding.id == owner.invocant),
+            );
+            assert_eq!(
+                invocant.declaration_item,
+                Some(item_id),
+                "the implicit invocant must be declared by the same method item"
+            );
+            assert_eq!(owner.method_scope, item_scope(&file, item_id));
+        }
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 6. Typed unavailability, never a guess
 // ──────────────────────────────────────────────────────────────────────────────
@@ -670,4 +707,187 @@ fn file_scope_is_not_inside_an_invocant() {
         file.exact_invocant_owner(HirScopeId::from_index(0)),
         Err(NativeInvocantLimitation::NotInMethod)
     );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 7. Recovered syntax never returns an exact owner
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A `method` whose body never closes is recovered syntax: the parser wraps the
+/// truncated block in its standard `Error { partial }` recovery shape, so the
+/// method lowers with recovered confidence and must carry
+/// [`NativeMethodOwnerLimitation::RecoveredMethod`], never an exact owner.
+#[test]
+fn recovered_method_body_refuses_exact_owner() {
+    let source = "use feature 'class';\nclass Animal {\n    method speak { $self->sound;\n";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    assert!(!output.diagnostics.is_empty(), "premise: the truncated source is genuinely recovered");
+    let file = lower_ast(&output.ast);
+
+    let (_, decl) = method_item(&file, "speak");
+    assert_eq!(decl.class_owner, Err(NativeMethodOwnerLimitation::RecoveredMethod));
+    assert!(invocant_bindings(&file).is_empty(), "a recovered method mints no implicit invocant");
+    // The refusal is typed, not structural: the class frame still opened, so
+    // field visibility and scopes behave while the owner stays unavailable.
+    let class_frame = first_scope_of_kind(&file, ScopeKind::Class);
+    assert_eq!(frame(&file, class_frame).kind, ScopeKind::Class);
+    assert_eq!(
+        file.exact_invocant_owner(class_frame),
+        Err(NativeInvocantLimitation::NotInMethod),
+        "the class body frame itself is no method pad"
+    );
+}
+
+/// A class declaration recovered inside an unclosed outer construct must
+/// refuse with [`NativeMethodOwnerLimitation::RecoveredClass`] — the outer
+/// defect — even though the method inside it is recovered too. The method's
+/// own recovery must not mask which construct actually failed.
+#[test]
+fn recovered_class_declaration_refuses_exact_owner() {
+    let source = "use feature 'class';\nsub wrap {\n    class Animal {\n        method speak { $self->sound }\n    }\n";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    assert!(
+        !output.diagnostics.is_empty(),
+        "premise: the unclosed `sub` recovers, recovering the class with it"
+    );
+    let file = lower_ast(&output.ast);
+
+    let (_, decl) = method_item(&file, "speak");
+    assert_eq!(decl.class_owner, Err(NativeMethodOwnerLimitation::RecoveredClass));
+    assert!(invocant_bindings(&file).is_empty());
+    // The class frame still opened through the recovery wrapper.
+    assert!(
+        file.scope_graph.scopes.iter().any(|frame| frame.kind == ScopeKind::Class),
+        "the recovered class still opens a class frame"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 8. A competing class dialect refuses the owner
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// `Object::Pad` owns the same block-form `class`/`method` syntax as the core
+/// feature. An import in lexical scope before the class means the body belongs
+/// to that dialect, so it cannot gain an exact core-native owner.
+#[test]
+fn competing_class_dialect_import_refuses_exact_owner() {
+    let file = lower(
+        "use feature 'class';\nuse Object::Pad;\nclass Animal { method speak { $self->sound; } }\n",
+    );
+    let (_, decl) = method_item(&file, "speak");
+    assert_eq!(decl.class_owner, Err(NativeMethodOwnerLimitation::CompetingClassDialect));
+    assert!(invocant_bindings(&file).is_empty());
+    assert_eq!(
+        file.method_owner_limitation(must_some(all_method_items(&file).first().map(|(id, _)| *id))),
+        Some(NativeMethodOwnerLimitation::CompetingClassDialect)
+    );
+}
+
+/// The dialect refusal is scoped, not global: an import *after* the class in
+/// source order, or *inside an unrelated closed block* before it, does not
+/// claim the class's body.
+#[test]
+fn dialect_import_outside_the_class_scope_or_after_it_does_not_refuse() {
+    let after = lower(
+        "use feature 'class';\nclass Animal { method speak { $self->sound; } }\nuse Object::Pad;\n",
+    );
+    let (_, decl) = method_item(&after, "speak");
+    assert!(
+        decl.class_owner.is_ok(),
+        "an import after the class cannot claim it; got {:?}",
+        decl.class_owner
+    );
+
+    let unrelated_block = lower(
+        "use feature 'class';\n{\n    use Object::Pad;\n}\nclass Animal { method speak { $self->sound; } }\n",
+    );
+    let (_, decl) = method_item(&unrelated_block, "speak");
+    assert!(
+        decl.class_owner.is_ok(),
+        "a dialect import inside an unrelated closed block does not claim code outside it; got {:?}",
+        decl.class_owner
+    );
+    let owner = must_some(decl.class_owner.ok());
+    assert_eq!(unrelated_block.exact_invocant_owner(owner.method_scope), Ok(&owner));
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 9. Feature retraction and compile-phase bodies
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// An inner `no feature 'class'` retracts admission for everything after it in
+/// the class body: the method written before it keeps its exact owner, the
+/// method written after it is a typed unavailability, never an exact owner.
+#[test]
+fn inner_no_feature_retracts_admission_for_later_methods() {
+    let file = lower(
+        "use feature 'class';\nclass Animal {\n    method before { $self->a; }\n    no feature 'class';\n    method after { $self->b; }\n}\n",
+    );
+    let (_, before) = method_item(&file, "before");
+    assert!(
+        before.class_owner.is_ok(),
+        "the method before the retraction is admitted; got {:?}",
+        before.class_owner
+    );
+    let (_, after) = method_item(&file, "after");
+    assert_eq!(after.class_owner, Err(NativeMethodOwnerLimitation::ClassFeatureNotAdmitted));
+
+    let invocants = invocant_bindings(&file);
+    assert_eq!(invocants.len(), 1, "only the admitted method mints an invocant");
+    let admitted = must_some(before.class_owner.ok());
+    assert_eq!(invocants[0].scope_id, admitted.method_scope);
+}
+
+/// A compile-phase block never runs inside a method invocation: `BEGIN` inside
+/// a method is a hard boundary for the invocant walk, while the method's own
+/// body keeps the exact invocant.
+#[test]
+fn compile_phase_block_is_not_inside_an_invocant() {
+    let file = lower(
+        "use feature 'class';\nclass Animal {\n    method speak {\n        BEGIN { $self->warn; }\n        $self->sound;\n    }\n}\n",
+    );
+    let owner = exact_owner(&file, "speak");
+    assert_eq!(file.exact_invocant_owner(owner.method_scope), Ok(&owner));
+
+    let phase_scope = first_scope_of_kind(&file, ScopeKind::PhaseBlock);
+    assert_eq!(
+        file.exact_invocant_owner(phase_scope),
+        Err(NativeInvocantLimitation::CompilePhaseBody),
+        "BEGIN's body never executes inside the method's invocant"
+    );
+}
+
+/// The invocant occurrence keeps the coarse `VariableKind::Package` row the
+/// body walk gave every pre-#16969 `$self`: that mapping is a lexical/package
+/// split, not receiver-fact production. Reclassifying occurrences against the
+/// owner relation belongs to #16967's accepted-generation projection — this
+/// test pins the current disposition so it cannot move silently.
+#[test]
+fn invocant_occurrence_keeps_coarse_package_classification() {
+    let file = lower(CORE_CLASS);
+    let invocant = invocant_bindings(&file);
+    assert_eq!(invocant.len(), 1, "premise: one implicit invocant");
+    let occurrences = self_occurrences(&file);
+    assert!(!occurrences.is_empty(), "premise: the body references the invocant");
+    for (_, binding) in occurrences {
+        assert_eq!(
+            binding,
+            Some(invocant[0].id),
+            "the occurrence resolves to the implicit invocant binding"
+        );
+    }
+    // And the occurrence's coarse kind is still `Package`, with the exact
+    // invocant identity carried by `binding` above rather than by the kind.
+    for body in &file.bodies {
+        for idx in 0..body.source_map.expr_ranges.len() {
+            let id = HirExprId(idx as u32);
+            if let Some(HirExpr::Variable(var)) = body.expr(id)
+                && var.name == "self"
+            {
+                assert_eq!(var.kind, VariableKind::Package);
+            }
+        }
+    }
 }

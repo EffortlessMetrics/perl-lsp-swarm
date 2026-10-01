@@ -1906,6 +1906,13 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// Diagnostic and recovery-node message for a block that reaches end of
+    /// input without its closing `}`. Shared by the retained diagnostic and
+    /// the `Error { partial }` recovery wrapper so both records name the same
+    /// defect (#16969).
+    const UNCLOSED_BLOCK_MESSAGE: &'static str =
+        "Unclosed block: expected '}' but reached end of input";
+
     /// Parse a block statement
     fn parse_block(&mut self) -> ParseResult<Node> {
         self.with_block_recursion_guard(|s| {
@@ -1989,6 +1996,7 @@ impl<'a> Parser<'a> {
             }
 
             // Handle unclosed block at EOF: emit error but return partial block
+            let mut unclosed = false;
             if s.peek_kind() == Some(TokenKind::RightBrace) {
                 s.expect(TokenKind::RightBrace)?;
             } else {
@@ -1997,14 +2005,34 @@ impl<'a> Parser<'a> {
                 // than at end-of-input, so the squiggle lands on the brace the
                 // user needs to close and nested unclosed blocks are
                 // distinguishable (#5546).
-                s.record_error(ParseError::syntax(
-                    "Unclosed block: expected '}' but reached end of input",
-                    start,
-                ));
+                unclosed = true;
+                s.record_error(ParseError::syntax(Self::UNCLOSED_BLOCK_MESSAGE, start));
             }
             let end = s.previous_position();
 
-            s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
+            let charged = s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })?;
+            if !unclosed {
+                return Ok(charged);
+            }
+            // A block that never closed is structurally incomplete — real
+            // Perl refuses to compile it — so the partial node travels inside
+            // the parser's standard recovery shape (`Error { partial }`)
+            // instead of masquerading as a complete `Block`. Every consumer
+            // that asks whether syntax was recovered then sees the same
+            // answer: lowering downgrades the subtree's recovery confidence,
+            // which is what keeps a `class`/`method` truncated at EOF from
+            // minting an exact native-class owner (#16969).
+            // #8786: not charged. Synthetic recovery node — recovery-node
+            // accounting is #7074's dimension, not an admitted core dimension.
+            Ok(Node::new(
+                NodeKind::Error {
+                    message: Self::UNCLOSED_BLOCK_MESSAGE.to_string(),
+                    expected: vec![],
+                    found: None,
+                    partial: Some(Box::new(charged)),
+                },
+                SourceLocation { start, end },
+            ))
         })
     }
 
