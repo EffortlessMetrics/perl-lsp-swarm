@@ -307,7 +307,8 @@ mod tests {
         let table = table();
         let visible = symbol("ok", SymbolKind::scalar(), "my", 2, 21);
         let future = symbol("later", SymbolKind::scalar(), "my", 2, 40);
-        let sibling = symbol("only_a", SymbolKind::scalar(), "my", 3, 56);
+        // Pre-cursor so DeclaredAfterCursor cannot mask a sibling-scope miss.
+        let sibling = symbol("only_a", SymbolKind::scalar(), "my", 3, 25);
         let selected = admitted_symbols(&table, 2, 30, [&visible, &future, &sibling]);
         assert_eq!(selected.len(), 1);
         assert!(std::ptr::eq(selected[0], &visible));

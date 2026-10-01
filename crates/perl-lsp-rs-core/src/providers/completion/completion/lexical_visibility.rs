@@ -163,11 +163,14 @@ fn scope_chain_contains(
     cursor_scope: ScopeId,
     target: ScopeId,
 ) -> bool {
-    // An equality between two unresolvable ids is not containment: the cursor
-    // scope must exist in the generation-current table before any comparison,
-    // or `cursor == target == 9` would admit a binding whose scope the table
-    // never recorded.
-    if !symbol_table.scopes.contains_key(&cursor_scope) {
+    // Unresolvable ids are not containment. The cursor scope must exist or
+    // `cursor == target == 9` would admit a binding the table never recorded.
+    // The target must exist too: `walk_ancestors` visits a parent id before
+    // looking up its record, so a cursor whose parent pointer names a missing
+    // id would otherwise match that ghost as an ancestor.
+    if !symbol_table.scopes.contains_key(&cursor_scope)
+        || !symbol_table.scopes.contains_key(&target)
+    {
         return false;
     }
     walk_ancestors(symbol_table, cursor_scope, |id, _hops| {
@@ -423,6 +426,22 @@ mod tests {
         let s = symbol("ghost", SymbolKind::scalar(), "my", 9, 1);
         assert_eq!(
             admit(&table, 9, 30, &s),
+            Admission::NotVisible(VisibilityReason::ScopeNotVisibleFromCursor)
+        );
+    }
+
+    #[test]
+    fn missing_parent_pointer_target_is_not_containment() {
+        // Cursor scope 2 exists but names missing parent 9. Visiting that
+        // parent id before a table lookup must not admit a binding in 9.
+        let mut table = table();
+        if let Some(scope) = table.scopes.get_mut(&2) {
+            scope.parent = Some(9);
+        }
+        let s = symbol("ghost", SymbolKind::scalar(), "my", 9, 1);
+        assert!(!scope_chain_contains(&table, 2, 9));
+        assert_eq!(
+            admit(&table, 2, 30, &s),
             Admission::NotVisible(VisibilityReason::ScopeNotVisibleFromCursor)
         );
     }
