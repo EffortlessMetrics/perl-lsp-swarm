@@ -155,15 +155,20 @@ jobs:
             summary "decision: \`skip (missing lane job identity)\`"
             exit 0
           fi
-          current_lane_job_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100" \
-            --jq ".jobs[] | select(.id == ${lane_job_id}) | .id" | head -1)
+          # One listing call projects both identity fields: jq emits the id and
+          # name on a single tab-separated line, and the id is digits-only so
+          # the first tab is always the separator. A second identical request
+          # for the same payload would double the API surface for no evidence
+          # gain.
+          current_lane_job=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100" \
+            --jq ".jobs[] | select(.id == ${lane_job_id}) | \"\(.id)\t\(.name)\"" | head -1)
+          current_lane_job_id="${current_lane_job%%$'\t'*}"
+          current_lane_job_name="${current_lane_job#*$'\t'}"
           if [ "${current_lane_job_id}" != "${lane_job_id}" ]; then
             echo "::notice::classification lane job ${lane_job_id} is not in current run attempt ${RUN_ATTEMPT} — no automatic retry."
             summary "decision: \`skip (lane job attempt mismatch)\`"
             exit 0
           fi
-          current_lane_job_name=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100" \
-            --jq ".jobs[] | select(.id == ${lane_job_id}) | .name" | head -1)
           if [ "${current_lane_job_name}" != "${lane_name}" ]; then
             echo "::notice::classification lane name does not match current run attempt ${RUN_ATTEMPT} — no automatic retry."
             summary "decision: \`skip (lane job name mismatch)\`"

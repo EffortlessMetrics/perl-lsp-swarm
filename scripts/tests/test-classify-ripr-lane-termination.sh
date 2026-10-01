@@ -367,6 +367,14 @@ ANN_TIMEOUT_NEAR_MISS="${WORK}/ann-timeout-near-miss.json"
 cat >"${ANN_TIMEOUT_NEAR_MISS}" <<'EOF'
 [{"annotation_level":"failure","message":"The job has exceeded the maximum execution time of 2h15m1s"}]
 EOF
+# Drift control: if the lane's configured limit ever changes, GitHub's
+# annotation carries the new duration, the exact pin no longer matches, and
+# the classifier must degrade to the blocking fail-closed red — never to an
+# inferred timeout cause or an infra retry — until the pin is updated with it.
+ANN_TIMEOUT_OTHER_LIMIT="${WORK}/ann-timeout-other-limit.json"
+cat >"${ANN_TIMEOUT_OTHER_LIMIT}" <<'EOF'
+[{"annotation_level":"failure","message":"The job has exceeded the maximum execution time of 3h0m0s"}]
+EOF
 
 # Fixture: the lane job missing from the jobs listing (the API answers null
 # for an unmatched first() projection).
@@ -414,6 +422,8 @@ expect_eq "API configured timeout evidence counter is exact" \
   "1" "$(classify_api_field "${ANN_CONFIGURED_TIMEOUT}" "${STEPS_CANCELLED}" "" configured_timeout_matches)"
 expect_eq "API near-miss timeout duration does not infer the configured timeout" \
   "ripr-failure" "$(classify_api_field "${ANN_TIMEOUT_NEAR_MISS}" "${STEPS_CANCELLED}" "" classification)"
+expect_eq "API drift to a different configured limit degrades fail-closed, not to a timeout verdict" \
+  "ripr-failure" "$(classify_api_field "${ANN_TIMEOUT_OTHER_LIMIT}" "${STEPS_CANCELLED}" "" classification)"
 expect_eq "API genuine gap receipt outranks configured timeout annotation" \
   "ripr-failure" "$(classify_api_field "${ANN_CONFIGURED_TIMEOUT}" "${STEPS_CANCELLED}" "${RECEIPT_LOG}" classification)"
 expect_eq "API configured timeout annotation without readable job state fails closed" \

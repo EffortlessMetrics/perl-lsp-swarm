@@ -1115,7 +1115,13 @@ fn write_retry_artifact(path: &std::path::Path, artifact_mode: &str) -> Result<(
         }
         "malformed" => {
             archive.start_file("ripr-gate-classification.env", options)?;
-            archive.write_all(b"classification=infra-no-proof\nrun_id=not-a-number\n")?;
+            // A well-formed evaluated SHA keeps the missing-SHA guard (which
+            // has its own `missing-evaluated-head` fixture) out of the way so
+            // the invalid run id is the first failing sanity guard this
+            // negative control names.
+            archive.write_all(
+                b"classification=infra-no-proof\nhead_sha=0123456789abcdef0123456789abcdef01234567\nrun_id=not-a-number\n",
+            )?;
         }
         "valid"
         | "download-failure"
@@ -2224,7 +2230,13 @@ fn ripr_infra_retry_is_bounded_and_gate_classified() -> Result<()> {
 
 #[test]
 fn ripr_cancelled_gate_requires_current_job_timeout_annotation() -> Result<()> {
-    let steps = r#"{"conclusion":"cancelled","steps":[{"name":"Run RIPR","status":"in_progress","conclusion":null}]}"#;
+    // The steps endpoint serves the raw jobs listing; the gate projects the
+    // selected lane job through first(.jobs[] | select(.name == ...)) itself,
+    // so the canned body must use the API listing shape (as the #16431
+    // fixtures above do), not the classifier's projected shape.
+    let hosted_cancelled_steps = r#"{"total_count":1,"jobs":[{"name":"ripr+ on GitHub Hosted","id":97001,"conclusion":"cancelled","steps":[{"name":"Run RIPR","status":"in_progress","conclusion":null}]}]}"#;
+    let fallback_cancelled_steps = r#"{"total_count":1,"jobs":[{"name":"ripr+ (Disk-Full Fallback)","id":88001,"conclusion":"cancelled","steps":[{"name":"Run RIPR","status":"in_progress","conclusion":null}]}]}"#;
+    let steps = hosted_cancelled_steps;
     let exact = r#"[{"annotation_level":"failure","message":"The job has exceeded the maximum execution time of 2h15m0s"}]"#;
     let near_miss = r#"[{"annotation_level":"failure","message":"The job has exceeded the maximum execution time of 2h15m1s"}]"#;
     for (name, annotation, class) in [
@@ -2323,7 +2335,7 @@ fn ripr_cancelled_gate_requires_current_job_timeout_annotation() -> Result<()> {
         0,
         30,
         "[]",
-        steps,
+        fallback_cancelled_steps,
     )?;
     if outcome.status.success() || !output.contains("RIPR_GATE_VERDICT=cancelled-no-verdict") {
         bail!(
@@ -2505,7 +2517,13 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
         );
     }
     let timeout_prefix = "timeout --signal=TERM --kill-after=5s";
-    if run.matches("bounded_gh_api ").count() != 4
+    // #16980 still routes every production call through one deadline-bounded
+    // helper chain: three calls use the whole-gate-deadline `bounded_gh_api`
+    // wrapper, and the cancelled-lane log fetch uses the explicit
+    // `bounded_gh_api_until` cutoff (the wrapper's own delegation is the
+    // second `bounded_gh_api_until` reference).
+    if run.matches("bounded_gh_api ").count() != 3
+        || run.matches("bounded_gh_api_until ").count() != 2
         || run.matches(timeout_prefix).count() != 1
         || !run.contains("gate_deadline=\"${RIPR_GATE_DEADLINE_EPOCH:-}\"")
         || !run.contains("remaining_until_deadline")
