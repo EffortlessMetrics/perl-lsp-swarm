@@ -156,6 +156,11 @@ pub struct EvidenceRef {
     pub subject: String,
     pub content_digest: String,
     pub reference: String,
+    /// Envelope schema identity the referenced evidence declares (for example
+    /// `landing_proof.v1`). Cross-vend consumers pin this per producer family
+    /// instead of trusting the producer name string (#15386).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<String>,
 }
 
 /// Transfer of one denominator row to another open owner.
