@@ -191,9 +191,19 @@ pub fn panic_location(line: &str) -> Option<PanicLocation> {
     let panic_at = trimmed.find("panicked at ")? + "panicked at ".len();
     let rest = trimmed[panic_at..].trim_end_matches(':');
     // The ≥1.73 form is tried first, exactly as the gate reader has always done
-    // it: a quoted message leaves a non-numeric second field, so the strict form
-    // rejects it and the pre-1.73 form below gets its turn.
-    parse_location(rest).or_else(|| parse_location(after_quoted_message(rest)))
+    // it — except when the payload opens with a quote. A leading `'` is the
+    // pre-1.73 form's signature (`panicked at '<message>', path:row:col`), and
+    // no ≥1.73 location begins with one. Skipping, not merely attempting, the
+    // strict parse there is load-bearing: for a message without a colon of its
+    // own, the strict form does not reject the line — it *succeeds*, with the
+    // whole `'<message>', path` token as its path — and the pre-1.73 form below
+    // never gets its turn. The receipt then refused that path outright and
+    // reported no location at all for an ordinary `panic!` (#16907 review). A
+    // message whose only colons are Rust's `::` escapes without this guard:
+    // those colons land in the strict parse's line field and make it
+    // non-numeric, so the fallback fires anyway.
+    let strict = if rest.starts_with('\'') { None } else { parse_location(rest) };
+    strict.or_else(|| parse_location(after_quoted_message(rest)))
 }
 
 fn after_quoted_message(rest: &str) -> &str {
@@ -352,6 +362,42 @@ mod tests {
         assert_eq!(location.path, "src/module.rs");
         assert_eq!(location.line, 42);
         assert_eq!(location.column, Some(5));
+        Ok(())
+    }
+
+    /// A pre-1.73 message that itself carries no colon must not be swallowed by
+    /// the strict ≥1.73 parse. `panicked at 'explicit panic', src/lib.rs:42:5`
+    /// hands that parse a numeric line field behind a path-shaped first token,
+    /// so it *succeeds* — with the whole `'<message>', path` token as its path —
+    /// and the fallback never gets its turn. The receipt's grammar then refuses
+    /// the bogus path and the location goes unreported. A message whose only
+    /// colons are Rust's `::` escapes by accident: they land in the strict
+    /// parse's line field and make it non-numeric, so the fallback fires. Both
+    /// are asserted so the ordering cannot regress in either direction
+    /// (#16907 review).
+    #[test]
+    fn a_pre_1_73_message_without_a_colon_is_not_swallowed_by_the_strict_parse()
+    -> anyhow::Result<()> {
+        let no_colon_at_all = location_or(
+            "thread 'main' panicked at 'explicit panic', src/lib.rs:42:5",
+            "message with no colon at all",
+        )?;
+        assert_eq!(no_colon_at_all.path, "src/lib.rs");
+        assert_eq!(no_colon_at_all.line, 42);
+        assert_eq!(no_colon_at_all.column, Some(5));
+        assert!(
+            is_plausible_path(&no_colon_at_all.path),
+            "the recovered location is one the receipt reports"
+        );
+
+        let path_separators_only = location_or(
+            "thread 'main' panicked at 'called `Option::unwrap()` on a `None` value', \
+             src/lib.rs:42:5",
+            "message whose only colons are `::`",
+        )?;
+        assert_eq!(path_separators_only.path, "src/lib.rs");
+        assert_eq!(path_separators_only.line, 42);
+        assert_eq!(path_separators_only.column, Some(5));
         Ok(())
     }
 

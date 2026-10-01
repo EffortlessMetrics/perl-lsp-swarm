@@ -896,20 +896,50 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n
         );
     }
 
+    /// A pre-1.73 quoted panic whose message carries no colon must still reach
+    /// the receipt. The shared reader's strict ≥1.73 parse *succeeds* on such a
+    /// line with the whole `'<message>', path` token as the path, the receipt's
+    /// path grammar refuses that token, and the location goes silent — where the
+    /// receipt's predecessor reported `src/lib.rs:42:5`. (A message whose only
+    /// colons are Rust's `::` escapes by accident: those colons make the strict
+    /// parse's line field non-numeric, so the fallback fires anyway.)
+    /// `panic_location` therefore has to skip the strict attempt for a quoted
+    /// payload (#16907 review).
+    #[test]
+    fn a_colon_free_pre_1_73_message_still_reports_its_location() {
+        let log = "running 1 test\n\
+test ux_scenario_01_startup::start ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- ux_scenario_01_startup::start stdout ----\n\
+thread 'main' panicked at 'explicit panic', src/lib.rs:42:5:\n\
+\n\
+test result: FAILED. 0 passed; 1 failed";
+        let receipt = classify(log, Some("pre173".to_string()));
+        assert_eq!(
+            receipt.panic_location.as_deref(),
+            Some("src/lib.rs:42:5"),
+            "the quoted message must not swallow the panic location behind it"
+        );
+    }
+
     /// The gate reports whatever `path:line` a panic printed; the receipt has a
     /// stricter path grammar. Sharing the parse must not make the gate stricter,
     /// because `ci_explain` classifies on `site.is_some()` — a rejected path
     /// turns a code regression into `unknown`.
     #[test]
-    fn a_path_the_receipt_refuses_is_still_parsed_for_the_gate() {
-        let location =
-            cargo_failure::panic_location("thread 'x' panicked at 9lives/src/lib.rs:42:8:");
-        let location = location.expect("the shared reader parses path:line:column structurally");
+    fn a_path_the_receipt_refuses_is_still_parsed_for_the_gate() -> anyhow::Result<()> {
+        let line = "thread 'x' panicked at 9lives/src/lib.rs:42:8:";
+        let location = cargo_failure::panic_location(line).ok_or_else(|| {
+            anyhow::anyhow!("the shared reader parses path:line:column structurally: {line:?}")
+        })?;
         assert_eq!(location.line_only(), "9lives/src/lib.rs:42");
         assert!(
             !cargo_failure::is_plausible_path(&location.path),
             "and the receipt is free to refuse to report it"
         );
+        Ok(())
     }
 
     #[test]
