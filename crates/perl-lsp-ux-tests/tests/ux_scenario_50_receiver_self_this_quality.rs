@@ -8,11 +8,11 @@
 
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::{
-    binary_available, missing_binary_skip, run_ux_scenario, ScenarioConfig, UxCiTier, UxComponent,
-    UxHarness,
+    ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available, missing_binary_skip,
+    run_ux_scenario,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 const SCENARIO_FILE: &str = "ux_scenario_50_receiver_self_this_quality.rs";

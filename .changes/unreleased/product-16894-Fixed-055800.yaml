@@ -1,7 +1,7 @@
 project: product
 component: Language intelligence
 kind: Fixed
-body: Resolve defining-class `$self->` / `$class->` method completion from canonical invocant facts instead of variable spelling.
+body: Stop treating `$self`/`$this` spelling as exact method-completion receivers; classic `sub` inherited methods stay on unknown-receiver collection. Canonical native-method Exact completion remains blocked pending #16967.
 time: 2026-09-29T05:58:00Z
 custom:
   PR: "16894"
