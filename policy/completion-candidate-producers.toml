@@ -90,7 +90,14 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
-source_digest = "sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f"
+# Re-audit 2026-10-01 (#16775): the #8386 ClientSession owner extraction
+# rewrote six access paths inside scanned `runtime/language/completion.rs`
+# (`self.client_capabilities` / `self.advertised_features` now read through
+# `self.client_session`). No producer signature, entry point, delegation,
+# finalizer, or candidate-channel shape changed, so the discovered producer
+# population, authored dispositions, entry routes, delegations, and finalizer
+# are unchanged; only the digest-bearing file text moved.
+source_digest = "sha256:894c35a85c0aab64da4a37bf10f699dfbb55e4912cc4f0768786e17c7843ee58"
 
 [[delegations]]
 module = "dancer2"
