@@ -234,6 +234,10 @@ fn active_blocker_projection_renders_bounded_rows_from_fixture_ledger() -> Resul
     assert_eq!(blocker["route"], "provider_fix");
     assert_eq!(blocker["issue"], 10015);
     assert_eq!(blocker["owner"], "@maintainer");
+    // The bounded review window must survive parsing and render with the
+    // blocker — a dropped bound would make the projection claim a row is
+    // bounded while showing no bound (#9879 review).
+    assert_eq!(blocker["expires_after_days"], 30);
     Ok(())
 }
 
@@ -255,6 +259,7 @@ fn active_blocker_projection_honors_explicit_route_and_empty_ledger() -> Result<
     let blockers = load_active_known_blockers(dir.path())?;
     assert_eq!(blockers.len(), 1);
     assert_eq!(blockers[0]["route"], "custom_triage_lane");
+    assert_eq!(blockers[0]["expires_after_days"], 14);
 
     let empty_dir = temp_root_with_ledger(&serde_json::json!([]))?;
     assert!(

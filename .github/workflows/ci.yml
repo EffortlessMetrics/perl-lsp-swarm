@@ -1733,8 +1733,8 @@ jobs:
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     # Run on every PR push — this is the regression prevention gate.
     # Flakiness note: .ci/ux-flakes.json records quarantine/disposition state for
-    # known-flaky UX scenario tests (the historical scenario_14 / @INC conformance
-    # rows among others); any active row must carry the bounded review contract
+    # known-flaky UX scenario tests (currently all of them historical scenario_14 /
+    # @INC conformance rows); any active row must carry the bounded review contract
     # (issue, owner, expiry) enforced by the quarantine registry contract test,
     # but the registry is advisory only — it is NOT enforced here. If any
     # scenario_14 test fails this job fails and merge-gate blocks. Quarantine

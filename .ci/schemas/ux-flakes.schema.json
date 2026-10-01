@@ -254,6 +254,14 @@
           "minimum": 1,
           "description": "Current GitHub issue for active failures; null when no current failure remains."
         },
+        "route": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "Optional explicit triage route for the update-status blocker projection; when absent or null the projection derives the route from failure_class."
+        },
         "owner": {
           "type": [
             "string",
@@ -344,7 +352,8 @@
               },
               "owner": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "pattern": "\\S"
               },
               "expires_after_days": {
                 "type": "integer",

@@ -9,15 +9,23 @@
 //!    re-verifies that binding: it fails when the recorded sha is fabricated or
 //!    pruned in a full-history clone, when the sha does not carry the recorded
 //!    blob, or when the quarantined artifact has drifted since verification.
-//! 3. Every `verified` disposition names the concrete `verification_pr` that
-//!    carried the evidence run, and all verified Scenario 14 rows bind the same
-//!    quarantined artifact blob, so artifact drift invalidates every binding at
-//!    once; each distinct (verification_pr, verified_sha) evidence event is
-//!    independently re-verified against that blob by the drift control, so
-//!    stale or free-floating provenance cannot hide behind the sha↔blob checks.
+//! 3. Every `verified` disposition names a well-formed `verification_pr`
+//!    (format gate: integer >= 1 — null, zero, or string identities fail), and
+//!    all verified Scenario 14 rows bind the same quarantined artifact blob, so
+//!    artifact drift invalidates every binding at once; each distinct
+//!    (verification_pr, verified_sha) evidence event is independently
+//!    re-verified against that blob by the drift control. Boundary: whether the
+//!    named PR actually carried the evidence run is attested by review, not
+//!    machine-verifiable from git — the sha↔blob checks bind the *artifact* to
+//!    exact commits, not the PR identity to the run.
 //! 4. Every `active` row carries the bounded review contract of #10015: a
 //!    current issue, a named owner, and a bounded `expires_after_days` — no
 //!    indefinite, ownerless quarantine may re-enter the registry silently.
+//!    Boundary: this is a bound-existence gate (integer >= 1). Anchor-date
+//!    deadline enforcement — #10015's "expired rows become action-required" —
+//!    is deliberately not implemented here; it is vacuous today because the
+//!    registry carries zero active rows, and must not be read as expiry
+//!    enforcement.
 
 use std::fs;
 use std::io;
@@ -69,7 +77,10 @@ fn check_verification_pr(test: &str, verification_pr: &Value) -> Result<(), Stri
 /// name its current issue and owner and carry a bounded review expiry. Without
 /// this detector an active row can re-enter the registry with
 /// `expires_after_days: null` and no honest owner — the exact unbounded shape
-/// #10015 forbids. Shared by the live contract test and the negative control.
+/// #10015 forbids. Boundary: bound-existence only — no anchor-date deadline
+/// arithmetic, so an active row whose window has passed is not auto-rejected;
+/// #10015's "expired rows become action-required" stays unimplemented here.
+/// Shared by the live contract test and the negative control.
 fn check_active_row_bounds(
     test: &str,
     issue: &Value,
@@ -555,11 +566,15 @@ fn active_row_bounds_negative_control_fails_on_unbounded_rows() -> TestResult {
         assert!(err.contains("owner"), "{err}");
     }
 
-    // 6. Issue-less active rows fail.
-    let err = check_active_row_bounds("t", &Value::Null, &owner, &bounded)
-        .err()
-        .ok_or_else(|| invalid_data("missing issue must fail"))?;
-    assert!(err.contains("issue"), "{err}");
+    // 6. Issue-less or placeholder issue identities fail. Fault shapes mirror
+    // the expiry cases (null, 0, negative, string) so a refactor weakening the
+    // issue >= 1 bound cannot stay green.
+    for bad_issue in [Value::Null, Value::from(0), Value::from(-10015), Value::from("10015")] {
+        let err = check_active_row_bounds("t", &bad_issue, &owner, &bounded)
+            .err()
+            .ok_or_else(|| invalid_data("invalid issue must fail"))?;
+        assert!(err.contains("issue"), "{err}");
+    }
 
     Ok(())
 }

@@ -2640,6 +2640,29 @@ mod tests {
             "active entry expires_after_days must be a positive review bound"
         );
 
+        // The then clause must reject blank owners, matching the quarantine
+        // contract detector's trim semantics (issue #9879 review): a
+        // whitespace-only owner string would otherwise satisfy minLength
+        // while naming nobody.
+        assert_eq!(
+            then_clause["properties"]["owner"]["pattern"], "\\S",
+            "active entry owner should be narrowed to a non-blank string"
+        );
+
+        // The blocker projection consumes an optional explicit per-row route
+        // (editor_ux load_active_known_blockers), so the schema must declare
+        // it under additionalProperties: false — an undeclared-but-parsed
+        // field would make the checked schema stricter than the Rust parser.
+        let route = &entry_def["properties"]["route"];
+        let route_types: Vec<&str> = route["type"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            route_types.contains(&"string") || route["type"] == "string",
+            "flakeEntry should declare the optional route field as a string, got {route}"
+        );
+
         // Presence of owner/issue/failure_class is enforced globally by
         // flakeEntry.required, which covers active entries.
         let required =
