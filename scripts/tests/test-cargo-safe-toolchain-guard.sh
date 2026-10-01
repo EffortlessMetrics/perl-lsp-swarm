@@ -176,6 +176,37 @@ else
   fail "preflight.sh: stale cargo received delegated args: $(cat "$STALE_LOG")"
 fi
 
+# Only the opt-in route promises no automatic toolchain installation. Model a
+# missing pin with a fake rustup Cargo proxy: without suppression even --version
+# would attempt installation. No network or actual toolchain mutation is involved.
+if [[ "$(basename "$CARGO_SAFE")" == "cargo-admitted" ]]; then
+  MISSING_BIN="${TMPDIR_BASE}/missing-pin-bin"
+  mkdir -p "$MISSING_BIN"
+  cat > "${MISSING_BIN}/cargo" <<'MISSING_PROXY'
+#!/usr/bin/env bash
+if [[ "${RUSTUP_AUTO_INSTALL:-1}" != "0" ]]; then
+  printf 'attempted install\n' > "$INSTALL_MARKER"
+fi
+printf 'missing pinned toolchain (fixture)\n' >&2
+exit 1
+MISSING_PROXY
+  chmod +x "${MISSING_BIN}/cargo"
+  INSTALL_MARKER="${TMPDIR_BASE}/control-install" RUSTUP_AUTO_INSTALL=1 "${MISSING_BIN}/cargo" --version >/dev/null 2>&1 || true
+  if [[ -f "${TMPDIR_BASE}/control-install" ]]; then
+    pass "missing-pin control would attempt install during version probe"
+  else
+    fail "missing-pin control did not exercise automatic install"
+  fi
+  code=0
+  PATH="${MISSING_BIN}:$PATH" INSTALL_MARKER="${TMPDIR_BASE}/guarded-install" RUSTUP_AUTO_INSTALL=1 \
+    DEVPLANE="${TMPDIR_BASE}/unallocated-plane" bash "$CARGO_SAFE" check >"${TMPDIR_BASE}/missing.out" 2>"${TMPDIR_BASE}/missing.err" || code=$?
+  if [[ "$code" -eq 78 && ! -e "${TMPDIR_BASE}/guarded-install" && ! -e "${TMPDIR_BASE}/unallocated-plane" ]]; then
+    pass "missing pin refuses before installation or storage allocation"
+  else
+    fail "missing pin must refuse without installation/allocation (exit $code)"
+  fi
+fi
+
 TOTAL=$((PASS + FAIL))
 echo ""
 echo "=== Results: ${PASS}/${TOTAL} passed ==="

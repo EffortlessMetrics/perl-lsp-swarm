@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Never let the pre-admission version probe install a missing pinned toolchain.
+export RUSTUP_AUTO_INSTALL=0
 # Keep stale-toolchain refusal before admission/build work.
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
 if [[ $# -eq 1 && "$1" == "--version" ]]; then

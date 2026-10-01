@@ -132,6 +132,7 @@ def main(args=None):
     try:
         validate_args(args)
         env = os.environ.copy()
+        env["RUSTUP_AUTO_INSTALL"] = "0"
         worktree, slot, paths = resource_plan(env)
         admission = check_capacity([slot, *paths.values()], env)  # before any mkdir/Cargo invocation
         if env.get("RUSTC_WRAPPER") or env.get("RUSTC_WORKSPACE_WRAPPER"):
@@ -165,8 +166,9 @@ def main(args=None):
                        *args[:1], "--target-dir", str(paths["target"]), *args[1:]]
             # Cargo's [env] force=true can override process environment for
             # rustc/build scripts. Override those config entries as well.
-            for name in ("TEMP", "TMP", "TMPDIR"):
-                for field, value in (("value", json.dumps(str(paths["temp"]))), ("force", "true"), ("relative", "false")):
+            for name in ("TEMP", "TMP", "TMPDIR", "RUSTUP_AUTO_INSTALL"):
+                child_value = "0" if name == "RUSTUP_AUTO_INSTALL" else str(paths["temp"])
+                for field, value in (("value", json.dumps(child_value)), ("force", "true"), ("relative", "false")):
                     command[1:1] = ["--config", "env." + name + "." + field + "=" + value]
             result = subprocess.call(command, env=env)
             # Cargo uses 101 for ordinary failure and may also panic with 101.

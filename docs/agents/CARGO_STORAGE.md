@@ -4,7 +4,12 @@
 agent route for explicit staged rollout. The existing `scripts/cargo-safe` stays
 unchanged for caller compatibility; it does **not** provide the guarantees below.
 Root orchestration must explicitly choose `cargo-admitted` after host admission.
-Existing callers and running processes are not automatically protected. Python 3.10+ and Cargo 1.95+ are required. Keep the qualification
+Existing callers and running processes are not automatically protected. The admitted
+route sets `RUSTUP_AUTO_INSTALL=0` before even the version probe, preserves it for
+Cargo, and forces it in Cargo's child environment; a missing pinned toolchain
+refuses instead of automatically installing. This changes no global rustup setting.
+See the [rustup environment reference](https://rust-lang.github.io/rustup/environment-variables.html).
+Python 3.10+ and Cargo 1.95+ are required. Keep the qualification
 profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
 
