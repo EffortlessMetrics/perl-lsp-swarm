@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16595,
-  "reason": "Folder-scoped includePaths configuration fix increases the combined bundled extension entrypoint by 639 bytes.",
-  "base_baseline_file_sha256": "02be3f2c70c23fe13159d7f0c3e1e84ac7f53ab291c51a28b21c22cb0d5a5791",
-  "candidate_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
-  "base_inventory_sha256": "91c883030a238ffa984d0fe649ff56cb0f1669efb096f1beaaa3eabaa976c9cf",
-  "candidate_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e"
+  "owner_issue": 16592,
+  "reason": "Demo module-resolution pin adds a 733-byte .perl-lsp.toml to both demo roots; exactly one new packaged file (assets/demo-project/.perl-lsp.toml), no other packaged content changed.",
+  "base_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
+  "candidate_baseline_file_sha256": "c7b46c32646fd0194be810b4e406cb120dbc1fac76a6d24b170241a89acb33da",
+  "base_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e",
+  "candidate_inventory_sha256": "1c072c2a3ffa224a34e9ae821546c72023c704ef8abcb9bc22e5b9439a1fe1fa"
 }
