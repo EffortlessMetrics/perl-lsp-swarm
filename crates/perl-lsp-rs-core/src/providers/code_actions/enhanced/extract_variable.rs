@@ -98,10 +98,14 @@ pub fn suggest_variable_name(node: &Node) -> String {
 
 /// Collect the variable names that are already bound at `offset`.
 ///
-/// Walks only the nodes whose span contains `offset`, so the cost is bounded by
-/// the enclosing scope chain rather than by the size of the file. Declarations
-/// inside *nested* scopes are deliberately skipped: a `my` in an inner block is
-/// not visible at `offset` and reusing its name cannot shadow anything there.
+/// The recursion descends only through the nodes whose span contains
+/// `offset`, and at each scope on that chain it records the declarations of
+/// that scope's own body. Program-level and same-scope declarations anywhere
+/// in the file — including *after* `offset` — therefore count: inserting a
+/// second `my $x` into a scope that already declares one later still triggers
+/// Perl's masking warning. Declarations inside *nested* scopes are skipped: a
+/// `my` in an inner block is not visible at `offset` and reusing its name
+/// cannot shadow anything there.
 fn visible_names_at(ast_root: &Node, offset: usize) -> HashSet<String> {
     let mut names = HashSet::new();
     collect_enclosing_scope_names(ast_root, offset, &mut names);
