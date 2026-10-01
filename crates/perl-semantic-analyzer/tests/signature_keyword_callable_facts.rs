@@ -625,13 +625,63 @@ fn versioned_and_spaced_empty_imports_fail_closed() {
 
 #[test]
 fn unsupported_requested_version_does_not_enable_keywords() {
-    let facts = minted(
-        "package App;\nuse Function::Parameters 3.0;\nfun add ($x) { $x }\n",
-        SignatureKeywordFamily::FunctionParameters,
-        "2.002006",
-        "gen-1",
-    );
+    let code = "package App;\nuse Function::Parameters 3.0;\nfun add ($x) { $x }\n";
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
     assert!(facts.is_empty());
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let extracted =
+        extract_signature_keyword_units(&ast, code, FileId(1), SourceGeneration::known("gen-1"));
+    assert_eq!(extracted.sites.len(), 1);
+    assert!(
+        !extracted.sites[0].is_exact(),
+        "an unadmitted version pin must not report exact activation"
+    );
+}
+
+#[test]
+fn unadmitted_versioned_no_does_not_disable_keywords() {
+    let code = r#"
+package App;
+use Function::Parameters;
+no Function::Parameters 3.0;
+fun add ($x) { $x }
+"#;
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "add").is_some());
+}
+
+#[test]
+fn extra_two_statement_arguments_are_not_a_declaration() {
+    let code = r#"
+package App;
+use Function::Parameters;
+fun add { 1 }, 2
+"#;
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "add").is_none());
+}
+
+#[test]
+fn comment_semicolon_between_fun_and_name_is_still_a_declaration() {
+    let code = "package App;\nuse Function::Parameters;\nfun # note; still docs\nadd { 1 }\n";
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    assert!(lookup_signature_keyword_callable(&facts, Some("App"), "add").is_some());
+}
+
+#[test]
+fn comment_between_signature_and_brace_still_recovers_the_body() {
+    let code = "package App;\nuse Function::Parameters;\nfun add ($x) # note\n{ $x }\n";
+    let facts = minted(code, SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1");
+    let add = query(&facts, Some("App"), "add");
+    let body = add.body_anchor.as_ref().and_then(|anchor| {
+        let start = usize::try_from(anchor.start_byte).ok()?;
+        let end = usize::try_from(anchor.end_byte).ok()?;
+        code.get(start..end)
+    });
+    let body = must_some(body);
+    assert!(body.contains("$x"), "body range was {body:?}");
+    assert!(body.starts_with('{') && body.ends_with('}'), "body range was {body:?}");
 }
 
 trait DeclarationPackage {

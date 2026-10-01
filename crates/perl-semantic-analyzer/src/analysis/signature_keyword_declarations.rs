@@ -42,10 +42,15 @@ pub struct SignatureKeywordActivationSite {
 }
 
 impl SignatureKeywordActivationSite {
-    /// Whether this site can participate in exact activation.
+    /// Whether this site can participate in exact keyword activation.
+    ///
+    /// Import-list Exact is not enough: a requested version outside the
+    /// reviewed constraint records the observation but does not enable
+    /// keywords and must not report as exact activation.
     #[must_use]
     pub fn is_exact(&self) -> bool {
         self.import_disposition.is_exact()
+            && requested_version_is_admitted(self.family, self.requested_version.as_deref())
     }
 }
 
@@ -299,10 +304,14 @@ fn requested_version_is_admitted(family: SignatureKeywordFamily, requested: Opti
 
 fn apply_no(node: &Node, module: &str, args: &[String], state: &mut WalkState<'_>) {
     let source_span = state.source.get(node.location.start..node.location.end);
-    let Some((family, _, disposition)) = classify_signature_keyword_use(module, args, source_span)
+    let Some((family, requested_version, disposition)) =
+        classify_signature_keyword_use(module, args, source_span)
     else {
         return;
     };
+    if !requested_version_is_admitted(family, requested_version.as_deref()) {
+        return;
+    }
     let keywords = match disposition {
         SignatureKeywordImportDisposition::Exact { keywords } => keywords,
         _ => SignatureKeywordSet::none(),
@@ -427,6 +436,9 @@ fn try_extract_two_statement_optional_signature(
     if !is_declaration_name(name) {
         return false;
     }
+    if args.len() != 1 {
+        return false;
+    }
     let Some(first_arg) = args.first() else {
         return false;
     };
@@ -436,7 +448,7 @@ fn try_extract_two_statement_optional_signature(
     if state
         .source
         .get(first.location.end..second.location.start)
-        .is_some_and(|gap| gap.contains(';'))
+        .is_some_and(gap_contains_statement_semicolon)
     {
         return false;
     }
@@ -596,13 +608,48 @@ fn block_operator_span(
     let bytes = source.as_bytes();
     let mut index = after_callee.min(bytes.len());
     let end = block_end.min(bytes.len());
-    while index < end && bytes[index].is_ascii_whitespace() {
-        index = index.saturating_add(1);
-    }
+    index = skip_ascii_whitespace_and_line_comments(bytes, index, end);
     if bytes.get(index).copied() != Some(b'{') {
         return None;
     }
     Some((index, end))
+}
+
+fn skip_ascii_whitespace_and_line_comments(bytes: &[u8], mut index: usize, end: usize) -> usize {
+    while index < end {
+        if bytes[index].is_ascii_whitespace() {
+            index = index.saturating_add(1);
+            continue;
+        }
+        if bytes[index] == b'#' {
+            while index < end && bytes[index] != b'\n' {
+                index = index.saturating_add(1);
+            }
+            continue;
+        }
+        break;
+    }
+    index
+}
+
+fn gap_contains_statement_semicolon(gap: &str) -> bool {
+    let mut in_comment = false;
+    for character in gap.chars() {
+        if in_comment {
+            if character == '\n' {
+                in_comment = false;
+            }
+            continue;
+        }
+        if character == '#' {
+            in_comment = true;
+            continue;
+        }
+        if character == ';' {
+            return true;
+        }
+    }
+    false
 }
 
 fn parameter_span_has_type_constraint(source: &str, node: &Node) -> bool {

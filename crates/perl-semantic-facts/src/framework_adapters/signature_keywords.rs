@@ -882,11 +882,25 @@ pub fn signature_keyword_callable_facts(
         .iter()
         .filter(|declaration| {
             declaration.family == family
+                && family_admits_keyword(family, declaration.keyword)
                 && declaration.package.as_deref() == package
                 && declaration.source_generation == *generation
         })
         .map(|declaration| mint_callable_fact(family, generation, declaration))
         .collect()
+}
+
+const fn family_admits_keyword(family: SignatureKeywordFamily, keyword: SignatureKeyword) -> bool {
+    matches!(
+        (family, keyword),
+        (
+            SignatureKeywordFamily::FunctionParameters,
+            SignatureKeyword::Fun | SignatureKeyword::Method
+        ) | (
+            SignatureKeywordFamily::MethodSignatures,
+            SignatureKeyword::Func | SignatureKeyword::Method
+        )
+    )
 }
 
 fn mint_callable_fact(
@@ -1214,6 +1228,28 @@ mod tests {
             )
             .len(),
             1
+        );
+    }
+
+    #[test]
+    fn minting_rejects_keyword_outside_family() {
+        let current = detect_function_parameters(&input(
+            SignatureKeywordFamily::FunctionParameters,
+            vec![matched(SignatureKeywordFamily::FunctionParameters, "2.002006", "gen-1")],
+            "gen-1",
+        ));
+        let mut mismatched = sample_fun_declaration("gen-1");
+        mismatched.keyword = SignatureKeyword::Func;
+        assert!(current.is_detected());
+        assert!(
+            signature_keyword_callable_facts(
+                &current,
+                SignatureKeywordFamily::FunctionParameters,
+                Some("App"),
+                &[mismatched],
+            )
+            .is_empty(),
+            "Method::Signatures `func` must not mint under Function::Parameters"
         );
     }
 
