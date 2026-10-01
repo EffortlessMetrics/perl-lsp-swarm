@@ -49,6 +49,15 @@ if not check:
         write('target/ripr/review/comments.json')
         if os.environ.get('TEST_CANCEL'):
             os.kill(os.getppid(), signal.SIGTERM)
+        if os.environ.get('TEST_DESTINATION_ANCESTOR'):
+            pathlib.Path('.ci/artifacts/ripr/target').symlink_to(
+                os.environ['TEST_OUTSIDE'], target_is_directory=True)
+        if os.environ.get('TEST_SOURCE_ANCESTOR'):
+            old = pathlib.Path('target/ripr')
+            old.rename('target/ripr-current')
+            old.symlink_to(os.environ['TEST_OUTSIDE'], target_is_directory=True)
+        if os.environ.get('TEST_UNREADABLE'):
+            write('target/ripr/pr/unreadable/diagnostic.json')
     elif command == 'impacted-evidence':
         if not os.environ.get('TEST_MISSING_IMPACTED'):
             write('target/xtask/impacted-evidence/latest.json')
@@ -211,6 +220,58 @@ class GovernedRiprProof(unittest.TestCase):
         result = self.run_proof(TEST_LINK="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.artifact("target/ripr/pr/unsafe-link").exists())
+
+    def outside(self):
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        (outside / "private.json").write_text("private sentinel")
+        return outside
+
+    def test_source_ancestors_are_guarded_before_producer_invalidation(self):
+        outside = self.outside()
+        for ancestor in ("target", "target/ripr", "target/receipts", "target/xtask"):
+            with self.subTest(ancestor=ancestor):
+                path = self.repo / ancestor
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.symlink_to(outside, target_is_directory=True)
+                result = self.run_proof()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("RIPR ancestor", result.stderr)
+                self.assertFalse(self.commands.exists())
+                self.assertEqual([p.name for p in outside.iterdir()], ["private.json"])
+                path.unlink()
+                shutil.rmtree(self.artifact())
+
+    def test_changed_source_ancestor_cannot_export_outside_bytes(self):
+        outside = self.outside()
+        (outside / "pr").mkdir()
+        (outside / "pr/private-diag.json").write_text("private")
+        result = self.run_proof(TEST_SOURCE_ANCESTOR="1", TEST_OUTSIDE=str(outside))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.artifact("target/ripr/pr/private-diag.json").exists())
+        self.assertEqual((outside / "private.json").read_text(), "private sentinel")
+
+    def test_destination_ancestor_cannot_write_outside_reserved_root(self):
+        outside = self.outside()
+        result = self.run_proof(TEST_DESTINATION_ANCESTOR="1", TEST_OUTSIDE=str(outside))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual([p.name for p in outside.iterdir()], ["private.json"])
+
+    def test_traversal_error_is_red_instead_of_silently_omitting_diagnostics(self):
+        # Inject only the directory scan failure; execute the real Bash copier.
+        hook = Path(self.temp.name) / "hook"
+        hook.mkdir()
+        (hook / "sitecustomize.py").write_text(
+            "import os\noriginal = os.scandir\n"
+            "def controlled(path):\n"
+            "    if str(path).endswith('/pr/unreadable'):\n"
+            "        raise PermissionError('controlled scan failure')\n"
+            "    return original(path)\n"
+            "os.scandir = controlled\n")
+        result = self.run_proof(TEST_UNREADABLE="1", PYTHONPATH=str(hook))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("controlled scan failure", result.stderr)
+        self.assertFalse(self.artifact("target/ripr/pr/unreadable/diagnostic.json").exists())
 
     def test_preseeded_artifact_root_is_not_reused_or_deleted(self):
         self.artifact().mkdir(parents=True)

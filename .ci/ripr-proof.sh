@@ -67,12 +67,17 @@ export RIPR_VERSION=0.10.1 RIPR_MAX_DIFF_INDEX_FILES=2560
 export CARGO_INCREMENTAL=0
 
 for component in .ci .ci/artifacts .ci/artifacts/ripr; do
-  [[ ! -L $component ]] || { echo '::error::symlink in RIPR artifact root' >&2; exit 1; }
+  [[ ! -L $component && ( ! -e $component || -d $component ) ]] || {
+    echo '::error::non-directory or symlink in RIPR artifact root' >&2; exit 1;
+  }
 done
-artifact_dir=$GITHUB_WORKSPACE/.ci/artifacts/ripr
-if [[ -e $artifact_dir && -n $(find "$artifact_dir" -mindepth 1 -print -quit) ]]; then
-  echo '::error::RIPR artifact root is not empty for this invocation' >&2
-  exit 1
+artifact_dir=$(pwd -P)/.ci/artifacts/ripr
+if [[ -e $artifact_dir ]]; then
+  existing=$(find "$artifact_dir" -mindepth 1 -print -quit) || exit 1
+  [[ -z $existing ]] || {
+    echo '::error::RIPR artifact root is not empty for this invocation' >&2
+    exit 1
+  }
 fi
 mkdir -p -- "$artifact_dir"
 export RIPR_FRESHNESS_HANDOFF
@@ -83,6 +88,94 @@ failed=0
 fresh() {
   [[ -f $RIPR_FRESHNESS_HANDOFF/clear-succeeded ]] &&
     [[ $(cat "$RIPR_FRESHNESS_HANDOFF/clear-succeeded") == "$RIPR_FRESHNESS_TOKEN" ]]
+}
+
+# Guard canonical source ancestors before invalidation as well as export.
+# Existing paths are never replaced; each copy checks its destination parents.
+handoff_receipts() {
+  python3 - "$artifact_dir" "$1" <<'PY'
+import os, shutil, stat, sys
+from pathlib import Path
+root = Path.cwd()
+destination = Path(sys.argv[1])
+mode = sys.argv[2]
+sources = (
+    'target/ripr/pr', 'target/ripr/review', 'target/xtask/impacted-evidence',
+    'target/receipts/quality/ripr-plus.json',
+    'target/receipts/quality/ripr-badge-producer.json',
+    'target/receipts/quality/quality-gate-ripr.json',
+    'target/receipts/quality/quality-gate-ripr.md',
+)
+
+def directories(path, create=False):
+    current = root
+    for component in path.relative_to(root).parts:
+        current /= component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            if create:
+                current.mkdir()
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            raise SystemExit('non-directory or linked RIPR ancestor: ' + str(current))
+
+def fresh_target(path):
+    directories(path.parent, create=True)
+    if path.exists() or path.is_symlink():
+        raise SystemExit('pre-existing RIPR export destination: ' + str(path))
+
+# The repository-relative source boundary must hold before any producer can
+# invalidate or write through these paths. Repeat it after producer execution.
+for relative in sources:
+    source = root / relative
+    directories(source.parent)
+    try:
+        info = source.lstat()
+    except FileNotFoundError:
+        continue
+    directory_source = relative in sources[:3]
+    expected = stat.S_ISDIR(info.st_mode) if directory_source else stat.S_ISREG(info.st_mode)
+    if not expected or (not directory_source and info.st_nlink != 1):
+        raise SystemExit('non-regular or linked RIPR source: ' + relative)
+directories(destination)
+for name in ('ripr-tool-identity.txt', 'ripr-cgroup-memory.txt'):
+    path = destination / name
+    if path.exists() or path.is_symlink():
+        raise SystemExit('pre-existing RIPR diagnostic destination: ' + name)
+if mode == 'guard':
+    raise SystemExit(0)
+assert mode == 'copy'
+
+def copy_file(source):
+    directories(source.parent)
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise SystemExit('non-regular or linked RIPR receipt: ' + str(source))
+    target = destination / source.relative_to(root)
+    fresh_target(target)
+    shutil.copyfile(source, target, follow_symlinks=False)
+
+def traversal_error(error):
+    raise error
+
+for relative in sources:
+    source = root / relative
+    if not source.exists():
+        continue
+    if not source.is_dir():
+        copy_file(source)
+        continue
+    for walked, children, files in os.walk(source, followlinks=False, onerror=traversal_error):
+        walked = Path(walked)
+        directories(walked)
+        children[:] = [name for name in children if not name.startswith('.')]
+        for name in children:
+            directories(walked / name)
+        for name in files:
+            if not name.startswith('.'):
+                copy_file(walked / name)
+PY
 }
 
 finish() {
@@ -98,54 +191,23 @@ finish() {
     # Match the existing upload's hidden-file exclusion. The separate
     # target/ripr/stdout-staging tree is not in the canonical source list.
     # Copy regular files without following links into private/stale paths.
-    python3 - "$artifact_dir" <<'PY' || fail_finish
-import os, shutil, stat, sys
-from pathlib import Path
-destination = Path(sys.argv[1])
-sources = (
-    'target/ripr/pr', 'target/ripr/review', 'target/xtask/impacted-evidence',
-    'target/receipts/quality/ripr-plus.json',
-    'target/receipts/quality/ripr-badge-producer.json',
-    'target/receipts/quality/quality-gate-ripr.json',
-    'target/receipts/quality/quality-gate-ripr.md',
-)
-def copy_file(source):
-    info = source.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        raise SystemExit('non-regular or linked RIPR receipt: ' + str(source))
-    target = destination / source
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target, follow_symlinks=False)
-for relative in sources:
-    source = Path(relative)
-    if source.is_symlink():
-        raise SystemExit('linked RIPR source: ' + relative)
-    if not source.exists():
-        continue
-    if not source.is_dir():
-        copy_file(source)
-        continue
-    for root, directories, files in os.walk(source, followlinks=False):
-        directories[:] = [name for name in directories if not name.startswith('.')]
-        for name in directories:
-            if (Path(root) / name).is_symlink():
-                raise SystemExit('linked RIPR directory: ' + str(Path(root) / name))
-        for name in files:
-            if not name.startswith('.'):
-                copy_file(Path(root) / name)
-PY
-    {
-      printf 'version=%s\n' "$version"
-      sha256sum -- "$(command -v ripr)"
-    } > "$artifact_dir/ripr-tool-identity.txt" || fail_finish
-    for metric in memory.peak memory.max memory.events; do
-      if [[ -r /sys/fs/cgroup/$metric ]]; then
-        printf '%s\n' "$metric"
-        cat -- "/sys/fs/cgroup/$metric"
+    handoff_receipts copy || fail_finish
+    if handoff_receipts guard; then
+      {
+        printf 'version=%s\n' "$version"
+        sha256sum -- "$(command -v ripr)"
+      } > "$artifact_dir/ripr-tool-identity.txt" || fail_finish
+      for metric in memory.peak memory.max memory.events; do
+        if [[ -r /sys/fs/cgroup/$metric ]]; then
+          printf '%s\n' "$metric"
+          cat -- "/sys/fs/cgroup/$metric"
       else
         printf '%s=NOT_PROVEN\n' "$metric"
       fi
     done > "$artifact_dir/ripr-cgroup-memory.txt" || fail_finish
+    else
+      fail_finish
+    fi
   else
     echo '::error::no current freshness handoff; canonical RIPR files were not exported' >&2
     fail_finish
@@ -161,6 +223,7 @@ run() {
   if "$@"; then :; else failed=1; fi
 }
 
+handoff_receipts guard
 ripr doctor
 run cargo xtask ripr-pr --base "$base" --head HEAD --pr-head "$pr_head"
 run cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
