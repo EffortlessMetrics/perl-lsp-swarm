@@ -131,6 +131,44 @@ case "$product_unit_flush_status" in
         ;;
 esac
 
+# The post-commit pointer-entry flush happens after the rename, so it cannot
+# refuse the promotion; the outcome must still be recorded rather than
+# discarded. flush_store_dir stores the status, traces it, and warns on a
+# failure. With the old discarded call (`fsync_path ... >/dev/null || true`)
+# both cases would observe an empty status and no trace or warning.
+store_flush_outcome() {
+    local _mode="$1"
+    printf '%s\n' "$_mode" > "$mode_file"
+    rm -f "$TMP/store-flush-trace.txt" "$TMP/store-flush-warn.txt"
+    PERL_LSP_INSTALLER_LIBRARY_ONLY=1 \
+    PERL5LIB="$TMP/fakelib${PERL5LIB:+:$PERL5LIB}" \
+    PERL_LSP_TEST_FSYNC_MODE_FILE="$mode_file" \
+    PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE="$TMP/store-flush-trace.txt" \
+    INSTALL_DIR="$TMP/store-root" \
+        bash -c 'set -- ; source "'"$INSTALLER"'"; mkdir -p "$(product_store_dir)"; : > "$PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE"; flush_store_dir; printf "status=%s\n" "$product_unit_store_flush_status"' \
+        2>"$TMP/store-flush-warn.txt"
+}
+
+_out="$(store_flush_outcome "ok")"
+if [ "$_out" = "status=flushed" ] \
+    && [ "$(cat "$TMP/store-flush-trace.txt")" = "dir store-post-commit flushed" ] \
+    && [ ! -s "$TMP/store-flush-warn.txt" ]; then
+    pass "a flushed store directory is recorded without a warning"
+else
+    fail_case "a flushed store directory is recorded without a warning" \
+        "out=$_out trace=$(cat "$TMP/store-flush-trace.txt" 2>/dev/null || true) warn=$(cat "$TMP/store-flush-warn.txt" 2>/dev/null || true)"
+fi
+
+_out="$(store_flush_outcome "error")"
+if [ "$_out" = "status=sync_failed" ] \
+    && [ "$(cat "$TMP/store-flush-trace.txt")" = "dir store-post-commit sync_failed" ] \
+    && grep -q "pointer-entry flush" "$TMP/store-flush-warn.txt"; then
+    pass "a failed post-commit pointer-entry flush is recorded and warned, not discarded"
+else
+    fail_case "a failed post-commit pointer-entry flush is recorded and warned, not discarded" \
+        "out=$_out trace=$(cat "$TMP/store-flush-trace.txt" 2>/dev/null || true) warn=$(cat "$TMP/store-flush-warn.txt" 2>/dev/null || true)"
+fi
+
 if [ "$FAIL" -ne 0 ]; then
     printf 'FAILED %s  passed %s\n' "$FAIL" "$PASS" >&2
     exit 1

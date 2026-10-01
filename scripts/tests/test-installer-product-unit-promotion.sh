@@ -867,6 +867,36 @@ else
         "durability=${receipt_durability[*]:-none} output=$LAST_OUTPUT"
 fi
 
+# The post-commit pointer-entry flush is recorded, not discarded: the receipt
+# carries exactly one pointer_flush= outcome, it is an accepted status, and it
+# agrees with the traced store-post-commit flush. durability= alone covers
+# candidate contents; the selector move's own durability is named separately.
+setup_root
+stage_pair "$EXTRACT_DIR" "pointer-a" "pointer-a-dap"
+: > "$TMP/pointer-flush-trace.txt"
+PERL_LSP_PRODUCT_UNIT_FLUSH_TRACE="$TMP/pointer-flush-trace.txt" run_promote release
+pointer_flush_ok=1
+[ "$LAST_STATUS" -eq 0 ] || pointer_flush_ok=0
+receipt_pointer=($(printf '%s\n' "$LAST_OUTPUT" | sed -n 's/.*pointer_flush=\([a-z_]*\).*/\1/p'))
+[ "${#receipt_pointer[@]}" -eq 1 ] || pointer_flush_ok=0
+case "${receipt_pointer[0]:-}" in
+    flushed|host_unsupported) ;;
+    *) pointer_flush_ok=0 ;;
+esac
+store_commit_status="$(sed -n 's/^dir store-post-commit //p' "$TMP/pointer-flush-trace.txt" | tail -n 1)"
+[ -n "$store_commit_status" ] || pointer_flush_ok=0
+case "$store_commit_status" in
+    flushed|host_unsupported) ;;
+    *) pointer_flush_ok=0 ;;
+esac
+[ "$store_commit_status" = "${receipt_pointer[0]:-}" ] || pointer_flush_ok=0
+if [ "$pointer_flush_ok" -eq 1 ]; then
+    pass "receipt records the post-commit pointer-entry flush and agrees with the trace"
+else
+    fail_case "receipt records the post-commit pointer-entry flush and agrees with the trace" \
+        "status=$LAST_STATUS pointer=${receipt_pointer[*]:-none} trace_store=${store_commit_status:-missing} trace=$(cat "$TMP/pointer-flush-trace.txt" 2>/dev/null || true) output=$LAST_OUTPUT"
+fi
+
 # Startup recovery: a current pointer left naming an incomplete candidate is
 # rolled back to the last complete unit rather than served as a working pair.
 setup_root

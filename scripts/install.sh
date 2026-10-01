@@ -1527,12 +1527,26 @@ flush_candidate_durability() {
 }
 
 # The pointer's own directory entry only becomes durable once the store
-# directory is flushed after the rename, so the commit flushes it again.
+# directory is flushed after the rename, so the commit flushes it again. The
+# pointer has already moved by then, so a failure here cannot refuse the
+# promotion; instead of discarding the outcome it is recorded in
+# product_unit_store_flush_status (and the receipt) so the receipt never
+# implies the selector move itself was proven durable when only the candidate
+# contents were.
+product_unit_store_flush_status="unverified"
 flush_store_dir() {
+    local _result
     if [ "${PERL_LSP_PRODUCT_UNIT_NO_FLUSH:-}" = "1" ]; then
+        product_unit_store_flush_status="skipped"
         return 0
     fi
-    fsync_path "$(product_store_dir)" >/dev/null || true
+    _result="$(fsync_path "$(product_store_dir)")" || _result="host_unsupported"
+    product_unit_store_flush_status="$_result"
+    product_unit_flush_trace "dir store-post-commit ${_result}"
+    case "$_result" in
+        flushed|host_unsupported) ;;
+        *) warn "product-unit pointer-entry flush after the selector move: ${_result}" ;;
+    esac
 }
 
 product_unit_dir_disposition() {
@@ -1589,9 +1603,9 @@ validate_and_recover_current_selection() {
             return 0
         fi
     fi
+    # err() exits, so the fail-closed refusal ends this function; there is no
+    # unrecoverable line to print afterwards.
     err "selected product unit ${_id} is incomplete and no complete previous unit exists"
-    printf 'unrecoverable candidate_id=%s\n' "$_id"
-    return 1
 }
 
 publish_immutable_candidate() {
@@ -1652,8 +1666,8 @@ commit_current_selection() {
     case "$product_unit_flush_status" in
         flushed|host_unsupported) ;;
         *)
+            # err() exits, so this refusal is terminal and nothing follows it.
             err "product-unit promotion refused: candidate ${_id} contents are not durable (${product_unit_flush_status})"
-            return 1
             ;;
     esac
     if [ -L "$_current" ]; then
@@ -1876,7 +1890,7 @@ Try one of:
     if [ -f "${_store}/current/${DAP_BIN_NAME}" ]; then
         _dap_hash="$(hash_product_member "${_store}/current/${DAP_BIN_NAME}")" || return
     fi
-    _receipt="product_unit_receipt disposition=${_disposition} candidate_id=${_id} previous=${_previous} server_sha256=${_server_hash} dap_sha256=${_dap_hash} state=selected durability=${product_unit_flush_status} recovery=${_recovery%% *}"
+    _receipt="product_unit_receipt disposition=${_disposition} candidate_id=${_id} previous=${_previous} server_sha256=${_server_hash} dap_sha256=${_dap_hash} state=selected durability=${product_unit_flush_status} pointer_flush=${product_unit_store_flush_status} recovery=${_recovery%% *}"
     case "$_receipt" in
         *"${INSTALL_DIR}"*|*"${EXTRACT_DIR}"*)
             err "product-unit receipt contained a private path"
