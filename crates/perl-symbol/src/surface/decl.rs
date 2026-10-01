@@ -35,9 +35,10 @@ use perl_ast::{Node, NodeKind};
 ///   `class`).
 /// - `container` — unqualified name of the enclosing package, `None` at
 ///   the top level
-/// - `declarator` — the scope keyword used to declare variables or named
-///   subroutines (`"my"`, `"our"`, `"local"`, `"state"`), or `None` when no
-///   scope keyword applies.  `"my"` and `"state"` bindings are lexical.
+/// - `declarator` — the scope keyword used to declare variables
+///   (`"my"`, `"our"`, `"local"`, `"state"`) or named subroutines
+///   (`"my"`, `"our"`, `"state"`), or `None` when no scope keyword applies.
+///   `"my"` and `"state"` bindings are lexical.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SymbolDecl {
     /// Symbol classification.
@@ -52,8 +53,9 @@ pub struct SymbolDecl {
     pub anchor_span: Option<(usize, usize)>,
     /// Enclosing package name, if the declaration is inside a `package`.
     pub container: Option<String>,
-    /// Scope declarator for variable or named subroutine declarations:
-    /// `"my"`, `"our"`, `"local"`, or `"state"`.  `None` when none applies.
+    /// Scope declarator: variables support `"my"`, `"our"`, `"local"`, and
+    /// `"state"`; named subroutines support `"my"`, `"our"`, and `"state"`.
+    /// `None` when no scope keyword applies.
     ///
     /// `"our"` variables are package-scoped and reachable from other files in
     /// the same package.  `"my"` variables are lexically-scoped and invisible
