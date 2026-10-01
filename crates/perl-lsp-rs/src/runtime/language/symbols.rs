@@ -243,12 +243,14 @@ impl LspServer {
                 .unwrap_or_default();
 
             let documents = self.documents_guard();
+            tracing::warn!(present = self.get_document(&documents, uri).is_some(), cap, "17020 document lookup");
             if let Some(doc) = self.get_document(&documents, uri) {
                 // Full-sync unavailability is not an ordinary parse failure.
                 // The AST-less regex fallback must keep using live `doc.text`
                 // for synchronized pending-parse gaps, and must not scan
                 // predecessor text while `full_sync_required` is set.
                 if doc.text_for_user_answers().is_none() {
+                    tracing::warn!("17020 full-sync refusal");
                     return Ok(Some(json!([])));
                 }
                 let parsed = doc.current_parsed();
@@ -267,6 +269,7 @@ impl LspServer {
                     // the innermost scope the parse proves instead of floating at
                     // the top level. Subtest calls only exist in test files, so
                     // this is empty for ordinary source.
+                    tracing::warn!(symbols = live_result.symbols.len(), source_traces = live_result.fact_traces.len(), "17020 fresh AST extraction");
                     let mut outline = live_result.symbols;
                     let subtests = perl_lsp_rs_core::providers::testing::subtest::discover_subtests(
                         ast, &doc.text,
@@ -296,6 +299,7 @@ impl LspServer {
                         document_symbols.truncate(cap);
                     }
 
+                    tracing::warn!(count = document_symbols.len(), cap, "17020 AST terminal");
                     return Ok(Some(json!(document_symbols)));
                 } else {
                     // Fallback: Extract symbols via regex when parse fails
@@ -313,6 +317,7 @@ impl LspServer {
                         symbols.truncate(cap);
                     }
                     tracing::debug!(count = symbols.len(), "Returning fallback symbols");
+                    tracing::warn!(count = symbols.len(), "17020 fallback terminal");
                     return Ok(Some(json!(symbols)));
                 }
             }

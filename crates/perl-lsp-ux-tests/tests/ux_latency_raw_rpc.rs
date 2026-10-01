@@ -415,13 +415,28 @@ fn ux_latency_document_symbols_returns_real_process_shape() -> Result<()> {
         return Ok(());
     }
 
-    let harness = UxHarness::new(e2e_config(timeout()))?;
+    let mut config = e2e_config(timeout()).env("RUST_LOG", "perl_lsp_rs=debug");
+    config.echo_stderr = true;
+    let harness = UxHarness::new(config)?;
     harness.open_file("lib/Latency/Symbols.pm", SYMBOL_SOURCE)?;
 
-    let symbols = harness.document_symbols("lib/Latency/Symbols.pm")?;
+    let raw = harness.client.request(
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": harness.workspace.uri("lib/Latency/Symbols.pm")}}),
+        timeout(),
+    )?;
+    if raw.get("error").is_some() {
+        bail!("17020 raw documentSymbol error: {raw:?}");
+    }
+    let symbols = match raw.get("result") {
+        Some(Value::Array(items)) => items.clone(),
+        Some(Value::Null) => Vec::new(),
+        _ => bail!("17020 malformed raw envelope: {raw:?}"),
+    };
     assert!(
         symbol_tree_contains_name(&symbols, "alpha"),
-        "documentSymbol must expose the alpha subroutine over the e2e path; got {symbols:?}"
+        "documentSymbol must expose the alpha subroutine over the e2e path; got {symbols:?}; raw={raw:?}; stderr={:?}",
+        harness.client.peek_stderr_lines()
     );
 
     harness.assert_no_crash();
