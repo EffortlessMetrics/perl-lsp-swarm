@@ -420,13 +420,13 @@ fn main() -> Result<()> {
         })?;
         let requirements: TopologyRequirements = serde_json::from_slice(&fs::read(path)?)?;
         let packet = parse_v2(&bytes).map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
-        let report = validate_v2(&packet, &requirements)
-            .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
         if args.profile_index {
-            let index = index_first_hour(&packet, &report, &FirstHourFacts::unobserved())
+            let index = index_first_hour(&packet, &requirements, &FirstHourFacts::unobserved())
                 .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
             writeln!(std::io::stdout().lock(), "{}", serde_json::to_string(&index)?)?;
         } else {
+            let report = validate_v2(&packet, &requirements)
+                .map_err(|error| color_eyre::eyre::eyre!("{error:#}"))?;
             writeln!(std::io::stdout().lock(), "{}", serde_json::to_string(&report)?)?;
         }
         return Ok(());

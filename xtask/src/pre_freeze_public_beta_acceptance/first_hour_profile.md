@@ -15,6 +15,12 @@ joined RC result.
 - Types reused: `PacketV2`, `Subject`, `EvidenceRef`, `JourneyRow`,
   `TopologyRequirements`, `ValidationReport`, `EvidenceRequirement`,
   `Status`, `Recommendation`, `InstalledQualification`.
+- Public entrypoint `first_hour_profile::index_first_hour` takes `PacketV2` +
+  `TopologyRequirements` + in-memory `FirstHourFacts` and calls `validate_v2`
+  itself; no caller-supplied report can bypass canonical checks.
+- The complete actual `ValidationReport` is retained in profile output with
+  its exact recommendation and permanent `not_proven` ceiling. Window slices
+  select cell obligations only; they never replace the full report.
 - CLI: `xtask/examples/pre_freeze_public_beta_acceptance.rs` with optional
   `--profile-index`. Historical `first_ten_minutes.v1` separation preserved.
 - Wire packet unchanged. No parallel cell IDs, no new JSON producer schema,
@@ -77,9 +83,9 @@ denominator is invented where the authority records observed rows only.
   `windows_x64_current_stable` retains the full retained journey at the
   recorded host; Linux minimum/current both retained. No new Windows
   two-version matrix, no macOS semantic parity.
-- Reference: #6056 adjudication
+- References: #6056 adjudication
   <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6056#issuecomment-5750256278>
-  and `inputs/friday-platform-reconciliation.json` at
+  and Friday platform reconciliation at
   <https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13768#issuecomment-5925014719>.
 - Missing Windows producers/mappings stay `not_proven`; never invented IDs
   or downgraded smoke.
@@ -89,30 +95,52 @@ denominator is invented where the authority records observed rows only.
 
 ## Evidence obligations and NOT_PROVEN boundary
 
-Genuine first-hour observation has no concrete producer yet. The native
-`index_first_hour` function therefore emits six outstanding
-`EvidenceRequirement` obligations (`first_hour_observation` /
-`new_human|fresh_agent` × `first_5|15|60_minutes`, category
-`FirstTenMinutes`, locator `missing:genuine-first-hour-observation:*`) and
-keeps `installed_qualification = not_proven` permanently. In-memory
-`FirstHourFacts` are non-authoritative and never persisted.
+Genuine first-hour observation has no concrete producer yet. Each of the six
+observer/window slices therefore carries an explanatory `missing` checklist
+(plain strings, no locator/digest/owner/category) and stays `not_proven`;
+`installed_qualification = not_proven` permanently. In-memory
+`FirstHourFacts` are non-authoritative and never persisted. Correctly recorded
+assistance stays `not_proven` and must name the assistance plus the unmet
+public instruction; a bare intervention count is rejected.
 
+Missing checklist names: public instruction entrypoint/version/content
+digest; actual human/fresh-agent identity and allowed environment; installed
+server/DAP/VSIX archive bytes and provenance; real host and clean
+profile/config generation; fixture source/config/trust and
+root/document/session generations; verified 5/15/60 windows and
+first-useful/first-correct timings; conventional AND dynamic fixture
+execution; safe edit/recovery/restart/update/cleanup outcomes; sustained
+request/edit/cancel/indexing overlap and shutdown mode; and
+assistance/intervention with unmet public instruction.
+
+- PacketV2 has no document/session generation or instruction-digest
+  producers. Canonical Subject joins and the `mixed_generation_result`
+  counter fail closed, but they do not prove runtime generation binding.
+- Declared fixture IDs do not prove conventional/dynamic execution.
+- Byte identity declarations do not authenticate bytes, provenance, or DAP.
 - Environment digest or copied declaration does not establish bytes or
   provenance. LSP/VSIX leaves do not fill DAP or source-provenance cells.
 - Byte leaves cannot substitute DAP identity or authenticated provenance.
 - Synthetic or 30-second runs test the validator but never satisfy the
-  60-minute cell. Safe refusal stays distinct from failure; forced kill,
-  timeout, cancelled/skipped, and missing/instrument-failed stay non-pass.
+  60-minute cell, even at 3600 in-memory seconds. Safe refusal stays distinct
+  from failure; forced kill, timeout, cancelled/skipped, and
+  missing/instrument-failed stay non-pass.
 - Zero-budget counters and #5902 friction taxonomy reused; no averaging
   hides unsafe edit, cross-root leakage, or other trust breakers.
+- Mechanism consistency (declared vs computed recommendation) is enforced by
+  the canonical validator; it is not runtime acceptance.
 
-## Falsifiers (focused native tests)
+## Falsifiers (focused wrapper regressions)
 
-`first_hour_profile::tests` rejects: wrong artifact/source binding; missing
-or duplicate rows/cells; guided-expert or cross-filled observers; omitted
-source-inspection/private-rescue intervention; synthetic/short run as hour;
-byte leaf for DAP/provenance; lost Linux floor or canonical denominator;
-lost safe-refusal accepted-claim obligation; and any recomputed or averaged
-recommendation. Canonical packet/observation/counter/refusal semantics stay
-covered by the existing validator tests. Mechanism tests never claim genuine
-installed acceptance.
+`pre_freeze_public_beta_acceptance/tests.rs` calls the safe public wrapper
+(therefore the actual `validate_v2`) and rejects: wrong artifact/target/
+platform binding; wrong Subject; missing/duplicate row/cell and missing
+observation/provenance/DAP; lost Linux floor; omitted
+source-inspection/private-rescue/hidden-assistance details; guided-expert or
+cross-filled observers; synthetic/short run as hour; and stale Ready after
+nonzero `unsafe_edit`/`mixed_generation_result`/`cross_root_leakage`. It
+proves the exact canonical obligations are retained, deterministic ordering
+under valid collection reordering, safe refusal via a real `SafeRefusal`
+proposition plus `AcceptedClaim`, and correct `Blocked` projection. A small
+module-only test keeps the fixed 5/15/60 partition. Mechanism tests never
+claim genuine installed acceptance.
