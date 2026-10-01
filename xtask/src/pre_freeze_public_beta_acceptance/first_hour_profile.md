@@ -25,6 +25,14 @@ joined RC result.
   `--profile-index`. Historical `first_ten_minutes.v1` separation preserved.
 - Wire packet unchanged. No parallel cell IDs, no new JSON producer schema,
   no parsed bindings or ledger protocol, no new status or denominator.
+- `profile_digest` is SHA-256 of compact UTF-8 JSON containing the index
+  kind, this document normalized to LF, the ordered observer names, and the
+  ordered window/canonical-cell partition. It identifies the applied profile
+  independently of the supplied product subject. It authenticates no run.
+- Output retains declared phase/source/release, artifact inventory, and row
+  host/profile/configuration/fixture content digests. These are declarations
+  from the validated canonical packet; observed identity and generations
+  remain external proof obligations.
 
 ## Profile windows (observation windows, not latency promises)
 

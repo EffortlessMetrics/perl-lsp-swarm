@@ -656,6 +656,19 @@ fn first_hour_wrapper_retains_complete_canonical_report_and_permanent_ceiling() 
         index.canonical_cells == CELLS.into_iter().map(str::to_owned).collect::<Vec<_>>(),
         "wrapper lost canonical cells"
     );
+    ensure!(index.profile_digest.starts_with("sha256:") && index.profile_digest.len() == 71);
+    ensure!(index.phase == packet.phase && index.source_version == packet.source_version);
+    ensure!(index.target_release == packet.target_release);
+    for declared in &index.declared_rows {
+        let row = packet.rows.iter().find(|row| row.id == declared.row_id).context("row")?;
+        ensure!(declared.platform == row.platform && declared.host_role == row.host_role);
+        ensure!(declared.vscode_version == row.vscode_version);
+        ensure!(declared.clean_profile_id == row.clean_profile_id);
+        ensure!(declared.configuration_identity == row.configuration_identity);
+        ensure!(serde_json::to_value(&declared.fixtures)? == serde_json::to_value(&row.fixtures)?);
+        ensure!(declared.artifacts == row.artifacts && declared.subject == row.subject);
+    }
+    ensure!(index.declared_artifacts.len() == packet.artifacts.len());
     Ok(())
 }
 

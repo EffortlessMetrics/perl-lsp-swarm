@@ -30,11 +30,13 @@
 //! Missing Windows producers/mappings stay `not_proven`.
 
 use super::{
-    CELLS, EvidenceRequirement, InstalledQualification, PacketV2, ROWS, Recommendation, SCHEMA,
-    Status, Subject, TopologyRequirements, ValidationReport,
+    Artifact, ArtifactSelection, CELLS, EvidenceRef, EvidenceRequirement, Fixture,
+    InstalledQualification, PacketV2, ROWS, Recommendation, SCHEMA, Status, Subject,
+    TopologyRequirements, ValidationReport,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Profile checkpoint labels. These index canonical cells; they are not
@@ -48,6 +50,10 @@ pub const WINDOW_FIRST_15: &str = "first_15_minutes";
 pub const WINDOW_FIRST_60: &str = "first_60_minutes";
 /// Fixed window order for deterministic output.
 pub const PROFILE_WINDOWS: [&str; 3] = [WINDOW_FIRST_5, WINDOW_FIRST_15, WINDOW_FIRST_60];
+
+const PROFILE_DOCUMENT: &str = include_str!("first_hour_profile.md");
+const PROFILE_DOCUMENT_PATH: &str =
+    "xtask/src/pre_freeze_public_beta_acceptance/first_hour_profile.md";
 
 /// Canonical cells observed by minute 5: install, boot, first useful answer.
 const FIRST_5_CELLS: [&str; 6] = [
@@ -232,13 +238,37 @@ pub struct ProfileWindowIndex {
     pub missing: Vec<String>,
 }
 
+/// Declared canonical row context. These values identify the supplied bundle;
+/// they do not authenticate a host, fixture, generation, or installed run.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeclaredRowContext {
+    pub row_id: String,
+    pub platform: String,
+    pub architecture: String,
+    pub host_role: String,
+    pub vscode_version: String,
+    pub host_selection: EvidenceRef,
+    pub clean_profile_id: String,
+    pub configuration_identity: String,
+    pub fixtures: Vec<Fixture>,
+    pub artifacts: ArtifactSelection,
+    pub subject: Subject,
+}
+
 /// Deterministic index beside the retained canonical report. Serialize-only:
 /// this is never parsed as a new wire protocol.
 #[derive(Debug, Serialize)]
 pub struct FirstHourIndex {
     pub index_kind: String,
     pub canonical_schema: String,
+    /// Content identity of the LF-normalized profile document and ordered
+    /// observer/window/cell partition, independent of the product subject.
+    pub profile_digest: String,
+    pub profile_document: String,
     pub subject: Subject,
+    pub phase: String,
+    pub source_version: String,
+    pub target_release: String,
     /// Exactly [`super::ROWS`], in canonical order.
     pub canonical_rows: Vec<String>,
     /// Exactly [`super::CELLS`], in canonical order.
@@ -246,6 +276,8 @@ pub struct FirstHourIndex {
     /// Row ID to sorted fixture IDs, as declared by the canonical packet.
     /// Declared IDs do not prove conventional/dynamic execution.
     pub row_fixtures: BTreeMap<String, Vec<String>>,
+    pub declared_rows: Vec<DeclaredRowContext>,
+    pub declared_artifacts: Vec<Artifact>,
     pub observers: Vec<ObserverSummary>,
     pub windows: Vec<ProfileWindowIndex>,
     /// The complete actual canonical report, retained without replacement.
@@ -257,13 +289,31 @@ pub struct FirstHourIndex {
     pub claim_boundary: String,
 }
 
+fn content_digest(document: &str, partition: &[(&str, &[&str])]) -> Result<String> {
+    let definition = serde_json::to_vec(&(
+        "first_hour_profile_index",
+        document.replace("\r\n", "\n"),
+        [ProfileObserver::NewHuman, ProfileObserver::FreshAgent],
+        partition,
+    ))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(definition)))
+}
+
+fn profile_digest() -> Result<String> {
+    let partition = PROFILE_WINDOWS
+        .into_iter()
+        .map(|window| Ok((window, window_cells(window)?)))
+        .collect::<Result<Vec<_>>>()?;
+    content_digest(PROFILE_DOCUMENT, &partition)
+}
+
 fn missing_checklist() -> Vec<String> {
     [
         "public instruction entrypoint/version/content digest not bound to an observed run",
         "actual new-human/fresh-agent identity and allowed environment not recorded by a producer",
         "installed server/DAP/VSIX archive bytes and release-shaped provenance not authenticated",
         "real host identity and clean-profile/config generation not bound to this observation",
-        "fixture source/config/trust/root/document/session generations not bound (PacketV2 declares IDs only)",
+        "fixture source/config/trust/root/document/session generations not observed (canonical IDs, content digests and row context are declarations)",
         "verified 5/15/60 start/end/elapsed windows and first-useful/first-correct timings not recorded",
         "conventional AND dynamic fixture execution not proven (declared IDs do not prove execution)",
         "safe edit/recovery/restart/update/cleanup outcomes not observed through a genuine producer",
@@ -315,6 +365,29 @@ fn project_first_hour(
         ids.sort();
         row_fixtures.insert(row.id.clone(), ids);
     }
+    let mut declared_rows = Vec::with_capacity(ROWS.len());
+    for id in ROWS {
+        let row = packet.rows.iter().find(|row| row.id == id).context("validated canonical row")?;
+        let mut fixtures = row.fixtures.clone();
+        fixtures.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut host_selection = row.host_selection.clone();
+        host_selection.artifact_ids.sort();
+        declared_rows.push(DeclaredRowContext {
+            row_id: row.id.clone(),
+            platform: row.platform.clone(),
+            architecture: row.architecture.clone(),
+            host_role: row.host_role.clone(),
+            vscode_version: row.vscode_version.clone(),
+            host_selection,
+            clean_profile_id: row.clean_profile_id.clone(),
+            configuration_identity: row.configuration_identity.clone(),
+            fixtures,
+            artifacts: row.artifacts.clone(),
+            subject: row.subject.clone(),
+        });
+    }
+    let mut declared_artifacts = packet.artifacts.clone();
+    declared_artifacts.sort_by(|a, b| a.id.cmp(&b.id));
 
     let observers = [ProfileObserver::NewHuman, ProfileObserver::FreshAgent]
         .into_iter()
@@ -368,10 +441,17 @@ fn project_first_hour(
     Ok(FirstHourIndex {
         index_kind: "first_hour_profile_index".into(),
         canonical_schema: SCHEMA.to_owned(),
+        profile_digest: profile_digest()?,
+        profile_document: PROFILE_DOCUMENT_PATH.to_owned(),
         subject: packet.subject.clone(),
+        phase: packet.phase.clone(),
+        source_version: packet.source_version.clone(),
+        target_release: packet.target_release.clone(),
         canonical_rows: ROWS.into_iter().map(str::to_owned).collect(),
         canonical_cells: CELLS.into_iter().map(str::to_owned).collect(),
         row_fixtures,
+        declared_rows,
+        declared_artifacts,
         observers,
         windows,
         canonical_report: report,
@@ -418,6 +498,23 @@ mod tests {
         let canonical: BTreeSet<&str> = CELLS.into_iter().collect();
         ensure!(seen == canonical, "profile must index every canonical cell once");
         ensure!(window_cells("unknown_window").is_err(), "unknown window accepted");
+        Ok(())
+    }
+
+    #[test]
+    fn profile_digest_binds_document_and_partition_without_checkout_line_endings() -> Result<()> {
+        let partition = PROFILE_WINDOWS
+            .into_iter()
+            .map(|window| Ok((window, window_cells(window)?)))
+            .collect::<Result<Vec<_>>>()?;
+        let digest = content_digest("public instructions\n", &partition)?;
+        ensure!(digest == content_digest("public instructions\r\n", &partition)?);
+        ensure!(digest != content_digest("changed public instructions\n", &partition)?);
+        let mut changed = partition.clone();
+        changed.swap(0, 1);
+        ensure!(digest != content_digest("public instructions\n", &changed)?);
+        changed[0] = (WINDOW_FIRST_15, &FIRST_5_CELLS);
+        ensure!(digest != content_digest("public instructions\n", &changed)?);
         Ok(())
     }
 }
