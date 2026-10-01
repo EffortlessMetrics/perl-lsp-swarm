@@ -28,6 +28,9 @@ def write(path, text='current fixture\n'):
     p = pathlib.Path(path); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(text)
 if not check:
     if command == 'ripr-pr':
+        if os.environ.get('TEST_CANCEL_BEFORE_FRESH'):
+            os.kill(os.getppid(), signal.SIGTERM)
+            raise SystemExit(0)
         freshness = os.environ.get('TEST_FRESHNESS', 'current')
         if freshness != 'missing':
             token = os.environ['RIPR_FRESHNESS_TOKEN'] if freshness == 'current' else 'older-run/1/1'
@@ -35,6 +38,11 @@ if not check:
         if not os.environ.get('TEST_MISSING_RAW'):
             write('target/ripr/pr/raw-check.json')
         write('target/ripr/pr/repo-exposure.json')
+        if os.environ.get('TEST_HIDDEN'):
+            write('target/ripr/pr/.private-diagnostic', 'excluded hidden fixture')
+            write('target/ripr/stdout-staging/raw-check.partial-fixture', 'unpublished partial')
+        if os.environ.get('TEST_LINK'):
+            pathlib.Path('target/ripr/pr/unsafe-link').symlink_to('/etc/passwd')
     elif command == 'ripr-plus':
         write('target/receipts/quality/ripr-plus.json')
     elif command == 'ripr-review-comments':
@@ -42,7 +50,9 @@ if not check:
         if os.environ.get('TEST_CANCEL'):
             os.kill(os.getppid(), signal.SIGTERM)
     elif command == 'impacted-evidence':
-        write('target/xtask/impacted-evidence/receipt.json')
+        if not os.environ.get('TEST_MISSING_IMPACTED'):
+            write('target/xtask/impacted-evidence/latest.json')
+            write('target/xtask/impacted-evidence/latest.md')
     elif command == 'quality-gate':
         write('target/receipts/quality/quality-gate-ripr.json')
         write('target/receipts/quality/quality-gate-ripr.md')
@@ -128,7 +138,7 @@ class GovernedRiprProof(unittest.TestCase):
         self.assertIn("--check", gates[1])
         self.assertEqual(gates[0][gates[0].index("--mode") + 1], "enforce-new-ripr")
         impacted = [call for call in calls if call[1] == "impacted-evidence"]
-        self.assertEqual(impacted[0][-1], "needs review $(false)")
+        self.assertEqual(impacted[0][-1], "--labels-csv=needs review $(false)")
         self.assertTrue(self.artifact("target/ripr/pr/raw-check.json").is_file())
         badge = json.loads(self.artifact("target/receipts/quality/ripr-badge-producer.json").read_text())
         self.assertEqual(badge["head"], self.sha)
@@ -185,6 +195,23 @@ class GovernedRiprProof(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing RIPR proof file", result.stderr)
 
+    def test_missing_impacted_receipts_are_not_covered_by_other_success(self):
+        result = self.run_proof(TEST_MISSING_IMPACTED="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("impacted-evidence/latest.json", result.stderr)
+
+    def test_hidden_and_noncanonical_staging_are_excluded_without_dropping_raw(self):
+        result = self.run_proof(TEST_HIDDEN="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.artifact("target/ripr/pr/raw-check.json").is_file())
+        self.assertFalse(self.artifact("target/ripr/pr/.private-diagnostic").exists())
+        self.assertFalse(self.artifact("target/ripr/stdout-staging").exists())
+
+    def test_generated_symlink_cannot_export_private_bytes_or_pass(self):
+        result = self.run_proof(TEST_LINK="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.artifact("target/ripr/pr/unsafe-link").exists())
+
     def test_preseeded_artifact_root_is_not_reused_or_deleted(self):
         self.artifact().mkdir(parents=True)
         prior = self.artifact("prior-attempt.json")
@@ -203,8 +230,24 @@ class GovernedRiprProof(unittest.TestCase):
 
     def test_cancellation_stays_red_and_does_not_enter_validation(self):
         result = self.run_proof(TEST_CANCEL="1")
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 143, result.stderr)
         self.assertFalse(any("--check" in call for call in self.calls()))
+
+    def test_cancellation_before_invalidation_preserves_signal_and_suppresses_files(self):
+        result = self.run_proof(TEST_CANCEL_BEFORE_FRESH="1")
+        self.assertEqual(result.returncode, 143, result.stderr)
+        self.assertFalse(self.artifact("target").exists())
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_leading_hyphen_label_is_bound_as_data_in_both_phases(self):
+        self.payload["pull_request"]["labels"] = [{"name": "--help"}]
+        result = self.run_proof()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [call for call in self.calls() if call[1] == "impacted-evidence"]
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            self.assertIn("--labels-csv=--help", call)
+            self.assertNotIn("--help", call)
 
     def test_merge_group_has_no_single_pr_head(self):
         self.payload["merge_group"] = {"base_sha": self.base}

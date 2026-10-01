@@ -89,21 +89,55 @@ finish() {
   status=$?
   trap - EXIT
   set +e
+  # A diagnostic failure may turn success red, but must retain an existing
+  # signal or proof failure instead of replacing its exit status.
+  fail_finish() { if [[ $status -eq 0 ]]; then status=1; fi; }
   # Current partial diagnostics are useful on failure; older files are never
   # exported if this invocation's canonical invalidation did not complete.
   if fresh; then
-    for source in target/ripr/pr target/ripr/review target/xtask/impacted-evidence \
-      target/receipts/quality/ripr-plus.json target/receipts/quality/ripr-badge-producer.json \
-      target/receipts/quality/quality-gate-ripr.json target/receipts/quality/quality-gate-ripr.md; do
-      if [[ -e $source ]]; then
-        mkdir -p -- "$artifact_dir/$(dirname "$source")" || status=1
-        cp -a -- "$source" "$artifact_dir/$(dirname "$source")/" || status=1
-      fi
-    done
+    # Match the existing upload's hidden-file exclusion. The separate
+    # target/ripr/stdout-staging tree is not in the canonical source list.
+    # Copy regular files without following links into private/stale paths.
+    python3 - "$artifact_dir" <<'PY' || fail_finish
+import os, shutil, stat, sys
+from pathlib import Path
+destination = Path(sys.argv[1])
+sources = (
+    'target/ripr/pr', 'target/ripr/review', 'target/xtask/impacted-evidence',
+    'target/receipts/quality/ripr-plus.json',
+    'target/receipts/quality/ripr-badge-producer.json',
+    'target/receipts/quality/quality-gate-ripr.json',
+    'target/receipts/quality/quality-gate-ripr.md',
+)
+def copy_file(source):
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise SystemExit('non-regular or linked RIPR receipt: ' + str(source))
+    target = destination / source
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target, follow_symlinks=False)
+for relative in sources:
+    source = Path(relative)
+    if source.is_symlink():
+        raise SystemExit('linked RIPR source: ' + relative)
+    if not source.exists():
+        continue
+    if not source.is_dir():
+        copy_file(source)
+        continue
+    for root, directories, files in os.walk(source, followlinks=False):
+        directories[:] = [name for name in directories if not name.startswith('.')]
+        for name in directories:
+            if (Path(root) / name).is_symlink():
+                raise SystemExit('linked RIPR directory: ' + str(Path(root) / name))
+        for name in files:
+            if not name.startswith('.'):
+                copy_file(Path(root) / name)
+PY
     {
       printf 'version=%s\n' "$version"
       sha256sum -- "$(command -v ripr)"
-    } > "$artifact_dir/ripr-tool-identity.txt" || status=1
+    } > "$artifact_dir/ripr-tool-identity.txt" || fail_finish
     for metric in memory.peak memory.max memory.events; do
       if [[ -r /sys/fs/cgroup/$metric ]]; then
         printf '%s\n' "$metric"
@@ -111,10 +145,10 @@ finish() {
       else
         printf '%s=NOT_PROVEN\n' "$metric"
       fi
-    done > "$artifact_dir/ripr-cgroup-memory.txt" || status=1
+    done > "$artifact_dir/ripr-cgroup-memory.txt" || fail_finish
   else
     echo '::error::no current freshness handoff; canonical RIPR files were not exported' >&2
-    status=1
+    fail_finish
   fi
   exit "$status"
 }
@@ -134,7 +168,7 @@ mkdir -p target/receipts/quality
 printf '{"schema_version":1,"kind":"ripr_badge_producer","head":"%s","root":".","source_format":"ripr-plus repo-badge-json","ripr_version":"%s"}\n' \
   "$GITHUB_SHA" "$RIPR_VERSION" > target/receipts/quality/ripr-badge-producer.json
 run cargo xtask ripr-review-comments --base "$base" --head HEAD --pr-head "$pr_head" --timeout-seconds 3600
-run cargo xtask impacted-evidence --labels-csv "$labels"
+run cargo xtask impacted-evidence "--labels-csv=$labels"
 run cargo xtask ripr-pr-summary
 run cargo xtask ripr-annotations
 cargo xtask ripr-suppression-audit || true
@@ -143,7 +177,7 @@ fresh || { echo '::error::canonical invalidation did not complete' >&2; exit 1; 
 run cargo xtask ripr-pr --base "$base" --head HEAD --pr-head "$pr_head" --check
 run cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
 run cargo xtask ripr-review-comments --base "$base" --head HEAD --pr-head "$pr_head" --check
-run cargo xtask impacted-evidence --labels-csv "$labels" --check
+run cargo xtask impacted-evidence "--labels-csv=$labels" --check
 run cargo xtask ripr-pr-summary --check
 run cargo xtask ripr-annotations --check
 gate=(cargo xtask quality-gate --mode enforce-new-ripr
@@ -160,7 +194,8 @@ run "${gate[@]}" --check
 # Platform publication validates fixed aggregate limits without dropping it.
 for required in target/ripr/pr/raw-check.json target/ripr/pr/repo-exposure.json \
   target/ripr/review/comments.json target/receipts/quality/ripr-plus.json \
-  target/receipts/quality/quality-gate-ripr.json target/receipts/quality/quality-gate-ripr.md; do
+  target/receipts/quality/quality-gate-ripr.json target/receipts/quality/quality-gate-ripr.md \
+  target/xtask/impacted-evidence/latest.json target/xtask/impacted-evidence/latest.md; do
   [[ -s $required ]] || { echo "::error::missing RIPR proof file: $required" >&2; failed=1; }
 done
 exit "$failed"
