@@ -6,6 +6,35 @@ name: Release Orchestration
 on:
   workflow_dispatch:
     inputs:
+      source_context_run_id:
+        description: 'Exact read-only context artifact run ID; missing remains NOT_PROVEN'
+        required: false
+        type: string
+      source_context_artifact_name:
+        description: 'Exact named unqualified context artifact'
+        required: false
+        type: string
+      source_context_sha256:
+        description: 'Expected canonical context.json digest'
+        required: false
+        type: string
+      expected_policy_sha256:
+        description: 'Independently expected selected policy digest'
+        required: true
+        type: string
+      expected_topology_sha256:
+        description: 'Independently expected candidate topology digest'
+        required: true
+        type: string
+      expected_run_attempt:
+        description: 'Exact selected child attempt; reruns cannot silently substitute'
+        required: false
+        type: string
+        default: '1'
+      transaction_id:
+        description: 'Exact private transaction ID (64 lowercase hex)'
+        required: true
+        type: string
       version:
         description: 'Release version (e.g., 0.x.y)'
         required: true
@@ -201,6 +230,10 @@ jobs:
       - name: Summary
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
+          EXPECTED_POLICY_SHA256: ${{ inputs.expected_policy_sha256 }}
+          EXPECTED_TOPOLOGY_SHA256: ${{ inputs.expected_topology_sha256 }}
+          EXPECTED_RUN_ATTEMPT: ${{ inputs.expected_run_attempt }}
+          TRANSACTION_ID: ${{ inputs.transaction_id }}
           INPUT_PRERELEASE: ${{ github.event.inputs.prerelease }}
           INPUT_SKIP_CRATES: ${{ github.event.inputs.skip_crates }}
           INPUT_SKIP_EXTENSION: ${{ github.event.inputs.skip_extension }}
@@ -228,6 +261,13 @@ jobs:
       - name: Dispatch release transaction
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_POLICY_SHA256: ${{ inputs.expected_policy_sha256 }}
+          EXPECTED_TOPOLOGY_SHA256: ${{ inputs.expected_topology_sha256 }}
+          EXPECTED_RUN_ATTEMPT: ${{ inputs.expected_run_attempt }}
+          SOURCE_CONTEXT_RUN_ID: ${{ inputs.source_context_run_id }}
+          SOURCE_CONTEXT_ARTIFACT_NAME: ${{ inputs.source_context_artifact_name }}
+          SOURCE_CONTEXT_SHA256: ${{ inputs.source_context_sha256 }}
+          TRANSACTION_ID: ${{ inputs.transaction_id }}
           INPUT_PRERELEASE: ${{ github.event.inputs.prerelease }}
           INPUT_SKIP_CRATES: ${{ github.event.inputs.skip_crates }}
           INPUT_SKIP_EXTENSION: ${{ github.event.inputs.skip_extension }}
@@ -244,6 +284,13 @@ jobs:
             -X POST \
             /repos/${{ github.repository }}/actions/workflows/release.yml/dispatches \
             -f ref="${REF}" \
+            -f inputs[no_publish]=true -f inputs[transaction_id]="$TRANSACTION_ID" \
+            -f inputs[expected_policy_sha256]="$EXPECTED_POLICY_SHA256" \
+            -f inputs[expected_topology_sha256]="$EXPECTED_TOPOLOGY_SHA256" \
+            -f inputs[expected_run_attempt]="$EXPECTED_RUN_ATTEMPT" \
+            -f inputs[source_context_run_id]="$SOURCE_CONTEXT_RUN_ID" \
+            -f inputs[source_context_artifact_name]="$SOURCE_CONTEXT_ARTIFACT_NAME" \
+            -f inputs[source_context_sha256]="$SOURCE_CONTEXT_SHA256" \
             -F inputs[tag]="${TAG}" \
             -F inputs[expected_sha]="$EXPECTED_SHA" \
             -F inputs[prerelease]="${PRERELEASE}" \

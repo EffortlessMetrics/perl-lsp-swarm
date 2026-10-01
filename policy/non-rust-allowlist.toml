@@ -5654,3 +5654,114 @@ reason = "Synthetic FF01 #13855 round-trip and shape fixture with placeholder id
 covered_by = ["cargo test -p xtask --locked --bin xtask release_scope_v2", "cargo xtask check-file-policy"]
 created = "2026-09-20"
 review_after = "2026-12-20"
+[[allow]]
+id = "non-rust-14406-admission-leaf"
+path = "scripts/ci/release_publication_admission.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 approved pure RC permission and exact-subject leaf; no publication or authenticated eligibility."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_publication_admission.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+
+
+[[allow]]
+id = "non-rust-14406-admission-tests"
+path = "scripts/ci/test_release_publication_admission.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 admission tests exercise pure RC permission and exact-subject accept/refuse cases; no publication or authenticated eligibility."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_publication_admission.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+
+
+[[allow]]
+id = "non-rust-14406-admission-policy"
+path = "policy/release-publication-admission.json"
+kind = "release_tooling"
+language = "json"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 admission policy declares the pure RC permission boundary consumed by the exact-subject leaf; no publication or authenticated eligibility."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_publication_admission.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-17"
+path = "scripts/ci/release_private_candidate.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 pinned canonical validator closure and private-byte adapter; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+
+
+[[allow]]
+id = "non-rust-14406-canonical-adapter-18"
+path = "scripts/ci/test_release_private_candidate.py"
+kind = "release_tooling"
+language = "python"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Issue #14406 adapter tests exercise the pinned canonical validator closure and private-byte refusals; no publisher activation or source-exception approval."
+covered_by = ["python -B -m unittest discover -s scripts/ci -p test_release_private_candidate.py"]
+created = "2026-09-20"
+review_after = "2026-12-20"
+
+[[allow]]
+id = "non-rust-16762-producer"
+path = "scripts/ci/release_private_producer.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "release-security"
+reason = "Scoped private producer and actual workflow refusal controls under #16762; no public mutation or qualification authority."
+covered_by = ["python -m unittest discover -s scripts/ci -p test_release_private_producer.py", "python -m unittest discover -s scripts/ci -p test_release_prerequisite_graph.py"]
+created = "2026-09-29"
+review_after = "2026-12-29"
+
+[[allow]]
+id = "non-rust-16762-producer-tests"
+path = "scripts/ci/test_release_private_producer.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "release-security"
+reason = "Issue #16762 producer tests exercise private input identity and refusal before candidate execution; no public mutation or qualification authority."
+covered_by = ["python -m unittest discover -s scripts/ci -p test_release_private_producer.py", "python -m unittest discover -s scripts/ci -p test_release_prerequisite_graph.py"]
+created = "2026-09-29"
+review_after = "2026-12-29"
+
+[[allow]]
+id = "non-rust-16762-graph-tests"
+path = "scripts/ci/test_release_prerequisite_graph.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "tooling"
+owner = "release-security"
+reason = "Issue #16762 graph tests exercise actual workflow authority and grammar refusal controls; no public mutation or qualification authority."
+covered_by = ["python -m unittest discover -s scripts/ci -p test_release_private_producer.py", "python -m unittest discover -s scripts/ci -p test_release_prerequisite_graph.py"]
+created = "2026-09-29"
+review_after = "2026-12-29"
