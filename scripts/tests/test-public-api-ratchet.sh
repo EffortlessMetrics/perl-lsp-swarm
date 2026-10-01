@@ -107,6 +107,15 @@ case "${FAKE_PUBLIC_API_MODE:-}" in
   mismatch)
     printf 'pub struct DifferentSurface;\n'
     ;;
+  arc_alias)
+    printf 'pub fn Surface::shared() -> alloc::rcs::arc::Arc<u8>\n'
+    ;;
+  arc_changed)
+    printf 'pub fn Surface::shared() -> alloc::rcs::arc::Arc<u16>\n'
+    ;;
+  arc_user_owned)
+    printf 'pub fn Surface::shared() -> owner::alloc::rcs::arc::Arc<u8>\n'
+    ;;
   nonempty)
     printf 'pub struct GeneratedSurface;\n'
     ;;
@@ -382,5 +391,83 @@ if [[ ! -s "${CHECK_DUP_LOG}" ]]; then
 else
   fail "duplicate ratchet entry invoked the generator: $(cat "${CHECK_DUP_LOG}")"
 fi
+
+
+# #17024: exercise the production grep/sed/awk chain, not a copy of its rule.
+# The closed delimiter lists must not absorb user-owned or longer identifiers.
+ARC_INPUT="${TMPDIR_BASE}/arc-input.txt"
+ARC_EXPECTED="${TMPDIR_BASE}/arc-expected.txt"
+ARC_ACTUAL="${TMPDIR_BASE}/arc-actual.txt"
+cat > "${ARC_INPUT}" <<'SURFACE'
+pub fn Surface::nested() -> alloc::rcs::arc::Arc<alloc::rcs::arc::Arc<u8>>
+pub fn Surface::borrow(v: &alloc::rcs::arc::Arc<u8>) -> alloc::sync::Arc<u8>
+#[must_use] pub fn Surface::adjacent() -> (alloc::rcs::arc::Arc<u8>,alloc::rcs::arc::Arc<u16>)
+pub fn Surface::owned() -> owner::alloc::rcs::arc::Arc<u8>
+pub fn Surface::prefix() -> customalloc::rcs::arc::Arc<u8>
+pub fn Surface::unicode_prefix() -> éalloc::rcs::arc::Arc<u8>
+pub fn Surface::longer() -> alloc::rcs::arc::Arcish<u8>
+pub fn Surface::unicode_suffix() -> alloc::rcs::arc::Arcé<u8>
+pub fn Surface::different() -> alloc::rcs::arc::UniqueArc<u8>
+SURFACE
+cat > "${ARC_EXPECTED}" <<'SURFACE'
+pub fn Surface::nested() -> alloc::sync::Arc<alloc::sync::Arc<u8>>
+pub fn Surface::borrow(v: &alloc::sync::Arc<u8>) -> alloc::sync::Arc<u8>
+#[must_use] pub fn Surface::adjacent() -> (alloc::sync::Arc<u8>,alloc::sync::Arc<u16>)
+pub fn Surface::owned() -> owner::alloc::rcs::arc::Arc<u8>
+pub fn Surface::prefix() -> customalloc::rcs::arc::Arc<u8>
+pub fn Surface::unicode_prefix() -> éalloc::rcs::arc::Arc<u8>
+pub fn Surface::longer() -> alloc::rcs::arc::Arcish<u8>
+pub fn Surface::unicode_suffix() -> alloc::rcs::arc::Arcé<u8>
+pub fn Surface::different() -> alloc::rcs::arc::UniqueArc<u8>
+SURFACE
+(
+  cd "${FIXTURE_ROOT}"
+  just --justfile "${FIXTURE_ROOT}/justfile" _public-api-filter "${ARC_INPUT}" "${ARC_ACTUAL}"
+)
+assert_same_file "Arc fold converges nested/adjacent aliases and preserves unrelated paths" \
+  "${ARC_EXPECTED}" "${ARC_ACTUAL}"
+
+write_ratchet_list perl-uri
+printf 'pub fn Surface::shared() -> alloc::sync::Arc<u8>\n' \
+  > "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt"
+ARC_BASELINE="${TMPDIR_BASE}/arc-baseline.txt"
+cp "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt" "${ARC_BASELINE}"
+for mode in arc_alias arc_changed arc_user_owned; do
+  output="${TMPDIR_BASE}/${mode}.txt"
+  log="${TMPDIR_BASE}/${mode}.log"
+  if run_recipe "${mode}" public-api-check "${output}" "${log}"; then
+    code=0
+  else
+    code=$?
+  fi
+  if [[ "${mode}" == arc_alias ]]; then
+    [[ "${code}" -eq 0 ]] || fail "Arc re-export spelling still differs"
+    assert_contains "Arc alias comparison reaches the real ratchet" "OK perl-uri" "${output}"
+  else
+    assert_exit_nonzero "${mode} remains a real API difference" "${code}"
+    assert_contains "${mode} is a surface mismatch, not an instrument error" "FAIL perl-uri" "${output}"
+    assert_not_contains "${mode} executes the comparison" "INSTRUMENT-FAIL" "${output}"
+  fi
+  assert_same_file "${mode} comparison never refreshes the baseline" \
+    "${ARC_BASELINE}" "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt"
+done
+
+# A hand-edited relocated-spelling baseline remains noncanonical. Do not
+# weaken the corruption guard merely because the generated type is equivalent.
+printf 'pub fn Surface::shared() -> alloc::rcs::arc::Arc<u8>\n' \
+  > "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt"
+ARC_NONCANONICAL="${TMPDIR_BASE}/arc-noncanonical.txt"
+cp "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt" "${ARC_NONCANONICAL}"
+if run_recipe arc_alias public-api-check "${TMPDIR_BASE}/arc-noncanonical-output.txt" \
+  "${TMPDIR_BASE}/arc-noncanonical.log"; then
+  code=0
+else
+  code=$?
+fi
+assert_exit_nonzero "noncanonical Arc baseline remains rejected" "${code}"
+assert_contains "noncanonical Arc baseline is an instrument failure" \
+  "not in canonical filtered form" "${TMPDIR_BASE}/arc-noncanonical-output.txt"
+assert_same_file "comparison never repairs a noncanonical baseline" \
+  "${ARC_NONCANONICAL}" "${FIXTURE_ROOT}/.ci/public-api-baselines/perl-uri.txt"
 
 echo "=== public-api ratchet regression fixture passed ==="
