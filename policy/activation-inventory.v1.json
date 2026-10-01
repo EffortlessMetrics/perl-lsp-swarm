@@ -3037,7 +3037,7 @@
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+      "notes": "Clippy --all-targets on the known-clean staged cohort (38/49 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     },
     {
       "surface_id": "gate:code_action_generation_ledger",
