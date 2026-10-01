@@ -91,6 +91,11 @@ pub perl_lsp_rs_core::config::MetadataSourceRead::Unreadable
 pub fn perl_lsp_rs_core::config::MetadataSourceRead::clone(&self) -> perl_lsp_rs_core::config::MetadataSourceRead
 pub fn perl_lsp_rs_core::config::MetadataSourceRead::eq(&self, other: &perl_lsp_rs_core::config::MetadataSourceRead) -> bool
 pub fn perl_lsp_rs_core::config::MetadataSourceRead::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::config::NativeBuildHintLimitationReason
+pub perl_lsp_rs_core::config::NativeBuildHintLimitationReason::Unreadable
+pub fn perl_lsp_rs_core::config::NativeBuildHintLimitationReason::clone(&self) -> perl_lsp_rs_core::config::NativeBuildHintLimitationReason
+pub fn perl_lsp_rs_core::config::NativeBuildHintLimitationReason::eq(&self, other: &perl_lsp_rs_core::config::NativeBuildHintLimitationReason) -> bool
+pub fn perl_lsp_rs_core::config::NativeBuildHintLimitationReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::config::NativeBuildHintParseReason
 pub perl_lsp_rs_core::config::NativeBuildHintParseReason::MalformedArrayLiteral
 pub perl_lsp_rs_core::config::NativeBuildHintParseReason::UnsupportedValueForm
@@ -273,12 +278,19 @@ pub perl_lsp_rs_core::config::NativeBuildHintDiagnostic::script: perl_lsp_rs_cor
 pub fn perl_lsp_rs_core::config::NativeBuildHintDiagnostic::clone(&self) -> perl_lsp_rs_core::config::NativeBuildHintDiagnostic
 pub fn perl_lsp_rs_core::config::NativeBuildHintDiagnostic::eq(&self, other: &perl_lsp_rs_core::config::NativeBuildHintDiagnostic) -> bool
 pub fn perl_lsp_rs_core::config::NativeBuildHintDiagnostic::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::config::NativeBuildHintLimitation
+pub perl_lsp_rs_core::config::NativeBuildHintLimitation::reason: perl_lsp_rs_core::config::NativeBuildHintLimitationReason
+pub perl_lsp_rs_core::config::NativeBuildHintLimitation::script: perl_lsp_rs_core::config::NativeBuildScript
+pub fn perl_lsp_rs_core::config::NativeBuildHintLimitation::clone(&self) -> perl_lsp_rs_core::config::NativeBuildHintLimitation
+pub fn perl_lsp_rs_core::config::NativeBuildHintLimitation::eq(&self, other: &perl_lsp_rs_core::config::NativeBuildHintLimitation) -> bool
+pub fn perl_lsp_rs_core::config::NativeBuildHintLimitation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp_rs_core::config::NativeBuildHints
 pub perl_lsp_rs_core::config::NativeBuildHints::define_flags: alloc::vec::Vec<alloc::string::String>
 pub perl_lsp_rs_core::config::NativeBuildHints::diagnostics: alloc::vec::Vec<perl_lsp_rs_core::config::NativeBuildHintDiagnostic>
 pub perl_lsp_rs_core::config::NativeBuildHints::include_dirs: alloc::vec::Vec<alloc::string::String>
 pub perl_lsp_rs_core::config::NativeBuildHints::libs_alternatives: alloc::vec::Vec<alloc::vec::Vec<alloc::string::String>>
 pub perl_lsp_rs_core::config::NativeBuildHints::libs_flags: alloc::vec::Vec<alloc::string::String>
+pub perl_lsp_rs_core::config::NativeBuildHints::limitations: alloc::vec::Vec<perl_lsp_rs_core::config::NativeBuildHintLimitation>
 pub perl_lsp_rs_core::config::NativeBuildHints::myextlib_files: alloc::vec::Vec<alloc::string::String>
 pub perl_lsp_rs_core::config::NativeBuildHints::object_files: alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::NativeBuildHints::clone(&self) -> perl_lsp_rs_core::config::NativeBuildHints
@@ -482,6 +494,7 @@ pub perl_lsp_rs_core::config::WorkspaceConfig::resolution_timeout_ms: u64
 pub perl_lsp_rs_core::config::WorkspaceConfig::use_perl5lib: bool
 pub perl_lsp_rs_core::config::WorkspaceConfig::use_system_inc: bool
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::apply_declared_dependency_reads(&mut self, reads: &[(perl_lsp_rs_core::config::DeclaredDependencySource, perl_lsp_rs_core::config::MetadataSourceRead)])
+pub fn perl_lsp_rs_core::config::WorkspaceConfig::apply_native_build_hint_reads(&mut self, reads: &[(perl_lsp_rs_core::config::DeclaredDependencySource, perl_lsp_rs_core::config::MetadataSourceRead)])
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::effective_include_paths(&self, perl5lib_paths: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::env_perl_lib_paths() -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::get_system_inc(&mut self) -> &[std::path::PathBuf]
@@ -567,11 +580,13 @@ pub const perl_lsp_rs_core::external_tool_doctor::NATIVE_STATUS_NOT_APPLICABLE: 
 pub const perl_lsp_rs_core::external_tool_doctor::NATIVE_STATUS_PLANNED: &str
 pub const perl_lsp_rs_core::external_tool_doctor::REASON_EXPLICIT_ADAPTER_ONLY: &str
 pub const perl_lsp_rs_core::external_tool_doctor::REASON_EXPLICIT_OPTIONAL_PEER: &str
+pub const perl_lsp_rs_core::external_tool_doctor::REASON_EXPLICIT_OPTIONAL_TESTING_INSTRUMENT: &str
 pub const perl_lsp_rs_core::external_tool_doctor::REASON_RUNTIME_ENABLEMENT_FORBIDDEN: &str
 pub const perl_lsp_rs_core::external_tool_doctor::REASON_UNCLASSIFIED: &str
 pub const perl_lsp_rs_core::external_tool_doctor::STATUS_CONFORMANCE_ONLY: &str
 pub const perl_lsp_rs_core::external_tool_doctor::STATUS_OPTIONAL_EXTERNAL: &str
 pub const perl_lsp_rs_core::external_tool_doctor::STATUS_OPTIONAL_PEER: &str
+pub const perl_lsp_rs_core::external_tool_doctor::STATUS_OPTIONAL_TESTING_INSTRUMENT: &str
 pub const perl_lsp_rs_core::external_tool_doctor::STATUS_UNKNOWN: &str
 pub fn perl_lsp_rs_core::external_tool_doctor::critic_compatibility_entry(registry: &[perl_lsp_rs_core::external_tools::ExternalToolPolicy]) -> core::option::Option<perl_lsp_rs_core::external_tool_doctor::ExternalToolDoctorEntry>
 pub fn perl_lsp_rs_core::external_tool_doctor::external_tool_doctor_entries(registry: &[perl_lsp_rs_core::external_tools::ExternalToolPolicy]) -> alloc::vec::Vec<perl_lsp_rs_core::external_tool_doctor::ExternalToolDoctorEntry>
@@ -588,6 +603,7 @@ pub fn perl_lsp_rs_core::external_tools::ConfigReaderSupport::eq(&self, other: &
 pub fn perl_lsp_rs_core::external_tools::ConfigReaderSupport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::external_tools::ConfigReaderSupport::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub enum perl_lsp_rs_core::external_tools::ExternalExecutionSupport
+pub perl_lsp_rs_core::external_tools::ExternalExecutionSupport::ExplicitOptionalTestingInstrument
 pub perl_lsp_rs_core::external_tools::ExternalExecutionSupport::ExplicitProductAdapter
 pub perl_lsp_rs_core::external_tools::ExternalExecutionSupport::None
 pub perl_lsp_rs_core::external_tools::ExternalExecutionSupport::RepositoryConformanceOnly
@@ -596,6 +612,7 @@ pub fn perl_lsp_rs_core::external_tools::ExternalExecutionSupport::eq(&self, oth
 pub fn perl_lsp_rs_core::external_tools::ExternalExecutionSupport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lsp_rs_core::external_tools::ExternalExecutionSupport::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub enum perl_lsp_rs_core::external_tools::ExternalToolId
+pub perl_lsp_rs_core::external_tools::ExternalToolId::DevelCover
 pub perl_lsp_rs_core::external_tools::ExternalToolId::PerlCritic
 pub perl_lsp_rs_core::external_tools::ExternalToolId::PerlLanguageServer
 pub perl_lsp_rs_core::external_tools::ExternalToolId::PerlTidy
@@ -637,6 +654,8 @@ pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidExternal
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidExternalExecutionTrust::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidPeerTrust
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidPeerTrust::tool: &'static str
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidTestingInstrumentTrust
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::InvalidTestingInstrumentTrust::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::MissingCandidateOutputValidationOwner
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::MissingCandidateOutputValidationOwner::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::MissingExplicitEnablement
@@ -653,10 +672,14 @@ pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::NativeReplaceme
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::NativeReplacementWithoutIdentity::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::NativeReplacementWithoutOwner
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::NativeReplacementWithoutOwner::tool: &'static str
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::ReportProducerRoleMismatch
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::ReportProducerRoleMismatch::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::RequiredForNative
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::RequiredForNative::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::RuntimeForbidden
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::RuntimeForbidden::tool: &'static str
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::TestingInstrumentRoleMismatch
+pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::TestingInstrumentRoleMismatch::tool: &'static str
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::WorkspaceOpenExecution
 pub perl_lsp_rs_core::external_tools::ExternalToolRegistryError::WorkspaceOpenExecution::tool: &'static str
 pub fn perl_lsp_rs_core::external_tools::ExternalToolRegistryError::clone(&self) -> perl_lsp_rs_core::external_tools::ExternalToolRegistryError
@@ -668,6 +691,8 @@ pub perl_lsp_rs_core::external_tools::ExternalToolRole::ConfigurationCompatibili
 pub perl_lsp_rs_core::external_tools::ExternalToolRole::ConformanceOracle
 pub perl_lsp_rs_core::external_tools::ExternalToolRole::ExplicitExternalAdapter
 pub perl_lsp_rs_core::external_tools::ExternalToolRole::ExplicitOptionalPeer
+pub perl_lsp_rs_core::external_tools::ExternalToolRole::ExplicitOptionalTestingInstrument
+pub perl_lsp_rs_core::external_tools::ExternalToolRole::ReportProducer
 pub fn perl_lsp_rs_core::external_tools::ExternalToolRole::clone(&self) -> perl_lsp_rs_core::external_tools::ExternalToolRole
 pub fn perl_lsp_rs_core::external_tools::ExternalToolRole::cmp(&self, other: &perl_lsp_rs_core::external_tools::ExternalToolRole) -> core::cmp::Ordering
 pub fn perl_lsp_rs_core::external_tools::ExternalToolRole::eq(&self, other: &perl_lsp_rs_core::external_tools::ExternalToolRole) -> bool
@@ -743,6 +768,7 @@ pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::native_host: &'static 
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::native_package_requires_external: bool
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::native_replacement: perl_lsp_rs_core::external_tools::NativeReplacement
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::owned_domain: &'static str
+pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::report_contract_owner: core::option::Option<&'static str>
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::required_for_native: bool
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::roles: &'static [perl_lsp_rs_core::external_tools::ExternalToolRole]
 pub perl_lsp_rs_core::external_tools::ExternalToolPolicy::runtime_enablement: perl_lsp_rs_core::external_tools::RuntimeEnablement
@@ -9834,7 +9860,9 @@ pub fn perl_lsp_rs_core::runtime::cancellation::CancellableProvider::check_cance
 pub fn perl_lsp_rs_core::runtime::cancellation::CancellableProvider::cleanup_on_cancel(&self, context: &perl_lsp_rs_core::runtime::ProviderCleanupContext)
 pub fn perl_lsp_rs_core::runtime::cancellation::CancellableProvider::provider_name(&self) -> &'static str
 pub mod perl_lsp_rs_core::runtime::input_validation
+pub fn perl_lsp_rs_core::runtime::input_validation::is_text_sync_method(method: &str) -> bool
 pub fn perl_lsp_rs_core::runtime::input_validation::sanitize_string(input: &str) -> alloc::string::String
+pub fn perl_lsp_rs_core::runtime::input_validation::text_sync_params_ceiling() -> usize
 pub fn perl_lsp_rs_core::runtime::input_validation::validate_buffer_line_lengths(text: &str) -> anyhow::Result<()>
 pub fn perl_lsp_rs_core::runtime::input_validation::validate_document_uri(uri: &str) -> anyhow::Result<()>
 pub fn perl_lsp_rs_core::runtime::input_validation::validate_file_content(content: &str, file_path: &std::path::Path) -> anyhow::Result<()>
@@ -9916,6 +9944,9 @@ pub fn perl_lsp_rs_core::runtime::LaunchAction::clone(&self) -> perl_lsp_rs_core
 pub fn perl_lsp_rs_core::runtime::LaunchAction::eq(&self, other: &perl_lsp_rs_core::runtime::LaunchAction) -> bool
 pub fn perl_lsp_rs_core::runtime::LaunchAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::runtime::launcher::LaunchParseError
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticDebounceMs
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticDebounceMs::raw_value: alloc::string::String
+pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticDebounceMs::reason: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticMode
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidDiagnosticMode::raw_mode: alloc::string::String
 pub perl_lsp_rs_core::runtime::launcher::LaunchParseError::InvalidFeatureProfile
@@ -10262,6 +10293,9 @@ pub fn perl_lsp_rs_core::runtime::LaunchAction::clone(&self) -> perl_lsp_rs_core
 pub fn perl_lsp_rs_core::runtime::LaunchAction::eq(&self, other: &perl_lsp_rs_core::runtime::LaunchAction) -> bool
 pub fn perl_lsp_rs_core::runtime::LaunchAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::runtime::LaunchParseError
+pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticDebounceMs
+pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticDebounceMs::raw_value: alloc::string::String
+pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticDebounceMs::reason: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticMode
 pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidDiagnosticMode::raw_mode: alloc::string::String
 pub perl_lsp_rs_core::runtime::LaunchParseError::InvalidFeatureProfile
@@ -10539,6 +10573,7 @@ pub fn perl_lsp_rs_core::runtime::format_startup_banner(version: &str, profile: 
 pub fn perl_lsp_rs_core::runtime::help_text() -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::init_logging(default_filter: &str)
 pub fn perl_lsp_rs_core::runtime::inlay_hints_cap() -> usize
+pub fn perl_lsp_rs_core::runtime::is_text_sync_method(method: &str) -> bool
 pub fn perl_lsp_rs_core::runtime::log_server_startup(server_name: &str, version: &str, transport: perl_lsp_rs_core::runtime::TransportMode, feature_profile: core::option::Option<perl_lsp_rs_core::features::policy::FeatureProfile>, startup_report: core::option::Option<&perl_lsp_rs_core::runtime::timing::StartupReport>)
 pub fn perl_lsp_rs_core::runtime::logging_filter(explicit_flag: bool, explicit_default_filter: &str, implicit_default_filter: &str) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::max_file_size_bytes() -> usize
@@ -10557,6 +10592,7 @@ pub fn perl_lsp_rs_core::runtime::should_use_ansi_stderr() -> bool
 pub fn perl_lsp_rs_core::runtime::should_use_ansi_stdout() -> bool
 pub fn perl_lsp_rs_core::runtime::shutdown_logging()
 pub fn perl_lsp_rs_core::runtime::startup_banner(version: &str, profile: perl_lsp_rs_core::features::policy::FeatureProfile, transport: perl_lsp_rs_core::runtime::TransportMode)
+pub fn perl_lsp_rs_core::runtime::text_sync_params_ceiling() -> usize
 pub fn perl_lsp_rs_core::runtime::to_json_for_profile(profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> alloc::string::String
 pub fn perl_lsp_rs_core::runtime::trackable_feature_count_for_grid() -> usize
 pub fn perl_lsp_rs_core::runtime::validate_buffer_line_lengths(text: &str) -> anyhow::Result<()>
