@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""Execute the real governed entry point with recording tools and real Git refs.
+
+These are adapter controls, not execution of RIPR or its domain validators.
+"""
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+PROOF = ROOT / ".ci/ripr-proof.sh"
+TOOL = r'''#!/usr/bin/env python3
+import json, os, pathlib, signal, sys
+args = sys.argv[1:]
+if pathlib.Path(sys.argv[0]).name == 'ripr':
+    print(os.environ.get('TEST_RIPR_VERSION', 'ripr 0.10.1'))
+    raise SystemExit(0)
+with open(os.environ['TEST_COMMANDS'], 'a') as stream:
+    stream.write(json.dumps(args) + '\n')
+command = args[1]
+check = '--check' in args
+def write(path, text='current fixture\n'):
+    p = pathlib.Path(path); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(text)
+if not check:
+    if command == 'ripr-pr':
+        freshness = os.environ.get('TEST_FRESHNESS', 'current')
+        if freshness != 'missing':
+            token = os.environ['RIPR_FRESHNESS_TOKEN'] if freshness == 'current' else 'older-run/1/1'
+            write(os.environ['RIPR_FRESHNESS_HANDOFF'] + '/clear-succeeded', token + '\n')
+        if not os.environ.get('TEST_MISSING_RAW'):
+            write('target/ripr/pr/raw-check.json')
+        write('target/ripr/pr/repo-exposure.json')
+    elif command == 'ripr-plus':
+        write('target/receipts/quality/ripr-plus.json')
+    elif command == 'ripr-review-comments':
+        write('target/ripr/review/comments.json')
+        if os.environ.get('TEST_CANCEL'):
+            os.kill(os.getppid(), signal.SIGTERM)
+    elif command == 'impacted-evidence':
+        write('target/xtask/impacted-evidence/receipt.json')
+    elif command == 'quality-gate':
+        write('target/receipts/quality/quality-gate-ripr.json')
+        write('target/receipts/quality/quality-gate-ripr.md')
+failure = os.environ.get('TEST_FAIL_COMMAND')
+fail_phase = os.environ.get('TEST_FAIL_PHASE', 'generate')
+raise SystemExit(1 if command == failure and check == (fail_phase == 'check') else 0)
+'''
+
+
+class GovernedRiprProof(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name) / "repo"
+        self.repo.mkdir()
+        self.git("init", "--initial-branch=main")
+        self.git("config", "user.name", "Fixture")
+        self.git("config", "user.email", "fixture@example.invalid")
+        self.commit("base.txt", "base")
+        self.git("checkout", "-b", "feature")
+        self.head = self.commit("feature.txt", "feature")
+        self.git("checkout", "main")
+        self.base = self.commit("main.txt", "updated base")
+        self.git("merge", "--no-ff", "feature", "-m", "evaluated merge")
+        self.sha = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/remotes/origin/main", self.base)
+        self.assertNotEqual(self.head, self.sha)
+        (self.repo / ".ci").mkdir()
+        shutil.copyfile(PROOF, self.repo / ".ci/ripr-proof.sh")
+        self.bin = Path(self.temp.name) / "bin"
+        self.bin.mkdir()
+        for name in ("cargo", "ripr"):
+            tool = self.bin / name
+            tool.write_text(TOOL)
+            tool.chmod(0o755)
+        self.commands = Path(self.temp.name) / "commands.jsonl"
+        self.event = Path(self.temp.name) / "event.json"
+        self.payload = {"repository": {"default_branch": "main"}, "pull_request": {
+            "base": {"sha": self.base}, "head": {"sha": self.head, "repo": {
+                "full_name": "EffortlessMetrics/perl-lsp-swarm"}},
+            "labels": [{"name": "needs review $(false)"}]}}
+        self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+                        GITHUB_WORKSPACE=str(self.repo), GITHUB_SHA=self.sha,
+                        GITHUB_REPOSITORY="EffortlessMetrics/perl-lsp-swarm",
+                        GITHUB_EVENT_NAME="pull_request", GITHUB_EVENT_PATH=str(self.event),
+                        GITHUB_RUN_ID="987654", GITHUB_RUN_ATTEMPT="4",
+                        RUNNER_TEMP=self.temp.name, TEST_COMMANDS=str(self.commands))
+
+    def git(self, *args):
+        return subprocess.check_output(["git", "-C", str(self.repo), *args],
+                                       text=True, stderr=subprocess.DEVNULL).strip()
+
+    def commit(self, path, text):
+        (self.repo / path).write_text(text)
+        self.git("add", path)
+        self.git("commit", "-m", text)
+        return self.git("rev-parse", "HEAD")
+
+    def run_proof(self, **env):
+        self.event.write_text(json.dumps(self.payload))
+        return subprocess.run(["bash", ".ci/ripr-proof.sh"], cwd=self.repo,
+                              env=dict(self.env, **env), text=True, capture_output=True,
+                              timeout=20)
+
+    def calls(self):
+        return [json.loads(line) for line in self.commands.read_text().splitlines()]
+
+    def artifact(self, path=""):
+        return self.repo / ".ci/artifacts/ripr" / path
+
+    def test_complete_pipeline_keeps_separate_event_and_pr_identity(self):
+        result = self.run_proof()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        for command in ("ripr-pr", "ripr-review-comments"):
+            matching = [call for call in calls if call[1] == command]
+            self.assertEqual(len(matching), 2)
+            for call in matching:
+                self.assertEqual(call[call.index("--base") + 1], self.base)
+                self.assertEqual(call[call.index("--pr-head") + 1], self.head)
+        gates = [call for call in calls if call[1] == "quality-gate"]
+        self.assertEqual(len(gates), 2)
+        self.assertIn("--check", gates[1])
+        self.assertEqual(gates[0][gates[0].index("--mode") + 1], "enforce-new-ripr")
+        impacted = [call for call in calls if call[1] == "impacted-evidence"]
+        self.assertEqual(impacted[0][-1], "needs review $(false)")
+        self.assertTrue(self.artifact("target/ripr/pr/raw-check.json").is_file())
+        badge = json.loads(self.artifact("target/receipts/quality/ripr-badge-producer.json").read_text())
+        self.assertEqual(badge["head"], self.sha)
+        self.assertEqual(badge["ripr_version"], "0.10.1")
+
+    def test_wrong_evaluated_sha_never_enters_generation(self):
+        result = self.run_proof(GITHUB_SHA=self.head)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("evaluated event SHA", result.stderr)
+        self.assertFalse(self.commands.exists())
+
+    def test_wrong_image_tool_is_not_reinstalled(self):
+        result = self.run_proof(TEST_RIPR_VERSION="ripr 0.10.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("image-owned RIPR", result.stderr)
+        self.assertFalse(self.commands.exists())
+
+    def test_foreign_pr_subject_is_refused(self):
+        self.payload["pull_request"]["head"]["repo"]["full_name"] = "foreign/repo"
+        result = self.run_proof()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.commands.exists())
+
+    def test_missing_revision_cannot_become_fresh(self):
+        self.payload["pull_request"]["base"]["sha"] = "f" * 40
+        self.assertNotEqual(self.run_proof().returncode, 0)
+        self.assertFalse(self.commands.exists())
+
+    def test_missing_and_previous_attempt_freshness_suppress_old_files(self):
+        for freshness in ("missing", "previous"):
+            with self.subTest(freshness=freshness):
+                result = self.run_proof(TEST_FRESHNESS=freshness)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.artifact("target").exists())
+                self.assertFalse(any("--check" in call for call in self.calls()))
+                self.commands.unlink()
+
+    def test_generation_failure_stays_red_with_current_partial_diagnostics(self):
+        result = self.run_proof(TEST_FAIL_COMMAND="ripr-plus")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.artifact("target/ripr/pr/raw-check.json").is_file())
+        self.assertEqual(len([call for call in self.calls() if call[1] == "quality-gate"]), 2)
+
+    def test_validator_failure_and_genuine_gap_are_not_promoted(self):
+        for command, phase in (("ripr-review-comments", "check"), ("quality-gate", "generate")):
+            with self.subTest(command=command):
+                result = self.run_proof(TEST_FAIL_COMMAND=command, TEST_FAIL_PHASE=phase)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(self.artifact("target/ripr/pr/raw-check.json").is_file())
+                shutil.rmtree(self.artifact())
+
+    def test_missing_raw_receipt_stays_blocking(self):
+        result = self.run_proof(TEST_MISSING_RAW="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing RIPR proof file", result.stderr)
+
+    def test_preseeded_artifact_root_is_not_reused_or_deleted(self):
+        self.artifact().mkdir(parents=True)
+        prior = self.artifact("prior-attempt.json")
+        prior.write_text("prior")
+        result = self.run_proof()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(prior.read_text(), "prior")
+        self.assertFalse(self.commands.exists())
+
+    def test_symlink_artifact_root_is_refused(self):
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        (self.repo / ".ci/artifacts").symlink_to(outside, target_is_directory=True)
+        self.assertNotEqual(self.run_proof().returncode, 0)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_cancellation_stays_red_and_does_not_enter_validation(self):
+        result = self.run_proof(TEST_CANCEL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("--check" in call for call in self.calls()))
+
+    def test_merge_group_has_no_single_pr_head(self):
+        self.payload["merge_group"] = {"base_sha": self.base}
+        result = self.run_proof(GITHUB_EVENT_NAME="merge_group")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = self.calls()[0]
+        self.assertEqual(call[call.index("--pr-head") + 1], "")
+
+
+if __name__ == "__main__":
+    unittest.main()
