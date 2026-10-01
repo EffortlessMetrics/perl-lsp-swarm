@@ -12,7 +12,7 @@ use super::helpers::Helpers;
 ///
 /// `ast_root` must be the full program AST so the suggested name can be checked
 /// against the declarations visible at the insertion point; see
-/// [`visible_names_at`].
+/// `visible_names_at`.
 pub fn create_extract_variable_action(
     node: &Node,
     source: &str,
@@ -102,7 +102,7 @@ pub fn suggest_variable_name(node: &Node) -> String {
 /// the enclosing scope chain rather than by the size of the file. Declarations
 /// inside *nested* scopes are deliberately skipped: a `my` in an inner block is
 /// not visible at `offset` and reusing its name cannot shadow anything there.
-pub fn visible_names_at(ast_root: &Node, offset: usize) -> HashSet<String> {
+fn visible_names_at(ast_root: &Node, offset: usize) -> HashSet<String> {
     let mut names = HashSet::new();
     collect_enclosing_scope_names(ast_root, offset, &mut names);
     names
@@ -214,7 +214,7 @@ fn is_scope_boundary(kind: &NodeKind) -> bool {
 
 /// Return `base` when it is free at the insertion point, otherwise the first
 /// free `base2`, `base3`, ... variant.
-pub fn unique_variable_name(base: &str, visible: &HashSet<String>) -> String {
+fn unique_variable_name(base: &str, visible: &HashSet<String>) -> String {
     if !visible.contains(base) {
         return base.to_string();
     }
@@ -232,6 +232,7 @@ pub fn unique_variable_name(base: &str, visible: &HashSet<String>) -> String {
 mod tests {
     use super::*;
     use perl_parser_core::Parser;
+    use perl_test_must::{must_some_with, must_with};
 
     fn set(names: &[&str]) -> HashSet<String> {
         names.iter().map(|s| (*s).to_string()).collect()
@@ -259,8 +260,8 @@ mod tests {
 
     fn visible_names_before(source: &str, needle: &str) -> HashSet<String> {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
-        let offset = source.find(needle).expect("needle present in fixture");
+        let ast = must_with(parser.parse(), "fixture must parse");
+        let offset = must_some_with(source.find(needle), "needle present in fixture");
         visible_names_at(&ast, offset)
     }
 
