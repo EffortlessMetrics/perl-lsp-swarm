@@ -51,7 +51,7 @@ def validate_evidence(environment: Mapping[str, str]) -> dict[str, str]:
         raise ValueError("expected run identity is absent or invalid")
     for key, value in expected.items():
         if evidence.get(key) != value:
-            raise ValueError(f"missing or contradictory {key}")
+            raise ValueError(f"missing or contradictory {key}; use Re-run all jobs for a fresh exact-attempt proof")
     route = evidence.get("route")
     reason = evidence.get("infrastructure_failure")
     if route == "hosted_fallback":
