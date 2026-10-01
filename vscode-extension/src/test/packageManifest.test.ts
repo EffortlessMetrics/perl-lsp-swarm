@@ -95,9 +95,11 @@ describe('first-run demo content (#16591)', () => {
 
   test('bundled demo has exactly the same files and bytes as the source demo', () => {
     const sourceFiles = filesUnder(sourceRoot).sort();
-    expect(sourceFiles).toEqual(['README.md', 'lib/Database.pm', 'lib/Utils.pm', 'main.pl'].map(
-      (file) => path.normalize(file),
-    ).sort());
+    expect(sourceFiles).toEqual(
+      ['README.md', 'lib/Database.pm', 'lib/Utils.pm', 'main.pl']
+        .map((file) => path.normalize(file))
+        .sort(),
+    );
     expect(filesUnder(bundledRoot).sort()).toEqual(sourceFiles);
     for (const file of sourceFiles) {
       expect(fs.readFileSync(path.join(bundledRoot, file))).toEqual(
