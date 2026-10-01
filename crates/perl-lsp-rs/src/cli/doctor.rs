@@ -2995,7 +2995,7 @@ mod tests {
             binary: None,
             source: "PATH",
             version: None,
-            error: Some(format!("{what} not found on PATH")),
+            error: Some(ReportFailure::Message(format!("{what} not found on PATH"))),
         };
         DoctorReport {
             workspace,
@@ -3009,7 +3009,7 @@ mod tests {
                 binary: None,
                 source: "PATH",
                 version: None,
-                error: Some("perl binary not found on PATH".to_string()),
+                error: Some(ReportFailure::Message("perl binary not found on PATH".to_string())),
             },
             perltidy: missing("perltidy"),
             perlcritic: missing("perlcritic"),
