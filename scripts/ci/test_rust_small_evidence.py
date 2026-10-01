@@ -120,6 +120,24 @@ class RustSmallEvidenceTests(unittest.TestCase):
         self.assertNotIn("if", evaluate)
         self.assertNotIn("continue-on-error", evaluate)
 
+    def test_final_evaluator_requires_validated_proof_and_preserves_draft(self) -> None:
+        import yaml
+        workflow = yaml.safe_load((ROOT / ".github/workflows/em-ci-routed-rust.yml").read_text())
+        step = next(step for step in workflow["jobs"]["rust-small-result"]["steps"] if step.get("name") == "Evaluate routed result")
+        self.assertEqual(step["env"]["PROOF_VALIDATED"], "${{ steps.evidence.outputs.proof_validated }}")
+        script = "gh() { return 1; }\n" + step["run"]
+        cases = (("success", "true", "false", True), ("success", "false", "false", False), ("success", "", "false", False), ("failure", "true", "false", False), ("cancelled", "true", "false", False), ("skipped", "", "true", False), ("skipped", "", "false", True))
+        with tempfile.TemporaryDirectory() as directory:
+            summary = Path(directory) / "summary"
+            for result, evidence, draft, expected in cases:
+                with self.subTest(result=result, evidence=evidence, draft=draft):
+                    summary.unlink(missing_ok=True)
+                    output = subprocess.run(["bash", "--noprofile", "--norc", "-c", script], env={**os.environ, "ROUTE_RESULT": result, "PROOF_VALIDATED": evidence, "IS_DRAFT_PR": draft, "GITHUB_STEP_SUMMARY": str(summary)}, capture_output=True, text=True, check=False)
+                    self.assertEqual(output.returncode == 0, expected, output.stderr + output.stdout)
+                    self.assertTrue(summary.is_file())
+                    if draft == "true":
+                        self.assertIn("RUST_SMALL_GATE_VERDICT=draft-no-proof", output.stdout)
+
     def test_cli_emits_validation_only_after_complete_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"

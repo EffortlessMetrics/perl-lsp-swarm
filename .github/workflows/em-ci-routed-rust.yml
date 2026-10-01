@@ -298,10 +298,16 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
           ROUTE_RESULT: ${{ needs.rust-small-proof.result }}
+          PROOF_VALIDATED: ${{ steps.evidence.outputs.proof_validated }}
         run: |
           set -euo pipefail
 
           echo "route_result=${ROUTE_RESULT:-}"
+          {
+            echo "### Perl LSP Rust Small Result"
+            echo "- governed_result: ${ROUTE_RESULT:-}"
+            echo "- proof_validated: ${PROOF_VALIDATED:-}"
+          } >> "$GITHUB_STEP_SUMMARY"
           # IS_DRAFT_PR is the webhook's snapshot of the pull request, taken
           # when this run was created. Marking a pull request ready does not
           # cancel a run already in flight: the concurrency policy above
@@ -492,4 +498,8 @@ jobs:
           # A successful reusable call is necessary but not sufficient: the
           # prior evidence step checked actual proof entry/result and this exact
           # repository, SHA, run and attempt. Missing evidence cannot be green.
+          if [ "${PROOF_VALIDATED:-}" != "true" ]; then
+            echo "::error::Rust Small NOT_PROVEN: exact-subject proof was not validated"
+            exit 1
+          fi
           echo "Perl LSP Rust Small Result: success"
