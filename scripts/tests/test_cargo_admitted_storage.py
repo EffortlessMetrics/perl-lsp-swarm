@@ -1,0 +1,156 @@
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location("cargo_admitted", ROOT / "scripts/cargo_admitted.py")
+safe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(safe)
+
+
+class AdmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="cargo-admitted-proof-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.slot = self.root / "slot"
+        self.paths = {"target": self.slot / "target", "build": self.slot / "build",
+                      "cargo_home": self.root / "home", "temp": self.root / "temp"}
+        self.env = {"MIN_FREE_GB": "0.001", "MAX_USED_PCT": "100"}
+
+    def run_safe(self, args, call=None):
+        with patch.dict(os.environ, self.env, clear=True), \
+             patch.object(safe, "resource_plan", return_value=(self.slot, self.paths)), \
+             patch.object(safe.subprocess, "call", side_effect=call or (lambda *a, **kw: 0)):
+            return safe.main(args)
+
+    def test_overrides_aliases_and_global_option_bypasses_refused_before_allocation(self):
+        for args in [["+1.95", "build"], ["--config", "x", "build"], ["b"], ["nextest"],
+                     ["clean"], ["test", "--manifest-path=x"], ["build", "--target-dir=x"],
+                     ["build", "--config=x"], ["build", "-j8"], ["check", "-Zfoo"]]:
+            self.assertEqual(self.run_safe(args), 75, args)
+            self.assertFalse(self.slot.exists())
+
+    def test_low_disk_on_each_effective_resource_prevents_any_allocation(self):
+        from collections import namedtuple
+        Usage = namedtuple("Usage", "total used free")
+        # Distinct existing ancestor per effective volume; slot remains absent.
+        volumes = [self.root / str(i) for i in range(5)]
+        for path in volumes:
+            path.mkdir()
+        self.slot = volumes[0] / "slot"
+        self.paths = {key: volumes[i + 1] / "new" for i, key in enumerate(self.paths)}
+        for denied in volumes:
+            seen = []
+            def disk(path):
+                seen.append(path)
+                return Usage(1000000000, 1000000000, 0) if path == denied else Usage(1000000000, 0, 1000000000)
+            with patch.object(safe.shutil, "disk_usage", side_effect=disk):
+                self.assertEqual(self.run_safe(["build"]), 75)
+            self.assertIn(denied, seen)
+            self.assertFalse(self.slot.exists())
+            self.assertFalse(any(path.exists() for path in self.paths.values()))
+
+    def test_cancellation_retains_exclusive_resource_lease(self):
+        def cancel(*args, **kw):
+            raise KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_safe(["run"], cancel)
+        self.assertTrue((self.slot / "cargo-active").exists())
+        self.assertEqual(self.run_safe(["test"]), 75)
+
+    def test_serialized_reuse_and_fixed_both_paths(self):
+        seen = []
+        def cargo(command, env):
+            self.assertTrue((self.slot / "cargo-active").is_dir())
+            self.assertEqual(self.run_safe(["check"]), 75)
+            self.assertEqual(env["TEMP"], env["TMPDIR"])
+            self.assertEqual(env["TMP"], env["TMPDIR"])
+            self.assertEqual(env["CARGO_INCREMENTAL"], "0")
+            self.assertTrue(any(arg.startswith("build.build-dir=") for arg in command))
+            self.assertEqual(command[command.index("--target-dir") + 1], str(self.paths["target"]))
+            seen.append(command)
+            return 0
+        for _ in range(2):
+            self.assertEqual(self.run_safe(["test", "--", "--config=program-arg"], cargo), 0)
+            self.assertFalse((self.slot / "cargo-active").exists())
+        self.assertEqual(seen[0], seen[1])
+
+    def test_cancel_or_failed_spawn_retains_lease_without_pid_stealing(self):
+        def fail(*args, **kw):
+            raise OSError("spawn failed")
+        self.assertEqual(self.run_safe(["build"], fail), 75)
+        self.assertTrue((self.slot / "cargo-active").exists())
+        self.assertEqual(self.run_safe(["build"]), 75)
+
+    def test_completed_failure_releases_lease_but_preserves_artifacts(self):
+        def fail(*args, **kw):
+            (self.paths["build"] / "evidence").write_text("retain")
+            return 101
+        self.assertEqual(self.run_safe(["build"], fail), 101)
+        self.assertEqual((self.paths["build"] / "evidence").read_text(), "retain")
+        self.assertFalse((self.slot / "cargo-active").exists())
+
+    def test_abnormal_child_exit_retains_lease(self):
+        for code in (-9, 3221225786, 9):
+            # Fresh fixture slot for each termination status; never clear a
+            # retained production lease just to make a retry pass.
+            self.slot = self.root / ("terminated-" + str(code))
+            self.paths = {name: self.slot / name for name in self.paths}
+            self.assertEqual(self.run_safe(["test"], lambda *a, **kw: code), code)
+            self.assertTrue((self.slot / "cargo-active").exists())
+            self.assertEqual(self.run_safe(["check"]), 75)
+
+    def test_bounded_common_repository_identity_and_explicit_override_refusal(self):
+        env = {"DEVPLANE": str(self.root), "CARGO_HOME": str(self.root / "cargo")}
+        with patch.object(safe.subprocess, "check_output", return_value=str(self.root / "repo.git")):
+            first = safe.resource_plan(env)
+            self.assertEqual(first, safe.resource_plan(env))
+            with self.assertRaises(safe.Denied):
+                safe.resource_plan(dict(env, CARGO_TARGET_DIR=str(self.root / "arbitrary")))
+        self.assertFalse(first[0].exists())
+
+    def test_nonfinite_policy_refused(self):
+        for key in ("MIN_FREE_GB", "MAX_USED_PCT"):
+            for value in ("NaN", "inf", "-inf", "0", "-1"):
+                with self.assertRaises(safe.Denied):
+                    safe.check_capacity([self.root], {key: value})
+
+    def test_native_and_foreign_paths(self):
+        self.assertEqual(safe.native_path(str(self.root)), self.root.resolve())
+        with self.assertRaises(safe.Denied):
+            safe.native_path("relative/path")
+        if os.name == "nt":
+            self.assertEqual(safe.native_path("/c/with space/cache"), Path("C:/with space/cache"))
+            for value in ("/mnt/c/cache", "/tmp/cache", "//wsl$/Ubuntu/cache"):
+                with self.assertRaises(safe.Denied):
+                    safe.native_path(value)
+        else:
+            for value in ("C:/cache", "/mnt/c/cache"):
+                with self.assertRaises(safe.Denied):
+                    safe.native_path(value)
+
+    def test_symlink_or_junction_rejected(self):
+        link = self.root / "link"
+        if os.name == "nt":
+            result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(self.root)], capture_output=True)
+            if result.returncode:
+                self.skipTest("junction creation unavailable")
+        else:
+            link.symlink_to(self.root, target_is_directory=True)
+        try:
+            with self.assertRaises(safe.Denied):
+                safe.native_path(str(link / "child"))
+        finally:
+            if os.name == "nt":
+                link.rmdir()
+            else:
+                link.unlink()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Keep stale-toolchain refusal before admission/build work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+if [[ $# -eq 1 && "$1" == "--version" ]]; then
+  exec cargo --version
+fi
+if command -v python3 >/dev/null 2>&1; then
+  python=python3
+elif command -v python >/dev/null 2>&1; then
+  python=python
+else
+  echo 'cargo-admitted: DENY: Python 3 is required for cross-platform admission' >&2
+  exit 75
+fi
+exec "$python" "$(dirname -- "${BASH_SOURCE[0]}")/cargo_admitted.py" "$@"

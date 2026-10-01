@@ -228,7 +228,9 @@ After merge or evidence-backed deliberate closure:
 4. update durable contracts, proof, support claims, and changelog only within the
    proven boundary;
 5. preserve partial or residual work explicitly;
-6. release the claim's worktree through the allocator/root that owns it;
+6. return the claim's worktree **and external Cargo target/build resources** to
+   the allocator/root, with a disposition for each canonical path: `released`,
+   `retained with reason`, or `awaiting owner verification`;
 7. update the root-held claim frame and expose the next coherent claim to `$deliver-goal`.
 
 Release local mutation resources on every terminal outcome—merged, superseded,
@@ -241,8 +243,29 @@ inside it. Keep a worktree only when it holds state that exists nowhere else:
 uncommitted changes, unpushed commits, or detached useful state outside the base. A
 fully pushed open PR is reconstructable with `git worktree add`.
 
-Use `bash scripts/cleanup-completed-worktrees.sh --dry-run` to classify safe residue
-before applying cleanup. Do not persist runtime topology, task state, or merge-check
+Carry resource paths and the Cargo lease from `cargo-admitted` in the existing
+root-held claim frame; do not create another ownership database. Cancellation,
+failure, and loss of a worker require the same resource return as success. A
+completed build normally retains its bounded reusable cache with a reason;
+completion is not automatic deletion authority. Unknown ownership, active artifact
+consumers, dirty/untracked/ignored evidence, and detached/unpushed commits retain
+resources pending verification. Age or a missing PID is never sufficient release
+proof. Keep the common Cargo slot assigned through any external artifact consumer;
+`cargo-admitted run/test` holds it through its child, but independent later execution
+requires a separately admitted owner-held lifetime.
+
+Reconcile with a read-only proposal joining Git's registered worktrees and the
+root's known external resource paths. Record path, owner certainty, unique-state
+checks, estimated allocation, and proposed action. Missing paths are metadata
+candidates, not permission to prune. Request exact cleanup authorization, recheck
+concurrency, and preserve branches and shared Git stores. Never invoke the legacy
+`target-gc.sh --apply` or forceful worktree-manager cleanup as this release step.
+See [Cargo storage admission](../../../docs/agents/CARGO_STORAGE.md).
+
+Use `bash scripts/cleanup-completed-worktrees.sh --dry-run` for advisory
+classification only. It uses stale refs and does not inventory ignored evidence;
+its proposals are not cleanup clearance. Verify exact remote preservation, ignored
+contents and active ownership separately before any specifically authorized action. Do not persist runtime topology, task state, or merge-check
 polling as closeout evidence.
 
 ## Supersession carries its corrections

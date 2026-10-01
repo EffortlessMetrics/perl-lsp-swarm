@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-CARGO_SAFE="${REPO_ROOT}/scripts/cargo-safe"
+CARGO_SAFE="${CARGO_SAFE_UNDER_TEST:-${REPO_ROOT}/scripts/cargo-safe}"
 PREFLIGHT="${REPO_ROOT}/scripts/preflight.sh"
 
 PASS=0
