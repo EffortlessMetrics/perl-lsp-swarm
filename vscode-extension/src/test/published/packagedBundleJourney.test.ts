@@ -773,7 +773,9 @@ suite('Packaged VSIX bundled-server journey', function () {
         );
         // A pull-diagnostic client may have observed this document before its
         // first parse completed. A real edit after readiness requests a fresh
-        // report for the current document version.
+        // report for the current document version. The wait subscribes before
+        // the probe edit and requires a change event, so a cached pre-probe
+        // report cannot stand in for the republished probed version.
         const diagnosticVersionAtOpen = diagnosticDocument.version;
         const probeEdit = new vscode.WorkspaceEdit();
         probeEdit.insert(
@@ -781,19 +783,30 @@ suite('Packaged VSIX bundled-server journey', function () {
           new vscode.Position(diagnosticDocument.lineCount, 0),
           '# probe\n',
         );
-        assert.ok(
-          await vscode.workspace.applyEdit(probeEdit),
-          'diagnostic probe edit was rejected',
-        );
-        assert.ok(
-          diagnosticDocument.version > diagnosticVersionAtOpen,
-          'diagnostic probe edit did not advance the document version',
-        );
-        const strictBefore = await waitForDiagnostic(
+        const probeWaitAbort = new AbortController();
+        const strictBeforeWait = waitForDiagnostic(
           diagnosticUri,
           (items) => items.some(expectedStrictDiagnostic),
           'diagnostic PL100 with expected code, source, range, and message',
+          true,
+          probeWaitAbort.signal,
         );
+        // Keep a rejection handler attached if the probe edit fails before this wait is awaited.
+        void strictBeforeWait.catch(() => undefined);
+        let strictBefore: vscode.Diagnostic[];
+        try {
+          assert.ok(
+            await vscode.workspace.applyEdit(probeEdit),
+            'diagnostic probe edit was rejected',
+          );
+          assert.ok(
+            diagnosticDocument.version > diagnosticVersionAtOpen,
+            'diagnostic probe edit did not advance the document version',
+          );
+          strictBefore = await strictBeforeWait;
+        } finally {
+          probeWaitAbort.abort();
+        }
         const diagnosticVersionBefore = diagnosticDocument.version;
         const diagnosticWaitAbort = new AbortController();
         const strictClear = waitForDiagnostic(

@@ -270,6 +270,12 @@ function fakeVscode(
             inserted.newText === '# probe\n'
           ) {
             diagnosticDocument.version += 1;
+            // A versioned edit produces a fresh publication in the real
+            // journey; the double must fire the same required change event
+            // the installed server emits for the probed version.
+            for (const handler of diagnosticHandlers) {
+              handler({ uris: [diagnosticDocument.uri] });
+            }
             continue;
           }
           if (
