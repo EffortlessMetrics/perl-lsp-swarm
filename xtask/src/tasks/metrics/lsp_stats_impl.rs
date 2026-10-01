@@ -2628,6 +2628,18 @@ mod tests {
             "active entries must not carry a resolved_at date"
         );
 
+        // The then clause must bound the review window: an active entry with a
+        // null expires_after_days is the indefinite quarantine #10015 forbids.
+        let then_expiry = &then_clause["properties"]["expires_after_days"];
+        assert_eq!(
+            then_expiry["type"], "integer",
+            "active entry expires_after_days should be narrowed to integer (non-nullable)"
+        );
+        assert_eq!(
+            then_expiry["minimum"], 1,
+            "active entry expires_after_days must be a positive review bound"
+        );
+
         // Presence of owner/issue/failure_class is enforced globally by
         // flakeEntry.required, which covers active entries.
         let required =

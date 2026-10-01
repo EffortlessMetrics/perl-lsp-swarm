@@ -183,3 +183,82 @@ fn scenario_14_rows_split_terminal_dispositions_from_active_proof_debt() -> Resu
     }
     Ok(())
 }
+
+/// Write a minimal flake ledger into a temp root and project its active
+/// blockers through `load_active_known_blockers`.
+fn temp_root_with_ledger(entries: &serde_json::Value) -> Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    let ci_dir = dir.path().join(".ci");
+    fs::create_dir_all(&ci_dir)?;
+    fs::write(
+        ci_dir.join("ux-flakes.json"),
+        serde_json::json!({ "schema_version": 2, "entries": entries }).to_string(),
+    )?;
+    Ok(dir)
+}
+
+/// The active-blocker projection must keep rendering issue-owned rows with
+/// their triage route even once the live ledger reaches zero active rows —
+/// otherwise the projection path only ever gets exercised by the live
+/// registry's current shape and silently rots (issue #9879 A06 residue).
+#[test]
+fn active_blocker_projection_renders_bounded_rows_from_fixture_ledger() -> Result<()> {
+    let active_row = serde_json::json!({
+        "test": "ux_scenario_14_inc_conformance::synthetic_active_row",
+        "state": "active",
+        "disposition": "not_proven",
+        "failure_class": "provider_regression",
+        "component": "module_resolution",
+        "issue": 10015,
+        "owner": "@maintainer",
+        "expires_after_days": 30
+    });
+    let resolved_row = serde_json::json!({
+        "test": "ux_scenario_14_inc_conformance::synthetic_resolved_row",
+        "state": "resolved",
+        "disposition": "stabilized"
+    });
+    let dir = temp_root_with_ledger(&serde_json::json!([active_row, resolved_row]))?;
+
+    let blockers = load_active_known_blockers(dir.path())?;
+    assert_eq!(blockers.len(), 1, "only the active row must project as a blocker");
+    let blocker = &blockers[0];
+    assert_eq!(blocker["test_name"], "ux_scenario_14_inc_conformance::synthetic_active_row");
+    assert_eq!(blocker["state"], "active");
+    assert_eq!(blocker["disposition"], "not_proven");
+    assert_eq!(blocker["failure_class"], "provider_regression");
+    assert_eq!(blocker["component"], "module_resolution");
+    // The triage route is derived from the failure class when the row carries
+    // no explicit route.
+    assert_eq!(blocker["route"], "provider_fix");
+    assert_eq!(blocker["issue"], 10015);
+    assert_eq!(blocker["owner"], "@maintainer");
+    Ok(())
+}
+
+/// An explicit per-row `route` must win over the failure-class default, and an
+/// empty ledger must project zero blockers rather than erroring.
+#[test]
+fn active_blocker_projection_honors_explicit_route_and_empty_ledger() -> Result<()> {
+    let routed_row = serde_json::json!({
+        "test": "ux_scenario_14_inc_conformance::synthetic_routed_row",
+        "state": "active",
+        "disposition": "still_failing",
+        "failure_class": "timeout",
+        "route": "custom_triage_lane",
+        "issue": 10015,
+        "owner": "@maintainer",
+        "expires_after_days": 14
+    });
+    let dir = temp_root_with_ledger(&serde_json::json!([routed_row]))?;
+    let blockers = load_active_known_blockers(dir.path())?;
+    assert_eq!(blockers.len(), 1);
+    assert_eq!(blockers[0]["route"], "custom_triage_lane");
+
+    let empty_dir = temp_root_with_ledger(&serde_json::json!([]))?;
+    assert!(
+        load_active_known_blockers(empty_dir.path())?.is_empty(),
+        "a ledger with zero active rows must project zero blockers"
+    );
+    Ok(())
+}

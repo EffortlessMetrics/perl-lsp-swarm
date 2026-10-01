@@ -168,7 +168,7 @@
       "first_seen": "2026-04-30",
       "scope": "pr",
       "quarantine_effect": "non_blocking_pr",
-      "expires_after_days": null,
+      "expires_after_days": 30,
       "resolved_in": null,
       "resolved_at": null,
       "evidence": {

@@ -13,6 +13,9 @@
 //!    carried the evidence run, and all verified Scenario 14 rows share one
 //!    (verification_pr, verified_sha, artifact blob) evidence event, so stale
 //!    or free-floating provenance cannot hide behind the sha↔blob checks.
+//! 4. Every `active` row carries the bounded review contract of #10015: a
+//!    current issue, a named owner, and a bounded `expires_after_days` — no
+//!    indefinite, ownerless quarantine may re-enter the registry silently.
 
 use std::fs;
 use std::io;
@@ -58,6 +61,34 @@ fn check_verification_pr(test: &str, verification_pr: &Value) -> Result<(), Stri
              evidence run, got {verification_pr}"
         )),
     }
+}
+
+/// Enforce the #10015 bounded active-row contract: an `active` quarantine must
+/// name its current issue and owner and carry a bounded review expiry. Without
+/// this detector an active row can re-enter the registry with
+/// `expires_after_days: null` and no honest owner — the exact unbounded shape
+/// #10015 forbids. Shared by the live contract test and the negative control.
+fn check_active_row_bounds(
+    test: &str,
+    issue: &Value,
+    owner: &Value,
+    expires_after_days: &Value,
+) -> Result<(), String> {
+    if issue.as_u64().map(|issue| issue >= 1) != Some(true) {
+        return Err(format!(
+            "{test}: active row must name its current tracking issue, got {issue}"
+        ));
+    }
+    if owner.as_str().is_none_or(|owner| owner.trim().is_empty()) {
+        return Err(format!("{test}: active row must name a current owner, got {owner}"));
+    }
+    if expires_after_days.as_u64().map(|days| days >= 1) != Some(true) {
+        return Err(format!(
+            "{test}: active row must carry a bounded expires_after_days (integer >= 1), \
+             got {expires_after_days} — no indefinite quarantine"
+        ));
+    }
+    Ok(())
 }
 
 /// Re-verify one recorded `verified_sha` binding against the quarantined
@@ -395,6 +426,95 @@ fn drift_negative_control_fails_on_tampered_bindings() -> TestResult {
     .err()
     .ok_or_else(|| invalid_data("shallow clones must still detect artifact drift"))?;
     assert!(err.contains("drifted"), "{err}");
+
+    Ok(())
+}
+
+#[test]
+fn active_rows_carry_bounded_review_contract() -> TestResult {
+    // Live half: every currently active row must satisfy the #10015 bounded
+    // active-row contract. With zero active rows this is vacuously green, but
+    // the detector is exercised below by fault injection so the bound cannot
+    // silently rot.
+    let root = repo_root();
+    let ledger_raw = fs::read_to_string(root.join(".ci/ux-flakes.json"))?;
+    let ledger: Value = serde_json::from_str(&ledger_raw)?;
+    let summary_active = ledger["summary"]["active"].as_u64().ok_or_else(|| {
+        invalid_data("ux-flakes summary.active must be an integer for the active-row bound")
+    })?;
+
+    let mut active_count = 0usize;
+    for entry in ledger["entries"]
+        .as_array()
+        .ok_or_else(|| invalid_data("ux-flakes entries must be an array"))?
+    {
+        if entry["state"] != "active" {
+            continue;
+        }
+        let test = entry["test"].as_str().unwrap_or("<missing test>");
+        check_active_row_bounds(
+            test,
+            &entry["issue"],
+            &entry["owner"],
+            &entry["expires_after_days"],
+        )
+        .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+        active_count += 1;
+    }
+
+    // The summary is a generated projection; it must not disagree with the
+    // rows the bound just walked.
+    assert_eq!(
+        active_count as u64, summary_active,
+        "summary.active ({summary_active}) must equal the actual active row count ({active_count})"
+    );
+    Ok(())
+}
+
+#[test]
+fn active_row_bounds_negative_control_fails_on_unbounded_rows() -> TestResult {
+    // Fault-injection half: the detector must fail on each unbounded active
+    // shape, not just pass on the healthy ledger.
+    let issue = Value::from(10015);
+    let owner = Value::from("@maintainer");
+    let bounded = Value::from(30);
+
+    // 1. A bounded, issue-owned active row passes.
+    assert!(check_active_row_bounds("t", &issue, &owner, &bounded).is_ok());
+
+    // 2. Null expiry — the indefinite quarantine #10015 forbids — fails.
+    let err = check_active_row_bounds("t", &issue, &owner, &Value::Null)
+        .err()
+        .ok_or_else(|| invalid_data("null expiry must fail"))?;
+    assert!(err.contains("expires_after_days"), "{err}");
+
+    // 3. Zero/negative expiry bounds are placeholders, not review windows.
+    for days in [Value::from(0), Value::from(-5)] {
+        let err = check_active_row_bounds("t", &issue, &owner, &days)
+            .err()
+            .ok_or_else(|| invalid_data("non-positive expiry must fail"))?;
+        assert!(err.contains("expires_after_days"), "{err}");
+    }
+
+    // 4. A non-integer expiry shape fails the bound.
+    let err = check_active_row_bounds("t", &issue, &owner, &Value::from("30"))
+        .err()
+        .ok_or_else(|| invalid_data("string expiry must fail"))?;
+    assert!(err.contains("expires_after_days"), "{err}");
+
+    // 5. Ownerless or blank-owner active rows fail.
+    for owner in [Value::Null, Value::from("")] {
+        let err = check_active_row_bounds("t", &issue, &owner, &bounded)
+            .err()
+            .ok_or_else(|| invalid_data("missing owner must fail"))?;
+        assert!(err.contains("owner"), "{err}");
+    }
+
+    // 6. Issue-less active rows fail.
+    let err = check_active_row_bounds("t", &Value::Null, &owner, &bounded)
+        .err()
+        .ok_or_else(|| invalid_data("missing issue must fail"))?;
+    assert!(err.contains("issue"), "{err}");
 
     Ok(())
 }

@@ -289,7 +289,7 @@
             "null"
           ],
           "minimum": 1,
-          "description": "Optional auto-expiry for active entries."
+          "description": "Bounded review window in days. Required (non-null, >= 1) for active entries — no indefinite quarantine; null only once the row is resolved."
         },
         "resolved_in": {
           "type": [
@@ -345,6 +345,10 @@
               "owner": {
                 "type": "string",
                 "minLength": 1
+              },
+              "expires_after_days": {
+                "type": "integer",
+                "minimum": 1
               },
               "resolved_in": {
                 "type": "null"
