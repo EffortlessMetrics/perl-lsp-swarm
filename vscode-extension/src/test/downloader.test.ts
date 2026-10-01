@@ -7,6 +7,8 @@
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as http from 'http';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { EventEmitter } from 'events';
@@ -3811,6 +3813,12 @@ describe('download failure classifiers', () => {
       'unable to verify the first certificate',
       'SELF_SIGNED_CERT_IN_CHAIN',
       'certificate is not yet valid',
+      // TLS-protocol failures such as a handshake answered with non-TLS bytes.
+      'SSL routines::wrong version number',
+      // Proxy dispositions from the managed transport (#7804).
+      'Managed download proxy connect refused: HTTP 407 (proxy credentials or access denied) for http://***@proxy.corp:3128',
+      'Managed download proxy configuration is unsupported: SOCKS proxies are not supported by the managed transport (socks5h://***@gateway:1080)',
+      'Managed download proxy connect failed: connect ECONNREFUSED 127.0.0.1:3128 (http://***@proxy.corp:3128)',
     ];
     for (const message of networkFailures) {
       expect(isNetworkErrorMessage(message)).toBe(true);
@@ -3853,4 +3861,303 @@ describe('download failure classifiers', () => {
       expect(isDownloadCancellationMessage(message)).toBe(false);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Redirect handling through the managed transport (#7804)
+// ---------------------------------------------------------------------------
+describe('BinaryDownloader.downloadFile redirects', () => {
+  type TestRequest = EventEmitter & {
+    destroy: jest.Mock;
+  };
+  type TestResponse = EventEmitter & {
+    statusCode: number;
+    headers: Record<string, string>;
+    destroy: jest.Mock;
+    resume: jest.Mock;
+  };
+  type DownloaderSeams = {
+    downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void>;
+    httpGet: (...args: unknown[]) => TestRequest;
+  };
+
+  const PAYLOAD = 'REDIRECT_PAYLOAD_BYTES';
+
+  let downloader: TestDownloader;
+  let seams: DownloaderSeams;
+  let tmpDir: string;
+  let origin: http.Server;
+  let originSockets: Set<net.Socket>;
+  let originPort: number;
+  let payloadRequests: string[];
+
+  function restoreDefaultConfigurationMock(): void {
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockImplementation((_section?: string) => ({
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    }));
+  }
+
+  async function closeServer(server: net.Server, sockets: Set<net.Socket>): Promise<void> {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  }
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-redirect-'));
+    downloader = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    seams = downloader as unknown as DownloaderSeams;
+    payloadRequests = [];
+
+    origin = http.createServer((req, res) => {
+      payloadRequests.push(req.url ?? '');
+      if (req.url === '/redirect-relative') {
+        res.writeHead(302, { location: '/payload.bin' });
+        res.end();
+      } else if (req.url === '/redirect-absolute') {
+        res.writeHead(302, { location: `http://127.0.0.1:${originPort}/payload.bin` });
+        res.end();
+      } else if (req.url === '/loop') {
+        res.writeHead(302, { location: '/loop' });
+        res.end();
+      } else if (req.url === '/payload.bin') {
+        res.writeHead(200, { 'content-length': String(PAYLOAD.length) });
+        res.end(PAYLOAD);
+      } else {
+        res.writeHead(404);
+        res.end('missing');
+      }
+    });
+    originSockets = new Set<net.Socket>();
+    origin.on('connection', (socket) => {
+      originSockets.add(socket);
+      socket.on('close', () => originSockets.delete(socket));
+    });
+    await new Promise<void>((resolve) => {
+      origin.listen(0, '127.0.0.1', () => resolve());
+    });
+    originPort = (origin.address() as net.AddressInfo).port;
+  });
+
+  afterEach(async () => {
+    await closeServer(origin, originSockets);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    jest.restoreAllMocks();
+    restoreDefaultConfigurationMock();
+  });
+
+  test('follows a relative Location header by resolving it against the current URL', async () => {
+    const dest = path.join(tmpDir, 'relative.bin');
+
+    await seams.downloadFile(`http://127.0.0.1:${originPort}/redirect-relative`, dest, 4000);
+
+    expect(fs.readFileSync(dest, 'utf8')).toBe(PAYLOAD);
+    expect(payloadRequests).toEqual(['/redirect-relative', '/payload.bin']);
+  }, 10000);
+
+  test('follows an absolute Location header to another origin path', async () => {
+    const dest = path.join(tmpDir, 'absolute.bin');
+
+    await seams.downloadFile(`http://127.0.0.1:${originPort}/redirect-absolute`, dest, 4000);
+
+    expect(fs.readFileSync(dest, 'utf8')).toBe(PAYLOAD);
+    expect(payloadRequests).toEqual(['/redirect-absolute', '/payload.bin']);
+  }, 10000);
+
+  test('redirect loops remain bounded', async () => {
+    const dest = path.join(tmpDir, 'loop.bin');
+
+    await expect(
+      seams.downloadFile(`http://127.0.0.1:${originPort}/loop`, dest, 4000),
+    ).rejects.toThrow('Too many redirects');
+    // The default budget of 5 redirects plus the initial request.
+    expect(payloadRequests).toHaveLength(6);
+  }, 10000);
+
+  function fakeRedirectResponse(statusCode: number, location: string): void {
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const response = new EventEmitter() as TestResponse;
+    response.statusCode = statusCode;
+    response.headers = { location };
+    response.destroy = jest.fn();
+    response.resume = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      process.nextTick(() => {
+        (callback as (value: unknown) => void)(response);
+      });
+      return request;
+    });
+  }
+
+  test('rejects an HTTPS-to-HTTP redirect before any request is made', async () => {
+    fakeRedirectResponse(301, 'http://evil.example/payload.bin');
+    const dest = path.join(tmpDir, 'downgrade.bin');
+
+    await expect(
+      seams.downloadFile('https://releases.example/payload.bin', dest, 1000),
+    ).rejects.toThrow('Security violation: Redirect from HTTPS to HTTP prevented');
+    // The refused target was never contacted: the only httpGet call was the
+    // original HTTPS one, and no new request followed the redirect.
+    expect(seams.httpGet).toHaveBeenCalledTimes(1);
+  });
+
+  test('rejects redirects to unsupported protocols', async () => {
+    fakeRedirectResponse(302, 'ftp://evil.example/payload.bin');
+    const dest = path.join(tmpDir, 'protocol.bin');
+
+    await expect(
+      seams.downloadFile('https://releases.example/payload.bin', dest, 1000),
+    ).rejects.toThrow('Security violation: Redirect to unsupported protocol: ftp:');
+  });
+
+  test('rejects an unresolvable redirect location as a bounded security failure', async () => {
+    fakeRedirectResponse(302, 'http://[::z/payload.bin');
+    const dest = path.join(tmpDir, 'unresolvable.bin');
+
+    await expect(
+      seams.downloadFile('https://releases.example/payload.bin', dest, 1000),
+    ).rejects.toThrow(/Security violation: Redirect location is not a resolvable URL/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The configured http.proxy now routes managed downloads (#7804)
+// ---------------------------------------------------------------------------
+describe('BinaryDownloader.downloadFile through the configured proxy', () => {
+  const PROXIED_BODY = 'PROXY_FIXTURE_BODY_v1';
+  const PROXY_CREDENTIALS = 'proxyuser:proxypass';
+
+  let downloader: TestDownloader;
+  let seams: { downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void> };
+  let tmpDir: string;
+  let proxy: http.Server;
+  let proxySockets: Set<net.Socket>;
+  let proxyPort: number;
+  let proxiedRequests: string[];
+
+  async function listenOnLoopback(server: net.Server): Promise<number> {
+    server.on('connection', (socket) => {
+      proxySockets.add(socket);
+      socket.on('close', () => proxySockets.delete(socket));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    return (server.address() as net.AddressInfo).port;
+  }
+
+  async function closedLocalPort(): Promise<number> {
+    const server = net.createServer();
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const port = (server.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+    return port;
+  }
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-proxy-'));
+    downloader = new BinaryDownloader(
+      makeContext(),
+      makeOutputChannel(),
+    ) as unknown as TestDownloader;
+    seams = downloader as unknown as {
+      downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void>;
+    };
+    proxiedRequests = [];
+    proxySockets = new Set<net.Socket>();
+
+    // A canned proxy: it answers absolute-form GETs itself and never forwards
+    // (the target origin port is closed, so any success must have traversed
+    // the proxy).
+    proxy = http.createServer((req, res) => {
+      proxiedRequests.push(req.url ?? '');
+      res.writeHead(200, { 'content-length': String(PROXIED_BODY.length) });
+      res.end(PROXIED_BODY);
+    });
+    proxyPort = await listenOnLoopback(proxy);
+  });
+
+  afterEach(async () => {
+    for (const socket of proxySockets) {
+      socket.destroy();
+    }
+    await new Promise<void>((resolve) => {
+      proxy.close(() => resolve());
+    });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    jest.restoreAllMocks();
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockImplementation((_section?: string) => ({
+      get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    }));
+  });
+
+  test('routes the artifact fetch through http.proxy while the direct path is unavailable', async () => {
+    const vscode = require('vscode');
+    const deadTargetPort = await closedLocalPort();
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'proxy') {
+          return `http://${PROXY_CREDENTIALS}@127.0.0.1:${proxyPort}`;
+        }
+        return defaultValue;
+      }),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    });
+
+    const dest = path.join(tmpDir, 'proxied.bin');
+    await seams.downloadFile(`http://127.0.0.1:${deadTargetPort}/asset.bin`, dest, 4000);
+
+    expect(fs.readFileSync(dest, 'utf8')).toBe(PROXIED_BODY);
+    expect(proxiedRequests).toEqual([`http://127.0.0.1:${deadTargetPort}/asset.bin`]);
+  }, 10000);
+
+  test('failure messages for a credential-bearing proxy route stay credential-free', async () => {
+    const vscode = require('vscode');
+    const unreachableProxyPort = await closedLocalPort();
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'proxy') {
+          return `http://${PROXY_CREDENTIALS}@127.0.0.1:${unreachableProxyPort}`;
+        }
+        return defaultValue;
+      }),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    });
+
+    const dest = path.join(tmpDir, 'unreachable.bin');
+    let rejection = '';
+    await seams.downloadFile('http://127.0.0.1:9/asset.bin', dest, 4000).catch((error: unknown) => {
+      rejection = error instanceof Error ? error.message : String(error);
+    });
+    expect(rejection).toMatch(/ECONNREFUSED/);
+
+    // The rejected error is exactly what lands in the output channel and
+    // failure banners, so its contents bound what any log seam can leak.
+    expect(rejection).not.toContain(PROXY_CREDENTIALS);
+    expect(rejection).not.toContain('proxyuser');
+    expect(rejection).not.toContain('proxypass');
+  }, 10000);
 });
