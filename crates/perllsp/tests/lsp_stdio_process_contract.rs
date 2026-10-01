@@ -793,6 +793,7 @@ fn post_shutdown_request_racing_exit_is_delivered() -> Result<()> {
 
     let status = client.wait_for_exit(timeout())?;
     ensure!(status.success(), "shutdown then exit failed: {status}");
+    client.assert_transport_clean()?;
     Ok(())
 }
 

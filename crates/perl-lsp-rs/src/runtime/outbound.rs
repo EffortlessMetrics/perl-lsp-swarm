@@ -1028,6 +1028,14 @@ pub(crate) mod tests {
                     thread::yield_now();
                 }
                 Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break true,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    // Writer is still blocked; the probe may fill the bounded
+                    // channel before settle_for_exit closes admission.
+                    if std::time::Instant::now() >= deadline {
+                        break false;
+                    }
+                    thread::yield_now();
+                }
                 Err(error) => {
                     return Err(format!("admission probe failed unexpectedly: {error}").into());
                 }
