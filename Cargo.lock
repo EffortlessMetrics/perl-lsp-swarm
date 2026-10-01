@@ -1959,6 +1959,7 @@ version = "0.17.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "perl-test-must",
  "regex",
  "serde",
  "serde_json",

@@ -2713,25 +2713,27 @@ fn collect_all_package_members_with_source(
 
         let facts = load_model(pkg, model_cache);
         if facts.from_current_document {
+            // Current-buffer methods are inserted first, so `seen_names` lets
+            // them shadow same-name persisted members (#16809).
             for symbol in facts.methods {
                 if seen_names.insert(symbol.name.clone()) {
                     result.push(symbol);
                 }
             }
-            // Current-buffer source wins for explicit methods; still consume
-            // persisted generated members (Moo `has` readers, etc.) so
-            // indexing the same package does not drop workspace facts.
-            push_index_method_symbols(index.get_generated_package_members(pkg), seen_names, result);
-        } else {
-            push_index_method_symbols(
-                index
-                    .get_package_members(pkg)
-                    .into_iter()
-                    .chain(index.get_generated_package_members(pkg)),
-                seen_names,
-                result,
-            );
         }
+        // Persisted members compose for every package, including one declared
+        // in the open buffer: workspace-only explicit methods must still be
+        // offered (#2536), and generated Moo/Moose members must survive the
+        // same package being indexed. Current-document facts above keep
+        // precedence for names both sides define.
+        push_index_method_symbols(
+            index
+                .get_package_members(pkg)
+                .into_iter()
+                .chain(index.get_generated_package_members(pkg)),
+            seen_names,
+            result,
+        );
 
         // Traverse @ISA ancestors in MRO order. C3 uses the same parent walk as
         // DFS here: completion only needs consistent visitation, not a second
@@ -2875,42 +2877,80 @@ fn load_source_package_facts(
                 .filter_map(|method| current_document_method_symbol(&model.name, method))
                 .collect()
         });
-        return SourcePackageFacts {
-            parents: model.parents.clone(),
-            roles: model.roles.clone(),
+        return current_document_facts_with_persisted_edges(
+            pkg,
+            index,
+            model.parents.clone(),
+            model.roles.clone(),
             methods,
-            from_current_document: true,
-        };
+        );
     }
 
     if let Some(methods) = current_methods.get(pkg) {
-        return SourcePackageFacts {
-            parents: Vec::new(),
-            roles: Vec::new(),
-            methods: methods.clone(),
-            from_current_document: true,
-        };
+        // The symbol table saw this package in the open buffer even though the
+        // class-model builder did not (partial/incomplete sources), so the
+        // persisted inheritance chain must still be consulted (#16809).
+        return current_document_facts_with_persisted_edges(
+            pkg,
+            index,
+            Vec::new(),
+            Vec::new(),
+            methods.clone(),
+        );
     }
 
+    indexed_package_model(pkg, index)
+        .map(|model| source_package_facts_from_model(&model, false))
+        .unwrap_or_else(empty_source_package_facts)
+}
+
+/// Compose current-document method facts with the persisted inheritance chain.
+///
+/// The open buffer stays authoritative for explicit methods and for
+/// `use parent`/role edges it actually states; a partial buffer that restates
+/// only the package header must not erase the persisted chain, so indexed
+/// edges fill the gaps.
+fn current_document_facts_with_persisted_edges(
+    pkg: &str,
+    index: &WorkspaceIndex,
+    mut parents: Vec<String>,
+    mut roles: Vec<String>,
+    methods: Vec<WorkspaceSymbol>,
+) -> SourcePackageFacts {
+    if (parents.is_empty() || roles.is_empty())
+        && let Some(indexed) = indexed_package_model(pkg, index)
+    {
+        if parents.is_empty() {
+            parents = indexed.parents;
+        }
+        if roles.is_empty() {
+            roles = indexed.roles;
+        }
+    }
+    SourcePackageFacts { parents, roles, methods, from_current_document: true }
+}
+
+/// Parse the persisted indexed text for `pkg` and return its class model when
+/// the indexed document actually declares that package. A bare-symbol lookup
+/// can resolve an unrelated indexed symbol, so the package name must match.
+fn indexed_package_model(
+    pkg: &str,
+    index: &WorkspaceIndex,
+) -> Option<perl_semantic_analyzer::class_model::ClassModel> {
     let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
         index.document_store().get_text(&pkg_location.uri).or_else(|| {
             perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
                 .and_then(|path| std::fs::read_to_string(path).ok())
         })
-    });
-    let Some(text) = indexed_text else {
-        return empty_source_package_facts();
-    };
-    let mut parser = perl_semantic_analyzer::Parser::new(&text);
+    })?;
+    let mut parser = perl_semantic_analyzer::Parser::new(&indexed_text);
     let Ok(ast) = parser.parse() else {
-        return empty_source_package_facts();
+        return None;
     };
     perl_semantic_analyzer::class_model::ClassModelBuilder::new()
         .build(&ast)
         .into_iter()
         .find(|model| model.name == pkg)
-        .map(|model| source_package_facts_from_model(&model, false))
-        .unwrap_or_else(empty_source_package_facts)
 }
 
 fn source_package_facts_from_model(

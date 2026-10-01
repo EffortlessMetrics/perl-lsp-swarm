@@ -1492,6 +1492,7 @@ mod normalize_tests {
         normalize_lsp_payload, normalize_uri_for_expectations,
     };
     use crate::LspEvent;
+    use perl_test_must::must_err_with;
     use serde_json::{Value, json};
     use std::path::Path;
     use tempfile::TempDir;
@@ -1505,8 +1506,10 @@ mod normalize_tests {
         );
         assert!(normalize_document_symbol_result(&Value::Null).unwrap().is_empty());
         let bare = json!({ "name": "greet", "kind": 12 });
-        let error = normalize_document_symbol_result(&bare)
-            .expect_err("a bare object is a malformed result envelope");
+        let error = must_err_with(
+            normalize_document_symbol_result(&bare),
+            "a bare object is a malformed result envelope",
+        );
         assert!(
             error.to_string().contains("must be DocumentSymbol[] | SymbolInformation[] | null")
         );
