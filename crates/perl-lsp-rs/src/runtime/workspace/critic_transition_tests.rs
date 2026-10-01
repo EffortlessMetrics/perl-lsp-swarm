@@ -18,6 +18,12 @@ const SOURCE: &str = "my $out = `ls -la`;\nopen(my $fh, '<', 'file.txt');\nprint
 const NATIVE_CODE: &str = "native.testing.require_use_strict";
 const PUSH_NATIVE_CODE: &str = "native.io.unchecked_open_close";
 const DEADLINE: Duration = Duration::from_secs(5);
+// FIFO fence via the registry-classified server-to-client `$/progress`
+// notification (protocol::method_direction). The progress `value` field is
+// opaque per LSP, and the unique token makes production progress frames
+// unable to satisfy the marker match. The method literal is spelled inline
+// at the send site so the outbound-inventory scanner can classify it.
+const FENCE_TOKEN: &str = "critic-proof-fence";
 
 #[derive(Clone)]
 struct Capture {
@@ -84,9 +90,10 @@ impl Fixture {
         // assertions never depend on a sleep or on an unflushed byte snapshot.
         self.fence = self.fence.checked_add(1).context("fence overflow")?;
         let marker = self.fence;
-        self.server
-            .outbound
-            .send_notification("$/criticProofFence", json!({ "sequence": marker }))?;
+        self.server.outbound.send_notification(
+            "$/progress",
+            json!({ "token": FENCE_TOKEN, "value": { "sequence": marker } }),
+        )?;
         let deadline = std::time::Instant::now() + DEADLINE;
         loop {
             let remaining = deadline
@@ -100,8 +107,10 @@ impl Fixture {
                 messages.push(serde_json::from_slice::<Value>(&body)?);
             }
             if messages.iter().any(|message| {
-                message.get("method").and_then(Value::as_str) == Some("$/criticProofFence")
-                    && message.pointer("/params/sequence").and_then(Value::as_u64) == Some(marker)
+                message.get("method").and_then(Value::as_str) == Some("$/progress")
+                    && message.pointer("/params/token").and_then(Value::as_str) == Some(FENCE_TOKEN)
+                    && message.pointer("/params/value/sequence").and_then(Value::as_u64)
+                        == Some(marker)
             }) {
                 return Ok(messages);
             }
