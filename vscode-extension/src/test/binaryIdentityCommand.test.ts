@@ -13,7 +13,7 @@ import {
   type BinaryIdentityCommandHost,
   type BinaryIdentityRequestClient,
 } from '../binaryIdentityCommand';
-import { createBinaryIdentityCommand } from '../extension';
+import { createBinaryIdentityCommand, createBinaryIdentityDialogShow } from '../extension';
 
 function response(): BinaryIdentityResponseV1 {
   return {
@@ -205,6 +205,82 @@ describe('binary identity command', () => {
     };
     expect(second.expected_extension).not.toHaveProperty('candidate_identity');
     expect(second.expected_extension).not.toHaveProperty('target');
+  });
+
+  test('production dialog maps the selected action to the governed callback', async () => {
+    const request = jest.fn().mockResolvedValue(response());
+    const repairManagedPair = jest.fn().mockResolvedValue(undefined);
+    const refreshIdentity = jest.fn().mockResolvedValue(undefined);
+    const showMessage = jest.fn().mockResolvedValue('Repair managed binary');
+    const host: BinaryIdentityCommandHost = {
+      show: createBinaryIdentityDialogShow(showMessage),
+      refreshIdentity,
+      repairManagedPair,
+      inspectConfiguredBinary: jest.fn().mockResolvedValue(undefined),
+      copySupportPacket: jest.fn().mockResolvedValue(undefined),
+    };
+
+    await createBinaryIdentityCommand(
+      () => ({ sendRequest: request }),
+      () => ({ extensionVersion: '0.18.0', selectedRole: 'managed' }),
+      host,
+    )();
+
+    expect(showMessage).toHaveBeenCalledWith(
+      expect.stringContaining('repair required'),
+      'Repair managed binary',
+      'Copy support packet',
+    );
+    expect(repairManagedPair).toHaveBeenCalledTimes(1);
+    expect(refreshIdentity).not.toHaveBeenCalled();
+  });
+
+  test('dismissing the production dialog dispatches no action', async () => {
+    const request = jest.fn().mockResolvedValue(response());
+    const repairManagedPair = jest.fn().mockResolvedValue(undefined);
+    const copySupportPacket = jest.fn().mockResolvedValue(undefined);
+    const showMessage = jest.fn().mockResolvedValue(undefined);
+    const host: BinaryIdentityCommandHost = {
+      show: createBinaryIdentityDialogShow(showMessage),
+      refreshIdentity: jest.fn().mockResolvedValue(undefined),
+      repairManagedPair,
+      inspectConfiguredBinary: jest.fn().mockResolvedValue(undefined),
+      copySupportPacket,
+    };
+
+    await createBinaryIdentityCommand(
+      () => ({ sendRequest: request }),
+      () => ({ extensionVersion: '0.18.0', selectedRole: 'managed' }),
+      host,
+    )();
+
+    expect(showMessage).toHaveBeenCalledTimes(1);
+    expect(repairManagedPair).not.toHaveBeenCalled();
+    expect(copySupportPacket).not.toHaveBeenCalled();
+  });
+
+  test('quiet exact-match presentation offers no buttons', async () => {
+    const request = jest.fn().mockResolvedValue({
+      ...response(),
+      compatibility: 'exact_match',
+      reasons: ['exact_identity_match'],
+    });
+    const showMessage = jest.fn().mockResolvedValue(undefined);
+    const host: BinaryIdentityCommandHost = {
+      show: createBinaryIdentityDialogShow(showMessage),
+      refreshIdentity: jest.fn().mockResolvedValue(undefined),
+      repairManagedPair: jest.fn().mockResolvedValue(undefined),
+      inspectConfiguredBinary: jest.fn().mockResolvedValue(undefined),
+      copySupportPacket: jest.fn().mockResolvedValue(undefined),
+    };
+
+    await createBinaryIdentityCommand(
+      () => ({ sendRequest: request }),
+      () => ({ extensionVersion: '0.18.0', selectedRole: 'managed' }),
+      host,
+    )();
+
+    expect(showMessage).toHaveBeenCalledWith(expect.stringContaining('identity verified'));
   });
 
   test('reports an identity request failure instead of returning unsupported', async () => {

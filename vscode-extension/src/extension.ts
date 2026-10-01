@@ -89,6 +89,7 @@ import {
   type BinaryIdentityCommandInput,
   type BinaryIdentityRequestClient,
 } from './binaryIdentityCommand';
+import type { BinaryIdentityAction } from './binaryIdentityStatus';
 import { registerCriticCommandGroup } from './criticCommandGroup';
 import { registerTestCommandGroup } from './testCommandGroup';
 import { registerOnboardingCommandGroup } from './onboardingCommandGroup';
@@ -295,10 +296,60 @@ function installedManagedIdentity(): { candidate: string; target: string } | und
     return undefined;
   }
   const manifest = readInstalledManagedCandidateManifest(path.dirname(serverPath));
-  if (manifest === null) {
+  // The shared reader validates the manifest envelope (schema_version,
+  // candidate_id) but not `subject`, so the target is read through the same
+  // defensive shape the reader itself casts to; a tampered manifest missing
+  // `subject` omits the expectations instead of throwing in the builder.
+  const target = (manifest as { subject?: { target?: string } } | null)?.subject?.target;
+  if (manifest === null || target === undefined) {
     return undefined;
   }
-  return { candidate: manifest.candidate_id, target: manifest.subject.target };
+  return { candidate: manifest.candidate_id, target };
+}
+
+/**
+ * Button labels for the identity presentation's executable remediation
+ * actions (#10307). The presentation's own action is offered first; the
+ * support-packet copy stays available alongside every actionable state.
+ */
+const BINARY_IDENTITY_ACTION_LABELS: Record<Exclude<BinaryIdentityAction, 'none'>, string> = {
+  refresh_identity: 'Refresh identity',
+  repair_managed_pair: 'Repair managed binary',
+  inspect_configured_binary: 'Inspect configured binary',
+  copy_support_packet: 'Copy support packet',
+};
+
+/**
+ * Production dialog for the binary-identity presentation: the presentation's
+ * recommended action and the support-packet copy are offered as buttons and
+ * the selection maps back to the dispatched action. A quiet state and a
+ * dismissed dialog dispatch nothing.
+ */
+export function createBinaryIdentityDialogShow(
+  showMessage: (message: string, ...items: string[]) => Thenable<string | undefined>,
+): BinaryIdentityCommandHost['show'] {
+  return async (presentation) => {
+    const message = `${presentation.label}\n${presentation.detail}`;
+    const choices: { action: BinaryIdentityAction; label: string }[] = [];
+    if (presentation.action !== 'none') {
+      choices.push({
+        action: presentation.action,
+        label: BINARY_IDENTITY_ACTION_LABELS[presentation.action],
+      });
+      if (presentation.action !== 'copy_support_packet') {
+        choices.push({
+          action: 'copy_support_packet',
+          label: BINARY_IDENTITY_ACTION_LABELS.copy_support_packet,
+        });
+      }
+    }
+    if (choices.length === 0) {
+      await showMessage(message);
+      return undefined;
+    }
+    const selection = await showMessage(message, ...choices.map((choice) => choice.label));
+    return choices.find((choice) => choice.label === selection)?.action;
+  };
 }
 
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
@@ -1009,21 +1060,11 @@ async function runExtensionActivation(
     },
   });
 
-  // The identity presentation's refresh action re-invokes the registered
-  // identity command. The in-flight guard breaks a stale→refresh→stale loop:
-  // the re-invocation's own presentation is shown, but it never re-enters
-  // refresh recursively.
-  let identityRefreshInFlight = false;
+  // The refresh action re-invokes the registered identity command. Re-entry
+  // stays bounded by the user: every re-invocation presents its own dialog,
+  // so a further refresh is a fresh user click, never an automatic loop.
   const refreshBinaryIdentity = async (): Promise<void> => {
-    if (identityRefreshInFlight) {
-      return;
-    }
-    identityRefreshInFlight = true;
-    try {
-      await vscode.commands.executeCommand(SHOW_BINARY_IDENTITY_COMMAND);
-    } finally {
-      identityRefreshInFlight = false;
-    }
+    await vscode.commands.executeCommand(SHOW_BINARY_IDENTITY_COMMAND);
   };
 
   // The inspect action surfaces the resolved server path read-only. It never
@@ -1096,12 +1137,9 @@ async function runExtensionActivation(
         };
       },
       {
-        show: async (presentation) => {
-          await vscode.window.showInformationMessage(
-            `${presentation.label}\n${presentation.detail}`,
-          );
-          return undefined;
-        },
+        show: createBinaryIdentityDialogShow((message, ...items) =>
+          vscode.window.showInformationMessage(message, ...items),
+        ),
         refreshIdentity: refreshBinaryIdentity,
         // Adapts the governed replacement authority: the same fail-closed
         // installer and restore-previous-binary path the `perl-lsp.reinstall`
