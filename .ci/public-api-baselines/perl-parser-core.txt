@@ -686,6 +686,7 @@ pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::fmt(&self, f: &m
 pub trait perl_parser_core::engine::error::ErrorClass
 pub fn perl_parser_core::engine::error::ErrorClass::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub fn perl_parser_core::engine::error::found_is_value_like(found: &str) -> bool
 pub fn perl_parser_core::engine::error::get_error_contexts(errors: &[perl_parser_core::syntax::error::ParseError], source: &str) -> alloc::vec::Vec<perl_parser_core::syntax::error::ErrorContext>
 pub type perl_parser_core::engine::error::ParseResult<T> = core::result::Result<T, perl_parser_core::syntax::error::ParseError>
 pub mod perl_parser_core::engine::heredoc_collector
@@ -1245,6 +1246,7 @@ pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::fmt(&self, f: &m
 pub trait perl_parser_core::error::ErrorClass
 pub fn perl_parser_core::error::ErrorClass::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub fn perl_parser_core::error::found_is_value_like(found: &str) -> bool
 pub fn perl_parser_core::error::get_error_contexts(errors: &[perl_parser_core::syntax::error::ParseError], source: &str) -> alloc::vec::Vec<perl_parser_core::syntax::error::ErrorContext>
 pub type perl_parser_core::error::ParseResult<T> = core::result::Result<T, perl_parser_core::syntax::error::ParseError>
 pub mod perl_parser_core::error_classifier
@@ -4141,6 +4143,7 @@ pub fn perl_parser_core::syntax::error::RecoverySalvageProfile::fmt(&self, f: &m
 pub trait perl_parser_core::syntax::error::ErrorClass
 pub fn perl_parser_core::syntax::error::ErrorClass::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub fn perl_parser_core::syntax::error::ParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub fn perl_parser_core::syntax::error::found_is_value_like(found: &str) -> bool
 pub fn perl_parser_core::syntax::error::get_error_contexts(errors: &[perl_parser_core::syntax::error::ParseError], source: &str) -> alloc::vec::Vec<perl_parser_core::syntax::error::ErrorContext>
 pub type perl_parser_core::syntax::error::ParseResult<T> = core::result::Result<T, perl_parser_core::syntax::error::ParseError>
 pub mod perl_parser_core::syntax::heredoc
