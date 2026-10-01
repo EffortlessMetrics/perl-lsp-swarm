@@ -7,6 +7,28 @@
 # README.md and docs/how-to/INSTALLATION.md. Do not assume perl-lsp/master is
 # equivalent to this file.
 #
+# Two concrete reasons that matters for Windows PowerShell 5.1:
+#
+#   1. The PS 5.1 parse fix lives only in THIS repository. The copy served from
+#      the publication repo's `master` branch
+#      (raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1)
+#      is still the older non-ASCII file, which Windows PowerShell 5.1 cannot
+#      parse (25 parse errors). This file is pure ASCII, so 5.1 parses it with
+#      zero errors. The fix reaches users when #4348 lands the audited
+#      publication join; until then, fetch this repository at a reviewed commit
+#      SHA rather than from `master`.
+#   2. First-party install-surface policy forbids publishing a
+#      pipeline from `install.ps1` into `iex` (see install_surface_check);
+#      that bare invocation omits the remote-bootstrap wrapper's identity pair — a
+#      full 40-character commit SHA plus a reviewed SHA-256 digest. A one-liner
+#      could carry both values, but no reviewed pair is published for this
+#      script.
+#
+# Fetch, review, then run:
+#   irm "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp-swarm/<commit-sha>/install.ps1" -OutFile install.ps1
+#   notepad .\install.ps1
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1
+#
 # Run it from a clone or a reviewed downloaded copy:
 #   .\install.ps1                                    # latest, default dir
 #   .\install.ps1 -Version 0.17.0 -InstallDir C:\tools\bin
@@ -22,13 +44,13 @@ $ProgressPreference = "SilentlyContinue"
 
 $Repo = "EffortlessMetrics/perl-lsp"
 # The release workflow packages the binary as `perllsp` on every platform
-# (see .github/workflows/release.yml — NAME="perllsp"), and every editor doc
+# (see .github/workflows/release.yml - NAME="perllsp"), and every editor doc
 # / README / POSIX installer (scripts/install.sh) uses `perllsp`. Install the
 # Windows candidate stores `perllsp.exe`; PATH-visible names are `perllsp.cmd`
 # / `perl-dap.cmd` shims that follow `.perl-lsp\current` so unelevated hosts
 # never publish independent copies.
 $Name = "perllsp"
-# The release archive also carries the debug adapter (`perl-dap.exe`) — see
+# The release archive also carries the debug adapter (`perl-dap.exe`) - see
 # .github/workflows/release.yml, which builds `-p perl-dap` for every target.
 # Install it alongside the server so Windows matches every sibling channel:
 # scripts/install.sh (optional perl-dap copy), Formula/perllsp.rb,
@@ -37,7 +59,7 @@ $DapName = "perl-dap"
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "→ " -ForegroundColor Green -NoNewline
+    Write-Host "-> " -ForegroundColor Green -NoNewline
     Write-Host $Message
 }
 
@@ -50,13 +72,13 @@ function Write-Error {
 
 function Write-Warn {
     param([string]$Message)
-    Write-Host "⚠ " -ForegroundColor Yellow -NoNewline
+    Write-Host "[!] " -ForegroundColor Yellow -NoNewline
     Write-Host $Message
 }
 
 function Write-Success {
     param([string]$Message)
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "[ok] " -ForegroundColor Green -NoNewline
     Write-Host $Message
 }
 
@@ -1012,6 +1034,13 @@ if (-not ($IsArm64Host -or $HostArch -eq "AMD64")) {
 # Resolve the version before selecting a target. Target selection now depends
 # on which assets a specific release actually carries, so the tag has to be
 # known first.
+
+# #16541: X.Y.Z semver core, mirroring PLSP_SEMVER_RE in scripts/install.sh
+# (#8367): no leading zeroes, optional prerelease/build suffix with its
+# restricted alphabet. Applied to the explicit -Version pin before any URL is
+# built.
+$SemverPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
+
 if ($Version -eq "latest") {
     try {
         $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
@@ -1021,7 +1050,15 @@ if ($Version -eq "latest") {
         Write-Error "Failed to fetch latest release: $_"
     }
 } else {
-    $Tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
+    # #16541: reject an invalid pin before any URL is built; previously
+    # anything non-"latest" was accepted and survived to a bare 404. Strip one
+    # optional leading "v" (-creplace is case-sensitive, matching the POSIX
+    # ${VERSION#v}) and apply the same semver core as scripts/install.sh.
+    $VersionSpec = $Version -creplace '^v', ''
+    if ($VersionSpec -notmatch $SemverPattern) {
+        Write-Error "Invalid -Version '$Version': expected a full X.Y.Z semver (for example 0.17.0 or v0.17.0, with optional prerelease/build metadata). Check the release page for an existing tag: https://github.com/$Repo/releases"
+    }
+    $Tag = "v$VersionSpec"
 }
 
 $VersionNum = $Tag.TrimStart("v")
@@ -1123,7 +1160,8 @@ try {
     try {
         Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
     } catch {
-        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $_"
+        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $($_.Exception.Message)
+Check the release page for an existing tag: https://github.com/$Repo/releases"
         throw
     }
 
@@ -1222,15 +1260,15 @@ try {
     Write-Info "PATH status: $PathDisposition"
     
     Write-Host ""
-    Write-Host "Installation complete! 🎉" -ForegroundColor Green
+    Write-Host "Installation complete!" -ForegroundColor Green
     Write-Host ""
     Write-Host "To get started with Perl LSP:"
-    Write-Host "  • VS Code: Install the Perl LSP extension from the marketplace"
-    Write-Host "  • Other editors: Configure to use '$DestPath --stdio'"
+    Write-Host "  - VS Code: Install the Perl LSP extension from the marketplace"
+    Write-Host "  - Other editors: Configure to use '$DestPath --stdio'"
     if ($DapInstalled) {
-        Write-Host "  • Debugging: Configure your DAP client to use '$DapDestPath'"
+        Write-Host "  - Debugging: Configure your DAP client to use '$DapDestPath'"
     } else {
-        Write-Host "  • Debugging: unavailable - $DapName.exe was not in this release archive"
+        Write-Host "  - Debugging: unavailable - $DapName.exe was not in this release archive"
     }
     Write-Host ""
     Write-Host "For more information: https://github.com/$Repo"
