@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 16595,
-  "reason": "Folder-scoped includePaths configuration fix increases the combined bundled extension entrypoint by 639 bytes.",
-  "base_baseline_file_sha256": "02be3f2c70c23fe13159d7f0c3e1e84ac7f53ab291c51a28b21c22cb0d5a5791",
-  "candidate_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
-  "base_inventory_sha256": "91c883030a238ffa984d0fe649ff56cb0f1669efb096f1beaaa3eabaa976c9cf",
-  "candidate_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e"
+  "owner_issue": 7804,
+  "reason": "Managed networking transport slice (#7851/#7804): the new managedHttpTransport module adds ~13KB to the rolldown bundle out/extension.js; size-only growth, no structural packaging change.",
+  "base_baseline_file_sha256": "975f428f8ea36ca04de3ee3ae5093b961b9a0002dfd61a9fc3b25e8c9fdb42eb",
+  "candidate_baseline_file_sha256": "f19c4ccf972e7308b5b93b9d5b5a301f38be9ee1b54ebbd819bc5d1a91ab688a",
+  "base_inventory_sha256": "02fe6fe2c7ab70962c657b90ca6b341bf245a1a1e7c6f1d637a3994500c4645e",
+  "candidate_inventory_sha256": "8e8041a6f0c401a7a94769d31239b26a72fc823662c985cc8aee7e72c4b9d8ce"
 }
