@@ -142,6 +142,42 @@ fn nested_block_same_spelling_facts_keep_distinct_bindings()
     Ok(())
 }
 
+/// Call-observation for the `LexicalWrite` arm of [`extract_lexical_facts`]:
+/// the write fact appended by `push_anchored_lexical_fact` must stay
+/// source-anchored, record its owning body, carry the `hir_bindings_by_range`
+/// join, and advance `total_write_count` exactly once. A write-arm or join
+/// regression flips one of these observed fields.
+#[test]
+fn write_arm_facts_carry_joined_binding_and_advance_write_count()
+-> Result<(), Box<dyn std::error::Error>> {
+    let receipt = extract("my $x = 1;\nprint $x;\n");
+    let body = &receipt.bodies[0];
+    let writes: Vec<_> = body
+        .facts
+        .iter()
+        .filter(|fact| fact.name.sigil == "$" && fact.name.name == "x")
+        .filter(|fact| matches!(fact.role, perl_parser_core::pir::LexicalRole::Write))
+        .collect();
+    assert_eq!(writes.len(), 1, "the declaration must produce exactly one write fact: {writes:?}");
+    let write = writes[0];
+    assert_eq!(write.body_idx, 0, "the write fact must record its owning body");
+    assert!(
+        write.source_anchor.is_anchored(),
+        "the write fact must stay source-anchored: {:?}",
+        write.source_anchor
+    );
+    assert!(
+        write.binding.is_some(),
+        "the write fact must carry the `hir_bindings_by_range` join: {:?}",
+        write.binding
+    );
+    assert_eq!(
+        receipt.total_write_count, 1,
+        "the write arm must advance total_write_count exactly once"
+    );
+    Ok(())
+}
+
 /// Fixture 2: State variables.
 ///
 /// Verifies that `state` variables are treated as lexical reads/writes just like `my`.

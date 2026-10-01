@@ -989,6 +989,40 @@ mod promote_tests {
         );
     }
 
+    #[test]
+    fn promote_exact_sigil_mismatch_refuses_with_the_exact_no_exact_facts_variant() {
+        // Exact error-variant discriminator for the empty sigil+name match in
+        // `evaluate_pir_reference_candidate`. The receipt carries only `$x`
+        // facts, so an `@x` query passes the refusal ladder (bare same-file
+        // name, valid body index, no dynamic boundary) and is refused
+        // precisely by the empty `matching` early return.
+        // `include_declaration: false` keeps the later post-filter empty-set
+        // check out of the picture: without the early return this query
+        // would resolve to `Exact(vec![])` instead of the `NoExactFacts`
+        // fallback, so the exact-variant assertion fails.
+        let receipt = receipt_for("my $x = 1;\n");
+        let outcome = references_pir_promote(
+            PromotionMode::PromoteExact,
+            "@",
+            "x",
+            &receipt,
+            &[(0, 2)],
+            0,
+            &byte_mapper,
+            ReferenceOptions { include_declaration: false, query_byte_offset: None },
+        );
+        assert!(
+            matches!(
+                &outcome,
+                ReferencesPirPromoteOutcome::LegacyFallback {
+                    reason: PirShadowRefusalReason::NoExactFacts,
+                    ..
+                }
+            ),
+            "sigil mismatch must refuse with the exact NoExactFacts variant, got {outcome:?}"
+        );
+    }
+
     // ── Ranges are sorted and deduped ──────────────────────────────────────
 
     #[test]
