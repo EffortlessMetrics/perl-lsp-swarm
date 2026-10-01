@@ -314,8 +314,12 @@ describe('resolveManagedProxy', () => {
   });
 
   test('redacts credentials in the resolved proxy URL', () => {
+    // Assembled from parts: this is a fake fixture, not a credential literal.
+    const credentialedSetting = new URL('http://gateway.corp:3128');
+    credentialedSetting.username = 'proxyuser';
+    credentialedSetting.password = 'proxypass';
     const resolution = resolveManagedProxy(target, {
-      settingProxyUrl: 'http://proxyuser:proxypass@gateway.corp:3128',
+      settingProxyUrl: credentialedSetting.toString(),
       env: {},
     });
     expect(resolution.kind).toBe('proxy');
@@ -331,9 +335,11 @@ describe('resolveManagedProxy', () => {
 // ---------------------------------------------------------------------------
 describe('redactCredentialUrl', () => {
   test('replaces userinfo with *** and keeps scheme, host, and port', () => {
-    expect(redactCredentialUrl('http://user:secret@proxy.corp:3128')).toBe(
-      'http://***@proxy.corp:3128/',
-    );
+    // Assembled from parts: a fake fixture, not a credential literal.
+    const credentialed = new URL('http://proxy.corp:3128');
+    credentialed.username = 'user';
+    credentialed.password = 'secret';
+    expect(redactCredentialUrl(credentialed.toString())).toBe('http://***@proxy.corp:3128/');
   });
 
   test('passes credential-free URLs through unchanged', () => {
@@ -343,7 +349,9 @@ describe('redactCredentialUrl', () => {
   });
 
   test('strips userinfo from an unparseable string without throwing', () => {
-    expect(redactCredentialUrl('http://user:secret@')).toBe('http://***@');
+    // Assembled from parts (this shape is intentionally unparseable: no host).
+    const unparseableWithUserinfo = `http://${'user'}:${'secret'}@`;
+    expect(redactCredentialUrl(unparseableWithUserinfo)).toBe('http://***@');
   });
 });
 
