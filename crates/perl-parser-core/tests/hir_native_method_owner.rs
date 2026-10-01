@@ -764,6 +764,51 @@ fn recovered_class_declaration_refuses_exact_owner() {
     );
 }
 
+/// A recovered method body must still lower the statements the parser did
+/// recover: the truncation wrapper is transparent to body lowering, so body
+/// HIR keeps the parsed `$self` occurrence and the `my` lexical — only the
+/// owner admission is refused.
+#[test]
+fn recovered_method_body_statements_still_reach_the_body_arena() {
+    let source = r"use feature 'class';
+class Animal {
+    method speak {
+        my $note = 1;
+        $self->sound;
+";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    assert!(!output.diagnostics.is_empty(), "premise: the truncated source is genuinely recovered");
+    let file = lower_ast(&output.ast);
+
+    let (_, decl) = method_item(&file, "speak");
+    assert_eq!(decl.class_owner, Err(NativeMethodOwnerLimitation::RecoveredMethod));
+    assert!(
+        !self_occurrences(&file).is_empty(),
+        "the recovered body's `$self` occurrence must survive the recovery wrapper"
+    );
+    assert!(
+        file.scope_graph
+            .bindings
+            .iter()
+            .any(|binding| binding.sigil == "$" && binding.name == "note"),
+        "the recovered body's `my $note` must still be recorded"
+    );
+}
+
+/// A dynamic pragma argument *between* the class declaration and the method
+/// leaves that method's feature environment undecidable too: the boundary is
+/// compared against the method's own offset, not only the declaration's.
+#[test]
+fn dynamic_pragma_between_class_and_method_refuses_owner() {
+    let file = lower(
+        "use feature 'class';\nclass Animal {\n    use feature $dynamic;\n    method speak { $self }\n}\n",
+    );
+    let (_, decl) = method_item(&file, "speak");
+    assert_eq!(decl.class_owner, Err(NativeMethodOwnerLimitation::DynamicPragmaEnvironment));
+    assert!(invocant_bindings(&file).is_empty());
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 8. A competing class dialect refuses the owner
 // ──────────────────────────────────────────────────────────────────────────────

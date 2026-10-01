@@ -1780,21 +1780,27 @@ impl Lowerer {
     /// admission (#16969): the class may have been admitted where it was
     /// written, but the method after the retraction is not core-native.
     ///
-    /// A dynamic pragma argument anywhere before the class leaves the effective
-    /// feature set undecidable, so it is reported as its own limitation rather
-    /// than folded into "not admitted". The check is deliberately coarse: any
-    /// dynamic `use`/`no` argument boundary suppresses, whether or not it
-    /// targets `feature` itself, because the boundary fact does not record
-    /// which pragma produced it. Refining it is strictly a precision gain and
-    /// stays inside the conservative direction.
+    /// A dynamic pragma argument anywhere before the *method* — including
+    /// between the class declaration and the method — leaves the effective
+    /// feature set at that method undecidable, so it is reported as its own
+    /// limitation rather than folded into "not admitted". The check is
+    /// deliberately coarse: any dynamic `use`/`no` argument boundary suppresses,
+    /// whether or not it targets `feature` itself, because the boundary fact
+    /// does not record which pragma produced it. Refining it is strictly a
+    /// precision gain and stays inside the conservative direction.
     fn class_feature_admission(
         &self,
         declared_at: usize,
         method_offset: usize,
     ) -> Result<(), NativeMethodOwnerLimitation> {
+        // A method pad sits inside its class body, so `method_offset` is always
+        // past `declared_at`; checking the method offset therefore covers both
+        // ranges — before the class and between the class and the method. Even
+        // in an unexpected order the check can only widen, never narrow, so it
+        // stays on the conservative side.
         if self.compile_environment.dynamic_boundaries.iter().any(|boundary| {
             boundary.kind == CompileEnvironmentBoundaryKind::DynamicPragmaArgs
-                && boundary.range.start < declared_at
+                && boundary.range.start < method_offset
         }) {
             return Err(NativeMethodOwnerLimitation::DynamicPragmaEnvironment);
         }
@@ -3958,9 +3964,19 @@ fn lower_body_from_ast(
 ) -> HirBody {
     let mut builder = BodyBuilder2::new(scope_graph, start_scope);
 
+    // A body the parser truncated travels inside the standard `Error
+    // { partial }` recovery shape; its parsed statements are the partial
+    // block's, so body lowering looks through that one wrapper here. Without
+    // the unwrap the whole wrapper lowers as a single opaque statement and
+    // every statement the parser did recover disappears from the body arena
+    // (#16969).
     let stmts = match &ast.kind {
         NodeKind::Program { statements } => statements.as_slice(),
         NodeKind::Block { statements } => statements.as_slice(),
+        NodeKind::Error { partial: Some(partial), .. } => match &partial.kind {
+            NodeKind::Block { statements } => statements.as_slice(),
+            _ => std::slice::from_ref(partial.as_ref()),
+        },
         _ => std::slice::from_ref(ast),
     };
 
