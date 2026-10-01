@@ -1440,6 +1440,140 @@ fn test_completion_does_not_leak_symbols_across_folders() -> TestResult {
     Ok(())
 }
 
+/// Method completion must use the requesting root for both indexed packages
+/// and a package declared in the open buffer (#16949, #16962).
+#[test]
+#[serial_test::serial]
+fn test_method_completion_uses_requesting_workspace_root() -> TestResult {
+    use support::env_guard::EnvGuard;
+
+    // SAFETY: Test runs single-threaded with #[serial_test::serial]
+    let _guard = unsafe { EnvGuard::set("PERL_LSP_WORKSPACE", "1") };
+    let ws = TempWorkspace::new()?;
+    let root_a = create_folder_with_config(&ws, "method-a", &["lib"])?;
+    let root_b = create_folder_with_config(&ws, "method-b", &["lib"])?;
+    let module_a = create_module(
+        &ws,
+        "method-a/lib/Shared.pm",
+        "package Shared;\nuse Moo;\nhas 'a_reader' => (is => 'ro');\nsub a_only { 1 }\n1;\n",
+    )?;
+    create_module(&ws, "method-a/lib/Split.pm", "package Shared;\nsub a_split { 1 }\n1;\n")?;
+    let module_b = create_module(
+        &ws,
+        "method-b/lib/Shared.pm",
+        "package Shared;\nuse Moo;\nhas 'b_reader' => (is => 'ro');\nsub b_only { 1 }\n1;\n",
+    )?;
+    let source_a = "Shared->";
+    let source_b = "package Shared;\nsub current_b { 1 }\nShared->";
+    let script_a = create_script(&ws, "method-a/run.pl", source_a)?;
+    let script_b = create_script(&ws, "method-b/run.pl", source_b)?;
+
+    let mut harness = LspHarness::new_raw();
+    let initialized = harness.request_with_timeout(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "capabilities": {},
+            "workspaceFolders": [
+                { "uri": root_a, "name": "method-a" },
+                { "uri": root_b, "name": "method-b" }
+            ]
+        }),
+        request_timeout(),
+    )?;
+    if !(initialized.get("capabilities").is_some()) {
+        return Err(format!("initialize failed: {initialized}").into());
+    }
+    harness.notify("initialized", json!({}));
+    std::thread::sleep(indexing_timeout());
+    harness.open(
+        &module_a,
+        "package Shared;\nuse Moo;\nhas 'a_reader' => (is => 'ro');\nsub a_only { 1 }\n1;\n",
+    )?;
+    harness.open(
+        &module_b,
+        "package Shared;\nuse Moo;\nhas 'b_reader' => (is => 'ro');\nsub b_only { 1 }\n1;\n",
+    )?;
+    harness.open(&script_a, source_a)?;
+    harness.open(&script_b, source_b)?;
+    harness.wait_for_idle(Duration::from_millis(500));
+
+    let indexed = harness.request_with_timeout(
+        "workspace/symbol",
+        json!({ "query": "Shared" }),
+        request_timeout(),
+    )?;
+    let indexed_uris: Vec<_> = indexed
+        .as_array()
+        .ok_or_else(|| format!("workspace symbols did not return an array: {indexed}"))?
+        .iter()
+        .map(|symbol| {
+            symbol
+                .get("location")
+                .and_then(|location| location.get("uri"))
+                .and_then(|uri| uri.as_str())
+                .ok_or_else(|| format!("workspace symbol lacks a string location URI: {symbol}"))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if !(indexed_uris.contains(&module_a.as_str())) {
+        return Err(format!("root A was not indexed: {indexed_uris:?}").into());
+    }
+    if !(indexed_uris.contains(&module_b.as_str())) {
+        return Err(format!("root B was not indexed: {indexed_uris:?}").into());
+    }
+
+    let requests: [(&str, u32, u32, &[&str], &[&str]); 2] = [
+        (
+            script_a.as_str(),
+            0,
+            8,
+            &["a_only", "a_split", "a_reader"],
+            &["b_only", "b_reader", "current_b"],
+        ),
+        (
+            script_b.as_str(),
+            2,
+            8,
+            &["b_only", "current_b", "b_reader"],
+            &["a_only", "a_reader", "a_split"],
+        ),
+    ];
+    for (uri, line, character, expected, excluded) in requests {
+        let response = harness.request_with_timeout(
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character }
+            }),
+            request_timeout(),
+        )?;
+        let items = response
+            .get("items")
+            .and_then(|items| items.as_array())
+            .or_else(|| response.as_array())
+            .ok_or_else(|| format!("completion did not return items for {uri}: {response}"))?;
+        let labels: Vec<_> = items
+            .iter()
+            .map(|item| {
+                item.get("label")
+                    .and_then(|label| label.as_str())
+                    .ok_or_else(|| format!("completion item lacks a string label: {item}"))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for &name in expected {
+            if !(labels.contains(&name)) {
+                return Err(format!("{uri}: expected {name}, got {labels:?}").into());
+            }
+        }
+        for &name in excluded {
+            if labels.contains(&name) {
+                return Err(format!("{uri}: sibling {name} leaked: {labels:?}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Test: deterministic multi-root workspace/symbol (#1514)
 //

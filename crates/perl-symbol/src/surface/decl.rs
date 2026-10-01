@@ -35,11 +35,10 @@ use perl_ast::{Node, NodeKind};
 ///   `class`).
 /// - `container` — unqualified name of the enclosing package, `None` at
 ///   the top level
-/// - `declarator` — the scope keyword used to declare variables (`"my"`,
-///   `"our"`, `"local"`, `"state"`), or `None` for non-variable declarations
-///   such as subroutines, packages, and constants.  `"our"` variables are
-///   package-scoped and visible across files; `"my"` variables are
-///   lexically-scoped and file-local.
+/// - `declarator` — the scope keyword used to declare variables
+///   (`"my"`, `"our"`, `"local"`, `"state"`) or named subroutines
+///   (`"my"`, `"our"`, `"state"`), or `None` when no scope keyword applies.
+///   `"my"` and `"state"` bindings are lexical.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SymbolDecl {
     /// Symbol classification.
@@ -54,9 +53,9 @@ pub struct SymbolDecl {
     pub anchor_span: Option<(usize, usize)>,
     /// Enclosing package name, if the declaration is inside a `package`.
     pub container: Option<String>,
-    /// Scope declarator for variable declarations: `"my"`, `"our"`, `"local"`,
-    /// or `"state"`.  `None` for non-variable declarations (subroutines,
-    /// packages, constants, classes).
+    /// Scope declarator: variables support `"my"`, `"our"`, `"local"`, and
+    /// `"state"`; named subroutines support `"my"`, `"our"`, and `"state"`.
+    /// `None` when no scope keyword applies.
     ///
     /// `"our"` variables are package-scoped and reachable from other files in
     /// the same package.  `"my"` variables are lexically-scoped and invisible
@@ -185,7 +184,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
         }
 
         // ── Subroutine ─────────────────────────────────────────────────────
-        NodeKind::Subroutine { name: Some(sub_name), name_span, body, .. } => {
+        NodeKind::Subroutine { name: Some(sub_name), name_span, declarator, body, .. } => {
             let anchor = name_span.as_ref().map(|s| (s.start, s.end));
             let container = ctx.current_package.clone();
             let qualified_name = ctx.qualify(sub_name);
@@ -196,7 +195,7 @@ fn walk(node: &Node, ctx: &mut WalkCtx, out: &mut Vec<SymbolDecl>) {
                 full_span: (node.location.start, node.location.end),
                 anchor_span: anchor,
                 container,
-                declarator: None,
+                declarator: declarator.clone(),
             });
             // Walk the body — may contain nested subs or closures.
             walk(body, ctx, out);
