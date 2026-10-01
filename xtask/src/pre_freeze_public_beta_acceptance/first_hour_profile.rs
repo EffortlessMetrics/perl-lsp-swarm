@@ -119,8 +119,8 @@ pub struct ObserverFact {
     /// Interventions recorded with the unmet public instruction.
     pub recorded_interventions: u64,
     /// In-memory intervention reasons naming the assistance and the unmet
-    /// public instruction. Required when any assistance flag is set; a bare
-    /// count alone conceals the requested details.
+    /// public instruction. Required whenever an intervention is recorded,
+    /// regardless of assistance flags; a bare count conceals the details.
     pub intervention_details: Vec<String>,
     /// True for accelerated validator self-tests; never genuine observation.
     pub synthetic_mechanism_only: bool,
@@ -150,9 +150,11 @@ impl ObserverFact {
                 self.recorded_interventions > 0,
                 "assistance without recorded intervention cannot fill {expected:?}"
             );
+        }
+        if self.recorded_interventions > 0 {
             ensure!(
                 !self.intervention_details.is_empty(),
-                "assistance without intervention details cannot fill {expected:?}"
+                "recorded intervention without intervention details cannot fill {expected:?}"
             );
             for detail in &self.intervention_details {
                 ensure!(
@@ -160,6 +162,11 @@ impl ObserverFact {
                     "empty intervention detail cannot fill {expected:?}"
                 );
             }
+        } else {
+            ensure!(
+                self.intervention_details.is_empty(),
+                "intervention details without recorded intervention cannot fill {expected:?}"
+            );
         }
         Ok(())
     }
@@ -232,7 +239,8 @@ pub struct ProfileWindowIndex {
     pub canonical_cells: Vec<String>,
     /// Selector view into the retained canonical report's cell obligations
     /// for those cells. All other canonical obligations remain in
-    /// [`FirstHourIndex::canonical_report`].
+    /// [`FirstHourIndex::canonical_report`]. Shared obligation copies are not
+    /// independent human or agent observations.
     pub evidence: Vec<EvidenceRequirement>,
     /// Explanatory missing-producer checklist. Plain strings only; never
     /// receipt rows, locators, digests, or adapter mappings.
@@ -349,8 +357,8 @@ fn window_reason(observer_name: &str, window: &str, fact: &ObserverFact) -> Stri
             fact.observed_60min_seconds
         )
     };
-    if fact.checkout_inspection || fact.private_rescue || fact.hidden_assistance {
-        reason.push_str("; assistance recorded: ");
+    if fact.recorded_interventions > 0 {
+        reason.push_str(&format!("; interventions recorded ({}): ", fact.recorded_interventions));
         reason.push_str(&fact.intervention_details.join("; "));
     }
     reason
@@ -466,6 +474,7 @@ fn project_first_hour(
         installed_qualification,
         claim_boundary: "profile index only; genuine new-human/fresh-agent 5/15/60 \
             observation not established; no concrete observation producer; \
+            window evidence repeats shared canonical obligations, not independent observer observations; \
             conventional plus dynamic fixture coverage remains owned by #5902/#6056; \
             byte leaves cannot fill DAP identity or authenticated provenance; \
             installed qualification not_proven"

@@ -21,6 +21,8 @@ joined RC result.
 - The complete actual `ValidationReport` is retained in profile output with
   its exact recommendation and permanent `not_proven` ceiling. Window slices
   select cell obligations only; they never replace the full report.
+  Human and agent slices repeat shared canonical obligations. Those copies are
+  not independent human or agent observations.
 - CLI: `xtask/examples/pre_freeze_public_beta_acceptance.rs` with optional
   `--profile-index`. Historical `pre_freeze_public_beta_acceptance.v1`
   separation preserved; `first_ten_minutes.v1` remains the #5902 study contract.

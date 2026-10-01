@@ -811,6 +811,73 @@ fn first_hour_wrapper_observer_negative_controls_and_3600s_ceiling() -> Result<(
 }
 
 #[test]
+fn first_hour_wrapper_interventions_require_details_without_assistance_flags() -> Result<()> {
+    let (packet, requirements) = fixture();
+    index_first_hour(&packet, &requirements, &FirstHourFacts::unobserved())?;
+    for observer in [ProfileObserver::NewHuman, ProfileObserver::FreshAgent] {
+        let detail = format!("{observer:?}: public instruction did not explain the recovery step");
+        for case in ["missing", "blank", "mixed_blank", "zero_count", "recorded"] {
+            let mut facts = FirstHourFacts::unobserved();
+            let fact = match observer {
+                ProfileObserver::NewHuman => &mut facts.human,
+                ProfileObserver::FreshAgent => &mut facts.agent,
+            };
+            fact.recorded_interventions = match case {
+                "zero_count" => 0,
+                "recorded" => 2,
+                _ => 1,
+            };
+            fact.intervention_details = match case {
+                "missing" => Vec::new(),
+                "blank" => vec![" \t".into()],
+                "mixed_blank" => vec![detail.clone(), " \t".into()],
+                _ => vec![detail.clone()],
+            };
+            let result = index_first_hour(&packet, &requirements, &facts);
+            if case != "recorded" {
+                let error = result.err().context(format!(
+                    "{observer:?} {case} intervention explanation was accepted"
+                ))?;
+                ensure!(error.to_string().contains("intervention"), "unexpected failure: {error}");
+                continue;
+            }
+            let index = result?;
+            let summary =
+                index.observers.iter().find(|s| s.observer == observer).context("observer")?;
+            ensure!(
+                summary.recorded_interventions == 2
+                    && summary.intervention_details == [detail.clone()]
+            );
+            ensure!(
+                !summary.checkout_inspection
+                    && !summary.private_rescue
+                    && !summary.hidden_assistance
+            );
+            let windows: Vec<_> = index.windows.iter().filter(|w| w.observer == observer).collect();
+            ensure!(windows.len() == 3, "observer window omitted");
+            for window in windows {
+                let reason = window.reason.as_deref().context("window reason")?;
+                ensure!(
+                    reason.contains("interventions recorded (2)") && reason.contains(&detail),
+                    "recorded intervention omitted from {observer:?} {} reason",
+                    window.window
+                );
+                ensure!(window.status == Status::NotProven, "intervention promoted observation");
+            }
+            ensure!(
+                index
+                    .windows
+                    .iter()
+                    .filter(|w| w.observer != observer)
+                    .all(|w| !w.reason.as_deref().is_some_and(|r| r.contains(&detail))),
+                "intervention details crossed observers"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn first_hour_wrapper_safe_refusal_and_deterministic_order() -> Result<()> {
     let (base, requirements) = fixture();
     let mut packet = base.clone();
