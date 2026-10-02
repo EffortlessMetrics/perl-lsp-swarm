@@ -2,6 +2,7 @@ name: Security Reconciliation Ledger
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - '.ci/security/may-2026-findings.json'
@@ -30,6 +31,7 @@ permissions:
 
 jobs:
   validate:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Security reconciliation ledger
     runs-on: ubuntu-24.04
     timeout-minutes: 5

@@ -3,7 +3,7 @@ name: Rebuild #11983 on current main
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - .github/workflows/discover-11983-current-main.yml
       - scripts/maintenance/rebuild_11983_current_main.sh
@@ -19,11 +19,7 @@ concurrency:
 
 jobs:
   rebuild:
-    if: >-
-      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.head_ref == 'repair/11983-current-main' ||
-       github.head_ref == 'codex/12975-reject-identity')
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.repository == 'EffortlessMetrics/perl-lsp-swarm' && github.event.pull_request.head.repo.full_name == github.repository && (github.head_ref == 'repair/11983-current-main' || github.head_ref == 'codex/12975-reject-identity')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 

@@ -1,6 +1,6 @@
 ---
 name: publish-pr
-description: Explicit atomic skill for publishing one locally complete coherent candidate through a concise GitHub review index, ready by default, with draft reserved for a named remote-only proof or collaboration need.
+description: Explicit atomic skill for publishing one locally complete coherent candidate through a concise GitHub review index, draft during preparation/review, then ready only for explicit late merge qualification.
 ---
 
 # Publish PR
@@ -13,7 +13,9 @@ A candidate publishes ready only when all applicable local preparation is curren
 
 - focused and affected proof passes on the candidate;
 - relevant negative, stale, failure, and recovery protection exists;
-- test hardening, simplification, and mutable local candidate review are complete;
+- test hardening, simplification, and substantive `REVIEW_CURRENT` are complete;
+- formatting, affected lint/build, and focused tests ran on own compute, with exact
+  commands, subjects, results, and limitations recorded;
 - the worktree contains no accidental or unsalvaged changes;
 - the published file set matches the intended worktree change set: before publishing
   (or immediately after creation), compare `gh pr diff --name-only <n>` (or the created
@@ -32,18 +34,24 @@ A candidate publishes ready only when all applicable local preparation is curren
 
 If this threshold is not met, return to `$build-candidate` rather than opening a churn-producing ready PR.
 
-## Draft exceptions and transition
+## Draft preparation and ready transition
 
-Use draft only for:
+Publish draft while development, evidence gathering, or substantive review remains.
+Keep native commits and useful checkpoint pushes; draft is the normal preparation
+phase, not a failure or a reason to run expensive CI. Run `address-review-comments`,
+final challenge, and cumulative review while draft rather than waiting for readiness.
 
-- remote-only proof or platform behavior;
-- real branch collaboration;
-- early visible ownership that prevents duplicate work;
-- a protected integration experiment whose remote behavior is the subject.
+Only after the full threshold above and `REVIEW_CURRENT`, mark the PR ready through the
+native GitHub action (for example `gh pr ready <n>`). This is the explicit request for
+final merge qualification; it does not authorize merge. No extra CI label or auto-merge
+flag is needed. Return to draft before material repair, then repeat affected local
+proof and review before another ready flip. An already-ready push still refreshes the
+current subject as a safety net, not a routine development loop.
 
-Record the exact draft reason and its completion condition in the PR body.
-
-For an existing draft, inspect that named condition. When it is complete, re-evaluate the full ready-publication threshold and explicitly mark the PR ready through the provider's native GitHub action (for example `gh pr ready <n>` or the equivalent connector operation). Do not leave a completed draft in a self-repeating `DRAFT` state. If the threshold is no longer met, return to candidate repair instead of marking ready.
+Record a necessary remote-only proof boundary precisely, complete every feasible
+own-compute check and review first, and request only that bounded qualification.
+Missing toolchain proof is not passing proof. Follow the shared late-CI contract in
+`docs/agents/DEVELOPMENT_METHOD.md`.
 
 ## PR review index
 
@@ -67,8 +75,9 @@ and name the hosted checks that replace `cargo fmt` / Clippy / tests. Do not cla
 those hosted checks passed until current GitHub evidence exists. "Local Rust proof
 NOT RUN" is the hosted-only mark, not a substitute for naming the checks. Hosted-only
 is a PR-body and reviewer classification; it does not rewrite the ready-publication
-threshold above. Authors without a toolchain still use the named draft exception for
-remote-only proof until hosted evidence exists.
+threshold above. Authors without a toolchain complete all feasible own-compute proof and substantive
+review while draft, then explicitly request bounded remote-only qualification.
+Missing proof stays `NOT_PROVEN` until exact-subject evidence exists.
 
 ```markdown
 ## Claim
@@ -124,8 +133,8 @@ rebuilding — see the currentness contract.
 ## Routes
 
 - `PR_PUBLISHED_READY` / `PR_RESUMED` → `$address-review-comments`
-- `DRAFT_FOR_NAMED_REASON` → run the required remote experiment or collaboration, then repeat this skill
-- `DRAFT_REASON_COMPLETE` → recheck readiness, mark the PR ready natively, and return `PR_RESUMED`
+- `DRAFT_FOR_NAMED_REASON` → complete preparation and substantive review through `$finish-pr`, then repeat this skill
+- `DRAFT_REASON_COMPLETE` → require `REVIEW_CURRENT`, recheck readiness, mark ready natively, and return `PR_RESUMED`
 - `CANDIDATE_NOT_COHERENT` / `LOCAL_PROOF_STALE` / `WORKTREE_DIRTY` → `$build-candidate`
 - `DUPLICATE_OR_WRITER_COLLISION` → reuse/resume or resolve the mechanical conflict
 - `IDENTITY_NOT_PROVEN` → stop and resolve branch/candidate identity

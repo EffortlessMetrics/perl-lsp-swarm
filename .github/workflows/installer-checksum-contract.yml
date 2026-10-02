@@ -2,6 +2,7 @@ name: Installer Checksum Contract
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master, agent/installer-bootstrap-identity-6097]
     paths:
       - 'scripts/install.sh'
@@ -34,6 +35,7 @@ permissions:
 
 jobs:
   validate:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Installer checksum, archive safety, and product-unit promotion
     runs-on: ubuntu-24.04
     timeout-minutes: 8

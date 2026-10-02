@@ -2,6 +2,7 @@ name: Installer Termux Contract
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - 'install.sh'
@@ -24,6 +25,7 @@ permissions:
 
 jobs:
   validate:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Installer Termux detection and wrapper ownership
     runs-on: ubuntu-24.04
     timeout-minutes: 5

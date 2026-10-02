@@ -8,6 +8,7 @@ name: Standalone contract tests
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'schemas/standalone_owned_state.v1.schema.json'
       - 'schemas/standalone_removal_plan.v1.schema.json'
@@ -27,6 +28,7 @@ permissions:
 
 jobs:
   validator-battery:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Checked validator battery (xtask example)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -47,6 +49,7 @@ jobs:
         run: cargo test -p xtask --example standalone_owned_state --locked
 
   schema-harness:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Schema-only parity harness
     runs-on: ubuntu-24.04
     timeout-minutes: 10

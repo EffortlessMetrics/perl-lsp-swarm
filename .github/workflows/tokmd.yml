@@ -22,7 +22,7 @@ permissions:
 jobs:
   analyze:
     name: tokmd Review Cockpit
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:tokmd')
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:tokmd')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -257,10 +257,7 @@ jobs:
   comment:
     name: Publish tokmd PR comment
     needs: analyze
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.analyze.result == 'success'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.analyze.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

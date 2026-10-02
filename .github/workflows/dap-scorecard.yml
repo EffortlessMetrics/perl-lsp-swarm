@@ -2,6 +2,7 @@ name: DAP Scorecard
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - 'crates/perl-dap/**'
@@ -50,6 +51,7 @@ env:
 
 jobs:
   scorecard:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: DAP runtime scorecard
     runs-on: ubuntu-24.04
     timeout-minutes: 30

@@ -2,6 +2,7 @@ name: Composite Action Contracts
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - '.github/actions/rust-checks/**'
@@ -26,6 +27,7 @@ permissions:
 
 jobs:
   rust-checks-contract:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Rust checks composite action contract
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -39,6 +41,7 @@ jobs:
         run: python3 .github/actions/rust-checks/test_run_cargo.py
 
   upload-receipt-contract:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Upload receipt composite action contract
     runs-on: ubuntu-24.04
     timeout-minutes: 5

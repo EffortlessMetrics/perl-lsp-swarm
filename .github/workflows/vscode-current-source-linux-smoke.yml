@@ -8,6 +8,7 @@ on:
         required: true
         type: string
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - 'vscode-extension/**'
@@ -31,6 +32,7 @@ permissions:
 
 jobs:
   current-source-linux-smoke:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Current-source Linux smoke (${{ matrix.vscode_version }})
     runs-on: ubuntu-24.04
     # 30 minutes: the packaged journeys now include the crash-recovery legs

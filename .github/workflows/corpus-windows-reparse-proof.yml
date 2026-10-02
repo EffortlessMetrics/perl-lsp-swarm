@@ -2,6 +2,7 @@ name: Corpus Windows reparse proof
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - "crates/perl-corpus/**"
@@ -20,6 +21,7 @@ concurrency:
 
 jobs:
   windows-reparse-proof:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Windows reparse rejection
     runs-on: windows-2022
     timeout-minutes: 35

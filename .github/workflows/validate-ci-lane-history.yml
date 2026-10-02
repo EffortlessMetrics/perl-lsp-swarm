@@ -2,6 +2,7 @@ name: Validate CI lane-history contract
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/aggregate-ci-lane-history.yml'
       - '.github/workflows/validate-ci-lane-history.yml'
@@ -18,6 +19,7 @@ permissions:
 
 jobs:
   validate-contract:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Validate lane-history trust contract
     runs-on: ubuntu-24.04
     timeout-minutes: 5

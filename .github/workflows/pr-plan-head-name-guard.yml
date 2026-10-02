@@ -41,7 +41,7 @@ permissions:
 jobs:
   head-name-guard:
     name: Head branch name must allow PR Plan to trigger
-    if: github.event.pull_request.draft != true
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event.pull_request.draft != true) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

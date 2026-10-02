@@ -14,6 +14,7 @@ name: Publish Dry-Run Gate
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - '**/Cargo.toml'
@@ -40,6 +41,7 @@ env:
 
 jobs:
   publish-dry-run:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Publish dry-run (packaging gate)
     runs-on: ubuntu-24.04
     timeout-minutes: 10

@@ -2,6 +2,7 @@ name: DAP Editor Transport
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - '.ci/dap/editor-transport-inventory.v1.json'
@@ -59,6 +60,7 @@ env:
 
 jobs:
   inventory:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Stdio-only editor transport
     runs-on: ubuntu-24.04
     timeout-minutes: 25

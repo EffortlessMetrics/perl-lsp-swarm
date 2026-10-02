@@ -2,6 +2,7 @@ name: Issue Controller Train Contract
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - '.spec/11764-controller-train-graph/**'
@@ -20,6 +21,7 @@ permissions:
 
 jobs:
   validate:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Validate stable issue_controller_train.v1
     runs-on: ubuntu-24.04
     timeout-minutes: 20

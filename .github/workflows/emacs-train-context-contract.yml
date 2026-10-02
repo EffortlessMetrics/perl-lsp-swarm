@@ -2,6 +2,7 @@ name: Emacs Train Context Contract
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - '.spec/10918-emacs-train-graph/**'
@@ -42,6 +43,7 @@ permissions:
 
 jobs:
   validate:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Validate emacs_node_context.v1 exact-tree bindings
     runs-on: ubuntu-24.04
     timeout-minutes: 20

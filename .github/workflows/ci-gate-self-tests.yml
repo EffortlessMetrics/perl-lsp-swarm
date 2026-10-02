@@ -12,6 +12,7 @@ name: CI Gate Self-Tests
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - 'scripts/cargo-package-workspace-dry-run.sh'
@@ -138,6 +139,7 @@ permissions:
 
 jobs:
   publish-dry-run-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Publish dry-run gate self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -178,6 +180,7 @@ jobs:
           fi
 
   install-target-selection-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Installer target-selection self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -203,6 +206,7 @@ jobs:
           fi
 
   installer-zero-args-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Installer zero-argument bootstrap self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -228,6 +232,7 @@ jobs:
           fi
 
   installer-path-contract-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Installer PATH contract self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -255,6 +260,7 @@ jobs:
           fi
 
   installer-source-version-binding-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Installer source-version binding self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -280,6 +286,7 @@ jobs:
           fi
 
   windows-fresh-path-oracle-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Windows fresh-process PATH oracle
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -307,6 +314,7 @@ jobs:
           fi
 
   distribution-manifest-consistency-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Distribution manifest consistency self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -332,6 +340,7 @@ jobs:
           fi
 
   rebuild-11983-reject-identity-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Rebuild 11983 reject-identity self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -357,6 +366,7 @@ jobs:
           fi
 
   check-pr-review-convergence-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Review-convergence gate self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -414,6 +424,7 @@ jobs:
           fi
 
   review-lease-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Review-lease self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -439,6 +450,7 @@ jobs:
           fi
 
   review-threads-inline-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Review threads/inline self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -464,6 +476,7 @@ jobs:
           fi
 
   worktree-manager-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Worktree-manager allocate self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -489,6 +502,7 @@ jobs:
           fi
 
   target-isolation-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Per-worktree cargo target-dir isolation self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -519,6 +533,7 @@ jobs:
           fi
 
   cargo-toolchain-guard-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Entrypoint cargo toolchain guard self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -554,6 +569,7 @@ jobs:
           fi
 
   release-turnkey-handoff-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Release-turnkey manual-handoff self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -581,6 +597,7 @@ jobs:
           fi
 
   fuzz-bounded-discovery-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: fuzz-bounded discovery self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -611,6 +628,7 @@ jobs:
           fi
 
   ripr-lane-termination-classifier-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: ripr lane-termination classifier self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -641,6 +659,7 @@ jobs:
           fi
 
   pr-plan-head-name-guard-self-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: PR Plan head-name guard self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 10

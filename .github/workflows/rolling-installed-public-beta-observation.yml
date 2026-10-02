@@ -9,6 +9,7 @@ on:
         type: boolean
         default: false
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
     paths:
       - '.github/workflows/rolling-installed-public-beta-observation.yml'
@@ -27,6 +28,7 @@ concurrency:
 
 jobs:
   contract:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Validate rolling observation contract
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -45,7 +47,7 @@ jobs:
 
   subject:
     name: Pin exact protected-main observation subject
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'workflow_dispatch') }}
     needs: contract
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -116,7 +118,7 @@ jobs:
 
   installed-row:
     name: Installed row (${{ matrix.row_id }})
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'workflow_dispatch') }}
     needs: subject
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -338,7 +340,7 @@ jobs:
 
   fan-in:
     name: Assemble rolling observation packet
-    if: always() && github.event_name == 'workflow_dispatch' && needs.subject.result == 'success'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (always() && github.event_name == 'workflow_dispatch' && needs.subject.result == 'success') }}
     needs: [subject, installed-row]
     runs-on: ubuntu-24.04
     timeout-minutes: 15

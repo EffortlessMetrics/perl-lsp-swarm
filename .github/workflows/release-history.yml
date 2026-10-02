@@ -2,6 +2,7 @@ name: Release History
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/release-history.yml"
       - "rust-toolchain.toml"
@@ -40,6 +41,7 @@ concurrency:
 
 jobs:
   release-history:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Release history provenance
     runs-on: ubuntu-latest
     timeout-minutes: 10

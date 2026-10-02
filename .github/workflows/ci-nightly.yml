@@ -102,11 +102,7 @@ jobs:
 
   mutation:
     name: Mutation Testing
-    if: |
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_mutation) ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:mutation'))
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_mutation) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:mutation'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -133,10 +129,7 @@ jobs:
   benchmark:
     name: Performance Benchmarks
     timeout-minutes: 45
-    if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_benchmarks) ||
-      github.event_name == 'schedule' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:bench')
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'workflow_dispatch' && inputs.run_benchmarks) || github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'ci:bench')) }}
     runs-on: ubuntu-24.04
 
     steps:
@@ -423,12 +416,7 @@ jobs:
   real-repo-latency:
     name: Real-Repo Latency (Catalyst 5K Diagnostics)
     timeout-minutes: 30
-    if: |
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_real_repo_latency) ||
-      (github.event_name == 'pull_request' &&
-       (contains(github.event.pull_request.labels.*.name, 'ci:bench') ||
-        contains(github.event.pull_request.labels.*.name, 'ci:real-repo-latency')))
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_real_repo_latency) || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci:bench') || contains(github.event.pull_request.labels.*.name, 'ci:real-repo-latency')))) }}
     runs-on: ubuntu-24.04
 
     steps:
@@ -468,11 +456,7 @@ jobs:
   corpus-differential:
     name: Corpus Differential (Full)
     timeout-minutes: 20
-    if: |
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_corpus_differential) ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:corpus-differential'))
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_corpus_differential) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:corpus-differential'))) }}
     runs-on: ubuntu-24.04
 
     steps:
@@ -513,11 +497,7 @@ jobs:
     name: LSP Memory Plateau
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    if: |
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_memory) ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:memory'))
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_memory) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:memory'))) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -673,9 +653,7 @@ jobs:
     name: Codecov / Patch 95
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    if: |
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_coverage)
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_coverage)) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -811,10 +789,7 @@ jobs:
     name: Tautology Detection
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_tautology) ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:strict'))
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'workflow_dispatch' && inputs.run_tautology) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:strict'))) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -841,11 +816,7 @@ jobs:
     name: API Compatibility
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_semver) ||
-      github.event_name == 'schedule' ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:semver'))
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'workflow_dispatch' && inputs.run_semver) || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:semver'))) }}
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -938,13 +909,7 @@ jobs:
     name: Public API Surface Check
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_public_api) ||
-      github.event_name == 'schedule' ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:public-api') &&
-       (github.event.action != 'labeled' ||
-        github.event.label.name == 'ci:public-api'))
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'workflow_dispatch' && inputs.run_public_api) || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:public-api') && (github.event.action != 'labeled' || github.event.label.name == 'ci:public-api'))) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1001,11 +966,7 @@ jobs:
     name: Scorecard Floor-Metric Ratchet Check
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_scorecard) ||
-      github.event_name == 'schedule' ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:metrics-ratchet'))
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'workflow_dispatch' && inputs.run_scorecard) || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:metrics-ratchet'))) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1039,10 +1000,7 @@ jobs:
   clippy-strict:
     name: Clippy (Strict)
     timeout-minutes: 20
-    if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_clippy_strict) ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:strict'))
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'workflow_dispatch' && inputs.run_clippy_strict) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:strict'))) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1074,11 +1032,7 @@ jobs:
     # to a blocking `check --profile pr --strict` once the receipt-backed
     # indicators are consistently green. See docs/reference/PERL_KWALITEE.md.
     continue-on-error: true
-    if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_perl_kwalitee) ||
-      github.event_name == 'schedule' ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:kwalitee'))
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'workflow_dispatch' && inputs.run_perl_kwalitee) || github.event_name == 'schedule' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:kwalitee'))) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1177,9 +1131,7 @@ jobs:
     name: Fuzz Target (${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    if: |
-      (github.event_name == 'workflow_dispatch' && inputs.run_fuzz) ||
-      github.event_name == 'schedule'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'workflow_dispatch' && inputs.run_fuzz) || github.event_name == 'schedule') }}
     strategy:
       fail-fast: false
       matrix:

@@ -2,6 +2,7 @@ name: Installer PowerShell Checksum Contract
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master]
     paths:
       - 'install.ps1'
@@ -30,6 +31,7 @@ permissions:
 
 jobs:
   validate:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: PowerShell checksum, archive safety, and product-unit promotion
     runs-on: windows-latest
     timeout-minutes: 12

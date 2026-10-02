@@ -26,6 +26,7 @@ name: Agent Capability Gate
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.claude/agents/**'
       - 'xtask/src/tasks/agent_capability_policy.rs'
@@ -48,10 +49,7 @@ concurrency:
 jobs:
   route-agent-capability-gate:
     name: Route agent capability gate
-    if: >-
-      github.event_name == 'pull_request' ||
-      github.event_name == 'merge_group' ||
-      github.event_name == 'push'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -193,9 +191,7 @@ jobs:
   agent-capability-gate-self-hosted:
     name: Agent Capability Gate on workflow-nano
     needs: route-agent-capability-gate
-    if: >-
-      needs.route-agent-capability-gate.result == 'success' &&
-      needs.route-agent-capability-gate.outputs.target == 'self_hosted'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.route-agent-capability-gate.result == 'success' && needs.route-agent-capability-gate.outputs.target == 'self_hosted') }}
     runs-on:
       group: em-ci-nano
       labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
@@ -215,9 +211,7 @@ jobs:
   agent-capability-gate-hosted:
     name: Agent Capability Gate on GitHub-hosted fallback
     needs: route-agent-capability-gate
-    if: >-
-      needs.route-agent-capability-gate.result == 'success' &&
-      needs.route-agent-capability-gate.outputs.target == 'github'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.route-agent-capability-gate.result == 'success' && needs.route-agent-capability-gate.outputs.target == 'github') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

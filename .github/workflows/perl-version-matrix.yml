@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [ main, master ]
     # Keep label-gated runs alive after label is applied.
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
   schedule:
     # Weekly on Mondays at 04:30 UTC
     - cron: '30 4 * * 1'
@@ -25,9 +25,7 @@ permissions:
 jobs:
   plan:
     runs-on: ubuntu-24.04
-    if: |
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:perl-matrix')
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:perl-matrix')) }}
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
@@ -47,9 +45,7 @@ jobs:
   perl-version-matrix:
     needs: plan
     name: Perl compatibility (${{ matrix.perl }})
-    if: |
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:perl-matrix')
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:perl-matrix')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
@@ -210,7 +206,7 @@ jobs:
           cargo test --locked -p perl-lsp-rs runtime::lifecycle::workspace::tests::check_perl_interpreter_does_not_panic --lib
 
   signature-native:
-    if: ${{ inputs.signatures_only }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (inputs.signatures_only) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:

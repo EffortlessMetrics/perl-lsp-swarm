@@ -2,6 +2,7 @@ name: LSP 3.18 Claim Guard
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/lsp-318-claim-guard.yml'
       - 'policy/ci-lane-whitelist.toml'
@@ -59,6 +60,7 @@ permissions:
 
 jobs:
   claim-guard:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: LSP 3.18 claim guard
     runs-on: ubuntu-24.04
     timeout-minutes: 10

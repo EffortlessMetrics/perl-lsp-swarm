@@ -1,8 +1,9 @@
 name: CI
 
 # Tiered CI for perl-lsp (see tests/TAXONOMY.md)
-# - PR smoke: fast feedback on every push (~1-2 min)
-# - Merge gate: full validation on every PR push and push to main (~5-10 min)
+# - Draft: own-compute proof and review, no ordinary PR runner allocation
+# - Ready flip: final qualification; ready-head pushes refresh exact-subject proof
+# - Main/merge queue: unchanged protected integration proof
 # Cost: ~$0.05 per PR (smoke + merge gate; see #4675 for rationale)
 
 on:
@@ -47,6 +48,7 @@ env:
 
 jobs:
   draft-pr-check:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Draft PR guard
     runs-on: ubuntu-24.04
     timeout-minutes: 1
@@ -82,11 +84,11 @@ jobs:
             {
               echo "### Draft PR CI posture"
               echo
-              echo "- \`Rust formatting\` and \`Conflict marker check\` still run against this exact draft head."
-              echo "- Other CI jobs are intentionally deferred while the PR remains draft."
+              echo "- Rust formatting and Conflict marker check run on own compute while draft."
+              echo "- All ordinary PR CI jobs are deferred before runner allocation while draft."
               echo "- A skipped job is not verification. Mark the PR ready for review to run the full merge-required suite."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice::Draft PR detected — running rustfmt and conflict-marker feedback; deferring full CI until ready for review"
+            echo "::notice::Draft PR detected — deferring CI until own-compute proof, substantive review, and the ready flip"
           else
             base_sha="${{ github.event.pull_request.base.sha }}"
             pr_number="${{ github.event.pull_request.number }}"
@@ -276,7 +278,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     needs: draft-pr-check
-    if: needs.draft-pr-check.outputs.run_ci == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.draft-pr-check.outputs.run_ci == 'true') }}
     outputs:
       is_latest: ${{ steps.check.outputs.is_latest }}
     steps:
@@ -317,7 +319,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true') }}
     outputs:
       windows_runner: ${{ steps.scope.outputs.windows_runner }}
       windows_test_crates: ${{ steps.scope.outputs.windows_test_crates }}
@@ -377,7 +379,7 @@ jobs:
     # same signature on #16624's job 108862152161 at 20m15s.
     timeout-minutes: 45
     needs: [platform-overrides]
-    if: needs.platform-overrides.outputs.windows_runner == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.platform-overrides.outputs.windows_runner == 'true') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -446,10 +448,7 @@ jobs:
     timeout-minutes: 15
     continue-on-error: true
     needs: [draft-pr-check, preflight-latest-check]
-    if: >-
-      (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
-      needs.draft-pr-check.outputs.run_ci == 'true' &&
-      needs.preflight-latest-check.outputs.is_latest == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true') }}
     env:
       CONTRACT_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
     steps:
@@ -527,27 +526,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     needs: [draft-pr-check, preflight-latest-check]
-    # `preflight-latest-check` is intentionally skipped for drafts, and GitHub
-    # reports a skipped need's outputs as empty strings. `always()` carries the
-    # evaluation past that skipped need while the disjunction routes each event
-    # class:
-    # - draft PR: run_ci is 'false' and the skipped preflight's is_latest is '',
-    #   so the needs branch is false and only the draft branch fires.
-    # - non-draft PR: run_ci='true' and is_latest='true'; the needs branch fires.
-    # - merge_group and push: the draft branch is false (`pull_request.draft` is
-    #   unset), so the needs branch is the only route; it fires because
-    #   is_latest='true' unless a superseded push SHA is skipped.
-    # Dropping either branch silently removes draft or push/merge_group runs;
-    # xtask/tests/draft_pr_feedback_contract.rs asserts both branches.
-    if: >-
-      always() &&
-      (
-        (github.event_name == 'pull_request' && github.event.pull_request.draft == true) ||
-        (
-          needs.draft-pr-check.outputs.run_ci == 'true' &&
-          needs.preflight-latest-check.outputs.is_latest == 'true'
-        )
-      )
+    # Keep the existing exact-head and freshness route under the outer
+    # server-side draft guard. No runner is allocated for draft feedback.
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (always() && ( (github.event_name == 'pull_request' && github.event.pull_request.draft == true) || ( needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true' ) )) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -589,12 +570,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs: [draft-pr-check, preflight-latest-check]
-    if: >-
-      (github.event_name == 'pull_request' ||
-       (github.event_name == 'push' &&
-        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))) &&
-      needs.draft-pr-check.outputs.run_ci == 'true' &&
-      needs.preflight-latest-check.outputs.is_latest == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && ((github.event_name == 'pull_request' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))) && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true') }}
     env:
       RUN_API_RATCHET: ${{ github.event_name == 'push' || needs.draft-pr-check.outputs.api_scope == 'true' }}
     permissions:
@@ -696,10 +672,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs: [draft-pr-check, preflight-latest-check]
-    if: >-
-      github.event_name == 'pull_request' &&
-      needs.draft-pr-check.outputs.run_ci == 'true' &&
-      needs.preflight-latest-check.outputs.is_latest == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (github.event_name == 'pull_request' && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true') }}
     permissions:
       contents: read
     steps:
@@ -816,7 +789,7 @@ jobs:
     # is the real gate.
     continue-on-error: true
     needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true') }}
     # #11943 bound arm: the tier's single CARGO_TARGET_DIR measured 83 GiB on
     # cold-cache branches (runs 32697324730 / 32697144932) against ~83-84 GiB of
     # starting headroom, filling /dev/root to 100% mid-link (ENOSPC -> ld
@@ -1128,7 +1101,7 @@ jobs:
     # No functional dependency on pr-smoke output; run in parallel after preflight
     # + conflict guard to reduce end-to-end merge-gate wall time.
     needs: [draft-pr-check, conflict-markers, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -1600,10 +1573,10 @@ jobs:
       - check-all-targets
       - ux-tests
       - merge-gate-shards
-    # A required dependent job must always start: a skipped job is treated as
-    # successful by GitHub protection. The classifier emits explicit scoped
-    # no-ops for draft/superseded routes and fails closed otherwise.
-    if: always()
+    # Once admitted (ready PR or non-PR), always report dependency failures.
+    # Drafts allocate no runner; their skipped checks are not proof. The ready
+    # transition must create current-subject qualification before integration.
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (always()) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -1730,8 +1703,8 @@ jobs:
     timeout-minutes: 15
     # UX suite does not consume pr-smoke artifacts/results; parallelize after preflight.
     needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
-    # Run on every PR push — this is the regression prevention gate.
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true') }}
+    # Run for ready PR qualification and ready-head updates, never draft pushes.
     # Flakiness note: 11 active entries in .ci/ux-flakes.json (all scenario_14 / @INC
     # conformance tests) are registered as quarantine_effect=non_blocking_pr but that
     # registry is advisory only — it is NOT enforced here. If any scenario_14 test
@@ -1968,7 +1941,7 @@ jobs:
     # Same shape as #5425: raise the knob when runners/base outgrow it.
     timeout-minutes: 35
     needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true') }}
     steps:
       # INTENTIONAL: no `ref:` override here — see #9594.
       #
@@ -2316,7 +2289,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft != true) && (needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -2419,6 +2392,7 @@ jobs:
   # the advisory receipt producer; duplicate meta-shard fmt execution is
   # retired (#9959). Settings-app promotion of this context remains #7087.
   rust-formatting:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     name: Rust formatting
     runs-on: ubuntu-24.04
     timeout-minutes: 10
