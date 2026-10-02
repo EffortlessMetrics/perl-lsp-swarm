@@ -6101,6 +6101,8 @@ fn run_output(cmd: &str, args: &[String]) -> Result<String> {
 /// blocks on the write and can never exit. The timeout then becomes the only
 /// way out, which is how `ripr-review-comments` lanes burned tens of minutes
 /// before an external SIGTERM on diffs whose output exceeded the buffer.
+/// The sole production caller is RIPR review guidance; the heartbeat names that
+/// phase and reports process liveness only, never semantic completion progress.
 fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Result<String> {
     let stdout_file =
         tempfile::NamedTempFile::new().context("failed to create command stdout file")?;
@@ -6113,6 +6115,7 @@ fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Res
         .spawn()
         .with_context(|| format!("failed to run {cmd}"))?;
     let started = Instant::now();
+    let mut next_progress = Duration::ZERO;
     let status = loop {
         if let Some(status) = child.try_wait().with_context(|| format!("failed to poll {cmd}"))? {
             break status;
@@ -6126,6 +6129,11 @@ fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Res
                 String::from_utf8_lossy(&read_output_excerpt(&stdout_file)?).trim(),
                 String::from_utf8_lossy(&read_output_excerpt(&stderr_file)?).trim()
             );
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= next_progress {
+            write_timed_command_progress(child.id(), elapsed, &stdout_file, &stderr_file);
+            next_progress = elapsed.saturating_add(Duration::from_secs(30));
         }
         std::thread::sleep(Duration::from_millis(200));
     };
@@ -6144,6 +6152,76 @@ fn run_output_with_timeout(cmd: &str, args: &[String], timeout: Duration) -> Res
         );
     }
     String::from_utf8(stdout_bytes).with_context(|| format!("{cmd} stdout was not UTF-8"))
+}
+
+/// Keep a long captured-output command observable without exposing its output or
+/// arguments. Best-effort diagnostics do not decide admission or change the
+/// configured timeout, cancellation, or exit-status policy. Linux memory fields are
+/// optional; other platforms still report elapsed time and captured byte counts.
+fn write_timed_command_progress(
+    child_id: u32,
+    elapsed: Duration,
+    stdout: &tempfile::NamedTempFile,
+    stderr: &tempfile::NamedTempFile,
+) {
+    let (process, host) = if cfg!(target_os = "linux") {
+        (
+            read_progress_proc_file(&format!("/proc/{child_id}/status")),
+            read_progress_proc_file("/proc/meminfo"),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    let line = timed_command_progress_line(
+        child_id,
+        elapsed,
+        stdout.as_file().metadata().ok().map(|m| m.len()),
+        stderr.as_file().metadata().ok().map(|m| m.len()),
+        &process,
+        &host,
+    );
+    let _ = std::io::Write::write_all(&mut io::stderr(), line.as_bytes());
+}
+
+fn read_progress_proc_file(path: &str) -> String {
+    let mut text = String::new();
+    if let Ok(file) = fs::File::open(path) {
+        let _ = file.take(16 * 1024).read_to_string(&mut text);
+    }
+    text
+}
+
+fn proc_kib_field(text: &str, key: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next()? != key {
+            return None;
+        }
+        let value = fields.next()?.parse().ok()?;
+        (fields.next()? == "kB" && fields.next().is_none()).then_some(value)
+    })
+}
+
+fn timed_command_progress_line(
+    child_id: u32,
+    elapsed: Duration,
+    stdout_bytes: Option<u64>,
+    stderr_bytes: Option<u64>,
+    process: &str,
+    host: &str,
+) -> String {
+    let metric = |value: Option<u64>| {
+        value.map(|value| value.to_string()).unwrap_or_else(|| "unavailable".to_string())
+    };
+    format!(
+        "ripr_timed_command_progress phase=review_guidance pid={child_id} elapsed_ms={} stdout_bytes={} stderr_bytes={} child_rss_kib={} child_peak_rss_kib={} host_available_kib={}\n",
+        elapsed.as_millis(),
+        metric(stdout_bytes),
+        metric(stderr_bytes),
+        metric(proc_kib_field(process, "VmRSS:")),
+        metric(proc_kib_field(process, "VmHWM:")),
+        metric(proc_kib_field(host, "MemAvailable:")),
+    )
 }
 
 /// Reads the first `MAX_RIPR_STDERR_BYTES` of a captured stream file for a
@@ -13301,6 +13379,58 @@ esac
             assert!(msg.contains("detailed error"), "stderr must appear in error: {msg}");
             assert!(msg.contains("status"), "exit status must appear in error: {msg}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn timed_command_progress_reports_only_numeric_resource_fields() {
+        let line = timed_command_progress_line(
+            42,
+            Duration::from_secs(30),
+            Some(123),
+            Some(456),
+            "Name:\tprivate-payload\nVmRSS:\t1024 kB\nVmHWM:\t2048 kB\n",
+            "MemAvailable: 4096 kB\nOther: private-token\n",
+        );
+        assert_eq!(
+            line,
+            "ripr_timed_command_progress phase=review_guidance pid=42 elapsed_ms=30000 stdout_bytes=123 stderr_bytes=456 child_rss_kib=1024 child_peak_rss_kib=2048 host_available_kib=4096\n"
+        );
+    }
+
+    #[test]
+    fn timed_command_progress_marks_missing_measurements_unavailable() {
+        let line = timed_command_progress_line(7, Duration::ZERO, None, None, "", "");
+        assert_eq!(
+            line,
+            "ripr_timed_command_progress phase=review_guidance pid=7 elapsed_ms=0 stdout_bytes=unavailable stderr_bytes=unavailable child_rss_kib=unavailable child_peak_rss_kib=unavailable host_available_kib=unavailable\n"
+        );
+    }
+
+    #[test]
+    fn timed_command_progress_rejects_malformed_resource_values() {
+        for input in [
+            "VmRSS: -1 kB",
+            "VmRSS: 18446744073709551616 kB",
+            "VmRSS: 12 bytes",
+            "VmRSS: secret kB",
+            "VmRSS: 12 kB extra",
+            "VmRSSExtra: 12 kB",
+        ] {
+            assert_eq!(proc_kib_field(input, "VmRSS:"), None, "{input}");
+        }
+        assert_eq!(proc_kib_field("VmRSS: 0 kB", "VmRSS:"), Some(0));
+    }
+
+    #[test]
+    fn timed_command_progress_bounds_proc_reads_and_tolerates_absence() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("status");
+        fs::write(&path, format!("{}\nVmRSS: 42 kB\n", "x".repeat(16 * 1024)))?;
+        let text = read_progress_proc_file(&path.to_string_lossy());
+        assert_eq!(text.len(), 16 * 1024);
+        assert_eq!(proc_kib_field(&text, "VmRSS:"), None);
+        assert!(read_progress_proc_file(&dir.path().join("missing").to_string_lossy()).is_empty());
         Ok(())
     }
 
