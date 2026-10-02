@@ -41,3 +41,12 @@ re-exports in one crate, use `perl-parser`.
 The `incremental` module provides checkpoint-bounded token replay with explicit
 fallback metrics. It reuses parser tokens outside the edit window and rebuilds the
 AST from the assembled stream; it does not claim AST subtree reuse.
+
+### Parenthesized loop headers
+
+`for` and `foreach` share delimiter-based parsing: a complete parenthesized
+expression is an implicit-`$_` `Foreach` list, including declarations such as
+`for (my @filename = @_)`. The declaration stays in `Foreach.list`; it is not
+an explicit iterator declaration. Semicolon-separated headers remain C-style
+`For` nodes, and missing separators still produce parser diagnostics. This is
+a syntax/AST contract, not a claim of runtime loop execution support.
