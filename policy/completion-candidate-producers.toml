@@ -90,7 +90,17 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
-source_digest = "sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f"
+# Re-audit 2026-10-01 (#16863): interpolation admission (#16891) added
+# request/interpolation.rs with one returned-page producer, complete_slot, and
+# rewrote request/{mod,dispatch,context}.rs routing plus lexical_context.rs
+# helpers. The gated #[cfg(test)] module interpolation_completion_tests.rs joins
+# TEST_SURFACE_FILES like its siblings. complete_slot delegates its binding
+# candidates to variables::add_variable_completions and variables::add_special_variables,
+# so it carries local_symbol / legacy_label_compatibility / #11002 with the
+# delegation recorded in its row. Entry routes, delegations, and finalizer
+# route are unchanged; projection diff is the new row plus digest, `check`
+# passes.
+source_digest = "sha256:10bb9897a42f444267b20e446eae7523c78c549255f8a3da766f2036fc54903d"
 
 [[delegations]]
 module = "dancer2"
@@ -670,6 +680,23 @@ reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#10229"
 limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
 note = "Context routing inside the provider dispatch."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::interpolation::complete_slot"
+package = "perl-lsp-rs-core"
+candidate_class = "local_symbol"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11002"
+limitations = "Delegates the binding candidates to variables::add_variable_completions (current document symbol table) and variables::add_special_variables (static catalogue), so the label-identity caveat of those rows carries over unchanged: a same-named binding in another scope, package, or document instance can merge with this one. Quiet and escaped boundaries return an empty page with no outcome distinguishing 'not an interpolation slot' from 'mine and empty'. The braced ${name form rewrites insert/filter and re-ranges the text edit after the shared constructors produced the candidates."
+note = "Exact interpolation-variable slots ($name, ${name}, @array, @{...}) in interpolating strings and interpolating heredocs: scope-visible sigil-compatible bindings only. Single quotes, q, literal heredocs, escaped sigils, and bare %hash never reach it."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::request::test_frameworks::reconcile"

@@ -1902,7 +1902,7 @@ fn test_string_completion_suppresses_scalar_in_single_quotes() {
     let completions = provider.get_completions(code, pos);
 
     assert!(
-        completions.iter().any(|item| item.label == "$message"),
+        !completions.iter().any(|item| item.label == "$message"),
         "expected scalar variable completions to be suppressed inside single-quoted strings, got: {:?}",
         completions.iter().map(|item| &item.label).collect::<Vec<_>>()
     );
@@ -1936,7 +1936,7 @@ fn test_string_completion_suppresses_scalar_in_q_literal() {
     let completions = provider.get_completions(code, pos);
 
     assert!(
-        completions.iter().any(|item| item.label == "$message"),
+        !completions.iter().any(|item| item.label == "$message"),
         "expected scalar variable completions to be suppressed inside q literals, got: {:?}",
         completions.iter().map(|item| &item.label).collect::<Vec<_>>()
     );

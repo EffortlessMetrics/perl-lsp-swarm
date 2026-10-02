@@ -111,6 +111,10 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # conversion is behavior-identical and costs no coverage. It is also what this
 # prefix's own removal_condition asks for: "initial profile and internal tests
 # use canonical initial names". Baseline therefore stays 710.
+# Growth of canonical caller identities (not compatibility count) by #16863:
+# crates/perl-lsp-rs-core/src/providers/completion/completion/interpolation_completion_tests.rs
+# seeds Animal.pm through index_initial_file as initial on-disk state so the
+# interpolation slot can prove workspace package labels stay absent.
 # Held at 710 by #16449 (#16019 lone-minus completion fix): that PR added one
 # `.index_file(Url::parse(...)?, ...)` fixture call in
 # crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs
@@ -143,6 +147,7 @@ compatibility_banned_prefixes = ["crates/perl-lsp-rs/src/runtime/text_sync"]
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [
+  "crates/perl-lsp-rs-core/src/providers/completion/completion/interpolation_completion_tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/same_file_role_completion_tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/tests.rs",
   "crates/perl-lsp-rs-core/src/providers/completion/completion/workspace.rs",
