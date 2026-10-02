@@ -42,6 +42,12 @@ from typing import Any
 
 GIT_DIFF_TIMEOUT_SECONDS = 30
 
+# Envelope version this consumer understands for `.ci/metrics/ci-lane-history.json`.
+# Same integer the producer stamps (`aggregate_lane_history.SCHEMA_VERSION`).
+# Restated here rather than imported so a producer bump cannot silently advance
+# this reader's field names (`lanes` / `p50` / `static_floor`).
+HISTORY_SCHEMA_VERSION = 1
+
 
 def read_toml(path: Path) -> dict[str, Any]:
     with path.open("rb") as f:
@@ -511,13 +517,40 @@ def lane_lem(lane: dict[str, Any], multipliers: dict[str, float]) -> float:
 
 
 def load_learned_history(path: Path) -> dict[str, Any]:
-    """Read .ci/metrics/ci-lane-history.json if present; tolerant on errors."""
+    """Read `.ci/metrics/ci-lane-history.json` if present.
+
+    Absent or unreadable files stay tolerant (return `{}`) so planning can
+    fall back to static `base_lem` floors. A decoded payload is fail-closed
+    on the envelope: only a JSON object with exact integer
+    `schema_version == HISTORY_SCHEMA_VERSION` is consumed. A v2 (or
+    unenveloped) payload that still carries `lanes` must not be read as v1
+    and substituted into each lane's `base_lem` (#15320).
+
+    Issue #15320 cites this helper as `load_history_payload`; the current
+    name is `load_learned_history`.
+    """
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+    schema_version = payload.get("schema_version") if isinstance(payload, dict) else None
+    # bool is an int subclass and 1.0 == 1: bare `!= 1` would admit JSON
+    # `true` / `1.0` as v1 and rewrite `base_lem` from those records.
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != HISTORY_SCHEMA_VERSION
+    ):
+        version_repr = (
+            payload.get("schema_version")
+            if isinstance(payload, dict)
+            else type(payload).__name__
+        )
+        raise SystemExit(f"unsupported ci-lane-history schema: {version_repr!r}")
+    return payload
 
 
 def apply_learned_estimates(
