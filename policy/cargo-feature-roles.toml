@@ -348,6 +348,15 @@ note = "Proof-only instrumentation for the native-critic rebuild counter (#7286)
 
 [[feature]]
 crate = "perl-lsp-ux-tests"
+name = "cold-index-proof"
+role = "test_only"
+owner = "#16650"
+consumers = ["cfg_gated"]
+migration = "Retire this opt-in gate under #16650 when the UX harness can hold real stdio discovery without feature-only instrumentation."
+note = "Gates the exact-binary first-ask references proof; its server-side discovery barrier separately requires perl-lsp-rs/expose_lsp_test_api and a child-only environment variable."
+
+[[feature]]
+crate = "perl-lsp-ux-tests"
 name = "integration-test"
 role = "test_only"
 owner = "#8409"

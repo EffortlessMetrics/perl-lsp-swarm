@@ -390,6 +390,31 @@ struct WorkspaceIndexCancellationGuard {
     request_id: JsonRpcId,
 }
 
+/// Test-feature-only barrier for a real stdio client to hold discovery while
+/// exercising references against an empty, still-building workspace index.
+#[cfg(feature = "expose_lsp_test_api")]
+fn hold_index_discovery_for_stdio_proof() -> bool {
+    let Some(directory) = std::env::var_os("PERL_LSP_TEST_INDEX_GATE_DIR") else {
+        return false;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    if let Err(error) = std::fs::write(directory.join("indexing-entered"), b"") {
+        tracing::warn!(%error, "stdio proof index gate could not signal entry");
+        return false;
+    }
+
+    let release = directory.join("release");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !release.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    if !release.exists() {
+        let _ = std::fs::write(directory.join("indexing-gate-timed-out"), b"");
+        tracing::warn!("stdio proof index gate timed out");
+    }
+    true
+}
+
 #[cfg(feature = "workspace")]
 impl Drop for WorkspaceIndexCancellationGuard {
     fn drop(&mut self) {
@@ -2914,6 +2939,9 @@ impl LspServer {
             if let Some(observation) = &scan_observation {
                 observation.worker_started();
             }
+            #[cfg(feature = "expose_lsp_test_api")]
+            let mut budget_start = Instant::now();
+            #[cfg(not(feature = "expose_lsp_test_api"))]
             let budget_start = Instant::now();
             {
                 let mut receipt = readiness_receipt.lock();
@@ -2924,6 +2952,12 @@ impl LspServer {
             coordinator.transition_to_scanning();
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             crate::runtime::readiness::notify_workspace_indexing_started(&readiness_start_gate);
+            #[cfg(feature = "expose_lsp_test_api")]
+            if hold_index_discovery_for_stdio_proof() {
+                // The injected wait is outside the real discovery time budget.
+                budget_start = Instant::now();
+                readiness_receipt.lock().begin_workspace(budget_start);
+            }
 
             // Send progress begin if client supports work done progress.
             if work_done_progress {

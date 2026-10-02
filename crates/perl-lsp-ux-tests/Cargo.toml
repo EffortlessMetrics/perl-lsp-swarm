@@ -38,11 +38,16 @@ serde_json.workspace = true
 anyhow.workspace = true
 url.workspace = true
 tempfile.workspace = true
+sha2.workspace = true
 
 [features]
 # Gate slow/heavy integration tests behind this feature flag.
 # Run with: cargo test -p perl-lsp-ux-tests --features integration-test
 integration-test = []
+# Deterministic real-stdio cold-index proof; requires the perllsp binary built
+# with perl-lsp-rs/expose_lsp_test_api and explicit PERL_LSP_BIN plus
+# PERL_LSP_PROOF_SHA256 identity.
+cold-index-proof = []
 
 [lints]
 workspace = true
