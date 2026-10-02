@@ -2688,6 +2688,24 @@ pub(super) fn collect_all_package_members(
     collect_all_package_members_with_source(index, package_name, "", "")
 }
 
+/// Canonical identity string for the edited document, compared against
+/// persisted `WorkspaceSymbol::uri` values (#17084).
+///
+/// LSP requests supply the document URI; direct provider callers may supply
+/// the historical `filepath` argument in path form. Both forms canonicalize
+/// to the same `Url::as_str()` string so the freshness seam compares like
+/// with like. Empty means identity is unknown: the seam stays inert instead
+/// of guessing, which keeps index-only behavior for identity-less callers.
+fn canonical_document_identity(current_document_uri: &str) -> String {
+    if current_document_uri.is_empty() {
+        return String::new();
+    }
+    if current_document_uri.contains("://") {
+        return current_document_uri.to_string();
+    }
+    perl_workspace::workspace_index::fs_path_to_uri(current_document_uri).unwrap_or_default()
+}
+
 /// Collect package members and use the current open document as a model source
 /// when the receiver package has not been indexed yet. This keeps completion
 /// useful during editing while retaining the workspace index as the authority
@@ -2699,17 +2717,19 @@ pub(super) fn collect_all_package_members(
 /// for the accepted document generation.
 ///
 /// `current_document_uri` is the open document's identity (canonical `file://`
-/// URL string, empty when unknown). When the buffer supplies authoritative facts
-/// for a package, persisted explicit members and inheritance models sourced from
-/// that same URI belong to an older generation of the edited document and are
-/// excluded (#17084); members from other files and generated members still
-/// compose.
+/// URL string or a filesystem path, empty when unknown). When the buffer
+/// supplies authoritative facts for a package, persisted explicit members and
+/// inheritance models sourced from that same URI belong to an older generation
+/// of the edited document and are excluded (#17084); members from other files
+/// and generated members still compose.
 fn collect_all_package_members_with_source(
     index: &WorkspaceIndex,
     package_name: &str,
     source: &str,
     current_document_uri: &str,
 ) -> Vec<WorkspaceSymbol> {
+    let current_document_uri = canonical_document_identity(current_document_uri);
+    let current_document_uri = current_document_uri.as_str();
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut result: Vec<WorkspaceSymbol> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
@@ -2984,10 +3004,12 @@ fn load_source_package_facts(
 ///   index. Roles carry no explicit marker, so only the next boundary applies
 ///   to them.
 /// - **Same-document freshness.** Indexed edges parsed from the edited
-///   document's own URI describe an older generation of that document. When the
-///   buffer supplies the package's facts, the buffer is the newer generation,
-///   so same-URI persisted edges never restore — a removed `use parent`/`with`
-///   line stays removed. Cross-file persisted edges still compose.
+///   document's own URI describe an older generation of that document. When
+///   the buffer supplies the package's facts, the buffer is the newer
+///   generation, so same-URI persisted edges never restore — a removed
+///   `use parent`/`with` line stays removed. Selection then falls through to
+///   another file's declaration of the same package, so cross-file persisted
+///   edges still compose.
 fn current_document_facts_with_persisted_edges(
     pkg: &str,
     index: &WorkspaceIndex,
@@ -2998,15 +3020,21 @@ fn current_document_facts_with_persisted_edges(
     current_document_uri: &str,
 ) -> SourcePackageFacts {
     if parents.is_empty() || roles.is_empty() {
-        let same_document_stale = |indexed_uri: &str| {
-            !current_document_uri.is_empty() && indexed_uri == current_document_uri
+        // Select the persisted model for `pkg`. With a known document identity
+        // the edited document's own (stale) generation is skipped, so another
+        // file's declaration of the same package can still supply the restored
+        // chain; identity-unknown callers keep the single-candidate lookup
+        // (#17084, #16809).
+        let selected = if current_document_uri.is_empty() {
+            indexed_package_model(pkg, index)
+        } else {
+            indexed_package_model_excluding_current_document(pkg, index, current_document_uri)
         };
-        if let Some((indexed, indexed_uri)) = indexed_package_model(pkg, index) {
-            let stale = same_document_stale(&indexed_uri);
-            if parents.is_empty() && !parents_stated && !stale {
+        if let Some((indexed, _)) = selected {
+            if parents.is_empty() && !parents_stated {
                 parents = indexed.parents;
             }
-            if roles.is_empty() && !stale {
+            if roles.is_empty() {
                 roles = indexed.roles;
             }
         }
@@ -3023,8 +3051,38 @@ fn indexed_package_model(
     index: &WorkspaceIndex,
 ) -> Option<(perl_semantic_analyzer::class_model::ClassModel, String)> {
     let pkg_location = index.find_definition(pkg)?;
-    let indexed_text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
-        perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
+    let model = indexed_package_model_at(index, pkg, &pkg_location.uri)?;
+    Some((model, pkg_location.uri))
+}
+
+/// Like [`indexed_package_model`], but selects the first indexed document that
+/// both declares `pkg` and is not the edited document itself. When the
+/// package's first indexed candidate is the edited document's own stale
+/// generation, cross-file declarations must still be able to supply the
+/// restored inheritance chain (#17084).
+fn indexed_package_model_excluding_current_document(
+    pkg: &str,
+    index: &WorkspaceIndex,
+    canonical_document_uri: &str,
+) -> Option<(perl_semantic_analyzer::class_model::ClassModel, String)> {
+    for pkg_location in index.find_definitions(pkg) {
+        if pkg_location.uri == canonical_document_uri {
+            continue;
+        }
+        if let Some(model) = indexed_package_model_at(index, pkg, &pkg_location.uri) {
+            return Some((model, pkg_location.uri));
+        }
+    }
+    None
+}
+
+fn indexed_package_model_at(
+    index: &WorkspaceIndex,
+    pkg: &str,
+    document_uri: &str,
+) -> Option<perl_semantic_analyzer::class_model::ClassModel> {
+    let indexed_text = index.document_store().get_text(document_uri).or_else(|| {
+        perl_workspace::workspace_index::uri_to_fs_path(document_uri)
             .and_then(|path| std::fs::read_to_string(path).ok())
     })?;
     let mut parser = perl_semantic_analyzer::Parser::new(&indexed_text);
@@ -3035,7 +3093,6 @@ fn indexed_package_model(
         .build(&ast)
         .into_iter()
         .find(|model| model.name == pkg)
-        .map(|model| (model, pkg_location.uri))
 }
 
 fn source_package_facts_from_model(
@@ -3291,6 +3348,39 @@ sub kept { 2 }
         assert_eq!(kept_count, 1, "unchanged method must not duplicate, got {names:?}");
     }
 
+    /// The freshness identity accepts the historical path-form `filepath`:
+    /// direct provider callers that pass a filesystem path get the same
+    /// same-document exclusion as URI-form callers (#17084).
+    #[test]
+    fn path_form_document_identity_receives_the_freshness_seam() {
+        let temp = must(tempfile::tempdir());
+        let document_path = temp.path().join("User.pm");
+        let document_uri = must(url::Url::from_file_path(&document_path)).to_string();
+
+        let index = Arc::new(WorkspaceIndex::new());
+        must(index.index_file(
+            must(url::Url::parse(&document_uri)),
+            "package User;\nsub old_name { 1 }\n1;\n".to_string(),
+        ));
+
+        let edited = "package User;\nsub new_name { 1 }\n1;\n";
+        let members = collect_all_package_members_with_source(
+            index.as_ref(),
+            "User",
+            edited,
+            &document_path.to_string_lossy(),
+        );
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            !names.contains(&"old_name"),
+            "path-form identity must reach the same-document exclusion, got {names:?}"
+        );
+        assert!(
+            names.contains(&"new_name"),
+            "current-buffer method must stay offered, got {names:?}"
+        );
+    }
+
     /// G2 regression (#17084): the persisted chain must not override an
     /// explicit ancestry statement from the open buffer. Both boundaries are
     /// pinned: an explicit empty `@ISA = ()` suppresses the persisted chain
@@ -3332,6 +3422,33 @@ sub kept { 2 }
         assert!(
             !names.contains(&"base_method"),
             "a deleted use-parent edge must not resurrect from the same document's stale index, got {names:?}"
+        );
+
+        // Cross-file selection: with the edited document's own stale
+        // generation skipped, another file's declaration of the same package
+        // still supplies the restored chain. Base2 must not be shadowed by
+        // Child.pm's older `use parent 'Base'`.
+        let base2_uri = must(Url::parse("file:///workspace/Base2.pm"));
+        must(
+            index.index_file(base2_uri, "package Base2;\nsub base2_method { 1 }\n1;\n".to_string()),
+        );
+        let other_child_uri = must(Url::parse("file:///workspace/Other.pm"));
+        must(
+            index.index_file(
+                other_child_uri,
+                "package Child;\nuse parent 'Base2';\n1;\n".to_string(),
+            ),
+        );
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "Child", silent, CHILD_URI);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"base2_method"),
+            "the cross-file declaration must supply the restored parent chain, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"base_method"),
+            "the skipped same-document generation must not contribute parents, got {names:?}"
         );
 
         // Control: with no document identity the header-only buffer keeps the
