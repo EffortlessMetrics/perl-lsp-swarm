@@ -90,7 +90,14 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
-source_digest = "sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f"
+# Re-anchor 2026-09-29 (#16861): extracted `completion/receiver.rs` (classifier,
+# not a producer) and excluded `defining_class_invocant_tests.rs` from the
+# production scan. Combined with #16937/#16938, scanned product files become 43.
+# Combined-tree re-anchor: #16938 workspace source-commit fixture repair plus
+# this branch's collector/unknown-fallback edits changed scanned workspace.rs,
+# so the 43-file digest moves; producer identities, entry routes, delegations,
+# and finalizer remain unchanged.
+source_digest = "sha256:0e53699d5624afb8bbe3bb46821a84871053300cd2417be8451dcfee5c38d47b"
 
 [[delegations]]
 module = "dancer2"

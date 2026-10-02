@@ -2274,8 +2274,8 @@ fn test_self_arrow_resolves_workspace_methods() -> Result<(), Box<dyn std::error
     //
     // The methods are ONLY in the workspace index (a separate .pm file), not in
     // the currently-parsed source. This tests the workspace path specifically:
-    // `classify_text_pattern_receiver` must return `SelfOrThis("MyService")` for `$self->` when
-    // `context.current_package == "MyService"`.
+    // proven `my $self = shift` consumes canonical invocant facts rather than
+    // `$self` spelling plus current_package.
     let index = Arc::new(WorkspaceIndex::new());
     let module_uri = Url::parse("file:///workspace/MyService.pm")?;
     let module_code = r#"package MyService;
@@ -2286,10 +2286,8 @@ sub validate_input { }
 "#;
     index.index_file(module_uri, module_code.to_string())?;
 
-    // The currently-edited file is in MyService but does NOT define
-    // process_request or validate_input locally — they are workspace-only.
     let code = r#"package MyService;
-sub run {
+method run {
 my $self = shift;
 $self->"#;
     let mut parser = Parser::new(code);
@@ -2351,7 +2349,7 @@ sub handle { }
 
     // Only `run` is in the edited file; `handle` lives only in the workspace index.
     let code = r#"package MyHandler;
-sub run {
+method run {
 my $this = shift;
 $this->"#;
     let mut parser = Parser::new(code);
@@ -2390,7 +2388,8 @@ sub own_method { }
     )?;
 
     let code = r#"package Child;
-sub run {
+use parent 'Parent';
+method run {
 my $self = shift;
 $self->"#;
     let mut parser = Parser::new(code);
@@ -2446,7 +2445,8 @@ use parent 'Parent';
     )?;
 
     let code = r#"package Child;
-sub run {
+use parent 'Parent';
+method run {
 my $self = shift;
 $self->"#;
     let mut parser = Parser::new(code);
@@ -2497,7 +2497,9 @@ with 'IntermediateRole';
     )?;
 
     let code = r#"package Consumer;
-sub run {
+use Moose;
+with 'IntermediateRole';
+method run {
 my $self = shift;
 $self->"#;
     let mut parser = Parser::new(code);
@@ -3164,7 +3166,8 @@ use parent 'Parent';
     )?;
 
     let code = r#"package Child;
-sub run {
+use parent 'Parent';
+method run {
 my $self = shift;
 $self->"#;
     let mut parser = Parser::new(code);
@@ -4100,21 +4103,21 @@ fn classify_receiver_qualified_static_package() {
 }
 
 #[test]
-fn classify_receiver_self_is_high_confidence() {
+fn classify_receiver_self_spelling_is_not_text_pattern_evidence() {
     let source = "package MyService;\n$self->";
     let ctx = ctx_for("$self->", "MyService", source.len());
     let ev = classify_text_pattern_receiver(&ctx, source);
-    assert_eq!(ev, ReceiverEvidence::SelfOrThis("MyService".to_string()));
-    assert_eq!(ev.confidence(), Some(Confidence::High));
+    assert_eq!(ev, ReceiverEvidence::Unknown);
+    assert_eq!(ev.confidence(), None);
 }
 
 #[test]
-fn classify_receiver_this_is_high_confidence() {
+fn classify_receiver_this_spelling_is_not_text_pattern_evidence() {
     let source = "package MyHandler;\n$this->";
     let ctx = ctx_for("$this->", "MyHandler", source.len());
     let ev = classify_text_pattern_receiver(&ctx, source);
-    assert_eq!(ev, ReceiverEvidence::SelfOrThis("MyHandler".to_string()));
-    assert_eq!(ev.confidence(), Some(Confidence::High));
+    assert_eq!(ev, ReceiverEvidence::Unknown);
+    assert_eq!(ev.confidence(), None);
 }
 
 #[test]
@@ -9152,7 +9155,7 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
 /// inheritance edge rather than merely finding declarations in one AST.
 fn inherited_moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
-    index.index_file(
+    index.index_initial_file(
         Url::parse("file:///workspace/Parent.pm")?,
         r#"package Parent;
 use Moo;
@@ -9214,6 +9217,27 @@ fn block_form_package_at_scope_end_is_main() {
     );
 }
 
+fn assert_unknown_inherited_workspace_method(completions: &[CompletionItem], label: &str) {
+    let item = must_some_with(
+        completions.iter().find(|item| item.label == label),
+        format!("inherited workspace method `{label}`"),
+    );
+    let detail = must_some_with(item.detail.as_deref(), format!("`{label}` detail"));
+    assert!(
+        detail.contains("receiver: unknown, low confidence"),
+        "classic-sub inherited `{label}` must stay unknown-receiver fallback, got {detail:?}"
+    );
+    assert!(
+        !detail.contains("receiver: self/this"),
+        "classic-sub inherited `{label}` must not promote Exact self/this, got {detail:?}"
+    );
+    let sort = must_some_with(item.sort_text.as_deref(), format!("`{label}` sort_text"));
+    assert!(
+        sort.starts_with("6_"),
+        "classic-sub inherited `{label}` must stay fallback tier 6, got {sort:?}"
+    );
+}
+
 #[test]
 fn inherited_moo_current_package_is_child() {
     let code = r#"
@@ -9258,11 +9282,7 @@ sub greet {
     let pos = must_some(code.find("$self->")) + "$self->".len();
     let completions = provider.get_completions(code, pos);
 
-    assert!(
-        completions.iter().any(|item| item.label == "name"),
-        "expected inherited Moo accessor name in Child completion, got {:?}",
-        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
-    );
+    assert_unknown_inherited_workspace_method(&completions, "name");
 }
 
 #[test]
@@ -9283,16 +9303,10 @@ sub inspect {
     let index = must(inherited_moo_parent_index());
     let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
-    let labels: Vec<_> =
-        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+    let completions = provider.get_completions(code, pos);
 
     for expected in ["status", "has_status", "_build_status", "clear_status"] {
-        assert!(
-            labels.iter().any(|label| label == expected),
-            "expected inherited generated accessor {} in Child completion, got {:?}",
-            expected,
-            labels
-        );
+        assert_unknown_inherited_workspace_method(&completions, expected);
     }
 }
 
@@ -9312,20 +9326,40 @@ sub inspect {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let index = must(inherited_moo_parent_index());
-    must(index.index_file(
+    must(index.index_initial_file(
         must(Url::parse("file:///workspace/Unrelated.pm")),
         "package Other; sub Child { 1 }".to_string(),
     ));
 
     let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
     let pos = must_some(code.find("$self->")) + "$self->".len();
-    let labels: Vec<_> =
-        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+    let completions = provider.get_completions(code, pos);
 
-    assert!(
-        labels.iter().any(|label| label == "name"),
-        "open Child source must win over unrelated indexed bare symbol, got {labels:?}"
-    );
+    assert_unknown_inherited_workspace_method(&completions, "name");
+}
+
+#[test]
+fn test_inherited_moo_unknown_obj_follows_current_document_isa() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my ($obj) = @_;
+    $obj->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = must(inherited_moo_parent_index());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let pos = must_some(code.find("$obj->")) + "$obj->".len();
+    let completions = provider.get_completions(code, pos);
+
+    assert_unknown_inherited_workspace_method(&completions, "name");
+    assert_unknown_inherited_workspace_method(&completions, "status");
 }
 
 /// Proof seam for issue #11858: empty-prefix general context must emit visible

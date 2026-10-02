@@ -1,10 +1,10 @@
 //! Scenario 50 - Receiver self/this quality receipt.
 //!
-//! This receipt records current-package `$self->` and `$this->` receiver
+//! This receipt records admitted-method `$self->` and `$this->` invocant
 //! completion over a small multi-file workspace. Current-package local methods
 //! remain ordinary local method candidates; inherited workspace methods may
-//! carry exact self/this receiver detail. This receipt records that boundary
-//! without broadening receiver completion behavior.
+//! carry exact self/this receiver detail from declared invocant facts. Classic
+//! package `sub` unpacking is out of this cohort.
 
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::{
@@ -48,7 +48,7 @@ sub shadowed_ping {
     return 'child';
 }
 
-sub run {
+method run {
     my ($self) = @_;
     $self->
 }
@@ -65,7 +65,7 @@ sub this_ping {
     return 1;
 }
 
-sub run {
+method run {
     my $this = shift;
     $this->
 }
@@ -246,7 +246,7 @@ fn probe_self_this_receiver(
     Ok(SelfThisReceiverReport {
         name: probe.name,
         file: probe.file,
-        receiver_fact_class: "self_this_current_package",
+        receiver_fact_class: "admitted_method_invocant",
         candidate_count: items.len(),
         expected_label_present,
         expected_label_detail,
@@ -436,8 +436,8 @@ fn scenario_50_receiver_self_this_quality_receipt() {
             let receipt = json!({
                 "schema_version": 1,
                 "receipt": "receiver_self_this_quality",
-                "workspace_fixture": "RealReceiver current-package self/this multi-file workspace",
-                "claim_boundary": "receipt-only receiver quality proof for $self/$this current-package method completion; no completion behavior change, support-tier promotion, broader receiver promotion, parser/corpus bucket movement, release-lineage sync, or source-repo development continuation",
+                "workspace_fixture": "RealReceiver admitted-method self/this multi-file workspace",
+                "claim_boundary": "receipt-only receiver quality proof for admitted-method $self/$this invocant facts (#16861); local methods stay ordinary candidates; inherited workspace methods carry exact self/this detail; classic package sub invocants remain out of this cohort",
                 "probe_count": reports.len(),
                 "self_this_labeled_count": self_this_labeled_count,
                 "local_method_boundary_count": local_method_boundary_count,
