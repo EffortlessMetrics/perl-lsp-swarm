@@ -23,6 +23,7 @@ pub(super) fn complete_dispatch(
         context,
         source,
         position,
+        filepath,
         is_cancelled,
     ) {
         return CompletionFlow::SortAndReturn;
@@ -62,6 +63,7 @@ fn complete_use_or_structural_context(
     context: &CompletionContext,
     source: &str,
     position: usize,
+    filepath: Option<&str>,
     is_cancelled: &dyn Fn() -> bool,
 ) -> bool {
     if let Some((module_name, qw_prefix)) =
@@ -131,11 +133,12 @@ fn complete_use_or_structural_context(
             provider.type_engine.as_ref(),
             &provider.workspace_index,
             &provider.used_modules,
+            filepath,
         );
         return true;
     }
 
-    if complete_indirect_method_context(provider, completions, context, source) {
+    if complete_indirect_method_context(provider, completions, context, source, filepath) {
         return true;
     }
 
@@ -435,6 +438,7 @@ fn complete_indirect_method_context(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
     source: &str,
+    filepath: Option<&str>,
 ) -> bool {
     if context.in_string || context.in_regex || context.in_comment {
         return false;
@@ -494,6 +498,7 @@ fn complete_indirect_method_context(
         provider.type_engine.as_ref(),
         &provider.workspace_index,
         &provider.used_modules,
+        filepath,
     );
     methods::add_method_completions(&mut probe, &synth, source, &provider.symbol_table);
     if !probe.iter().any(|c| !OBJECT_DEFAULTS.contains(&c.label.as_ref())) {
@@ -510,6 +515,7 @@ fn complete_indirect_method_context(
         provider.type_engine.as_ref(),
         &provider.workspace_index,
         &provider.used_modules,
+        filepath,
     );
 
     // The arrow-form providers emit parenthesized insert text (`run()`), which is

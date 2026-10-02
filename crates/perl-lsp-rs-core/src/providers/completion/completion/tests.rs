@@ -2369,6 +2369,118 @@ $this->"#;
 }
 
 #[test]
+fn split_file_completion_excludes_indexed_predecessor_of_open_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(
+        Url::parse("file:///workspace/Parent.pm")?,
+        "package Parent;\nsub inherited { 1 }\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///workspace/Child.pm")?,
+        "package Child;\nuse parent 'Parent';\nsub removed { 1 }\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///workspace/Split.pm")?,
+        "package Child;\nsub from_split { 1 }\n".to_string(),
+    )?;
+
+    let current = "package Child;\nsub run {\nmy $self = shift;\n$self->";
+    let mut parser = Parser::new(current);
+    let ast = parser.parse()?;
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let items = provider.get_completions_with_path(
+        current,
+        current.len(),
+        Some("file:///workspace/Child.pm"),
+    );
+    let labels: Vec<_> = items.iter().map(|item| item.label.as_ref()).collect();
+    if !(labels.contains(&"from_split")) {
+        return Err(format!("split-file method missing: {labels:?}").into());
+    }
+    if labels.contains(&"removed") {
+        return Err(format!("predecessor method resurfaced: {labels:?}").into());
+    }
+    if labels.contains(&"inherited") {
+        return Err(format!("predecessor ISA resurfaced: {labels:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn method_completion_filesystem_path_excludes_indexed_predecessor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::temp_dir().join("perl-lsp-completion-open-child.pm");
+    let uri = Url::from_file_path(&path)
+        .map_err(|()| std::io::Error::other("absolute test path has no file URI"))?;
+    let split_uri = Url::from_file_path(path.with_file_name("perl-lsp-completion-split-child.pm"))
+        .map_err(|()| std::io::Error::other("absolute split path has no file URI"))?;
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_initial_file(uri, "package Child; sub removed { 1 }".to_string())?;
+    index.index_initial_file(split_uri, "package Child; sub from_split { 1 }".to_string())?;
+
+    let current = "package Child; sub run { my $self = shift; $self->";
+    let mut parser = Parser::new(current);
+    let ast = parser.parse()?;
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let current_path = path.to_string_lossy();
+    let items = provider.get_completions_with_path(current, current.len(), Some(&current_path));
+    let labels: Vec<_> = items.iter().map(|item| item.label.as_ref()).collect();
+    if !(labels.contains(&"run")) {
+        return Err(format!("current method missing: {labels:?}").into());
+    }
+    if !(labels.contains(&"from_split")) {
+        return Err(format!("split-file method missing: {labels:?}").into());
+    }
+    if labels.contains(&"removed") {
+        return Err(format!("predecessor method resurfaced: {labels:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn split_file_completion_scopes_inherited_methods_and_generated_members_to_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.set_workspace_folders(vec!["file:///root-a".to_string(), "file:///root-b".to_string()]);
+    index.index_initial_file(
+        Url::parse("file:///root-a/ChildEdge.pm")?,
+        "package Child;\nuse parent 'Parent';\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///root-a/Parent.pm")?,
+        "package Parent;\nuse Moo;\nhas 'same_root' => (is => 'ro');\nsub own { 1 }\n".to_string(),
+    )?;
+    index.index_initial_file(
+        Url::parse("file:///root-b/Parent.pm")?,
+        "package Parent;\nuse Moo;\nhas 'foreign_accessor' => (is => 'ro');\nsub foreign_method { 1 }\n".to_string(),
+    )?;
+    let current = "package Child;\nsub run {\nmy $self = shift;\n$self->";
+    let mut parser = Parser::new(current);
+    let ast = parser.parse()?;
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let items = provider.get_completions_with_path(
+        current,
+        current.len(),
+        Some("file:///root-a/Current.pl"),
+    );
+    let labels: Vec<_> = items.iter().map(|item| item.label.as_ref()).collect();
+    if !(labels.contains(&"own")) {
+        return Err(format!("same-root method missing: {labels:?}").into());
+    }
+    if !(labels.contains(&"same_root")) {
+        return Err(format!("same-root accessor missing: {labels:?}").into());
+    }
+    if labels.contains(&"foreign_method") {
+        return Err(format!("cross-root method leaked: {labels:?}").into());
+    }
+    if labels.contains(&"foreign_accessor") {
+        return Err(format!("cross-root accessor leaked: {labels:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
 fn test_method_completion_semantic_inheritance_detail() -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(
