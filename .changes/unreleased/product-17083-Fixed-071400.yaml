@@ -1,7 +1,7 @@
 project: product
 component: Language intelligence
 kind: Fixed
-body: "Accept implicit-topic for/foreach lists beginning with my declarations, including Perl core parent.pm and uninitialized declarations with binary or ternary operators, while preserving C-style loop separator diagnostics."
+body: "Accept implicit-topic for/foreach lists beginning with my declarations, including Perl core parent.pm, and complete declaration expressions with binary/ternary operators and exponentiation in loops, conditions and arguments while preserving C-style separator diagnostics."
 time: 2026-10-02T07:14:00Z
 custom:
   PR: "17083"

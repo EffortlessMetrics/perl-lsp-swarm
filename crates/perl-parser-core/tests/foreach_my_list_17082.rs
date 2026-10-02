@@ -117,7 +117,8 @@ fn declaration_comma_and_word_operator_continuations_remain_in_list() -> TestRes
 #[test]
 fn uninitialized_declaration_binary_operators_remain_in_list() -> TestResult {
     for keyword in ["for", "foreach"] {
-        for (operator, rhs) in [("&&", "$ready"), ("==", "1"), ("+", "2"), ("||", "3")] {
+        for (operator, rhs) in [("&&", "$ready"), ("==", "1"), ("+", "2"), ("||", "3"), ("**", "2")]
+        {
             let expression = format!("my $x {operator} {rhs}");
             let source = format!("# café\n{keyword} (\n {expression}\n) {{ print $_; }}");
             let ast = parse(&source)?;
@@ -182,6 +183,135 @@ fn symbolic_continuation_precedes_comma_and_word_operators() -> TestResult {
     Ok(())
 }
 
+fn assert_declaration_power(node: &Node, source: &str, expected_rhs: &str) -> TestResult {
+    let NodeKind::Binary { op, left, right } = &node.kind else {
+        return Err(format!("power continuation lost: {}", node.to_sexp()).into());
+    };
+    assert_eq!(op, "**");
+    assert!(matches!(
+        &left.kind,
+        NodeKind::VariableDeclaration { declarator, initializer: None, .. } if declarator == "my"
+    ));
+    assert_eq!(&source[left.location.start..left.location.end], "my $x");
+    assert_eq!(&source[right.location.start..right.location.end], expected_rhs);
+    Ok(())
+}
+
+#[test]
+fn declaration_power_is_right_associative_before_lower_precedence() -> TestResult {
+    for keyword in ["for", "foreach"] {
+        let expression = "my $x ** 2 ** 3 * 4, $other or die";
+        let source = format!("# café\n{keyword} (\n {expression}\n) {{ print $_; }}");
+        let ast = parse(&source)?;
+        let list = implicit_list(&ast, &source, expression)?;
+        let NodeKind::Binary { op, left, .. } = &list.kind else {
+            return Err("word operator lost".into());
+        };
+        assert_eq!(op, "or");
+        let NodeKind::ArrayLiteral { elements } = &left.kind else {
+            return Err("comma list lost".into());
+        };
+        assert_eq!(elements.len(), 2);
+        let NodeKind::Binary { op, left: power, right } = &elements[0].kind else {
+            return Err("multiplication lost".into());
+        };
+        assert_eq!(op, "*");
+        assert_eq!(&source[right.location.start..right.location.end], "4");
+        assert_declaration_power(power, &source, "2 ** 3")?;
+        let NodeKind::Binary { right, .. } = &power.kind else {
+            return Err("power lost".into());
+        };
+        assert!(matches!(&right.kind, NodeKind::Binary { op, left, right }
+            if op == "**"
+                && matches!(&left.kind, NodeKind::Number { value } if value == "2")
+                && matches!(&right.kind, NodeKind::Number { value } if value == "3")));
+        assert_eq!(&source[elements[1].location.start..elements[1].location.end], "$other");
+    }
+    Ok(())
+}
+
+#[test]
+fn declaration_power_is_shared_by_conditions_and_call_arguments() -> TestResult {
+    for source in [
+        "# café\nif (\n my $x ** 2\n) { print $_; }",
+        "# café\nprint($before,\n my $x ** 2, $after);",
+    ] {
+        let ast = parse(source)?;
+        let NodeKind::Program { statements } = &ast.kind else {
+            return Err("expected program".into());
+        };
+        let expression = match &statements[0].kind {
+            NodeKind::If { condition, .. } => condition.as_ref(),
+            NodeKind::ExpressionStatement { expression } => match &expression.kind {
+                NodeKind::FunctionCall { name, args } if name == "print" => {
+                    assert_eq!(args.len(), 3, "power must not absorb neighboring arguments");
+                    assert_eq!(&source[args[0].location.start..args[0].location.end], "$before");
+                    assert_eq!(&source[args[2].location.start..args[2].location.end], "$after");
+                    &args[1]
+                }
+                _ => return Err(format!("expected print call: {}", ast.to_sexp()).into()),
+            },
+            _ => return Err(format!("expected condition or call: {}", ast.to_sexp()).into()),
+        };
+        assert_declaration_power(expression, source, "2")?;
+        assert_eq!(&source[expression.location.start..expression.location.end], "my $x ** 2");
+    }
+    Ok(())
+}
+
+#[test]
+fn initialized_power_and_power_assignment_keep_their_existing_shapes() -> TestResult {
+    for keyword in ["for", "foreach"] {
+        for expression in ["my $x = 2 ** 3", "my $x **= 2"] {
+            let source = format!("{keyword} ({expression}) {{ print $_; }}");
+            let ast = parse(&source)?;
+            let list = implicit_list(&ast, &source, expression)?;
+            let NodeKind::VariableDeclaration { initializer: Some(initializer), .. } = &list.kind
+            else {
+                return Err(format!("declaration initializer lost: {}", list.to_sexp()).into());
+            };
+            match &initializer.kind {
+                NodeKind::Binary { op, .. } if op == "**" && expression.contains(" = ") => {
+                    assert_eq!(
+                        &source[initializer.location.start..initializer.location.end],
+                        "2 ** 3"
+                    );
+                }
+                NodeKind::Assignment { op, lhs, rhs } if op == "**=" => {
+                    assert!(matches!(&lhs.kind, NodeKind::Variable { sigil, name }
+                        if sigil == "$" && name == "x"));
+                    assert_eq!(&source[rhs.location.start..rhs.location.end], "2");
+                }
+                _ => {
+                    return Err(format!(
+                        "initialized/assignment shape changed: {}",
+                        list.to_sexp()
+                    )
+                    .into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn declaration_power_requires_a_rhs_in_every_shared_consumer() {
+    for source in [
+        "for (my $x **) { print $_; }",
+        "foreach (my $x **; $i < 2; ++$i) { print $_; }",
+        "if (my $x **) { print $_; }",
+        "f(my $x **);",
+    ] {
+        let mut parser = Parser::new(source);
+        let result = parser.parse();
+        assert!(
+            result.is_err() || parser.errors().iter().any(|error| error.blocks_clean_parse()),
+            "missing power RHS silently accepted: {source}"
+        );
+    }
+}
+
 #[test]
 fn core_parent_shaped_helper_keeps_implicit_topic() -> TestResult {
     let source =
@@ -230,6 +360,9 @@ fn semicolons_preserve_all_three_c_style_clauses() -> TestResult {
             "my $i && $ready",
             "my $i == 1",
             "my $i ? 1 : 2",
+            "my $i ** 2",
+            "my $i = 2 ** 3",
+            "my $i **= 2",
         ] {
             let source = format!("{keyword} ({initialization}; $i < 2; ++$i) {{ print $_; }}");
             let ast = parse(&source)?;

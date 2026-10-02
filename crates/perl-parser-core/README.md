@@ -46,8 +46,10 @@ AST from the assembled stream; it does not claim AST subtree reuse.
 
 `for` and `foreach` share delimiter-based parsing: a complete parenthesized
 expression is an implicit-`$_` `Foreach` list, including declarations such as
-`for (my @filename = @_)` and expressions such as `for (my $x && $ready)`
-or `for (my $x ? 1 : 2)`. The declaration stays in `Foreach.list`; it is not
+`for (my @filename = @_)` and expressions such as `for (my $x ** 2)`,
+`for (my $x && $ready)` or `for (my $x ? 1 : 2)`. The declaration stays in `Foreach.list`; it is not
 an explicit iterator declaration. Semicolon-separated headers remain C-style
 `For` nodes, and missing separators still produce parser diagnostics. This is
 a syntax/AST contract, not a claim of runtime loop execution support.
+The shared expression parser's ternary-comma limitation (#16210) and implicit-list
+continue attachment (#17091) remain open.
