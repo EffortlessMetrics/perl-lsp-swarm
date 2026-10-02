@@ -10,7 +10,7 @@ Controlling issue #10949. The one live application route is #10229, pure merge/r
 
 The dispositions below were audited against this exact source. A change to any file listed here invalidates the audit and `check` fails until the rows are re-checked.
 
-- Digest: `sha256:ebfd92835f0614e1536867af4045bddde70f02d9ecf2b009b2d7f6f64e7c9b3a`
+- Digest: `sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f`
 - Files (42):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`
@@ -61,7 +61,7 @@ A producer is a function that carries candidates: it takes a `&mut Vec<Candidate
 
 | Population | Count |
 | --- | --- |
-| producers | 58 |
+| producers | 59 |
 | candidate classes | 18 |
 | construction-only files | 0 |
 | delegated modules | 2 |
@@ -87,6 +87,7 @@ A producer is a function that carries candidates: it takes a `&mut Vec<Candidate
 | `perl_lsp_rs_core::providers::completion::completion::workspace::add_union_receiver_method_completions` | method | append | core_provider | legacy_label_compatibility | legacy_compatibility | accepted_semantic_snapshot | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #8958 |
 | `perl_lsp_rs_core::providers::completion::completion::workspace::add_unknown_receiver_fallback` | method | append | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #8958 |
 | `perl_lsp_rs_core::providers::completion::completion::workspace::add_workspace_method_completions` | method | append | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #8958 |
+| `perl_lsp_rs_core::providers::completion::completion::workspace::drop_generic_local_methods_rebound_from_composition` | method | append | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #8958 |
 | `perl_lsp_rs_core::providers::completion::completion::packages::add_known_core_module_completions` | module | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11015 |
 | `perl_lsp_rs_core::providers::completion::completion::packages::add_package_completions` | module | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11015 |
 | `perl_lsp_rs_core::providers::completion::completion::workspace::add_use_module_completions` | module | append | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #11015 |
@@ -177,7 +178,7 @@ flowchart LR
   nhandle_completion --> nworkspace_symbol_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nworkspace_symbol_handle_completion_handle_completion_cancellable
   nworkspace_symbol_handle_completion_handle_completion_cancellable --> pool
-  nmethod_handle_completion_handle_completion_cancellable["method ×6"]
+  nmethod_handle_completion_handle_completion_cancellable["method ×7"]
   nhandle_completion --> nmethod_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nmethod_handle_completion_handle_completion_cancellable
   nmethod_handle_completion_handle_completion_cancellable --> pool

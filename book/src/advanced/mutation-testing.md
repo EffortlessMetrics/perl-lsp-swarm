@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the comprehensive mutation testing methodology implemented in PR #153 that achieved an **87% mutation score** and discovered critical security vulnerabilities in the tree-sitter-perl parsing ecosystem. The methodology demonstrates **comprehensive quality validation** through systematic test quality assessment and real bug discovery.
+This document describes the comprehensive mutation testing methodology that achieved an **87% mutation score** and discovered critical security vulnerabilities in the tree-sitter-perl parsing ecosystem. The methodology demonstrates **comprehensive quality validation** through systematic test quality assessment and real bug discovery.
 
 ## Executive Summary
 
@@ -79,7 +79,7 @@ fn convert_position_unsafe(utf8_pos: usize) -> u32 {
 - **Result**: Test failed, revealing asymmetric position handling
 - **Impact**: Boundary violations in UTF-16 position conversion
 
-**Secure Implementation (PR #153):**
+**Secure Implementation (UTF-16 position mapping):**
 ```rust
 // SECURE: Symmetric conversion with comprehensive validation
 pub fn convert_utf8_to_utf16_position(text: &str, utf8_offset: usize) -> u32 {
@@ -224,7 +224,7 @@ cargo test -p perl-parser --test mutation_hardening_tests -- security_hardening
 
 ## Conclusion
 
-The mutation testing methodology implemented in PR #153 demonstrates that **systematic quality validation can simultaneously improve security and maintain revolutionary performance**. The 87% mutation score achievement, combined with real vulnerability discovery and comprehensive security enhancements, establishes a gold standard for parser ecosystem quality validation.
+The documented mutation testing methodology demonstrates that **systematic quality validation can simultaneously improve security and maintain revolutionary performance**. The 87% mutation score achievement, combined with real vulnerability discovery and comprehensive security enhancements, establishes a gold standard for parser ecosystem quality validation.
 
 **Key Achievements:**
 - **87% mutation score**

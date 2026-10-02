@@ -1,4 +1,8 @@
 import * as vscode from 'vscode';
+import {
+  syncLanguageClientConfiguration,
+  syncLiveLanguageClientConfiguration,
+} from '../languageClientConfiguration';
 
 type ConfigurationHandler = (
   params: { items: Array<{ scopeUri?: string; section?: string }> },
@@ -84,6 +88,11 @@ describe('configuration transport wiring (#14447)', () => {
     captured.options = undefined;
     jest.clearAllMocks();
     installScopedConfiguration({ '': {} });
+    Object.assign(vscode.workspace, { workspaceFolders: [{ uri: vscode.Uri.parse(FOLDER_A) }] });
+  });
+
+  afterEach(() => {
+    Object.assign(vscode.workspace, { workspaceFolders: undefined });
   });
 
   test('the real client options install a workspace/configuration handler', () => {
@@ -120,5 +129,77 @@ describe('configuration transport wiring (#14447)', () => {
     expect(answers).toHaveLength(3);
     expect(answers[1]).toEqual({ workspace: { includePaths: ['a/lib'] } });
     expect(answers[2]).toEqual({ workspace: { includePaths: ['b/lib'] } });
+  });
+
+  test('startup and a live change keep two roots on their own include paths', async () => {
+    Object.assign(vscode.workspace, {
+      workspaceFolders: [{ uri: vscode.Uri.parse(FOLDER_A) }, { uri: vscode.Uri.parse(FOLDER_B) }],
+    });
+    installScopedConfiguration({
+      '': { includePaths: ['a/lib'] },
+      [FOLDER_A]: { includePaths: ['a/lib'] },
+      [FOLDER_B]: { includePaths: ['b/lib'] },
+    });
+    createLanguageClient('/usr/local/bin/perllsp');
+    const handler = captured.options?.middleware?.workspace?.configuration;
+    expect(handler).toBeInstanceOf(Function);
+    const sendNotification = jest.fn(async () => undefined);
+
+    await syncLanguageClientConfiguration({ sendNotification });
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    const startupPush = (
+      sendNotification.mock.calls as unknown as Array<[string, unknown]>
+    )[0]?.[1];
+    expect(JSON.stringify(startupPush)).not.toContain('a/lib');
+    expect(JSON.stringify(startupPush)).not.toContain('b/lib');
+
+    const items = [
+      { section: 'perl' },
+      { scopeUri: FOLDER_A, section: 'perl' },
+      { scopeUri: FOLDER_B, section: 'perl' },
+    ];
+    expect(await handler!({ items }, undefined, jest.fn())).toEqual([
+      { workspace: { includePaths: ['a/lib'] } },
+      { workspace: { includePaths: ['a/lib'] } },
+      { workspace: { includePaths: ['b/lib'] } },
+    ]);
+
+    installScopedConfiguration({
+      '': { includePaths: ['a/lib'] },
+      [FOLDER_A]: { includePaths: ['a/new-lib'] },
+      [FOLDER_B]: { includePaths: ['b/lib'] },
+    });
+    await syncLiveLanguageClientConfiguration(
+      { sendNotification },
+      { affectsConfiguration: (key) => key === 'perl-lsp.includePaths' },
+    );
+    expect(sendNotification).toHaveBeenNthCalledWith(2, 'workspace/didChangeConfiguration', {
+      settings: null,
+    });
+    expect(await handler!({ items }, undefined, jest.fn())).toEqual([
+      { workspace: { includePaths: ['a/lib'] } },
+      { workspace: { includePaths: ['a/new-lib'] } },
+      { workspace: { includePaths: ['b/lib'] } },
+    ]);
+  });
+
+  test('single-root startup and live changes still resolve that root', async () => {
+    installScopedConfiguration({ '': {}, [FOLDER_A]: { includePaths: ['a/lib'] } });
+    createLanguageClient('/usr/local/bin/perllsp');
+    const handler = captured.options?.middleware?.workspace?.configuration;
+    const sendNotification = jest.fn(async () => undefined);
+    await syncLanguageClientConfiguration({ sendNotification });
+    expect(
+      await handler!({ items: [{ scopeUri: FOLDER_A, section: 'perl' }] }, undefined, jest.fn()),
+    ).toEqual([{ workspace: { includePaths: ['a/lib'] } }]);
+
+    installScopedConfiguration({ '': {}, [FOLDER_A]: { includePaths: ['a/new-lib'] } });
+    await syncLiveLanguageClientConfiguration(
+      { sendNotification },
+      { affectsConfiguration: (key) => key === 'perl-lsp.includePaths' },
+    );
+    expect(
+      await handler!({ items: [{ scopeUri: FOLDER_A, section: 'perl' }] }, undefined, jest.fn()),
+    ).toEqual([{ workspace: { includePaths: ['a/new-lib'] } }]);
   });
 });

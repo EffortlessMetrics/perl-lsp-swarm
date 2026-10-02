@@ -1846,7 +1846,7 @@ mod tests {
         let mut context = PullDiagnosticsContext::new();
         context.markup_message_support = true;
 
-        let cases = [("my $re = qr/(a+)+b/;\n", "PL1000"), ("sub broken {\n", "PL001")];
+        let cases = [("my $re = qr/(a+)+b/;\n", "PL1000"), ("sub broken {\n", "PL002")];
         for (source, expected_code) in cases {
             let items = get_full_items(
                 provider.get_document_diagnostics_with_context(&uri, source, None, &context, None),

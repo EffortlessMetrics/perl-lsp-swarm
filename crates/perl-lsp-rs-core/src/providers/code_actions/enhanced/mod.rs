@@ -271,13 +271,16 @@ impl EnhancedCodeActionsProvider {
             actions.push(action);
         }
 
-        // Extract subroutine — only for standalone blocks, not control-flow bodies
-        if !is_control_body && self.is_extractable_block(node) {
-            actions.push(extract_subroutine::create_extract_subroutine_action(
-                node,
-                &self.source,
-                &helpers,
-            ));
+        // Extract subroutine — only for standalone blocks, not control-flow bodies.
+        // The generator returns `None` for a capture it cannot pass through the
+        // `my (...) = @_;` convention without changing the program's meaning, so
+        // no action is published rather than a semantics-altering one.
+        if !is_control_body
+            && self.is_extractable_block(node)
+            && let Some(action) =
+                extract_subroutine::create_extract_subroutine_action(node, &self.source, &helpers)
+        {
+            actions.push(action);
         }
 
         // Recursively check children, flagging control-flow body blocks

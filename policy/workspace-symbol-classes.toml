@@ -50,8 +50,10 @@ live = true
 requires_non_empty_query = true
 requires_ready_index = true
 # The bounded pilot admits only the claim's Medium-confidence facts; High is
-# not inferred or promoted by this shared class.
+# not inferred or promoted by this shared class. The admitted band is declared
+# machine-readably and enforced by xtask class validation.
 requires_high_confidence = false
+admits_confidence = ["Medium"]
 requires_source_anchor = true
 requires_generated_label = true
 label = "[generated/framework]"
