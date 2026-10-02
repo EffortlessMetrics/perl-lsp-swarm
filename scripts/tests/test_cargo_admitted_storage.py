@@ -12,6 +12,10 @@ safe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(safe)
 
 
+def git_output(path):
+    return os.fsencode(path) + b"\n"
+
+
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="cargo-admitted-proof-")
@@ -57,7 +61,7 @@ class AdmissionTests(unittest.TestCase):
             destination = self.root / component
             env = dict(self.env, DEVPLANE=str(destination), HOME=str(self.root), USERPROFILE=str(self.root))
             with patch.dict(os.environ, env, clear=True), \
-                 patch.object(safe.subprocess, "check_output", return_value=str(self.root / "repo")), \
+                 patch.object(safe.subprocess, "check_output", return_value=git_output(self.root / "repo")), \
                  patch.object(safe.subprocess, "call") as cargo:
                 self.assertEqual(safe.main(["check"]), 75)
                 cargo.assert_not_called()
@@ -66,7 +70,7 @@ class AdmissionTests(unittest.TestCase):
             destination = self.root / (name + "-{workspace-root}")
             env = dict(self.env, DEVPLANE=str(self.slot), HOME=str(self.root), USERPROFILE=str(self.root), **{name: str(destination)})
             with patch.dict(os.environ, env, clear=True), \
-                 patch.object(safe.subprocess, "check_output", return_value=str(self.root / "repo")), \
+                 patch.object(safe.subprocess, "check_output", return_value=git_output(self.root / "repo")), \
                  patch.object(safe.subprocess, "call") as cargo:
                 self.assertEqual(safe.main(["check"]), 75)
                 cargo.assert_not_called()
@@ -245,7 +249,7 @@ class AdmissionTests(unittest.TestCase):
 
     def test_bounded_common_repository_identity_and_explicit_override_refusal(self):
         env = {"DEVPLANE": str(self.root), "CARGO_HOME": str(self.root / "cargo")}
-        with patch.object(safe.subprocess, "check_output", return_value=str(self.root / "repo.git")):
+        with patch.object(safe.subprocess, "check_output", return_value=git_output(self.root / "repo.git")):
             first = safe.resource_plan(env)
             self.assertEqual(first, safe.resource_plan(env))
             with self.assertRaises(safe.Denied):
@@ -287,7 +291,158 @@ class AdmissionTests(unittest.TestCase):
         finally:
             os.chdir(previous)
         for name in ("target", "build"):
-            self.assertEqual(descriptors[0]["resources"][name], descriptors[1]["resources"][name])
+            self.assertNotEqual(descriptors[0]["resources"][name], descriptors[1]["resources"][name])
+        self.assertEqual(descriptors[0]["lease"], descriptors[1]["lease"])
+        self.assertEqual(descriptors[0]["resources"]["cargo_home"], descriptors[1]["resources"]["cargo_home"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX permits trailing whitespace in directory names")
+    def test_real_git_whitespace_paths_keep_distinct_private_state(self):
+        repo = self.root / "repo"
+        # Git permits trailing space/tab in a separate common directory too.
+        # Trailing newlines in gitdir files are not supported by Git itself.
+        common = self.root / "common \t"
+        env = os.environ.copy()
+        env.update(GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1",
+                   DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"))
+        for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+            env.pop(key, None)
+        def git(*args, cwd=self.root):
+            return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True).stdout
+        git("init", "-b", "main", "--separate-git-dir", str(common), str(repo))
+        git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+            "commit", "--allow-empty", "-m", "fixture", cwd=repo)
+        trees = [self.root / ("tree" + suffix) for suffix in ("", " ", "\t", "\n", "\r")]
+        for index, tree in enumerate(trees):
+            git("worktree", "add", "-b", "linked-" + str(index), str(tree), cwd=repo)
+        plans = []
+        previous = Path.cwd()
+        try:
+            for tree in trees:
+                os.chdir(tree)
+                # Check the real Git protocol, including its one terminal LF.
+                self.assertEqual(git("rev-parse", "--show-toplevel", cwd=tree), os.fsencode(tree.resolve()) + b"\n")
+                self.assertEqual(git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=tree), os.fsencode(common.resolve()) + b"\n")
+                with patch.dict(os.environ, env, clear=True):
+                    self.assertEqual(safe.git_path("--path-format=absolute", "--git-common-dir"), common.resolve())
+                    plan = safe.resource_plan(env)
+                self.assertEqual(plan[0], tree.resolve())
+                plans.append(plan)
+        finally:
+            os.chdir(previous)
+        self.assertEqual(len({plan[1] for plan in plans}), 1)
+        for name in ("target", "build"):
+            self.assertEqual(len({plan[2][name] for plan in plans}), len(trees))
+        self.assertFalse(plans[0][1].exists())
+
+    def test_git_path_requires_one_terminator_without_stripping_path_bytes(self):
+        with patch.object(safe.subprocess, "check_output", return_value=os.fsencode(self.root)):
+            with self.assertRaises(safe.Denied):
+                safe.git_path("--show-toplevel")
+        if os.name != "nt":
+            # Two LF bytes are a valid trailing LF in the path plus Git's LF.
+            path = self.root / "tree\n"
+            with patch.object(safe.subprocess, "check_output", return_value=git_output(path)):
+                self.assertEqual(safe.git_path("--show-toplevel"), path.resolve())
+
+    def test_same_named_worktrees_and_stale_shared_overrides(self):
+        env = {"DEVPLANE": str(self.root / "plane"), "CARGO_HOME": str(self.root / "cargo")}
+        common = str(self.root / "repo.git")
+        plans = []
+        for worktree in (self.root / "one" / "same", self.root / "two" / "same"):
+            with patch.object(safe.subprocess, "check_output", side_effect=[git_output(worktree), git_output(common)]):
+                plans.append(safe.resource_plan(env))
+        self.assertEqual(plans[0][1], plans[1][1])  # unchanged exclusion domain
+        for name, variable in (("target", "CARGO_TARGET_DIR"), ("build", "CARGO_BUILD_BUILD_DIR")):
+            self.assertNotEqual(plans[0][2][name], plans[1][2][name])
+            with patch.object(safe.subprocess, "check_output", side_effect=[git_output(plans[0][0]), git_output(common)]):
+                self.assertEqual(safe.resource_plan(dict(env, **{variable: str(plans[0][2][name])})), plans[0])
+            for stale in (plans[1][2][name], plans[0][1] / name):
+                with patch.object(safe.subprocess, "check_output", side_effect=[git_output(plans[0][0]), git_output(common)]):
+                    with self.assertRaises(safe.Denied):
+                        safe.resource_plan(dict(env, **{variable: str(stale)}))
+        self.assertFalse(plans[0][1].exists())
+
+    def test_legacy_resources_and_common_lease_are_preserved(self):
+        worktree, common = str(self.root / "repo"), str(self.root / "repo.git")
+        env = dict(self.env, DEVPLANE=str(self.root / "plane"), CARGO_HOME=str(self.root / "cargo"))
+        with patch.object(safe.subprocess, "check_output", side_effect=[git_output(worktree), git_output(common)]):
+            _, slot, paths = safe.resource_plan(env)
+        for name in ("target", "build"):
+            legacy = slot / name
+            legacy.mkdir(parents=True)
+            (legacy / "evidence").write_bytes(b"retain exact legacy bytes")
+        lease = slot / "cargo-active"
+        lease.mkdir()
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(safe.subprocess, "check_output", side_effect=[git_output(worktree), git_output(common)]), \
+             patch.object(safe.subprocess, "call") as cargo:
+            self.assertEqual(safe.main(["check"]), 75)
+            cargo.assert_not_called()
+        self.assertTrue(lease.is_dir())
+        for name in ("target", "build"):
+            self.assertFalse(paths[name].exists())
+            self.assertEqual((slot / name / "evidence").read_bytes(), b"retain exact legacy bytes")
+
+    @unittest.skipUnless(os.environ.get("CARGO_ADMITTED_REAL_BUILD_TEST") == "1",
+                         "set CARGO_ADMITTED_REAL_BUILD_TEST=1 for the offline Cargo A/B/A regression")
+    def test_real_cargo_alternating_worktrees_preserve_dependency_behavior(self):
+        """Exercise real Cargo; a shared intermediate directory fails this oracle.
+
+        Disk policy is separately fixture-tested above. This test patches only its
+        observation so a tiny offline build does not pretend to admit a host budget.
+        It does not touch any existing repository, target, or user Cargo defaults.
+        """
+        import contextlib
+        import io
+        import json
+        repo, linked = self.root / "repo", self.root / "linked"
+        env = os.environ.copy()
+        for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+            env.pop(name, None)
+        env.update(DEVPLANE=str(self.root / "plane"), TMPDIR=str(self.root / "tmp"),
+                   CARGO_NET_OFFLINE="true", CARGO_INCREMENTAL="0", CARGO_BUILD_JOBS="2",
+                   GIT_CONFIG_GLOBAL=str(self.root / "no-global"), GIT_CONFIG_NOSYSTEM="1")
+        def run(command, cwd):
+            result = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout.strip()
+        def write(path, text):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        run(["git", "init", "-b", "main", str(repo)], self.root)
+        write(repo / "Cargo.toml", '[workspace]\nmembers=["app","core"]\nresolver="2"\n')
+        write(repo / "core/Cargo.toml", '[package]\nname="identity-core"\nversion="0.1.0"\nedition="2021"\n')
+        write(repo / "core/src/lib.rs", 'pub fn value() -> u32 { 1 }\n')
+        write(repo / "app/Cargo.toml", '[package]\nname="identity-app"\nversion="0.1.0"\nedition="2021"\n[dependencies]\nidentity-core={path="../core"}\n')
+        write(repo / "app/src/main.rs", 'fn main() { println!("{}", identity_core::value()); }\n')
+        run(["cargo", "generate-lockfile", "--offline"], repo)
+        run(["git", "add", "."], repo)
+        run(["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+             "commit", "-m", "old behavior"], repo)
+        run(["git", "worktree", "add", "-b", "changed", str(linked)], repo)
+        write(linked / "core/src/lib.rs", 'pub fn value() -> u32 { 2 }\n')
+        # Both worktrees, including the changed library, exist before the first
+        # build. No source touching/backdating is needed to expose the stale hit.
+        descriptors = []
+        previous = Path.cwd()
+        try:
+            for worktree, expected in ((repo, "1"), (linked, "2"), (repo, "1")):
+                os.chdir(worktree)
+                output = io.StringIO()
+                with patch.dict(os.environ, env, clear=True), \
+                     patch.object(safe, "check_capacity", return_value={"fixture": "identity-only"}), \
+                     contextlib.redirect_stderr(output):
+                    self.assertEqual(safe.main(["build", "-p", "identity-app", "--offline", "--locked"]), 0)
+                descriptor = json.loads(output.getvalue().split("cargo-admitted resources: ", 1)[1])
+                descriptors.append(descriptor)
+                executable = Path(descriptor["resources"]["target"]) / "debug" / ("identity-app.exe" if os.name == "nt" else "identity-app")
+                self.assertEqual(run([str(executable)], worktree), expected)
+        finally:
+            os.chdir(previous)
+        for name in ("target", "build"):
+            self.assertNotEqual(descriptors[0]["resources"][name], descriptors[1]["resources"][name])
+            self.assertEqual(descriptors[0]["resources"][name], descriptors[2]["resources"][name])
+        self.assertEqual(descriptors[0]["lease"], descriptors[1]["lease"])
 
     def test_nonfinite_policy_refused(self):
         for key in ("MIN_FREE_GB", "MAX_USED_PCT"):

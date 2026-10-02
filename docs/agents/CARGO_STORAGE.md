@@ -13,12 +13,33 @@ Python 3.10+ and Cargo 1.95+ are required. Keep the qualification
 profiles unchanged. Default jobs remain two (accepted range one to four), with
 incremental compilation disabled. This is a capacity policy, not a speed claim.
 
-One reusable slot is keyed by canonical Git common directory, hostname and OS,
-under `DEVPLANE` (default `~/.cache/devplane`). Sibling worktrees share it;
-independent clones and Windows/WSL do not. Cargo fingerprints separate compiler,
-profile and feature artifacts, but the slot is serialized because final filenames
-can collide. Do not create a new DEVPLANE or clone for each task. This bounds slot
-count, not bytes; the capacity gate remains necessary.
+One admission/lease slot is keyed by canonical Git common directory, hostname and
+OS, under `DEVPLANE` (default `~/.cache/devplane`). Sibling worktrees share this
+exclusion domain; independent clones and Windows/WSL do not. Within that slot,
+`worktrees/<sha256-of-canonical-worktree-path>/target` and `build` are private to
+each worktree. Invoking from a nested directory resolves the same worktree root.
+Git path output is read as bytes and removes exactly its final LF; valid POSIX
+trailing spaces, tabs, carriage returns and newlines remain part of path identity.
+Both paths must be isolated: separate final output with shared intermediates still
+reuses incompatible libraries. Cargo home remains independently reusable.
+
+Cargo's workspace-relative fingerprints and mtime checks can consider a sibling's
+different source fresh when both worktrees predate the build. Serialization,
+disabling incremental compilation, a passing test feature variant, and an outer
+Git version stamp do not establish ordinary-library source identity. This is
+reproduced on Cargo 1.95 and 1.99; see [#11650](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11650)
+and [Cargo #12516](https://github.com/rust-lang/cargo/issues/12516).
+
+The common slot and its existing lease stay unchanged. Old shared target/build
+paths are retained without reading them as candidate proof, moving them, or
+cleaning them. Explicit target/build environment overrides are accepted only when
+they equal the resolved private paths; stale common-slot or sibling paths refuse.
+Machine `DEVPLANE`, Cargo home, temporary-storage settings, and repository toolchain
+pins retain their existing semantics. Each worktree reuses its own paths across
+normal edits, not one new target per task or commit. Storage therefore grows with
+retained worktrees, and the capacity gate remains necessary. Do not repurpose a
+worktree path or restore backdated source over its build state without a separately
+verified fresh qualification; this path partition is not content-addressed state.
 
 The wrapper refuses aliases, external subcommands (including clippy and nextest), +toolchain,
 clean, manifest/config/path overrides (including output/artifact/build directory
@@ -122,7 +143,13 @@ approved proposals. Do not move active target directories or restart workers.
 Changing the wrapper does not retrofit currently running processes. Revert the
 candidate to roll back code, preserving all retained resources for review.
 
-Proof: `python scripts/tests/test_cargo_admitted_storage.py` covers admission, bounded
-reuse, lock refusal, cancellation retention, path translation/junction refusal and
-non-destructive failure. The cleanup sweep fixture checks command-local fetch
+Proof: `python scripts/tests/test_cargo_admitted_storage.py` covers admission,
+worktree-private paths with a common lease, same-name and trailing-whitespace
+worktree distinction, exact
+and stale override handling, lock refusal, cancellation retention, path
+translation/junction refusal and non-destructive failure. Set
+`CARGO_ADMITTED_REAL_BUILD_TEST=1` for the offline two-crate linked-worktree A/B/A
+behavior regression; use an already installed toolchain. It executes real Cargo
+through the production Python entrypoint, but uses a fixture capacity observation
+and makes no host-budget claim. The cleanup sweep fixture checks command-local fetch
 maintenance suppression; it does not change global Git configuration.
