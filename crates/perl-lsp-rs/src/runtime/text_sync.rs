@@ -22,6 +22,7 @@ use perl_parser_core::source_file::is_binary_content;
 #[cfg(feature = "workspace")]
 use perl_workspace::workspace_index::{IndexPhase, IndexState, SourceCommit, SourceCommitOutcome};
 
+mod admission_desync;
 mod document_state;
 mod lifecycle;
 mod srp_helpers;
