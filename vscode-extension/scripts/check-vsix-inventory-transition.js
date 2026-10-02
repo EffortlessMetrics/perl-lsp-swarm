@@ -753,6 +753,8 @@ if (require.main === module) {
 module.exports = {
   canonicalJson,
   collectArchiveInventory,
+  baselinePath,
+  declarationPath,
   ensureDistinctBase,
   evaluateTransition,
   inventoriesEqual,
@@ -761,6 +763,8 @@ module.exports = {
   parseDeclarationDocument,
   parseInventoryDocument,
   projectInventory,
+  readBaselineAtRevision,
+  readCandidateBaseline,
   parseArgs,
   resolveBaseRevision,
   resolvePullRequestMergeBase,

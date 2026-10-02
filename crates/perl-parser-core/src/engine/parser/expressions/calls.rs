@@ -740,7 +740,7 @@ impl<'a> Parser<'a> {
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
                 // Declaration-as-argument list forms share per-item attribute
                 // attachment with statement-form `my ($x :shared, $y)`.
-                let var = self.parse_variable_list_item()?;
+                let var = self.parse_variable_list_item(&declarator)?;
                 variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {

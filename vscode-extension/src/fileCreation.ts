@@ -1,9 +1,4 @@
-/**
- * Smart file creation: auto-populate new .pm and .t files with boilerplate.
- *
- * Exported pure functions are unit-tested independently of the VSCode runtime.
- */
-
+/** Pure starter content for an explicitly chosen new file. */
 import * as path from 'path';
 
 export const enum FileKind {
@@ -11,63 +6,23 @@ export const enum FileKind {
   Test = 'test',
 }
 
-export interface BoilerplateResult {
-  kind: FileKind;
-  content: string;
-}
+/** A module name is earned from the owning workspace's lib tree. */
+export function scaffoldContent(
+  kind: FileKind,
+  rootPath: string,
+  targetPath: string,
+): string | null {
+  const relative = path.relative(rootPath, targetPath).split(path.sep).join('/');
+  if (relative === '..' || relative.startsWith('../') || path.isAbsolute(relative)) return null;
 
-/**
- * Infer the Perl package name from a `.pm` file path.
- *
- * Anchors on the last `lib` directory segment found in the path.
- * Returns `null` for non-`.pm` paths.
- */
-export function inferPackageName(filePath: string): string | null {
-  // Normalise Windows backslashes
-  const normalised = filePath.replace(/\\/g, '/');
-  const ext = path.extname(normalised);
-
-  if (ext !== '.pm') {
-    return null;
+  if (kind === FileKind.Test) {
+    return path.extname(relative).toLowerCase() === '.t'
+      ? 'use strict;\nuse warnings;\nuse Test::More;\n\n\n\ndone_testing;\n'
+      : null;
   }
 
-  const parts = normalised.split('/');
-  const libIdx = parts.lastIndexOf('lib');
-
-  if (libIdx !== -1 && libIdx < parts.length - 1) {
-    const relative = parts.slice(libIdx + 1);
-    const lastIndex = relative.length - 1;
-    const lastPart = relative[lastIndex];
-    if (lastPart === undefined) {
-      return null;
-    }
-    relative[lastIndex] = lastPart.replace(/\.pm$/, '');
-    return relative.join('::');
-  }
-
-  // Fallback: bare basename without extension
-  return path.basename(normalised, '.pm');
-}
-
-/**
- * Generate boilerplate content for a newly created Perl file.
- *
- * Returns `null` for file types that do not get boilerplate (.pl, .pod, etc.).
- */
-export function generateBoilerplate(filePath: string): BoilerplateResult | null {
-  const normalised = filePath.replace(/\\/g, '/');
-  const ext = path.extname(normalised);
-
-  if (ext === '.pm') {
-    const pkg = inferPackageName(filePath) ?? path.basename(normalised, '.pm');
-    const content = `package ${pkg};\nuse strict;\nuse warnings;\n\n\n\n1;\n`;
-    return { kind: FileKind.Module, content };
-  }
-
-  if (ext === '.t') {
-    const content = `use strict;\nuse warnings;\nuse Test::More;\n\n\n\ndone_testing;\n`;
-    return { kind: FileKind.Test, content };
-  }
-
-  return null;
+  if (path.extname(relative).toLowerCase() !== '.pm' || !relative.startsWith('lib/')) return null;
+  const segments = relative.slice(4, -3).split('/');
+  if (!segments.every((part) => /^[A-Za-z_]\w*$/.test(part))) return null;
+  return `package ${segments.join('::')};\nuse strict;\nuse warnings;\n\n\n\n1;\n`;
 }

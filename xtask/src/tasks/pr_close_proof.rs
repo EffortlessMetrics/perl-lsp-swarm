@@ -301,6 +301,19 @@ fn print_human(output: &CloseProofOutput) {
 mod tests {
     use super::*;
 
+    // ----- Receipt vocabulary ratchet ---------------------------------------
+
+    /// The producer-side receipt ratchet and the consumer-side cross-vend pin
+    /// in `close_proof::contract` must never drift: if the receipt vocabulary
+    /// bumps, this test forces the evidence-ref pin to move with it (#15386).
+    #[test]
+    fn landing_proof_schema_matches_close_proof_consumer_pin() {
+        assert_eq!(
+            LANDING_PROOF_SCHEMA_V1,
+            xtask::close_proof::contract::LANDING_PROOF_ENVELOPE_V1,
+        );
+    }
+
     // ----- SHA validation ---------------------------------------------------
 
     #[test]
