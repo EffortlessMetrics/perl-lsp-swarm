@@ -99,7 +99,14 @@ outcome_owner = "#10230"
 # maps, not candidate channels, and the scanned population, entry routes, and
 # finalizer route are unchanged. Projection diff is digest-only, `check`
 # passes.
-source_digest = "sha256:e81eb97055c01cf09e73d8a6a312a128c1c97708103ce10190d4469780c3f5e5"
+#
+# 2026-10-02 merge-ref re-anchor (PR #16973 integration): origin/main moved
+# completion-adjacent sources (lexical_visibility, scope_distance, completion
+# variables, completion tests) after the previous anchor. Digest bumped to the
+# merge tree's value; `graph` regenerated the projection from the same 59
+# producers and `check` passes with no row changes, so the main-side edits are
+# not candidate-channel changes.
+source_digest = "sha256:21b252f29eb127e93e1c589c37d97404dd68694f7aaff8dcf66d2e772c31b4ca"
 
 [[delegations]]
 module = "dancer2"
