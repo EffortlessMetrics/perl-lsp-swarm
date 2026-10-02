@@ -636,6 +636,167 @@ mod tests {
         assert_eq!(resolve_socket_port(&args), None);
     }
 
+    fn clap_port_error(argv: &[&str]) -> String {
+        must_err_with(Args::try_parse_from(argv), format!("expected clap to reject {argv:?}"))
+            .to_string()
+    }
+
+    fn assert_no_parse_int_leak(rendered: &str, argv: &[&str]) {
+        assert!(
+            !rendered.contains("invalid digit found in string"),
+            "leaked ParseIntError for {argv:?}: {rendered}"
+        );
+        assert!(
+            !rendered.contains("number too large to fit in target type"),
+            "leaked ParseIntError for {argv:?}: {rendered}"
+        );
+        assert!(
+            !rendered.contains("cannot parse integer from empty string"),
+            "leaked ParseIntError for {argv:?}: {rendered}"
+        );
+        assert!(!rendered.contains("0..="), "leaked Rust range syntax for {argv:?}: {rendered}");
+    }
+
+    /// `perl-dap` parses `--port` through shared `TransportArgs`, not the
+    /// `perllsp` launcher prevalidate path. Invalid tokens must still name the
+    /// 0-65535 contract instead of clap's `u16` parse-source wording (#16562).
+    #[test]
+    fn dap_port_rejections_state_the_accepted_range_instead_of_parse_int_error() {
+        struct Case {
+            argv: &'static [&'static str],
+            reason: &'static str,
+        }
+
+        let cases = [
+            Case { argv: &["perl-dap", "--port", "65536"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port=65536"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port", "99999"], reason: "Expected a port in 0-65535." },
+            Case {
+                argv: &["perl-dap", "--port", "99999999999999999999999999"],
+                reason: "Expected a port in 0-65535.",
+            },
+            Case { argv: &["perl-dap", "--port", "-1"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port=-1"], reason: "Expected a port in 0-65535." },
+            Case { argv: &["perl-dap", "--port", "+65536"], reason: "Expected a port in 0-65535." },
+            Case {
+                argv: &["perl-dap", "--port", "abc"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port=abc"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "0x10"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "8080.0"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "1e2"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "80_80"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "+"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "-"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port", "-0"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case {
+                argv: &["perl-dap", "--port=-000"],
+                reason: "Expected a whole number in 0-65535.",
+            },
+            Case { argv: &["perl-dap", "--port="], reason: "Expected a whole number in 0-65535." },
+        ];
+
+        for case in cases {
+            let rendered = clap_port_error(case.argv);
+            assert!(
+                rendered.contains(case.reason),
+                "argv={:?} missing {reason:?} in {rendered}",
+                case.argv,
+                reason = case.reason
+            );
+            assert_no_parse_int_leak(&rendered, case.argv);
+            assert!(
+                !rendered.contains("perllsp"),
+                "DAP --port must not point at perllsp: {rendered}"
+            );
+            assert!(
+                rendered.contains("--help") || rendered.contains("perl-dap --help"),
+                "DAP --port rejection must keep a DAP help pointer: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn dap_accepted_ports_reach_transport_resolution_unchanged() {
+        let cases: &[(&[&str], u16)] = &[
+            (&["perl-dap", "--port", "0"], 0),
+            (&["perl-dap", "--port", "65535"], 65535),
+            (&["perl-dap", "--port=0"], 0),
+            (&["perl-dap", "--port=65535"], 65535),
+            (&["perl-dap", "--port", "+0"], 0),
+            (&["perl-dap", "--port", "+65535"], 65535),
+            (&["perl-dap", "--port", "0000"], 0),
+            (&["perl-dap", "--port", "08080"], 8080),
+            (&["perl-dap", "--port", "1"], 1),
+        ];
+
+        for (argv, port) in cases {
+            let parsed = must_with(
+                Args::try_parse_from(*argv),
+                format!("valid --port must parse for {argv:?}"),
+            );
+            assert_eq!(parsed.transport.port, Some(*port), "argv={argv:?}");
+            assert_eq!(
+                resolve_socket_port(&parsed.transport),
+                Some(*port),
+                "accepted port must still resolve so later editor-socket retirement can refuse it; argv={argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dap_missing_port_value_is_not_a_parse_int_error() {
+        for argv in [&["perl-dap", "--port"][..], &["perl-dap", "--port", "--stdio"][..]] {
+            let rendered = clap_port_error(argv);
+            assert_no_parse_int_leak(&rendered, argv);
+            assert!(
+                !rendered.contains("Expected a port in 0-65535."),
+                "a missing value must not be reclassified as an out-of-range port: {rendered}"
+            );
+            assert!(
+                !rendered.contains("Expected a whole number in 0-65535."),
+                "a following flag must not be swallowed as a port token: {rendered}"
+            );
+            assert!(
+                !rendered.contains("perllsp"),
+                "DAP missing --port must not point at perllsp: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn dap_cli_help_pointer_stays_on_perl_dap() {
+        assert_eq!(Args::command().get_name(), "perl-dap");
+        let help = Args::command().render_long_help().to_string();
+        assert!(help.contains("Usage: perl-dap"), "{help}");
+        assert!(!help.contains("perllsp --help"), "{help}");
+    }
+
     #[test]
     fn fn_main_still_fails_socket_flags_via_native_editor_socket_retired() {
         // The inventory scan ratchets `native_editor_socket_retired` inside
