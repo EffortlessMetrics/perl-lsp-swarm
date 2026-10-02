@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Fixed
+body: "Don't ask again on the update prompt now suppresses only the prompt: interval update checks and perl-lsp.autoUpdate keep working, instead of the old behavior that permanently rewrote updateCheckInterval to 0."
+time: 2026-09-27T11:03:00Z
+custom:
+  PR: 16573
+  Slug: update-prompt-scoped-suppression
+  Breaking: "no"

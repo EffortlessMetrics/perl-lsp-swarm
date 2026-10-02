@@ -2,9 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://effortlessmetrics.dev/perl-lsp/receipts/queue-health.schema.json",
   "title": "Queue Health Receipt",
+  "description": "Queue health receipt, schema version 2 (#15387). GREEN is earned only by a complete, current, subject-bound live observation; every weaker evidence state is NOT_PROVEN and permits only read-only investigation and exact evidence refresh.",
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "check",
+    "schema_version",
+    "source",
     "master_sha",
     "mode",
     "allowed_lanes",
@@ -13,13 +17,27 @@
     "verdict"
   ],
   "properties": {
-    "master_sha": {
+    "check": {
       "type": "string",
-      "minLength": 7
+      "const": "queue-health"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "source": {
+      "description": "LIVE observations only can authorize mutating lanes; OFFLINE_FIXTURE output can never be consumed as live queue authorization.",
+      "type": "string",
+      "enum": ["LIVE", "OFFLINE_FIXTURE"]
+    },
+    "master_sha": {
+      "description": "Exact default-branch subject the observation binds to; a full 40-character object id when observed, empty only when no usable input was available.",
+      "type": "string",
+      "pattern": "^(|[0-9a-fA-F]{40})$"
     },
     "mode": {
       "type": "string",
-      "enum": ["GREEN", "PENDING", "RED"]
+      "enum": ["GREEN", "PENDING", "RED", "NOT_PROVEN"]
     },
     "allowed_lanes": {
       "type": "array",
