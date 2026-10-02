@@ -5,6 +5,12 @@ set -Eeuo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 [[ $(pwd -P) == "$(realpath -- "${GITHUB_WORKSPACE:?}")" ]]
+# Match the canonical RustSmall owner's checkout hygiene without changing global
+# Git configuration. Hook-provided overrides must not redirect the proof's Git
+# reads to a different worktree, index or object database.
+git_local_env=$(git rev-parse --local-env-vars)
+readarray -t git_local_env_names <<< "$git_local_env"
+unset "${git_local_env_names[@]}"
 [[ $(git rev-parse HEAD) == "${GITHUB_SHA:?}" ]] || {
   echo '::error::RIPR checkout differs from the evaluated event SHA' >&2
   exit 1
@@ -24,12 +30,15 @@ head = ''
 labels = ''
 if kind == 'pull_request':
     pr = event['pull_request']
-    if pr['head']['repo']['full_name'] != os.environ['GITHUB_REPOSITORY']:
+    if any(pr[side]['repo']['full_name'] != os.environ['GITHUB_REPOSITORY']
+           for side in ('base', 'head')):
         raise SystemExit('RIPR proof requires an authorized same-repository PR')
     base, head = pr['base']['sha'], pr['head']['sha']
     labels = ','.join(label['name'] for label in pr.get('labels', []))
 elif kind == 'merge_group':
     base = event['merge_group']['base_sha']
+    if event['merge_group']['head_sha'] != os.environ['GITHUB_SHA']:
+        raise SystemExit('RIPR merge-group head differs from the evaluated checkout')
 elif kind in {'push', 'workflow_dispatch', 'schedule'}:
     ref = event['repository']['default_branch']
     if not re.fullmatch(r'[A-Za-z0-9._/-]+', ref) or '..' in ref:
@@ -44,6 +53,8 @@ for revision in (base, head):
         raise SystemExit('invalid immutable RIPR revision')
     if revision:
         subprocess.run(['git', 'cat-file', '-e', revision + '^{commit}'], check=True)
+        if kind in {'pull_request', 'merge_group'}:
+            subprocess.run(['git', 'merge-base', '--is-ancestor', revision, 'HEAD'], check=True)
 if any(character in labels for character in '\x00\r\n'):
     raise SystemExit('invalid label data')
 print(base)

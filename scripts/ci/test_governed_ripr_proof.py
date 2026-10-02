@@ -100,7 +100,7 @@ class GovernedRiprProof(unittest.TestCase):
         self.commands = Path(self.temp.name) / "commands.jsonl"
         self.event = Path(self.temp.name) / "event.json"
         self.payload = {"repository": {"default_branch": "main"}, "pull_request": {
-            "base": {"sha": self.base}, "head": {"sha": self.head, "repo": {
+            "base": {"sha": self.base, "repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}, "head": {"sha": self.head, "repo": {
                 "full_name": "EffortlessMetrics/perl-lsp-swarm"}},
             "labels": [{"name": "needs review $(false)"}]}}
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
@@ -170,6 +170,39 @@ class GovernedRiprProof(unittest.TestCase):
         result = self.run_proof()
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.commands.exists())
+
+    def test_foreign_base_repository_is_refused_before_generation(self):
+        self.payload['pull_request']['base']['repo']['full_name'] = 'foreign/repository'
+        result = self.run_proof()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.commands.exists())
+
+    def test_event_revision_outside_evaluated_tree_cannot_become_fresh(self):
+        self.git('checkout', '-b', 'unmerged', self.base)
+        other = self.commit('unmerged.txt', 'unmerged source')
+        self.git('checkout', '--detach', self.sha)
+        for side in ('base', 'head'):
+            with self.subTest(side=side):
+                previous = self.payload['pull_request'][side]['sha']
+                self.payload['pull_request'][side]['sha'] = other
+                result = self.run_proof()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.commands.exists())
+                self.payload['pull_request'][side]['sha'] = previous
+
+    def test_inherited_git_overrides_cannot_redirect_the_checkout(self):
+        other = Path(self.temp.name) / 'other'
+        other.mkdir()
+        subprocess.run(['git', '-C', str(other), 'init', '--initial-branch=main'], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        index = Path(self.temp.name) / 'outside-index'
+        index.write_bytes(b'preserve caller data')
+        result = self.run_proof(GIT_DIR=str(other / '.git'), GIT_WORK_TREE=str(other),
+                                GIT_INDEX_FILE=str(index), GIT_CONFIG_COUNT='1',
+                                GIT_CONFIG_KEY_0='core.bare', GIT_CONFIG_VALUE_0='true')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(index.read_bytes(), b'preserve caller data')
+        self.assertFalse((other / 'target').exists())
 
     def test_missing_revision_cannot_become_fresh(self):
         self.payload["pull_request"]["base"]["sha"] = "f" * 40
@@ -311,11 +344,17 @@ class GovernedRiprProof(unittest.TestCase):
             self.assertNotIn("--help", call)
 
     def test_merge_group_has_no_single_pr_head(self):
-        self.payload["merge_group"] = {"base_sha": self.base}
+        self.payload["merge_group"] = {"base_sha": self.base, "head_sha": self.sha}
         result = self.run_proof(GITHUB_EVENT_NAME="merge_group")
         self.assertEqual(result.returncode, 0, result.stderr)
         call = self.calls()[0]
         self.assertEqual(call[call.index("--pr-head") + 1], "")
+
+    def test_wrong_merge_group_head_is_refused_before_generation(self):
+        self.payload['merge_group'] = {'base_sha': self.base, 'head_sha': self.head}
+        result = self.run_proof(GITHUB_EVENT_NAME='merge_group')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.commands.exists())
 
 
 if __name__ == "__main__":
