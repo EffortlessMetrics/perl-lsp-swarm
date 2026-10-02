@@ -1826,6 +1826,10 @@ fn is_valid_perl_package_name(s: &str) -> bool {
 /// detail label and a sort tier that puts them below all exact-receiver
 /// completions. [`ReceiverEvidence::Dynamic`] (positively-detected dynamic
 /// `bless` forms) is *not* fallback-eligible and stays fail-closed.
+// Justification: the trailing `current_document_uri` is the request's document
+// identity feeding the same-document freshness seam (#17084); the existing
+// positional mirrors the dispatcher's call shape.
+#[allow(clippy::too_many_arguments)]
 pub fn add_workspace_method_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
@@ -2006,8 +2010,12 @@ fn add_union_receiver_method_completions(
     // Emit one completion per method, iterating packages in declaration order
     // so the first arm's definition wins for the detail label.
     for package_name in packages {
-        let members =
-            collect_all_package_members_with_source(index, package_name, source, current_document_uri);
+        let members = collect_all_package_members_with_source(
+            index,
+            package_name,
+            source,
+            current_document_uri,
+        );
         for symbol in &members {
             if !matches!(symbol.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method) {
                 continue;
@@ -2725,6 +2733,10 @@ fn collect_all_package_members_with_source(
 
     // DFS traversal honoring MRO: visit receiver first, then @ISA ancestors
     // in MRO order, then roles. This ensures child definitions shadow parents.
+    // Justification: the MRO walk carries the traversal accumulators plus the
+    // request's document identity (#17084); splitting a private nested helper
+    // into a struct would not clarify the walk.
+    #[allow(clippy::too_many_arguments)]
     fn visit_mro(
         pkg: &str,
         index: &WorkspaceIndex,
@@ -2764,9 +2776,7 @@ fn collect_all_package_members_with_source(
             persisted_members.retain(|symbol| symbol.uri != current_document_uri);
         }
         push_index_method_symbols(
-            persisted_members
-                .into_iter()
-                .chain(index.get_generated_package_members(pkg)),
+            persisted_members.into_iter().chain(index.get_generated_package_members(pkg)),
             seen_names,
             result,
         );
@@ -3184,8 +3194,7 @@ package User;
 use Moo;
 with 'Printable';
 "#;
-        let members =
-            collect_all_package_members_with_source(index.as_ref(), "User", source, "");
+        let members = collect_all_package_members_with_source(index.as_ref(), "User", source, "");
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
         assert!(
             names.contains(&"stringify"),
@@ -3273,10 +3282,7 @@ sub kept { 2 }
             !names.contains(&"old_name"),
             "renamed method must not resurrect from the stale same-document index, got {names:?}"
         );
-        assert!(
-            names.contains(&"kept"),
-            "unchanged method must stay offered, got {names:?}"
-        );
+        assert!(names.contains(&"kept"), "unchanged method must stay offered, got {names:?}");
         assert!(
             names.contains(&"other_file_member"),
             "cross-file member of the same package must still compose (#2536), got {names:?}"
@@ -3296,16 +3302,12 @@ sub kept { 2 }
     fn explicit_empty_isa_suppresses_persisted_parents() {
         let index = Arc::new(WorkspaceIndex::new());
         let base_uri = must(Url::parse("file:///workspace/Base.pm"));
-        must(
-            index.index_file(base_uri, "package Base;\nsub base_method { 1 }\n1;\n".to_string()),
-        );
+        must(index.index_file(base_uri, "package Base;\nsub base_method { 1 }\n1;\n".to_string()));
         let child_uri = must(Url::parse(CHILD_URI));
-        must(
-            index.index_file(
-                child_uri,
-                "package Child;\nuse parent 'Base';\nsub child_method { 1 }\n1;\n".to_string(),
-            ),
-        );
+        must(index.index_file(
+            child_uri,
+            "package Child;\nuse parent 'Base';\nsub child_method { 1 }\n1;\n".to_string(),
+        ));
 
         // Explicit reset: `@ISA = ()` is a statement, not an omission.
         let reset = "package Child;\nour @ISA = ();\nsub child_method { 1 }\n";
