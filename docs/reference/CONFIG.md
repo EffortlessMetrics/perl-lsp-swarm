@@ -322,6 +322,35 @@ Extra arguments passed to the Perl interpreter when probing startup `@INC`.
 }
 ```
 
+#### `perl.workspace.discoverySkippedDirs`
+
+| Property | Value |
+|---|---|
+| Type | `string[]` |
+| Default | `[]` |
+| Key | `discoverySkippedDirs` |
+
+Additional directory names skipped while the workspace is discovered and
+indexed. Values are exact directory names compared against each component of
+a candidate path — not globs, regular expressions, or path fragments — so
+`build` skips a `build/` directory but not `build-out/`. Whitespace around a
+name is trimmed and duplicates are removed.
+
+This list is **additive**. Discovery already skips `.git`, `.hg`, `.svn`,
+`target`, `node_modules`, `.cache`, `blib`, `local`, `vendor`, and
+`.perl-lsp` in both enumeration modes, so listing any of those here has no
+effect. An `includePaths` entry can permit discovery inside a skipped
+directory (for example `local/lib/perl5`) when its files are included in
+Git's file listing, or when discovery uses its filesystem walk fallback.
+Untracked files ignored by Git remain absent from Git's listing.
+
+Project configuration exposes the same control as `[perl].discovery_skipped_dirs`:
+
+```toml
+[perl]
+discovery_skipped_dirs = ["generated"]
+```
+
 #### `perl.workspace.useSystemInc`
 
 | Property | Value |
@@ -974,12 +1003,28 @@ PERL_LSP_FILE_WATCHERS=false perllsp --stdio
 
 ### `PERL_LSP_TIMING`
 
-Enable phase-1 latency instrumentation. Values: `off` (default), `spans`
-(human-readable timing spans), `json` (machine-readable JSON).
+Enable phase-1 latency instrumentation. Every sink writes JSONL — one JSON
+object per line.
+
+| Value | Effect |
+|---|---|
+| unset, empty, `off`, `0`, `false` | disabled (default) |
+| `stderr`, `1`, `true` | JSONL to stderr |
+| `json` | JSONL to stderr (the same sink; there is no separate JSON format) |
+| `spans` | accepted for compatibility; **not implemented** — emits one warning-level notice (unless filtered by `RUST_LOG`), then behaves as `json` |
+| a file path | JSONL appended to that file, created if absent |
 
 ```bash
-PERL_LSP_TIMING=spans perllsp --stdio
+PERL_LSP_TIMING=stderr perllsp --stdio
+PERL_LSP_TIMING=./timing.jsonl perllsp --stdio
 ```
+
+Any value that is none of the modes above is treated as a **file path** and
+created if it does not exist, so quote it if it contains spaces or shell
+metacharacters.
+
+`spans` was previously documented here as "human-readable timing spans". That
+output does not exist; there is no human-readable span formatter in the server.
 
 ### `PERL_LSP_INCREMENTAL`
 

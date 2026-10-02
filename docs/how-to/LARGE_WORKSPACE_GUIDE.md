@@ -15,7 +15,7 @@ behaviour, and diagnose the failures that appear only after hours of editor use.
   - [Criterion Benchmarks](#criterion-benchmarks)
   - [cargo flamegraph](#cargo-flamegraph)
   - [DHAT Heap Profiling](#dhat-heap-profiling)
-  - [tracing / tokio-console](#tracing--tokio-console)
+  - [Tracing and timing](#tracing-and-timing)
   - [Interpreting Results](#interpreting-results)
   - [Common Performance Pitfalls](#common-performance-pitfalls)
 - [Memory Patterns at Scale](#memory-patterns-at-scale)
@@ -200,7 +200,7 @@ echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid
 
 # Profile workspace indexing
 cargo flamegraph --root \
-  -p perl-lsp-rs \
+  -p perllsp \
   -- --stdio < scripts/lsp-index-replay.json \
   > flamegraph.svg
 
@@ -235,7 +235,7 @@ most bytes" in a run.
 
 ```bash
 # Build with DHAT support (Valgrind must be installed)
-RUSTFLAGS="-g" cargo build --release -p perl-lsp-rs
+RUSTFLAGS="-g" cargo build --release -p perllsp
 
 # Run under DHAT — produces dhat.out.<pid>
 valgrind --tool=dhat --dhat-out-file=dhat.out \
@@ -265,7 +265,7 @@ fn main() {
 }
 ```
 
-### tracing / tokio-console
+### Tracing and timing
 
 The LSP server uses `tracing` for structured logging. Enable spans to see where async
 time goes:
@@ -280,20 +280,11 @@ RUST_LOG=perl_lsp=trace RUST_LOG_STYLE=always \
   perllsp --stdio 2>trace.log
 ```
 
-For real-time async task inspection, connect `tokio-console`:
-
-```bash
-# In one terminal — start the server with tokio-console support
-RUSTFLAGS="--cfg tokio_unstable" \
-  cargo run -p perl-lsp-rs --features tokio-console -- --stdio
-
-# In another terminal
-cargo install tokio-console
-tokio-console
-```
-
-`tokio-console` shows live task timings, waker counts, and poll durations — useful for
-finding tasks that hold locks too long or are polled at high frequency.
+Live task and waker inspection through `tokio-console` is unavailable in this tree:
+`perllsp` declares no `tokio-console` feature or console subscriber. Use the tracing
+commands above for structured events. Set `PERL_LSP_TIMING=1` to record the selected
+phase and lock-wait timings instrumented by the server (including
+`didChange.lock_wait`). These timings do not identify which task owns a lock.
 
 ### Interpreting Results
 
@@ -562,7 +553,9 @@ are exceeded or when incremental updates fail to apply cleanly.
    ```
 
 3. If the server frequently enters `Degraded`, it is hitting resource limits. Review
-   your workspace scope (`.perl-lspignore`) and memory-budget settings.
+   whether the editor opened a broad repository or parent directory, and open a
+   narrower workspace folder if it includes unrelated project areas. Also review
+   memory-budget settings.
 
 **Remediation**:
 - File a bug if `Degraded` is entered without hitting documented limits

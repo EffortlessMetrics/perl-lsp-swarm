@@ -274,6 +274,8 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     manifestScope: 'resource',
     semanticScope: 'workspace-folder',
     owner: 'server',
+    // With no workspace folders there is no scoped pull; the extension keeps
+    // the standalone-file include path alive via didChangeConfiguration.
     transport: 'workspace/configuration',
   },
   {
