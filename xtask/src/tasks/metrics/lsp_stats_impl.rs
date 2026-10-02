@@ -2663,12 +2663,16 @@ mod tests {
             "flakeEntry should declare the optional route field as a string, got {route}"
         );
 
-        // Presence of owner/issue/failure_class is enforced globally by
-        // flakeEntry.required, which covers active entries.
+        // Presence of owner/issue/failure_class/expires_after_days is enforced
+        // globally by flakeEntry.required, which covers active entries. The
+        // expiry must stay in this list: the type/minimum narrowing above only
+        // applies when the field is present, so dropping it from `required`
+        // would let an active row omit its review bound entirely while the
+        // narrowing assertions still pass (issue #9879 review).
         let required =
             entry_def["required"].as_array().ok_or("flakeEntry.required should be an array")?;
         let required_fields: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
-        for field in ["owner", "issue", "failure_class"] {
+        for field in ["owner", "issue", "failure_class", "expires_after_days"] {
             assert!(
                 required_fields.contains(&field),
                 "schema should require '{field}' for every entry (active included), got {required_fields:?}"

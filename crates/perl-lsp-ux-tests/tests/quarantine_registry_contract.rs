@@ -558,8 +558,11 @@ fn active_row_bounds_negative_control_fails_on_unbounded_rows() -> TestResult {
         .ok_or_else(|| invalid_data("string expiry must fail"))?;
     assert!(err.contains("expires_after_days"), "{err}");
 
-    // 5. Ownerless or blank-owner active rows fail.
-    for owner in [Value::Null, Value::from("")] {
+    // 5. Ownerless, empty, or whitespace-only owner active rows fail. The
+    // whitespace shape pins the detector's trim semantics against the
+    // schema's non-blank `owner` pattern (issue #9879 review): `" "` would
+    // otherwise satisfy a bare minLength while naming nobody.
+    for owner in [Value::Null, Value::from(""), Value::from("   ")] {
         let err = check_active_row_bounds("t", &issue, &owner, &bounded)
             .err()
             .ok_or_else(|| invalid_data("missing owner must fail"))?;
