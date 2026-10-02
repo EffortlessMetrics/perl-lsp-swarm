@@ -336,7 +336,8 @@ describe('pod preview webview accessibility (#7807/#7865)', () => {
 
   test('keeps the #6030 security boundary intact', () => {
     expect(html).toContain('Content-Security-Policy" content="default-src \'none\'');
-    expect(html).not.toContain('<script');
+    // HTML tag names are case-insensitive, so the guard must be too.
+    expect(html.toLowerCase()).not.toContain('<script');
   });
 
   test('exposes semantic document structure', () => {
@@ -366,8 +367,9 @@ describe('pod preview webview accessibility (#7807/#7865)', () => {
   test('links stay real anchors so keyboard activation is native', () => {
     expect(html).toMatch(/<a href="https:\/\/example\.com\/">/);
     expect(html).not.toContain('tabindex=');
-    // A visible focus indicator backed by the theme's own focus color.
-    expect(html).toMatch(/a:focus-visible\s*{\s*outline: 1px solid var\(--vscode-focusBorder/);
+    // A visible focus indicator backed by the theme's own focus color, at the
+    // WCAG 2.4.13 (AA) 2px focus-appearance minimum.
+    expect(html).toMatch(/a:focus-visible\s*{\s*outline: 2px solid var\(--vscode-focusBorder/);
   });
 
   test('colors come from VS Code theme variables, not hard-coded values', () => {
@@ -385,10 +387,11 @@ describe('pod preview webview accessibility (#7807/#7865)', () => {
   });
 
   test('prose reflows under zoom instead of clipping', () => {
-    // The body constrains reading width with max-width, never a fixed width,
-    // and only code blocks scroll horizontally.
+    // The body constrains reading width with max-width, never a fixed width
+    // (a min-width would clip prose just as hard), and only code blocks
+    // scroll horizontally. The lookbehind exempts exactly `max-`.
     expect(html).toMatch(/body\s*{[^}]*max-width:\s*860px/s);
-    expect(html).not.toMatch(/body\s*{[^}]*[^-\w]width:\s*\d/s);
+    expect(html).not.toMatch(/body\s*{[^}]*(?<!max-)width:\s*\d/s);
     expect(html).toMatch(/pre\s*{[^}]*overflow-x:\s*auto/s);
   });
 });

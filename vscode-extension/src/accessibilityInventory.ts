@@ -450,17 +450,46 @@ export function validateAccessibilityReceipt(
       if (!isDimensionVerdict(row[dimension])) {
         errors.push(`row ${row.surface_id} has an invalid ${dimension} verdict`);
       }
+      // `manual_bounded` is reserved for bounded human screen-reader evidence
+      // (see the verdict docs); an automated receipt claiming it on any other
+      // dimension is presenting human-bounded evidence that never existed.
+      if (row[dimension] === 'manual_bounded' && dimension !== 'screen_reader') {
+        errors.push(`manual_bounded evidence is reserved for screen_reader: ${row.surface_id}`);
+      }
     }
     // The negative control from #7807/#7865: automation can never observe a
-    // screen reader, so a `pass` here is a manufactured result.
-    if (row.screen_reader === 'pass') {
+    // screen reader, so neither a `pass` nor a `failed` here is observable —
+    // both are manufactured results; only not_proven/manual_bounded exist.
+    if (row.screen_reader === 'pass' || row.screen_reader === 'failed') {
       errors.push(`automated receipt cannot claim screen-reader proof: ${row.surface_id}`);
+    }
+    // The automated harness never exercises high-contrast or zoom/reflow
+    // surfaces either (their rows are hard-coded `not_proven` by the
+    // builder), so an observation-class verdict there is manufactured too.
+    for (const dimension of ['high_contrast', 'zoom_reflow'] as const) {
+      if (row[dimension] === 'pass' || row[dimension] === 'failed') {
+        errors.push(
+          `automated receipt cannot claim an observed ${dimension} verdict: ${row.surface_id}`,
+        );
+      }
     }
   }
 
   const expectedDigest = accessibilityInventoryDigest(inventory);
   if (receipt.candidate.inventory_digest !== expectedDigest) {
     errors.push('receipt inventory digest does not match the current inventory');
+  }
+
+  // A partial receipt must say why its evidence is incomplete: `bounded` and
+  // `not_proven` verdicts without limitations would present an unbounded
+  // claim as evidence.
+  if (
+    (receipt.verdict === 'bounded' || receipt.verdict === 'not_proven') &&
+    (!Array.isArray(receipt.limitations) ||
+      receipt.limitations.length === 0 ||
+      receipt.limitations.every((limitation) => limitation.trim() === ''))
+  ) {
+    errors.push(`receipt verdict ${receipt.verdict} requires non-empty limitations`);
   }
 
   if (errors.length === 0) {

@@ -126,7 +126,15 @@ function summarizeReceipts(receipts) {
       runClassifications[classification] = (runClassifications[classification] ?? 0) + 1;
     }
     const accessibility = receipt.accessibility;
-    if (accessibility && typeof accessibility === 'object') {
+    // Project only receipts in the schema the validator accepts (#7865):
+    // a differently-schema'd or malformed block is not honest evidence and
+    // must not silently count as an accessibility verdict or inventory
+    // contract in the roll-up.
+    if (
+      accessibility &&
+      typeof accessibility === 'object' &&
+      accessibility.schema_version === 'vscode_accessibility.v1'
+    ) {
       const verdict = accessibility.verdict;
       if (typeof verdict === 'string') {
         accessibilityVerdicts[verdict] = (accessibilityVerdicts[verdict] ?? 0) + 1;

@@ -159,12 +159,15 @@ describe('accessibility inventory is bound to the shipped extension', () => {
     );
     // The row may only claim manual-obligation evidence while the source-level
     // contract tests backing it exist; dropping those tests invalidates the row.
+    // Pin a distinctive contract assertion, not the describe header: deleting
+    // the tests while keeping the name must fail this binding.
     expect(pod?.evidence).toBe('manual_screen_reader_required');
     expect(pod?.keyboard_route).toBe('perl-lsp.previewPod');
     expect(readExtensionSource('podPreview.ts')).toContain('export function buildWebviewHtml');
-    expect(readExtensionSource(path.join('test', 'podPreview.test.ts'))).toContain(
-      'pod preview webview accessibility',
-    );
+    const podPreviewTests = readExtensionSource(path.join('test', 'podPreview.test.ts'));
+    expect(podPreviewTests).toContain('keeps the #6030 security boundary intact');
+    expect(podPreviewTests).toContain("not.toContain('<script')");
+    expect(podPreviewTests).toContain('prose reflows under zoom instead of clipping');
   });
 });
 
@@ -249,11 +252,19 @@ describe('installed accessibility receipt (#7865)', () => {
       },
     );
 
+    const statusOf = (receipt: AccessibilityReceipt) =>
+      receipt.surfaces.find((row) => row.surface_id === 'workspace_status');
+    // Per-dimension contract: a missing command fails BOTH dimensions (it was
+    // never registered); a hidden command fails keyboard only; an inhuman
+    // title (internal code rather than text) fails semantic_labels only. A
+    // regression failing both in every scenario must not satisfy this.
+    expect(statusOf(missing)?.keyboard).toBe('failed');
+    expect(statusOf(missing)?.semantic_labels).toBe('failed');
+    expect(statusOf(hidden)?.keyboard).toBe('failed');
+    expect(statusOf(hidden)?.semantic_labels).toBe('pass');
+    expect(statusOf(untitled)?.keyboard).toBe('pass');
+    expect(statusOf(untitled)?.semantic_labels).toBe('failed');
     for (const receipt of [missing, hidden, untitled]) {
-      const status = receipt.surfaces.find((row) => row.surface_id === 'workspace_status');
-      // A missing or hidden command fails keyboard proof; an inhuman title
-      // (internal code rather than text) fails the semantic row instead.
-      expect(status?.keyboard === 'failed' || status?.semantic_labels === 'failed').toBe(true);
       expect(receipt.verdict).toBe('failed');
     }
   });
@@ -312,6 +323,49 @@ describe('installed accessibility receipt (#7865)', () => {
       validateAccessibilityReceipt(screenReaderPass, CURRENT_ACCESSIBILITY_INVENTORY),
     ).toContain('automated receipt cannot claim screen-reader proof: workspace_status');
 
+    // Automation never performs a screen-reader observation, so a claimed
+    // `failed` is as manufactured as a claimed `pass`.
+    const screenReaderFailed: AccessibilityReceipt = {
+      ...receipt,
+      surfaces: receipt.surfaces.map((row) =>
+        row.surface_id === 'workspace_status' ? { ...row, screen_reader: 'failed' } : row,
+      ),
+    };
+    expect(
+      validateAccessibilityReceipt(screenReaderFailed, CURRENT_ACCESSIBILITY_INVENTORY),
+    ).toContain('automated receipt cannot claim screen-reader proof: workspace_status');
+
+    // The harness never exercises high-contrast or zoom/reflow surfaces, so
+    // observation-class verdicts there are manufactured too.
+    const highContrastPass: AccessibilityReceipt = {
+      ...receipt,
+      surfaces: receipt.surfaces.map((row) =>
+        row.surface_id === 'workspace_status' ? { ...row, high_contrast: 'pass' } : row,
+      ),
+    };
+    expect(
+      validateAccessibilityReceipt(highContrastPass, CURRENT_ACCESSIBILITY_INVENTORY),
+    ).toContain(
+      'automated receipt cannot claim an observed high_contrast verdict: workspace_status',
+    );
+
+    // `manual_bounded` is reserved for bounded human screen-reader evidence.
+    const manualBoundedKeyboard: AccessibilityReceipt = {
+      ...receipt,
+      surfaces: receipt.surfaces.map((row) =>
+        row.surface_id === 'workspace_status' ? { ...row, keyboard: 'manual_bounded' } : row,
+      ),
+    };
+    expect(
+      validateAccessibilityReceipt(manualBoundedKeyboard, CURRENT_ACCESSIBILITY_INVENTORY),
+    ).toContain('manual_bounded evidence is reserved for screen_reader: workspace_status');
+
+    // A partial verdict must carry its limitations.
+    const unboundedClaim: AccessibilityReceipt = { ...receipt, limitations: [] };
+    expect(validateAccessibilityReceipt(unboundedClaim, CURRENT_ACCESSIBILITY_INVENTORY)).toContain(
+      'receipt verdict bounded requires non-empty limitations',
+    );
+
     const digestMismatch: AccessibilityReceipt = {
       ...receipt,
       candidate: { ...receipt.candidate, inventory_digest: 'd'.repeat(64) },
@@ -328,16 +382,27 @@ describe('installed accessibility receipt (#7865)', () => {
     );
   });
 
-  test('receipt builder binds the candidate digest it was given', () => {
+  test('receipt builder rebinds the candidate digest to the exercised inventory', () => {
+    // The supplied digest deliberately disagrees with the exercised inventory:
+    // the builder must override it (rebind), not pass the fixture through, so
+    // this test can tell rebinding from blind copying.
+    const mismatchedCandidate: typeof candidate = {
+      ...candidate,
+      inventory_digest: 'e'.repeat(64),
+    };
     const receipt = buildInstalledAccessibilityReceipt(
-      candidate,
+      mismatchedCandidate,
       CURRENT_ACCESSIBILITY_INVENTORY,
       provenObservations(),
     );
     expect(receipt.candidate.inventory_digest).toBe(
       accessibilityInventoryDigest(CURRENT_ACCESSIBILITY_INVENTORY),
     );
+    expect(receipt.candidate.inventory_digest).not.toBe(mismatchedCandidate.inventory_digest);
+    // Non-digest candidate identity passes through unchanged, and the rebound
+    // receipt validates clean against the inventory it exercised.
     expect(receipt.candidate.vsix_sha256).toBe(candidate.vsix_sha256);
+    expect(validateAccessibilityReceipt(receipt, CURRENT_ACCESSIBILITY_INVENTORY)).toEqual([]);
     expect(receipt.limitations.length).toBeGreaterThan(0);
   });
 });

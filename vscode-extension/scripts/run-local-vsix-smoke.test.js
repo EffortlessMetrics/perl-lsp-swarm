@@ -1306,7 +1306,6 @@ function fakeAccessibilityExpectation(overrides = {}) {
       surfaces: [{ surface_id: 'workspace_status' }, { surface_id: 'pod_preview' }],
     },
     digest: 'a'.repeat(64),
-    expectedVsixSha256: CHILD_SUBJECT.expectedVsixSha256,
     validate: (receipt, inventory) => {
       const ids = inventory.surfaces.map((surface) => surface.surface_id);
       const rowIds = (receipt.surfaces ?? []).map((row) => row.surface_id);
@@ -1325,7 +1324,8 @@ function boundAccessibilitySection(overrides = {}) {
       vsix_version: '0.18.0',
       vsix_sha256: CHILD_SUBJECT.expectedVsixSha256,
       vscode_version: '1.130.2',
-      platform: 'linux',
+      // The child records its own process.platform, which is this host's.
+      platform: process.platform,
       inventory_digest: 'a'.repeat(64),
     },
     surfaces: [

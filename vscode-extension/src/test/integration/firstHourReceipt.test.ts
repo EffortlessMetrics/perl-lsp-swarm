@@ -535,19 +535,26 @@ suite('First-hour VS Code receipt', function () {
         : [],
     );
     for (const route of inventoryCommandRoutes) {
-      await withTimeout(
-        `accessibility keyboard route ${route}`,
-        (async () => {
-          for (;;) {
-            const commands = await vscode.commands.getCommands(true);
-            if (commands.includes(route)) {
-              return;
+      try {
+        await withTimeout(
+          `accessibility keyboard route ${route}`,
+          (async () => {
+            for (;;) {
+              const commands = await vscode.commands.getCommands(true);
+              if (commands.includes(route)) {
+                return;
+              }
+              await delay(100);
             }
-            await delay(100);
-          }
-        })(),
-        10_000,
-      );
+          })(),
+          10_000,
+        );
+      } catch {
+        // A route that never registers must not abort the harness: the
+        // receipt below observes registration itself, records the route as
+        // `keyboard: 'failed'`, and surfaces an accessibility failure —
+        // aborting here would destroy that evidence instead of writing it.
+      }
     }
     const installedManifest = extension.packageJSON as InstalledManifest;
     let nlsMessages: Record<string, string> = {};

@@ -724,9 +724,10 @@ export function buildWebviewHtml(title: string, bodyHtml: string): string {
     }
     a:hover { text-decoration: underline; }
     /* Keyboard focus must stay visible under every theme, including high
-     * contrast: use the theme's own focus color rather than a hard-coded one. */
+     * contrast: use the theme's own focus color and a 2px perimeter, the
+     * WCAG 2.4.13 (AA) focus-appearance minimum, robust at zoom. */
     a:focus-visible {
-      outline: 1px solid var(--vscode-focusBorder, #007fd4);
+      outline: 2px solid var(--vscode-focusBorder, #007fd4);
       outline-offset: 1px;
     }
     ul, ol { padding-left: 1.5em; }

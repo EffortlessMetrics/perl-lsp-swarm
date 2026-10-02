@@ -861,18 +861,17 @@ function loadAccessibilityInventory(rootDir = root) {
 /**
  * The orchestrator-side expectation for the installed accessibility receipt
  * (#7865): the inventory contract of this candidate, its digest, and the
- * receipt validator compiled alongside it.
- *
- * @param {string | null} expectedVsixSha256
+ * receipt validator compiled alongside it. The VSIX identity itself is
+ * validated against the run's `expectedVsixSha256` argument, so the
+ * expectation carries no duplicate copy of it.
  */
-function buildAccessibilityExpectation(expectedVsixSha256) {
+function buildAccessibilityExpectation() {
   const inventoryModule = loadAccessibilityInventory();
   const inventory = inventoryModule.CURRENT_ACCESSIBILITY_INVENTORY;
   return {
     inventory,
     digest: inventoryModule.accessibilityInventoryDigest(inventory),
     validate: inventoryModule.validateAccessibilityReceipt,
-    expectedVsixSha256,
   };
 }
 
@@ -1012,10 +1011,30 @@ function validateChildSmokeReceipt({
       if (accessibility.candidate?.vsix_sha256 !== expectedVsixSha256) {
         violations.push("accessibility receipt VSIX digest is not this run's package");
       }
-      const structural = accessibilityExpectation.validate(
-        accessibility,
-        accessibilityExpectation.inventory,
-      );
+      // The candidate block was written by the same child process that wrote
+      // the validated environment block, so it must name the same launched
+      // host: evidence from a different matrix leg cannot ride along.
+      if (accessibility.candidate?.vscode_version !== environment.vscode_version) {
+        violations.push("accessibility receipt candidate VS Code version is not this run's host");
+      }
+      if (accessibility.candidate?.platform !== process.platform) {
+        violations.push("accessibility receipt candidate platform is not this run's host");
+      }
+      // A malformed accessibility section is a bounded receipt violation, not
+      // an instrumentation failure: catch validator throws and fail closed.
+      let structural = [];
+      try {
+        structural = accessibilityExpectation.validate(
+          accessibility,
+          accessibilityExpectation.inventory,
+        );
+      } catch (error) {
+        violations.push(
+          `accessibility receipt validator threw: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
       for (const error of Array.isArray(structural) ? structural : []) {
         violations.push(`accessibility receipt: ${error}`);
       }
@@ -3133,9 +3152,7 @@ function main() {
                   // The compiled inventory module exists by now: the child ran
                   // against it, so the accessibility expectation binds to the
                   // same artifact (or the require itself fails the instrument).
-                  accessibilityExpectation: buildAccessibilityExpectation(
-                    receipt.vsix.sha256 ?? null,
-                  ),
+                  accessibilityExpectation: buildAccessibilityExpectation(),
                 });
           receipt.stages.behavioral_smoke = childReceipt.ok
             ? {
