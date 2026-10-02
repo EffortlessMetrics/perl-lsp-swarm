@@ -3490,6 +3490,10 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_returns_source_backed_edit
 fn refactor_runtime_blocker_ux_safe_delete_live_pilot_keeps_edit_when_apply_edit_send_fails()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut server = create_server();
+    // Same fixture as the successful live-pilot path: `send_request` rejects
+    // reverse requests before initialization (#7708). Mark initialized so the
+    // closed outbound sender is the failure under test, not the init gate.
+    server.client_session.initialized.store(true, std::sync::atomic::Ordering::Release);
     {
         let mut caps = server.client_session.client_capabilities.lock();
         caps.workspace_apply_edit_support = true;

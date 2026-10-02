@@ -2882,7 +2882,7 @@ impl LspServer {
         // increment so it doesn't collide with IDs from other server-to-client requests.
         let progress_create_id = next_indexing_progress_request_id(&resources.next_request_id);
         let outbound = resources.outbound;
-        let work_done_progress = resources.work_done_progress;
+        let mut work_done_progress = resources.work_done_progress;
         // Keep the cancellation registry identity in a string namespace. The
         // progress-create request ID is server-generated, while the registry
         // also contains client request IDs; sharing numeric IDs would allow a
@@ -2910,6 +2910,10 @@ impl LspServer {
                     crate::runtime::client_session::ProgressTokenInstall::Shutdown
                     | crate::runtime::client_session::ProgressTokenInstall::AlreadyExists => {
                         GLOBAL_CANCELLATION_REGISTRY.remove_request(&progress_request_id);
+                        // Installer refusal must suppress this scan's cloned-outbound
+                        // create/begin/end. `send_progress_*` writes the captured
+                        // sink directly and does not take the session enqueue fence.
+                        work_done_progress = false;
                     }
                 }
             }
@@ -5644,6 +5648,73 @@ mod tests {
             return Err(
                 "cancelled indexing did not end progress with a cancellation message".into()
             );
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn indexing_after_shutdown_does_not_emit_progress_frames()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(
+            dir.path().join("after-shutdown.pm"),
+            "package AfterShutdown;\nsub marker { 1 }\n1;\n",
+        )?;
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+
+        let (mut server, output) = server_with_output_capture();
+        server.client_session.client_capabilities.lock().work_done_progress_support = true;
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+            )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf()),
+        );
+
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        let _receipt_observer_guard =
+            crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        server
+            .readiness_receipt_observer_id
+            .store(_receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
+
+        if server.client_session.begin_shutdown()
+            != crate::runtime::client_session::ShutdownAdmission::First
+        {
+            return Err("expected first-caller shutdown admission".into());
+        }
+
+        server.start_workspace_indexing();
+        let _receipt = receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+
+        if server.client_session.progress_tokens.lock().contains(WORKSPACE_INDEX_PROGRESS_TOKEN)
+            || server
+                .client_session
+                .progress_token_to_request
+                .lock()
+                .contains_key(WORKSPACE_INDEX_PROGRESS_TOKEN)
+        {
+            return Err("indexing after shutdown retained workspace-index progress identity".into());
+        }
+
+        drop(server);
+        let messages = output.messages()?;
+        if messages.iter().any(|message| {
+            message.get("method").and_then(Value::as_str) == Some("window/workDoneProgress/create")
+        }) {
+            return Err("indexing after shutdown emitted window/workDoneProgress/create".into());
+        }
+        if messages
+            .iter()
+            .any(|message| message.get("method").and_then(Value::as_str) == Some("$/progress"))
+        {
+            return Err("indexing after shutdown emitted $/progress".into());
         }
         Ok(())
     }
