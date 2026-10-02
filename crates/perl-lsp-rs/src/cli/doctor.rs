@@ -404,8 +404,12 @@ fn comparable_workspace_path(path: &Path) -> std::borrow::Cow<'_, Path> {
     // would leave `server\share`, which parses as three *relative* components
     // and can never equal a real UNC path — so every UNC workspace would
     // report a substitution. Re-attach the `\\` that the verbatim form replaced.
+    // Build the result as a plain string rather than through `Path::join`:
+    // `join` splices in the platform separator, which on POSIX cuts the UNC
+    // path into `\\` + `server\share\proj` and changes its component count,
+    // making this comparison disagree with itself across platforms.
     if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
-        return Cow::Owned(Path::new(r"\\").join(unc));
+        return Cow::Owned(PathBuf::from(format!(r"\\{unc}")));
     }
     match text.strip_prefix(r"\\?\") {
         Some(stripped) => Cow::Owned(Path::new(stripped).to_path_buf()),
