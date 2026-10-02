@@ -1,7 +1,7 @@
 project: product
 component: Language intelligence
 kind: Fixed
-body: "A broken or invalid .perl-lsp.toml in single-file mode now warns at most once per editor session instead of repeating an identical popup on every file open; changed TOML errors still warn again. The multi-root config-conflict warning no longer points at the repo-relative docs/reference/CONFIG.md path, and the core-module goto-definition notice appears once per session instead of on every request."
+body: "A broken or invalid .perl-lsp.toml in single-file mode now warns at most once per editor session per config file instead of repeating an identical popup on every file open; a different config file (or an undelivered warning) still warns. The multi-root config-conflict warning no longer points at the repo-relative docs/reference/CONFIG.md path, and the core-module goto-definition notice appears once per session per module instead of on every request."
 time: 2026-09-27T00:00:00Z
 custom:
   PR: "16666"
