@@ -15,7 +15,7 @@ impl LspServer {
         let Some(workspace_trust_report) = self.workspace_trust_report(argument)? else {
             return Ok(None);
         };
-        let advertised_feature_ids = self.advertised_feature_ids.lock().clone();
+        let advertised_feature_ids = self.client_session.advertised_feature_ids.lock().clone();
         let execute_commands = if advertised_feature_ids.contains(&LSP_EXECUTE_COMMAND) {
             crate::execute_command::get_supported_commands()
         } else {

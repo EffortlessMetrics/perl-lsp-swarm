@@ -28,7 +28,7 @@ fn profile_identity(profile: &str) -> SessionWarningIdentity {
 }
 
 fn note_critic(server: &LspServer, identity: SessionWarningIdentity) -> SessionWarningDecision {
-    server.session_warning_dedup.note(SessionWarningFamily::Critic, identity)
+    server.client_session.session_warning_dedup.note(SessionWarningFamily::Critic, identity)
 }
 
 // -------------------------------------------------------------------------
@@ -128,7 +128,10 @@ fn large_unicode_value_is_bounded_and_never_retained_raw() {
         &huge,
     );
     assert_eq!(
-        server.session_warning_dedup.note(SessionWarningFamily::ClientSetting, identity),
+        server
+            .client_session
+            .session_warning_dedup
+            .note(SessionWarningFamily::ClientSetting, identity),
         SessionWarningDecision::EmitFirst
     );
     let snapshot = server.session_warning_dedup_snapshot();
@@ -162,7 +165,7 @@ fn lifecycle_clear_releases_only_its_own_family() {
     let server = LspServer::new();
     note_critic(&server, profile_identity("/cfg/old-profile"));
     assert_eq!(
-        server.session_warning_dedup.note_client_setting(
+        server.client_session.session_warning_dedup.note_client_setting(
             "critic.engine",
             "string",
             "not-an-engine"
@@ -171,12 +174,12 @@ fn lifecycle_clear_releases_only_its_own_family() {
     );
     let auth = SessionWarningIdentity::subjectless(SessionWarningCode::AiBackendAuthFailure);
     assert_eq!(
-        server.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
+        server.client_session.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
         SessionWarningDecision::EmitFirst
     );
 
     // Critic configuration movement clears only the critic family (#9769).
-    server.session_warning_dedup.clear_family(SessionWarningFamily::Critic);
+    server.client_session.session_warning_dedup.clear_family(SessionWarningFamily::Critic);
 
     let snapshot = server.session_warning_dedup_snapshot();
     assert_eq!(snapshot.critic.entries, 0);
@@ -198,12 +201,12 @@ fn forget_releases_an_identity_so_a_failed_send_can_retry() {
     let server = LspServer::new();
     let auth = SessionWarningIdentity::subjectless(SessionWarningCode::AiBackendAuthFailure);
     assert_eq!(
-        server.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
+        server.client_session.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
         SessionWarningDecision::EmitFirst
     );
-    server.session_warning_dedup.forget(SessionWarningFamily::AiBackend, &auth);
+    server.client_session.session_warning_dedup.forget(SessionWarningFamily::AiBackend, &auth);
     assert_eq!(
-        server.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
+        server.client_session.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
         SessionWarningDecision::EmitFirst
     );
 }
@@ -216,19 +219,23 @@ fn guarded_emission_holds_the_reservation_through_the_send() {
     // A failed send rolls the retention back inside the same lock hold, so a
     // concurrent caller that suppressed against the reservation is followed
     // by a retryable identity -- exactly the pre-#9769 atomicity.
-    let failed =
-        server
-            .session_warning_dedup
-            .emit_once_with(SessionWarningFamily::AiBackend, auth, || false);
+    let failed = server.client_session.session_warning_dedup.emit_once_with(
+        SessionWarningFamily::AiBackend,
+        auth,
+        || false,
+    );
     assert_eq!(failed, SessionWarningDecision::EmitFirst);
     assert_eq!(server.session_warning_dedup_snapshot().ai_backend.entries, 0);
 
     // A successful send keeps the reservation: later occurrences suppress.
-    let delivered =
-        server.session_warning_dedup.emit_once_with(SessionWarningFamily::AiBackend, auth, || true);
+    let delivered = server.client_session.session_warning_dedup.emit_once_with(
+        SessionWarningFamily::AiBackend,
+        auth,
+        || true,
+    );
     assert_eq!(delivered, SessionWarningDecision::EmitFirst);
     assert_eq!(
-        server.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
+        server.client_session.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth),
         SessionWarningDecision::Suppress
     );
     assert_eq!(server.session_warning_dedup_snapshot().ai_backend.entries, 1);
@@ -254,13 +261,17 @@ fn concurrent_failure_window_never_suppresses_an_undelivered_warning()
     let (release_a, a_may_finish) = mpsc::channel::<()>();
     let server_a = Arc::clone(&server);
     let caller_a = std::thread::spawn(move || {
-        server_a.session_warning_dedup.emit_once_with(SessionWarningFamily::AiBackend, auth, || {
-            // A is now inside the critical section; hold the send open
-            // until the test releases it, then report the send as failed.
-            entered_send.send(()).ok();
-            let _released = a_may_finish.recv();
-            false
-        })
+        server_a.client_session.session_warning_dedup.emit_once_with(
+            SessionWarningFamily::AiBackend,
+            auth,
+            || {
+                // A is now inside the critical section; hold the send open
+                // until the test releases it, then report the send as failed.
+                entered_send.send(()).ok();
+                let _released = a_may_finish.recv();
+                false
+            },
+        )
     });
 
     a_is_sending.recv().map_err(|_| "caller A never entered its send")?;
@@ -269,7 +280,10 @@ fn concurrent_failure_window_never_suppresses_an_undelivered_warning()
     let (b_answer, b_answered) = mpsc::channel::<SessionWarningDecision>();
     let server_b = Arc::clone(&server);
     let caller_b = std::thread::spawn(move || {
-        let decision = server_b.session_warning_dedup.note(SessionWarningFamily::AiBackend, auth);
+        let decision = server_b
+            .client_session
+            .session_warning_dedup
+            .note(SessionWarningFamily::AiBackend, auth);
         b_answer.send(decision).ok();
     });
 
@@ -307,7 +321,7 @@ fn client_setting_identity_is_setting_and_value_type_aware() {
 
     // Same setting + normalized value suppresses.
     assert_eq!(
-        server.session_warning_dedup.note_client_setting(
+        server.client_session.session_warning_dedup.note_client_setting(
             "critic.engine",
             "string",
             "not-an-engine"
@@ -315,7 +329,7 @@ fn client_setting_identity_is_setting_and_value_type_aware() {
         SessionWarningDecision::EmitFirst
     );
     assert_eq!(
-        server.session_warning_dedup.note_client_setting(
+        server.client_session.session_warning_dedup.note_client_setting(
             "critic.engine",
             "string",
             "not-an-engine"
@@ -325,7 +339,7 @@ fn client_setting_identity_is_setting_and_value_type_aware() {
 
     // A different setting with an equivalent value stays distinct.
     assert_eq!(
-        server.session_warning_dedup.note_client_setting(
+        server.client_session.session_warning_dedup.note_client_setting(
             "formatting.engine",
             "string",
             "not-an-engine"
@@ -336,7 +350,7 @@ fn client_setting_identity_is_setting_and_value_type_aware() {
     // The same setting with a different value type stays distinct: the JSON
     // type was part of the reviewed pre-#9769 identity too.
     assert_eq!(
-        server.session_warning_dedup.note_client_setting(
+        server.client_session.session_warning_dedup.note_client_setting(
             "critic.engine",
             "number",
             "not-an-engine"
@@ -347,7 +361,7 @@ fn client_setting_identity_is_setting_and_value_type_aware() {
     // An unknown setting name cannot be represented by a bounded tag: the
     // warning still emits, but nothing is retained for it.
     assert_eq!(
-        server.session_warning_dedup.note_client_setting(
+        server.client_session.session_warning_dedup.note_client_setting(
             "critic.unknownKnob",
             "string",
             "some-value"
@@ -499,7 +513,7 @@ fn adversarial_distinct_client_values_still_warn_but_never_grow_retention()
 // -------------------------------------------------------------------------
 
 fn note_project_config(server: &LspServer, subject: &str) -> SessionWarningDecision {
-    server.session_warning_dedup.emit_project_config_warning(
+    server.client_session.session_warning_dedup.emit_project_config_warning(
         SessionWarningCode::ProjectConfigInvalid,
         subject,
         || true,
@@ -594,7 +608,10 @@ fn emit_project_config(
     path: &str,
     delivered: bool,
 ) -> SessionWarningDecision {
-    server.session_warning_dedup.emit_project_config_warning(code, path, || delivered)
+    server
+        .client_session
+        .session_warning_dedup
+        .emit_project_config_warning(code, path, || delivered)
 }
 
 #[test]

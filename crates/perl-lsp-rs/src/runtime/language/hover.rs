@@ -153,7 +153,7 @@ impl LspServer {
         // If the client does not support markdown, convert MarkupContent to
         // plaintext (#1724). This is a single post-processing pass rather than
         // threading the capability through all 22 hover construction sites.
-        if !self.client_capabilities.lock().markdown_support {
+        if !self.client_session.client_capabilities.lock().markdown_support {
             Ok(result.map(Self::convert_hover_to_plaintext))
         } else {
             Ok(result)
@@ -2457,7 +2457,7 @@ Not found in workspace or configured include paths.
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().hover {
+        if !self.client_session.advertised_features.lock().hover {
             return Err(crate::protocol::method_not_advertised());
         }
 

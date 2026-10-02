@@ -259,7 +259,7 @@ impl LspServer {
     /// integration tests can assert capability parsing without reaching through
     /// private state modules.
     pub fn test_client_capabilities(&self) -> crate::state::ClientCapabilities {
-        self.client_capabilities.lock().clone()
+        self.client_session.client_capabilities.lock().clone()
     }
 
     /// Test-only entrypoint for LSP `textDocument/definition`.
@@ -638,7 +638,7 @@ impl LspServer {
     /// integration tests.  Equivalent to mutating `config.perlcritic_enabled`,
     /// `config.perlcritic_severity`, and `config.perlcritic_profile` directly.
     pub fn test_configure_perlcritic(&self, enabled: bool, severity: u8, profile: Option<String>) {
-        let mut cfg = self.config.lock();
+        let mut cfg = self.client_session.config.lock();
         cfg.perlcritic_enabled = enabled;
         cfg.perlcritic_severity = severity;
         cfg.perlcritic_profile = profile;
@@ -646,7 +646,7 @@ impl LspServer {
 
     /// Configure the critic engine directly for test purposes.
     pub fn test_configure_critic_engine(&self, engine: perl_lsp_rs_core::config::CriticEngine) {
-        self.config.lock().critic_engine = engine;
+        self.client_session.config.lock().critic_engine = engine;
     }
 
     /// Configure the native critic profile directly for test purposes.
@@ -654,13 +654,13 @@ impl LspServer {
         if let Some(profile) =
             perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile::parse(profile)
         {
-            self.config.lock().native_critic_profile = profile.as_str().to_string();
+            self.client_session.config.lock().native_critic_profile = profile.as_str().to_string();
         }
     }
 
     /// Configure native critic include/exclude filters directly for test purposes.
     pub fn test_configure_native_critic_filters(&self, include: Vec<String>, exclude: Vec<String>) {
-        let mut cfg = self.config.lock();
+        let mut cfg = self.client_session.config.lock();
         cfg.native_critic_include = include;
         cfg.native_critic_exclude = exclude;
     }
@@ -710,7 +710,7 @@ impl LspServer {
     /// anymore. Disabling revokes the activation so tests observe the same
     /// fail-closed construction gate production uses.
     pub fn test_configure_ai_completion(&self, enabled: bool, fallback: bool) {
-        let mut cfg = self.config.lock();
+        let mut cfg = self.client_session.config.lock();
         cfg.ai_completion.user_enabled = enabled;
         if enabled {
             cfg.ai_completion.admit_trusted_user_operator_activation();
@@ -1065,7 +1065,7 @@ impl LspServer {
     /// in that handler returns early (method-not-advertised) unless this flag
     /// is set, so the wait line is unreachable without enabling it.
     pub fn test_enable_call_hierarchy(&self) {
-        self.advertised_features.lock().call_hierarchy = true;
+        self.client_session.advertised_features.lock().call_hierarchy = true;
     }
 
     /// Test-only entrypoint for LSP `textDocument/prepareCallHierarchy`.

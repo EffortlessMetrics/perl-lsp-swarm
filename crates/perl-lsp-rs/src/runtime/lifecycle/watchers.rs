@@ -46,16 +46,16 @@ impl LspServer {
             return;
         }
 
-        if !self.client_capabilities.lock().dynamic_registration_support {
+        if !self.client_session.client_capabilities.lock().dynamic_registration_support {
             return;
         }
 
-        if !self.advertised_features.lock().workspace_symbol {
+        if !self.client_session.advertised_features.lock().workspace_symbol {
             return;
         }
 
         let supports_relative_patterns =
-            self.client_capabilities.lock().file_watcher_relative_pattern_support;
+            self.client_session.client_capabilities.lock().file_watcher_relative_pattern_support;
         let watchers = if supports_relative_patterns {
             self.relative_file_watchers().unwrap_or_else(string_file_watchers)
         } else {
@@ -128,9 +128,9 @@ impl LspServer {
 
     pub(crate) fn register_inline_completion_if_needed(&self) {
         let should_register = {
-            let caps = self.client_capabilities.lock();
+            let caps = self.client_session.client_capabilities.lock();
             caps.inline_completion_dynamic_registration_support
-                && self.advertised_features.lock().inline_completion
+                && self.client_session.advertised_features.lock().inline_completion
         };
 
         if !should_register {

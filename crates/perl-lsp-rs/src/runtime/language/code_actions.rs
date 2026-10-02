@@ -577,12 +577,12 @@ fn convert_pragma_quickfix_edits_to_snippet_text_edits(
 
 impl LspServer {
     fn supports_workspace_snippet_text_edits(&self) -> bool {
-        let caps = self.client_capabilities.lock();
+        let caps = self.client_session.client_capabilities.lock();
         caps.workspace_edit_document_changes_support && caps.workspace_edit_snippet_edit_support
     }
 
     fn supports_code_action_disabled(&self) -> bool {
-        self.client_capabilities.lock().code_action_disabled_support
+        self.client_session.client_capabilities.lock().code_action_disabled_support
     }
 
     fn maybe_push_disabled_extract_placeholder(
@@ -598,7 +598,7 @@ impl LspServer {
 
     fn enforce_code_action_tag_capabilities(&self, code_actions: &mut [Value]) {
         let supports_llm_generated_tag =
-            self.client_capabilities.lock().code_action_llm_generated_tag_support;
+            self.client_session.client_capabilities.lock().code_action_llm_generated_tag_support;
         enforce_code_action_tag_capability(code_actions, supports_llm_generated_tag);
     }
 
@@ -731,7 +731,7 @@ impl LspServer {
         cancellation: Option<&PerlLspCancellationToken>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().code_action {
+        if !self.client_session.advertised_features.lock().code_action {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -2354,7 +2354,7 @@ print $x;
     }
 
     fn enable_code_action_disabled_support(server: &LspServer) {
-        server.client_capabilities.lock().code_action_disabled_support = true;
+        server.client_session.client_capabilities.lock().code_action_disabled_support = true;
     }
 
     #[test]
@@ -2599,7 +2599,7 @@ print $x;
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         {
-            let mut caps = server.client_capabilities.lock();
+            let mut caps = server.client_session.client_capabilities.lock();
             caps.workspace_edit_document_changes_support = true;
             caps.workspace_edit_snippet_edit_support = true;
         }
@@ -2647,7 +2647,7 @@ print $x;
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         {
-            let mut caps = server.client_capabilities.lock();
+            let mut caps = server.client_session.client_capabilities.lock();
             caps.workspace_edit_document_changes_support = true;
             caps.workspace_edit_snippet_edit_support = true;
         }

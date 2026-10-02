@@ -68,6 +68,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8384"
     ),
     row!(
+        "client_session",
+        ClientSession,
+        "owned service",
+        "connection replacement / shutdown drain",
+        "client session generation",
+        false,
+        "#8386"
+    ),
+    row!(
         "backing_file_transitions",
         DocumentStore,
         "Arc<Mutex>",
@@ -75,42 +84,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "document URI + observed transition",
         false,
         "#8041"
-    ),
-    row!(
-        "initialize_requested",
-        ClientSession,
-        "AtomicBool",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    row!(
-        "initialized",
-        ClientSession,
-        "AtomicBool",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    row!(
-        "shutdown_received",
-        ClientSession,
-        "AtomicBool",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    row!(
-        "pending_startup_log",
-        ClientSession,
-        "Arc<Mutex>",
-        "initialized or connection shutdown",
-        "client session",
-        false,
-        "#8386"
     ),
     row!(
         "index_coordinator",
@@ -129,15 +102,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "project fact generation",
         false,
         "#6957"
-    ),
-    row!(
-        "config",
-        ClientSession,
-        "Arc<Mutex>",
-        "configuration generation / connection replacement",
-        "configuration generation",
-        false,
-        "#8386"
     ),
     row!(
         "reader",
@@ -167,45 +131,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#9507"
     ),
     row!(
-        "client_capabilities",
-        ClientSession,
-        "Mutex",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    // #8161: initialize root-input provenance receipt, written once per
-    // initialize request; kept as a separate receipt from the client's
-    // advertised workspace-folder capability bit.
-    row!(
-        "initial_root_input",
-        ClientSession,
-        "Mutex<Option<InitialRootInput>>",
-        "connection replacement",
-        "initialize root-input provenance receipt (#8161)",
-        false,
-        "#8161"
-    ),
-    row!(
-        "cancelled",
-        ClientSession,
-        "Arc<Mutex>",
-        "request terminal / connection shutdown",
-        "request ID",
-        false,
-        "#7098"
-    ),
-    row!(
-        "pending_request_ids",
-        ClientSession,
-        "Arc<Mutex>",
-        "request terminal / connection shutdown",
-        "request ID",
-        false,
-        "#7098"
-    ),
-    row!(
         "workspace_folders",
         WorkspaceServices,
         "Arc<Mutex>",
@@ -233,51 +158,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8385"
     ),
     row!(
-        "advertised_features",
-        ClientSession,
-        "Mutex",
-        "connection replacement",
-        "initialize surface identity",
-        false,
-        "#8386"
-    ),
-    row!(
-        "advertised_feature_ids",
-        ClientSession,
-        "Mutex",
-        "connection replacement",
-        "initialize surface identity",
-        false,
-        "#8386"
-    ),
-    row!(
-        "text_sync_session",
-        ClientSession,
-        "Mutex<Option<AcceptedTextSyncSession>>",
-        "connection replacement",
-        "accepted text-sync session contract (#9378): immutable FULL + UTF-16 authority written once at initialize acceptance",
-        false,
-        "#9378"
-    ),
-    row!(
-        "position_encoding_session_context",
-        ClientSession,
-        "Mutex<Option<PositionEncodingSessionContext>>",
-        "shutdown / connection replacement",
-        "immutable active position-encoding context (#8534): published at text-sync session acceptance, cleared on shutdown",
-        false,
-        "#8534"
-    ),
-    row!(
-        "client_supports_pull_diags",
-        ClientSession,
-        "Arc<AtomicBool>",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    row!(
         "workspace_config",
         WorkspaceServices,
         "Arc<Mutex>",
@@ -285,15 +165,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "root + configuration generation",
         false,
         "#8385"
-    ),
-    row!(
-        "initialization_options_perl_settings",
-        ClientSession,
-        "Arc<Mutex>",
-        "connection replacement",
-        "client session + configuration generation",
-        false,
-        "#8386"
     ),
     // #15715: tier-3 client settings replayed over merged project config
     // across folder removals; same server-global config ownership shape
@@ -306,42 +177,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "tier-3 client settings replay generation",
         false,
         "#15715"
-    ),
-    row!(
-        "next_request_id",
-        ClientSession,
-        "Arc<AtomicI32>",
-        "connection replacement",
-        "server request ID domain",
-        false,
-        "#7007"
-    ),
-    row!(
-        "pending_workspace_configuration_requests",
-        ClientSession,
-        "Arc<Mutex>",
-        "response/timeout/connection shutdown",
-        "server request ID",
-        false,
-        "#7007"
-    ),
-    row!(
-        "progress_tokens",
-        ClientSession,
-        "Arc<Mutex>",
-        "operation terminal / connection shutdown",
-        "progress token",
-        false,
-        "#6729"
-    ),
-    row!(
-        "progress_token_to_request",
-        ClientSession,
-        "Arc<Mutex>",
-        "operation terminal / connection shutdown",
-        "progress token + request ID",
-        false,
-        "#6729"
     ),
     row!(
         "refresh_controller",
@@ -369,15 +204,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "notebook document generation",
         false,
         "#8384"
-    ),
-    row!(
-        "trace_level",
-        ClientSession,
-        "Arc<Mutex>",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
     ),
     row!(
         "resolve_session_authenticator",
@@ -706,15 +532,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8385"
     ),
     row!(
-        "root_undetected_shown",
-        ClientSession,
-        "Arc<AtomicBool>",
-        "connection replacement",
-        "client session",
-        false,
-        "#8386"
-    ),
-    row!(
         "formatter_runtime_override",
         ProductComposition,
         "Mutex<Option<Arc>>",
@@ -724,15 +541,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#5001"
     ),
     row!(
-        "session_warning_dedup",
-        ClientSession,
-        "owned store (per-family Mutex)",
-        "connection replacement + family lifecycle clear",
-        "typed warning family/code/subject fingerprint",
-        false,
-        "#9769"
-    ),
-    row!(
         "diagnostic_after_snapshot_hook",
         RuntimeServices,
         "Mutex<Option<Box>>",
@@ -740,6 +548,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "test runtime",
         true,
         "#7394"
+    ),
+    row!(
+        "progress_create_outbound_hook",
+        RuntimeServices,
+        "Mutex<Option<Box>>",
+        "test hook release / server drop",
+        "test runtime",
+        true,
+        "#8386"
     ),
     row!(
         "document_symbols_before_commit_hook",
@@ -978,9 +795,6 @@ fn ownership_map_covers_every_current_lsp_server_field() -> Result<()> {
 /// declaration on the struct is raw unbounded state and fails the #9769
 /// negative control -- whatever it is named.
 const STRING_KEYED_STATE_FIELDS: &[&str] = &[
-    // Transport/session bookkeeping with per-item removal semantics.
-    "progress_tokens",
-    "progress_token_to_request",
     // Per-document stores governed by #8384/#8388.
     "documents",
     "parse_cancel_flags",
@@ -988,6 +802,12 @@ const STRING_KEYED_STATE_FIELDS: &[&str] = &[
     // Reviewed analysis surfaces governed by #6957/#8384.
     "provider_decision_traces",
     "semantic_tokens_cache",
+];
+
+const CLIENT_SESSION_STRING_KEYED_STATE_FIELDS: &[&str] = &[
+    // Connection-scoped transport/session bookkeeping with per-item removal.
+    "progress_tokens",
+    "progress_token_to_request",
 ];
 
 /// The declared type text of one field declaration (everything after the
@@ -1012,6 +832,9 @@ fn struct_body(source: &str, marker: &str) -> Result<String> {
     let mut body = String::new();
     for line in source[start + marker.len()..].lines() {
         let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
         if line == "}" {
             return Ok(body);
         }
@@ -1056,11 +879,25 @@ fn session_warning_dedup_is_not_a_raw_string_set() -> Result<()> {
         "the #9769 pull-path warning store name must not return"
     );
 
+    let session_source =
+        fs::read_to_string(repo_root()?.join("crates/perl-lsp-rs/src/runtime/client_session.rs"))?;
+    let session_body = struct_body(&session_source, "pub(crate) struct ClientSession {")?;
+    let session_declarations = split_declarations(&session_body)?;
+    for declaration in &session_declarations {
+        if !is_string_keyed_collection(declaration) {
+            continue;
+        }
+        let name = declaration_field_name(declaration)?;
+        ensure!(
+            CLIENT_SESSION_STRING_KEYED_STATE_FIELDS.contains(&name.as_str()),
+            "ClientSession must not retain raw string-keyed collection state outside the reviewed allowlist (#9769): {declaration}"
+        );
+    }
     ensure!(
-        declarations.iter().any(|declaration| declaration.starts_with(
-            "pub(crate) session_warning_dedup: session_warning_dedup::SessionWarningDedupStore"
-        )),
-        "the bounded #9769 warning-dedup store must remain a governed field"
+        session_declarations.iter().any(|declaration| {
+            declaration.contains("session_warning_dedup: SessionWarningDedupStore")
+        }),
+        "the bounded #9769 warning-dedup store must remain on ClientSession"
     );
 
     Ok(())
@@ -1096,7 +933,7 @@ pub struct LspServer {
     // Reviewed allowlisted state keeps passing the same scan.
     let governed = r#"
 pub struct LspServer {
-    progress_tokens: Arc<Mutex<HashSet<String>>>,
+    documents: Arc<Mutex<HashMap<String, DocumentState>>>,
     provider_decision_traces: Arc<Mutex<HashMap<String, Value>>>,
 }
 "#;
@@ -1433,7 +1270,7 @@ fn a_new_unowned_field_is_rejected() -> Result<()> {
     let source = r#"
 pub struct LspServer {
     documents: Store,
-    initialize_requested: Flag,
+    client_session: Flag,
     newly_added_state: State,
 }
 "#;
@@ -1448,7 +1285,7 @@ fn a_restricted_visibility_field_is_rejected() -> Result<()> {
     let source = r#"
 pub struct LspServer {
     documents: Store,
-    pub(crate) initialize_requested: Flag,
+    pub(crate) client_session: Flag,
     pub(super) sibling_visible_state: State,
     pub(in crate::runtime) path_visible_state: State,
 }
@@ -1474,7 +1311,7 @@ pub struct LspServer {
     let stale = stale_ownership_rows(source)?;
 
     assert!(
-        stale.contains("initialize_requested"),
+        stale.contains("client_session"),
         "a dropped field must leave its ownership row visible as stale"
     );
     assert!(!stale.contains("documents"), "a retained field must not be reported as stale");

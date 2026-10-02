@@ -1227,6 +1227,7 @@ impl LspServer {
                 // clients own diagnostic currency on demand, so push
                 // publication cannot be a required core effect for them.
                 diagnostics_effect_satisfied: self
+                    .client_session
                     .client_supports_pull_diags
                     .load(Ordering::Relaxed),
                 symbols_effect_satisfied: false,

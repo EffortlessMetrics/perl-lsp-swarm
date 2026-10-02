@@ -104,7 +104,7 @@ impl LspServer {
         // a per-request `.or()` merge cannot work because the defaults are
         // `Some(..)` and would always short-circuit the profile value.
         if let Some(options) = discovered_options {
-            self.config.lock().apply_perltidy_native_options(&options);
+            self.client_session.config.lock().apply_perltidy_native_options(&options);
         }
     }
 
@@ -204,12 +204,12 @@ impl LspServer {
         // reset evicts them, so this must precede the baseline restore.
         #[cfg(not(target_arch = "wasm32"))]
         let critic_snapshot_before = {
-            let cfg = self.config.lock();
+            let cfg = self.client_session.config.lock();
             super::super::workspace::critic_config_snapshot(&cfg)
         };
 
         if let Some(baseline) = self.server_config_baseline.lock().clone() {
-            *self.config.lock() = baseline;
+            *self.client_session.config.lock() = baseline;
         }
 
         // Discover before taking the workspace-folder lock because discovery
@@ -243,7 +243,7 @@ impl LspServer {
                         .as_deref()
                         .map(|path| path.display().to_string())
                         .unwrap_or_else(|| PROJECT_CONFIG_SUBJECT.to_string());
-                    let _ = self.session_warning_dedup.emit_project_config_warning(
+                    let _ = self.client_session.session_warning_dedup.emit_project_config_warning(
                         SessionWarningCode::ProjectConfigInvalid,
                         &identity_path,
                         || {
@@ -278,7 +278,7 @@ impl LspServer {
                         selected_config_path.as_deref(),
                     );
                 }
-                let mut server_config = self.config.lock();
+                let mut server_config = self.client_session.config.lock();
                 config.apply_to_server_config(&mut server_config);
             }
             // Replay cached tier-3 (client) settings on top so the
@@ -316,7 +316,9 @@ impl LspServer {
                 // Start with initializationOptions.perl.* as the base layer, then
                 // layer .perl-lsp.toml on top so project config wins.
                 let mut effective_config = WorkspaceConfig::default();
-                if let Some(init_opts) = self.initialization_options_perl_settings.lock().as_ref() {
+                if let Some(init_opts) =
+                    self.client_session.initialization_options_perl_settings.lock().as_ref()
+                {
                     let rejected = effective_config.update_from_value(init_opts);
                     for entry in rejected {
                         tracing::warn!(
@@ -405,28 +407,29 @@ impl LspServer {
                             perl_lsp_rs_core::config::discover_project_config_path(&folder_path)
                                 .map(|path| path.display().to_string())
                                 .unwrap_or_else(|| folder.display_name().to_string());
-                        let _ = self.session_warning_dedup.emit_project_config_warning(
-                            SessionWarningCode::ProjectConfigInvalid,
-                            &identity_path,
-                            || {
-                                match self.notify(
-                                    "window/showMessage",
-                                    serde_json::json!({
-                                        "type": 2, // Warning
-                                        "message": user_msg
-                                    }),
-                                ) {
-                                    Ok(()) => true,
-                                    Err(error) => {
-                                        tracing::warn!(
-                                            error = %error,
-                                            "Failed to send showMessage warning"
-                                        );
-                                        false
+                        let _ =
+                            self.client_session.session_warning_dedup.emit_project_config_warning(
+                                SessionWarningCode::ProjectConfigInvalid,
+                                &identity_path,
+                                || {
+                                    match self.notify(
+                                        "window/showMessage",
+                                        serde_json::json!({
+                                            "type": 2, // Warning
+                                            "message": user_msg
+                                        }),
+                                    ) {
+                                        Ok(()) => true,
+                                        Err(error) => {
+                                            tracing::warn!(
+                                                error = %error,
+                                                "Failed to send showMessage warning"
+                                            );
+                                            false
+                                        }
                                     }
-                                }
-                            },
-                        );
+                                },
+                            );
                     }
                 }
             }
@@ -449,7 +452,7 @@ impl LspServer {
                 perl_lsp_rs_core::config::merge_project_configs_for_server(&merge_inputs);
 
             {
-                let mut config = self.config.lock();
+                let mut config = self.client_session.config.lock();
                 merged.apply_to_server_config(&mut config);
             }
 
@@ -484,11 +487,12 @@ impl LspServer {
     #[cfg(not(target_arch = "wasm32"))]
     fn clear_critic_dedup_if_moved(&self, before: &super::super::workspace::CriticConfigSnapshot) {
         let after = {
-            let cfg = self.config.lock();
+            let cfg = self.client_session.config.lock();
             super::super::workspace::critic_config_snapshot(&cfg)
         };
         if before != &after {
-            self.session_warning_dedup
+            self.client_session
+                .session_warning_dedup
                 .clear_family(super::super::session_warning_dedup::SessionWarningFamily::Critic);
         }
     }
@@ -503,7 +507,7 @@ impl LspServer {
         let Some(perl) = self.last_client_settings.lock().clone() else {
             return;
         };
-        let mut config = self.config.lock();
+        let mut config = self.client_session.config.lock();
         config.update_from_value(&perl);
     }
 
@@ -569,7 +573,7 @@ impl LspServer {
         let identity_path = selected_config_path
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| authority.to_string());
-        let _ = self.session_warning_dedup.emit_project_config_warning(
+        let _ = self.client_session.session_warning_dedup.emit_project_config_warning(
             SessionWarningCode::ProjectConfigVersionInvalid,
             &identity_path,
             || match self.show_message(MessageType::Warning, &user_msg) {
@@ -915,7 +919,7 @@ mod tests {
         // built-in defaults (which are Some(80)/Some(4)), so the native
         // formatter actually honors the project profile. Workspace-first search
         // keeps this assertion independent of any ambient $HOME/$PERLTIDY profile.
-        let config = server.config.lock();
+        let config = server.client_session.config.lock();
         assert_eq!(
             config.perltidy_maximum_line_length,
             Some(120),
@@ -1033,7 +1037,7 @@ include_paths = ["other_lib"]
         // First folder wins for the conflicting global key; folder2 does NOT
         // silently overwrite it.
         assert!(
-            server.config.lock().perlcritic_enabled,
+            server.client_session.config.lock().perlcritic_enabled,
             "first folder's [diagnostics].perlcritic=true must win, not last folder's false"
         );
 
@@ -1076,7 +1080,7 @@ include_paths = ["other_lib"]
 
         server.load_and_apply_project_config();
 
-        let config = server.config.lock();
+        let config = server.client_session.config.lock();
         assert!(config.perlcritic_enabled, "folder1's perlcritic=true must apply");
         assert!(
             !config.inlay_hints_enabled,
@@ -1116,7 +1120,7 @@ include_paths = ["other_lib"]
 
         // First folder (severity 3) wins; last folder (severity 5) does NOT win.
         assert_eq!(
-            server.config.lock().perlcritic_severity,
+            server.client_session.config.lock().perlcritic_severity,
             3,
             "first folder's severity=3 must win, not last folder's 5"
         );
@@ -1251,7 +1255,7 @@ perlcritic_severity = 2
 
         server.load_and_apply_project_config();
         assert_eq!(
-            server.config.lock().perlcritic_severity,
+            server.client_session.config.lock().perlcritic_severity,
             2,
             "TOML severity must reach ServerConfig while the folder is present",
         );
@@ -1264,7 +1268,7 @@ perlcritic_severity = 2
         server.workspace_folders.lock().retain(|f| f.uri != uri);
         server.load_and_apply_project_config();
 
-        let cfg = server.config.lock();
+        let cfg = server.client_session.config.lock();
         assert_eq!(
             cfg.perlcritic_severity, 3,
             "removed-folder severity must not survive the merge (was {} after removal)",
@@ -1317,7 +1321,7 @@ perlcritic_severity = 2
             Some(perl_lsp_rs_core::config::ServerConfig::default());
 
         server.load_and_apply_project_config();
-        assert_eq!(server.config.lock().perlcritic_severity, 2);
+        assert_eq!(server.client_session.config.lock().perlcritic_severity, 2);
 
         // Evict folder_a and re-apply. Folder_b has no critic config, so the
         // merged result has no severity entry; the field must fall back to
@@ -1325,7 +1329,7 @@ perlcritic_severity = 2
         server.workspace_folders.lock().retain(|f| f.uri != uri_a);
         server.load_and_apply_project_config();
 
-        let cfg = server.config.lock();
+        let cfg = server.client_session.config.lock();
         assert_eq!(
             cfg.perlcritic_severity, 3,
             "severity contributed by the removed folder must not persist when remaining folders do not set it (was {})",
@@ -1381,7 +1385,7 @@ perlcritic_severity = 2
 
         server.load_and_apply_project_config();
         assert_eq!(
-            server.config.lock().perlcritic_severity,
+            server.client_session.config.lock().perlcritic_severity,
             4,
             "tier-3 (client) severity must win over tier-2 (TOML) when both are present",
         );
@@ -1392,7 +1396,7 @@ perlcritic_severity = 2
         server.workspace_folders.lock().retain(|f| f.uri != uri);
         server.load_and_apply_project_config();
 
-        let cfg = server.config.lock();
+        let cfg = server.client_session.config.lock();
         assert_eq!(
             cfg.perlcritic_severity, 4,
             "tier-3 severity must survive the removed-folder reset (was {})",
@@ -1430,8 +1434,8 @@ perlcritic_severity = 2
 
         // Simulate `handle_initialize` with `initializationOptions` that set
         // severity 5: the live config and the post-tier-1 baseline agree.
-        server.config.lock().perlcritic_severity = 5;
-        *server.server_config_baseline.lock() = Some(server.config.lock().clone());
+        server.client_session.config.lock().perlcritic_severity = 5;
+        *server.server_config_baseline.lock() = Some(server.client_session.config.lock().clone());
 
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
@@ -1444,7 +1448,7 @@ perlcritic_severity = 2
         server.load_and_apply_project_config();
         server.load_and_apply_project_config();
         assert_eq!(
-            server.config.lock().perlcritic_severity,
+            server.client_session.config.lock().perlcritic_severity,
             2,
             "folder TOML severity must apply while the folder is present",
         );
@@ -1453,7 +1457,7 @@ perlcritic_severity = 2
         server.load_and_apply_project_config();
 
         assert_eq!(
-            server.config.lock().perlcritic_severity,
+            server.client_session.config.lock().perlcritic_severity,
             5,
             "removed-folder reset must restore the tier-1 baseline, not retain tier-2 severity",
         );
@@ -1498,11 +1502,17 @@ perlcritic_severity = 2
         let identity =
             SessionWarningIdentity::subjectless(SessionWarningCode::AiBackendAuthFailure);
         assert_eq!(
-            server.session_warning_dedup.note(SessionWarningFamily::Critic, identity),
+            server
+                .client_session
+                .session_warning_dedup
+                .note(SessionWarningFamily::Critic, identity),
             SessionWarningDecision::EmitFirst,
         );
         assert_eq!(
-            server.session_warning_dedup.note(SessionWarningFamily::Critic, identity),
+            server
+                .client_session
+                .session_warning_dedup
+                .note(SessionWarningFamily::Critic, identity),
             SessionWarningDecision::Suppress,
             "test setup must retain the critic identity before the reload",
         );
@@ -1510,14 +1520,17 @@ perlcritic_severity = 2
         // Default severity is not 2, so applying the folder TOML moves a
         // critic-relevant field and must clear the family.
         assert_ne!(
-            server.config.lock().perlcritic_severity,
+            server.client_session.config.lock().perlcritic_severity,
             2,
             "test setup needs the TOML to move the critic snapshot"
         );
         server.load_and_apply_project_config();
 
         assert_eq!(
-            server.session_warning_dedup.note(SessionWarningFamily::Critic, identity),
+            server
+                .client_session
+                .session_warning_dedup
+                .note(SessionWarningFamily::Critic, identity),
             SessionWarningDecision::EmitFirst,
             "critic-moving reload must drop retained critic identities",
         );
@@ -1538,7 +1551,7 @@ perlcritic_severity = 2
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
                 .with_path(folder.clone()),
         );
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             ServerRequestId::for_test(12),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri.clone()],
@@ -1584,7 +1597,7 @@ perlcritic_severity = 2
                 .with_path(folder2.clone()),
         );
 
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             ServerRequestId::for_test(11),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri1.clone(), uri2.clone()],
@@ -1628,7 +1641,7 @@ perlcritic_severity = 2
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
                 .with_path(folder),
         );
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             ServerRequestId::for_test(101),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri.clone()],
@@ -1648,7 +1661,8 @@ perlcritic_severity = 2
         let folders = server.workspace_folders.lock();
         let state = folders.iter().find(|folder| folder.uri == uri).expect("missing folder");
         assert_eq!(state.effective_workspace_config.resolution_timeout_ms, 321);
-        let serialized = serde_json::to_value(&*server.config.lock()).expect("serialize config");
+        let serialized =
+            serde_json::to_value(&*server.client_session.config.lock()).expect("serialize config");
         assert!(serialized.get("testRunner").is_none());
         assert!(serialized.to_string().find("CANARY").is_none());
     }
@@ -1667,7 +1681,7 @@ perlcritic_severity = 2
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
                 .with_path(folder.clone()),
         );
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             ServerRequestId::for_test(77),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri.clone()],
@@ -1711,7 +1725,7 @@ perlcritic_severity = 2
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
                 .with_path(folder.clone()),
         );
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             ServerRequestId::for_test(99),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri.clone()],
@@ -1903,7 +1917,7 @@ perlcritic_severity = 2
                 "text": "requires 'Buffer::Only';\n"
             }
         })))?;
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             ServerRequestId::for_test(15088),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri],
@@ -2098,10 +2112,10 @@ perlcritic_severity = 2
     #[test]
     fn request_workspace_configuration_supersedes_older_pending_requests() {
         let server = LspServer::new();
-        server.client_capabilities.lock().workspace_configuration_support = true;
+        server.client_session.client_capabilities.lock().workspace_configuration_support = true;
         // Supersession is a post-initialize concern; server->client requests are
         // rejected before initialization completes (#7708).
-        server.initialized.store(true, Ordering::Release);
+        server.client_session.initialized.store(true, Ordering::Release);
 
         let temp = tempfile::tempdir().expect("failed to create temp dir");
         let folder = temp.path().join("folder");
@@ -2114,7 +2128,7 @@ perlcritic_severity = 2
         );
         let expected_uri = server.workspace_folders.lock()[0].uri.clone();
 
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             ServerRequestId::for_test(1),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec!["file:///stale".to_string()],
@@ -2125,7 +2139,7 @@ perlcritic_severity = 2
 
         server.request_workspace_configuration_for_folders();
 
-        let pending = server.pending_workspace_configuration_requests.lock();
+        let pending = server.client_session.pending_workspace_configuration_requests.lock();
         assert_eq!(pending.len(), 1, "only latest request should remain pending");
         let pending_request = pending.values().next().expect("missing pending request");
         assert_eq!(pending_request.folder_uris.len(), 1);
@@ -2143,7 +2157,7 @@ perlcritic_severity = 2
             .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
             .to_string();
 
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             ServerRequestId::for_test(700),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri.clone()],
@@ -2160,7 +2174,7 @@ perlcritic_severity = 2
         })))?;
 
         assert!(
-            server.pending_workspace_configuration_requests.lock().is_empty(),
+            server.client_session.pending_workspace_configuration_requests.lock().is_empty(),
             "workspace folder changes should invalidate stale scoped configuration requests",
         );
         Ok(())
@@ -2246,7 +2260,7 @@ perlcritic_severity = 2
     }
 
     fn insert_pending_request(server: &LspServer, request_id: i32, folder_uris: Vec<String>) {
-        server.pending_workspace_configuration_requests.lock().insert(
+        server.client_session.pending_workspace_configuration_requests.lock().insert(
             ServerRequestId::for_test(request_id),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris,
@@ -2263,13 +2277,14 @@ perlcritic_severity = 2
         let server = LspServer::new();
         let temp = tempfile::tempdir()?;
         let uri = push_folder_with_project_config(&server, &temp, "alpha")?;
-        *server.initialization_options_perl_settings.lock() = Some(serde_json::json!({
-            "workspace": {
-                "resolutionTimeout": 111,
-                "includePaths": ["init_lib"],
-                "usePerl5lib": false
-            }
-        }));
+        *server.client_session.initialization_options_perl_settings.lock() =
+            Some(serde_json::json!({
+                "workspace": {
+                    "resolutionTimeout": 111,
+                    "includePaths": ["init_lib"],
+                    "usePerl5lib": false
+                }
+            }));
         insert_pending_request(&server, 300, vec![uri.clone()]);
 
         server.handle_client_response(Some(serde_json::json!({
@@ -2323,7 +2338,7 @@ perlcritic_severity = 2
         let server = LspServer::new();
         let temp = tempfile::tempdir()?;
         let uri = push_folder_with_project_config(&server, &temp, "beta")?;
-        *server.initialization_options_perl_settings.lock() =
+        *server.client_session.initialization_options_perl_settings.lock() =
             Some(serde_json::json!({ "workspace": { "resolutionTimeout": 111 } }));
 
         server.handle_did_change_configuration(Some(serde_json::json!({
@@ -2501,7 +2516,7 @@ perlcritic_severity = 2
             } }
         })));
 
-        let config = server.config.lock();
+        let config = server.client_session.config.lock();
         assert!(
             config.inlay_hints_enabled,
             "unrelated ServerConfig field from the earlier batch must survive"
@@ -2543,7 +2558,7 @@ perlcritic_severity = 2
         let server = LspServer::new();
         let temp = tempfile::tempdir()?;
         let uri = push_folder_with_project_config(&server, &temp, "zeta")?;
-        *server.initialization_options_perl_settings.lock() =
+        *server.client_session.initialization_options_perl_settings.lock() =
             Some(serde_json::json!({ "workspace": { "resolutionTimeout": 111 } }));
 
         server.handle_did_change_configuration(Some(serde_json::json!({

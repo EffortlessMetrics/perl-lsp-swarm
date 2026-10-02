@@ -162,7 +162,7 @@ impl LspServer {
 
     /// Check if the server is initialized
     pub fn is_initialized(&self) -> bool {
-        self.initialized.load(Ordering::Acquire)
+        self.client_session.initialized.load(Ordering::Acquire)
     }
 
     /// Mark a request as cancelled.
@@ -173,8 +173,8 @@ impl LspServer {
     /// the scheduler-aware path. The legacy helper remains for internal
     /// supersession and test paths; its cap prevents unbounded growth.
     pub(crate) fn cancel_mark(&self, id: &JsonRpcId) {
-        let pending = self.pending_request_ids.lock();
-        let mut c = self.cancelled.lock();
+        let pending = self.client_session.pending_request_ids.lock();
+        let mut c = self.client_session.cancelled.lock();
         if c.len() >= CANCELLED_SET_CAP {
             c.retain(|candidate| pending.contains(candidate));
         }
@@ -183,17 +183,17 @@ impl LspServer {
 
     /// Keep a scheduler-owned request ID protected from stale-marker trimming.
     pub(crate) fn mark_request_pending(&self, id: &JsonRpcId) {
-        self.pending_request_ids.lock().insert(id.clone());
+        self.client_session.pending_request_ids.lock().insert(id.clone());
     }
 
     /// Mark cancellation only while the scheduler still owns this request.
     /// Holding both locks in this order closes the settlement race.
     pub(crate) fn mark_cancelled_if_pending(&self, id: &JsonRpcId) {
-        let pending = self.pending_request_ids.lock();
+        let pending = self.client_session.pending_request_ids.lock();
         if !pending.contains(id) {
             return;
         }
-        let mut cancelled = self.cancelled.lock();
+        let mut cancelled = self.client_session.cancelled.lock();
         if cancelled.len() >= CANCELLED_SET_CAP {
             cancelled.retain(|candidate| pending.contains(candidate));
         }
@@ -202,21 +202,21 @@ impl LspServer {
 
     /// Release a scheduler-owned request ID after it is fully settled.
     pub(crate) fn clear_request_pending(&self, id: &JsonRpcId) {
-        let mut pending = self.pending_request_ids.lock();
-        let mut cancelled = self.cancelled.lock();
+        let mut pending = self.client_session.pending_request_ids.lock();
+        let mut cancelled = self.client_session.cancelled.lock();
         pending.remove(id);
         cancelled.remove(id);
     }
 
     /// Clear a cancelled request
     pub(crate) fn cancel_clear(&self, id: &JsonRpcId) {
-        let mut c = self.cancelled.lock();
+        let mut c = self.client_session.cancelled.lock();
         c.remove(id);
     }
 
     /// Check if a request has been cancelled
     pub(crate) fn is_cancelled(&self, id: &JsonRpcId) -> bool {
-        let set = self.cancelled.lock();
+        let set = self.client_session.cancelled.lock();
         set.contains(id)
     }
 
@@ -226,7 +226,7 @@ impl LspServer {
     /// the server will look up the request ID and signal cancellation via the
     /// global cancellation registry.
     pub(crate) fn register_progress_request(&self, token: &str, request_id: JsonRpcId) {
-        self.progress_token_to_request.lock().insert(token.to_string(), request_id);
+        self.client_session.progress_token_to_request.lock().insert(token.to_string(), request_id);
     }
 }
 
@@ -312,7 +312,7 @@ mod tests {
         if writes.load(std::sync::atomic::Ordering::SeqCst) == 0 {
             return Err("required response never reached the failing writer".into());
         }
-        if server.pending_request_ids.lock().contains(&JsonRpcId::Integer(14168)) {
+        if server.client_session.pending_request_ids.lock().contains(&JsonRpcId::Integer(14168)) {
             return Err("failed live request remained pending after serve_async returned".into());
         }
         drop(tx);

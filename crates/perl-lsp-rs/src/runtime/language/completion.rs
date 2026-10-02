@@ -1761,7 +1761,7 @@ impl LspServer {
                     item_defaults_data_support,
                     apply_kind_support,
                 ) = {
-                    let client_caps = self.client_capabilities.lock();
+                    let client_caps = self.client_session.client_capabilities.lock();
                     (
                         client_caps.snippet_support,
                         client_caps.completion_commit_characters_support,
@@ -1827,7 +1827,7 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().completion {
+        if !self.client_session.advertised_features.lock().completion {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -2166,7 +2166,7 @@ impl LspServer {
                     item_defaults_data_support,
                     apply_kind_support,
                 ) = {
-                    let client_caps = self.client_capabilities.lock();
+                    let client_caps = self.client_session.client_capabilities.lock();
                     (
                         client_caps.snippet_support,
                         client_caps.completion_commit_characters_support,
@@ -2423,7 +2423,8 @@ impl LspServer {
             .to_string();
         let kind = item.get("kind").and_then(|v| v.as_u64()).unwrap_or(0);
         let has_doc = item.get("documentation").is_some();
-        let label_details_support = self.client_capabilities.lock().label_details_support;
+        let label_details_support =
+            self.client_session.client_capabilities.lock().label_details_support;
 
         // Check if this is a built-in function and add documentation
         let builtin_signatures = crate::builtin_signatures::create_builtin_signatures();
@@ -4787,7 +4788,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
         // Simulate a client that declared labelDetailsSupport.
-        server.client_capabilities.lock().label_details_support = true;
+        server.client_session.client_capabilities.lock().label_details_support = true;
 
         let item = json!({
             "label": "print",
@@ -4836,7 +4837,7 @@ mod tests {
     fn test_completion_variable_has_label_details_on_resolve()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
-        server.client_capabilities.lock().label_details_support = true;
+        server.client_session.client_capabilities.lock().label_details_support = true;
 
         let item = json!({ "label": "$count", "kind": 6 });
         let resolved = server

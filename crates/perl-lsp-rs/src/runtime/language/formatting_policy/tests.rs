@@ -4,7 +4,7 @@ use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
 use std::sync::Arc;
 
 fn advertise(server: &LspServer, surface: Surface) {
-    server.advertised_feature_ids.lock().push(surface.feature_id());
+    server.client_session.advertised_feature_ids.lock().push(surface.feature_id());
 }
 
 fn receipt(server: &LspServer) -> Result<Value, Box<dyn std::error::Error>> {
@@ -39,7 +39,7 @@ fn initialize(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
 fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::Document);
-    server.config.lock().perltidy_enabled = false;
+    server.client_session.config.lock().perltidy_enabled = false;
     let uri = "file:///disabled-formatting.pl";
     server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
 
@@ -137,7 +137,7 @@ fn generic_external_formatter_alias_is_contained_before_formatting()
     server.test_handle_did_change_configuration(Some(json!({
         "settings": { "perl": { "formatting": { "engine": "external-legacy" } } }
     })));
-    assert_eq!(server.config.lock().formatting_engine, FormatterMode::Native);
+    assert_eq!(server.client_session.config.lock().formatting_engine, FormatterMode::Native);
 
     let uri = "file:///generic-external-alias.pl";
     server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
@@ -182,7 +182,10 @@ fn trusted_project_external_formatter_reaches_injected_runtime()
     );
     server.load_and_apply_project_config();
 
-    assert_eq!(server.config.lock().formatting_engine, FormatterMode::ExternalLegacy);
+    assert_eq!(
+        server.client_session.config.lock().formatting_engine,
+        FormatterMode::ExternalLegacy
+    );
     let uri = "file:///project-external-formatting.pl";
     server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
     let result = server.handle_formatting_policy(
@@ -208,7 +211,7 @@ fn multi_range_external_formatter_reaches_injected_runtime()
     let runtime = Arc::new(MockSubprocessRuntime::new());
     runtime.add_response(MockResponse::success("my $x = 1;\nmy $y = 2;\n"));
     server.test_install_formatter_runtime(runtime.clone());
-    server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
+    server.client_session.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
 
     let uri = "file:///multi-range-external-formatting.pl";
     server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
@@ -287,7 +290,7 @@ fn native_refusal_is_not_no_change() -> Result<(), Box<dyn std::error::Error>> {
 fn disabled_on_type_does_not_run() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::OnType);
-    server.config.lock().formatting_engine = FormatterMode::Off;
+    server.client_session.config.lock().formatting_engine = FormatterMode::Off;
     let uri = "file:///disabled-on-type.pl";
     server.test_apply_did_open(uri, "if ($ok) {\n\n", 1)?;
 
@@ -312,7 +315,7 @@ fn disabled_on_type_does_not_run() -> Result<(), Box<dyn std::error::Error>> {
 fn tab_indentation_on_type_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::OnType);
-    server.config.lock().perltidy_tabs = Some(true);
+    server.client_session.config.lock().perltidy_tabs = Some(true);
     let uri = "file:///tabs-on-type.pl";
     server.test_apply_did_open(uri, "if ($ok) {\n\n", 1)?;
 
@@ -408,7 +411,7 @@ fn missing_on_type_trigger_is_rejected() -> Result<(), Box<dyn std::error::Error
 fn external_partial_range_never_substitutes_native() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::Range);
-    server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
+    server.client_session.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
     let uri = "file:///external-range.pl";
     server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
 
@@ -539,7 +542,7 @@ fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
         "options": { "tabSize": 4, "insertSpaces": true },
     });
     let fresh = server.admit(Surface::Document, &fresh_params)?;
-    server.config.lock().perltidy_maximum_line_length = Some(96);
+    server.client_session.config.lock().perltidy_maximum_line_length = Some(96);
     let error = server.ensure_current(&fresh).err().ok_or("expected stale-configuration error")?;
     assert_eq!(error.code, CONTENT_MODIFIED);
     assert_eq!(receipt(&server)?["reason"], "stale_configuration");
@@ -552,7 +555,7 @@ fn stale_unknown_range_decision_preserves_unknown_receipt_engine()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::Range);
-    server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
+    server.client_session.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
     let uri = "file:///stale-unknown-range-formatting.pl";
     server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
     let params = json!({
@@ -607,7 +610,7 @@ fn stale_unknown_range_decision_preserves_unknown_receipt_engine()
         &fresh_context,
     )?;
     assert_eq!(fresh_decision.outcome.identity.actual_engine, FormatEngine::Unknown);
-    server.config.lock().perltidy_maximum_line_length = Some(96);
+    server.client_session.config.lock().perltidy_maximum_line_length = Some(96);
     let error = server
         .ensure_current_with_engine(&fresh, Some(actual_engine_for_decision(&fresh_decision)))
         .err()
@@ -994,7 +997,7 @@ fn live_external_partial_range_cannot_execute_any_formatter_edits()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
-    server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
+    server.client_session.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
     let runtime = Arc::new(MockSubprocessRuntime::new());
     server.test_install_formatter_runtime(runtime.clone());
     let uri = "file:///live-external-range.pl";
@@ -1151,7 +1154,7 @@ fn receipt_static_invariants_hold_for_disabled_formatter() -> Result<(), Box<dyn
 {
     let server = LspServer::new();
     advertise(&server, Surface::Document);
-    server.config.lock().perltidy_enabled = false;
+    server.client_session.config.lock().perltidy_enabled = false;
     let uri = "file:///disabled-formatter-invariants.pl";
     server.test_apply_did_open(uri, "my $x = 1;\n", 1)?;
 

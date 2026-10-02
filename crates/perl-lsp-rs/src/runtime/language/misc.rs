@@ -616,20 +616,20 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().inlay_hints {
+        if !self.client_session.advertised_features.lock().inlay_hints {
             return Err(crate::protocol::method_not_advertised());
         }
 
         use crate::protocol::req_range;
 
         // Return empty if client does not support inlay hints.
-        if !self.client_capabilities.lock().inlay_hint_support {
+        if !self.client_session.client_capabilities.lock().inlay_hint_support {
             return Ok(Some(json!([])));
         }
 
         // Snapshot config once to avoid holding the lock across the hint generation.
         let (hints_enabled, param_hints, type_hints, max_label_length) = {
-            let cfg = self.config.lock();
+            let cfg = self.client_session.config.lock();
             (
                 cfg.inlay_hints_enabled,
                 cfg.inlay_hints_parameter_hints,
@@ -781,7 +781,7 @@ impl LspServer {
         // Read client capabilities before taking the authenticator, so this
         // path never holds the authenticator while acquiring another lock.
         let (supports_label_location, profile) = {
-            let capabilities = self.client_capabilities.lock();
+            let capabilities = self.client_session.client_capabilities.lock();
             let supports = capabilities
                 .inlay_hint_resolve_support
                 .as_ref()
@@ -916,6 +916,7 @@ impl LspServer {
             // parts, and resolve only populates the advertised nested property (#14679). A
             // string label is left untouched rather than rewritten into parts.
             let client_supports_label_location = self
+                .client_session
                 .client_capabilities
                 .lock()
                 .inlay_hint_resolve_support
@@ -1051,7 +1052,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().selection_range {
+        if !self.client_session.advertised_features.lock().selection_range {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1098,7 +1099,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().code_lens {
+        if !self.client_session.advertised_features.lock().code_lens {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1165,7 +1166,8 @@ impl LspServer {
     }
 
     fn client_supports_code_lens_command_resolve(&self) -> bool {
-        self.client_capabilities
+        self.client_session
+            .client_capabilities
             .lock()
             .code_lens_resolve_support
             .as_ref()
@@ -1317,7 +1319,7 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         use crate::inline_completions::InlineCompletionProvider;
 
-        if !self.advertised_features.lock().inline_completion {
+        if !self.client_session.advertised_features.lock().inline_completion {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1357,7 +1359,7 @@ impl LspServer {
 
             // Try AI backend if enabled
             let (ai_enabled, ai_fallback, ai_max_output_tokens, ai_timeout_ms) = {
-                let cfg = self.config.lock();
+                let cfg = self.client_session.config.lock();
                 let a = &cfg.ai_completion;
                 (a.enabled, a.fallback, a.max_output_tokens, a.timeout_ms)
             };
@@ -1842,7 +1844,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().document_color {
+        if !self.client_session.advertised_features.lock().document_color {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1897,7 +1899,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().document_color {
+        if !self.client_session.advertised_features.lock().document_color {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -1934,7 +1936,7 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
-        if !self.advertised_features.lock().linked_editing {
+        if !self.client_session.advertised_features.lock().linked_editing {
             return Err(crate::protocol::method_not_advertised());
         }
 
@@ -2093,7 +2095,7 @@ impl LspServer {
             // reports the same rule set as the editor's on-type native pull
             // diagnostics.
             let (critic_engine, native_profile, native_include, native_exclude, native_severity) = {
-                let config = self.config.lock();
+                let config = self.client_session.config.lock();
                 (
                     config.critic_engine,
                     config.native_critic_profile.clone(),
@@ -2471,7 +2473,7 @@ mod tests {
     fn make_server_with_caps(caps: ClientCapabilities) -> LspServer {
         let server =
             LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(Vec::<u8>::new()));
-        *server.client_capabilities.lock() = caps;
+        *server.client_session.client_capabilities.lock() = caps;
         server
     }
 
@@ -2883,7 +2885,7 @@ mod tests {
 
         server.handle_initialize(Some(params)).expect("initialize must not error");
 
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
         let props = caps
             .inlay_hint_resolve_support
             .as_ref()
@@ -2908,7 +2910,7 @@ mod tests {
 
         server.handle_initialize(Some(params)).expect("initialize must not error");
 
-        let caps = server.client_capabilities.lock();
+        let caps = server.client_session.client_capabilities.lock();
         assert!(
             caps.inlay_hint_resolve_support.is_none(),
             "inlay_hint_resolve_support must remain None when client sends no resolveSupport"
