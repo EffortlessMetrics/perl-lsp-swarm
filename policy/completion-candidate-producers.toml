@@ -96,7 +96,12 @@ outcome_owner = "#10230"
 # remain unchanged. Index/scope argument grouping preserves traversal semantics;
 # new tests propagate failures without panic. Native cloud reconciliation must
 # verify this exact source binding and generated projection before acceptance.
-source_digest = "sha256:987ff18129ce42eef51a34e3d6bab79184fc279c4d39ab7f6c63a4c38c3d54e1"
+# Re-audit 2026-10-02 (#17062): the indexed-method collector now applies
+# explicit-before-generated precedence in both branches and rejects descendant
+# package members before name deduplication. Current-buffer and URI/root
+# admission remain unchanged. Producer population, channels, entry reach and
+# finalizer route are unchanged; native reconciliation remains required.
+source_digest = "sha256:579f79fcf33f78f5dbd9f0530c2c0ee559888592b3acac58f5cf14fd55138c98"
 
 [[delegations]]
 module = "dancer2"

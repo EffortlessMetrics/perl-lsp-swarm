@@ -2765,35 +2765,19 @@ fn collect_all_package_members_with_source(
                     result.push(symbol);
                 }
             }
-            // Current-buffer source wins on name collision. Keep generated
-            // members and non-colliding explicit methods from split files.
-            push_index_method_symbols(
-                index
-                    .get_generated_package_members(pkg)
-                    .into_iter()
-                    .filter(|symbol| scope.admits(index, &symbol.uri)),
-                seen_names,
-                result,
-            );
-            push_index_method_symbols(
-                index
-                    .get_package_members(pkg)
-                    .into_iter()
-                    .filter(|symbol| scope.admits(index, &symbol.uri)),
-                seen_names,
-                result,
-            );
-        } else {
-            push_index_method_symbols(
-                index
-                    .get_package_members(pkg)
-                    .into_iter()
-                    .chain(index.get_generated_package_members(pkg))
-                    .filter(|symbol| scope.admits(index, &symbol.uri)),
-                seen_names,
-                result,
-            );
         }
+        // Current-buffer source wins first. In both collector branches,
+        // explicit indexed methods override same-named generated accessors.
+        push_index_method_symbols(
+            pkg,
+            index
+                .get_package_members(pkg)
+                .into_iter()
+                .chain(index.get_generated_package_members(pkg))
+                .filter(|symbol| scope.admits(index, &symbol.uri)),
+            seen_names,
+            result,
+        );
 
         // Traverse @ISA ancestors in MRO order. C3 uses the same parent walk as
         // DFS here: completion only needs consistent visitation, not a second
@@ -2858,12 +2842,21 @@ fn empty_source_package_facts() -> SourcePackageFacts {
 }
 
 fn push_index_method_symbols(
+    package_name: &str,
     symbols: impl IntoIterator<Item = WorkspaceSymbol>,
     seen_names: &mut HashSet<String>,
     result: &mut Vec<WorkspaceSymbol>,
 ) {
     for symbol in symbols {
-        if symbol.is_lexical {
+        // The legacy index query includes qualified-name prefixes. A nested
+        // package is not its parent's method owner, so require the immediate
+        // declaring package before name-based deduplication.
+        let owner = symbol
+            .qualified_name
+            .as_deref()
+            .and_then(|name| name.rsplit_once("::").map(|(owner, _)| owner))
+            .or(symbol.container_name.as_deref());
+        if symbol.is_lexical || owner != Some(package_name) {
             continue;
         }
         match symbol.kind {
@@ -3234,6 +3227,81 @@ sub own_method { 1 }
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_prefers_explicit_split_methods_to_generated_accessors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/Generated.pm")?,
+            "package User; use Moo; has 'name' => (is => 'ro'); \
+             has 'generated_only' => (is => 'ro');"
+                .to_string(),
+        )?;
+        index.index_initial_file(
+            Url::parse("file:///workspace/Explicit.pm")?,
+            "package User; sub name { 'explicit' }".to_string(),
+        )?;
+        assert!(
+            index.get_generated_package_members("User").iter().any(|m| m.name == "name"),
+            "fixture must include the competing generated accessor"
+        );
+        for source in ["package User; sub local { 1 }", ""] {
+            let members = collect_all_package_members_with_source(
+                &index,
+                "User",
+                source,
+                Some("file:///workspace/Current.pm"),
+            );
+            let named: Vec<_> = members.iter().filter(|m| m.name == "name").collect();
+            assert_eq!(named.len(), 1, "the collision must produce one method");
+            assert!(named[0].has_body, "explicit method must win over virtual accessor");
+            assert!(
+                members.iter().any(|m| m.name == "generated_only" && !m.has_body),
+                "noncolliding generated accessors must remain"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn collect_all_keeps_nested_package_methods_with_their_exact_owner()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index.index_initial_file(
+            Url::parse("file:///workspace/Split.pm")?,
+            "package User; sub own { 1 } package User::Private; sub secret { 1 }"
+                .to_string(),
+        )?;
+        assert!(
+            index.get_package_members("User").iter().any(|m| m.name == "secret"),
+            "fixture must challenge the legacy prefix-based query"
+        );
+        for source in ["package User; sub local { 1 }", ""] {
+            let members = collect_all_package_members_with_source(
+                &index,
+                "User",
+                source,
+                Some("file:///workspace/Current.pm"),
+            );
+            assert!(members.iter().any(|m| m.name == "own"), "same-package method retained");
+            assert!(
+                !members.iter().any(|m| m.name == "secret"),
+                "descendant method must not be offered on its parent"
+            );
+        }
+        let nested = collect_all_package_members_with_source(
+            &index,
+            "User::Private",
+            "package User::Private; sub local { 1 }",
+            Some("file:///workspace/Current.pm"),
+        );
+        assert!(
+            nested.iter().any(|m| m.name == "secret"),
+            "the same method must remain available to its actual receiver"
+        );
         Ok(())
     }
 
