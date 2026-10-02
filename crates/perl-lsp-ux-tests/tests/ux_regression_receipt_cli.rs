@@ -32,12 +32,43 @@ fn passing_run_emits_exact_subject_nonblocking_receipt() -> Result<()> {
     fs::write(temp.path().join("ux.exit"), "0\n")?;
     let output = emit(temp.path())?;
     ensure!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    ensure!(
+        output.stdout
+            == format!("Wrote UX regression receipt: {}\n", temp.path().join("ux.json").display())
+                .as_bytes(),
+        "unexpected receipt-path stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
     let value: Value = serde_json::from_slice(&fs::read(temp.path().join("ux.json"))?)?;
     ensure!(value["schema_version"] == 2);
     ensure!(value["sha"] == SHA);
     ensure!(value["result"] == "pass");
     ensure!(value["blocking"] == false);
     ensure!(value["merge_action"] == "merge_allowed");
+    Ok(())
+}
+
+#[test]
+fn no_receipt_path_prints_the_json_payload() -> Result<()> {
+    let temp = TempDir::new()?;
+    fs::write(temp.path().join("ux.log"), "running 1 test\ntest result: ok. 1 passed; 0 failed\n")?;
+    fs::write(temp.path().join("ux.exit"), "0\n")?;
+    let output = Command::new(env!("CARGO_BIN_EXE_ux-regression-receipt"))
+        .args([
+            "--input",
+            temp.path().join("ux.log").to_str().ok_or_else(|| anyhow::anyhow!("log path"))?,
+            "--exit-status-file",
+            temp.path().join("ux.exit").to_str().ok_or_else(|| anyhow::anyhow!("exit path"))?,
+            "--sha",
+            SHA,
+        ])
+        .output()?;
+    ensure!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let value: Value = serde_json::from_slice(&output.stdout)?;
+    ensure!(value["sha"] == SHA);
+    ensure!(value["result"] == "pass");
+    ensure!(output.stdout.ends_with(b"\n"));
+    ensure!(!temp.path().join("ux.json").exists());
     Ok(())
 }
 
@@ -69,6 +100,7 @@ fn missing_log_or_status_and_malformed_status_emit_no_receipt() -> Result<()> {
         }
         let output = emit(temp.path())?;
         ensure!(!output.status.success(), "{missing} unexpectedly succeeded");
+        ensure!(output.stdout.is_empty(), "{missing} emitted stdout before failing");
         ensure!(!temp.path().join("ux.json").exists(), "{missing} emitted a receipt");
     }
     Ok(())

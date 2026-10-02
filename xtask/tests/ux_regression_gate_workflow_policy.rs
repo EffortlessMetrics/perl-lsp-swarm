@@ -10,7 +10,7 @@ use std::{
     process::{Command, Output},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::Value as JsonValue;
 use serde_yaml_ng::Value;
 use tempfile::TempDir;
@@ -125,7 +125,39 @@ fn emit_receipt(root: &Path) -> Result<JsonValue> {
         ])
         .output()?;
     assert_exit(&output, 0, "ux-regression-receipt")?;
+    let expected = format!("Wrote UX regression receipt: {}\n", receipt.display());
+    if output.stdout != expected.as_bytes() {
+        bail!(
+            "ux-regression-receipt: expected receipt-path stdout, got {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
     Ok(serde_json::from_str(&fs::read_to_string(receipt)?)?)
+}
+
+#[test]
+fn ux_receipt_without_output_path_prints_json() -> Result<()> {
+    let temp = TempDir::new()?;
+    let log = temp.path().join("ux.log");
+    let exit = temp.path().join("ux.exit");
+    fs::write(&log, "running 1 test\ntest result: ok. 1 passed; 0 failed\n")?;
+    fs::write(&exit, "0\n")?;
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args([
+            "ux-regression-receipt",
+            "--input",
+            log.to_str().ok_or_else(|| anyhow!("log path"))?,
+            "--exit-status-file",
+            exit.to_str().ok_or_else(|| anyhow!("exit path"))?,
+            "--sha",
+            FIXED_SHA,
+        ])
+        .output()?;
+    assert_exit(&output, 0, "ux-regression-receipt without output path")?;
+    let value: JsonValue = serde_json::from_slice(&output.stdout)?;
+    ensure!(value["sha"] == FIXED_SHA);
+    ensure!(value["result"] == "pass");
+    Ok(())
 }
 
 fn execute_verifier(run: &str, root: &Path) -> Result<Output> {
