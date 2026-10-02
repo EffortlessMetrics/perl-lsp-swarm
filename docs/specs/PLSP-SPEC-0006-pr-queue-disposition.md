@@ -201,10 +201,12 @@ word is not a semantic disposition.
 
 ### Mergeability signal during long-running suites (2026-08-23, #11928)
 
-The enforced integration set on current `main` is exactly five status contexts: classic
-branch protection requires `Perl LSP Rust Small Result` and `ripr+ New Gap Gate`; the
-active ruleset additionally requires `Compile All Targets (bit-rot guard)`,
-`Conflict marker check`, and `validate-title`. Every producing workflow triggers on all
+The enforced integration set observed on `main` on 2026-09-29 is five status contexts.
+The active ruleset requires `Perl LSP Rust Small Result`, `ripr+ New Gap Gate`,
+`Compile All Targets (bit-rot guard)`, `Conflict marker check`, and `validate-title`;
+classic branch protection currently adds no contexts. Read both live policy sources
+additively at merge time rather than treating this historical snapshot as policy.
+Every producing workflow triggers on all
 pull requests without path filters. Advisory, third-party, and path-filtered suites hold
 no enforcement binding, so a queued or skipped run among them cannot gate integration by
 policy — whatever it does to event volume.
@@ -224,6 +226,32 @@ the five enforced contexts directly instead of acting on the summary word; and n
 mutate, close, or rebase a candidate because of either state. Workflow or runner changes
 that would shorten these windows are ordinary claims owned by their own issues; summary-
 word frustration alone selects no branch mutation and no protection change here.
+
+For `UNSTABLE` with all live required contexts successful, preserve the advisory
+failure boundary explicitly. A candidate-owned advisory regression blocks merge.
+An inherited failure needs matching check and failure evidence from the candidate's
+merge base; an instrument or environment failure needs a named discriminator and
+source evidence. An unclassified material failure remains `NOT_PROVEN` and blocks.
+An advisory that is still `NOT_PROVEN` may be recorded as nonmaterial only when a
+specific production-path or changed-path discriminator establishes why it cannot
+affect this candidate's reviewed claim. This is not a passing result for that advisory.
+Pending, cancelled, and action-required advisory checks have no verdict; report them
+as such without making them required gates. Unknown or malformed check states remain
+`NOT_PROVEN` for the guard. Required contexts still need an unambiguous current
+`SUCCESS` result.
+
+`scripts/pre-merge-check.sh` reads current ruleset and classic protection, compares
+them with `gh pr checks --required`, and uses current `gh pr checks` results to avoid
+counting superseded attempts in the raw status rollup. It matches advisory reds by
+check name and run URL. For `UNSTABLE`, supply `PRE_MERGE_ADVISORY_EVIDENCE` as a JSON file with the
+current `headRefOid` and one `advisories` entry per red check. Each entry names
+`name`, `link`, `classification`, `discriminator`, and `evidenceUrl`.
+`inherited` also requires `mergeBaseRunUrl`; `not_proven_nonmaterial` also requires
+`nonmaterialReason`. Missing, stale, duplicate, candidate-owned, or unclassified
+entries fail closed. This record supports the handoff guard; GitHub protection and
+the substantive review remain independent merge authorities. The helper validates
+identity and required evidence fields; a substantive reviewer must judge whether
+the cited merge-base signature and nonmateriality claims are true.
 
 ## Stacked candidates under squash merge
 
