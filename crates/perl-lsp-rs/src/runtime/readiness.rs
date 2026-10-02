@@ -23,7 +23,11 @@ const INDEX_READY_POLL_MS: u64 = 1;
 // gate; a dropped release sender disconnects immediately. The long leash
 // keeps gate-based race tests stable under fully parallel test loads
 // (#13308).
-const INDEXING_START_GATE_WAIT_MS: u64 = 30_000;
+//
+// `pub(crate)` so `workspace`'s tests can assert their own wait budget
+// outlasts this lease; a test-side wait shorter than the gate's own leash is a
+// structural race with the harness, not a stricter measurement (#16695).
+pub(crate) const INDEXING_START_GATE_WAIT_MS: u64 = 30_000;
 
 /// LSP-level milestones used to measure when startup indexing becomes useful.
 #[allow(dead_code)] // Provider readiness hooks land in the follow-up workload slice.
