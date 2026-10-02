@@ -56,10 +56,13 @@ const DOCUMENT_READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// completion request is issued while indexing is still in flight and only
 /// succeeds because a later retry catches up.
 ///
-/// The result is intentionally ignored: readiness is an *optimization* for the
-/// attempts below, not an assertion. A server that never publishes it still
-/// gets its full [`USEFUL_RESULT_TIMEOUT`] worth of attempts, and the scenario
-/// still fails on the useful-result predicate rather than on a missing signal.
+/// Only a live deadline is tolerated as absence: readiness is an *optimization*
+/// for the attempts below, not an assertion, so a server that never publishes
+/// the signal still gets its full [`USEFUL_RESULT_TIMEOUT`] worth of attempts,
+/// and the scenario still fails on the useful-result predicate rather than on a
+/// missing signal. An orderly stream end or transport failure is different:
+/// optional_wait_with_subject propagates it, and the scenario fails at the
+/// readiness wait before any attempt runs.
 fn await_document_ready(harness: &UxHarness, relative_path: &str) -> Result<()> {
     let uri = harness.workspace.uri(relative_path);
     perl_lsp_ux_tests::optional_wait_with_subject(

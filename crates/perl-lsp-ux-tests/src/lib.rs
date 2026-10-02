@@ -175,7 +175,12 @@ pub fn optional_wait_with_subject<T>(
 ) -> Result<Option<T>> {
     match observed {
         Ok(value) => Ok(Some(value)),
-        Err(WaitEnd::Deadline { .. }) => Ok(None),
+        // A live deadline is accepted as absence, but not silently: a later
+        // starved assertion keeps the terminal reason as a breadcrumb (#15870).
+        Err(end @ WaitEnd::Deadline { .. }) => {
+            eprintln!("wait for {subject}: {} (accepted as absence)", end.describe());
+            Ok(None)
+        }
         Err(end) => {
             let context = format!("wait for {subject}: {end}");
             Err(anyhow::Error::new(end).context(context))

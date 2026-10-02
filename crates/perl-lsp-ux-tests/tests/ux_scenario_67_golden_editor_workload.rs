@@ -1424,11 +1424,34 @@ fn classify_error(response: &Value) -> String {
     let message_lower = message.to_ascii_lowercase();
     if message_lower.contains("request superseded") {
         "request_superseded".to_owned()
-    } else if message_lower.contains("timeout") || message_lower.contains("timed out") {
+    } else if message_lower.contains("timeout")
+        || message_lower.contains("timed out")
+        // WaitEnd::Deadline renders as "deadline expired after Nms ...", so a
+        // typed diagnostics wait deadline must not degrade to request_error.
+        || message_lower.contains("deadline expired")
+    {
         "timeout".to_owned()
     } else {
         "request_error".to_owned()
     }
+}
+
+#[test]
+fn classify_error_scores_typed_wait_deadline_as_timeout() {
+    let response = json!({
+        "_golden_error":
+            "wait for diagnostics for file:///golden.pl: deadline expired after 5000ms with the stream still live"
+    });
+    assert_eq!(classify_error(&response), "timeout");
+}
+
+#[test]
+fn classify_error_still_scores_transport_failure_as_request_error() {
+    let response = json!({
+        "_golden_error":
+            "wait for diagnostics for file:///golden.pl: server closed its output stream (orderly end of stream)"
+    });
+    assert_eq!(classify_error(&response), "request_error");
 }
 
 fn apply_lifecycle_receipt(mut row: WorkloadRow) -> WorkloadRow {
