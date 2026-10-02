@@ -23,6 +23,8 @@ pub const STATUS_OPTIONAL_EXTERNAL: &str = "optional_external";
 pub const STATUS_CONFORMANCE_ONLY: &str = "conformance_only";
 /// The tool is an explicitly selected optional peer.
 pub const STATUS_OPTIONAL_PEER: &str = "optional_peer";
+/// The tool is an explicitly selected optional testing instrument.
+pub const STATUS_OPTIONAL_TESTING_INSTRUMENT: &str = "optional_testing_instrument";
 /// The registry row did not match a known role shape.
 pub const STATUS_UNKNOWN: &str = "unknown";
 
@@ -39,6 +41,9 @@ pub const REASON_RUNTIME_ENABLEMENT_FORBIDDEN: &str = "runtime_enablement_forbid
 pub const REASON_EXPLICIT_ADAPTER_ONLY: &str = "explicit_adapter_only";
 /// The tool cooperates only as an explicitly selected peer.
 pub const REASON_EXPLICIT_OPTIONAL_PEER: &str = "explicit_optional_peer";
+/// Coverage/testing runs only after an explicit user action.
+pub const REASON_EXPLICIT_OPTIONAL_TESTING_INSTRUMENT: &str =
+    "explicit_optional_testing_instrument";
 /// The registry row did not match a known role shape.
 pub const REASON_UNCLASSIFIED: &str = "unclassified";
 
@@ -121,18 +126,7 @@ pub fn critic_compatibility_entry(
 
 /// Project one registry row into a typed doctor entry.
 fn external_tool_doctor_entry(policy: &ExternalToolPolicy) -> ExternalToolDoctorEntry {
-    let has_peer = policy.roles.contains(&ExternalToolRole::ExplicitOptionalPeer);
-    let has_adapter = policy.roles.contains(&ExternalToolRole::ExplicitExternalAdapter);
-
-    let (status_code, reason_code) = if policy.runtime_enablement == RuntimeEnablement::Forbidden {
-        (STATUS_CONFORMANCE_ONLY, REASON_RUNTIME_ENABLEMENT_FORBIDDEN)
-    } else if has_peer {
-        (STATUS_OPTIONAL_PEER, REASON_EXPLICIT_OPTIONAL_PEER)
-    } else if has_adapter {
-        (STATUS_OPTIONAL_EXTERNAL, REASON_EXPLICIT_ADAPTER_ONLY)
-    } else {
-        (STATUS_UNKNOWN, REASON_UNCLASSIFIED)
-    };
+    let (status_code, reason_code) = role_verdict(policy);
 
     let native_status_code = match policy.native_replacement.delivery {
         NativeReplacementDelivery::Shipped => NATIVE_STATUS_AVAILABLE,
@@ -175,11 +169,34 @@ fn safe_next_action(policy: &ExternalToolPolicy, status_code: &'static str) -> &
         return "Optionally configure an explicit peer session; the native product keeps \
             protocol ownership.";
     }
+    if status_code == STATUS_OPTIONAL_TESTING_INSTRUMENT {
+        return "Optionally request an explicit coverage run; missing Devel::Cover is an \
+            optional-tool-unavailable state and does not affect native testing.";
+    }
     if policy.install_help_scope == InstallHelpScope::UserRequestedCompatibility {
         return "Optionally request explicit compatibility setup; guidance is copyable, \
             environment-scoped, and never auto-executed.";
     }
     "No install guidance is offered for this tool."
+}
+
+fn role_verdict(policy: &ExternalToolPolicy) -> (&'static str, &'static str) {
+    let has_peer = policy.roles.contains(&ExternalToolRole::ExplicitOptionalPeer);
+    let has_testing_instrument =
+        policy.roles.contains(&ExternalToolRole::ExplicitOptionalTestingInstrument);
+    let has_adapter = policy.roles.contains(&ExternalToolRole::ExplicitExternalAdapter);
+
+    if policy.runtime_enablement == RuntimeEnablement::Forbidden {
+        (STATUS_CONFORMANCE_ONLY, REASON_RUNTIME_ENABLEMENT_FORBIDDEN)
+    } else if has_peer {
+        (STATUS_OPTIONAL_PEER, REASON_EXPLICIT_OPTIONAL_PEER)
+    } else if has_testing_instrument {
+        (STATUS_OPTIONAL_TESTING_INSTRUMENT, REASON_EXPLICIT_OPTIONAL_TESTING_INSTRUMENT)
+    } else if has_adapter {
+        (STATUS_OPTIONAL_EXTERNAL, REASON_EXPLICIT_ADAPTER_ONLY)
+    } else {
+        (STATUS_UNKNOWN, REASON_UNCLASSIFIED)
+    }
 }
 
 fn role_label(role: ExternalToolRole) -> &'static str {
@@ -188,6 +205,10 @@ fn role_label(role: ExternalToolRole) -> &'static str {
         ExternalToolRole::ExplicitExternalAdapter => "explicit_external_adapter",
         ExternalToolRole::ConformanceOracle => "conformance_oracle",
         ExternalToolRole::ExplicitOptionalPeer => "explicit_optional_peer",
+        ExternalToolRole::ExplicitOptionalTestingInstrument => {
+            "explicit_optional_testing_instrument"
+        }
+        ExternalToolRole::ReportProducer => "report_producer",
     }
 }
 
@@ -196,6 +217,9 @@ fn execution_support_label(support: ExternalExecutionSupport) -> &'static str {
         ExternalExecutionSupport::None => "none",
         ExternalExecutionSupport::RepositoryConformanceOnly => "repository_conformance_only",
         ExternalExecutionSupport::ExplicitProductAdapter => "explicit_product_adapter",
+        ExternalExecutionSupport::ExplicitOptionalTestingInstrument => {
+            "explicit_optional_testing_instrument"
+        }
     }
 }
 
@@ -318,6 +342,9 @@ fn role_summary(entry: &ExternalToolDoctorEntry) -> String {
                 .to_string()
         }
         STATUS_OPTIONAL_PEER => "optional debugger peer".to_string(),
+        STATUS_OPTIONAL_TESTING_INSTRUMENT => {
+            "optional testing instrument; not required for native testing".to_string()
+        }
         _ => "registry row did not match a known role shape".to_string(),
     }
 }
@@ -335,7 +362,7 @@ fn native_summary(entry: &ExternalToolDoctorEntry) -> String {
             entry.native_status_code
         ),
         NativeReplacementDelivery::NotApplicable => {
-            "Native replacement: not applicable — the native product owns the protocol".to_string()
+            "Native replacement: not applicable — the native product keeps this domain".to_string()
         }
     }
 }
@@ -480,6 +507,32 @@ mod tests {
     }
 
     #[test]
+    fn devel_cover_projects_as_optional_testing_instrument_without_health_effect() -> TestResult {
+        let cover = entry_for("Devel::Cover")?;
+        assert_eq!(cover.status_code, STATUS_OPTIONAL_TESTING_INSTRUMENT);
+        assert_eq!(cover.reason_code, REASON_EXPLICIT_OPTIONAL_TESTING_INSTRUMENT);
+        assert_eq!(
+            cover.allowed_roles,
+            vec!["explicit_optional_testing_instrument", "report_producer"]
+        );
+        assert_eq!(cover.execution_support, "explicit_optional_testing_instrument");
+        assert_eq!(cover.runtime_enablement, "explicit_user_action");
+        assert_eq!(cover.native_delivery, NativeReplacementDelivery::NotApplicable);
+        assert!(!cover.required_for_native);
+        assert!(!cover.degrades_native_health);
+        assert!(cover.safe_next_action.contains("optional-tool-unavailable"));
+        assert!(cover.safe_next_action.contains("does not affect native testing"));
+        assert!(!cover.safe_next_action.contains("peer session"));
+
+        let rendered = render_external_tool_doctor_text(std::slice::from_ref(&cover));
+        assert!(rendered.contains("optional testing instrument; not required for native testing"));
+        assert!(rendered.contains("never degrades native readiness"));
+        assert!(rendered.contains("optional-tool-unavailable"));
+        assert!(!rendered.to_lowercase().contains("unhealthy"));
+        Ok(())
+    }
+
+    #[test]
     fn critic_compatibility_fails_closed_on_duplicate_config_owner() {
         // Duplicate .perlcriticrc ownership is not rejected by registry
         // validation; the doctor projection must not guess by declaration
@@ -530,6 +583,8 @@ mod tests {
         };
         assert!(json.contains("\"status_code\":\"conformance_only\""));
         assert!(json.contains("\"reason_code\":\"runtime_enablement_forbidden\""));
+        assert!(json.contains("\"status_code\":\"optional_testing_instrument\""));
+        assert!(json.contains("\"reason_code\":\"explicit_optional_testing_instrument\""));
     }
 
     #[test]

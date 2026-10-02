@@ -1,32 +1,144 @@
-# Getting Started with perl-lsp
+# Getting Started with perllsp
 
 This guide gets you from zero to a working Perl language server in your editor.
+
+## First Success
+
+For VS Code, the fastest validation path is:
+
+1. Install the `perl-lsp` extension
+2. Open a `.pl` or `.pm` file
+3. Run **Perl: Run Health Check** from the Command Palette
+4. Confirm the LSP binary check passes, then verify diagnostics and hover text
+
+For other editors or a manually installed server, put `perllsp` on your
+`PATH` and run `perllsp --health` before opening a Perl file.
+
+If the LSP binary check and diagnostics/hover work, your core install is good.
+The health check may warn that Perl is unavailable; Perl is optional for the
+core language server and is only needed for the test runner and debugger.
+The rest of this guide is editor-specific setup and feature discovery.
+
+## What is a Language Server?
+
+A **language server** is a program that runs alongside your editor and gives it deep understanding of your code. Instead of each editor re-implementing features like "go to definition" or "show all references," the [Language Server Protocol (LSP)](https://microsoft.github.io/language-server-protocol/) defines a standard way for any editor to talk to a language-specific backend. `perllsp` is the native Perl 5 language server CLI from the perl-lsp project: it parses your code, builds an index of symbols, and responds to editor requests over JSON-RPC -- so you get IDE-grade navigation, completion, diagnostics, and refactoring in VS Code, Neovim, Emacs, Helix, or any other LSP-capable editor. No Perl runtime is required; the server is a single native binary.
 
 ## Prerequisites
 
 - **Rust 1.95+** (for building from source)
-- **A supported editor**: VS Code, Neovim, Emacs, Helix, or Sublime Text
+- **A supported editor**: VS Code, Amazon Kiro, Neovim, Emacs, Helix, or Sublime Text
 
 ## Installation
 
 Choose one method:
 
-### Option 1: Install from crates.io (Recommended)
+### Option 1: VS Code extension (Recommended for VS Code users)
 
 ```bash
-cargo install perllsp
+code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
-> The crates.io package `perl-lsp` is a different project, not this language server.
 
-### Option 2: Install Script (Linux/macOS)
+The extension downloads the matching server binary for your platform.
 
-Use the installer script (best-effort / non-canonical):
+### Option 2: Installer script, macOS and Linux (Recommended for other editors)
+
+Prefer a [release archive](https://github.com/EffortlessMetrics/perl-lsp/releases) until
+release closeout publishes the reviewed SHA-256 digest of `scripts/install.sh`. From a
+clone, run `bash install.sh --help`. Otherwise, decide whether to use the
+identity-bound root `install.sh` wrapper or verify `scripts/install.sh` manually;
+both routes start from the same `INSTALLER_REF` and `INSTALLER_SHA256` values:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+RELEASE_TAG=v0.17.0  # the release you want to install
+INSTALLER_REF="$(git ls-remote https://github.com/EffortlessMetrics/perl-lsp.git "refs/tags/${RELEASE_TAG}^{}" | cut -f1)"
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA_TOOL="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  SHA_TOOL="shasum -a 256"
+else
+  echo "sha256sum or shasum is required to generate the installer digest" >&2
+  exit 1
+fi
+INSTALLER_SHA256="$(curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/scripts/install.sh" | $SHA_TOOL | cut -d' ' -f1)"
+printf 'ref: %s\ndigest: %s\n' "$INSTALLER_REF" "$INSTALLER_SHA256"
 ```
 
-### Option 3: Build from Source
+`INSTALLER_REF` is the immutable publish commit of that tag, and `INSTALLER_SHA256` is
+the digest of `scripts/install.sh` at that commit. Both values are convenience-level:
+they pin the executed installer to one exact ref and content, but they come from the
+same host the installer is fetched from, so they are not independent review. They bind
+the installer code only, so both execution routes below also pass `VERSION="$RELEASE_TAG"`
+and the pinned release installs its own binaries; with no `RELEASE_TAG` set, the
+installer keeps its floating `latest` default.
+
+**The wrapper's identity-bound check only holds when the wrapper at `$INSTALLER_REF`
+performs the digest verification.** Current `main` does
+([`install.sh:84-126`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/install.sh)); the `v0.17.0` wrapper does not — at
+v0.17.0 it fetches floating `master` and ignores both env vars. Pick the route
+that matches the wrapper at the chosen ref:
+
+1. **Use the root wrapper (when its verification is hardened).** Feed both identity
+   env vars plus the pinned release:
+
+   ```bash
+   curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+     | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+       PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" \
+       VERSION="${RELEASE_TAG:-latest}" bash
+   ```
+
+   The wrapper at the chosen ref must read `PERL_LSP_INSTALLER_REF` /
+   `PERL_LSP_INSTALLER_SHA256` and refuse to exec on any mismatch; verify by
+   reading the wrapper's source before relying on this.
+
+2. **Verify `scripts/install.sh` directly (works for any release, including v0.17.0).**
+   The wrapper is not involved — the digest is checked locally before exec, so a
+   non-hardening wrapper cannot reach the installer:
+
+   ```bash
+   TMP="$(mktemp)"
+   trap 'rm -f "$TMP"' EXIT
+   curl --proto '=https' --silent --show-error --output "$TMP" \
+     "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/${INSTALLER_REF}/scripts/install.sh"
+   ACTUAL_SHA="$($SHA_TOOL "$TMP" | cut -d' ' -f1)"
+   if [ "$ACTUAL_SHA" != "$INSTALLER_SHA256" ]; then
+     echo "scripts/install.sh digest mismatch: expected $INSTALLER_SHA256, got $ACTUAL_SHA" >&2
+     exit 1
+   fi
+   VERSION="${RELEASE_TAG:-latest}" bash "$TMP"
+   ```
+
+   The pinned-ref path runs the verified installer with `VERSION` bound to
+   `RELEASE_TAG`, so the archive comes from that exact release; without it the
+   installer would resolve `latest` while the installer code stayed pinned.
+
+The canonical installer at
+[`scripts/install.sh`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/scripts/install.sh) downloads the matching GitHub
+release archive, verifies it against the release `SHA256SUMS` when that file is
+available, and installs `perllsp` and `perl-dap`. GitHub Releases remains the
+authority for what was actually published; the script is a convenience over that
+same archive, not a separate channel.
+
+### Option 3: Windows
+
+Use the release archive. Download
+`perllsp-<version>-x86_64-pc-windows-msvc.zip` from
+[Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it,
+and add the folder containing `perllsp.exe` to your `PATH`.
+
+The PowerShell installer version linked in
+[INSTALLATION.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md#published-powershell-script) also
+selects this archive and installs `perllsp.exe` only; use the manual archive
+if you need `perl-dap.exe`. That script supports x86_64 Windows and Windows 11
+ARM64 through x64 emulation; Windows 10 ARM64 must build from source. Its
+checksum check aborts on a mismatch, but some verification failures only warn
+and continue. The guide includes checksum limitations and manual PATH setup.
+
+### Option 4: GitHub release archive
+
+Download the latest archive from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) and place `perllsp` on your `PATH`.
+
+### Option 5: Build from Source
 
 ```bash
 git clone https://github.com/EffortlessMetrics/perl-lsp.git
@@ -34,7 +146,12 @@ cd perl-lsp
 cargo install --path crates/perllsp
 ```
 
-## Verify Installation
+> **Note:** this installs `perllsp` only, not the `perl-dap` debug adapter.
+> For both binaries use a release archive, or build the adapter yourself with
+> `cargo build -p perl-dap --release`. See
+> [INSTALLATION.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md) for details.
+
+## Verify a Manual Installation
 
 ```bash
 # Check binary is available
@@ -42,8 +159,16 @@ perllsp --version
 
 # Quick health check
 perllsp --health
-# Should output: ok 0.10.0
+# Should output: ok <installed-version>
+
+# Optional: show feature/profile information
+perllsp --info
+
+# Optional: native listed-file parser check (does not execute project Perl)
+perllsp --check script.pl
 ```
+
+If `--version` and `--health` work but your editor still cannot connect, jump to [Troubleshooting](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/TROUBLESHOOTING.md).
 
 ## Quick Editor Setup
 
@@ -51,12 +176,17 @@ perllsp --health
 
 1. Install the extension:
    ```bash
-   code --install-extension effortlesssteven.perl-lsp
+   code --install-extension EffortlessMetrics.perl-lsp-rs
    ```
 
 2. Open a `.pl` or `.pm` file - the server starts automatically.
 
 ### Neovim
+
+This snippet requires the third-party `nvim-lspconfig` plugin (which also
+provides the `:LspInfo` command used in the verify step below). On Neovim
+0.11+, you can skip the plugin and use the native `vim.lsp.config()` setup in
+[EDITOR_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/EDITOR_SETUP.md#neovim) instead.
 
 Add to your `init.lua`:
 
@@ -64,25 +194,47 @@ Add to your `init.lua`:
 local lspconfig = require('lspconfig')
 local configs = require('lspconfig.configs')
 
+-- Register the Perl LSP server with nvim-lspconfig
 if not configs.perl_lsp then
   configs.perl_lsp = {
     default_config = {
       cmd = { 'perllsp', '--stdio' },
       filetypes = { 'perl' },
-      root_dir = lspconfig.util.root_pattern('.git'),
+      root_dir = lspconfig.util.root_pattern('.git', 'Makefile.PL', 'cpanfile', 'dist.ini'),
       single_file_support = true,
+      settings = {
+        perl = {
+          workspace = {
+            includePaths = { 'lib', '.', 'local/lib/perl5' },
+          },
+        },
+      },
     },
   }
 end
 
-lspconfig.perl_lsp.setup({})
+lspconfig.perl_lsp.setup({
+  on_attach = function(client, bufnr)
+    -- Suggested keybindings (customize to taste)
+    local opts = { buffer = bufnr, noremap = true, silent = true }
+    vim.keymap.set('n', 'gd', vim.lsp.buf.definition, opts)
+    vim.keymap.set('n', 'gr', vim.lsp.buf.references, opts)
+    vim.keymap.set('n', 'K', vim.lsp.buf.hover, opts)
+    vim.keymap.set('n', '<leader>rn', vim.lsp.buf.rename, opts)
+    vim.keymap.set('n', '<leader>ca', vim.lsp.buf.code_action, opts)
+    vim.keymap.set('n', '[d', vim.diagnostic.goto_prev, opts)
+    vim.keymap.set('n', ']d', vim.diagnostic.goto_next, opts)
+  end,
+})
 ```
+
+**Verify it works**: open a `.pl` file and run `:LspInfo` -- you should see `perl_lsp` attached.
 
 ### Emacs (with eglot, Emacs 29+)
 
 ```elisp
 (add-to-list 'eglot-server-programs
-             '((cperl-mode perl-mode) . ("perllsp" "--stdio")))
+             '((perl-mode cperl-mode perl-ts-mode) . ("perllsp" "--stdio")))
 ```
 
 Then run `M-x eglot` in a Perl buffer.
@@ -118,68 +270,150 @@ shebangs = ["perl"]
 The checked fixture is
 [`docs/examples/helix/languages.toml`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/examples/helix/languages.toml).
 This safe override deliberately stops the same entry from owning Raku-family
-file detection; it does not supply or imply Raku LSP support.
+file detection; it does not supply or imply Raku LSP support. See
+[HELIX_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/EDITORS/HELIX_SETUP.md) for the released-versus-current
+client cohorts, roots, and workspace-trust boundaries.
 
 ## Your First 5 Minutes
 
-Once installed, open any Perl file and try these features:
+Once installed, open any Perl file and try these features. Each heading describes what you will see in your editor.
 
-### 1. Hover for Documentation
+### 1. Real-Time Diagnostics
 
-Move your cursor over a function like `print` or `substr` and see documentation appear.
+As soon as you open a Perl file, the server parses it and reports errors. You will see **red or yellow squiggly underlines** directly on lines with problems, just like a spell-checker. A count badge appears in your editor's status bar or problems panel. Hover over a squiggle to read the error message inline.
 
-### 2. Go to Definition
+### 2. Hover for Documentation
 
-Click on a variable or function call and use your editor's "Go to Definition" command:
-- VS Code: `F12` or `Ctrl+Click`
-- Neovim: `gd`
-- Emacs: `M-.`
+Move your cursor over a built-in function like `print`, `substr`, or `chomp`. After a brief pause, a **floating tooltip** appears with the function signature, a short description, and a usage example. This works for over 150 Perl built-ins, keywords, and special variables like `$_` and `@ARGV`.
 
-### 3. Find All References
+### 3. Code Completion
 
-Find everywhere a symbol is used:
-- VS Code: `Shift+F12`
-- Neovim: `gr`
-- Emacs: `M-?`
-
-### 4. Code Completion
-
-Type `$` to see variable completions, or start typing a function name:
+Start typing and the server offers completions in a **dropdown list** that appears automatically. Type `$` to see variable names in scope, `use ` to see module names, or the first few letters of a function to see matching built-ins and your own subroutines. The list filters as you type.
 
 ```perl
 my $name = "Alice";
-print $na  # Completes to $name
-prin       # Completes to print
+print $na  # Dropdown offers $name
+prin       # Dropdown offers print, printf, ...
+use Fi     # Dropdown offers File::Spec, File::Find, ...
 ```
 
-### 5. Quick Fixes
+### 4. Go to Definition
 
-The LSP suggests fixes for common issues. Look for the lightbulb icon (VS Code) or use:
-- VS Code: `Ctrl+.`
-- Neovim: `<leader>ca`
-- Emacs: `C-c l a`
+Place your cursor on a variable, function call, or module name and jump to where it is defined.
+
+| Editor | Command |
+|--------|---------|
+| VS Code | `F12` or `Ctrl+Click` |
+| Neovim | `gd` |
+| Emacs | `M-.` |
+
+The editor opens the target file and scrolls to the exact line. For variables, it jumps to the `my`, `our`, or `local` declaration. For subroutines, it jumps to the `sub` definition. For modules, it opens the `.pm` file.
+
+### 5. Find All References
+
+Find every place a symbol is used across your project. Results appear in a **references panel** (VS Code) or a quickfix list (Neovim).
+
+| Editor | Command |
+|--------|---------|
+| VS Code | `Shift+F12` |
+| Neovim | `gr` |
+| Emacs | `M-?` |
+
+### 6. Rename Symbol
+
+Rename a variable or subroutine and the server updates **every reference** across files in a single operation. Your editor shows a preview of all changes before applying them.
+
+| Editor | Command |
+|--------|---------|
+| VS Code | `F2` |
+| Neovim | `<leader>rn` |
+| Emacs | `M-x eglot-rename` |
+
+### 7. Document Outline and Symbols
+
+Open your editor's symbol outline to see a **tree of subroutines, packages, and variables** in the current file. Use workspace symbol search (`Ctrl+T` in VS Code, `<leader>ws` in Neovim) to jump to any symbol across your project.
+
+### 8. Code Actions and Quick Fixes
+
+When the server detects a fixable issue, a **lightbulb icon** appears in the gutter (VS Code) or a hint appears in the diagnostic. Trigger the action to apply the fix automatically.
+
+| Editor | Command |
+|--------|---------|
+| VS Code | `Ctrl+.` |
+| Neovim | `<leader>ca` |
+| Emacs | `C-c l a` |
 
 ## What You Get
 
-perl-lsp provides:
+perllsp provides:
 
 | Feature | What It Does |
 |---------|--------------|
 | **Diagnostics** | Real-time syntax error detection |
 | **Completion** | Variables, functions, keywords, file paths |
-| **Hover** | Documentation for 150+ Perl built-ins |
+| **Hover** | Documentation for Perl built-ins, keywords, and special variables |
 | **Definition** | Jump to where symbols are defined |
 | **References** | Find all uses of a symbol |
 | **Rename** | Safely rename variables across files |
-| **Formatting** | Format code with Perl::Tidy |
+| **Formatting** | Format code with the native formatter |
 | **Folding** | Collapse functions, blocks, POD |
 | **Symbols** | Document outline and workspace search |
 
 ## Project Configuration
 
-For project-specific settings, the server reads configuration from your editor's LSP settings.
+perllsp supports two ways to configure your project: a **project configuration file** for team-wide defaults, and **LSP settings** for personal or editor-specific overrides.
 
-### Example: Configure Module Search Paths
+### Project Configuration File (.perl-lsp.toml)
+
+The `.perl-lsp.toml` file lives at your workspace root and is committed to version control. It lets you share configuration with your whole team without requiring each developer to configure their own editor. The file is optional — if it does not exist, the server uses its built-in defaults.
+
+Create a `.perl-lsp.toml` in the root of your project:
+
+```toml
+# .perl-lsp.toml — project-wide defaults for perl-lsp
+
+[perl]
+# Perl version hint (for future use)
+version = "5.38"
+
+# Module include paths relative to workspace root
+include_paths = ["lib", "local/lib/perl5"]
+
+[diagnostics]
+# Native critic diagnostics are enabled by default.
+# Set false to disable them.
+# perlcritic = true
+perlcritic_severity = 3
+
+[features]
+# Toggle all inlay hints
+inlay_hints = true
+```
+
+**Key behaviors:**
+- If the file does not exist, the server starts normally with defaults.
+- Unknown keys and sections are silently ignored — safe to add future fields.
+- Invalid TOML produces a warning notification in your editor.
+- An empty `include_paths = []` is treated as "not set" and leaves the defaults unchanged.
+
+A ready-to-copy example is available at [`.perl-lsp.toml.example`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/.perl-lsp.toml.example) in the repo root.
+
+### Configuration Precedence
+
+Settings are applied in this order, last-write-wins:
+
+```
+.perl-lsp.toml  →  initializationOptions  →  didChangeConfiguration
+(project file)      (editor startup)           (live editor settings)
+```
+
+Editor settings always override the project file. This lets individual developers override team defaults locally.
+
+### LSP Settings (Editor-Specific)
+
+For per-developer or editor-specific settings, configure via your editor's LSP mechanism.
+
+#### Example: Configure Module Search Paths
 
 ```json
 {
@@ -191,7 +425,7 @@ For project-specific settings, the server reads configuration from your editor's
 }
 ```
 
-### Example: Tune for Large Projects
+#### Example: Tune for Large Projects
 
 ```json
 {
@@ -203,15 +437,105 @@ For project-specific settings, the server reads configuration from your editor's
 }
 ```
 
-See [CONFIG.md](../reference/CONFIG.md) for all configuration options.
+See [CONFIG.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/CONFIG.md) for the current configuration options, including workspace paths, inlay hints, and resource limits.
 
 ## Troubleshooting
+
+Quick fixes for the most common first-run problems. For the full guide, see [TROUBLESHOOTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/TROUBLESHOOTING.md).
+
+### "Binary not found" after install
+
+`cargo install` places the binary in `~/.cargo/bin/`. If your shell cannot find `perllsp`, that directory is not on your `PATH`.
+
+```bash
+# Check whether the binary exists
+ls ~/.cargo/bin/perllsp
+
+# Add Cargo's bin directory to your PATH (add to ~/.bashrc, ~/.zshrc, or equivalent)
+export PATH="$HOME/.cargo/bin:$PATH"
+
+# Reload your shell
+source ~/.bashrc   # or: source ~/.zshrc
+```
+
+After reloading, `perllsp --version` should print the version number.
+
+### Extension / editor not connecting to the server
+
+The editor must be able to find and launch the `perllsp` binary. Symptoms include "server failed to start" messages or LSP features simply not appearing.
+
+1. **Verify the binary path** in the same shell your editor uses:
+   - POSIX-compatible shells: `command -v perllsp`
+   - PowerShell: `Get-Command perllsp`
+   - Windows Command Prompt: `where.exe perllsp`
+
+   Some editors (VS Code, for instance) may not inherit your shell's `PATH` when launched from a desktop shortcut. Try launching the editor from the terminal (`code .`) so it inherits your environment.
+
+2. **Check editor logs** -- every LSP client has a log output:
+   - VS Code: View > Output > select "Perl Language Server"
+   - Neovim: `:LspLog`
+   - Emacs: `*eglot stderr*` buffer
+
+3. **Ask the binary about itself.** These checks are the supported way to tell a
+   broken installation from an editor that cannot find or launch the server, and
+   they work the same in every shell:
+
+   ```bash
+   perllsp --version   # version, git commit, and parser in use
+   perllsp --health    # prints "ok <version>"
+   perllsp --doctor .  # Perl path, project config, and effective @INC roots
+   ```
+
+   These commands prove the binary is installed, runnable, and able to report its
+   own configuration. They do not start the language server: `--health` prints a
+   version string and `--doctor` is a read-only report, so neither exercises the
+   stdio transport or request handling. If all three succeed, rule out a missing
+   or unrunnable binary and move on to the editor's own logs in step 2 -- that is
+   the surface that shows a server which starts and then fails.
+
+   Do not test the server by piping bare JSON into `perllsp --stdio`. LSP stdio
+   requires every message to carry a `Content-Length` header followed by a blank
+   line and the UTF-8 JSON payload, so an unframed line is never read as a
+   request: the server waits, prints nothing on standard output, and exits when
+   its input closes. That silence is a property of the protocol, not evidence of
+   a bad install. Hand-framing a request is protocol debugging rather than an
+   installation check. Use the repository's protocol harnesses when debugging
+   request framing instead of hand-constructing messages in this basic guide.
+
+4. **VS Code specific**: ensure the extension is installed and enabled:
+   ```bash
+   code --list-extensions | grep perl
+   ```
+
+### Completion not working
+
+1. **Check file type registration** -- your editor must recognize the file as Perl. In VS Code, look at the language indicator in the bottom-right of the status bar (it should say "Perl"). In Neovim, run `:set filetype?` and confirm it says `filetype=perl`. Files without a `.pl`, `.pm`, or `.t` extension may not be detected automatically.
+
+2. **Trigger completion manually** to rule out trigger-character issues:
+   - VS Code: `Ctrl+Space`
+   - Neovim: `<C-x><C-o>` (omni-completion) or use a completion plugin like nvim-cmp
+   - Emacs: `M-TAB` or `C-M-i`
+
+3. **Ensure the server is actually running** -- check `:LspInfo` (Neovim) or the Output panel (VS Code). If no server is attached, see the "Extension not connecting" section above.
+
+### Tests are flaky when developing perl-lsp
+
+If you are building perl-lsp from source and encounter intermittent test failures (particularly in LSP integration tests), constrain the thread count:
+
+```bash
+RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
+```
+
+The LSP integration tests start real server instances that compete for ports and file handles. Limiting parallelism eliminates the race conditions. See [TROUBLESHOOTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/TROUBLESHOOTING.md) for more details on test threading.
 
 ### Server Not Starting
 
 ```bash
-# Test if the binary works
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' | perllsp --stdio
+# Quick health check
+perllsp --health
+
+# Run with debug logging to see what's happening
+RUST_LOG=perl_lsp=debug perllsp --stdio 2>debug.log
 ```
 
 ### No Diagnostics Appearing
@@ -220,7 +544,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}
 2. Check your editor's language mode is set to Perl
 3. Look at the LSP output log in your editor
 
-### Slow Performance
+### Slow on Large Projects
 
 Reduce indexed files and result caps in your settings:
 
@@ -234,16 +558,18 @@ Reduce indexed files and result caps in your settings:
 }
 ```
 
-See [TROUBLESHOOTING.md](../how-to/TROUBLESHOOTING.md) for more solutions.
+For the full troubleshooting guide including DAP debugging, parser edge cases, and editor-specific issues, see [TROUBLESHOOTING.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/TROUBLESHOOTING.md).
 
 ## Next Steps
 
-- **[EDITOR_SETUP.md](../how-to/EDITOR_SETUP.md)** - Detailed editor configurations
-- **[CONFIG.md](../reference/CONFIG.md)** - All configuration options
-- **[LSP_FEATURES.md](../reference/LSP_FEATURES.md)** - Complete feature documentation
-- **[FAQ.md](../reference/FAQ.md)** - Frequently asked questions
+- **[EDITOR_SETUP.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/EDITOR_SETUP.md)** - Detailed editor configurations
+- **[INSTALLATION.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md)** - Platform-specific installation and verification steps
+- **[CONFIG.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/CONFIG.md)** - All configuration options
+- **[LSP_FEATURES.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/LSP_FEATURES.md)** - Complete feature documentation
+- **[FAQ.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/FAQ.md)** - Frequently asked questions
+- **[Documentation Index](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/INDEX.md)** - Documentation front door and routing guide
 
 ## Getting Help
 
 - **Issues**: [GitHub Issues](https://github.com/EffortlessMetrics/perl-lsp/issues)
-- **Documentation**: [docs/INDEX.md](INDEX.md)
+- **Documentation**: [docs/INDEX.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/INDEX.md)
