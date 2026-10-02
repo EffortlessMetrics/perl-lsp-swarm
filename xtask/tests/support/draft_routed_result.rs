@@ -36,6 +36,10 @@ fn run(script: &str, draft: bool, route: &str, producer: &str) -> TestResult<(bo
         .env("CX53_RESULT", "skipped")
         .env("CX43_RESULT", "skipped")
         .env("GITHUB_RESULT", producer)
+        // The governed Small evaluator consumes its preceding exact-evidence
+        // step's witness. This shared fixture models that producer boundary;
+        // RIPR retains its existing GITHUB_RESULT contract.
+        .env("PROOF_VALIDATED", if producer == "success" { "true" } else { "false" })
         .env("FALLBACK_RESULT", "skipped")
         .env("GITHUB_STEP_SUMMARY", "summary.md")
         .env("GITHUB_REPOSITORY", "controlled/fixture")

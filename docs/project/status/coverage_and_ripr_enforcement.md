@@ -1,5 +1,11 @@
 # Coverage and RIPR Enforcement
 
+Candidate migration note (2026-10-02): the owned Rust context below is proposed
+by this source candidate. Live ruleset16664791 still requires `Perl LSP Rust Small Result`
+until exact native qualification and an explicitly approved settings transaction.
+The other four protected identities are unchanged; this document is not live
+settings evidence. See [.ci/rust-standard-result.md](../../../.ci/rust-standard-result.md) for the transaction and rollback.
+
 > Human-owned. Update when the proof-lane policy or transition exceptions
 > change. Do not use this page to claim final enforcement before the gates are
 > blocking in CI.
@@ -9,8 +15,8 @@
 The proof lane is in transition from measurement to enforcement:
 
 - Main ruleset `16664791` (binding administrators) requires the current
-  proof-floor contexts: `ripr+ New Gap Gate` and `Perl LSP Rust Small Result`
-- `Perl LSP Rust Small Result` must pass before merge
+  proof-floor contexts: `ripr+ New Gap Gate` and `Perl LSP Rust Small governed proof / Rust CI / Required`
+- `Perl LSP Rust Small governed proof / Rust CI / Required` must pass before merge
 - `ripr+ New Gap Gate` blocks new RIPR gaps and stale or missing RIPR proof
   receipts
 - `Codecov / Patch 95` and `codecov/patch` are advisory coverage contexts.

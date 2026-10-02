@@ -477,3 +477,12 @@ action = 'docker/setup-buildx-action'
 sha = '37fe631027851001ddb9b187196cc803df7f5f0e'
 kind = 'release_tag'
 value = 'v4.3.0'
+
+# Verified 2026-10-01 through the upstream GitHub branches API:
+# EffortlessMetrics/em-ci-workflows main -> 92c170b052d046c3c98acf8a1a4aab4510dda42d
+# Signed distribution merge #15, sourced from em-ci fddf555e6534.
+[[pin]]
+action = 'EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml'
+sha = '92c170b052d046c3c98acf8a1a4aab4510dda42d'
+kind = 'branch_commit'
+value = 'main (2026-10-01)'

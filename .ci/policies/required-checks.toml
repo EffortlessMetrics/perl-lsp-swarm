@@ -1,6 +1,11 @@
 version = 2
 source = "github-enforcement-union"
 
+# Candidate contract: the owned Rust aggregate replaces the old Rust Small
+# context only after native qualification and explicit settings approval.
+# As assembled2026-10-02, live ruleset16664791 still requires the old context.
+# The static receipt never proves live enforcement; verify the protected union.
+
 # `[[check]]` is workflow-trigger-lint input. Its `required` bit means the
 # workflow receives the required-workflow trigger contract; it does not claim
 # GitHub branch protection or ruleset enforcement.
@@ -12,7 +17,7 @@ required = true
 contract_role = "required-workflow-shape"
 
 [[check]]
-name = "Perl LSP Rust Small Result"
+name = "Perl LSP Rust Small governed proof / Rust CI / Required"
 workflow = ".github/workflows/em-ci-routed-rust.yml"
 required = true
 contract_role = "required-workflow-shape"
@@ -124,18 +129,22 @@ enforcement = "neither"
 reason = "Shadow exact-tree policy evaluator; advisory until canaries and ruleset promotion complete."
 
 [[checks]]
-name = "Perl LSP Rust Small Result"
-producer = "repository-job"
+name = "Perl LSP Rust Small governed proof / Rust CI / Required"
+producer = "reusable-workflow-job"
 workflow = ".github/workflows/em-ci-routed-rust.yml"
-job = "rust-small-result"
+job = "rust-small-proof"
+callee_workflow = "EffortlessMetrics/em-ci-workflows/.github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d"
+callee_source = ".ci/workflow-sources/em-ci-rust-a3125de9.yml"
+callee_sha256 = "275203f28721f1b209b0b09695392e9996c3717981c1eb56ab7a412d483e22fc"
+callee_job = "result"
 workflow_result = "propagate"
 events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
 required = true
 policy_role = "required"
-applicability = "always-or-scoped-noop"
+applicability = "conditional"
 enforcement = "github-ruleset"
 ruleset_integration_id = 15368
-reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge, bound to the GitHub Actions integration. #16168 added the push trigger so landed main commits carry the required baseline."
+reason = "Proposed owned Rust Small aggregate; activation requires native exact-subject qualification and explicit settings approval."
 
 [[checks]]
 name = "ripr+ New Gap Gate"
@@ -204,7 +213,7 @@ required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "Advisory receipt-producing dedicated formatter context. Live merge blocking is owned by the required Perl LSP Rust Small Result path (#9127/#12320). Duplicate meta-shard fmt execution is retired by #9959. Settings-app promotion of this context remains #7087 and is not claimed here."
+reason = "Advisory receipt-producing dedicated formatter context. Candidate merge blocking is owned by the required Perl LSP Rust Small governed proof / Rust CI / Required path (#9127/#12320). Duplicate meta-shard fmt execution is retired by #9959. Settings-app promotion of this context remains #7087 and is not claimed here."
 
 [[checks]]
 name = "Codecov / Patch 95"

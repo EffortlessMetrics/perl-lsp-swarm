@@ -1,100 +1,36 @@
 #!/usr/bin/env python3
-"""Route-shape contract for the canonical Rust Small proof lane (#8407).
+"""Discriminating contracts for the script-mediated governed Rust Small route.
 
-Every required Rust Small route (`rust-small-cx53`, `rust-small-cx43`,
-`rust-small-github`, `rust-small-fallback`) must invoke exactly one shared,
-candidate/toolchain/profile-honest command:
-
-    cargo run -p xtask --locked -- rust-small-proof
-
-The semantic step list (fetch, workspace check, parser smokes, LSP smoke,
-references scorecard census + execution, diff hygiene) lives in the xtask task
-(`xtask/src/tasks/rust_small_proof.rs`) so the aggregate gate means one proof
-on every route. Duplicated per-runner shell lists previously drifted: the
-scorecard census counted `awk "/: test$/{...}"` on CX routes and
-`grep -c -F ": test"` on hosted routes — two different proofs behind one
-required check. The consolidation keeps the stricter suffix-marker semantics
-in exactly one place.
-
-Red-first contract (issue #10064 slice): mutating ANY single lane's copy of
-the canonical invocation — argument drift, commenting out, echo decoy, shadow
-duplicate — must fail this contract WITH THE SITE NAMED, so a silent revert
-fails the required "Perl LSP Rust Small Result" check instead of drifting
-back to per-runner copies.
-
-`cargo fmt --all -- --check` intentionally remains pinned as a literal yml
-line by scripts/ci/test_rustfmt_required_workflow.py (#9127/#12320); that
-claim owns its placement and this file does not move it.
+All routes use one pinned reusable workflow and one owned proof script. Mutation
+controls retain the formatter/canonical-command parity guarantees of #8407/#8408.
 """
-
 from __future__ import annotations
 
+import os
+import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW_PATH = ROOT / ".github" / "workflows" / "em-ci-routed-rust.yml"
+import yaml
 
-RUST_SMALL_LANE_JOBS = (
-    "rust-small-cx53",
-    "rust-small-cx43",
-    "rust-small-github",
-    "rust-small-fallback",
-)
-RUST_SMALL_RESULT_JOB = "rust-small-result"
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW_PATH = ROOT / ".github/workflows/em-ci-routed-rust.yml"
+PROOF_PATH = ROOT / ".ci/rust-standard-proof.sh"
 CANONICAL_INVOCATION = "cargo run -p xtask --locked -- rust-small-proof"
 CONTRACT_TEST_FILE = "scripts/ci/test_rust_small_route_contract.py"
-
-# Inline fragments whose presence in an active (non-comment) line of a lane job
-# means the duplicated route-command list or its drifted counter came back.
 LEGACY_INLINE_FRAGMENTS = (
-    'awk "/: test',  # cx53/cx43 census drift (#8407 receipt)
-    "grep -c -F",  # hosted/fallback census drift (#8407 receipt)
-    "-p perl-parser --test semantic_smoke_tests",
-    "-p perl-parser --test parser_accuracy_e2e",
-    "-p perl-lsp-rs --test lsp_smoke",
-    "references_tier_scorecard_tests",
-    "cargo fetch --locked",
-    "cargo check --workspace --locked",
-    "INSTA_UPDATE=no",
+    'awk "/: test', "grep -c -F", "-p perl-parser --test semantic_smoke_tests",
+    "-p perl-parser --test parser_accuracy_e2e", "-p perl-lsp-rs --test lsp_smoke",
+    "references_tier_scorecard_tests", "cargo fetch --locked",
+    "cargo check --workspace --locked", "INSTA_UPDATE=no",
 )
-
-# Per-site field mutations that each independently prove the pin is red-first.
-INVOCATION_MUTATIONS = (
-    ("argument drift (--locked dropped)", CANONICAL_INVOCATION.replace(" --locked", "")),
-    ("commented out", f"# {CANONICAL_INVOCATION}"),
-    ("echo decoy", f'echo "{CANONICAL_INVOCATION}"'),
-)
-
-# The only cargo commands a lane may run besides the canonical invocation:
-# runner instrumentation and the fmt literal owned by
-# test_rustfmt_required_workflow.py. Anything else (an extra semantic test, a
-# second cargo run, a clippy/check/build side gate) would make the route
-# choice change what the required status means (#8408 negative control).
-ALLOWED_CARGO_COMMANDS = (
-    "cargo --version",
-    "cargo fmt --all -- --check",
-    CANONICAL_INVOCATION,
-)
+ALLOWED_CARGO_COMMANDS = ("cargo fmt --all -- --check", CANONICAL_INVOCATION)
 
 
 def load_workflow_text() -> str:
     return WORKFLOW_PATH.read_text(encoding="utf-8")
-
-
-def job_start_index(workflow_text: str, job_id: str) -> int:
-    return workflow_text.index(f"\n  {job_id}:\n")
-
-
-def mutate_first_in_job(workflow_text: str, job_id: str, old: str, new: str) -> str:
-    """Replace the first `old` at-or-after `job_id`'s header with `new`.
-
-    Anchoring at the job header makes every mutation test site-specific even
-    when several lanes contain byte-identical copies.
-    """
-    start = job_start_index(workflow_text, job_id)
-    position = workflow_text.index(old, start)
-    return workflow_text[:position] + new + workflow_text[position + len(old) :]
 
 
 def job_bodies(workflow_text: str) -> dict[str, str]:
@@ -144,199 +80,241 @@ def canonical_invocation_count(job_body: str) -> int:
     )
 
 
-def validate_rust_small_route_contract(workflow_text: str) -> None:
-    jobs = job_bodies(workflow_text)
+def validate_rust_small_route_contract(workflow_text: str, proof_text: str | None = None, policy_text: str | None = None) -> None:
+    """Validate execution reachability as well as the canonical proof body."""
+    proof_text = PROOF_PATH.read_text(encoding="utf-8") if proof_text is None else proof_text
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow.get("jobs", {})
+    call = jobs.get("rust-small-proof")
+    if not isinstance(call, dict):
+        raise AssertionError("governed Rust Small proof job missing")
+    if call.get("name") != "Perl LSP Rust Small governed proof":
+        raise AssertionError("native result context prefix drifted")
+    if not re.fullmatch(r"EffortlessMetrics/em-ci-workflows/\.github/workflows/rust\.yml@[0-9a-f]{40}", call.get("uses", "")):
+        raise AssertionError("governed workflow must use a full-SHA pin")
+    if set(call) != {"name", "if", "uses", "with"}:
+        raise AssertionError("thin caller must not own runners, permissions, secrets or implementation")
+    inputs = call.get("with", {})
+    if set(inputs) != {"profile", "script", "result_script", "fetch_depth", "force_hosted"} or inputs.get("profile") != "standard" or inputs.get("script") != ".ci/rust-standard-proof.sh" or inputs.get("fetch_depth") != 1 or inputs.get("result_script") != ".ci/rust-standard-result.sh":
+        raise AssertionError("canonical script/profile/depth inputs drifted")
+    expected_force = "${{ (github.event_name == 'workflow_dispatch' && inputs.force_target == 'github') || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.type == 'Bot' || startsWith(github.event.pull_request.user.login, 'dependabot') || startsWith(github.event.pull_request.user.login, 'app/') || endsWith(github.event.pull_request.user.login, '[bot]'))) }}"
+    if inputs.get("force_hosted") != expected_force:
+        raise AssertionError("forced hosted/fork/bot isolation drifted")
+    if call.get("if") != "github.event.pull_request.draft != true || github.event_name != 'pull_request'":
+        raise AssertionError("draft proof admission drifted")
+    active_lines = active_code_lines(proof_text)
+    active = "\n".join(active_lines)
+    if "set -euo pipefail" not in active_lines:
+        raise AssertionError("proof script must propagate failures")
+    if canonical_invocation_count(proof_text) != 1:
+        raise AssertionError(".ci/rust-standard-proof.sh must invoke canonical proof exactly once")
+    for fragment in LEGACY_INLINE_FRAGMENTS:
+        if fragment in active:
+            raise AssertionError(f".ci/rust-standard-proof.sh reintroduced semantic-step-body {fragment!r}")
+    for line in active_lines:
+        if line.strip().startswith("cargo ") and line.strip() not in ALLOWED_CARGO_COMMANDS:
+            raise AssertionError(f".ci/rust-standard-proof.sh cargo-allowlist rejected {line.strip()!r}")
+    policy = (ROOT / ".ci/rust-standard-result.sh").read_text() if policy_text is None else policy_text
+    if CONTRACT_TEST_FILE not in "\n".join(active_code_lines(policy)):
+        raise AssertionError(f"owned result policy must run {CONTRACT_TEST_FILE}")
+    if set(jobs) != {"rust-small-proof"}:
+        raise AssertionError("consumer must not retain hosted controls or duplicate proof routes")
 
-    missing = [job_id for job_id in RUST_SMALL_LANE_JOBS if job_id not in jobs]
-    if missing:
-        raise AssertionError(f"required Rust Small lane jobs missing: {missing}")
 
-    for job_id in RUST_SMALL_LANE_JOBS:
-        body = jobs[job_id]
-        active = "\n".join(active_code_lines(body))
-        invocations = canonical_invocation_count(body)
-        if invocations != 1:
-            raise AssertionError(
-                f"{job_id} (field: canonical-invocation) must invoke the "
-                f"canonical Rust Small proof exactly once ({CANONICAL_INVOCATION!r}); "
-                f"found {invocations}. Route drift between runners made one "
-                "aggregate check mean two different proofs (#8407)."
+
+class RustStandardProofScriptTests(unittest.TestCase):
+    """Every governed route executes this strict canonical proof entry point."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.log = self.directory / "cargo.log"
+        self.config = self.directory / "gitconfig"
+        binary = self.directory / "cargo"
+        binary.write_text(
+            '#!/usr/bin/env bash\n'
+            'printf "%s\\n" "$*" >> "$PROOF_TEST_LOG"\n'
+            'if [ "$1" = fmt ]; then exit "${FMT_STATUS:-0}"; fi\n'
+            'exit "${PROOF_STATUS:-0}"\n',
+            encoding="utf-8",
+        )
+        binary.chmod(0o755)
+        self.environment = {
+            **os.environ,
+            "PATH": f"{self.directory}{os.pathsep}{os.environ['PATH']}",
+            "GIT_CONFIG_GLOBAL": str(self.config),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GITHUB_WORKSPACE": str(self.directory / "workspace with spaces"),
+            "PROOF_TEST_LOG": str(self.log),
+        }
+        for variable in subprocess.check_output(
+            ["git", "rev-parse", "--local-env-vars"], text=True
+        ).splitlines():
+            self.environment.pop(variable, None)
+
+    def run_script(
+        self, *, cwd: Path | None = None, **environment: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(ROOT / ".ci/rust-standard-proof.sh")],
+            cwd=cwd,
+            env={**self.environment, **environment},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_repeated_runs_preserve_canonical_proof_and_one_safe_directory(self) -> None:
+        subprocess.run(
+            ["git", "config", "--global", "--add", "safe.directory", "/unrelated/workspace"],
+            env=self.environment,
+            check=True,
+        )
+        for _ in range(2):
+            result = self.run_script()
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.log.read_text().splitlines(),
+            ["fmt --all -- --check", "run -p xtask --locked -- rust-small-proof"] * 2,
+        )
+        safe_directories = subprocess.check_output(
+            ["git", "config", "--global", "--get-all", "safe.directory"],
+            env=self.environment,
+            text=True,
+        ).splitlines()
+        self.assertEqual(
+            safe_directories, ["/unrelated/workspace", self.environment["GITHUB_WORKSPACE"]]
+        )
+
+    def test_format_failure_prevents_proof(self) -> None:
+        result = self.run_script(FMT_STATUS="17")
+        self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertEqual(self.log.read_text().splitlines(), ["fmt --all -- --check"])
+
+    def test_proof_failure_propagates(self) -> None:
+        result = self.run_script(PROOF_STATUS="23")
+        self.assertEqual(result.returncode, 23, result.stderr)
+
+    def test_safe_directory_write_failure_prevents_cargo(self) -> None:
+        result = self.run_script(GIT_CONFIG_GLOBAL=str(self.directory / "absent/config"))
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_inherited_git_hook_environment_cannot_redirect_proof(self) -> None:
+        workspace = Path(self.environment["GITHUB_WORKSPACE"])
+        foreign = self.directory / "foreign"
+        for repository in (workspace, foreign):
+            subprocess.run(
+                ["git", "init", "--quiet", str(repository)],
+                env=self.environment,
+                check=True,
             )
-        for fragment in LEGACY_INLINE_FRAGMENTS:
-            if fragment in active:
-                raise AssertionError(
-                    f"{job_id} (field: semantic-step-body) reintroduced an inline "
-                    f"duplicated lane step or drifted counter ({fragment!r}). The "
-                    "semantic Rust Small proof is owned by "
-                    "`cargo xtask rust-small-proof`; fix the task, not a "
-                    "per-route copy (#8407)."
-                )
-        for cargo_line in (
-            line.strip() for line in active_code_lines(body) if line.strip().startswith("cargo ")
-        ):
-            if cargo_line not in ALLOWED_CARGO_COMMANDS:
-                raise AssertionError(
-                    f"{job_id} (field: cargo-allowlist) runs unowned cargo "
-                    f"command {cargo_line!r}. A route may add only runner "
-                    "instrumentation around the canonical invocation; an extra "
-                    "semantic command makes the route choice change what the "
-                    "required status means (#8408 negative control)."
-                )
+        observed = self.directory / "observed-repository"
+        (self.directory / "cargo").write_text(
+            '#!/usr/bin/env bash\n'
+            'set -euo pipefail\n'
+            'if [ "$1" = run ]; then\n'
+            '  git rev-parse --show-toplevel > "$PROOF_TEST_REPOSITORY"\n'
+            'fi\n',
+            encoding="utf-8",
+        )
+        result = self.run_script(
+            cwd=workspace,
+            PROOF_TEST_REPOSITORY=str(observed),
+            GIT_DIR=str(foreign / ".git"),
+            GIT_WORK_TREE=str(foreign),
+            GIT_COMMON_DIR=str(foreign / ".git"),
+            GIT_INDEX_FILE=str(foreign / ".git/index"),
+            GIT_OBJECT_DIRECTORY=str(foreign / ".git/objects"),
+            GIT_ALTERNATE_OBJECT_DIRECTORIES=str(foreign / ".git/objects"),
+            GIT_PREFIX="foreign/",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(observed.read_text().strip()), workspace)
 
-    result_job = jobs.get(RUST_SMALL_RESULT_JOB)
-    if not isinstance(result_job, str):
-        raise AssertionError(
-            f"{RUST_SMALL_RESULT_JOB} (field: aggregate-job) is missing"
+    def test_inherited_git_config_cannot_disable_diff_hygiene(self) -> None:
+        workspace = Path(self.environment["GITHUB_WORKSPACE"])
+        subprocess.run(
+            ["git", "init", "--quiet", str(workspace)], env=self.environment, check=True
         )
-    result_active = "\n".join(active_code_lines(result_job))
-    if CONTRACT_TEST_FILE not in result_active:
-        raise AssertionError(
-            f"{RUST_SMALL_RESULT_JOB} (field: contract-suite-list) must run "
-            f"{CONTRACT_TEST_FILE} so a silent revert of the canonical-route "
-            "consolidation fails a required check (#8407)"
+        tracked = workspace / "tracked.txt"
+        tracked.write_text("clean\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(workspace), "add", "tracked.txt"],
+            env=self.environment,
+            check=True,
         )
+        tracked.write_text("trailing whitespace \n", encoding="utf-8")
+        (self.directory / "cargo").write_text(
+            '#!/usr/bin/env bash\n'
+            'if [ "$1" = run ]; then git diff --check; fi\n',
+            encoding="utf-8",
+        )
+        result = self.run_script(
+            cwd=workspace,
+            GIT_CONFIG_COUNT="1",
+            GIT_CONFIG_KEY_0="core.whitespace",
+            GIT_CONFIG_VALUE_0="-trailing-space",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("trailing whitespace", result.stdout)
 
 
 class RustSmallRouteContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow_text = load_workflow_text()
-
-    # ── green path ──────────────────────────────────────────────────────────
+        self.proof_text = PROOF_PATH.read_text(encoding="utf-8")
 
     def test_checked_in_workflow_matches_canonical_route(self) -> None:
-        validate_rust_small_route_contract(self.workflow_text)
+        validate_rust_small_route_contract(self.workflow_text, self.proof_text)
 
-    def test_every_route_invocation_is_byte_identical(self) -> None:
-        jobs = job_bodies(self.workflow_text)
-        seen: set[str] = set()
-        for job_id in RUST_SMALL_LANE_JOBS:
-            occurrences = [
-                line.strip()
-                for line in active_code_lines(jobs[job_id])
-                if line.strip().strip("'\"") == CANONICAL_INVOCATION
-            ]
-            self.assertEqual(len(occurrences), 1, f"{job_id}: {occurrences}")
-            seen.add(occurrences[0])
-        self.assertEqual(seen, {CANONICAL_INVOCATION})
+    def test_canonical_invocation_mutations_fail_named_site(self) -> None:
+        for replacement in (CANONICAL_INVOCATION.replace(" --locked", ""), f"# {CANONICAL_INVOCATION}", f'echo "{CANONICAL_INVOCATION}"', f"{CANONICAL_INVOCATION} || true", ""):
+            with self.subTest(replacement=replacement), self.assertRaisesRegex(AssertionError, "rust-standard-proof.sh"):
+                validate_rust_small_route_contract(self.workflow_text, self.proof_text.replace(CANONICAL_INVOCATION, replacement))
 
-    # ── red-first per-site pins: any single mutated copy fails, named ───────
+    def test_shadow_duplicate_fails_closed(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "exactly once"):
+            validate_rust_small_route_contract(self.workflow_text, self.proof_text + "\n" + CANONICAL_INVOCATION)
 
-    def test_any_single_lane_invocation_mutation_fails_named_site(self) -> None:
-        for job_id in RUST_SMALL_LANE_JOBS:
-            for mutation_name, replacement in INVOCATION_MUTATIONS:
-                with self.subTest(
-                    site=job_id, field="canonical-invocation", mutation=mutation_name
-                ):
-                    broken = mutate_first_in_job(
-                        self.workflow_text, job_id, CANONICAL_INVOCATION, replacement
-                    )
-                    with self.assertRaises(AssertionError) as context:
-                        validate_rust_small_route_contract(broken)
-                    message = str(context.exception)
-                    self.assertIn(job_id, message, message)
+    def test_reintroduced_semantic_steps_and_counters_fail_closed(self) -> None:
+        for extra in LEGACY_INLINE_FRAGMENTS:
+            with self.subTest(extra=extra), self.assertRaisesRegex(AssertionError, "semantic-step-body"):
+                validate_rust_small_route_contract(self.workflow_text, self.proof_text + "\n" + extra)
 
-    def test_shadow_duplicate_in_any_single_lane_fails_named_site(self) -> None:
-        for job_id in RUST_SMALL_LANE_JOBS:
-            with self.subTest(site=job_id, field="canonical-invocation"):
-                broken = mutate_first_in_job(
-                    self.workflow_text,
-                    job_id,
-                    CANONICAL_INVOCATION,
-                    f"{CANONICAL_INVOCATION}\n              {CANONICAL_INVOCATION}",
-                )
-                with self.assertRaises(AssertionError) as context:
-                    validate_rust_small_route_contract(broken)
-                message = str(context.exception)
-                self.assertIn(job_id, message, message)
-                self.assertIn("exactly once", message, message)
+    def test_extra_semantic_cargo_command_fails_closed(self) -> None:
+        for extra in ("cargo test --locked -p perl-lsp-rs --test route_parity_extra", "cargo clippy --workspace --locked -- -D warnings", "cargo run -p xtask --locked -- some-other-proof"):
+            with self.subTest(extra=extra), self.assertRaisesRegex(AssertionError, "cargo-allowlist"):
+                validate_rust_small_route_contract(self.workflow_text, self.proof_text + "\n" + extra)
 
-    def test_reintroduced_drifted_counter_fails_named_site_per_fragment(self) -> None:
-        legacy_counters = (
-            'scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features '
-            'workspace --profile agent --locked references_tier_scorecard_tests '
-            '-- --list | awk "/: test\\$/{count++} END {print count+0}")',
-            "scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features "
-            "workspace --profile agent --locked references_tier_scorecard_tests "
-            "-- --list | grep -c -F ': test' || true)",
-        )
-        for job_id in RUST_SMALL_LANE_JOBS:
-            for legacy in legacy_counters:
-                with self.subTest(
-                    site=job_id, field="semantic-step-body", legacy=legacy[:60]
-                ):
-                    broken = mutate_first_in_job(
-                        self.workflow_text,
-                        job_id,
-                        CANONICAL_INVOCATION,
-                        f"{legacy}\n              {CANONICAL_INVOCATION}",
-                    )
-                    with self.assertRaises(AssertionError) as context:
-                        validate_rust_small_route_contract(broken)
-                    message = str(context.exception)
-                    self.assertIn(job_id, message, message)
+    def test_strict_failure_propagation_cannot_be_removed(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "propagate failures"):
+            validate_rust_small_route_contract(self.workflow_text, self.proof_text.replace("set -euo pipefail", "set +e"))
 
-    def test_reintroduced_semantic_step_body_fails_named_site(self) -> None:
-        legacy_steps = (
-            "cargo fetch --locked",
-            "cargo check --workspace --locked",
-            "cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture",
-            "INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib",
-        )
-        for job_id in RUST_SMALL_LANE_JOBS:
-            for legacy in legacy_steps:
-                with self.subTest(
-                    site=job_id, field="semantic-step-body", legacy=legacy[:50]
-                ):
-                    broken = mutate_first_in_job(
-                        self.workflow_text,
-                        job_id,
-                        CANONICAL_INVOCATION,
-                        f"{legacy}\n              {CANONICAL_INVOCATION}",
-                    )
-                    with self.assertRaises(AssertionError) as context:
-                        validate_rust_small_route_contract(broken)
-                    message = str(context.exception)
-                    self.assertIn(job_id, message, message)
+    def test_caller_mutations_fail_closed(self) -> None:
+        for old, new in (("name: Perl LSP Rust Small governed proof", "name: Unbound proof"), ("profile: standard", "profile: heavy"), ("script: .ci/rust-standard-proof.sh", "script: .ci/other.sh"), ("fetch_depth: 1", "fetch_depth: 0"), (".github/workflows/rust.yml@a3125de962a74e7ec2e127d41d7532f66c69334d", ".github/workflows/rust.yml@main"), ("inputs.force_target == 'github'", "inputs.force_target == 'auto'"), (" || endsWith(github.event.pull_request.user.login, '[bot]')", ""), ("    with:\n", "    secrets: inherit\n    with:\n"), ("    if: github.event.pull_request.draft != true", "    if: github.event.pull_request.draft == true"), ("  rust-small-proof:\n", "  removed:\n")):
+            with self.subTest(old=old):
+                broken = self.workflow_text.replace(old, new, 1)
+                self.assertNotEqual(broken, self.workflow_text)
+                with self.assertRaises(AssertionError):
+                    validate_rust_small_route_contract(broken, self.proof_text)
 
-    def test_extra_semantic_cargo_command_in_any_lane_fails_named_site(self) -> None:
-        # #8408 negative control: a hosted route running an extra semantic
-        # test (or any unowned cargo command) must fail with the site named,
-        # not silently broaden what one route's green means.
-        extras = (
-            "cargo test --locked -p perl-lsp-rs --test route_parity_extra",
-            "cargo clippy --workspace --locked -- -D warnings",
-            "cargo run -p xtask --locked -- some-other-proof",
-        )
-        for job_id in RUST_SMALL_LANE_JOBS:
-            for extra in extras:
-                with self.subTest(site=job_id, field="cargo-allowlist", extra=extra[:50]):
-                    broken = mutate_first_in_job(
-                        self.workflow_text,
-                        job_id,
-                        CANONICAL_INVOCATION,
-                        f"{CANONICAL_INVOCATION}\n              {extra}",
-                    )
-                    with self.assertRaises(AssertionError) as context:
-                        validate_rust_small_route_contract(broken)
-                    message = str(context.exception)
-                    self.assertIn(job_id, message, message)
-                    self.assertIn("cargo-allowlist", message, message)
-                    self.assertIn(extra, message, message)
+    def test_policy_binding_and_duplicate_job_regressions_fail_closed(self) -> None:
+        variants = [self.workflow_text.replace("result_script: .ci/rust-standard-result.sh", "result_script: .ci/other.sh"),
+                    self.workflow_text.replace("      result_script: .ci/rust-standard-result.sh\n", ""),
+                    self.workflow_text + "\n  duplicate:\n    runs-on: ubuntu-latest\n    steps: []\n"]
+        for broken in variants:
+            self.assertNotEqual(broken, self.workflow_text)
+            with self.assertRaises(AssertionError):
+                validate_rust_small_route_contract(broken, self.proof_text)
 
-    def test_missing_lane_job_fails_closed(self) -> None:
-        lines = [
-            line
-            for line in self.workflow_text.splitlines()
-            if not line.startswith(("  rust-small-fallback:", "  rust-small-cx53:"))
-        ]
-        broken = "\n".join(lines)
-        with self.assertRaisesRegex(AssertionError, "lane jobs missing"):
-            validate_rust_small_route_contract(broken)
-
-    def test_result_job_without_contract_reference_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(CONTRACT_TEST_FILE, "scripts/ci/removed.py")
+    def test_policy_without_contract_reference_fails_closed(self) -> None:
+        policy = (ROOT / ".ci/rust-standard-result.sh").read_text()
+        broken = policy.replace(CONTRACT_TEST_FILE, "scripts/ci/removed.py")
+        self.assertNotEqual(broken, policy)
         with self.assertRaisesRegex(AssertionError, "must run"):
-            validate_rust_small_route_contract(broken)
+            validate_rust_small_route_contract(self.workflow_text, self.proof_text, broken)
 
 
 if __name__ == "__main__":

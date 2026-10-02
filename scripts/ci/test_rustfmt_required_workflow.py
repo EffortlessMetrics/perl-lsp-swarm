@@ -43,12 +43,7 @@ SUBJECT_EXPRESSION = (
     "github.event_name == 'pull_request' && github.event.pull_request.head.sha || "
     "github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha"
 )
-RUST_SMALL_LANE_JOBS = (
-    "rust-small-cx53",
-    "rust-small-cx43",
-    "rust-small-github",
-    "rust-small-fallback",
-)
+RUST_SMALL_LANE_JOBS = ("rust-small-proof",)
 RUST_SMALL_RESULT_JOB = "rust-small-result"
 FMT_COMMAND = "cargo fmt --all -- --check"
 CONTRACT_TEST_FILES = (
@@ -281,7 +276,7 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
         raise AssertionError("formatter policy must name the owning job")
     # Policy schema v2 separates merge-policy role from live GitHub enforcement.
     # Dedicated `Rust formatting` stays advisory; live merge blocking is the
-    # required Perl LSP Rust Small Result path (#9127/#12320). #9959 retires
+    # required Perl LSP Rust Small governed proof / Rust CI / Required path (#9127/#12320). #9959 retires
     # duplicate meta-shard fmt without promoting this context.
     if (
         entry.get("required") is not False
@@ -292,7 +287,7 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
     reason = str(entry.get("reason", "")).lower()
     if "advisory receipt-producing dedicated formatter" not in reason:
         raise AssertionError("formatter policy must name the dedicated context as advisory")
-    if "perl lsp rust small result" not in reason:
+    if "perl lsp rust small governed proof / rust ci / required" not in reason:
         raise AssertionError("formatter policy must declare Rust Small as the live blocker")
     if "9959" not in reason:
         raise AssertionError("formatter policy must record meta-shard fmt retirement")
@@ -660,14 +655,17 @@ def load_rust_small_workflow_text() -> str:
     return RUST_SMALL_WORKFLOW_PATH.read_text(encoding="utf-8")
 
 
-def validate_rust_small_fmt_contract(workflow_text: str) -> None:
+def validate_rust_small_fmt_contract(workflow_text: str, proof_text: str | None = None, policy_text: str | None = None) -> None:
     jobs = job_bodies(workflow_text)
     missing = [job_id for job_id in RUST_SMALL_LANE_JOBS if job_id not in jobs]
     if missing:
         raise AssertionError(f"required Rust Small lane jobs missing: {missing}")
 
+    proof_text = (ROOT / ".ci/rust-standard-proof.sh").read_text(encoding="utf-8") if proof_text is None else proof_text
     for job_id in RUST_SMALL_LANE_JOBS:
-        body = jobs[job_id]
+        if "script: .ci/rust-standard-proof.sh" not in jobs[job_id]:
+            raise AssertionError(f"{job_id} must reach the canonical formatter script")
+        body = proof_text
         active_lines = active_code_lines(body)
         if not any(line.strip().strip("'\"") == FMT_COMMAND for line in active_lines):
             raise AssertionError(
@@ -691,37 +689,20 @@ def validate_rust_small_fmt_contract(workflow_text: str) -> None:
                 f"{job_id} must not pass --files to cargo fmt / rustfmt"
             )
 
-    result_job = jobs.get(RUST_SMALL_RESULT_JOB)
-    if not isinstance(result_job, str):
-        raise AssertionError("Perl LSP Rust Small Result job is missing")
-    result_active_lines = active_code_lines(result_job)
-    result_active = "\n".join(result_active_lines)
-    if not any(
-        line.strip().startswith("python3 -m unittest") for line in result_active_lines
-    ):
-        raise AssertionError(
-            "Perl LSP Rust Small Result must invoke the rustfmt prevention tests"
-        )
+    if "result_script: .ci/rust-standard-result.sh" not in jobs["rust-small-proof"]:
+        raise AssertionError("owned result policy is missing")
+    policy_text = (ROOT / ".ci/rust-standard-result.sh").read_text() if policy_text is None else policy_text
+    active_lines = active_code_lines(policy_text)
+    active = "\n".join(active_lines)
+    if not any(line.strip() == "python3 -m unittest \\" for line in active_lines):
+        raise AssertionError("owned result policy must invoke the rustfmt prevention tests")
     for test_file in CONTRACT_TEST_FILES:
-        if test_file not in result_active:
-            raise AssertionError(
-                f"Perl LSP Rust Small Result must run {test_file} so a silent "
-                "revert fails a required check"
-            )
-    prove = _named_step_body(result_job, "Prove rustfmt prevention contract")
-    if re.search(r"^\s+if:", prove, re.MULTILINE):
-        raise AssertionError(
-            "rustfmt prevention contract must not be skipped with if: "
-            "(draft-skip stays in the evaluate step, #10006)"
-        )
-    if "continue-on-error: true" in prove:
-        raise AssertionError("rustfmt prevention contract must not continue on error")
-    if "RUST_SMALL_GATE_VERDICT=draft-no-proof" not in _named_step_body(
-        result_job, "Evaluate routed result"
-    ):
-        raise AssertionError(
-            "draft-skip must remain explicit no-proof in the evaluate step (#9603)"
-        )
+        if test_file not in active:
+            raise AssertionError(f"owned result policy must run {test_file}")
+    if "set -euo pipefail" not in active_lines or "|| true" in active or "if " in active:
+        raise AssertionError("prevention tests must not be skipped or tolerate failure")
+    if active.index("python3 -m unittest") > active.index("python3 scripts/ci/rust_standard_result.py"):
+        raise AssertionError("prevention tests must precede policy")
 
 
 def _named_step_body(job_text: str, step_name: str) -> str:
@@ -737,69 +718,52 @@ def _named_step_body(job_text: str, step_name: str) -> str:
 class RustSmallRequiredFmtTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow_text = load_rust_small_workflow_text()
+        self.proof_text = (ROOT / ".ci/rust-standard-proof.sh").read_text(encoding="utf-8")
 
     def test_checked_in_rust_small_fmt_contract_holds(self) -> None:
         validate_rust_small_fmt_contract(self.workflow_text)
 
     def test_echo_decoy_fmt_command_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(
+        broken = self.proof_text.replace(
             FMT_COMMAND, f'echo "{FMT_COMMAND}"', 1
         )
         with self.assertRaisesRegex(AssertionError, "silent revert of #12320"):
-            validate_rust_small_fmt_contract(broken)
+            validate_rust_small_fmt_contract(self.workflow_text, broken)
 
     def test_fmt_command_with_or_true_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(FMT_COMMAND, f"{FMT_COMMAND} || true", 1)
+        broken = self.proof_text.replace(FMT_COMMAND, f"{FMT_COMMAND} || true", 1)
         with self.assertRaisesRegex(AssertionError, "silent revert of #12320"):
-            validate_rust_small_fmt_contract(broken)
+            validate_rust_small_fmt_contract(self.workflow_text, broken)
 
     def test_commenting_out_one_lane_fmt_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(FMT_COMMAND, f"# {FMT_COMMAND}", 1)
+        broken = self.proof_text.replace(FMT_COMMAND, f"# {FMT_COMMAND}", 1)
         with self.assertRaisesRegex(AssertionError, "silent revert of #12320"):
-            validate_rust_small_fmt_contract(broken)
+            validate_rust_small_fmt_contract(self.workflow_text, broken)
 
     def test_dropping_all_flag_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(FMT_COMMAND, "cargo fmt -- --check", 1)
+        broken = self.proof_text.replace(FMT_COMMAND, "cargo fmt -- --check", 1)
         with self.assertRaisesRegex(AssertionError, "dropping --all|silent revert"):
-            validate_rust_small_fmt_contract(broken)
+            validate_rust_small_fmt_contract(self.workflow_text, broken)
 
     def test_changed_file_narrowing_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(
+        broken = self.proof_text.replace(
             FMT_COMMAND,
             "cargo fmt --all -- --check --files $(git diff --name-only origin/main)",
             1,
         )
         with self.assertRaisesRegex(AssertionError, "changed-file narrowing|--files|silent revert"):
-            validate_rust_small_fmt_contract(broken)
+            validate_rust_small_fmt_contract(self.workflow_text, broken)
 
-    def test_echo_decoy_unittest_invocation_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(
-            "python3 -m unittest", 'echo "python3 -m unittest"', 1
-        )
-        with self.assertRaisesRegex(
-            AssertionError, "must invoke the rustfmt prevention tests"
-        ):
-            validate_rust_small_fmt_contract(broken)
-
-    def test_removing_result_job_test_invocation_fails_closed(self) -> None:
-        broken = "\n".join(
-            line
-            for line in self.workflow_text.splitlines()
-            if "python3 -m unittest" not in line
-            and all(test_file not in line for test_file in CONTRACT_TEST_FILES)
-        )
-        with self.assertRaisesRegex(
-            AssertionError, "must invoke the rustfmt prevention tests|must run "
-        ):
-            validate_rust_small_fmt_contract(broken)
-
-    def test_skipping_the_contract_step_with_if_fails_closed(self) -> None:
-        broken = self.workflow_text.replace(
-            "- name: Prove rustfmt prevention contract\n        shell: bash",
-            "- name: Prove rustfmt prevention contract\n        if: false\n        shell: bash",
-        )
-        with self.assertRaisesRegex(AssertionError, "must not be skipped with if"):
-            validate_rust_small_fmt_contract(broken)
+    def test_policy_mutations_fail_closed(self) -> None:
+        policy = (ROOT / ".ci/rust-standard-result.sh").read_text()
+        mutations = [policy.replace("python3 -m unittest", 'echo "python3 -m unittest"'),
+                     policy.replace("set -euo pipefail", "set +e"),
+                     "if false; then\n" + policy + "\nfi\n",
+                     policy.replace("python3 -m unittest", "true || python3 -m unittest")]
+        mutations.extend(policy.replace(test_file, "") for test_file in CONTRACT_TEST_FILES)
+        for broken in mutations:
+            with self.subTest(broken=broken), self.assertRaises(AssertionError):
+                validate_rust_small_fmt_contract(self.workflow_text, policy_text=broken)
 
 
 if __name__ == "__main__":
