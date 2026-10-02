@@ -115,6 +115,74 @@ fn declaration_comma_and_word_operator_continuations_remain_in_list() -> TestRes
 }
 
 #[test]
+fn uninitialized_declaration_binary_operators_remain_in_list() -> TestResult {
+    for keyword in ["for", "foreach"] {
+        for (operator, rhs) in [("&&", "$ready"), ("==", "1"), ("+", "2"), ("||", "3")] {
+            let expression = format!("my $x {operator} {rhs}");
+            let source = format!("# café\n{keyword} (\n {expression}\n) {{ print $_; }}");
+            let ast = parse(&source)?;
+            let list = implicit_list(&ast, &source, &expression)?;
+            let NodeKind::Binary { op, left, right } = &list.kind else {
+                return Err(format!("binary continuation lost: {}", list.to_sexp()).into());
+            };
+            assert_eq!(op, operator);
+            assert!(matches!(
+                &left.kind,
+                NodeKind::VariableDeclaration { declarator, initializer: None, .. }
+                    if declarator == "my"
+            ));
+            assert_eq!(&source[left.location.start..left.location.end], "my $x");
+            assert_eq!(&source[right.location.start..right.location.end], rhs);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn uninitialized_declaration_ternary_remains_in_list() -> TestResult {
+    for keyword in ["for", "foreach"] {
+        let expression = "my $x ? 1 : 2";
+        let source = format!("{keyword} ({expression}) {{ print $_; }}");
+        let ast = parse(&source)?;
+        let list = implicit_list(&ast, &source, expression)?;
+        let NodeKind::Ternary { condition, then_expr, else_expr } = &list.kind else {
+            return Err(format!("ternary continuation lost: {}", list.to_sexp()).into());
+        };
+        assert!(matches!(
+            &condition.kind,
+            NodeKind::VariableDeclaration { declarator, initializer: None, .. }
+                if declarator == "my"
+        ));
+        for (part, expected) in [(condition, "my $x"), (then_expr, "1"), (else_expr, "2")] {
+            assert_eq!(&source[part.location.start..part.location.end], expected);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn symbolic_continuation_precedes_comma_and_word_operators() -> TestResult {
+    for keyword in ["for", "foreach"] {
+        let expression = "my $x && $ready, $other or die";
+        let source = format!("{keyword} ({expression}) {{ print $_; }}");
+        let ast = parse(&source)?;
+        let list = implicit_list(&ast, &source, expression)?;
+        let NodeKind::Binary { op, left, .. } = &list.kind else {
+            return Err(format!("word continuation lost: {}", list.to_sexp()).into());
+        };
+        assert_eq!(op, "or");
+        let NodeKind::ArrayLiteral { elements } = &left.kind else {
+            return Err(format!("comma continuation lost: {}", left.to_sexp()).into());
+        };
+        assert_eq!(elements.len(), 2);
+        assert!(matches!(&elements[0].kind, NodeKind::Binary { op, left, .. }
+            if op == "&&" && matches!(left.kind, NodeKind::VariableDeclaration { initializer: None, .. })));
+        assert_eq!(&source[elements[1].location.start..elements[1].location.end], "$other");
+    }
+    Ok(())
+}
+
+#[test]
 fn core_parent_shaped_helper_keeps_implicit_topic() -> TestResult {
     let source =
         r#"sub f { for (my @filename = @_) { s{::|'}{/}g; print "$_\n"; } } f("A::B", "C::D");"#;
@@ -154,7 +222,15 @@ fn existing_implicit_and_explicit_iterator_forms_stay_foreach() -> TestResult {
 #[test]
 fn semicolons_preserve_all_three_c_style_clauses() -> TestResult {
     for keyword in ["for", "foreach"] {
-        for initialization in ["my $i = 0", "$i = 0", "my $i = 0, $j = 1", "my $i = 0 or die"] {
+        for initialization in [
+            "my $i = 0",
+            "$i = 0",
+            "my $i = 0, $j = 1",
+            "my $i = 0 or die",
+            "my $i && $ready",
+            "my $i == 1",
+            "my $i ? 1 : 2",
+        ] {
             let source = format!("{keyword} ({initialization}; $i < 2; ++$i) {{ print $_; }}");
             let ast = parse(&source)?;
             let NodeKind::Program { statements } = &ast.kind else {
@@ -175,6 +251,21 @@ fn semicolons_preserve_all_three_c_style_clauses() -> TestResult {
         parse(&format!("{keyword} (;;) {{ last; }}"))?;
     }
     Ok(())
+}
+
+#[test]
+fn incomplete_declaration_operators_still_report_blocking_errors() {
+    for keyword in ["for", "foreach"] {
+        for expression in ["my $x &&", "my $x ==", "my $x ? 1 :"] {
+            let source = format!("{keyword} ({expression}) {{ print $_; }}");
+            let mut parser = Parser::new(&source);
+            let result = parser.parse();
+            assert!(
+                result.is_err() || parser.errors().iter().any(|error| error.blocks_clean_parse()),
+                "incomplete operator silently accepted: {source}"
+            );
+        }
+    }
 }
 
 #[test]

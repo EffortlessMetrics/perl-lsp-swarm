@@ -434,13 +434,14 @@ fn qualified_output_call_keeps_clean_diagnostics_through_document_lifecycle() ->
 #[test]
 fn foreach_declaration_list_diagnostics_clear_after_header_repair() -> Result<()> {
     let clean = "use strict;\nuse warnings;\nfor (my @filename = @_) { print $_; }\n";
+    let symbolic = "use strict;\nuse warnings;\nforeach (my $x ? 1 : 2) { print $_; }\n";
     let broken = "use strict;\nuse warnings;\nfor (my $i = 0 $i < 2; ++$i) { print $i; }\n";
     let mut client = RealProcessClient::spawn_exact()?;
     initialize(&mut client)?;
     did_open(&mut client, 1, clean)?;
 
     for (version, text, expect_parser_error) in
-        [(1, clean, false), (2, broken, true), (3, clean, false)]
+        [(1, clean, false), (2, broken, true), (3, symbolic, false), (4, clean, false)]
     {
         if version > 1 {
             did_change(&mut client, version, text)?;

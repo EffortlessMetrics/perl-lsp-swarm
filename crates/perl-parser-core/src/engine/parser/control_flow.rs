@@ -306,6 +306,10 @@ impl<'a> Parser<'a> {
             self.in_for_loop_init = true;
             let decl = self.parse_variable_declaration()?;
             self.in_for_loop_init = false;
+            // Uninitialized declarations can be operands, as in `my $x && $ready`
+            // or `my $x ? 1 : 2`. Finish them before the comma/word continuations
+            // and delimiter dispatch, just like condition declarations.
+            let decl = self.parse_below_assignment_with(decl)?;
             // `my` declares only the FIRST variable in an unparenthesized
             // list (perlsub), so `for (my $i, $j; ...)` parses as
             // `for ((my $i), $j; ...)` — absorb the trailing comma term(s)
