@@ -3,7 +3,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const {
   activationFailureLegEnv,
   bundleTargetForPlatform,
@@ -16,6 +16,7 @@ const {
   concludeRun,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
+  hasCandidateIdentity,
   interpretBehavioralSmokeExit,
   inventoryTransitionArgs,
   interpretTestExplorerExit,
@@ -31,6 +32,7 @@ const {
   stageServerForPackage,
   validateActivationRecoveryChildReceipts,
   validateChildSmokeReceipt,
+  observeSmokeArtifact,
   validateVerifiedCandidateReceipt,
   observedVscodeVersion,
   validateCrashRecoveryChildReceipts,
@@ -465,9 +467,9 @@ void test(
         (_env) => ({ phase: 'child', result: { status: 2 } }),
       );
       assert.deepEqual(result, {
-        status: 'not_proven',
+        status: 'failed',
         exit_code: 2,
-        reason: 'candidate_bound_platform_unavailable',
+        reason: 'test_explorer_journey_failed',
       });
 
       for (const name of names.slice(0, 4)) delete process.env[name];
@@ -1248,9 +1250,48 @@ void test('the orchestrator reads the child receipt where the child writes it', 
   }
 });
 
+const identityFixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'current-leaf-identity-'));
+after(() => fs.rmSync(identityFixtureRoot, { recursive: true, force: true }));
+const isolatedExtensionsRoot = path.join(identityFixtureRoot, 'extensions');
+const installedExtensionRoot = path.join(isolatedExtensionsRoot, 'extension');
+fs.mkdirSync(installedExtensionRoot, { recursive: true });
+const inputServerFile = path.join(identityFixtureRoot, 'server');
+const installedServerFile = path.join(installedExtensionRoot, 'server');
+const inputVsixFile = path.join(identityFixtureRoot, 'candidate.vsix');
+fs.writeFileSync(inputServerFile, 'known-server');
+fs.writeFileSync(installedServerFile, 'known-server');
+fs.writeFileSync(inputVsixFile, 'known-vsix');
+const observedInputServer = observeSmokeArtifact(inputServerFile);
+const observedInputVsix = observeSmokeArtifact(inputVsixFile);
+function installedIdentity() {
+  const selected = observeSmokeArtifact(installedServerFile);
+  return {
+    schema_version: 'installed_lsp_vsix_bytes.v1',
+    extension_root: installedExtensionRoot,
+    extensions_root: isolatedExtensionsRoot,
+    before_provider: selected,
+    after_restart: selected,
+    after_shutdown: selected,
+    vsix_before: observedInputVsix,
+    vsix_after: observedInputVsix,
+  };
+}
+function selectedMetrics() {
+  return {
+    binary_resolution_status: 'ok',
+    binary_resolution_source: 'bundled',
+    binary_resolution_path: installedServerFile,
+    server_start_status: 'ok',
+    initialize_status: 'ok',
+  };
+}
+
 const CHILD_SUBJECT = {
   expectedRevision: 'a'.repeat(40),
-  expectedVsixSha256: 'b'.repeat(64),
+  expectedVsixSha256: observedInputVsix.sha256,
+  expectedServerObservation: observedInputServer,
+  expectedVsixObservation: observedInputVsix,
+  expectedExtensionsRoot: isolatedExtensionsRoot,
   expectedServerSourceSha: 'a'.repeat(40),
   expectedVscodeVersion: 'stable',
   expectedSourceLabel: 'hosted-linux-current-source',
@@ -1260,6 +1301,9 @@ function childReceipt(overrides = {}, environmentOverrides = {}) {
   return {
     outcome: 'completed',
     failures: [],
+    installed_byte_identity: installedIdentity(),
+    startup: { language_client: selectedMetrics() },
+    lifecycle: { restart: { language_client: selectedMetrics() } },
     environment: {
       source_revision: CHILD_SUBJECT.expectedRevision,
       server_source_revision: CHILD_SUBJECT.expectedServerSourceSha,
@@ -1623,6 +1667,20 @@ void test('a partial Windows candidate-bound exit 2 remains not proven', () => {
   });
   assert.equal(result.status, 'not_proven');
   assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+});
+
+void test('a standalone first-hour SHA does not make Windows exit 2 a candidate boundary', () => {
+  const standalone = { PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40) };
+  assert.equal(hasCandidateIdentity(standalone), false);
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: hasCandidateIdentity(standalone),
+    platform: 'win32',
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-first-hour-exit-does-not-exist'),
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'published_extension_smoke_failed');
+  assert.equal(hasCandidateIdentity({ ...standalone, PERL_LSP_CANDIDATE_ID: 'partial' }), true);
 });
 
 void test('a complete Windows candidate-bound exit 2 remains a product failure', () => {
@@ -3400,6 +3458,10 @@ void test('main forwards its constructed manifest to the Test Explorer child', (
       if (name === 'fs')
         return {
           existsSync: () => true,
+          lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false }),
+          realpathSync: (file) => file,
+          mkdirSync() {},
+          mkdtempSync: (prefix) => prefix + 'owned-fixture',
           readFileSync: () => JSON.stringify({ name: 'fixture', version: '1.0.0' }),
           rmSync() {},
         };
@@ -3529,4 +3591,55 @@ void test('main records manifest failures before packaging and exits not proven'
     assert.equal(receipt.stages.package_inventory.status, 'not_proven', scenario.label);
     assert.equal(receipt.stages.behavioral_smoke.status, 'not_run', scenario.label);
   }
+});
+
+void test('old receipts still parse but cannot satisfy current observed identity', () => {
+  const old = childReceipt();
+  Reflect.deleteProperty(old, 'installed_byte_identity');
+  assert.doesNotThrow(() => JSON.parse(JSON.stringify(old)));
+  const result = validateChild(old);
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /missing current installed byte observations/);
+});
+
+void test('forged observations cannot conceal actual same-length installed bytes', () => {
+  const receipt = childReceipt();
+  fs.writeFileSync(installedServerFile, 'wrong-server');
+  try {
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /actual file bytes/);
+  } finally {
+    fs.writeFileSync(installedServerFile, 'known-server');
+  }
+});
+
+void test('wrong selected VSIX bytes refuse independent parent acceptance', () => {
+  const receipt = childReceipt();
+  fs.writeFileSync(inputVsixFile, 'wrong-vsix');
+  try {
+    const result = validateChild(receipt);
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join('; '), /actual file bytes/);
+  } finally {
+    fs.writeFileSync(inputVsixFile, 'known-vsix');
+  }
+});
+
+void test('missing observation and restart path substitution refuse', () => {
+  const missing = childReceipt();
+  Reflect.deleteProperty(missing.installed_byte_identity, 'after_restart');
+  assert.equal(validateChild(missing).ok, false);
+  const changed = childReceipt();
+  changed.lifecycle.restart.language_client.binary_resolution_path = inputServerFile;
+  assert.equal(validateChild(changed).ok, false);
+});
+
+void test('same-prefix installed profile and unavailable selected file refuse', () => {
+  const outside = childReceipt();
+  outside.installed_byte_identity.extension_root = identityFixtureRoot;
+  assert.equal(validateChild(outside).ok, false);
+  const absent = childReceipt();
+  absent.installed_byte_identity.before_provider.path = path.join(installedExtensionRoot, 'absent');
+  assert.equal(validateChild(absent).ok, false);
 });
