@@ -107,8 +107,11 @@ outcome_owner = "#10230"
 # scope_distance.rs, variables.rs, and tests.rs in the same scan set);
 # producer population, identities, authored dispositions, entry routes,
 # delegations, and finalizer route are unchanged. Open-buffer candidates may
-# drop stale same-document rows the previous digest could offer.
-source_digest = "sha256:f5cb46d44a22edb2c25a99c9fc3b5f1477b50c55dca9f6ad0f33b2955ba830de"
+# drop stale same-document rows the previous digest could offer. A follow-up
+# hardening pass canonicalizes path-form document identity and selects
+# cross-file inheritance facts before the stale-document skip; scan-root file
+# set and producer population are unchanged by it.
+source_digest = "sha256:c751ddf440403d38bb9775efe3d49b396e609616042b87fbdf988da2ffab62c0"
 
 [[delegations]]
 module = "dancer2"
