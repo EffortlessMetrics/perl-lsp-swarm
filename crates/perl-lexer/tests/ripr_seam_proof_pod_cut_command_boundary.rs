@@ -26,14 +26,117 @@ fn significant(source: &str) -> Vec<Token> {
         .collect()
 }
 
+/// Classify the first significant token so each boundary side has an exact,
+/// comparable value (`op:=` operator, `num:1` number, `none` skipped input).
+fn first_kind(source: &str) -> String {
+    match significant(source).into_iter().next() {
+        Some(token) => match token.token_type {
+            TokenType::Identifier(text) => format!("id:{text}"),
+            TokenType::Number(text) => format!("num:{text}"),
+            TokenType::Keyword(text) => format!("kw:{text}"),
+            TokenType::Operator(text) => format!("op:{text}"),
+            other => format!("{other:?}"),
+        },
+        None => "none".to_string(),
+    }
+}
+
+/// Exact-value boundary discriminator for the `opens_pod` predicate
+/// (`src/lib.rs`, `if opens_pod {`): every `assert_eq!` observes the exact
+/// first surviving token for one input on one side of a boundary, so flipping
+/// the predicate or any boundary comparison flips an observed value.
+///
+/// Boundary sides (perl 5.42 tokenizer oracle where noted):
+/// - `=` + ASCII letter takes the `opens_pod` branch and the block is skipped.
+/// - `=` + digit/underscore, or `=` with no following byte, leaves the
+///   operator in the stream.
+/// - `=cut` followed by a word byte stays open; a non-word byte closes.
+#[test]
+fn skip_whitespace_and_comments_boundary_discriminator() {
+    // opens_pod true: `=pod` at byte 0 takes the branch; the block runs to
+    // the closing `=cut`.
+    assert_eq!(first_kind("=pod\nx\n=cut\n1"), "num:1", "=pod must open POD and =cut close it");
+    // opens_pod true via a stray `=cut` opener: the opener consumes its own
+    // line, so it closes only at the next `=cut`.
+    assert_eq!(
+        first_kind("=cut\n=cut\n1"),
+        "num:1",
+        "a stray =cut opens POD and the next =cut closes it"
+    );
+    // opens_pod false: a digit after `=` misses `is_ascii_alphabetic`.
+    assert_eq!(first_kind("\n=1;"), "op:=", "a digit-led line-initial = must stay the operator");
+    // opens_pod false: `=` as the final byte — `.get(position + 1)` is None.
+    assert_eq!(first_kind("="), "op:=", "a trailing = must stay the operator");
+    // opens_pod false: underscore after `=` (oracle: `=_foo` is code).
+    assert_eq!(first_kind("=_foo;"), "op:=", "an underscore-led = must stay the operator");
+    // `=cut` closer word boundary: letter extension is a distinct command.
+    assert_eq!(
+        first_kind("=pod\nx\n=cutlery\n=cut\n1"),
+        "num:1",
+        "=cutlery must keep POD open until the word-bounded =cut"
+    );
+    // Digit extension is a distinct command (oracle: `=cut123` keeps POD open).
+    assert_eq!(
+        first_kind("=pod\nx\n=cut123\n=cut\n1"),
+        "num:1",
+        "=cut123 must keep POD open until the word-bounded =cut"
+    );
+    // Underscore extension is a distinct command (oracle: `=cut_foo` keeps POD open).
+    assert_eq!(
+        first_kind("=pod\nx\n=cut_foo\n=cut\n1"),
+        "num:1",
+        "=cut_foo must keep POD open until the word-bounded =cut"
+    );
+    // The first non-word byte after `cut` ends the command and closes the block.
+    assert_eq!(first_kind("=pod\nx\n=cut.foo\n1"), "num:1", "=cut.foo must close POD");
+}
+
+/// Call-presence observer for the two ASCII classification calls in
+/// `skip_whitespace_and_comments` — `byte.is_ascii_alphabetic()` on the
+/// opener and `byte.is_ascii_alphanumeric() || *byte == b'_'` on the `=cut`
+/// closer. Each input drives one call and asserts the exact observed
+/// outcome, so deleting a call flips an asserted value.
+#[test]
+fn skip_whitespace_and_comments_call_presence_observer() {
+    // Opener call reached with a letter: POD opens and runs to EOF.
+    assert_eq!(
+        first_kind("=p\n1"),
+        "none",
+        "a letter after = must reach is_ascii_alphabetic and open POD"
+    );
+    // Opener call reached with a digit: the classification is false.
+    assert_eq!(
+        first_kind("=9"),
+        "op:=",
+        "a digit after = must fail is_ascii_alphabetic and stay code"
+    );
+    // Opener call true, then the closer call reached with `\n` after `=cut`.
+    assert_eq!(
+        first_kind("=p\n=cut\n1"),
+        "num:1",
+        "=cut at a word boundary must reach is_ascii_alphanumeric and close POD"
+    );
+    // Closer call reached with a digit after `=cut`: still a word, stays open.
+    assert_eq!(
+        first_kind("=pod\nx\n=cut7\n=cut\n1"),
+        "num:1",
+        "=cut7 must reach is_ascii_alphanumeric and keep POD open"
+    );
+}
+
 /// `opens_pod` (`lib.rs`) true side: a line-initial `=` followed by an ASCII
-/// letter opens POD, so the call after the block never reaches the stream.
+/// letter opens POD, so the call before the opener stays code and the text
+/// after it never reaches the stream.
 #[test]
 fn opens_pod_true_side_hides_following_call() {
     let toks = significant("real(1);\n=cut\npod text here\n");
     assert!(
-        !toks.iter().any(|t| t.text.as_ref() == "real"),
-        "a call before a stray =cut opener stays code, everything after is POD: {toks:?}"
+        toks.iter().any(|t| t.text.as_ref() == "real"),
+        "the call before a stray =cut opener stays code: {toks:?}"
+    );
+    assert!(
+        !toks.iter().any(|t| t.text.as_ref() == "here"),
+        "text after the stray =cut opener stays POD: {toks:?}"
     );
 }
 

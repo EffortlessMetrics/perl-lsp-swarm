@@ -1273,6 +1273,95 @@ mod tests {
     }
 
     #[test]
+    fn scan_subs_pod_command_word_run_boundary_exact_count() {
+        // Exact-count discriminators for `pod_command`'s word-run predicate:
+        // a word byte (digit, underscore) after `cut` extends the command and
+        // keeps POD open; a non-word byte (`;`, `.`) ends the `cut` command
+        // and closes the block (perl 5.42 oracle).
+        let word_extensions = "=pod\nsub phantom { }\n=cut0\nsub phantom_two { }\n=cut_9\nsub phantom_three { }\n=cut;\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(word_extensions);
+
+        assert_eq!(
+            table.len(),
+            1,
+            "word extensions of =cut keep POD open; =cut; closes it: {table:?}"
+        );
+        assert!(table.is_known_sub("real"), "code after =cut; is scanned");
+
+        let dot_stops_run = "=pod\nsub phantom { }\n=cut.\nsub real { }\n";
+        assert_eq!(
+            LocalSymbolTable::scan_subs(dot_stops_run).len(),
+            1,
+            "a non-word byte after =cut ends the command and closes POD"
+        );
+    }
+
+    #[test]
+    fn scan_subs_pod_gate_quote_state_boundary_exact_count() {
+        // Exact-count discriminators for the `state.quote == QuoteState::Code`
+        // conjunct of the prepass POD gate: the same POD-shaped line opens POD
+        // in code state but must not open POD inside a multiline string.
+        let in_string = "my $s = \"\n=cut\n\";\nsub real { }\n";
+        let inside = LocalSymbolTable::scan_subs(in_string);
+
+        assert_eq!(
+            inside.len(),
+            1,
+            "a =cut inside a multiline string must not open POD: {inside:?}"
+        );
+        assert!(inside.is_known_sub("real"), "code after the string is scanned");
+
+        let in_code = "my $s = \"\";\n=cut\nsub phantom { }\n";
+        assert_eq!(
+            LocalSymbolTable::scan_subs(in_code).len(),
+            0,
+            "the same =cut outside a string opens POD and hides the sub"
+        );
+    }
+
+    #[test]
+    fn pod_command_boundary_discriminator() {
+        // Exact return values of `pod_command` across its word-run boundary:
+        // letters, digits, and underscores extend the command; the first
+        // non-word byte ends it (perl 5.42 tokenizer oracle).
+        assert_eq!(super::pod_command("=cut"), Some("cut"));
+        assert_eq!(super::pod_command("=cut foo"), Some("cut"));
+        assert_eq!(super::pod_command("=cutlery"), Some("cutlery"));
+        assert_eq!(super::pod_command("=cut123"), Some("cut123"));
+        assert_eq!(super::pod_command("=cut_foo"), Some("cut_foo"));
+        assert_eq!(super::pod_command("=cut.foo"), Some("cut"));
+        assert_eq!(super::pod_command("=cut, foo"), Some("cut"));
+        // `byte == b'_'` boundary: an underscore continues the run, a byte on
+        // the other side of that comparison ends it.
+        assert_eq!(super::pod_command("=cut_"), Some("cut_"));
+        assert_eq!(super::pod_command("=cut_."), Some("cut_"));
+        // Non-command shapes: no letter after `=`, or no word run at all.
+        assert_eq!(super::pod_command("=1x"), Some("1x"));
+        assert_eq!(super::pod_command("=_x"), Some("_x"));
+        assert_eq!(super::pod_command("= head"), Some(""));
+    }
+
+    #[test]
+    fn scan_pass_boundary_discriminator() {
+        // Exact counts from `scan_pass` on the two sides of the
+        // `state.quote == QuoteState::Code` POD-gate boundary: a POD-shaped
+        // line inside a multiline double-quoted string must not open POD,
+        // while the same line at quote == Code must.
+        let hints = super::Declarations::default();
+
+        let inside_string = super::scan_pass("my $s = \"\n=cut\n\";\nsub real { }\n", &hints);
+        assert_eq!(
+            inside_string.callables.len(),
+            1,
+            "the =cut inside the string must not open POD"
+        );
+        assert!(inside_string.callables.contains("real"));
+
+        let at_code = super::scan_pass("my $s = \"\";\n=cut\nsub phantom { }\n", &hints);
+        assert_eq!(at_code.callables.len(), 0, "the same =cut at Code opens POD and hides the sub");
+    }
+
+    #[test]
     fn quoted_and_indented_heredoc_bodies_cannot_create_known_subs() {
         let source = concat!(
             "my $a = <<'ONE';\n",
