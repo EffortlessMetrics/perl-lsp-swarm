@@ -402,10 +402,6 @@ Reduce result caps:
             "workspaceSymbolCap": 100,
             "referencesCap": 200,
             "completionCap": 50,
-            "astCacheMaxEntries": 50,
-            "maxIndexedFiles": 5000,
-            "maxTotalSymbols": 250000,
-            "workspaceScanDeadlineMs": 20000,
             "referenceSearchDeadlineMs": 1500
           },
           "workspace": {

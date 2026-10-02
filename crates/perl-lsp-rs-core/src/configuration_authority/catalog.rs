@@ -772,20 +772,6 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         ["inlayHints.typeHints"]
     ),
     authority!(
-        "limits.ast_cache_max_entries",
-        Limits.ast_cache_max_entries,
-        Global,
-        Unsigned,
-        LIMITS_CHANNELS,
-        Validation::Unsigned,
-        KeepLastValid,
-        Ordinary,
-        SafeValue,
-        RuntimeScheduling,
-        BOUNDED_EXECUTION,
-        ["astCacheMaxEntries"]
-    ),
-    authority!(
         "limits.ast_cache_memory_bytes",
         Limits.ast_cache_max_bytes,
         Global,
@@ -798,20 +784,6 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         RuntimeScheduling,
         BOUNDED_EXECUTION,
         ["astCacheMaxMemoryBytes"]
-    ),
-    authority!(
-        "limits.ast_cache_ttl_secs",
-        Limits.ast_cache_ttl_secs,
-        Global,
-        Unsigned,
-        LIMITS_CHANNELS,
-        Validation::Unsigned,
-        KeepLastValid,
-        Ordinary,
-        SafeValue,
-        RuntimeScheduling,
-        BOUNDED_EXECUTION,
-        ["astCacheTtlSecs"]
     ),
     authority!(
         "limits.code_lens_cap",
@@ -898,20 +870,6 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         ["maxFileSizeBytes"]
     ),
     authority!(
-        "limits.indexed_files",
-        Limits.max_indexed_files,
-        Global,
-        Unsigned,
-        LIMITS_CHANNELS,
-        Validation::Unsigned,
-        KeepLastValid,
-        Ordinary,
-        SafeValue,
-        RuntimeScheduling,
-        BOUNDED_EXECUTION,
-        ["maxIndexedFiles"]
-    ),
-    authority!(
         "limits.inlay_hints_cap",
         Limits.inlay_hints_cap,
         Global,
@@ -954,34 +912,6 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         ["referencesCap"]
     ),
     authority!(
-        "limits.symbol_cache_max_entries",
-        Limits.symbol_cache_max_entries,
-        Global,
-        Unsigned,
-        LIMITS_CHANNELS,
-        Validation::Unsigned,
-        KeepLastValid,
-        Ordinary,
-        SafeValue,
-        RuntimeScheduling,
-        BOUNDED_EXECUTION,
-        ["symbolCacheMaxEntries"]
-    ),
-    authority!(
-        "limits.total_symbols",
-        Limits.max_total_symbols,
-        Global,
-        Unsigned,
-        LIMITS_CHANNELS,
-        Validation::Unsigned,
-        KeepLastValid,
-        Ordinary,
-        SafeValue,
-        RuntimeScheduling,
-        BOUNDED_EXECUTION,
-        ["maxTotalSymbols"]
-    ),
-    authority!(
         "limits.warning_memory_threshold_bytes",
         Limits.warning_threshold_bytes,
         Global,
@@ -994,20 +924,6 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         RuntimeScheduling,
         BOUNDED_EXECUTION,
         ["memoryWarningThresholdBytes"]
-    ),
-    authority!(
-        "limits.workspace_scan_deadline_ms",
-        Limits.workspace_scan_deadline,
-        Global,
-        Unsigned,
-        LIMITS_CHANNELS,
-        Validation::Unsigned,
-        KeepLastValid,
-        Ordinary,
-        SafeValue,
-        RuntimeScheduling,
-        BOUNDED_EXECUTION,
-        ["workspaceScanDeadlineMs"]
     ),
     authority!(
         "limits.workspace_symbol_cap",

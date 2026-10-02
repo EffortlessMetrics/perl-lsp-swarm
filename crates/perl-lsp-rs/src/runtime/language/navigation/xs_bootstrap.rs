@@ -84,6 +84,7 @@ fn extract_xs_loader_target(
     cursor: usize,
     current_package: &str,
     marker: &str,
+    marker_is_code: &impl Fn(usize) -> bool,
 ) -> Option<String> {
     let mut search_from = 0;
     while let Some(found) = text.get(search_from..)?.find(marker) {
@@ -103,8 +104,9 @@ fn extract_xs_loader_target(
             arg_start += 1;
         }
 
-        if let Some((token_start, token_end, module_name)) =
-            parse_bootstrap_argument(text, arg_start, current_package)
+        if marker_is_code(marker_start)
+            && let Some((token_start, token_end, module_name)) =
+                parse_bootstrap_argument(text, arg_start, current_package)
             && ((cursor >= marker_start && cursor <= marker_end)
                 || (cursor >= token_start && cursor <= token_end))
         {
@@ -121,6 +123,7 @@ fn extract_bare_bootstrap_target(
     text: &str,
     cursor: usize,
     current_package: &str,
+    marker_is_code: &impl Fn(usize) -> bool,
 ) -> Option<String> {
     let mut search_from = 0;
     let needle = "bootstrap";
@@ -143,8 +146,9 @@ fn extract_bare_bootstrap_target(
             continue;
         }
 
-        if let Some((token_start, token_end, module_name)) =
-            parse_bootstrap_argument(text, end, current_package)
+        if marker_is_code(start)
+            && let Some((token_start, token_end, module_name)) =
+                parse_bootstrap_argument(text, end, current_package)
             && ((cursor >= start && cursor <= end)
                 || (cursor >= token_start && cursor <= token_end))
         {
@@ -157,7 +161,11 @@ fn extract_bare_bootstrap_target(
     None
 }
 
-fn extract_qualified_bootstrap_target(text: &str, cursor: usize) -> Option<String> {
+fn extract_qualified_bootstrap_target(
+    text: &str,
+    cursor: usize,
+    marker_is_code: &impl Fn(usize) -> bool,
+) -> Option<String> {
     let mut search_from = 0;
     let needle = "::bootstrap";
     while let Some(found) = text.get(search_from..)?.find(needle) {
@@ -175,7 +183,7 @@ fn extract_qualified_bootstrap_target(text: &str, cursor: usize) -> Option<Strin
         let module = text.get(module_start..suffix_start)?;
         let module_name = normalize_bootstrap_module(module, "main")?;
         let full_end = suffix_start + needle.len();
-        if cursor >= module_start && cursor <= full_end {
+        if marker_is_code(suffix_start) && cursor >= module_start && cursor <= full_end {
             return Some(module_name);
         }
 
@@ -189,13 +197,20 @@ pub(super) fn extract_xs_bootstrap_target(
     text: &str,
     cursor: usize,
     current_package: &str,
+    marker_is_code: impl Fn(usize) -> bool,
 ) -> Option<String> {
-    extract_xs_loader_target(text, cursor, current_package, "XSLoader::load")
+    extract_xs_loader_target(text, cursor, current_package, "XSLoader::load", &marker_is_code)
         .or_else(|| {
-            extract_xs_loader_target(text, cursor, current_package, "DynaLoader::bootstrap")
+            extract_xs_loader_target(
+                text,
+                cursor,
+                current_package,
+                "DynaLoader::bootstrap",
+                &marker_is_code,
+            )
         })
-        .or_else(|| extract_bare_bootstrap_target(text, cursor, current_package))
-        .or_else(|| extract_qualified_bootstrap_target(text, cursor))
+        .or_else(|| extract_bare_bootstrap_target(text, cursor, current_package, &marker_is_code))
+        .or_else(|| extract_qualified_bootstrap_target(text, cursor, &marker_is_code))
 }
 
 fn xs_boot_symbol_name(module_name: &str) -> String {
@@ -242,7 +257,7 @@ mod tests {
         // "é" (2 bytes: 0xC3 0xA9) immediately precedes "bootstrap"
         let text = "ébootstrap MyModule";
         // cursor at byte 3 (inside "bootstrap")
-        let result = extract_bare_bootstrap_target(text, 3, "main");
+        let result = extract_bare_bootstrap_target(text, 3, "main", &|_| true);
         // Must not panic, and the trailing token is a valid module name.
         assert_eq!(result.as_deref(), Some("MyModule"));
     }
@@ -255,7 +270,7 @@ mod tests {
         // "€" (3 bytes: 0xE2 0x82 0xAC) immediately precedes "bootstrap"
         let text = "€bootstrap MyModule";
         // cursor at byte 4 (inside "bootstrap")
-        let result = extract_bare_bootstrap_target(text, 4, "main");
+        let result = extract_bare_bootstrap_target(text, 4, "main", &|_| true);
         // Must not panic, and the trailing token is a valid module name.
         assert_eq!(result.as_deref(), Some("MyModule"));
     }
@@ -265,7 +280,7 @@ mod tests {
     #[test]
     fn test_extract_bare_bootstrap_target_qualified_prefix_returns_none() {
         let text = "DynaLoader::bootstrap MyModule";
-        let result = extract_bare_bootstrap_target(text, 12, "main");
+        let result = extract_bare_bootstrap_target(text, 12, "main", &|_| true);
         assert!(result.is_none(), "qualified call should not be matched as bare: {result:?}");
     }
 
@@ -273,7 +288,24 @@ mod tests {
     #[test]
     fn test_extract_bare_bootstrap_target_plain_call_returns_module() {
         let text = "bootstrap MyModule";
-        let result = extract_bare_bootstrap_target(text, 0, "main");
+        let result = extract_bare_bootstrap_target(text, 0, "main", &|_| true);
         assert_eq!(result.as_deref(), Some("MyModule"));
+    }
+
+    #[test]
+    fn bootstrap_marker_must_be_code_even_when_argument_is_quoted() {
+        let call = "XSLoader::load('Foo')";
+        let cursor = call.find("Foo").unwrap_or(0);
+        assert_eq!(
+            extract_xs_bootstrap_target(call, cursor, "main", |start| start == 0).as_deref(),
+            Some("Foo")
+        );
+
+        let inert = "'XSLoader::load Foo'";
+        let cursor = inert.find("Foo").unwrap_or(0);
+        assert!(
+            extract_xs_bootstrap_target(inert, cursor, "main", |_| false).is_none(),
+            "a marker in quoted prose must not select an XS bootstrap target"
+        );
     }
 }
