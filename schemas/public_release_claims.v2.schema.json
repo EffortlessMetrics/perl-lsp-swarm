@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/public_release_claims.v2.schema.json",
   "title": "public_release_claims.v2",
-  "description": "The sole current route-aware public release claim contract (#10333). Typed install-route rows with independent product-unit, platform/environment, target/execution-class, integrity/provenance, channel-currentness, fresh-process PATH, transition, and publication-stage dimensions. Claims bind one exact route ID. v1 remains historical/compatibility input only (#6355); npm stays absent under #8301. The semantic authority is the typed Rust model in xtask; this schema is its projection.",
+  "description": "The sole current route-aware public release claim contract (#10333). Typed install-route rows with independent product-unit, platform/environment, target/execution-class, integrity/provenance, channel-currentness, fresh-process PATH, transition, and publication-stage dimensions. Claims bind one exact route ID. v1 remains historical/compatibility input only (#6355); npm stays absent under #8301. The semantic authority is the typed Rust model in xtask; this schema is its projection. Deliberate asymmetry: `surfaces` and the free-text ref/identity fields stay open strings (values are governed by policy/install-surface-registry.toml at the policy layer) so a new publication surface never requires a schema change, while the enumerated dimensions above are closed.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "release", "track", "subject_sha", "topology_digest", "install_routes", "claims"],
