@@ -87,13 +87,18 @@ impl<'a> Parser<'a> {
     /// `func { ... } foreach => $items` without a comma after the block. We
     /// still stop at real statement boundaries and at postfix modifiers / low-
     /// precedence word operators unless that token is being autoquoted before
-    /// `=>` (`has { 1 } or => 2`, #16639).
+    /// `=>` (`has { 1 } or => 2`, #16639). Comparison words are infix here:
+    /// `has { 1 } cmp => 2` is a Perl syntax error (`} cmp`); the valid form
+    /// uses an explicit comma (`has { 1 }, cmp => 2`, #16691). Comma and fat
+    /// arrow belong to the dedicated separator loop, not this implicit path.
     fn should_continue_bare_call_after_block(&mut self) -> bool {
         match self.peek_kind() {
             Some(kind) if kind.is_recovery_boundary() => false,
             None => false,
             // `?` begins a ternary on the block-call result, not an argument to it.
             Some(TokenKind::Question) => false,
+            Some(TokenKind::Comma | TokenKind::FatArrow) => false,
+            Some(_) if self.peek_is_comparison_word() => false,
             Some(kind)
                 if kind.is_low_precedence_word_operator() || Self::is_stmt_modifier_kind(kind) =>
             {
@@ -101,6 +106,57 @@ impl<'a> Parser<'a> {
             }
             _ => true,
         }
+    }
+
+    /// After an explicit `,` / `=>`, comparison words before `=>` are ordinary
+    /// list elements (`has { 1 }, cmp => 2`). The implicit after-block path
+    /// still refuses them.
+    fn should_continue_bare_call_after_separator(&mut self) -> bool {
+        if self.peek_is_comparison_word() {
+            return self.is_keyword_before_fat_arrow();
+        }
+        self.should_continue_bare_call_after_block()
+    }
+
+    /// Word-operator tokens Perl autoquotes before `=>` (`and`/`or`/`not`/`xor`/`cmp`).
+    /// These must not be treated as infix/no-arg terminators in that position.
+    fn peek_is_autoquoted_word_operator(&mut self) -> bool {
+        self.peek_kind().is_some_and(|kind| kind.is_word_operator())
+            && self.is_keyword_before_fat_arrow()
+    }
+
+    /// Turn a word-operator token immediately left of `=>` into an identifier
+    /// so every expression-start path, including `parse_shift`, can autoquote it.
+    fn consume_autoquoted_word_operator_identifier(&mut self) -> ParseResult<Option<Node>> {
+        if !self.peek_is_autoquoted_word_operator() {
+            return Ok(None);
+        }
+        let token = self.consume_token()?;
+        Ok(Some(self.charge_node(
+            NodeKind::Identifier { name: token.text.to_string() },
+            SourceLocation { start: token.start(), end: token.end() },
+        )?))
+    }
+
+    fn peek_is_comparison_word(&mut self) -> bool {
+        self.peek_kind() == Some(TokenKind::StringCompare)
+            || self.peek_is_identifier_string_comparison()
+    }
+
+    /// Identifier spellings that Perl treats as infix string comparisons.
+    /// `cmp` is normally `TokenKind::StringCompare`; keep the Identifier
+    /// spelling so a reclassified token still terminates like `eq`.
+    fn is_identifier_string_comparison(text: &str) -> bool {
+        matches!(text, "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "cmp")
+    }
+
+    fn peek_is_identifier_string_comparison(&mut self) -> bool {
+        self.peek_kind() == Some(TokenKind::Identifier)
+            && self
+                .tokens
+                .peek()
+                .ok()
+                .is_some_and(|token| Self::is_identifier_string_comparison(token.text.as_ref()))
     }
 
     /// Enter production recursion depth through the live operation context.
@@ -387,11 +443,9 @@ impl<'a> Parser<'a> {
     }
 
     /// Barewords Perl autoquotes before `=>`: identifiers, reserved-word
-    /// tokens, and low-precedence word operators (`and`/`or`/`not`/`xor`).
+    /// tokens, and word-operator tokens (`and`/`or`/`not`/`xor`/`cmp`).
     fn is_autoquoted_bareword_kind(kind: TokenKind) -> bool {
-        kind == TokenKind::Identifier
-            || Self::is_keyword_token(kind)
-            || kind.is_low_precedence_word_operator()
+        kind == TokenKind::Identifier || Self::is_keyword_token(kind) || kind.is_word_operator()
     }
 
     /// Check if a token kind is a binary operator that couldn't start an expression argument.
@@ -1461,7 +1515,8 @@ impl<'a> Parser<'a> {
         // 'rw')` (#16639). This check must precede the statement-end / binary-
         // operator refusal: `and`/`or` are logical operators, and `if` is a
         // statement-end token, but `has and => 1` / `has if => 1` are still
-        // autoquoted list-operator arguments. The Identifier match below used
+        // autoquoted list-operator arguments, including comparison-word tokens
+        // (`has cmp =>`, `has eq =>`, #16691). The Identifier match below used
         // to return early for builtins without consulting `=>`, and keyword
         // tokens fell through to `_ => false`.
         if Self::is_autoquoted_bareword_kind(next_kind) && self.is_keyword_before_fat_arrow() {

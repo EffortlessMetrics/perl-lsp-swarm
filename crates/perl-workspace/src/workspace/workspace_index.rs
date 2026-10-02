@@ -2361,11 +2361,9 @@ impl WorkspaceIndex {
         // canonical `Vec<SymbolRef>` projection, replacing the two
         // independent full-AST reference walks (`IndexVisitor::visit` +
         // `extract_symbol_refs`) this path ran before. Declaration
-        // extraction, eval-sub boundary facts, generated-member facts, and
-        // import/use-lib extraction are UNCHANGED by this cutover -- only
-        // the reference walk is unified (declarations are a separable
-        // follow-up; see `FileExtractionBundle::build_unified`'s doc
-        // comment).
+        // extraction, eval-sub boundary facts, and generated-member facts
+        // remain separate walks. Import rows are projected from the HIR
+        // compile environment already lowered above (#16823).
         let file_hir = perl_parser_core::hir::lower_ast(&ast);
         let package_edges = package_edges_from_stash_graph(&file_hir.stash_graph);
         let inherited_method_aliases = self.inherited_method_aliases(&package_edges);
@@ -2376,6 +2374,7 @@ impl WorkspaceIndex {
             &mut candidate_document,
             folder_uri,
             &inherited_method_aliases,
+            &file_hir,
         );
         // `build_unified` builds its own `FileIndex` (it has no notion of
         // this call's `generation` parameter) -- restore it here, exactly
@@ -2396,10 +2395,9 @@ impl WorkspaceIndex {
 
         // Update the import/export index with the import specs and use-lib
         // facts the unified extraction bundle above already produced
-        // (`extract_import_specs`/`extract_use_lib_facts`, unchanged by
-        // this cutover) -- populates ImportExportIndex so that
-        // `Foo->import(@names)` dynamic-import suppression is live in
-        // production.
+        // (`CompileEnvironment::import_specs` plus use-lib extraction) --
+        // populates ImportExportIndex so that `Foo->import(@names)`
+        // dynamic-import suppression is live in production.
         //
         // Lock ordering note: `semantic_import_export_index` is acquired write
         // separately from (and after) `files`/`symbols`/`global_references` to
@@ -5259,8 +5257,8 @@ pub(crate) struct FileExtractionBundle {
     /// The canonical fact shard, produced by one
     /// `build_canonical_fact_shard_for_ast` call.
     pub(crate) canonical_shard: FileFactShard,
-    /// Import specifications from one `extract_import_specs` call. Not part
-    /// of `canonical_shard` (see the parity contract table above).
+    /// Import specifications from HIR `CompileEnvironment::import_specs`. Not
+    /// part of `canonical_shard` (see the parity contract table above).
     pub(crate) import_specs: Vec<perl_semantic_facts::ImportSpec>,
     /// `use lib`/`no lib` facts from one `extract_use_lib_facts` call. Not
     /// part of `canonical_shard` (see the parity contract table above).
@@ -5329,7 +5327,8 @@ impl FileExtractionBundle {
     /// called twice (once per projection, with the existing
     /// `Some("main")`/`None` package-context seeds) -- unifying declarations
     /// is a separable follow-up (see the #1711 feasibility comment, item 3).
-    /// Import/use-lib extraction is also unchanged.
+    /// Import/use-lib extraction projects HIR compile-environment facts
+    /// (`#16823`) rather than classifying flattened `Use.args`.
     ///
     /// Uses [`Node::for_each_child`] as the unified walk's recursion
     /// fallback (see `IndexVisitor::walk_unified`'s doc comment), which
@@ -5350,6 +5349,7 @@ impl FileExtractionBundle {
         doc: &mut Document,
         folder_uri: Option<String>,
         inherited_method_aliases: &std::collections::BTreeMap<String, EntityId>,
+        hir: &perl_parser_core::hir::HirFile,
     ) -> Self {
         let mut file_index = FileIndex {
             source_uri: uri_str.to_string(),
@@ -5378,10 +5378,11 @@ impl FileExtractionBundle {
         #[cfg(test)]
         let import_start = Instant::now();
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+            crate::semantic::workspace_import_extractor::extract_import_specs_from_hir(
+                hir,
                 ast,
                 file_id,
-                doc.text(),
+                Some(doc.text()),
             );
         #[cfg(test)]
         reindex_metrics::record_import_extract(import_start.elapsed());
@@ -14572,6 +14573,7 @@ mod extraction_bundle_shadow_compare {
     fn build_bundle_unified(uri: &str, text: &str, ast: &Node) -> FileExtractionBundle {
         let content_hash = content_hash_of(text);
         let mut doc = Document::new(uri.to_string(), 1, text.to_string());
+        let hir = perl_parser_core::hir::lower_ast(ast);
         FileExtractionBundle::build_unified(
             ast,
             uri,
@@ -14579,6 +14581,7 @@ mod extraction_bundle_shadow_compare {
             &mut doc,
             None,
             &std::collections::BTreeMap::new(),
+            &hir,
         )
     }
 
