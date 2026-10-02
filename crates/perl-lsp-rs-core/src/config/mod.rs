@@ -39,8 +39,8 @@ pub use metadata_dependencies::{
     extract_meta_json_requirements, extract_meta_yml_requirements,
 };
 pub use native_build_hints::{
-    NativeBuildHintDiagnostic, NativeBuildHintParseReason, NativeBuildHints, NativeBuildScript,
-    detect_native_build_hints,
+    NativeBuildHintDiagnostic, NativeBuildHintLimitation, NativeBuildHintLimitationReason,
+    NativeBuildHintParseReason, NativeBuildHints, NativeBuildScript, detect_native_build_hints,
 };
 pub use perl_lsp_perltidy::FormatterMode;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1270,8 +1270,9 @@ pub struct WorkspaceConfig {
 
     /// Native build hints derived from workspace-root `Makefile.PL` / `Build.PL`.
     ///
-    /// These are cached once at workspace initialization and kept separate from
-    /// Perl module search paths.
+    /// Cached by the workspace-folder metadata lifecycle and kept separate
+    /// from Perl module search paths. Refreshing these facts must not mutate
+    /// [`Self::include_paths`].
     pub native_build_hints: NativeBuildHints,
 
     /// Declared dependency facts derived from workspace-root project metadata.
@@ -1680,10 +1681,25 @@ impl WorkspaceConfig {
 
     /// Refresh workspace-native build hints from the selected workspace root.
     ///
-    /// This is a workspace-initialization cache step only; it does not mutate
-    /// module-resolution include paths.
+    /// Disk-backed initialization only: registered folders with possible open
+    /// buffers must use [`Self::apply_native_build_hint_reads`]. This does not
+    /// mutate module-resolution include paths.
     pub fn refresh_native_build_hints(&mut self, workspace_root: &Path) {
         self.native_build_hints = detect_native_build_hints(workspace_root);
+    }
+
+    /// Apply per-source captured metadata reads to native build hints.
+    ///
+    /// Used by the watcher invalidation route (#13640). Open `Makefile.PL` /
+    /// `Build.PL` text outranks disk; an unreadable script keeps only its own
+    /// previous contribution. Sources that are not native build scripts are
+    /// ignored.
+    pub fn apply_native_build_hint_reads(
+        &mut self,
+        reads: &[(DeclaredDependencySource, MetadataSourceRead)],
+    ) {
+        self.native_build_hints =
+            native_build_hints::native_build_hints_from_reads(reads, &self.native_build_hints);
     }
 
     /// Refresh declared dependency facts from the selected workspace root.
@@ -1713,11 +1729,12 @@ impl WorkspaceConfig {
     /// Configuration consumers release their folder lock before performing
     /// captured metadata reads. Retaining the previous detector contribution
     /// across that gap prevents concurrent resolution from observing a
-    /// transiently incomplete include-path set. Explicitly configured paths
-    /// remain unowned; the next metadata refresh commits marker additions and
-    /// removals (#15088).
+    /// transiently incomplete include-path set or empty native-hint snapshot.
+    /// Explicitly configured paths remain unowned; the next metadata refresh
+    /// commits marker additions and removals (#15088).
     pub fn preserve_metadata_state_from(&mut self, previous: &Self) {
         self.declared_dependencies = previous.declared_dependencies.clone();
+        self.native_build_hints = previous.native_build_hints.clone();
         for detected_path in &previous.detected_dependency_include_paths {
             let Some(previous_path) = previous.include_paths.iter().find(|path| {
                 normalize_include_path(path).as_deref() == Some(detected_path.as_str())
