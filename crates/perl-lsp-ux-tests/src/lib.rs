@@ -1555,6 +1555,7 @@ mod normalize_tests {
         wait_for_active_document_ready_event, wait_for_index_ready_event, wait_with_subject,
     };
     use crate::{Inbox, LspEvent, StreamEnd, WaitEnd};
+    use perl_test_must::must_err_with;
     use serde_json::{Value, json};
     use std::path::Path;
     use std::time::Duration;
@@ -1665,8 +1666,10 @@ mod normalize_tests {
         );
         assert!(normalize_document_symbol_result(&Value::Null).unwrap().is_empty());
         let bare = json!({ "name": "greet", "kind": 12 });
-        let error = normalize_document_symbol_result(&bare)
-            .expect_err("a bare object is a malformed result envelope");
+        let error = must_err_with(
+            normalize_document_symbol_result(&bare),
+            "a bare object is a malformed result envelope",
+        );
         assert!(
             error.to_string().contains("must be DocumentSymbol[] | SymbolInformation[] | null")
         );
