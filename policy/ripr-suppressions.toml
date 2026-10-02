@@ -4038,18 +4038,22 @@ removal_criteria = "Remove when ripr#1429 traces const-data references or ripr#1
 id = "ripr-suppress-9204-activation-inventory-declaration-and-error-path-seams"
 kind = "declaration_line_no_static_path"
 paths = [
-  "xtask/src/activation/*",
-  "xtask/src/activation/**",
+  "xtask/src/activation/mod.rs",
+  "xtask/src/activation/derive.rs",
+  "xtask/src/activation/model.rs",
+  "xtask/src/activation/overrides.rs",
+  "xtask/src/activation/render.rs",
+  "xtask/src/activation/validate.rs",
   "xtask/src/tasks/activation.rs",
 ]
 classification = ["no_static_path", "reachable_unrevealed"]
 owner = "architecture/activation"
 issue = "#9204"
-reason = "PR #14633 (#9204) adds the versioned activation inventory generator. Hosted RIPR on head 09cb09d623 (merge tree d5827469, run 35005794864) reported 188 new actionable gaps: 106 no_static_path (const/struct field_construction owners in derive.rs plus declaration residue) and 82 reachable_unrevealed (error_path/?/side_effect on derive_features, feature_row, derive_gates). Discriminating proof already exists: cargo test -p xtask --test activation --test activation_cwd_independence (63+1) and --lib activation, including protocol_kind_strings_do_not_establish_an_unowned_preview and exact_derivation_receipts. RIPR's fallback named those same tests as related_tests for the error_path seams and still classified them reachable_unrevealed; const FEATURES_TOML/GATE_POLICY_YAML owners have no call path (ripr#1429). Same class as ripr-suppress-13397-panic-debt-declaration-seams and ripr-suppress-14058-tautology-declaration-seams. Classification is no_static_path and reachable_unrevealed only; weakly_exposed stays active. HONEST SCOPE NOTE: path-scoped to the new activation module and its CLI wrapper, so a future seam in these files is masked for this window — the next consumer (#9205) must re-scope rather than inherit. Remove when ripr#1429 traces declaration owners and error_path ? through the existing tests."
+reason = "PR #14633 (#9204) adds the versioned activation inventory generator. Hosted RIPR on head 09cb09d623 (merge tree d5827469, run 35005794864) reported 188 new actionable gaps: 106 no_static_path (const/struct field_construction owners in derive.rs plus declaration residue) and 82 reachable_unrevealed (error_path/?/side_effect on derive_features, feature_row, derive_gates). Discriminating proof already exists: cargo test -p xtask --test activation --test activation_cwd_independence (63+1) and --lib activation, including protocol_kind_strings_do_not_establish_an_unowned_preview and exact_derivation_receipts. RIPR's fallback named those same tests as related_tests for the error_path seams and still classified them reachable_unrevealed; const FEATURES_TOML/GATE_POLICY_YAML owners have no call path (ripr#1429). Same class as ripr-suppress-13397-panic-debt-declaration-seams and ripr-suppress-14058-tautology-declaration-seams. Classification is no_static_path and reachable_unrevealed only; weakly_exposed stays active. HONEST SCOPE NOTE: re-scoped for #9205 so `xtask/src/activation/check.rs` is not inherited; checker seams are covered by cargo test -p xtask --test activation_check. Path-scoped to generator/classification files and the CLI wrapper, so a future seam in those files is still masked for this window. Remove when ripr#1429 traces declaration owners and error_path ? through the existing tests."
 created = "2026-09-15"
 review_after = "2026-10-15"
 expires = "2026-12-15"
-removal_criteria = "ripr#1429 traces declaration-line field_construction and error_path ? owners in xtask/src/activation to the existing unit and integration tests; then delete this entry and expect those tests to clear the seams without it. Narrow immediately if a receipt reports an executable seam in these files that cargo test -p xtask --test activation does not name. Do not keep the entry if a later PR adds an activation check/report consumer (#9205) without re-scoping."
+removal_criteria = "ripr#1429 traces declaration-line field_construction and error_path ? owners in xtask/src/activation generator files to the existing unit and integration tests; then delete this entry and expect those tests to clear the seams without it. Narrow immediately if a receipt reports an executable seam in these files that cargo test -p xtask --test activation does not name. check.rs is out of this matcher; do not re-widen the glob to cover the #9205 checker."
 
 # -----------------------------------------------------------------------------
 # PR #14815 bare-name availability admission. Four independently scoped

@@ -5,7 +5,9 @@ on:
     branches: [main, master]
     paths:
       - 'install.sh'
+      - 'scripts/install.sh'
       - 'scripts/tests/test-install-bootstrap-identity.sh'
+      - 'scripts/tests/test-install-arg-surface.sh'
       - 'docs/how-to/INSTALLATION.md'
       - 'README.md'
       - '.github/workflows/installer-bootstrap-contract.yml'
@@ -13,7 +15,9 @@ on:
     branches: [main, master]
     paths:
       - 'install.sh'
+      - 'scripts/install.sh'
       - 'scripts/tests/test-install-bootstrap-identity.sh'
+      - 'scripts/tests/test-install-arg-surface.sh'
       - 'docs/how-to/INSTALLATION.md'
       - 'README.md'
       - '.github/workflows/installer-bootstrap-contract.yml'
@@ -42,7 +46,14 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Parse shell sources
-        run: bash -n install.sh scripts/tests/test-install-bootstrap-identity.sh
+        run: bash -n install.sh scripts/install.sh scripts/tests/test-install-bootstrap-identity.sh scripts/tests/test-install-arg-surface.sh
 
       - name: Run bootstrap identity negative controls
         run: bash scripts/tests/test-install-bootstrap-identity.sh
+
+      # Wrapper vs canonical positional grammar (#16310 item 4). Fixed slots,
+      # env-wins-without-shift, third-positional fail-closed, and prefix-only
+      # positionals. Wired here so the proof actually runs; a justfile-only
+      # recipe is not a merge gate (#16343).
+      - name: Run installer arg-surface parity controls
+        run: bash scripts/tests/test-install-arg-surface.sh
