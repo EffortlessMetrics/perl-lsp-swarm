@@ -3271,7 +3271,9 @@ void test('main records manifest failures before packaging and exits not proven'
   const cases = [
     {
       label: 'missing',
-      read: () => { throw new Error('ENOENT: package.json missing'); },
+      read: () => {
+        throw new Error('ENOENT: package.json missing');
+      },
       reason: /ENOENT/,
     },
     { label: 'malformed', read: () => '{', reason: /JSON/ },
@@ -3309,7 +3311,8 @@ void test('main records manifest failures before packaging and exits not proven'
         persisted.push({ destination, receipt: JSON.parse(JSON.stringify(receipt)) }),
     };
     const code = vm.runInNewContext(
-      source + `
+      source +
+        `
         gitRevision = () => '${revision}';
         ensureCleanWorkingTree = () => {};
         sha256File = () => 'b'.repeat(64);

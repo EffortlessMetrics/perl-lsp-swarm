@@ -32,6 +32,8 @@ on:
       - 'scripts/ci/parser_facade_inventory.py'
       - 'scripts/ci/check_parser_facade_authority.py'
       - 'scripts/ci/test_parser_facade_authority.py'
+      - 'scripts/ci/policy_validators_aggregate.py'
+      - 'scripts/ci/test_policy_validators_route_contract.py'
       - 'scripts/ci/validate_risk_packs.py'
       - 'scripts/ci/validate_gate_lane_mapping.py'
       - '.ci/policy-checks-inventory.json'
@@ -91,6 +93,8 @@ on:
       - 'docs/project/status/provider_fact_reads.md'
       - 'xtask/src/tasks/update_status/provider_fact_reads.rs'
       - 'xtask/src/tasks/update_status/mod.rs'
+      - 'scripts/ci/policy_validators_aggregate.py'
+      - 'scripts/ci/test_policy_validators_route_contract.py'
       - '.github/workflows/policy-validators.yml'
   workflow_dispatch: {}
 
@@ -399,33 +403,8 @@ jobs:
           fi
           nano="${nano_conclusion:-pending}"
           echo "nano=$nano hosted=$HOSTED_RESULT"
-          case "$nano" in
-            success)
-              if [ "$HOSTED_RESULT" = "success" ]; then
-                echo "Policy Validators trusted result: both lanes agree."
-                exit 0
-              fi
-              echo "::error::lane divergence: trusted lane passed but fallback is $HOSTED_RESULT"
-              exit 1
-              ;;
-            failure)
-              echo "::error::Policy Validators trusted lane failed (fallback $HOSTED_RESULT)"
-              exit 1
-              ;;
-            skipped | cancelled)
-              if [ "$HOSTED_RESULT" = "success" ]; then
-                echo "Policy Validators fallback result: trusted lane $nano, hosted passed."
-                exit 0
-              fi
-              echo "::error::Policy Validators failed (trusted $nano, hosted $HOSTED_RESULT)"
-              exit 1
-              ;;
-            *)
-              if [ "$HOSTED_RESULT" = "success" ]; then
-                echo "Policy Validators failover result: trusted lane still $nano after deadline, hosted passed."
-                exit 0
-              fi
-              echo "::error::Policy Validators failed (trusted $nano, hosted $HOSTED_RESULT)"
-              exit 1
-              ;;
-          esac
+          # Decision table lives in policy_validators_aggregate.py so the
+          # required identity fail-overs on every trusted non-success
+          # (failure, skip, cancel, outage) and fail-closes when hosted
+          # also failed or the lanes diverge. No expressions here.
+          python3 scripts/ci/policy_validators_aggregate.py "$nano" "$HOSTED_RESULT"

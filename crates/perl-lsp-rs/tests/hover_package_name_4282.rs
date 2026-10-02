@@ -32,16 +32,17 @@ fn test_hover_package_name_file_path_richer_than_bare_token() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
     harness.open_document("file:///pkg_hover_4282.pl", doc)?;
+    // Token-fallback hover is generation-bound source-region gated (#4967).
+    // Wait for the open document to parse so `File::Path` is proven code.
+    harness.barrier();
     // Position 0 = 'F' of "File::Path"
-    let result = harness
-        .request(
-            "textDocument/hover",
-            json!({
-                "textDocument": {"uri": "file:///pkg_hover_4282.pl"},
-                "position": {"line": 0, "character": 0}
-            }),
-        )
-        .unwrap_or(json!(null));
+    let result = harness.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": {"uri": "file:///pkg_hover_4282.pl"},
+            "position": {"line": 0, "character": 0}
+        }),
+    )?;
     let val = hover_value(&result).ok_or("Expected hover content for File::Path")?;
     assert!(
         !val.starts_with("**Perl**: `"),

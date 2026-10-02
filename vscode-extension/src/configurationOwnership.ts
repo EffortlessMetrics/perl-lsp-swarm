@@ -125,16 +125,6 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     transport: 'local-only',
   },
   {
-    // `populateCreatedFiles` in extension.ts resolves the gate against each
-    // created URI, so a folder override selects the behaviour for files created
-    // in that folder (#14547). Local-only: the value never reaches the server.
-    key: 'perl-lsp.autoPopulateNewFiles',
-    manifestScope: 'resource',
-    semanticScope: 'workspace-folder',
-    owner: 'extension',
-    transport: 'local-only',
-  },
-  {
     key: 'perl-lsp.autoUpdate',
     manifestScope: 'machine',
     semanticScope: 'machine',
@@ -194,6 +184,17 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     owner: 'server',
     transport: 'didChangeConfiguration',
     defect: CRITIC_SESSION_STATE_DEFECT,
+  },
+  {
+    // `folderlessDebugLaunchRefusal`/`buildDapExecutableArgs` in debugAdapter.ts
+    // read this key and forward each entry as a `--trusted-root` argv flag of
+    // the locally spawned perl-dap (#16554). Local-only: the value never
+    // reaches the language server; it only shapes the debug adapter spawn.
+    key: 'perl-lsp.debug.trustedRoots',
+    manifestScope: 'machine',
+    semanticScope: 'machine',
+    owner: 'extension',
+    transport: 'local-only',
   },
   {
     key: 'perl-lsp.disabledFeatures',
@@ -273,6 +274,8 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     manifestScope: 'resource',
     semanticScope: 'workspace-folder',
     owner: 'server',
+    // With no workspace folders there is no scoped pull; the extension keeps
+    // the standalone-file include path alive via didChangeConfiguration.
     transport: 'workspace/configuration',
   },
   {
