@@ -22,7 +22,7 @@ schema_version = 1
 policy = "ci-lane-whitelist"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-05-20"
+updated = "2026-09-29"
 
 # =============================================================================
 # Swarm routed Rust small lanes
@@ -659,6 +659,29 @@ expensive_reason = "Three-OS matrix with extension-host startup."
 duplicate_of = []
 review_after = "2026-06-07"
 expires = "2026-11-07"
+
+[[lane]]
+id = "vscode_installed_first_hour_windows"
+workflow = ".github/workflows/vscode-installed-first-hour-windows.yml"
+job = "installed-first-hour-windows"
+tier = "release"
+kind = "platform"
+blocking = false
+default_pr = false
+runner = "windows_latest"
+# One 35-minute Windows job at the 2.0 runner multiplier, bounded at 70 LEM.
+base_lem = 70
+owner = "vscode"
+intent = "Prove the installed first-hour LSP and VSIX byte identity on hosted Windows at a pull-request head."
+failure_mode = "A green packaged-bundle or Test Explorer smoke hides wrong installed bytes or paths on Windows."
+proof_obligation = "Build release server and DAP at the PR head, run the installed first-hour parent, and upload child and parent byte-identity receipts."
+evidence = ["target/receipts/vscode-smoke/installed-first-hour-windows/**"]
+allowed_triggers = ["pull_request"]
+expensive = true
+expensive_reason = "Cold release Rust build and VS Code host on a Windows runner; path-scoped to extension and server/DAP changes."
+duplicate_of = []
+review_after = "2026-12-29"
+expires = "2027-03-29"
 
 [[lane]]
 id = "security_audit"
