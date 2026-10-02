@@ -240,15 +240,12 @@ const CI_POLICY_PACK: ProofPack = ProofPack {
         "cargo xtask workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json",
         "cargo test -p xtask --test quality_ci_wiring_policy --profile agent --locked -- --nocapture",
         // The #5432 shadow measurement lane is manual-only, so ordinary CI
-        // never executes it. These targets are the only thing standing
+        // never executes it. These three targets are the only thing standing
         // between that lane and silent drift, and compiling them is not
-        // running them. The disposition tests bind production flags and
-        // borderline-repeat confirmation without a native runner.
+        // running them.
         "cargo test -p xtask --test release_artifact_size_shadow_workflow --profile agent --locked -- --nocapture",
-        "cargo test -p xtask --test release_artifact_size_disposition --profile agent --locked -- --nocapture",
         "cargo test -p xtask --test release_artifact_size_stage_script --profile agent --locked -- --nocapture",
         "cargo test -p xtask --test release_artifact_size_smoke_script --profile agent --locked -- --nocapture",
-        "cargo test -p xtask --example release_artifact_size --profile agent --locked -- --nocapture",
     ],
 };
 
@@ -815,12 +812,7 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
                 | "scripts/ci/release_artifact_size_stage.sh"
                 | "scripts/ci/release_artifact_size_smoke.sh"
                 | "xtask/examples/release_artifact_size.rs"
-                | "xtask/src/bin/release_artifact_size/disposition.rs"
-                | "xtask/src/bin/release_artifact_size/measure.rs"
-                | "xtask/src/bin/release_artifact_size/model.rs"
                 | "xtask/src/bin/release_artifact_size/policy.rs"
-                | "xtask/src/bin/release_artifact_size/render.rs"
-                | "xtask/tests/release_artifact_size_disposition.rs"
                 | "xtask/tests/release_artifact_size_shadow_workflow.rs"
                 | "xtask/tests/release_artifact_size_stage_script.rs"
                 | "xtask/tests/release_artifact_size_smoke_script.rs"

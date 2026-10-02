@@ -7,8 +7,6 @@ on:
       - '.github/workflows/validate-ci-lane-history.yml'
       - 'scripts/ci/aggregate_lane_history.py'
       - 'scripts/ci/test_aggregate_lane_history.py'
-      - 'scripts/ci/pr_plan.py'
-      - 'scripts/ci/test_pr_plan.py'
       - 'policy/ci-lanes.toml'
       - '.ci/metrics/ci-lane-history.json'
   workflow_dispatch: {}
@@ -39,13 +37,6 @@ jobs:
 
       - name: Run focused aggregation tests
         run: python3 scripts/ci/test_aggregate_lane_history.py
-
-      - name: Run lane-history reader tests
-        # pr_plan.py substitutes history numbers into lane estimates, so a
-        # payload it cannot read as v1 must fail closed rather than be
-        # consumed (#15320). This is the PR Plan consumer gate; these
-        # focused tests were otherwise not executed by any workflow.
-        run: python3 scripts/ci/test_pr_plan.py
 
       - name: Validate checked-in payload (independent oracle)
         # Reads the checked-in .ci/metrics/ci-lane-history.json — unlike the

@@ -8,33 +8,10 @@ import Mocha from 'mocha';
 import {
   assertCandidateBoundInstallSource,
   assertCandidateBoundPlatform,
-  configureCurrentSourceSmoke,
-  hasCompleteCandidateIdentity,
   isDeterministicPublishedInstallFailure,
   retryPublishedInstall,
 } from './runPublishedSmoke';
 import { assertSmokeSelector, run as runPublishedSuite } from './suite';
-
-void test('current-source installed smoke selects the staged bundled server', () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'published-bundled-selection-'));
-  const previous = process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
-  try {
-    const server = path.join(directory, 'source-server');
-    fs.writeFileSync(server, 'server bytes staged into the VSIX');
-    process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH = server;
-    const userData = path.join(directory, 'profile');
-    configureCurrentSourceSmoke(userData, path.join(directory, 'extensions'), 'disabled');
-    const settings = JSON.parse(
-      fs.readFileSync(path.join(userData, 'User', 'settings.json'), 'utf8'),
-    ) as Record<string, unknown>;
-    assert.equal(settings['perl-lsp.serverPath'], '');
-    assert.equal(settings['perl-lsp.autoDownload'], false);
-  } finally {
-    if (previous === undefined) delete process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
-    else process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH = previous;
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
-});
 
 void test('published smoke rejects a recovery leg without its failure selector', () => {
   assert.throws(
@@ -148,33 +125,6 @@ void test('partial Windows candidate identity remains not proven', () => {
     () => assertCandidateBoundPlatform('win32', true),
     /requires candidate ID, artifact-set ID, frozen product SHA, and artifact manifest/,
   );
-});
-
-void test('standalone first-hour source SHA does not request candidate validation', () => {
-  assert.equal(
-    hasCompleteCandidateIdentity({ PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40) }),
-    false,
-  );
-  assert.doesNotThrow(() => assertCandidateBoundPlatform('win32', false));
-});
-
-void test('candidate identity is complete or fails before host installation', () => {
-  const complete = {
-    PERL_LSP_CANDIDATE_ID: 'candidate-1',
-    PERL_LSP_ARTIFACT_SET_ID: 'set-1',
-    PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
-    PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
-  };
-  assert.equal(hasCompleteCandidateIdentity(complete), true);
-  for (const missing of Object.keys(complete)) {
-    const partial: NodeJS.ProcessEnv = { ...complete };
-    delete partial[missing];
-    assert.throws(
-      () => hasCompleteCandidateIdentity(partial),
-      /requires candidate ID, frozen product SHA, artifact-set ID, and artifact manifest together/,
-      missing,
-    );
-  }
 });
 
 void test('unsupported candidate-bound platform still throws the typed boundary error', () => {
@@ -305,9 +255,6 @@ void test('the published-smoke child reserves exit 2 before host or receipt work
         env: {
           ...process.env,
           PERL_LSP_CURRENT_SOURCE_SHA: 'candidate-sha',
-          PERL_LSP_CANDIDATE_ID: 'candidate-1',
-          PERL_LSP_ARTIFACT_SET_ID: 'set-1',
-          PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
           PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
           PERL_LSP_PUBLISHED_EXTENSION_VERSION: '0.17.0',
           PERL_LSP_PUBLISHED_VSIX_PATH: path.join(receiptRoot, 'candidate.vsix'),
@@ -344,9 +291,6 @@ void test('the compiled child reserves exit 2 with a file receipt root on unsupp
         env: {
           ...process.env,
           PERL_LSP_CURRENT_SOURCE_SHA: 'candidate-sha',
-          PERL_LSP_CANDIDATE_ID: 'candidate-1',
-          PERL_LSP_ARTIFACT_SET_ID: 'set-1',
-          PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
           PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
           PERL_LSP_PUBLISHED_EXTENSION_VERSION: '0.17.0',
           PERL_LSP_PUBLISHED_VSIX_PATH: path.join(fixtureRoot, 'candidate.vsix'),

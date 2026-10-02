@@ -11,52 +11,8 @@
 use super::lexical_visibility::{admit, select_exact_identities};
 use super::scope_distance::compute_scope_sort_key;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
-use perl_semantic_analyzer::symbol::{ScopeId, Symbol, SymbolKind, SymbolTable};
+use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
 use std::borrow::Cow;
-
-fn admitted_symbols<'a>(
-    symbol_table: &'a SymbolTable,
-    cursor_scope_id: ScopeId,
-    cursor_position: usize,
-    symbols: impl IntoIterator<Item = &'a Symbol>,
-) -> Vec<&'a Symbol> {
-    let admitted: Vec<&Symbol> = symbols
-        .into_iter()
-        .filter(|symbol| admit(symbol_table, cursor_scope_id, cursor_position, symbol).is_visible())
-        .collect();
-    select_exact_identities(symbol_table, admitted)
-}
-
-fn variable_item(
-    context: &CompletionContext,
-    symbol_table: &SymbolTable,
-    symbol: &Symbol,
-    name: &str,
-    sigil: &str,
-    sort_tier: char,
-    detail: String,
-) -> CompletionItem {
-    let insert_text = format!("{sigil}{name}");
-    let scope_sort_key =
-        compute_scope_sort_key(symbol_table, context.cursor_scope_id, symbol.scope_id);
-    CompletionItem {
-        label: Cow::Owned(insert_text.clone()),
-        kind: super::items::CompletionItemKind::Variable,
-        detail: Some(Cow::Owned(detail)),
-        documentation: symbol.documentation.clone().map(Cow::Owned),
-        insert_text: Some(Cow::Owned(insert_text.clone())),
-        sort_text: Some(Cow::Owned(format!("{sort_tier}{scope_sort_key}_{name}"))),
-        // Include the sigil in filter_text so strict-filtering clients match
-        // when the user types the sigil prefix (e.g. `$c` matching `$count`).
-        // (#5050 item 4)
-        filter_text: Some(Cow::Owned(insert_text)),
-        additional_edits: vec![],
-        text_edit_range: Some((context.prefix_start, context.position)),
-        commit_characters: None,
-        insert_text_format: InsertTextFormat::PlainText,
-        label_details: None,
-    }
-}
 
 /// Add variable completions with scope-distance ranking.
 ///
@@ -80,27 +36,44 @@ pub fn add_variable_completions(
         // Admission before candidate construction (#8941): sibling/child/
         // ended scopes and future declarations contribute nothing; shadowed
         // outers are dropped so one label resolves to exactly one binding.
-        let selected = admitted_symbols(
-            symbol_table,
-            context.cursor_scope_id,
-            context.position,
-            symbols.iter().filter(|symbol| symbol.kind == kind),
-        );
+        let admitted: Vec<&perl_semantic_analyzer::symbol::Symbol> = symbols
+            .iter()
+            .filter(|symbol| symbol.kind == kind)
+            .filter(|symbol| {
+                admit(symbol_table, context.cursor_scope_id, context.position, symbol).is_visible()
+            })
+            .collect();
+        let selected = select_exact_identities(symbol_table, admitted);
 
         for symbol in selected {
-            let detail =
-                format!("{} {}{}", symbol.declaration.as_deref().unwrap_or(""), sigil, name)
-                    .trim()
-                    .to_string();
-            completions.push(variable_item(
-                context,
-                symbol_table,
-                symbol,
-                name,
-                sigil,
-                '1',
-                detail,
-            ));
+            let insert_text = format!("{}{}", sigil, name);
+
+            let scope_sort_key =
+                compute_scope_sort_key(symbol_table, context.cursor_scope_id, symbol.scope_id);
+
+            completions.push(CompletionItem {
+                label: Cow::Owned(insert_text.clone()),
+                kind: super::items::CompletionItemKind::Variable,
+                detail: Some(Cow::Owned(
+                    format!("{} {}{}", symbol.declaration.as_deref().unwrap_or(""), sigil, name)
+                        .trim()
+                        .to_string(),
+                )),
+                documentation: symbol.documentation.clone().map(Cow::Owned),
+                insert_text: Some(Cow::Owned(insert_text.clone())),
+                sort_text: Some(Cow::Owned(format!("1{scope_sort_key}_{name}"))),
+                // Include the sigil in filter_text so strict-filtering
+                // clients match when the user types the sigil prefix
+                // (e.g. `$c` matching `$count`). Without it, filter_text
+                // is just "count" and the sigil prefix never matches.
+                // (#5050 item 4)
+                filter_text: Some(Cow::Owned(insert_text)),
+                additional_edits: vec![],
+                text_edit_range: Some((context.prefix_start, context.position)),
+                commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
+                label_details: None,
+            });
         }
     }
 }
@@ -220,109 +193,46 @@ pub fn add_all_variables(
 ) {
     // Only add if the prefix doesn't already have a sigil
     if !context.prefix.starts_with(['$', '@', '%', '&']) {
-        let selected = admitted_symbols(
-            symbol_table,
-            context.cursor_scope_id,
-            context.position,
-            symbol_table.symbols.iter().flat_map(|(name, symbols)| {
-                symbols.iter().filter(move |symbol| {
-                    symbol.kind.is_variable() && name.starts_with(&context.prefix)
-                })
-            }),
-        );
+        let mut admitted: Vec<&perl_semantic_analyzer::symbol::Symbol> = Vec::new();
+
+        for (name, symbols) in &symbol_table.symbols {
+            for symbol in symbols {
+                if symbol.kind.is_variable()
+                    && name.starts_with(&context.prefix)
+                    && admit(symbol_table, context.cursor_scope_id, context.position, symbol)
+                        .is_visible()
+                {
+                    admitted.push(symbol);
+                }
+            }
+        }
+
+        let selected = select_exact_identities(symbol_table, admitted);
 
         for symbol in selected {
             let name = symbol.name.as_str();
             let sigil = symbol.kind.sigil().unwrap_or("");
-            let detail = format!("{} variable", symbol.declaration.as_deref().unwrap_or(""));
-            completions.push(variable_item(
-                context,
-                symbol_table,
-                symbol,
-                name,
-                sigil,
-                '5',
-                detail,
-            ));
+            let scope_sort_key =
+                compute_scope_sort_key(symbol_table, context.cursor_scope_id, symbol.scope_id);
+            completions.push(CompletionItem {
+                label: Cow::Owned(format!("{}{}", sigil, name)),
+                kind: super::items::CompletionItemKind::Variable,
+                detail: Some(Cow::Owned(format!(
+                    "{} variable",
+                    symbol.declaration.as_deref().unwrap_or("")
+                ))),
+                documentation: symbol.documentation.clone().map(Cow::Owned),
+                insert_text: Some(Cow::Owned(format!("{}{}", sigil, name))),
+                sort_text: Some(Cow::Owned(format!("5{scope_sort_key}_{name}"))),
+                // Include the sigil in filter_text so strict-filtering
+                // clients can match the typed prefix ($c → $count) (#5050 item 4).
+                filter_text: Some(Cow::Owned(format!("{sigil}{name}"))),
+                additional_edits: vec![],
+                text_edit_range: Some((context.prefix_start, context.position)),
+                commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
+                label_details: None,
+            });
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use perl_parser_core::SourceLocation;
-    use perl_semantic_analyzer::symbol::{Scope, ScopeKind};
-
-    fn table() -> SymbolTable {
-        let mut table = SymbolTable::new();
-        for (id, parent, kind, start, end) in [
-            (0usize, None, ScopeKind::Global, 0usize, 100usize),
-            (1, Some(0), ScopeKind::Subroutine, 10, 90),
-            (2, Some(1), ScopeKind::Block, 20, 50),
-            (3, Some(1), ScopeKind::Block, 55, 80),
-        ] {
-            table.scopes.insert(
-                id,
-                Scope {
-                    id,
-                    parent,
-                    kind,
-                    location: SourceLocation { start, end },
-                    symbols: std::collections::HashSet::new(),
-                },
-            );
-        }
-        table
-    }
-
-    fn symbol(
-        name: &str,
-        kind: SymbolKind,
-        declaration: &str,
-        scope_id: ScopeId,
-        start: usize,
-    ) -> Symbol {
-        Symbol {
-            name: name.to_string(),
-            qualified_name: name.to_string(),
-            kind,
-            location: SourceLocation { start, end: start + 4 },
-            scope_id,
-            declaration: Some(declaration.to_string()),
-            documentation: None,
-            attributes: vec![],
-        }
-    }
-
-    #[test]
-    fn admitted_symbols_empty_iterator_is_empty() {
-        let table = table();
-        let selected = admitted_symbols(&table, 2, 30, std::iter::empty());
-        assert!(selected.is_empty());
-    }
-
-    #[test]
-    fn admitted_symbols_filter_drops_after_cursor_and_sibling_scope() {
-        let table = table();
-        let visible = symbol("ok", SymbolKind::scalar(), "my", 2, 21);
-        let future = symbol("later", SymbolKind::scalar(), "my", 2, 40);
-        // Pre-cursor so DeclaredAfterCursor cannot mask a sibling-scope miss.
-        let sibling = symbol("only_a", SymbolKind::scalar(), "my", 3, 25);
-        let selected = admitted_symbols(&table, 2, 30, [&visible, &future, &sibling]);
-        assert_eq!(selected.len(), 1);
-        assert!(std::ptr::eq(selected[0], &visible));
-    }
-
-    #[test]
-    fn admitted_symbols_identity_keeps_innermost_and_distinct_kinds() {
-        let table = table();
-        let outer = symbol("value", SymbolKind::scalar(), "my", 1, 11);
-        let inner = symbol("value", SymbolKind::scalar(), "my", 2, 21);
-        let array = symbol("value", SymbolKind::array(), "my", 2, 22);
-        let selected = admitted_symbols(&table, 2, 30, [&outer, &inner, &array]);
-        assert_eq!(selected.len(), 2);
-        assert!(std::ptr::eq(selected[0], &inner), "innermost scalar must survive");
-        assert!(std::ptr::eq(selected[1], &array), "distinct kind must not shadow");
     }
 }

@@ -130,7 +130,6 @@ impl WorkspaceFolderState {
     pub fn refresh_workspace_metadata(&mut self) {
         if let Some(path) = self.path.as_deref() {
             self.effective_workspace_config.refresh_declared_dependencies(path);
-            self.effective_workspace_config.refresh_native_build_hints(path);
             self.effective_workspace_config.refresh_dependency_include_paths(path);
         }
     }
@@ -139,9 +138,7 @@ impl WorkspaceFolderState {
     ///
     /// Declared dependencies come from `reads`, so an open metadata buffer's
     /// staged text is authoritative and an unreadable source keeps only its own
-    /// previous entries. Native build hints use the same captured `Makefile.PL`
-    /// / `Build.PL` reads and stay separate from `workspace.includePaths`.
-    /// Dependency-manager include roots are reconciled on
+    /// previous entries. Dependency-manager include roots are reconciled on
     /// every call, so an unreadable declaration file cannot stop a deleted
     /// `carton.lock` from retiring its root. Their install-base markers are
     /// probed on disk; only the `cpanfile` declaration gate follows the
@@ -154,7 +151,6 @@ impl WorkspaceFolderState {
         )],
     ) {
         self.effective_workspace_config.apply_declared_dependency_reads(reads);
-        self.effective_workspace_config.apply_native_build_hint_reads(reads);
         if let Some(path) = self.path.as_deref() {
             // The declaration gate follows the captured read, not a fresh disk
             // probe: an open `cpanfile` buffer is authoritative and outlives an
@@ -396,156 +392,6 @@ mod tests {
         assert_eq!(
             folder.effective_workspace_config.include_paths,
             vec!["lib", ".", "local/lib/perl5"]
-        );
-        Ok(())
-    }
-
-    const MAKEFILE_HINTS: &str = r#"
-WriteMakefile(
-    INC => '-Ixs/make_inc',
-    LIBS => ['-L/opt/make/lib', '-lmake'],
-    DEFINE => '-DMAKE_HINT',
-    OBJECT => 'make.o',
-    MYEXTLIB => 'make/libmake.a',
-);
-"#;
-    const BUILD_HINTS: &str = r#"
-Module::Build->new(
-    include_dirs => ['xs/build_inc'],
-    extra_compiler_flags => '-Ixs/build_extra',
-    LIBS => '-lbuild',
-    DEFINE => '-DBUILD_HINT',
-    OBJECT => 'build.obj',
-    MYEXTLIB => 'build/libbuild.lib',
-);
-"#;
-
-    #[test]
-    fn refresh_workspace_metadata_populates_native_hints_from_makefile_pl()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempfile::tempdir()?;
-        std::fs::write(temp.path().join("Makefile.PL"), MAKEFILE_HINTS)?;
-        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
-            .with_path(temp.path().to_path_buf());
-        let include_paths_before = folder.effective_workspace_config.include_paths.clone();
-
-        folder.refresh_workspace_metadata();
-
-        let hints = &folder.effective_workspace_config.native_build_hints;
-        assert_eq!(hints.include_dirs, vec!["xs/make_inc".to_string()]);
-        assert_eq!(hints.libs_flags, vec!["-L/opt/make/lib".to_string(), "-lmake".to_string()]);
-        assert_eq!(hints.define_flags, vec!["-DMAKE_HINT".to_string()]);
-        assert_eq!(hints.object_files, vec!["make.o".to_string()]);
-        assert_eq!(hints.myextlib_files, vec!["make/libmake.a".to_string()]);
-        assert!(hints.diagnostics.is_empty());
-        assert!(hints.limitations.is_empty());
-        assert_eq!(
-            folder.effective_workspace_config.include_paths, include_paths_before,
-            "native hints must not mutate workspace.includePaths"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn refresh_workspace_metadata_populates_native_hints_from_build_pl()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempfile::tempdir()?;
-        std::fs::write(temp.path().join("Build.PL"), BUILD_HINTS)?;
-        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
-            .with_path(temp.path().to_path_buf());
-
-        folder.refresh_workspace_metadata();
-
-        let hints = &folder.effective_workspace_config.native_build_hints;
-        assert_eq!(
-            hints.include_dirs,
-            vec!["xs/build_inc".to_string(), "xs/build_extra".to_string()]
-        );
-        assert_eq!(hints.libs_flags, vec!["-lbuild".to_string()]);
-        assert_eq!(hints.define_flags, vec!["-DBUILD_HINT".to_string()]);
-        assert_eq!(hints.object_files, vec!["build.obj".to_string()]);
-        assert_eq!(hints.myextlib_files, vec!["build/libbuild.lib".to_string()]);
-        assert!(hints.diagnostics.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn refresh_workspace_metadata_merges_makefile_and_build_pl()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempfile::tempdir()?;
-        std::fs::write(temp.path().join("Makefile.PL"), MAKEFILE_HINTS)?;
-        std::fs::write(temp.path().join("Build.PL"), BUILD_HINTS)?;
-        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
-            .with_path(temp.path().to_path_buf());
-
-        folder.refresh_workspace_metadata();
-
-        let hints = &folder.effective_workspace_config.native_build_hints;
-        assert_eq!(
-            hints.include_dirs,
-            vec![
-                "xs/make_inc".to_string(),
-                "xs/build_inc".to_string(),
-                "xs/build_extra".to_string(),
-            ]
-        );
-        assert_eq!(
-            hints.libs_flags,
-            vec!["-L/opt/make/lib".to_string(), "-lmake".to_string(), "-lbuild".to_string(),]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn captured_makefile_buffer_outranks_disk_without_touching_include_paths()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use perl_lsp_rs_core::config::{DeclaredDependencySource, MetadataSourceRead};
-
-        let temp = tempfile::tempdir()?;
-        std::fs::write(temp.path().join("Makefile.PL"), MAKEFILE_HINTS)?;
-        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
-            .with_path(temp.path().to_path_buf());
-        folder.refresh_workspace_metadata();
-        let include_paths_before = folder.effective_workspace_config.include_paths.clone();
-
-        folder.refresh_workspace_metadata_from_reads(&[(
-            DeclaredDependencySource::MakefilePl,
-            MetadataSourceRead::Text(
-                "WriteMakefile(INC => '-Ixs/staged', LIBS => '-lstaged');\n".to_string(),
-            ),
-        )]);
-
-        let hints = &folder.effective_workspace_config.native_build_hints;
-        assert_eq!(hints.include_dirs, vec!["xs/staged".to_string()]);
-        assert_eq!(hints.libs_flags, vec!["-lstaged".to_string()]);
-        assert_eq!(
-            folder.effective_workspace_config.include_paths, include_paths_before,
-            "captured native-hint refresh must not mutate workspace.includePaths"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn config_replacement_retains_native_build_hints_until_refresh()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempfile::tempdir()?;
-        std::fs::write(temp.path().join("Makefile.PL"), MAKEFILE_HINTS)?;
-        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
-            .with_path(temp.path().to_path_buf());
-        folder.refresh_workspace_metadata();
-
-        folder.replace_effective_workspace_config(WorkspaceConfig::default());
-        assert_eq!(
-            folder.effective_workspace_config.native_build_hints.include_dirs,
-            vec!["xs/make_inc".to_string()],
-            "settings replacement must keep native hints until the next metadata refresh"
-        );
-
-        std::fs::remove_file(temp.path().join("Makefile.PL"))?;
-        folder.refresh_workspace_metadata();
-        assert!(
-            folder.effective_workspace_config.native_build_hints.include_dirs.is_empty(),
-            "the next disk refresh must drop facts from an absent Makefile.PL"
         );
         Ok(())
     }

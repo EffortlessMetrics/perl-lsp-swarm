@@ -195,11 +195,3 @@ The planner now consumes learned LEM estimates whenever the history file has
 substitute `p50 × 1.15` (clamped to the static floor) for the static `base_lem`,
 and the plan's `learned` block reports `lanes_using_learned` and
 `delta_lem_vs_static`.
-
-The history file is a versioned envelope (`schema_version: 1`, produced by
-`aggregate_lane_history.py`). `load_learned_history()` fail-closes on a
-decoded payload whose version is not an exact integer `1`: planning exits
-rather than substituting another version's per-record numbers into
-`base_lem`. Absent or unreadable files still fall back to the static floors.
-The standalone `learned_estimate.py` reader is a separate consumer and is
-not changed here.
