@@ -1591,6 +1591,29 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
+    /// Emit the core-module goto-definition notice at most once per server
+    /// session. Returns whether *this* call emitted (#16551).
+    ///
+    /// Extracted from [`Self::handle_definition_inner`] so the once-per-session
+    /// contract is enforced in one place. A test that pokes
+    /// `core_module_notice_shown` directly would stay green if the `swap` guard
+    /// were deleted — it would be testing `AtomicBool` semantics rather than
+    /// the once-per-session behavior, which is the hole this extraction closes.
+    fn emit_core_module_notice_once(&self, module_name: &str) -> bool {
+        if self.core_module_notice_shown.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        let _ = self.log_message(
+            crate::runtime::window::MessageType::Info,
+            &format!(
+                "'{module_name}' is a Perl core module. \
+                 No source file is available for goto-definition. \
+                 Use hover (K) to view documentation."
+            ),
+        );
+        true
+    }
+
     /// Handle textDocument/definition request
     #[tracing::instrument(skip(self, params), name = "textDocument/definition")]
     pub(crate) fn handle_definition(
@@ -1872,18 +1895,19 @@ impl LspServer {
                                 },
                             }])));
                         } else if is_core_perl_module(&module_name) {
-                            // Core pragma — not on disk in the user's workspace, so no file jump
+                            // Core pragma - not on disk in the user's workspace, so no file jump
                             // is possible.  Log an info message to the LSP output channel
                             // (visible in the VSCode Output panel) so users can discover that
                             // hover (K) shows documentation for core modules.
-                            let _ = self.log_message(
-                                crate::runtime::window::MessageType::Info,
-                                &format!(
-                                    "'{module_name}' is a Perl core module. \
-                                     No source file is available for goto-definition. \
-                                     Use hover (K) to view documentation."
-                                ),
-                            );
+                            //
+                            // Once per session: goto-definition is a per-request action, so an
+                            // unguarded notice repeats every time the user presses F12 on
+                            // `use strict`, filling the Output panel with a line they have
+                            // already read. The fact - "this module has no source" - does not
+                            // change between invocations, so neither does the need to say so
+                            // (#16551). The per-module detail stays in the debug log, which is
+                            // not user-facing, so nothing is actually lost.
+                            self.emit_core_module_notice_once(&module_name);
                             tracing::debug!(
                                 module = %module_name,
                                 "core pragma requested via goto-def — no file target"
@@ -4101,5 +4125,38 @@ mod tests {
         // mutex's poisoned flag from being permanently true after this test
         // runs, matching "no test leaving the mutex poisoned".
         NAVIGATION_SAME_DOC_FALLBACK_GAP.clear_poison();
+    }
+
+    /// The core-module goto-definition notice must reach the output channel
+    /// once per server session, not once per F12 (#16551).
+    ///
+    /// `window/logMessage` is a per-request action path, so an unguarded notice
+    /// repeats on every jump to `use strict` and trains the user to ignore the
+    /// channel that carries it.
+    ///
+    /// Drives [`LspServer::emit_core_module_notice_once`] — the unit that
+    /// actually enforces the guard — rather than the flag behind it, so deleting
+    /// the guard fails this test.
+    #[test]
+    fn the_core_module_notice_is_emitted_once_per_server_session() {
+        let first = crate::runtime::LspServer::new();
+        assert!(
+            first.emit_core_module_notice_once("strict"),
+            "the first notice in a session must be emitted"
+        );
+        assert!(
+            !first.emit_core_module_notice_once("strict"),
+            "a second F12 on the same module must stay silent, not repeat the notice"
+        );
+        assert!(
+            !first.emit_core_module_notice_once("warnings"),
+            "the guard is per session, not per module: a different core module is also silent"
+        );
+
+        let second = crate::runtime::LspServer::new();
+        assert!(
+            second.emit_core_module_notice_once("strict"),
+            "the guard is instance-level: a second server session must still emit"
+        );
     }
 }

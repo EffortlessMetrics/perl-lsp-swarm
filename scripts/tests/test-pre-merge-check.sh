@@ -8,6 +8,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 IMPL="$SCRIPT_DIR/../pre-merge-check.sh"
 CONVERGENCE_WRAPPER="$SCRIPT_DIR/../ci/check-pr-review-convergence"
 SEMANTIC_CHECKER="$SCRIPT_DIR/../ci/check-pr-semantic-review-currentness.py"
+STATUS_FIXTURES="$SCRIPT_DIR/test-pre-merge-status.py"
 CURRENTNESS_DOC="$REPO_ROOT/docs/agents/REVIEW_CURRENTNESS.md"
 AGENT_VERIFY="$REPO_ROOT/.agents/skills/verify-live-ci/SKILL.md"
 CLAUDE_VERIFY="$REPO_ROOT/.claude/skills/verify-live-ci/SKILL.md"
@@ -19,6 +20,7 @@ for required in \
     "$IMPL" \
     "$CONVERGENCE_WRAPPER" \
     "$SEMANTIC_CHECKER" \
+    "$STATUS_FIXTURES" \
     "$CURRENTNESS_DOC" \
     "$AGENT_VERIFY" \
     "$CLAUDE_VERIFY" \
@@ -39,13 +41,44 @@ make_mock_gh() {
     semantic_class="${2:-REVIEW_CURRENT}"
     semantic_reason="${3:-fixture}"
     semantic_rc="${4:-0}"
+    json="$(jq -c '. + {headRefOid:"fixture-head",baseRefName:"main"}' <<<"$json")"
+    printf '%s' "$json" >"$tmpdir/pr.json"
+    printf '%s' '[{"name":"Required A","state":"SUCCESS","link":"https://example.test/required"}]' >"$tmpdir/checks.json"
+    printf '%s' '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Required A"}]}}]' >"$tmpdir/rules.json"
+    printf '%s' '{"contexts":[],"checks":[]}' >"$tmpdir/classic.json"
+    printf '%s' '[{"name":"Required A","state":"SUCCESS","link":"https://example.test/required"}]' >"$tmpdir/required.json"
     cat > "$tmpdir/gh" <<EOF_MOCK
 #!/usr/bin/env bash
-if [[ "\$*" == *"repo view"* ]]; then
-    printf '%s' 'test-owner/test-repo'
-else
-    printf '%s' '$json'
-fi
+case "\$*" in
+    'repo view'*) printf '%s' 'test-owner/test-repo' ;;
+    *'rules/branches/'*) cat '$tmpdir/rules.json' ;;
+    *'protection/required_status_checks'*)
+        if [[ -f '$tmpdir/classic-404' ]]; then
+            printf '%s' '{"message":"Branch not protected","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-status-checks-protection","status":"404"}'
+            echo 'gh: Branch not protected (HTTP 404)' >&2
+            exit 1
+        fi
+        if [[ -f '$tmpdir/classic-404-not-found' ]]; then
+            printf '%s' '{"message":"Branch not found","status":"404"}'
+            echo 'gh: Branch not found (HTTP 404)' >&2
+            exit 1
+        fi
+        if [[ -f '$tmpdir/classic-403' ]]; then
+            echo 'gh: Resource not accessible (HTTP 403)' >&2
+            exit 1
+        fi
+        cat '$tmpdir/classic.json'
+        ;;
+    *'--required'*) cat '$tmpdir/required.json' ;;
+    *'pr checks'*)
+        cat '$tmpdir/checks.json'
+        if [[ -f '$tmpdir/checks-error' ]]; then
+            echo 'API partial response' >&2
+            exit 1
+        fi
+        ;;
+    *) cat '$tmpdir/pr.json' ;;
+esac
 EOF_MOCK
     cat > "$tmpdir/semantic-currentness.py" <<EOF_SEMANTIC
 #!/usr/bin/env python3
@@ -70,6 +103,7 @@ run_check() {
     local fixture="${3:-all-resolved-converges}"
     local code=0
     PATH="$mock_dir:$PATH" \
+        PRE_MERGE_ADVISORY_EVIDENCE="${PRE_MERGE_ADVISORY_EVIDENCE:-}" \
         SEMANTIC_CURRENTNESS_BIN="$mock_dir/semantic-currentness.py" \
         CONVERGENCE_TEST_FIXTURE_DIR="$SCRIPT_DIR/../ci/fixtures/convergence/$fixture" \
         bash "$IMPL" "$pr_number" >/dev/null 2>&1 || code=$?
@@ -83,6 +117,7 @@ run_check_with_output() {
     local code=0
     local output
     output="$(PATH="$mock_dir:$PATH" \
+        PRE_MERGE_ADVISORY_EVIDENCE="${PRE_MERGE_ADVISORY_EVIDENCE:-}" \
         SEMANTIC_CURRENTNESS_BIN="$mock_dir/semantic-currentness.py" \
         CONVERGENCE_TEST_FIXTURE_DIR="$SCRIPT_DIR/../ci/fixtures/convergence/$fixture" \
         bash "$IMPL" "$pr_number" 2>&1)" || code=$?
@@ -142,6 +177,89 @@ test_behind_merge_state_passes() {
     code="$(run_check "$mock")"
     cleanup "$mock"
     [[ "$code" -eq 0 ]] && pass "behind native merge state exits zero" || fail "behind native merge state unexpectedly failed"
+}
+
+test_unstable_inherited_advisory_requires_evidence() {
+    local mock json code
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"UNSTABLE","title":"fix: launcher (#16939)"}'
+    mock="$(make_mock_gh "$json")"
+    jq '. += [{name:"PR Smoke",state:"FAILURE",link:"https://example.test/advisory"}]' "$mock/checks.json" >"$mock/updated.json"
+    mv "$mock/updated.json" "$mock/checks.json"
+    code="$(run_check "$mock")"
+    if [[ "$code" -eq 0 ]]; then
+        fail "UNSTABLE advisory without evidence unexpectedly passed"
+    else
+        pass "UNSTABLE advisory without evidence fails closed"
+    fi
+    printf '%s' '{"headRefOid":"fixture-head","advisories":[{"name":"PR Smoke","link":"https://example.test/advisory","classification":"inherited","discriminator":"same failing gate and signature at merge base","evidenceUrl":"https://example.test/advisory","mergeBaseRunUrl":"https://example.test/merge-base"}]}' >"$mock/evidence.json"
+    code="$(PRE_MERGE_ADVISORY_EVIDENCE="$mock/evidence.json" run_check "$mock")"
+    cleanup "$mock"
+    [[ "$code" -eq 0 ]] && pass "UNSTABLE inherited advisory with exact-head evidence passes" || fail "UNSTABLE inherited advisory with evidence failed"
+}
+
+test_partial_check_snapshot_fails_closed() {
+    local mock json output
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"fix: thing (#16958)"}'
+    mock="$(make_mock_gh "$json")"
+    touch "$mock/checks-error"
+    output="$(run_check_with_output "$mock")"
+    cleanup "$mock"
+    if grep -Fq 'gh pr checks did not return a reliable current snapshot' <<<"$output" &&
+       grep -Fq 'EXIT:1' <<<"$output"; then
+        pass "partial gh pr checks response fails closed"
+    else
+        fail "partial gh pr checks response unexpectedly passed"
+    fi
+}
+
+test_absent_classic_protection_uses_active_ruleset() {
+    local mock json output
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"fix: thing (#16958)"}'
+    mock="$(make_mock_gh "$json")"
+    touch "$mock/classic-404"
+    output="$(run_check_with_output "$mock")"
+    cleanup "$mock"
+    if grep -Fq 'EXIT:0' <<<"$output" && grep -Fq 'required contexts green' <<<"$output"; then
+        pass "definitive classic 404 contributes no contexts while ruleset remains enforced"
+    else
+        fail "definitive classic 404 incorrectly blocked ruleset checks"
+    fi
+}
+
+test_unreadable_classic_protection_blocks() {
+    local mock json output
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"fix: thing (#16958)"}'
+    mock="$(make_mock_gh "$json")"
+    touch "$mock/classic-403"
+    output="$(run_check_with_output "$mock")"
+    if ! grep -Fq 'EXIT:1' <<<"$output" || ! grep -Fq 'classic protection is unreadable' <<<"$output"; then
+        fail "classic 403 did not block"
+    else
+        pass "classic 403 remains NOT_PROVEN"
+    fi
+    printf '%s' 'not-json' >"$mock/classic.json"
+    rm "$mock/classic-403"
+    output="$(run_check_with_output "$mock")"
+    cleanup "$mock"
+    if grep -Fq 'EXIT:1' <<<"$output" && grep -Fq 'classic protection response is malformed' <<<"$output"; then
+        pass "malformed classic response remains NOT_PROVEN"
+    else
+        fail "malformed classic response did not block"
+    fi
+}
+
+test_branch_not_found_404_blocks() {
+    local mock json output
+    json='{"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","title":"fix: thing (#16958)"}'
+    mock="$(make_mock_gh "$json")"
+    touch "$mock/classic-404-not-found"
+    output="$(run_check_with_output "$mock")"
+    cleanup "$mock"
+    if grep -Fq 'EXIT:1' <<<"$output" && grep -Fq 'classic protection is unreadable' <<<"$output"; then
+        pass "branch-not-found 404 does not impersonate absent classic protection"
+    else
+        fail "branch-not-found 404 unexpectedly passed"
+    fi
 }
 
 test_semantic_not_proven_fails_even_when_native_facts_converge() {
@@ -231,12 +349,22 @@ test_conflicting_pr_fails
 test_missing_issue_ref_fails
 test_clean_review_current_pr_passes
 test_behind_merge_state_passes
+test_unstable_inherited_advisory_requires_evidence
+test_partial_check_snapshot_fails_closed
+test_absent_classic_protection_uses_active_ruleset
+test_unreadable_classic_protection_blocks
+test_branch_not_found_404_blocks
 test_semantic_not_proven_fails_even_when_native_facts_converge
 test_zero_or_generic_review_cannot_become_review_current
 test_public_wrappers_keep_authority_split
 test_currentness_policy_surfaces
 test_error_messages_are_native
 test_no_pr_number_fails
+if python3 "$STATUS_FIXTURES"; then
+    pass "required and advisory status fixtures"
+else
+    fail "required and advisory status fixtures"
+fi
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
 
 [[ "$FAIL_COUNT" -eq 0 ]]
