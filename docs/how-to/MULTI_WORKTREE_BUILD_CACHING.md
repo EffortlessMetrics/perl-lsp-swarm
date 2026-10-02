@@ -1,216 +1,125 @@
 # Multi-Worktree Build Caching
 
-How to make several local worktrees of this repository share compiled work
-instead of each one building its own multi-GB `target/` tree.
+Share dependency downloads while keeping each worktree's Cargo build state
+separate. This guide applies to multiple worktrees or clones of `perl-lsp-swarm`
+on one machine, including concurrent PR, review and agent work.
 
-Audience: anyone running more than one local worktree or clone of
-`perl-lsp-swarm` on one machine (agent swarms, stacked PR work, review
-worktrees). If you have a single checkout, the default per-worktree layout is
-already fine — this guide trades disk and cold-build time for shared-state
-discipline you only need at N>1.
+## Correctness boundary
 
-## The problem
+Both `CARGO_TARGET_DIR` (final outputs) and `CARGO_BUILD_BUILD_DIR`
+(intermediate artifacts and freshness metadata) must belong to the current
+worktree. Sharing either mutable build-state namespace can mix different local
+sources with the same package name, version and workspace-relative path.
 
-Every worktree that runs plain `cargo` / `just pr-fast` builds into its own
-`<worktree>/target/`:
+Cargo can mark a sibling library fresh when both worktrees' source mtimes predate
+the first build. Rebuilding only the outer executable can then produce the new
+Git stamp with old library behavior. A lock prevents concurrent mutation but does
+not establish source compatibility. Disabling incremental compilation does not
+fix it. This was reproduced on Cargo 1.95 and 1.99 in
+[#11650](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11650), matching
+[Cargo #12516](https://github.com/rust-lang/cargo/issues/12516).
 
-- a cold full-workspace build takes on the order of **10 minutes** on a
-  build-bound box (measured 10m32s on toolchain 1.95.0, #12596);
-- each `target/` tree is multiple GB, multiplied by every sibling worktree;
-- on Windows the per-worktree hardlink/copy cost makes the duplication worse.
+A passing test build may use a separate feature-set artifact from the ordinary
+product binary. Qualify the actual ordinary executable and keep an immutable copy
+with its hash before releasing build ownership. Version strings and successful
+Cargo exit status alone are insufficient evidence.
 
-The repository already ships the routing mechanism — `scripts/cargo-safe` —
-but plain `cargo` and most `just` recipes bypass it. This guide makes the
-shared-cache path the documented default for multi-worktree development.
+## Recommended route for agent work
 
-## The recommended default
-
-Use `scripts/cargo-safe` for build work in every secondary worktree. The
-easiest way is the `just cached` passthrough, which forwards any cargo
-command:
-
-```bash
-just cached check --workspace --all-targets --locked
-just cached test -p perl-lsp-rs --locked
-just cached clippy -p perl-workspace --all-targets --locked -- -D warnings
-```
-
-The `agent-*` recipes (`just agent-check`, `just agent-test`,
-`just agent-clippy`, `just agent-pr-fast`) route through the same wrapper and
-are equally safe for multi-worktree use.
-
-Scope note: the tier lanes (`just merge-gate`, `just ci-gate`, `just nightly`)
-and their leaves (`check-all-targets`, `clippy-full`, `test-full`, …) invoke
-plain `cargo`, so in a secondary worktree they rebuild into that worktree's
-own `target/` with no flock or disk gate. Treat them as single-worktree
-lanes; keep multi-worktree build work on `just cached`, `just build`,
-`just test`, `just check`, `just fix`, and
-`agent-check`/`agent-test`/`agent-clippy`/`agent-nextest`, which all reach
-the wrapper with a heavy first word and take its lock. `just pr-fast` and
-`just agent-pr-fast` instead invoke `cargo-safe xtask gates …`: `xtask`
-takes the wrapper's unlocked branch, so they share the target dir and
-sccache but not the build flock — do not run them concurrently against
-one `DEVPLANE`.
-
-What `cargo-safe` does (see `scripts/cargo-safe`, 74 lines, worth reading):
-
-- redirects `CARGO_TARGET_DIR`, `CARGO_HOME`, `CARGO_BUILD_BUILD_DIR`, and
-  `TMPDIR` to a machine-level devplane at
-  `${XDG_CACHE_HOME:-~/.cache}/devplane/<repo-name>/` (override with
-  `DEVPLANE=/path`);
-- sets `CARGO_INCREMENTAL=0` and a bounded `CARGO_BUILD_JOBS=2`;
-- if `sccache` is installed, wraps rustc with it and sets
-  `SCCACHE_BASEDIRS` to the worktree **parent directory** — that is the key
-  that lets sibling worktrees hit each other's cached compiler output;
-- serializes heavy commands (`build|check|test|run|bench|doc|clippy|nextest`)
-  through an `flock` on the devplane with a 180s wait
-  (`CARGO_LOCK_WAIT` to tune);
-- refuses to run when the devplane filesystem is nearly full
-  (`MIN_FREE_GB=40`, `MAX_USED_PCT=85`).
-
-**One honest caveat about the default devplane key.** `cargo-safe` derives
-`<repo-name>` from `basename "$(git rev-parse --show-toplevel)"`, so under
-this repository's standard `.worktrees/<slot>` layout **each worktree slot
-gets its own devplane** — separate target, Cargo home, sccache, and lock
-directories. What is shared out of the box is the *compiler output*, because
-`SCCACHE_BASEDIRS` covers the worktree parent and sccache deduplicates
-identical compile invocations across slots. If you additionally want **one
-shared target dir** across all worktrees, set `DEVPLANE` explicitly to a
-single repository-stable path (see the export block below) — with that one
-variable overridden, the wrapper's target dir, Cargo home, sccache dir, and
-build flock all land on the same shared root.
-
-One-time setup per machine:
+After the root admits host capacity and existing consumers, use the existing
+strict route:
 
 ```bash
-just devplane-init     # creates the devplane directories
-cargo install sccache --locked   # optional but recommended
+scripts/cargo-admitted check --workspace --all-targets --locked
+scripts/cargo-admitted test -p perl-lsp-rs --locked
 ```
 
-If you prefer not to route every command through the wrapper, export the same
-variables once per shell. Derive the devplane from the **common git dir** so
-every linked worktree resolves the same path (deriving it from the worktree's
-own toplevel basename would recreate the per-slot split):
+The [Cargo storage admission contract](../agents/CARGO_STORAGE.md) governs this
+route. It retains one common-repository/host lease and independently reusable
+Cargo home, while assigning both target and build paths to a canonical-worktree
+hash under that slot. It preserves toolchain pins, checks every admitted storage
+destination and refuses incompatible inherited target/build overrides.
+
+`DEVPLANE` selects the machine storage root; it does not make sibling worktrees'
+mutable artifacts compatible. There is no automatic migration or deletion of old
+shared outputs. Account for per-worktree artifact growth before admission, and
+retain old evidence/resources for separately authorized ownership-aware cleanup.
+This route is opt-in; it does not retrofit running commands.
+
+The admitted route supports `build`, `check`, `test`, `run`, `bench` and `doc`.
+External commands such as Clippy and nextest require a separately admitted route.
+Do not bypass a refusal by silently retrying raw Cargo or the legacy wrapper.
+
+## Plain Cargo and existing integrations
+
+Cargo's unconfigured default uses `<workspace-root>/target` for both outputs and
+intermediates. That provides worktree separation when no environment or Cargo
+configuration overrides either path. Inspect both effective directories, including
+inherited settings, rather than trusting a shell's current directory:
 
 ```bash
-# --git-common-dir is absolute from a worktree but relative (".git") from the
-# main checkout, so dirname alone splits the devplane ("."/basename mismatch).
-# Branch exactly like the justfile lane does:
-common_dir="$(git rev-parse --git-common-dir)"
-case "$common_dir" in
-  /*|[A-Za-z]:*) main_root="$(dirname "$common_dir")" ;;
-  *) main_root="$(git rev-parse --show-toplevel)" ;;
-esac
-export DEVPLANE="${XDG_CACHE_HOME:-$HOME/.cache}/devplane/$(basename "$main_root")"
-export CARGO_TARGET_DIR="$DEVPLANE/target"
-export CARGO_HOME="$DEVPLANE/cargo-home"
-export CARGO_INCREMENTAL=0
-# with sccache installed:
-export RUSTC_WRAPPER=sccache
-export SCCACHE_DIR="$DEVPLANE/sccache"
-export SCCACHE_BASEDIRS="$(dirname "$main_root")"
+cargo metadata --no-deps --format-version 1
 ```
 
-Warning: with the variables exported directly, **you lose the flock** (see
-lock serialization below) and the disk gate. Prefer the wrapper for anything
-heavier than `cargo check` on one crate.
+The `target_directory` and `build_directory` fields identify those two destinations
+on Cargo 1.95+. A target-dir command-line argument alone does not override an
+independently configured build-dir. Rust-analyzer and independent later binary
+consumers need their own admitted resource ownership.
 
-## Tradeoffs — read before adopting
+Plain Cargo does not provide this repository's host disk admission or conservative
+lease. Root orchestration still owns compute capacity and active consumers.
+Worktree-private paths address cross-worktree reuse; they do not make backdated
+source restoration or arbitrary path reuse content-safe.
 
-### Shared-target staleness
+## Legacy compatibility route
 
-One shared `target/` means toolchain, edition, Rust version, or crate-version
-moves invalidate artifacts for **every** worktree at once. A workspace-wide
-version bump (e.g. the 0.18.0-rc.1 churn) effectively cold-builds the next
-command in each worktree's first use after the bump — but only once total,
-not once per worktree.
+`scripts/cargo-safe`, `just cached`, and legacy recipes that delegate to that
+wrapper remain for caller compatibility. They do **not** establish worktree
+isolation or the strict admission guarantees above. The wrapper honors existing
+`CARGO_TARGET_DIR`, `CARGO_BUILD_BUILD_DIR` and `DEVPLANE` settings, which can route
+divergent worktrees into one mutable target/build namespace.
 
-After a toolchain switch (`rustup update`, MSRV bump) or when builds behave
-strangely across a version move, clean the shared root once:
+Its default devplane uses the checkout basename, so different basenames usually
+separate state. Matching basenames or an explicitly common `DEVPLANE` can still
+collide. Do not infer safety from a wrapper name, two jobs, a flock, or sccache.
+The legacy wrapper's `xtask` branch also bypasses its heavy-command flock.
+
+Retain the legacy interface for existing callers; choose the strict admitted
+route for new agent work. Existing running commands and retained outputs remain
+under their current owner's control.
+
+## Reusable caches and storage
+
+Cargo registry/download and Git dependency caches may remain shared independently
+of private target/build state. A compiler cache such as sccache can avoid identical
+compilations, but it is reached only when Cargo decides to invoke rustc; it cannot
+repair Cargo's false-fresh decision. The strict route requires a separately admitted
+compiler-cache configuration and does not automatically enable wrappers.
+
+Do not clean a shared root to switch candidates. `scripts/target-gc.sh` is advisory;
+age and a free lock do not prove consumer inactivity or permission to remove data.
+Any cleanup must preserve source, unique work, proof artifacts and a restore path.
+Cargo's dependency-cache GC does not bound retained target/build output storage.
+
+## Verification and measurement
+
+Run the lightweight storage fixtures, then the opt-in real Cargo behavior test
+using an installed toolchain and an admitted small-build budget:
 
 ```bash
-cargo clean --target-dir "$DEVPLANE/target"
+python3 scripts/tests/test_cargo_admitted_storage.py
+CARGO_ADMITTED_REAL_BUILD_TEST=1 python3 scripts/tests/test_cargo_admitted_storage.py
 ```
 
-Use `scripts/target-gc.sh` to inspect age-selected whole `target/` directories:
+The real regression builds a two-crate workspace and its linked worktree with
+intentionally different library behavior, both created before the first build.
+Alternating A/B/A must return the corresponding behavior with private target and
+build paths, while retaining a common lease and shared Cargo home. Its capacity
+observation is a test fixture, not proof that an arbitrary host budget is admitted.
 
-```bash
-just target-gc              # advisory report (default age threshold 30d)
-bash scripts/target-gc.sh --self-test   # inspection/refusal/preservation proof
-```
-
-`--apply` is retired and refuses. The report does not delete anything, and age
-or the legacy build flock cannot establish ownership or consumer inactivity.
-Review ignored evidence, unique source state and all active consumers, then
-request an exact-path cleanup proposal through the allocating root. A report is
-not cleanup authorization. See [Cargo storage admission](../agents/CARGO_STORAGE.md)
-for both target/build resources and the opt-in admitted route. Continuously hot
-artifact trees may contain old artifacts that age-only inspection does not identify.
-
-### Lock serialization
-
-Concurrent builds against one shared `CARGO_TARGET_DIR` serialize. Cargo's
-own package cache lock is per-`CARGO_HOME`; the target dir itself is not safe
-for truly parallel full builds. This is why `cargo-safe` wraps heavy commands
-in an `flock`: parallel lanes **queue** instead of corrupting each other.
-
-Rules of thumb:
-
-- Parallel lanes (several worktrees building at once): always go through
-  `just cached` / `agent-*` / `scripts/cargo-safe`. Never run two plain
-  `cargo build`s against the same `CARGO_TARGET_DIR`.
-- A single interactive lane: exported variables without the wrapper are
-  tolerable for light commands, but the wrapper costs nothing and keeps the
-  disk gate.
-- Do not point rust-analyzer at the shared target dir while also building in
-  terminals — rust-analyzer holds its own long-lived build lock and will
-  stall your CLI builds (or vice versa). Give the IDE its own target dir.
-
-### `sccache` vs shared `target/`
-
-These solve different halves of the problem and compose well:
-
-| | Shared `CARGO_TARGET_DIR` | `sccache` |
-|---|---|---|
-| What is shared | Final artifacts, dep graph, fingerprints | Compiled crate objects only |
-| Cross-worktree hit | Immediate (same dir) | Via `SCCACHE_BASEDIRS` covering the worktree parent |
-| Disk cost | One tree total | One cache (bounded, default 15G here) + per-worktree metadata |
-| Locking needs | Real serialization (flock required) | Safe for concurrent use |
-| Failure mode | Stale-after-bump confusion | Cache miss → normal compile |
-
-`cargo-safe` enables both when `sccache` is present: per-invocation safety
-from the cache, full reuse from the shared target. If you can only pick one,
-pick **sccache with `SCCACHE_BASEDIRS`** — it is concurrency-safe and degrades
-to a normal compile on a miss, where a mismanaged shared target dir can
-poison every worktree at once.
-
-## Measuring whether it helps
-
-Do not take the strategy on faith — measure it on your box class. One
-measurement trap first: `scripts/build-timing-receipt.sh` (i.e. `cargo xtask
-build-timing-receipt`) **with no flags runs `cargo clean` before timing** —
-with a shared target exported, that deletes the warm artifacts you meant to
-measure. A warm-vs-cold comparison that preserves the cache:
-
-```bash
-# 1. Cold baseline in a scratch worktree (receipt cleans, then times):
-scripts/build-timing-receipt.sh --clean --output artifacts/timing-cold.json
-
-# 2. Warm the devplane once from any worktree:
-just cached check --workspace --all-targets --locked
-
-# 3. Warm measurement in a *second* worktree at the same revision — no clean:
-scripts/build-timing-receipt.sh --incremental --output artifacts/timing-warm.json
-#    or, simplest honest wall-clock: time just cached check --workspace --locked
-
-# 4. Receipt-level delta:
-cargo xtask compare-build-timing artifacts/timing-cold.json artifacts/timing-warm.json
-```
-
-The cache-strategy measurement programme lives in **#9178**; adoption
-evidence for this guide should land there as receipts, not anecdotes.
-
-Expected shape on a build-bound box: first worktree pays the full cold build
-(~10m class); every subsequent sibling worktree's first build of the same
-revision should be dominated by linking and workspace-member rebuilds, not by
-recompiling the shared dependency graph.
+Cache-strategy measurements remain with #9178 and the existing build-measurement
+programme. Compare equivalent source, toolchain, profile and feature sets, retain
+actual behavior and executable hashes, and account for queue time and all storage
+volumes. Do not equate a fast false cache hit with useful reuse. The build-timing
+receipt's no-flag default cleans first; never invoke it against active or retained
+state merely to obtain a timing number.
