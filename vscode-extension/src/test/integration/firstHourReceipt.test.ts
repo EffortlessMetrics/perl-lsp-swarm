@@ -127,7 +127,11 @@ function sampleLabels(items: readonly vscode.CompletionItem[]): string[] {
   });
 }
 
-function assertSuccessfulStartupMetrics(metrics: Record<string, unknown>, label: string): void {
+function assertSuccessfulStartupMetrics(
+  metrics: Record<string, unknown>,
+  label: string,
+  requireFirstUsefulRequest = true,
+): void {
   assert.equal(metrics.binary_resolution_status, 'ok', `${label} binary resolution should succeed`);
   assert.equal(metrics.server_start_status, 'ok', `${label} server start should succeed`);
   assert.equal(metrics.initialize_status, 'ok', `${label} initialize should succeed`);
@@ -148,9 +152,13 @@ function assertSuccessfulStartupMetrics(metrics: Record<string, unknown>, label:
     'process_started',
     'initialize_completed',
     'workspace_ready',
-    'first_useful_request',
   ] as const;
-  for (const ordered of [activationOrdered, startupOrdered]) {
+  // The installed-byte snapshot runs before the first provider call; only the
+  // post-provider check may require its first-useful-request milestone.
+  for (const ordered of [
+    activationOrdered,
+    requireFirstUsefulRequest ? [...startupOrdered, 'first_useful_request'] : startupOrdered,
+  ]) {
     let previous = -1;
     for (const milestone of ordered) {
       const value = values[milestone];
@@ -159,6 +167,31 @@ function assertSuccessfulStartupMetrics(metrics: Record<string, unknown>, label:
       previous = value as number;
     }
   }
+}
+
+async function waitForRunningStartupMetrics(
+  getMetrics: () => Record<string, unknown>,
+  label: string,
+  timeoutMs = 30_000,
+): Promise<Record<string, unknown>> {
+  const deadline = monotonicNow() + timeoutMs;
+  let metrics = getMetrics();
+  while (metrics.lifecycle_state !== 'running') {
+    if (metrics.lifecycle_state === 'failed' || metrics.lifecycle_state === 'stopped') {
+      throw new Error(
+        `${label} reached terminal lifecycle state ${String(metrics.lifecycle_state)}`,
+      );
+    }
+    if (monotonicNow() >= deadline) {
+      throw new Error(
+        `${label} did not reach running within ${timeoutMs}ms (state ${String(metrics.lifecycle_state)})`,
+      );
+    }
+    await delay(100);
+    metrics = getMetrics();
+  }
+  assertSuccessfulStartupMetrics(metrics, label, false);
+  return metrics;
 }
 
 async function collectProviderMoment(
@@ -592,7 +625,7 @@ suite('First-hour VS Code receipt', function () {
     let inputServer: ArtifactObservation | undefined;
     let selectedVsix: ArtifactObservation | undefined;
     const observeSelectedInstalled = (metrics: Record<string, unknown>): ArtifactObservation => {
-      assertSuccessfulStartupMetrics(metrics, 'installed identity');
+      assertSuccessfulStartupMetrics(metrics, 'installed identity', false);
       assert.equal(
         metrics.binary_resolution_source,
         'bundled',
@@ -624,9 +657,11 @@ suite('First-hour VS Code receipt', function () {
             relative !== '..' &&
             !relative.startsWith(`..${path.sep}`),
         );
-        initialInstalled = observeSelectedInstalled(
-          extensionApi?.getLanguageClientStartupMetrics?.() ?? {},
+        const runningMetrics = await waitForRunningStartupMetrics(
+          () => extensionApi?.getLanguageClientStartupMetrics?.() ?? {},
+          'installed identity',
         );
+        initialInstalled = observeSelectedInstalled(runningMetrics);
         installedByteIdentity = {
           schema_version: 'installed_lsp_vsix_bytes.v1',
           extension_root: extensionRoot,
@@ -684,9 +719,14 @@ suite('First-hour VS Code receipt', function () {
         vscode.commands.executeCommand('perl-lsp.restart'),
         90_000,
       );
-      const restartMetrics = extensionApi?.getLanguageClientStartupMetrics?.();
-      assert.ok(restartMetrics, 'current-source smoke must expose restart metrics');
-      assertSuccessfulStartupMetrics(restartMetrics, 'restart startup');
+      assert.ok(
+        extensionApi?.getLanguageClientStartupMetrics,
+        'current-source smoke must expose restart metrics',
+      );
+      const restartMetrics = await waitForRunningStartupMetrics(
+        extensionApi.getLanguageClientStartupMetrics,
+        'restart startup',
+      );
       const restartMilestones = restartMetrics.milestones;
       assert.ok(
         restartMilestones &&

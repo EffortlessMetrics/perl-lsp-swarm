@@ -29,6 +29,24 @@ function envValue(name: string): string {
   return process.env[name]?.trim() ?? '';
 }
 
+export function hasCompleteCandidateIdentity(env: NodeJS.ProcessEnv): boolean {
+  const candidateId = env.PERL_LSP_CANDIDATE_ID?.trim() ?? '';
+  const artifactSetId = env.PERL_LSP_ARTIFACT_SET_ID?.trim() ?? '';
+  const sourceSha = env.PERL_LSP_CURRENT_SOURCE_SHA?.trim() ?? '';
+  const manifest = env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST?.trim() ?? '';
+  // A source SHA also identifies a standalone first-hour run. Candidate-only
+  // fields opt into the stronger identity contract, which remains all-or-none.
+  if (!candidateId && !artifactSetId && !manifest) {
+    return false;
+  }
+  if (!candidateId || !artifactSetId || !sourceSha || !manifest) {
+    throw new Error(
+      'Candidate-bound packaged smoke requires candidate ID, frozen product SHA, artifact-set ID, and artifact manifest together.',
+    );
+  }
+  return true;
+}
+
 export interface CandidateBoundInstallContext {
   source: ExtensionSource;
   version: string;
@@ -452,22 +470,11 @@ function configureCrashRecoverySmoke(userDataDir: string): void {
 async function main(): Promise<void> {
   const source = publishedSource();
   const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
-  const candidateBound = Boolean(
-    envValue('PERL_LSP_CANDIDATE_ID') ||
-    envValue('PERL_LSP_ARTIFACT_SET_ID') ||
-    envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
-    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
-  );
-  const completeCandidateIdentity = [
-    envValue('PERL_LSP_CANDIDATE_ID'),
-    envValue('PERL_LSP_ARTIFACT_SET_ID'),
-    envValue('PERL_LSP_CURRENT_SOURCE_SHA'),
-    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
-  ].every(Boolean);
+  const candidateBound = hasCompleteCandidateIdentity(process.env);
   assertCandidateBoundPlatform(
     process.platform === 'linux' ? 'linux' : process.platform,
     candidateBound,
-    completeCandidateIdentity,
+    candidateBound,
   );
   assertCandidateBoundInstallSource({
     source,

@@ -16,6 +16,7 @@ const {
   concludeRun,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
+  hasCandidateIdentity,
   interpretBehavioralSmokeExit,
   inventoryTransitionArgs,
   interpretTestExplorerExit,
@@ -466,9 +467,9 @@ void test(
         (_env) => ({ phase: 'child', result: { status: 2 } }),
       );
       assert.deepEqual(result, {
-        status: 'not_proven',
+        status: 'failed',
         exit_code: 2,
-        reason: 'candidate_bound_platform_unavailable',
+        reason: 'test_explorer_journey_failed',
       });
 
       for (const name of names.slice(0, 4)) delete process.env[name];
@@ -1474,6 +1475,20 @@ void test('a partial Windows candidate-bound exit 2 remains not proven', () => {
   });
   assert.equal(result.status, 'not_proven');
   assert.equal(result.reason, 'candidate_bound_platform_unavailable');
+});
+
+void test('a standalone first-hour SHA does not make Windows exit 2 a candidate boundary', () => {
+  const standalone = { PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40) };
+  assert.equal(hasCandidateIdentity(standalone), false);
+  const result = interpretBehavioralSmokeExit({
+    status: 2,
+    candidateBound: hasCandidateIdentity(standalone),
+    platform: 'win32',
+    receiptsRoot: path.join(os.tmpdir(), 'perl-lsp-windows-first-hour-exit-does-not-exist'),
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'published_extension_smoke_failed');
+  assert.equal(hasCandidateIdentity({ ...standalone, PERL_LSP_CANDIDATE_ID: 'partial' }), true);
 });
 
 void test('a complete Windows candidate-bound exit 2 remains a product failure', () => {

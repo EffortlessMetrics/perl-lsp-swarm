@@ -9,6 +9,7 @@ import {
   assertCandidateBoundInstallSource,
   assertCandidateBoundPlatform,
   configureCurrentSourceSmoke,
+  hasCompleteCandidateIdentity,
   isDeterministicPublishedInstallFailure,
   retryPublishedInstall,
 } from './runPublishedSmoke';
@@ -149,6 +150,33 @@ void test('partial Windows candidate identity remains not proven', () => {
   );
 });
 
+void test('standalone first-hour source SHA does not request candidate validation', () => {
+  assert.equal(
+    hasCompleteCandidateIdentity({ PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40) }),
+    false,
+  );
+  assert.doesNotThrow(() => assertCandidateBoundPlatform('win32', false));
+});
+
+void test('candidate identity is complete or fails before host installation', () => {
+  const complete = {
+    PERL_LSP_CANDIDATE_ID: 'candidate-1',
+    PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+    PERL_LSP_CURRENT_SOURCE_SHA: 'a'.repeat(40),
+    PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
+  };
+  assert.equal(hasCompleteCandidateIdentity(complete), true);
+  for (const missing of Object.keys(complete)) {
+    const partial: NodeJS.ProcessEnv = { ...complete };
+    delete partial[missing];
+    assert.throws(
+      () => hasCompleteCandidateIdentity(partial),
+      /requires candidate ID, frozen product SHA, artifact-set ID, and artifact manifest together/,
+      missing,
+    );
+  }
+});
+
 void test('unsupported candidate-bound platform still throws the typed boundary error', () => {
   assert.throws(
     () => assertCandidateBoundPlatform('darwin', true),
@@ -277,6 +305,9 @@ void test('the published-smoke child reserves exit 2 before host or receipt work
         env: {
           ...process.env,
           PERL_LSP_CURRENT_SOURCE_SHA: 'candidate-sha',
+          PERL_LSP_CANDIDATE_ID: 'candidate-1',
+          PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+          PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
           PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
           PERL_LSP_PUBLISHED_EXTENSION_VERSION: '0.17.0',
           PERL_LSP_PUBLISHED_VSIX_PATH: path.join(receiptRoot, 'candidate.vsix'),
@@ -313,6 +344,9 @@ void test('the compiled child reserves exit 2 with a file receipt root on unsupp
         env: {
           ...process.env,
           PERL_LSP_CURRENT_SOURCE_SHA: 'candidate-sha',
+          PERL_LSP_CANDIDATE_ID: 'candidate-1',
+          PERL_LSP_ARTIFACT_SET_ID: 'set-1',
+          PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: '{}',
           PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
           PERL_LSP_PUBLISHED_EXTENSION_VERSION: '0.17.0',
           PERL_LSP_PUBLISHED_VSIX_PATH: path.join(fixtureRoot, 'candidate.vsix'),
