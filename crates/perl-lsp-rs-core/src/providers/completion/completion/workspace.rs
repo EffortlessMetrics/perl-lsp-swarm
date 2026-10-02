@@ -1813,6 +1813,10 @@ fn is_valid_perl_package_name(s: &str) -> bool {
 /// When the user types `$obj->` or `Package->`, queries the workspace index for
 /// methods defined in the receiver's package and suggests them.
 ///
+/// `current_document_uri` is the open document's canonical `file://` URL string
+/// (empty when unknown). It feeds the same-document freshness seam so stale
+/// persisted facts from the edited file cannot resurrect (#17084).
+///
 /// Auto-import edits are attached when the receiver package is not yet imported.
 ///
 /// When receiver inference returns [`ReceiverEvidence::Unknown`] (no exact
@@ -1830,6 +1834,7 @@ pub fn add_workspace_method_completions(
     type_engine: Option<&TypeInferenceEngine>,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
     used_modules: &HashSet<String>,
+    current_document_uri: &str,
 ) {
     let Some(index) = workspace_index else {
         return;
@@ -1851,7 +1856,14 @@ pub fn add_workspace_method_completions(
     // the enum variant's internals.
     let union_packages = evidence.candidate_packages();
     if !union_packages.is_empty() {
-        add_union_receiver_method_completions(completions, context, source, index, union_packages);
+        add_union_receiver_method_completions(
+            completions,
+            context,
+            source,
+            index,
+            union_packages,
+            current_document_uri,
+        );
         return;
     }
 
@@ -1870,7 +1882,8 @@ pub fn add_workspace_method_completions(
 
     // Collect all methods from the receiver package AND its ancestor chain
     // (parents + roles). Child methods take priority.
-    let members = collect_all_package_members_with_source(index, &package_name, source);
+    let members =
+        collect_all_package_members_with_source(index, &package_name, source, current_document_uri);
     drop_generic_local_methods_rebound_from_composition(completions, &package_name, &members);
 
     let method_symbols = {
@@ -1957,6 +1970,7 @@ fn add_union_receiver_method_completions(
     source: &str,
     index: &WorkspaceIndex,
     packages: &[String],
+    current_document_uri: &str,
 ) {
     let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
     // Snapshot existing labels before any push to avoid borrow conflicts.
@@ -1992,7 +2006,8 @@ fn add_union_receiver_method_completions(
     // Emit one completion per method, iterating packages in declaration order
     // so the first arm's definition wins for the detail label.
     for package_name in packages {
-        let members = collect_all_package_members_with_source(index, package_name, source);
+        let members =
+            collect_all_package_members_with_source(index, package_name, source, current_document_uri);
         for symbol in &members {
             if !matches!(symbol.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method) {
                 continue;
@@ -2662,7 +2677,7 @@ pub(super) fn collect_all_package_members(
     index: &WorkspaceIndex,
     package_name: &str,
 ) -> Vec<WorkspaceSymbol> {
-    collect_all_package_members_with_source(index, package_name, "")
+    collect_all_package_members_with_source(index, package_name, "", "")
 }
 
 /// Collect package members and use the current open document as a model source
@@ -2674,10 +2689,18 @@ pub(super) fn collect_all_package_members(
 /// index members for packages declared in the open buffer (#16809). This adapter
 /// retires when [`WorkspaceSemanticQueries`] can consume a source-only shard
 /// for the accepted document generation.
+///
+/// `current_document_uri` is the open document's identity (canonical `file://`
+/// URL string, empty when unknown). When the buffer supplies authoritative facts
+/// for a package, persisted explicit members and inheritance models sourced from
+/// that same URI belong to an older generation of the edited document and are
+/// excluded (#17084); members from other files and generated members still
+/// compose.
 fn collect_all_package_members_with_source(
     index: &WorkspaceIndex,
     package_name: &str,
     source: &str,
+    current_document_uri: &str,
 ) -> Vec<WorkspaceSymbol> {
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut result: Vec<WorkspaceSymbol> = Vec::new();
@@ -2689,7 +2712,13 @@ fn collect_all_package_members_with_source(
         cache
             .entry(pkg.to_string())
             .or_insert_with(|| {
-                load_source_package_facts(pkg, index, &current_models, &current_methods)
+                load_source_package_facts(
+                    pkg,
+                    index,
+                    &current_models,
+                    &current_methods,
+                    current_document_uri,
+                )
             })
             .clone()
     };
@@ -2704,6 +2733,7 @@ fn collect_all_package_members_with_source(
         visited: &mut HashSet<String>,
         seen_names: &mut HashSet<String>,
         result: &mut Vec<WorkspaceSymbol>,
+        current_document_uri: &str,
         depth: usize,
     ) {
         const MAX_DEPTH: usize = 50;
@@ -2725,10 +2755,16 @@ fn collect_all_package_members_with_source(
         // in the open buffer: workspace-only explicit methods must still be
         // offered (#2536), and generated Moo/Moose members must survive the
         // same package being indexed. Current-document facts above keep
-        // precedence for names both sides define.
+        // precedence for names both sides define. When the buffer supplies
+        // authoritative facts for this package, persisted explicit members
+        // anchored to the edited document itself are an older generation and
+        // must not resurrect deleted or renamed bindings (#17084).
+        let mut persisted_members = index.get_package_members(pkg);
+        if facts.from_current_document && !current_document_uri.is_empty() {
+            persisted_members.retain(|symbol| symbol.uri != current_document_uri);
+        }
         push_index_method_symbols(
-            index
-                .get_package_members(pkg)
+            persisted_members
                 .into_iter()
                 .chain(index.get_generated_package_members(pkg)),
             seen_names,
@@ -2747,13 +2783,24 @@ fn collect_all_package_members_with_source(
                 visited,
                 seen_names,
                 result,
+                current_document_uri,
                 depth + 1,
             );
         }
 
         // Traverse roles after @ISA (role composition is distinct from MRO)
         for role in &facts.roles {
-            visit_mro(role, index, load_model, model_cache, visited, seen_names, result, depth + 1);
+            visit_mro(
+                role,
+                index,
+                load_model,
+                model_cache,
+                visited,
+                seen_names,
+                result,
+                current_document_uri,
+                depth + 1,
+            );
         }
     }
 
@@ -2765,6 +2812,7 @@ fn collect_all_package_members_with_source(
         &mut visited,
         &mut seen_names,
         &mut result,
+        current_document_uri,
         0,
     );
 
@@ -2868,6 +2916,7 @@ fn load_source_package_facts(
     index: &WorkspaceIndex,
     current_models: &HashMap<String, perl_semantic_analyzer::class_model::ClassModel>,
     current_methods: &HashMap<String, Vec<WorkspaceSymbol>>,
+    current_document_uri: &str,
 ) -> SourcePackageFacts {
     if let Some(model) = current_models.get(pkg) {
         let methods = current_methods.get(pkg).cloned().unwrap_or_else(|| {
@@ -2883,24 +2932,30 @@ fn load_source_package_facts(
             model.parents.clone(),
             model.roles.clone(),
             methods,
+            model.parents_explicit(),
+            current_document_uri,
         );
     }
 
     if let Some(methods) = current_methods.get(pkg) {
         // The symbol table saw this package in the open buffer even though the
         // class-model builder did not (partial/incomplete sources), so the
-        // persisted inheritance chain must still be consulted (#16809).
+        // persisted inheritance chain must still be consulted (#16809). The
+        // buffer states no ancestry of its own here, so only the same-document
+        // freshness gate below can suppress restoration (#17084).
         return current_document_facts_with_persisted_edges(
             pkg,
             index,
             Vec::new(),
             Vec::new(),
             methods.clone(),
+            false,
+            current_document_uri,
         );
     }
 
     indexed_package_model(pkg, index)
-        .map(|model| source_package_facts_from_model(&model, false))
+        .map(|(model, _)| source_package_facts_from_model(&model, false))
         .unwrap_or_else(empty_source_package_facts)
 }
 
@@ -2910,38 +2965,57 @@ fn load_source_package_facts(
 /// `use parent`/role edges it actually states; a partial buffer that restates
 /// only the package header must not erase the persisted chain, so indexed
 /// edges fill the gaps.
+///
+/// Two boundaries keep that composition honest (#17084):
+///
+/// - **Explicit emptiness.** `parents_stated` is the current model's
+///   `parents_explicit()` marker. An explicit `our @ISA = ();` is a statement,
+///   not an omission, so an empty parent list must not be refilled from the
+///   index. Roles carry no explicit marker, so only the next boundary applies
+///   to them.
+/// - **Same-document freshness.** Indexed edges parsed from the edited
+///   document's own URI describe an older generation of that document. When the
+///   buffer supplies the package's facts, the buffer is the newer generation,
+///   so same-URI persisted edges never restore — a removed `use parent`/`with`
+///   line stays removed. Cross-file persisted edges still compose.
 fn current_document_facts_with_persisted_edges(
     pkg: &str,
     index: &WorkspaceIndex,
     mut parents: Vec<String>,
     mut roles: Vec<String>,
     methods: Vec<WorkspaceSymbol>,
+    parents_stated: bool,
+    current_document_uri: &str,
 ) -> SourcePackageFacts {
-    if (parents.is_empty() || roles.is_empty())
-        && let Some(indexed) = indexed_package_model(pkg, index)
-    {
-        if parents.is_empty() {
-            parents = indexed.parents;
-        }
-        if roles.is_empty() {
-            roles = indexed.roles;
+    if parents.is_empty() || roles.is_empty() {
+        let same_document_stale = |indexed_uri: &str| {
+            !current_document_uri.is_empty() && indexed_uri == current_document_uri
+        };
+        if let Some((indexed, indexed_uri)) = indexed_package_model(pkg, index) {
+            let stale = same_document_stale(&indexed_uri);
+            if parents.is_empty() && !parents_stated && !stale {
+                parents = indexed.parents;
+            }
+            if roles.is_empty() && !stale {
+                roles = indexed.roles;
+            }
         }
     }
     SourcePackageFacts { parents, roles, methods, from_current_document: true }
 }
 
-/// Parse the persisted indexed text for `pkg` and return its class model when
-/// the indexed document actually declares that package. A bare-symbol lookup
-/// can resolve an unrelated indexed symbol, so the package name must match.
+/// Parse the persisted indexed text for `pkg` and return its class model with
+/// the URI of the indexed document it was parsed from, so callers can apply the
+/// same-document freshness gate (#17084). A bare-symbol lookup can resolve an
+/// unrelated indexed symbol, so the package name must match.
 fn indexed_package_model(
     pkg: &str,
     index: &WorkspaceIndex,
-) -> Option<perl_semantic_analyzer::class_model::ClassModel> {
-    let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
-        index.document_store().get_text(&pkg_location.uri).or_else(|| {
-            perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
-                .and_then(|path| std::fs::read_to_string(path).ok())
-        })
+) -> Option<(perl_semantic_analyzer::class_model::ClassModel, String)> {
+    let pkg_location = index.find_definition(pkg)?;
+    let indexed_text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
+        perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
+            .and_then(|path| std::fs::read_to_string(path).ok())
     })?;
     let mut parser = perl_semantic_analyzer::Parser::new(&indexed_text);
     let Ok(ast) = parser.parse() else {
@@ -2951,6 +3025,7 @@ fn indexed_package_model(
         .build(&ast)
         .into_iter()
         .find(|model| model.name == pkg)
+        .map(|model| (model, pkg_location.uri))
 }
 
 fn source_package_facts_from_model(
@@ -3046,6 +3121,11 @@ mod collect_all_tests {
     use std::sync::Arc;
     use url::Url;
 
+    /// Canonical URI string of the edited document in the freshness tests.
+    /// Must match `Url::parse(..).as_str()` for the indexed fixture file.
+    const USER_URI: &str = "file:///workspace/User.pm";
+    const CHILD_URI: &str = "file:///workspace/Child.pm";
+
     fn inherited_moo_parent_index() -> Arc<WorkspaceIndex> {
         let index = Arc::new(WorkspaceIndex::new());
         let parent_uri = must(Url::parse("file:///workspace/Parent.pm"));
@@ -3084,7 +3164,7 @@ sub greet {
 }
 "#;
         let members =
-            collect_all_package_members_with_source(index.as_ref(), "Child", child_source);
+            collect_all_package_members_with_source(index.as_ref(), "Child", child_source, "");
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
         assert!(
             names.contains(&"name"),
@@ -3104,7 +3184,8 @@ package User;
 use Moo;
 with 'Printable';
 "#;
-        let members = collect_all_package_members_with_source(index.as_ref(), "User", source);
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "User", source, "");
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
         assert!(
             names.contains(&"stringify"),
@@ -3133,7 +3214,8 @@ sub own_method { 1 }
             ),
         );
         assert!(index.has_symbols(), "indexed current-document package must publish symbols");
-        let members = collect_all_package_members_with_source(index.as_ref(), "User", source);
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "User", source, USER_URI);
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
         assert!(
             names.contains(&"own_method"),
@@ -3142,6 +3224,121 @@ sub own_method { 1 }
         assert!(
             names.contains(&"name"),
             "indexed generated reader must remain after current-document composition, got {names:?}"
+        );
+    }
+
+    /// G1 regression (#17084): the index holds generation 1 of the edited
+    /// document. The open buffer is generation 2 and renames `old_name` to
+    /// `new_name`; the stale same-document explicit member must not resurrect,
+    /// while the same-buffer method, an unchanged same-document method, and a
+    /// cross-file member of the same package (#2536) must all still compose.
+    #[test]
+    fn stale_same_document_member_does_not_resurrect_deleted_method() {
+        let index = Arc::new(WorkspaceIndex::new());
+        let user_uri = must(Url::parse(USER_URI));
+        must(
+            index.index_file(
+                user_uri,
+                r#"package User;
+sub old_name { 1 }
+sub kept { 2 }
+1;
+"#
+                .to_string(),
+            ),
+        );
+        // A different indexed file also declares User: its explicit member
+        // must survive the same-document exclusion (#2536).
+        let other_uri = must(Url::parse("file:///workspace/Other.pm"));
+        must(
+            index.index_file(
+                other_uri,
+                "package User;\nsub other_file_member { 3 }\n1;\n".to_string(),
+            ),
+        );
+
+        let edited = r#"package User;
+sub new_name { 1 }
+sub kept { 2 }
+1;
+"#;
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "User", edited, USER_URI);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"new_name"),
+            "current-buffer method must be collected, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"old_name"),
+            "renamed method must not resurrect from the stale same-document index, got {names:?}"
+        );
+        assert!(
+            names.contains(&"kept"),
+            "unchanged method must stay offered, got {names:?}"
+        );
+        assert!(
+            names.contains(&"other_file_member"),
+            "cross-file member of the same package must still compose (#2536), got {names:?}"
+        );
+        let kept_count = names.iter().filter(|name| **name == "kept").count();
+        assert_eq!(kept_count, 1, "unchanged method must not duplicate, got {names:?}");
+    }
+
+    /// G2 regression (#17084): the persisted chain must not override an
+    /// explicit ancestry statement from the open buffer. Both boundaries are
+    /// pinned: an explicit empty `@ISA = ()` suppresses the persisted chain
+    /// even before reindexing, and a buffer that silently drops the
+    /// `use parent` line (same edited document, older indexed generation)
+    /// must not have the deleted edge restored. A silent buffer whose
+    /// persisted chain lives in a different document still composes (#16809).
+    #[test]
+    fn explicit_empty_isa_suppresses_persisted_parents() {
+        let index = Arc::new(WorkspaceIndex::new());
+        let base_uri = must(Url::parse("file:///workspace/Base.pm"));
+        must(
+            index.index_file(base_uri, "package Base;\nsub base_method { 1 }\n1;\n".to_string()),
+        );
+        let child_uri = must(Url::parse(CHILD_URI));
+        must(
+            index.index_file(
+                child_uri,
+                "package Child;\nuse parent 'Base';\nsub child_method { 1 }\n1;\n".to_string(),
+            ),
+        );
+
+        // Explicit reset: `@ISA = ()` is a statement, not an omission.
+        let reset = "package Child;\nour @ISA = ();\nsub child_method { 1 }\n";
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "Child", reset, CHILD_URI);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            !names.contains(&"base_method"),
+            "explicit empty @ISA must suppress the persisted parent chain, got {names:?}"
+        );
+        assert!(
+            names.contains(&"child_method"),
+            "current-buffer method must stay offered, got {names:?}"
+        );
+
+        // Silent drop: the edited document no longer states the `use parent`
+        // line, so the same-document persisted chain must not restore it.
+        let silent = "package Child;\nuse Moo;\nsub child_method { 1 }\n";
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "Child", silent, CHILD_URI);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            !names.contains(&"base_method"),
+            "a deleted use-parent edge must not resurrect from the same document's stale index, got {names:?}"
+        );
+
+        // Control: with no document identity the header-only buffer keeps the
+        // persisted chain (the #16809 partial-buffer contract).
+        let members = collect_all_package_members_with_source(index.as_ref(), "Child", silent, "");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"base_method"),
+            "header-only buffer without document identity must keep the persisted chain (#16809), got {names:?}"
         );
     }
 }
@@ -3211,6 +3408,7 @@ mod union_receiver_method_completion_tests {
             source,
             &index,
             &["Foo".to_string(), "Bar".to_string()],
+            "",
         );
 
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
@@ -3238,6 +3436,7 @@ mod union_receiver_method_completion_tests {
             source,
             &index,
             &["Foo".to_string(), "Bar".to_string()],
+            "",
         );
 
         let count = completions.iter().filter(|c| c.label.as_ref() == "shared_method").count();
@@ -3259,6 +3458,7 @@ mod union_receiver_method_completion_tests {
             source,
             &index,
             &["Foo".to_string(), "Bar".to_string()],
+            "",
         );
 
         let shared = completions.iter().find(|c| c.label.as_ref() == "shared_method");
