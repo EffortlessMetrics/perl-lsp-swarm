@@ -244,7 +244,7 @@ REMOTE_STATE=fresh
 if $DRY_RUN; then
     REMOTE_STATE=stale
 else
-    git_out git -C "$REPO_ROOT" fetch --quiet origin "$BASE" 2>/dev/null ||
+    git_out git -c maintenance.auto=false -C "$REPO_ROOT" fetch --quiet origin "$BASE" 2>/dev/null ||
         { FETCH_OK=false; REMOTE_STATE=failed; }
 fi
 BASE_REF="origin/$BASE"
