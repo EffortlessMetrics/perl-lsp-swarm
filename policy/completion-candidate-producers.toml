@@ -121,7 +121,10 @@ outcome_owner = "#10230"
 # variable producer's push seam: no producer add/remove/re-channel, scanned
 # set unchanged, entry and finalizer routes untouched. Projection diff is
 # digest-only, `check` passes.
-source_digest = "sha256:c751ddf440403d38bb9775efe3d49b396e609616042b87fbdf988da2ffab62c0"
+# Post-conversion re-anchor (same PR): the freshness-seam test fixtures moved
+# from index_file to the canonical index_initial_file (behavior-identical
+# forward) plus rustfmt layout; producer rows unchanged.
+source_digest = "sha256:e3cdec39da0445be3c900acd970dbdb7efa78c03ef16fcee11177ea5c8fa7489"
 
 [[delegations]]
 module = "dancer2"

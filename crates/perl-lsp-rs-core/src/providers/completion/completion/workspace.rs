@@ -3197,7 +3197,7 @@ mod collect_all_tests {
         let index = Arc::new(WorkspaceIndex::new());
         let parent_uri = must(Url::parse("file:///workspace/Parent.pm"));
         must(
-            index.index_file(
+            index.index_initial_file(
                 parent_uri,
                 r#"package Parent;
 use Moo;
@@ -3303,7 +3303,7 @@ sub own_method { 1 }
         let index = Arc::new(WorkspaceIndex::new());
         let user_uri = must(Url::parse(USER_URI));
         must(
-            index.index_file(
+            index.index_initial_file(
                 user_uri,
                 r#"package User;
 sub old_name { 1 }
@@ -3316,12 +3316,10 @@ sub kept { 2 }
         // A different indexed file also declares User: its explicit member
         // must survive the same-document exclusion (#2536).
         let other_uri = must(Url::parse("file:///workspace/Other.pm"));
-        must(
-            index.index_file(
-                other_uri,
-                "package User;\nsub other_file_member { 3 }\n1;\n".to_string(),
-            ),
-        );
+        must(index.index_initial_file(
+            other_uri,
+            "package User;\nsub other_file_member { 3 }\n1;\n".to_string(),
+        ));
 
         let edited = r#"package User;
 sub new_name { 1 }
@@ -3358,7 +3356,7 @@ sub kept { 2 }
         let document_uri = must(url::Url::from_file_path(&document_path)).to_string();
 
         let index = Arc::new(WorkspaceIndex::new());
-        must(index.index_file(
+        must(index.index_initial_file(
             must(url::Url::parse(&document_uri)),
             "package User;\nsub old_name { 1 }\n1;\n".to_string(),
         ));
@@ -3392,9 +3390,12 @@ sub kept { 2 }
     fn explicit_empty_isa_suppresses_persisted_parents() {
         let index = Arc::new(WorkspaceIndex::new());
         let base_uri = must(Url::parse("file:///workspace/Base.pm"));
-        must(index.index_file(base_uri, "package Base;\nsub base_method { 1 }\n1;\n".to_string()));
+        must(index.index_initial_file(
+            base_uri,
+            "package Base;\nsub base_method { 1 }\n1;\n".to_string(),
+        ));
         let child_uri = must(Url::parse(CHILD_URI));
-        must(index.index_file(
+        must(index.index_initial_file(
             child_uri,
             "package Child;\nuse parent 'Base';\nsub child_method { 1 }\n1;\n".to_string(),
         ));
@@ -3429,16 +3430,15 @@ sub kept { 2 }
         // still supplies the restored chain. Base2 must not be shadowed by
         // Child.pm's older `use parent 'Base'`.
         let base2_uri = must(Url::parse("file:///workspace/Base2.pm"));
-        must(
-            index.index_file(base2_uri, "package Base2;\nsub base2_method { 1 }\n1;\n".to_string()),
-        );
+        must(index.index_initial_file(
+            base2_uri,
+            "package Base2;\nsub base2_method { 1 }\n1;\n".to_string(),
+        ));
         let other_child_uri = must(Url::parse("file:///workspace/Other.pm"));
-        must(
-            index.index_file(
-                other_child_uri,
-                "package Child;\nuse parent 'Base2';\n1;\n".to_string(),
-            ),
-        );
+        must(index.index_initial_file(
+            other_child_uri,
+            "package Child;\nuse parent 'Base2';\n1;\n".to_string(),
+        ));
         let members =
             collect_all_package_members_with_source(index.as_ref(), "Child", silent, CHILD_URI);
         let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
@@ -3482,13 +3482,13 @@ mod union_receiver_method_completion_tests {
         let index = Arc::new(WorkspaceIndex::new());
 
         let foo_uri = must(Url::parse("file:///workspace/Foo.pm"));
-        must(index.index_file(
+        must(index.index_initial_file(
             foo_uri,
             "package Foo;\nsub shared_method { }\nsub foo_only { }\n1;\n".to_string(),
         ));
 
         let bar_uri = must(Url::parse("file:///workspace/Bar.pm"));
-        must(index.index_file(
+        must(index.index_initial_file(
             bar_uri,
             "package Bar;\nsub shared_method { }\nsub bar_only { }\n1;\n".to_string(),
         ));
