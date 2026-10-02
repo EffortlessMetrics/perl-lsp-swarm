@@ -2303,8 +2303,13 @@ jobs:
       # that test. So no separate drift step is needed, and this job is the
       # right surface for both, being the required check that still runs when
       # only `.ci/` changes and no crate is selected.
+      # #9205: `xtask/tests/activation_check.rs` is the same class of
+      # `tests/` target. Without naming it here, class-contract checks would
+      # compile in an advisory lane and never execute on the required merge
+      # surface. This is not a product `activation check` gate (#9210);
+      # it is the checker suite that proves the inventory's class contracts.
       - name: Activation inventory suite (required merge surface)
-        run: cargo test -p xtask --test activation --locked -- --nocapture
+        run: cargo test -p xtask --test activation --test activation_check --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
