@@ -30,9 +30,11 @@
 //!     cargo test -p perl-lsp-ux-tests --test ux_latency_raw_rpc \
 //!         -- --test-threads=1 --nocapture
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
+use perl_lsp_ux_tests::observation::WaitEnd;
 use perl_lsp_ux_tests::{LspEvent, ScenarioConfig, UxHarness, binary_available};
 use serde_json::{Value, json};
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 const SHORT_SOURCE: &str = r#"use strict;
@@ -136,6 +138,81 @@ fn symbol_tree_contains_name(symbols: &[Value], expected_name: &str) -> bool {
         }
     }
     false
+}
+
+#[derive(Debug)]
+struct WorkspaceSymbolObservation {
+    symbols: Vec<Value>,
+    elapsed: Duration,
+    budget: Duration,
+}
+
+// Local runs use a print macro; CI needs descriptor IO to bypass libtest capture.
+// Keep both paths explicit so the source-policy exception is operative.
+#[expect(
+    clippy::print_stderr,
+    reason = "policy:allow-ux-ws-symbol-receipt-15988: one path-free success receipt must survive libtest capture in CI logs"
+)]
+fn emit_workspace_symbol_probe_receipt(receipt: &Value) -> Result<()> {
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let stderr = std::io::stderr();
+        let mut output = stderr.lock();
+        serde_json::to_writer(&mut output, receipt)?;
+        output.write_all(b"\n")?;
+    } else {
+        eprintln!("{receipt}");
+    }
+    Ok(())
+}
+
+fn workspace_symbols_with_budget(
+    harness: &UxHarness,
+    deadline: Instant,
+    phase: &str,
+) -> Result<WorkspaceSymbolObservation> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        bail!("workspace/symbol {phase}: overall deadline expired before RPC");
+    }
+
+    let request_started = Instant::now();
+    match harness.workspace_symbols_with_timeout("alpha", remaining) {
+        Ok(symbols) => Ok(WorkspaceSymbolObservation {
+            symbols,
+            elapsed: request_started.elapsed(),
+            budget: remaining,
+        }),
+        Err(error) => {
+            let kind = if format!("{error:#}").contains("deadline expired after") {
+                "RPC timeout"
+            } else {
+                "RPC failure"
+            };
+            bail!(
+                "workspace/symbol {phase}: {kind} after {}ms (budget {}ms): {error:#}",
+                request_started.elapsed().as_millis(),
+                remaining.as_millis()
+            )
+        }
+    }
+}
+
+fn observe_immediate_workspace_symbols(
+    request: impl FnOnce() -> Result<WorkspaceSymbolObservation>,
+    readiness_after_rpc: impl FnOnce() -> std::result::Result<(), WaitEnd>,
+    ready_before_query: bool,
+) -> Result<WorkspaceSymbolObservation> {
+    match request() {
+        Ok(observation) => Ok(observation),
+        Err(error) => {
+            // The first RPC can consume the whole scenario budget. Preserve the
+            // exact-document readiness state already buffered when it ends.
+            let readiness = readiness_after_rpc();
+            bail!(
+                "workspace/symbol immediate request failed; ready_before_query={ready_before_query}; active_document_readiness_after_rpc={readiness:?}: {error:#}"
+            )
+        }
+    }
 }
 
 fn registration_seen(events: &[LspEvent], method_name: &str) -> bool {
@@ -359,21 +436,71 @@ fn ux_latency_workspace_symbols_sees_open_document_symbols() -> Result<()> {
 
     let harness = UxHarness::new(e2e_config(timeout()))?;
     harness.open_file("lib/Latency/Symbols.pm", SYMBOL_SOURCE)?;
-
-    let symbols = harness.wait_for_workspace_symbols(
-        "alpha",
-        ARRIVAL_BUDGET,
-        Duration::from_millis(50),
-        |items| {
-            items.iter().any(|symbol| symbol.get("name").and_then(Value::as_str) == Some("alpha"))
-        },
+    let opened_at = Instant::now();
+    let deadline = opened_at + ARRIVAL_BUDGET;
+    let uri = harness.workspace.uri("lib/Latency/Symbols.pm");
+    let ready_before_query = harness.wait_for_active_document_ready(&uri, Duration::ZERO);
+    let first = observe_immediate_workspace_symbols(
+        || workspace_symbols_with_budget(&harness, deadline, "immediate after didOpen"),
+        || harness.wait_for_active_document_ready_result(&uri, Duration::ZERO),
+        ready_before_query,
     )?;
-    assert!(
-        symbols.iter().any(|symbol| symbol.get("name").and_then(Value::as_str) == Some("alpha")),
-        "workspace/symbol must find alpha from an opened e2e document; got {symbols:?}"
-    );
+    let first_has_alpha = first.symbols.iter().any(|symbol| symbol["name"] == "alpha");
+    let ready_by_response = harness.wait_for_active_document_ready(&uri, Duration::ZERO);
 
+    let ready_budget = deadline.saturating_duration_since(Instant::now());
+    match harness.wait_for_active_document_ready_result(&uri, ready_budget) {
+        Ok(()) => {}
+        Err(WaitEnd::Deadline { .. }) => {
+            bail!(
+                "active-document readiness timeout after {}ms with stream live; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
+                opened_at.elapsed().as_millis()
+            );
+        }
+        Err(end) => {
+            bail!(
+                "active-document readiness stream ended after {}ms: {end:?}; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
+                opened_at.elapsed().as_millis()
+            );
+        }
+    }
+    // The event may have arrived while the first RPC was in flight. This is
+    // the latest time by which readiness is confirmed, not its arrival time.
+    let readiness_confirmed_by = opened_at.elapsed();
+
+    let after_ready = workspace_symbols_with_budget(&harness, deadline, "after active-document-ready")
+        .with_context(|| {
+            format!(
+                "active-document-ready confirmed by {}ms; ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}",
+                readiness_confirmed_by.as_millis()
+            )
+        })?;
+    let after_ready_has_alpha = after_ready.symbols.iter().any(|symbol| symbol["name"] == "alpha");
+    if !after_ready_has_alpha {
+        bail!(
+            "workspace/symbol empty or missing alpha after active-document-ready (confirmed by {}ms); ready_before_query={ready_before_query}, ready_by_response={ready_by_response}, immediate={first:?}, after_ready={after_ready:?}",
+            readiness_confirmed_by.as_millis()
+        );
+    }
     harness.assert_no_crash();
+
+    // One reviewed stderr exception keeps the passing timing visible in CI.
+    let receipt = json!({
+        "kind": "workspace_symbol_readiness_probe",
+        "test": "ux_latency_workspace_symbols_sees_open_document_symbols",
+        "result": "pass",
+        "immediate_rpc_ms": first.elapsed.as_millis(),
+        "immediate_budget_ms": first.budget.as_millis(),
+        "immediate_alpha": first_has_alpha,
+        "ready_before_query": ready_before_query,
+        "ready_by_response": ready_by_response,
+        "readiness_confirmed_by_ms": readiness_confirmed_by.as_millis(),
+        "after_ready_rpc_ms": after_ready.elapsed.as_millis(),
+        "after_ready_budget_ms": after_ready.budget.as_millis(),
+        "after_ready_alpha": after_ready_has_alpha,
+    });
+    emit_workspace_symbol_probe_receipt(&receipt)?;
+
     Ok(())
 }
 
@@ -397,6 +524,37 @@ fn symbol_tree_contains_name_searches_nested_children() -> Result<()> {
     assert!(symbol_tree_contains_name(&symbols, "alpha"));
     assert!(symbol_tree_contains_name(&symbols, "beta"));
     assert!(!symbol_tree_contains_name(&symbols, "gamma"));
+    Ok(())
+}
+
+#[test]
+fn stalled_immediate_rpc_reports_readiness_that_arrived_during_request() -> Result<()> {
+    let ready = std::cell::Cell::new(false);
+    let error = observe_immediate_workspace_symbols(
+        || {
+            ready.set(true);
+            Err(anyhow::anyhow!("deadline expired after 30s"))
+        },
+        || ready.get().then_some(()).ok_or(WaitEnd::Deadline { timeout: Duration::ZERO }),
+        false,
+    )
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("simulated stalled request unexpectedly succeeded"))?;
+    let message = format!("{error:#}");
+    anyhow::ensure!(message.contains("active_document_readiness_after_rpc=Ok(())"), "{message}");
+    anyhow::ensure!(message.contains("deadline expired after 30s"), "{message}");
+
+    let not_ready = observe_immediate_workspace_symbols(
+        || Err(anyhow::anyhow!("deadline expired after 30s")),
+        || Err(WaitEnd::Deadline { timeout: Duration::ZERO }),
+        false,
+    )
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("simulated stalled request unexpectedly succeeded"))?;
+    anyhow::ensure!(
+        format!("{not_ready:#}").contains("active_document_readiness_after_rpc=Err(Deadline"),
+        "{not_ready:#}"
+    );
     Ok(())
 }
 
