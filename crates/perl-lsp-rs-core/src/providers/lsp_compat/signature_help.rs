@@ -316,10 +316,11 @@ impl SignatureHelpProvider {
 
         // If no AST signature found, fall back to extended prototype parsing
         if params.is_empty() {
-            let prototype = symbol
-                .attributes
-                .iter()
-                .find_map(|attr| attr.strip_prefix("prototype(").and_then(|s| s.strip_suffix(")")));
+            // Last `:prototype(...)` wins, matching HIR `prototype_payload` and Perl.
+            let prototype =
+                symbol.attributes.iter().rev().find_map(|attr| {
+                    attr.strip_prefix("prototype(").and_then(|s| s.strip_suffix(")"))
+                });
 
             if let Some(proto) = prototype {
                 label.push_str(proto);
@@ -553,6 +554,22 @@ mod tests {
         assert_eq!(
             signature.parameters[0].documentation.as_deref(),
             Some("Scalar parameter 1 (defaults to $_ if omitted)")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn last_prototype_attribute_wins_in_signature_help() -> Result<(), String> {
+        let source = "sub last_attr :prototype($) :prototype(@) {}";
+        let ast = Parser::new(source).parse().map_err(|error| error.to_string())?;
+        let provider = SignatureHelpProvider::new(&ast);
+        let signatures = provider.get_signatures("last_attr");
+        let signature = signatures.first().ok_or("missing prototype signature")?;
+        assert_eq!(signature.parameters.len(), 1);
+        assert_eq!(signature.parameters[0].label, "@args");
+        assert_eq!(
+            signature.parameters[0].documentation.as_deref(),
+            Some("Array (slurps remaining arguments)")
         );
         Ok(())
     }
