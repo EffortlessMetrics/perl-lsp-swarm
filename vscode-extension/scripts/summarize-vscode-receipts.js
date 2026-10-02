@@ -111,6 +111,11 @@ function summarizeReceipts(receipts) {
 
   const binaryResolutionSources = {};
   const runClassifications = {};
+  // Installed accessibility receipts (#7865): project which verdicts the
+  // installed runs recorded and which inventory contracts they exercised, so
+  // the bounded accessibility evidence survives the receipt roll-up.
+  const accessibilityVerdicts = {};
+  const accessibilityInventoryDigests = {};
   for (const { receipt } of receipts) {
     const source = receipt.startup?.language_client?.binary_resolution_source;
     if (typeof source === 'string') {
@@ -120,6 +125,25 @@ function summarizeReceipts(receipts) {
     if (typeof classification === 'string') {
       runClassifications[classification] = (runClassifications[classification] ?? 0) + 1;
     }
+    const accessibility = receipt.accessibility;
+    // Project only receipts in the schema the validator accepts (#7865):
+    // a differently-schema'd or malformed block is not honest evidence and
+    // must not silently count as an accessibility verdict or inventory
+    // contract in the roll-up.
+    if (
+      accessibility &&
+      typeof accessibility === 'object' &&
+      accessibility.schema_version === 'vscode_accessibility.v1'
+    ) {
+      const verdict = accessibility.verdict;
+      if (typeof verdict === 'string') {
+        accessibilityVerdicts[verdict] = (accessibilityVerdicts[verdict] ?? 0) + 1;
+      }
+      const digest = accessibility.candidate?.inventory_digest;
+      if (typeof digest === 'string') {
+        accessibilityInventoryDigests[digest] = (accessibilityInventoryDigests[digest] ?? 0) + 1;
+      }
+    }
   }
 
   return {
@@ -128,6 +152,8 @@ function summarizeReceipts(receipts) {
     sample_count: receipts.length,
     binary_resolution_sources: binaryResolutionSources,
     run_classifications: runClassifications,
+    accessibility_verdicts: accessibilityVerdicts,
+    accessibility_inventory_digests: accessibilityInventoryDigests,
     metrics,
   };
 }
