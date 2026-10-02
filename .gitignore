@@ -286,3 +286,19 @@ test_corpus/workspaces/xlarge/bin/
 # Staged Zed extension fixture builds locally (never committed).
 .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.lock
 .ci/fixtures/zed-perl-upstream/zed-perl/target/
+
+# Secrets and credentials (never committed; safety net only — nothing
+# matching these patterns is currently tracked).
+.env
+.env.*
+# Shared examples are safe to commit and should remain visible to Git.
+!.env.example
+!.env.template
+*.pem
+*.key
+*.token
+*secret*.json
+credentials.json
+secrets.yaml
+secrets.yml
+secrets.toml

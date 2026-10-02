@@ -167,10 +167,11 @@ function validateTestExplorerReceipt({
 }
 
 function hasCandidateIdentity(env) {
+  // The first-hour child always carries its source SHA. Only candidate-only
+  // fields opt into candidate-bound failure classification.
   return [
     env.PERL_LSP_CANDIDATE_ID,
     env.PERL_LSP_ARTIFACT_SET_ID,
-    env.PERL_LSP_CURRENT_SOURCE_SHA,
     env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
   ].some((value) => typeof value === 'string' && value.trim().length > 0);
 }
@@ -444,6 +445,94 @@ function sha256File(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
+/** Parent-owned byte snapshot, independent of the extension-host observer. */
+function observeSmokeArtifact(file, containmentRoot) {
+  if (typeof file !== 'string' || !path.isAbsolute(file))
+    throw new Error('artifact path must be absolute');
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink())
+    throw new Error('artifact must be a regular non-link file');
+  const canonical = fs.realpathSync(file);
+  if (containmentRoot !== undefined) {
+    const relative = path.relative(fs.realpathSync(containmentRoot), canonical);
+    if (
+      !relative ||
+      path.isAbsolute(relative) ||
+      relative === '..' ||
+      relative.startsWith(`..${path.sep}`)
+    )
+      throw new Error('artifact escapes installed root');
+  }
+  const bytes = fs.readFileSync(canonical);
+  return {
+    path: canonical,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    size: bytes.length,
+  };
+}
+
+function requireSmokeObservation(declared, observed) {
+  if (
+    !declared ||
+    declared.path !== observed.path ||
+    declared.sha256 !== observed.sha256 ||
+    declared.size !== observed.size
+  )
+    throw new Error('artifact observation differs from actual file bytes/path');
+}
+
+function validateInstalledByteIdentity(
+  identity,
+  expectedServer,
+  expectedVsix,
+  receipt,
+  expectedExtensionsRoot,
+) {
+  if (
+    !identity ||
+    identity.schema_version !== 'installed_lsp_vsix_bytes.v1' ||
+    !expectedServer ||
+    !expectedVsix
+  )
+    throw new Error('missing current installed byte observations');
+  const profile = fs.realpathSync(identity.extensions_root);
+  if (!expectedExtensionsRoot || profile !== fs.realpathSync(expectedExtensionsRoot))
+    throw new Error('installed profile differs from parent-owned selection');
+  const extensionRoot = fs.realpathSync(identity.extension_root);
+  const relative = path.relative(profile, extensionRoot);
+  if (
+    !relative ||
+    path.isAbsolute(relative) ||
+    relative === '..' ||
+    relative.startsWith(`..${path.sep}`)
+  )
+    throw new Error('installed extension escapes isolated profile');
+  requireSmokeObservation(expectedServer, observeSmokeArtifact(expectedServer.path));
+  requireSmokeObservation(expectedVsix, observeSmokeArtifact(expectedVsix.path));
+  for (const [metrics, phase] of [
+    [receipt?.startup?.language_client, 'before_provider'],
+    [receipt?.lifecycle?.restart?.language_client, 'after_restart'],
+  ]) {
+    if (
+      metrics?.binary_resolution_source !== 'bundled' ||
+      metrics?.binary_resolution_status !== 'ok' ||
+      metrics?.server_start_status !== 'ok' ||
+      metrics?.initialize_status !== 'ok' ||
+      fs.realpathSync(metrics?.binary_resolution_path) !== identity[phase]?.path
+    )
+      throw new Error('selected startup metrics do not bind installed observation');
+  }
+  for (const phase of ['before_provider', 'after_restart', 'after_shutdown']) {
+    const observed = observeSmokeArtifact(identity[phase]?.path, extensionRoot);
+    requireSmokeObservation(identity[phase], observed);
+    if (observed.sha256 !== expectedServer.sha256 || observed.size !== expectedServer.size)
+      throw new Error('installed server differs from observed input bytes');
+    requireSmokeObservation(identity.before_provider, observed);
+  }
+  requireSmokeObservation(identity.vsix_before, expectedVsix);
+  requireSmokeObservation(identity.vsix_after, expectedVsix);
+}
+
 function safeFilePart(value) {
   return String(value || 'unknown').replace(/[^A-Za-z0-9_.-]+/g, '-');
 }
@@ -497,8 +586,8 @@ function writeJsonAtomic(destination, value) {
  *   vscode_version: string,
  *   observed_vscode_version: string | null,
  *   source_label: string,
- *   server: { source_sha: string | null, path: string | null, sha256: string | null },
- *   vsix: { path: string | null, sha256: string | null },
+ *   server: { source_sha: string | null, path: string | null, sha256: string | null, observation_before?: {path:string,sha256:string,size:number}, observation_after?: {path:string,sha256:string,size:number} },
+ *   vsix: { path: string | null, sha256: string | null, observation_before?: {path:string,sha256:string,size:number}, observation_after?: {path:string,sha256:string,size:number} },
  *   stages: {
  *     package_creation: SmokeStage,
  *     package_inventory: SmokeStage,
@@ -860,6 +949,9 @@ function childReceiptPath() {
  *   expectedRevision: string,
  *   expectedVsixSha256: string | null,
  *   expectedServerSourceSha: string,
+ *   expectedServerObservation?: {path:string,sha256:string,size:number},
+ *   expectedVsixObservation?: {path:string,sha256:string,size:number},
+ *   expectedExtensionsRoot?: string,
  *   expectedVscodeVersion: string,
  *   expectedSourceLabel: string,
  *   readFile?: (file: string) => string,
@@ -874,6 +966,9 @@ function validateChildSmokeReceipt({
   expectedServerSourceSha,
   expectedVscodeVersion,
   expectedSourceLabel,
+  expectedServerObservation,
+  expectedVsixObservation,
+  expectedExtensionsRoot,
   readFile = (file) => fs.readFileSync(file, 'utf8'),
   exists = (file) => fs.existsSync(file),
 }) {
@@ -963,6 +1058,19 @@ function validateChildSmokeReceipt({
     );
   }
 
+  try {
+    validateInstalledByteIdentity(
+      receipt.installed_byte_identity,
+      expectedServerObservation,
+      expectedVsixObservation,
+      receipt,
+      expectedExtensionsRoot,
+    );
+  } catch (error) {
+    violations.push(
+      `installed byte identity: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
 }
 
@@ -2884,6 +2992,8 @@ function main() {
 
   const runStageBody = () => {
     try {
+      const inputServerObservation = observeSmokeArtifact(path.resolve(serverPath));
+      receipt.server.observation_before = inputServerObservation;
       restoreStagedServer = stageServerForPackage(serverPath, root, dapPath);
       /** @type {NodeJS.ProcessEnv} */
       const packageEnv = {
@@ -2977,6 +3087,15 @@ function main() {
       persistReceipt(destination, receipt);
 
       if (shouldRunBehavioralSmoke(receipt.stages)) {
+        const vsixObservation = observeSmokeArtifact(path.resolve(vsixPath));
+        // Existing runner inputs retain this invocation-owned profile for parent byte observation.
+        fs.mkdirSync(receiptsRoot(), { recursive: true });
+        const identityProfile = fs.mkdtempSync(path.join(receiptsRoot(), 'installed-identity-'));
+        const identityUserData = path.join(identityProfile, 'user-data');
+        const identityExtensions = path.join(identityProfile, 'extensions');
+        fs.mkdirSync(identityUserData, { recursive: true });
+        fs.mkdirSync(identityExtensions, { recursive: true });
+        receipt.vsix.observation_before = vsixObservation;
         /** @type {NodeJS.ProcessEnv} */
         const smokeEnv = {
           ...process.env,
@@ -2990,7 +3109,10 @@ function main() {
           PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision,
           PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
           PERL_LSP_SMOKE_SOURCE_LABEL: smokeSourceLabel(),
-          PERL_LSP_VSIX_SHA256: receipt.vsix.sha256 ?? '',
+          PERL_LSP_VSIX_SHA256: vsixObservation.sha256,
+          PERL_LSP_SERVER_ARTIFACT_SHA256: inputServerObservation.sha256,
+          PERL_LSP_SMOKE_USER_DATA_DIR: identityUserData,
+          PERL_LSP_SMOKE_EXTENSIONS_DIR: identityExtensions,
         };
         if (constructedManifest !== undefined) {
           smokeEnv.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = constructedManifest;
@@ -3027,6 +3149,10 @@ function main() {
 
         const smokeRun = runPublishedSmoke(smokeEnv);
         const smokeResult = smokeRun.result;
+        receipt.server.observation_after = observeSmokeArtifact(inputServerObservation.path);
+        receipt.vsix.observation_after = observeSmokeArtifact(vsixObservation.path);
+        requireSmokeObservation(inputServerObservation, receipt.server.observation_after);
+        requireSmokeObservation(vsixObservation, receipt.vsix.observation_after);
         if (smokeRun.phase === 'compile') {
           receipt.stages.behavioral_smoke = {
             status: 'failed',
@@ -3066,6 +3192,9 @@ function main() {
                   expectedRevision: revision,
                   expectedVsixSha256: receipt.vsix.sha256,
                   expectedServerSourceSha: serverSourceRevision,
+                  expectedServerObservation: inputServerObservation,
+                  expectedVsixObservation: vsixObservation,
+                  expectedExtensionsRoot: identityExtensions,
                   // Mirror the child's own default so an unset matrix version is not
                   // reported as an identity mismatch.
                   expectedVscodeVersion:
@@ -3203,6 +3332,7 @@ module.exports = {
   concludeRun,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
+  hasCandidateIdentity,
   initialReceipt,
   interpretBehavioralSmokeExit,
   interpretTestExplorerExit,
@@ -3224,6 +3354,8 @@ module.exports = {
   shouldRunCrashRecoveryJourney,
   validateActivationRecoveryChildReceipts,
   validateChildSmokeReceipt,
+  observeSmokeArtifact,
+  validateInstalledByteIdentity,
   validateCrashRecoveryChildReceipts,
   stageServerForPackage,
   writeJsonAtomic,

@@ -10,8 +10,10 @@ import {
   classifyConfigurationSetting,
   DEFAULT_INCLUDE_PATHS,
   hasExplicitPerlCriticOverrides,
+  invalidateFolderConfiguration,
   machineScopedExternalIncludePaths,
   syncLanguageClientConfiguration,
+  syncLiveLanguageClientConfiguration,
   syncPerlCriticConfiguration,
 } from '../languageClientConfiguration';
 
@@ -25,6 +27,9 @@ function makeConfig(values: Record<string, unknown>, explicit = Object.keys(valu
 }
 
 describe('language client configuration', () => {
+  afterEach(() => {
+    Object.assign(vscode.workspace, { workspaceFolders: undefined });
+  });
   test('does not turn built-in defaults into an explicit workspace override', () => {
     const payload = buildWorkspaceConfigurationPayload(makeConfig({}, []));
 
@@ -85,7 +90,10 @@ describe('language client configuration', () => {
     expect(machineScopedExternalIncludePaths(config)).toEqual(['/opt/perl/lib']);
   });
 
-  test('combines workspace and critic settings under the canonical perl payload', () => {
+  test('keeps folder include paths out of the unscoped push while retaining critic', () => {
+    Object.assign(vscode.workspace, {
+      workspaceFolders: [{ uri: vscode.Uri.file('/workspace/a') }],
+    });
     const config = makeConfig({
       includePaths: ['vendor/lib'],
       'critic.enabled': true,
@@ -97,7 +105,6 @@ describe('language client configuration', () => {
     expect(buildLanguageClientConfigurationPayload()).toEqual({
       settings: {
         perl: {
-          workspace: { includePaths: ['vendor/lib'] },
           critic: { enabled: true, severity: 4 },
           perlcritic: { severity: 2 },
         },
@@ -129,14 +136,102 @@ describe('language client configuration', () => {
     );
   });
 
-  test('uses the document scope for folder-specific initial synchronization', () => {
+  test('uses the document scope only for critic settings, not folder include paths', () => {
+    Object.assign(vscode.workspace, {
+      workspaceFolders: [{ uri: vscode.Uri.file('/workspace/folder') }],
+    });
     const documentUri = vscode.Uri.file('/workspace/folder/src/main.pl');
     const config = makeConfig({ includePaths: ['folder/lib'] });
     (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(config);
 
     buildLanguageClientConfigurationPayload(documentUri);
 
-    expect(vscode.workspace.getConfiguration).toHaveBeenCalledWith('perl-lsp', documentUri);
+    expect(vscode.workspace.getConfiguration).toHaveBeenCalledWith('perl-lsp', {
+      uri: documentUri,
+      languageId: 'perl',
+    });
+    expect(buildLanguageClientConfigurationPayload(documentUri)).toEqual({
+      settings: { perl: {} },
+    });
+  });
+
+  test('include path invalidation sends null settings and does not read one folder', async () => {
+    (vscode.workspace.getConfiguration as jest.Mock).mockClear();
+    const sendNotification = jest.fn(async () => undefined);
+    await invalidateFolderConfiguration({ sendNotification });
+    expect(sendNotification).toHaveBeenCalledWith('workspace/didChangeConfiguration', {
+      settings: null,
+    });
+    expect(vscode.workspace.getConfiguration).not.toHaveBeenCalled();
+  });
+
+  test('standalone-file mode pushes include paths because no scoped pull exists', async () => {
+    Object.assign(vscode.workspace, { workspaceFolders: undefined });
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(
+      makeConfig({ includePaths: ['standalone/lib'] }),
+    );
+    const sendNotification = jest.fn(async () => undefined);
+    await syncLanguageClientConfiguration({ sendNotification });
+    expect(sendNotification).toHaveBeenCalledWith('workspace/didChangeConfiguration', {
+      settings: {
+        perl: {
+          workspace: { includePaths: ['standalone/lib'] },
+          aiCompletion: { enabled: false, streaming: { enabled: true } },
+        },
+      },
+    });
+  });
+
+  test('combined Critic and include-path event pushes session settings without folder paths', async () => {
+    Object.assign(vscode.workspace, {
+      workspaceFolders: [{ uri: vscode.Uri.file('/workspace/a') }],
+    });
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(
+      makeConfig({ includePaths: ['a/lib'], 'critic.severity': 4 }),
+    );
+    const sendNotification = jest.fn(async () => undefined);
+    await syncLiveLanguageClientConfiguration(
+      { sendNotification },
+      {
+        affectsConfiguration: (key) =>
+          key === 'perl-lsp.includePaths' || key === 'perl-lsp.critic.severity',
+      },
+    );
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    expect(sendNotification).toHaveBeenCalledWith('workspace/didChangeConfiguration', {
+      settings: {
+        perl: {
+          critic: { severity: 4 },
+          aiCompletion: { enabled: false, streaming: { enabled: true } },
+        },
+      },
+    });
+  });
+
+  test('include-path-only event uses null invalidation with folders but a push without them', async () => {
+    const config = makeConfig({ includePaths: ['standalone/lib'] });
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(config);
+    const sendNotification = jest.fn(async () => undefined);
+    const event = { affectsConfiguration: (key: string) => key === 'perl-lsp.includePaths' };
+
+    Object.assign(vscode.workspace, {
+      workspaceFolders: [{ uri: vscode.Uri.file('/workspace/a') }],
+    });
+    await syncLiveLanguageClientConfiguration({ sendNotification }, event);
+    expect(sendNotification).toHaveBeenLastCalledWith('workspace/didChangeConfiguration', {
+      settings: null,
+    });
+
+    Object.assign(vscode.workspace, { workspaceFolders: undefined });
+    await syncLiveLanguageClientConfiguration({ sendNotification }, event);
+    expect(sendNotification).toHaveBeenLastCalledWith('workspace/didChangeConfiguration', {
+      settings: {
+        perl: {
+          workspace: { includePaths: ['standalone/lib'] },
+          aiCompletion: { enabled: false, streaming: { enabled: true } },
+        },
+      },
+    });
   });
 
   test('preserves project configuration when no editor setting is explicit', () => {
