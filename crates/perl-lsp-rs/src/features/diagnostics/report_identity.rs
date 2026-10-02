@@ -52,14 +52,11 @@ const PULL_IDENTITY_PROJECT: &str = "perl-lsp";
 /// prior results. Each pin is owned here until its future authority lands
 /// (#9942 evaluation/result contract, #9945 wire projector) and is bumped by
 /// the change that alters the corresponding behavior.
-// Bumped to 2 by #7024: canonical regex diagnostics changed what the built-in
-// catalog emits. `PL1000`-`PL1007` are new identities, a backtracking risk moved
-// off `PL001` onto `PL1000`, and `PL609` narrowed from the whole pattern node to
-// the `(?{ ... })` block. Result IDs are deterministic across processes for equal
-// subjects, so without this bump a client holding a pre-change ID could be told
-// `unchanged` and keep diagnostics that predate every one of those. The cost is one
-// `full` report per document after upgrade, which is what the pin is for.
-const RULE_CATALOG_SCHEMA_VERSION: u32 = 2;
+// Version 3 (#6965) merges missing-pragma producer aliases and retains core
+// remediation/catalog metadata. Clients holding pre-migration reports must
+// receive a fresh full report even when source and accepted policy are equal.
+// Version 2 (#7024) introduced canonical regex diagnostic behavior.
+const RULE_CATALOG_SCHEMA_VERSION: u32 = 3;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
 const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 1;
 const REMEDIATION_WIRE_SCHEMA_VERSION: u16 = 1;
@@ -311,6 +308,13 @@ impl PullReportSubject {
     /// through SHA-256 over a length-prefixed canonical encoding that embeds
     /// the core substrate identity (#7201) plus this layer's fragments.
     pub fn compose(&self) -> Result<PullReportResultId, NotReusable> {
+        self.compose_with_catalog_version(RULE_CATALOG_SCHEMA_VERSION)
+    }
+
+    fn compose_with_catalog_version(
+        &self,
+        rule_catalog_version: u32,
+    ) -> Result<PullReportResultId, NotReusable> {
         let policy = AcceptedCriticPolicyIdentity::new(
             self.critic_root_id.clone(),
             self.accepted_critic_fingerprint.clone(),
@@ -331,7 +335,7 @@ impl PullReportSubject {
             policy,
             facts,
             DiagnosticResultSchemaVersions::new(
-                RULE_CATALOG_SCHEMA_VERSION,
+                rule_catalog_version,
                 CRITIC_IDENTITY_SCHEMA_VERSION,
                 SUPPRESSION_CONTRACT_SCHEMA_VERSION,
                 PROJECTION_WIRE_SCHEMA_VERSION,
@@ -595,6 +599,50 @@ mod tests {
             return format!("C:{path_or_uri}");
         }
         path_or_uri.to_string()
+    }
+
+    #[test]
+    fn pragma_migration_invalidates_pre_merge_catalog_reports()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::features::diagnostics::PullDiagnosticsProvider;
+        use lsp_types::DocumentDiagnosticReport;
+        let context = context_with(Some(ROOT_A));
+        let script_uri = URI_A.replace("lib/Mod.pm", "script.pl");
+        let source = "print \"hello\\n\";\n";
+        let subject =
+            pull_report_subject(&script_uri, source, None, &context).expect("complete subject");
+        let prior = subject.compose_with_catalog_version(2).expect("old catalog report identity");
+        let current = subject.compose().expect("current catalog report identity");
+        assert_ne!(prior, current, "behavior-changing producer migration must invalidate old IDs");
+        let provider = PullDiagnosticsProvider::new();
+        let uri = script_uri.parse().expect("fixture URI");
+        let report = provider.get_document_diagnostics_with_context(
+            &uri,
+            source,
+            Some(prior.into_string()),
+            &context,
+            None,
+        );
+        let DocumentDiagnosticReport::Full(full) = report else {
+            return Err("pre-migration result ID must never retain the old duplicate report".into());
+        };
+        assert_eq!(full.full_document_diagnostic_report.items.len(), 2);
+        let new_id = full.full_document_diagnostic_report.result_id.expect("current reusable ID");
+        assert_eq!(new_id, current.as_str());
+        assert!(
+            matches!(
+                provider.get_document_diagnostics_with_context(
+                    &uri,
+                    source,
+                    Some(new_id),
+                    &context,
+                    None
+                ),
+                DocumentDiagnosticReport::Unchanged(_)
+            ),
+            "the same current subject remains reusable"
+        );
+        Ok(())
     }
 
     #[test]
