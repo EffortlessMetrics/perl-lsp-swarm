@@ -132,21 +132,20 @@ strangely across a version move, clean the shared root once:
 cargo clean --target-dir "$DEVPLANE/target"
 ```
 
-Between full cleans, reap trees nothing has touched recently — whole stale
-`target/` directories, not files inside active ones — with `scripts/target-gc.sh`:
+Use `scripts/target-gc.sh` to inspect age-selected whole `target/` directories:
 
 ```bash
-just target-gc              # dry-run: reports which targets are stale (default 30d)
-just target-gc --apply      # delete the stale candidates
-bash scripts/target-gc.sh --self-test   # built-in discrimination test
+just target-gc              # advisory report (default age threshold 30d)
+bash scripts/target-gc.sh --self-test   # inspection/refusal/preservation proof
 ```
 
-The tool never touches lockfiles or the cargo registry, refuses to run while
-the devplane build flock is held, and keeps any tree in which even one file was
-modified inside the window — so a fresh build's output is immune by
-construction. A tree that stays continuously hot accumulates internal orphaned
-hash-versioned artifacts that this whole-tree rule will not reclaim; pruning
-those would need per-file mtime semantics and remains future work.
+`--apply` is retired and refuses. The report does not delete anything, and age
+or the legacy build flock cannot establish ownership or consumer inactivity.
+Review ignored evidence, unique source state and all active consumers, then
+request an exact-path cleanup proposal through the allocating root. A report is
+not cleanup authorization. See [Cargo storage admission](../agents/CARGO_STORAGE.md)
+for both target/build resources and the opt-in admitted route. Continuously hot
+artifact trees may contain old artifacts that age-only inspection does not identify.
 
 ### Lock serialization
 

@@ -53,6 +53,8 @@ pub mod env;
 pub mod observation;
 pub mod project_fixture;
 pub mod recorder;
+/// Structured evidence for an exact-subject UX regression run.
+pub mod regression_receipt;
 pub mod reverse_request_fixture;
 pub mod scorecard;
 pub mod server_request_fixture;
@@ -586,12 +588,22 @@ impl UxHarness {
     /// Returns the flat list of workspace symbol objects, or an empty vec if
     /// the server returned null/empty.
     pub fn workspace_symbols(&self, query: &str) -> Result<Vec<Value>> {
+        self.workspace_symbols_with_timeout(query, self.config.timeout)
+    }
+
+    /// Request workspace symbols with a caller-supplied RPC deadline budget.
+    /// Useful when an overall scenario deadline must also bound this request.
+    pub fn workspace_symbols_with_timeout(
+        &self,
+        query: &str,
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         let resp = self.client.request(
             "workspace/symbol",
             json!({
                 "query": query
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp.get("error").is_some() {
             return Err(anyhow!("workspace/symbol returned error: {}", resp["error"]));
@@ -653,14 +665,22 @@ impl UxHarness {
         self.client.peek_events().iter().filter(|event| is_index_ready_event(event)).count()
     }
 
-    /// Wait until the server confirms that a specific active document has
-    /// completed its E2E background indexing pass.
+    /// Wait until the server confirms parser-core readiness for a specific
+    /// active document's diagnostics and document-symbol effects.
     pub fn wait_for_active_document_ready(&self, uri: &str, timeout: Duration) -> bool {
-        self.client
-            .wait_for_events(timeout, |events| {
-                events.iter().any(|event| is_active_document_ready_event(event, uri)).then_some(())
-            })
-            .is_ok()
+        self.wait_for_active_document_ready_result(uri, timeout).is_ok()
+    }
+
+    /// Wait for active-document readiness while retaining the reason a wait ended.
+    /// A live-stream deadline and a closed or failed stream have different causes.
+    pub fn wait_for_active_document_ready_result(
+        &self,
+        uri: &str,
+        timeout: Duration,
+    ) -> std::result::Result<(), observation::WaitEnd> {
+        self.client.wait_for_events(timeout, |events| {
+            events.iter().any(|event| is_active_document_ready_event(event, uri)).then_some(())
+        })
     }
 
     /// Wait until a ready-index notification arrives after `already_seen` events.
