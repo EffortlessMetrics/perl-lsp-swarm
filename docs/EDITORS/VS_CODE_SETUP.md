@@ -193,7 +193,6 @@ settings.
 | `perl-lsp.enableFormatting` | boolean | `true` | Enable native document formatting. |
 | `perl-lsp.formatOnSave` | boolean | `false` | Format document on save. |
 | `perl-lsp.enableTestIntegration` | boolean | `true` | Enable `Test::More` and `Test2` integration. |
-| `perl-lsp.autoPopulateNewFiles` | boolean | `true` | Auto-populate new `.pm` and `.t` files with boilerplate. |
 | `perl-lsp.perlcritic.enabled` | boolean | `true` | Enable native critic diagnostics. |
 | `perl-lsp.perlcritic.severity` | number | `3` | Critic minimum severity, from `1` to `5`. |
 | `perl-lsp.perlcritic.profile` | string | `""` | Path to `.perlcriticrc` compatibility profile file. |
@@ -649,7 +648,6 @@ Here is a typical `.vscode/settings.json` for a Perl project using only real ext
     "vendor/lib"
   ],
   "perl-lsp.perltidyConfig": "",
-  "perl-lsp.autoPopulateNewFiles": true,
   "perl-lsp.featureProfile": "auto",
 
   "[perl]": {

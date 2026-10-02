@@ -22,7 +22,7 @@ schema_version = 1
 policy = "ci-lane-whitelist"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-05-20"
+updated = "2026-09-29"
 
 # =============================================================================
 # Swarm routed Rust small lanes
@@ -661,6 +661,29 @@ review_after = "2026-06-07"
 expires = "2026-11-07"
 
 [[lane]]
+id = "vscode_installed_first_hour_windows"
+workflow = ".github/workflows/vscode-installed-first-hour-windows.yml"
+job = "installed-first-hour-windows"
+tier = "release"
+kind = "platform"
+blocking = false
+default_pr = false
+runner = "windows_latest"
+# One 35-minute Windows job at the 2.0 runner multiplier, bounded at 70 LEM.
+base_lem = 70
+owner = "vscode"
+intent = "Prove the installed first-hour LSP and VSIX byte identity on hosted Windows at a pull-request head."
+failure_mode = "A green packaged-bundle or Test Explorer smoke hides wrong installed bytes or paths on Windows."
+proof_obligation = "Build release server and DAP at the PR head, run the installed first-hour parent, and upload child and parent byte-identity receipts."
+evidence = ["target/receipts/vscode-smoke/installed-first-hour-windows/**"]
+allowed_triggers = ["pull_request"]
+expensive = true
+expensive_reason = "Cold release Rust build and VS Code host on a Windows runner; path-scoped to extension and server/DAP changes."
+duplicate_of = []
+review_after = "2026-12-29"
+expires = "2027-03-29"
+
+[[lane]]
 id = "security_audit"
 workflow = ".github/workflows/ci-security.yml"
 job = "security"
@@ -1084,7 +1107,7 @@ default_pr = false
 runner = "ubuntu_24_04"
 base_lem = 2
 owner = "ci"
-intent = "Run the portable stdlib-only policy validators on GitHub-hosted capacity when the trusted nano runner is unavailable."
+intent = "Run the portable stdlib-only policy validators on GitHub-hosted capacity whenever the trusted nano lane does not succeed."
 failure_mode = "Runner outages leave portable policy validation without a proof path."
 proof_obligation = "Run the identical validator step list as the self-hosted validate job on ubuntu-24.04 system python3."
 evidence = ["job logs"]
@@ -1105,9 +1128,9 @@ default_pr = false
 runner = "ubuntu_latest"
 base_lem = 1
 owner = "ci"
-intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status. Reports actionable deadline diagnostics when the trusted lane stays queued without a runner (#15900)."
-failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, a validator failure masks as a routing skip, or a queued-forever trusted lane leaves the run and its check permanently pending without diagnostics."
-proof_obligation = "Run both lanes; aggregate passes on agreement or on a fallback success when the trusted lane never completes, and fails on trusted failure or divergence; report deadline diagnostics for a trusted lane still queued without a runner; run the fallback contract test."
+intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status. Fail-overs to the hosted lane whenever the trusted lane does not succeed, and reports actionable deadline diagnostics when the trusted lane stays queued without a runner (#15854, #15900)."
+failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, a validator failure masks as a routing skip, a trusted-lane failure blocks a hosted success, or a queued-forever trusted lane leaves the run and its check permanently pending without diagnostics."
+proof_obligation = "Run both lanes; aggregate passes on agreement or on a hosted success whenever the trusted lane does not succeed (failure, skip, cancel, or outage timeout), and fail-closes on hosted failure or trusted/hosted divergence; report deadline diagnostics for a trusted lane still queued without a runner; run the fallback contract and aggregate decision-table tests."
 evidence = ["job output", "step-summary"]
 allowed_triggers = ["pull_request", "workflow_dispatch"]
 expensive = false

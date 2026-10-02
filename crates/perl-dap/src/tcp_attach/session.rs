@@ -7,6 +7,14 @@ use std::io::Write;
 use std::net::TcpStream;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// Deadline for the refusal re-probe in [`TcpAttachSession::connect`].
+///
+/// Deliberately tiny: a refused connect returns immediately whatever the
+/// deadline, so this costs nothing, and a genuinely slow peer must re-time-out
+/// quickly rather than turn a short user timeout into a long stall.
+const REPROBE_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// TCP attach session
 ///
@@ -87,6 +95,34 @@ impl TcpAttachSession {
                     return Ok(());
                 }
                 Err(e) => {
+                    // A refused listener and a slow peer both surface as
+                    // `TimedOut` once the deadline is short, but they are
+                    // opposite remedies: "nothing is listening" versus "raise
+                    // the timeout". Telling a user their debuggee is slow when
+                    // nothing is bound sends them to tune a number that cannot
+                    // help (#16555).
+                    //
+                    // Re-probe once on a short, bounded deadline. A refused
+                    // connect returns immediately regardless of the timeout,
+                    // so this costs nothing in the common case; a genuinely
+                    // slow peer simply re-times-out and we keep the original
+                    // error.
+                    let e = if e.kind() == std::io::ErrorKind::TimedOut {
+                        match TcpStream::connect_timeout(addr, REPROBE_TIMEOUT) {
+                            Err(probe)
+                                if matches!(
+                                    probe.kind(),
+                                    std::io::ErrorKind::ConnectionRefused
+                                        | std::io::ErrorKind::ConnectionReset
+                                ) =>
+                            {
+                                probe
+                            }
+                            _ => e,
+                        }
+                    } else {
+                        e
+                    };
                     tracing::warn!(address = %addr, error = %e, "Failed to connect to resolved address");
                     last_err = Some(e);
                 }

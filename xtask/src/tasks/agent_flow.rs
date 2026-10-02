@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use crate::utils::project_root;
 
+mod route_hint;
+
 const PROVIDER_SKILL_ROOTS: &[(&str, &str)] =
     &[("codex", ".agents/skills"), ("claude", ".claude/skills")];
 
@@ -713,6 +715,7 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
                             &skill.path,
                             &skill.name,
                             observation,
+                            &known_names,
                         ));
                     }
                 }
@@ -1384,14 +1387,19 @@ fn missing_route_target_message(
     path: &Path,
     source: &str,
     observation: &RouteObservation,
+    known_names: &BTreeSet<String>,
 ) -> String {
+    let suggestion = route_hint::unique_near_miss(&observation.target, known_names)
+        .map(|name| format!(" (did you mean '{name}'?)"))
+        .unwrap_or_default();
     format!(
-        "{}:{}:{}: route from '{}' points to missing provider-local skill '{}' via {:?} (if this is prose or a code identifier, remove its route syntax; route references should use an explicit route form)",
+        "{}:{}:{}: route from '{}' points to missing provider-local skill '{}'{} via {:?} (if this is prose or a code identifier, remove its route syntax; route references should use an explicit route form)",
         path.display(),
         observation.line,
         observation.column_start + 1,
         source,
         observation.target,
+        suggestion,
         observation.syntax
     )
 }
@@ -2102,10 +2110,105 @@ mod tests {
             Path::new(".agents/skills/review-tests/SKILL.md"),
             "review-tests",
             &observation,
+            &BTreeSet::new(),
         );
         assert!(message.contains("SKILL.md:12:8"));
         assert!(message.contains("missing provider-local skill 'clear'"));
         assert!(message.contains("ArrowTarget"));
+        assert!(
+            !message.contains("did you mean"),
+            "an empty inventory must not invent a suggestion: {message}"
+        );
+    }
+
+    fn known_skills(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    fn labeled_missing_observation(target: &str) -> RouteObservation {
+        RouteObservation {
+            target: target.into(),
+            line: 4,
+            column_start: 11,
+            column_end: 11 + target.len(),
+            syntax: RouteSyntax::ArrowTarget,
+        }
+    }
+
+    #[test]
+    fn missing_route_diagnostic_suggests_a_unique_near_miss() {
+        let observation = labeled_missing_observation("delver-pr");
+        let known = known_skills(&["deliver-pr", "finish-pr", "review-tests"]);
+        let message = missing_route_target_message(
+            Path::new(".agents/skills/finish-pr/SKILL.md"),
+            "finish-pr",
+            &observation,
+            &known,
+        );
+        assert!(message.contains("SKILL.md:4:12"));
+        assert!(message.contains("missing provider-local skill 'delver-pr'"));
+        assert!(message.contains("did you mean 'deliver-pr'?"));
+        assert!(message.contains("ArrowTarget"));
+        assert!(
+            message.contains("remove its route syntax"),
+            "generic remediation must remain: {message}"
+        );
+    }
+
+    #[test]
+    fn missing_route_diagnostic_stays_silent_on_ambiguous_or_distant_names() {
+        let ambiguous = missing_route_target_message(
+            Path::new(".claude/skills/review-pr/SKILL.md"),
+            "review-pr",
+            &labeled_missing_observation("review-plax"),
+            &known_skills(&["review-plan", "review-plat"]),
+        );
+        assert!(ambiguous.contains("missing provider-local skill 'review-plax'"));
+        assert!(!ambiguous.contains("did you mean"), "a tie must not guess: {ambiguous}");
+
+        let distant = missing_route_target_message(
+            Path::new(".claude/skills/review-pr/SKILL.md"),
+            "review-pr",
+            &labeled_missing_observation("archive-corpus-nightly"),
+            &known_skills(&["deliver-pr", "finish-pr"]),
+        );
+        assert!(distant.contains("missing provider-local skill 'archive-corpus-nightly'"));
+        assert!(
+            !distant.contains("did you mean"),
+            "a distant token must keep the current message: {distant}"
+        );
+    }
+
+    #[test]
+    fn spelling_similarity_does_not_create_or_drop_executable_edges() {
+        let prose =
+            route_line_observations("Take issue #123 through `deliver-pr` after review.", 1, true);
+        assert!(
+            prose.iter().all(|observation| !observation.syntax.is_edge()),
+            "prose/code mentions remain non-edges"
+        );
+        assert!(
+            !resolve_route_syntax(&prose[0], &known_skills(&["deliver-pr"])).is_edge(),
+            "a known prose mention must not become an edge because a skill name is similar"
+        );
+
+        let observations = route_line_observations("- ready -> `delver-pr`", 1, true);
+        assert_eq!(edge_targets(&observations), vec!["delver-pr"]);
+        assert_eq!(
+            resolve_route_syntax(&observations[0], &known_skills(&["deliver-pr"])),
+            RouteSyntax::ArrowTarget
+        );
+        let message = missing_route_target_message(
+            Path::new(".agents/skills/deliver-goal/SKILL.md"),
+            "deliver-goal",
+            &observations[0],
+            &known_skills(&["deliver-pr"]),
+        );
+        assert!(
+            message.contains("missing provider-local skill 'delver-pr'"),
+            "a near-miss remains a hard error: {message}"
+        );
+        assert!(message.contains("did you mean 'deliver-pr'?"));
     }
 
     fn parity_names(pairs: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
