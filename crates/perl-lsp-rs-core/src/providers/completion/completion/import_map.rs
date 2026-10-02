@@ -41,10 +41,21 @@ fn collect_runtime_import_authority(
     specs: &[perl_semantic_facts::ImportSpec],
     authorities: &mut Vec<RuntimeImportAuthority>,
 ) {
+    // Same recovery transparency as the import map (#16969): a `require`
+    // inside a body truncated at EOF keeps its adjacent runtime-import
+    // authority.
+    let node = match &node.kind {
+        NodeKind::Error { partial: Some(partial), .. } => partial,
+        _ => node,
+    };
     let statements: &[Node] = match &node.kind {
         NodeKind::Program { statements } | NodeKind::Block { statements } => statements,
         NodeKind::Package { block: Some(block), .. } => match &block.kind {
             NodeKind::Block { statements } => statements,
+            NodeKind::Error { partial: Some(partial), .. } => match &partial.kind {
+                NodeKind::Block { statements } => statements,
+                _ => &[],
+            },
             _ => &[],
         },
         _ => &[],
@@ -91,6 +102,13 @@ fn unwrap_expression_statement(node: &Node) -> &Node {
 }
 
 fn collect(node: &Node, map: &mut ImportMap) {
+    // Look through the parser's standard recovery wrapper (#16969): a
+    // statement list truncated at EOF keeps its `use` statements, so the
+    // import map sees exactly what a complete body would have shown.
+    let node = match &node.kind {
+        NodeKind::Error { partial: Some(partial), .. } => partial,
+        _ => node,
+    };
     match &node.kind {
         NodeKind::Use { module, args, .. } => collect_use_import(module, args, map),
         NodeKind::Program { statements } | NodeKind::Block { statements } => {

@@ -90,7 +90,23 @@ outcome_owner = "#10230"
 # test setup in scanned completion/workspace.rs, and a test-only module already
 # excluded above. The 42-file product scan, discovered producer population,
 # authored dispositions, entry routes, delegations, and finalizer are unchanged.
-source_digest = "sha256:2521f636463acbed91b0ddcc060897b72c341fb897b04a8b10fb1977f5d64d3f"
+# Re-anchor 2026-10-01 (#16973): the completion import walks
+# (completion/import_map.rs and completion/import_map/used_modules.rs) look
+# through the parser's standard `Error { partial }` recovery wrapper when
+# extracting statement lists, so a body truncated at EOF keeps the same
+# statement walk a complete body would have taken. No producer add/remove or
+# re-channeling: the changed functions build module-visibility sets and import
+# maps, not candidate channels, and the scanned population, entry routes, and
+# finalizer route are unchanged. Projection diff is digest-only, `check`
+# passes.
+#
+# 2026-10-02 merge-ref re-anchor (PR #16973 integration): origin/main moved
+# completion-adjacent sources (lexical_visibility, scope_distance, completion
+# variables, completion tests) after the previous anchor. Digest bumped to the
+# merge tree's value; `graph` regenerated the projection from the same 59
+# producers and `check` passes with no row changes, so the main-side edits are
+# not candidate-channel changes.
+source_digest = "sha256:21b252f29eb127e93e1c589c37d97404dd68694f7aaff8dcf66d2e772c31b4ca"
 
 [[delegations]]
 module = "dancer2"

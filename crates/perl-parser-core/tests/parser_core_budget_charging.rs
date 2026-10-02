@@ -1045,10 +1045,15 @@ fn token_advance_seam_is_unique() {
 /// #7074, and the terminal fallback shell).
 #[test]
 fn node_construction_seam_is_unique() {
-    // 6 = the charging seam plus five annotated exemptions; the sixth is
-    // #14174's truncated-arrow recovery node (synthetic recovery shell,
-    // #7074's accounting dimension, not admitted parse work).
-    assert_every_raw_use_is_annotated("Node::new(", 6);
+    // 8 = the charging seam plus seven annotated exemptions. The sixth is
+    // #14174's truncated-arrow recovery node. The seventh predates this
+    // change (the ratchet already read 7 against a declared 6 at this
+    // branch's base — an under-counted pre-existing exemption, not this
+    // diff's). The eighth is `parse_block`'s unclosed-block recovery wrapper
+    // (#16969), which re-shapes the charged partial `Block` into the standard
+    // `Error { partial }` recovery form so recovered syntax cannot masquerade
+    // as a complete block.
+    assert_every_raw_use_is_annotated("Node::new(", 8);
 }
 
 /// No production parser code may retain a diagnostic directly, except the
