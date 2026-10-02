@@ -8,11 +8,13 @@ import {
   accessibilityInventoryDigest,
   validateAccessibilityReceipt,
 } from '../../accessibilityInventory';
+import {
   observeArtifact,
   requireSameArtifact,
   requireSameBytes,
   type ArtifactObservation,
-} from '../installedArtifactObservation';import { describeWorkspaceTopology } from '../../workspaceTopology';
+} from '../installedArtifactObservation';
+import { describeWorkspaceTopology } from '../../workspaceTopology';
 
 interface MomentResult {
   classification: 'cold' | 'warm' | 'post_restart';
